@@ -20,6 +20,7 @@ from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.core.logging import get_logger
+from threetears.core.tracing import traced
 
 log = get_logger(__name__)
 
@@ -59,6 +60,7 @@ class MemoryExtractor:
         self._rate_limit_bucket = rate_limit_bucket
         self._summary_callback = summary_callback
 
+    @traced(record_args=False)
     async def extract(
         self,
         pool: Any,
@@ -223,6 +225,7 @@ class MemoryExtractor:
             log.warning("Worthiness gate LLM call failed, allowing extraction: %s", exc)
             return True, "llm_error"
 
+    @traced()
     async def _extract_candidates(
         self,
         user_message: str,
@@ -305,6 +308,7 @@ class MemoryExtractor:
             if float(row["similarity"]) >= self._config.similar_memory_threshold
         ]
 
+    @traced()
     async def _resolve_actions(
         self,
         candidates: list[dict[str, Any]],
@@ -412,6 +416,7 @@ class MemoryExtractor:
             candidates_section="\n\n".join(sections),
         )
 
+    @traced()
     async def _execute_actions(
         self,
         actions: list[dict[str, Any]],

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.core.logging import get_logger
+from threetears.core.tracing import traced
 
 from threetears.agent.tools.types import ChatModelFactory
 
@@ -136,6 +137,7 @@ class ToolRouter:
         self._factory = chat_model_factory
         self._routing_prompt = routing_prompt
 
+    @traced()
     async def route(
         self,
         user_message: str,

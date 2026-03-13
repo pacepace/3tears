@@ -13,6 +13,7 @@ from uuid import UUID
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.types import MemoryConfig
+from threetears.core.tracing import traced
 
 
 def _recency_decay(created: datetime, half_life_hours: float) -> float:
@@ -224,6 +225,7 @@ class MemoryRetriever:
         self._config = config
         self._embedding = embedding_provider
 
+    @traced(record_args=False)
     async def retrieve(
         self,
         pool: Any,
@@ -235,6 +237,7 @@ class MemoryRetriever:
         result = await self.retrieve_with_candidates(pool, user_id, user_text, ledger)
         return result.context
 
+    @traced(record_args=False)
     async def retrieve_with_candidates(
         self,
         pool: Any,

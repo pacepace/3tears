@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.messages import ToolMessage
 
 from threetears.core.logging import get_logger
+from threetears.core.tracing import traced
 
 log = get_logger(__name__)
 
@@ -50,6 +51,7 @@ class ToolExecutor:
     def __init__(self, max_rounds: int = 3) -> None:
         self._max_rounds = max_rounds
 
+    @traced()
     async def invoke_with_tools(
         self,
         chat_model: Any,

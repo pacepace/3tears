@@ -14,6 +14,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.logging import get_logger
+from threetears.core.tracing import traced
 
 log = get_logger(__name__)
 
@@ -319,6 +320,22 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Signal other pods to evict this entity from their L1 caches."""
         await self._registry.publish_invalidation(self._nats_client, self.table_name, entity_id)
 
+    # --- Span attribute helpers (no-op when OTel unavailable) ---
+
+    @staticmethod
+    def _set_span_attr(key: str, value: Any) -> None:
+        """Set an attribute on the current OTel span, if available."""
+        try:
+            from opentelemetry import trace as _trace
+            span = _trace.get_current_span()
+            span.set_attribute(key, value)
+        except ImportError:
+            pass
+
+    def _set_span_table(self) -> None:
+        """Set ``cache.table`` on the current span."""
+        self._set_span_attr("cache.table", self.table_name)
+
     # --- Three-tier operations ---
 
     async def ensure(self, entity_id: Any) -> bool:
@@ -335,18 +352,26 @@ class BaseCollection(ABC, Generic[EntityT]):
         data = await self._pull_through(entity_id)
         return data is not None
 
+    @traced()
     async def get(self, entity_id: Any) -> EntityT | None:
         """Three-tier read: L1 -> L2 -> L3, promote on miss."""
+        self._set_span_table()
         found = await self.ensure(entity_id)
         if not found:
+            self._set_span_attr("cache.hit_tier", "miss")
             return None
         try:
-            return self[entity_id]
+            result = self[entity_id]
+            self._set_span_attr("cache.hit_tier", "L1+")
+            return result
         except KeyError:
+            self._set_span_attr("cache.hit_tier", "miss")
             return None
 
+    @traced()
     async def save_entity(self, entity: BaseEntity) -> None:
         """Save entity through three-tier write path."""
+        self._set_span_table()
         entity_id = entity.id
         data = entity.to_dict()
         original_timestamp = getattr(entity, "_original_date_updated", None)
@@ -388,8 +413,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Used by flush_pending."""
         return await self._save_to_postgres(data)
 
+    @traced()
     async def reload_entity(self, entity: BaseEntity) -> None:
         """Reload entity from L3."""
+        self._set_span_table()
         entity_id = entity.id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
@@ -403,8 +430,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 
+    @traced()
     async def delete(self, entity_id: Any) -> bool:
         """Delete entity from all tiers."""
+        self._set_span_table()
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         await self._delete_from_postgres(entity_id)
@@ -414,8 +443,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self._publish_invalidation(entity_id)
         return True
 
+    @traced()
     async def invalidate_cache(self, entity_id: Any) -> None:
         """Delete from L1 and L2, signal other pods."""
+        self._set_span_table()
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, str(entity_id), self._primary_key_column)
         await self._delete_from_l2(entity_id)

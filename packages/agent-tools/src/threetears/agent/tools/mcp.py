@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from threetears.core.logging import get_logger
+from threetears.core.tracing import traced
 
 log = get_logger(__name__)
 
@@ -48,6 +49,7 @@ class McpClient:
         """Close the underlying HTTP client."""
         await self._http.aclose()
 
+    @traced()
     async def list_tools(self) -> list[McpTool]:
         """Discover available tools from the MCP server."""
         try:
@@ -71,6 +73,7 @@ class McpClient:
             )
             return []
 
+    @traced(record_args=True)
     async def invoke_tool(
         self, tool_name: str, arguments: dict[str, Any]
     ) -> McpToolResult:
