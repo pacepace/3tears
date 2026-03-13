@@ -19,14 +19,10 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.14
 
       - name: Install dependencies
-        env:
-          UV_PYTHON: "3.13"
-        run: |
-          rm -f .python-version
-          uv sync
+        run: uv sync
 
       - name: Lint
         run: |
@@ -50,7 +46,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.13
+        run: uv python install 3.14
 
       - name: Verify version matches tag
         run: |
