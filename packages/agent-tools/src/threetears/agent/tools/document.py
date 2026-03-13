@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from threetears.core.logging import get_logger
 from threetears.core.tracing import traced
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 # -- Data types ---------------------------------------------------------------
@@ -208,7 +208,7 @@ def _parse_pdf(
         )
 
     except Exception as exc:
-        _logger.error(
+        log.error(
             "PDF parsing failed",
             extra={"extra_data": {"error": str(exc)}},
         )
@@ -353,7 +353,7 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str) -> str | None:
         return text.strip() if text.strip() else None
 
     except Exception as exc:
-        _logger.warning(
+        log.warning(
             "OCR failed for page",
             extra={"extra_data": {"page": page_num, "error": str(exc)}},
         )
@@ -460,7 +460,7 @@ def _parse_docx(
         )
 
     except Exception as exc:
-        _logger.error(
+        log.error(
             "DOCX parsing failed",
             extra={"extra_data": {"error": str(exc)}},
         )
@@ -586,7 +586,7 @@ def _parse_xlsx(
         )
 
     except Exception as exc:
-        _logger.error(
+        log.error(
             "XLSX parsing failed",
             extra={"extra_data": {"error": str(exc)}},
         )

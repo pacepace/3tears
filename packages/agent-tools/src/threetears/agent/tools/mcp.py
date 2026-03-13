@@ -9,7 +9,7 @@ import httpx
 
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 _MCP_TIMEOUT_SECONDS = 30
 
@@ -65,7 +65,7 @@ class McpClient:
                 for t in data.get("tools", [])
             ]
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "Failed to list MCP tools",
                 extra={"extra_data": {"error": str(exc), "url": self._base_url}},
             )

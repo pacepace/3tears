@@ -76,7 +76,7 @@ class TestLoggingConsistency:
 
         uses_logger = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id == "_logger":
+            if isinstance(node, ast.Name) and node.id == "log":
                 uses_logger = True
                 break
 
@@ -93,7 +93,7 @@ class TestLoggingConsistency:
                             break
 
         assert imports_get_logger, (
-            f"{src_file.relative_to(_SRC_ROOT)} uses _logger but does not "
+            f"{src_file.relative_to(_SRC_ROOT)} uses log but does not "
             f"import get_logger from the project logging module."
         )
 

@@ -16,7 +16,7 @@ from typing import Any
 from threetears.core.cache import MISSING
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 # Internal attribute names that bypass __setattr__ routing
 _INTERNAL_ATTRS = frozenset(
@@ -170,7 +170,7 @@ class BaseEntity:
         object.__setattr__(self, "_dirty", False)
         object.__setattr__(self, "_is_new", False)
         object.__setattr__(self, "_changes", {})
-        _logger.debug(
+        log.debug(
             "Entity marked clean",
             extra={"extra_data": {"id": str(self._id)}},
         )

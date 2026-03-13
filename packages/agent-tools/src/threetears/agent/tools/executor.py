@@ -9,7 +9,7 @@ from langchain_core.messages import ToolMessage
 
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 @dataclass
@@ -94,7 +94,7 @@ class ToolExecutor:
 
                 tool = tool_map.get(tc_name)
                 if tool is None:
-                    _logger.warning(
+                    log.warning(
                         "Tool not found during execution",
                         extra={"extra_data": {"tool_name": tc_name}},
                     )
@@ -109,7 +109,7 @@ class ToolExecutor:
                 try:
                     result = str(await tool.ainvoke(tc_args))
                 except Exception as exc:
-                    _logger.error(
+                    log.error(
                         "Tool execution failed",
                         extra={"extra_data": {"tool_name": tc_name, "error": str(exc)}},
                     )

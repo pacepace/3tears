@@ -15,7 +15,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
 
@@ -126,7 +126,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                 return None
             return self._deserialize(raw)
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "L2 cache read failed",
                 extra={
                     "extra_data": {
@@ -144,7 +144,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self._serialize(data))
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "L2 cache write failed",
                 extra={
                     "extra_data": {
@@ -162,7 +162,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             return await self._nats_client.delete(self._l2_bucket(), self._l2_key(entity_id))
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "L2 cache delete failed",
                 extra={
                     "extra_data": {
@@ -298,7 +298,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             try:
                 await self._save_to_postgres(data)
             except Exception as exc:
-                _logger.error(
+                log.error(
                     "Background L3 write failed",
                     extra={
                         "extra_data": {

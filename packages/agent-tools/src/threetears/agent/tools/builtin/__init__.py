@@ -8,8 +8,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from threetears.core.logging import get_logger
+
 if TYPE_CHECKING:
     from threetears.agent.tools.registry import ToolRegistry
+
+log = get_logger(__name__)
 
 
 def register_builtins(registry: ToolRegistry) -> None:
@@ -18,10 +22,6 @@ def register_builtins(registry: ToolRegistry) -> None:
     Missing optional dependencies cause individual tools to be skipped,
     not a crash.
     """
-    from threetears.core.logging import get_logger
-
-    _logger = get_logger(__name__)
-
     # Each entry: (tool_type, module_path, factory_name)
     _BUILTINS: list[tuple[str, str, str]] = [
         ("calculator", "threetears.agent.tools.builtin.calculator", "create_calculator_tool"),
@@ -41,12 +41,12 @@ def register_builtins(registry: ToolRegistry) -> None:
             factory = getattr(mod, factory_name)
             registry.register(tool_type, factory)
         except ImportError as exc:
-            _logger.warning(
+            log.warning(
                 "Skipping built-in tool (missing dependency)",
                 extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
             )
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "Skipping built-in tool (registration error)",
                 extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
             )

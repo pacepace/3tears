@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 # -- Storage protocol ---------------------------------------------------------
@@ -164,7 +164,7 @@ def load_todo_tools(
         except ValueError as ve:
             return str(ve)
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "add_todo failed",
                 extra={"extra_data": {"title": title, "error": str(exc)}},
             )
@@ -189,7 +189,7 @@ def load_todo_tools(
             await _snapshot(conversation_id)
             return f'Completed: "{row["title"]}"'
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "complete_todo failed",
                 extra={"extra_data": {"title": title, "error": str(exc)}},
             )
@@ -219,7 +219,7 @@ def load_todo_tools(
             display_title = new_title.strip() if new_title else row["title"]
             return f'Updated: "{display_title}"'
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "update_todo failed",
                 extra={"extra_data": {"title": title, "error": str(exc)}},
             )
@@ -243,7 +243,7 @@ def load_todo_tools(
             todos = await _snapshot(conversation_id)
             return f'Removed: "{row["title"]}" ({len(todos)} remaining)'
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "remove_todo failed",
                 extra={"extra_data": {"title": title, "error": str(exc)}},
             )
@@ -279,7 +279,7 @@ def load_todo_tools(
             return "\n".join(lines)
 
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "list_todos failed",
                 extra={"extra_data": {"error": str(exc)}},
             )

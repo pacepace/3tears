@@ -30,7 +30,7 @@ try:
 except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 class DuckDBBackend:
@@ -64,7 +64,7 @@ class DuckDBBackend:
     def initialize(self, sa_metadata: Any) -> None:
         """Initialize DuckDB with schema from SQLAlchemy metadata."""
         if self._initialized:
-            _logger.debug("DuckDB already initialized, skipping")
+            log.debug("DuckDB already initialized, skipping")
             return
 
         self._db = duckdb.connect(":memory:")
@@ -73,10 +73,10 @@ class DuckDBBackend:
             ddl = self._generate_create_table(table)
             self._db.execute(ddl)
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
-            _logger.debug(f"Created DuckDB table: {table.name}")
+            log.debug(f"Created DuckDB table: {table.name}")
 
         self._initialized = True
-        _logger.debug(
+        log.debug(
             "DuckDB L1 cache initialized",
             extra={"extra_data": {"table_count": len(sa_metadata.tables)}},
         )
@@ -305,5 +305,5 @@ class DuckDBBackend:
         if isinstance(sa_type, ARRAY):
             return "VARCHAR_ARRAY"
 
-        _logger.warning(f"Unknown SQLAlchemy type {type(sa_type)}, defaulting to VARCHAR")
+        log.warning(f"Unknown SQLAlchemy type {type(sa_type)}, defaulting to VARCHAR")
         return "VARCHAR"

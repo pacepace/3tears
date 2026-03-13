@@ -1,4 +1,14 @@
-"""Structured logging with optional context injection via contextvars."""
+"""Structured logging for 3tears.
+
+Library-friendly: ``get_logger`` returns a standard ``logging.Logger`` with a
+``NullHandler`` so log output is silent unless the host application configures
+handlers.  Host apps call ``configure_logging()`` (or attach their own
+handlers to the ``threetears`` logger hierarchy) to see output.
+
+Context variables (``set_context`` / ``clear_context``) are available for
+correlation IDs — the built-in ``ContextFormatter`` reads them, and host
+formatters can too via the public ContextVar instances.
+"""
 
 from __future__ import annotations
 
@@ -9,24 +19,23 @@ from contextvars import ContextVar
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Context variables – importable by other modules (e.g. tracing)
+# Context variables – importable by host applications and formatters
 # ---------------------------------------------------------------------------
 
-_correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
-_session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
-_conversation_id: ContextVar[str | None] = ContextVar("conversation_id", default=None)
+correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
+session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
+conversation_id: ContextVar[str | None] = ContextVar("conversation_id", default=None)
 
 
 def set_context(**kwargs: str | None) -> None:
     """Set one or more context variables.
 
     Supported keys: ``correlation_id``, ``session_id``, ``conversation_id``.
-    Values may be strings or objects with ``__str__`` (e.g. ``uuid.UUID``).
     """
     _var_map: dict[str, ContextVar[str | None]] = {
-        "correlation_id": _correlation_id,
-        "session_id": _session_id,
-        "conversation_id": _conversation_id,
+        "correlation_id": correlation_id,
+        "session_id": session_id,
+        "conversation_id": conversation_id,
     }
     for key, value in kwargs.items():
         var = _var_map.get(key)
@@ -37,39 +46,41 @@ def set_context(**kwargs: str | None) -> None:
 
 def clear_context() -> None:
     """Reset all context variables to their defaults."""
-    _correlation_id.set(None)
-    _session_id.set(None)
-    _conversation_id.set(None)
+    correlation_id.set(None)
+    session_id.set(None)
+    conversation_id.set(None)
 
 
 # ---------------------------------------------------------------------------
-# Color support
+# Formatter (available for standalone use or host app adoption)
 # ---------------------------------------------------------------------------
 
 _LEVEL_COLORS: dict[int, str] = {
-    logging.DEBUG: "\033[36m",  # cyan
-    logging.INFO: "\033[32m",  # green
-    logging.WARNING: "\033[33m",  # yellow
-    logging.ERROR: "\033[31m",  # red
-    logging.CRITICAL: "\033[1;31m",  # bold red
+    logging.DEBUG: "\033[36m",      # cyan
+    logging.INFO: "\033[32m",       # green
+    logging.WARNING: "\033[33m",    # yellow
+    logging.ERROR: "\033[31m",      # red
+    logging.CRITICAL: "\033[1;31m", # bold red
 }
 _RESET = "\033[0m"
 
 
 def _color_enabled() -> bool:
+    """Check whether ANSI color output is enabled."""
     env = os.environ.get("THREETEARS_LOG_COLOR", "true").lower()
     if env in ("0", "false", "no"):
         return False
     return sys.stderr.isatty()
 
 
-# ---------------------------------------------------------------------------
-# Formatter
-# ---------------------------------------------------------------------------
+class ContextFormatter(logging.Formatter):
+    """Formats log records with context IDs and call-site info.
 
-
-class _ContextFormatter(logging.Formatter):
-    """Formats log records with context IDs and call-site info."""
+    Reads ``correlation_id``, ``session_id``, and ``conversation_id`` from
+    the module-level ContextVars.  Host apps that populate those vars (or
+    map their own vars via ``set_context``) get structured context in every
+    3tears log line.
+    """
 
     def __init__(self, use_color: bool = False) -> None:
         super().__init__()
@@ -77,14 +88,9 @@ class _ContextFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """Format a log record with context IDs and call-site info."""
-        cid = _correlation_id.get() or "-"
-        sid = _session_id.get() or "-"
-        conv = _conversation_id.get() or "-"
-
-        # Call-site info – set by _ThreeTearsLogger._log
-        path = getattr(record, "call_path", record.pathname)
-        func = getattr(record, "call_func", record.funcName)
-        lineno = getattr(record, "call_lineno", record.lineno)
+        cid = correlation_id.get() or "-"
+        sid = session_id.get() or "-"
+        conv = conversation_id.get() or "-"
 
         level = record.levelname
         if self._use_color:
@@ -98,7 +104,7 @@ class _ContextFormatter(logging.Formatter):
             f"[cid:{cid}]",
             f"[sid:{sid}]",
             f"[conv:{conv}]",
-            f"{path}/{func}.{lineno}:",
+            f"{record.pathname}/{record.funcName}.{record.lineno}:",
             record.getMessage(),
         ]
 
@@ -116,76 +122,40 @@ class _ContextFormatter(logging.Formatter):
 
 
 # ---------------------------------------------------------------------------
-# Custom logger class
-# ---------------------------------------------------------------------------
-
-
-class _ThreeTearsLogger(logging.Logger):
-    """Logger that captures the *caller's* call site, not the logging internals."""
-
-    def _log(  # type: ignore[override]
-        self,
-        level: int,
-        msg: object,
-        args: Any,
-        exc_info: Any = None,
-        extra: dict[str, Any] | None = None,
-        stack_info: bool = False,
-        stacklevel: int = 1,
-        **kwargs: Any,
-    ) -> None:
-        # Find the caller frame – we need to skip *our* frame plus the
-        # public method frame (info/debug/etc.).  The stdlib already adds
-        # stacklevel, so we just pass it through and additionally record
-        # our own call-site attributes for the formatter.
-        import inspect
-
-        frame = inspect.currentframe()
-        # Walk up stacklevel + 1 frames (our _log + caller's info/debug/etc.)
-        for _ in range(stacklevel + 1):
-            if frame is not None:
-                frame = frame.f_back
-
-        if extra is None:
-            extra = {}
-
-        if frame is not None:
-            extra["call_path"] = frame.f_code.co_filename
-            extra["call_func"] = frame.f_code.co_name
-            extra["call_lineno"] = frame.f_lineno
-
-        super()._log(level, msg, args, exc_info=exc_info, extra=extra, stack_info=stack_info, stacklevel=stacklevel)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-# Install our custom logger class *before* any loggers are created.
-logging.setLoggerClass(_ThreeTearsLogger)
-
-_configured_handlers: set[str] = set()
+_null_handlers_added: set[str] = set()
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a configured logger for *name*.
+    """Return a logger for *name*.
 
-    Each logger gets a stderr handler with the structured context formatter.
-    The log level is controlled by the ``THREETEARS_LOG_LEVEL`` env var
-    (default ``INFO``).
+    Adds a ``NullHandler`` so that 3tears never produces output unless the
+    host application configures handlers on the ``threetears`` hierarchy.
+    This follows the Python library logging best practice.
     """
     logger = logging.getLogger(name)
-
-    if name not in _configured_handlers:
-        _configured_handlers.add(name)
-
-        level_name = os.environ.get("THREETEARS_LOG_LEVEL", "INFO").upper()
-        level = getattr(logging, level_name, logging.INFO)
-        logger.setLevel(level)
-
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(_ContextFormatter(use_color=_color_enabled()))
-        logger.addHandler(handler)
-        logger.propagate = False
-
+    if name not in _null_handlers_added:
+        _null_handlers_added.add(name)
+        logger.addHandler(logging.NullHandler())
     return logger
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configure the ``threetears`` logger hierarchy with structured output.
+
+    Call this from standalone applications or test scripts that want 3tears
+    log output on stderr.  Host apps like MetaLLM should NOT call this —
+    they configure the ``threetears`` hierarchy with their own handlers.
+    """
+    root = logging.getLogger("threetears")
+    if root.handlers:
+        return  # already configured
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(ContextFormatter(use_color=_color_enabled()))
+    root.addHandler(handler)
+
+    level_val = getattr(logging, level.upper(), logging.INFO)
+    root.setLevel(level_val)

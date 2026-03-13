@@ -11,7 +11,7 @@ from threetears.core.logging import get_logger
 if TYPE_CHECKING:
     from threetears.core.collections.registry import CollectionRegistry
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 _MAX_FLUSH_RETRIES = 10
 
@@ -132,7 +132,7 @@ async def flush_pending(
     for pw in sorted_pending:
         collection = registry.get_collection(pw.table_name)
         if collection is None:
-            _logger.warning(
+            log.warning(
                 "No collection registered for table, skipping flush",
                 extra={"extra_data": {"table": pw.table_name, "entity_id": str(pw.entity_id)}},
             )
@@ -143,7 +143,7 @@ async def flush_pending(
         except Exception as exc:
             next_retry = pw.retries + 1
             if next_retry >= _MAX_FLUSH_RETRIES:
-                _logger.error(
+                log.error(
                     "Flush write permanently failed after max retries, dropping",
                     extra={
                         "extra_data": {
@@ -155,7 +155,7 @@ async def flush_pending(
                     },
                 )
             else:
-                _logger.warning(
+                log.warning(
                     "Flush write failed, re-adding to buffer for retry",
                     extra={
                         "extra_data": {
@@ -167,5 +167,5 @@ async def flush_pending(
                     },
                 )
                 await write_buffer.add(pw.table_name, pw.entity_id, pw.data, retries=next_retry)
-    _logger.debug("Flush complete", extra={"extra_data": {"flushed": flushed, "total": len(pending)}})
+    log.debug("Flush complete", extra={"extra_data": {"flushed": flushed, "total": len(pending)}})
     return flushed

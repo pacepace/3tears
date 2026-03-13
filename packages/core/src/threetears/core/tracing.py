@@ -82,11 +82,11 @@ def _result_attrs(result: Any) -> dict[str, str]:
 
 def _inject_context_attrs(span: Any) -> None:
     """Inject correlation context from threetears.core.logging into span."""
-    from threetears.core.logging import _correlation_id, _conversation_id, _session_id
+    from threetears.core.logging import correlation_id, conversation_id, session_id
 
-    cid = _correlation_id.get()
-    sid = _session_id.get()
-    conv = _conversation_id.get()
+    cid = correlation_id.get()
+    sid = session_id.get()
+    conv = conversation_id.get()
     if cid:
         span.set_attribute("ctx.correlation_id", cid)
     if sid:

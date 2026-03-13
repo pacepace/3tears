@@ -7,7 +7,13 @@ from io import StringIO
 
 import pytest
 
-from threetears.core.logging import clear_context, get_logger, set_context
+from threetears.core.logging import (
+    ContextFormatter,
+    clear_context,
+    configure_logging,
+    get_logger,
+    set_context,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -20,11 +26,9 @@ def _clean_context():
 
 def _capture_handler() -> tuple[logging.Handler, StringIO]:
     """Create a handler that writes to a StringIO buffer."""
-    from threetears.core.logging import _ContextFormatter
-
     buf = StringIO()
     handler = logging.StreamHandler(buf)
-    handler.setFormatter(_ContextFormatter(use_color=False))
+    handler.setFormatter(ContextFormatter(use_color=False))
     return handler, buf
 
 
@@ -34,10 +38,26 @@ def test_get_logger_returns_logger():
     assert logger.name == "test.basic"
 
 
+def test_get_logger_has_null_handler():
+    logger = get_logger("test.null_handler")
+    has_null = any(isinstance(h, logging.NullHandler) for h in logger.handlers)
+    assert has_null, "get_logger should add a NullHandler"
+
+
+def test_get_logger_no_stream_handler():
+    logger = get_logger("test.no_stream")
+    has_stream = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.NullHandler)
+        for h in logger.handlers
+    )
+    assert not has_stream, "get_logger should NOT add a StreamHandler"
+
+
 def test_log_format_without_context():
     logger = get_logger("test.no_ctx")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
     try:
         logger.info("hello world")
     finally:
@@ -55,6 +75,7 @@ def test_log_format_with_context():
     logger = get_logger("test.with_ctx")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
     try:
         logger.info("context test")
     finally:
@@ -73,6 +94,7 @@ def test_clear_context():
     logger = get_logger("test.clear")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
     try:
         logger.info("after clear")
     finally:
@@ -88,6 +110,7 @@ def test_extra_data_in_log():
     logger = get_logger("test.extra")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
     try:
         logger.info("with extras", extra={"extra_data": {"key": "value", "count": 42}})
     finally:
@@ -97,3 +120,29 @@ def test_extra_data_in_log():
     assert "key" in output
     assert "value" in output
     assert "42" in output
+
+
+def test_configure_logging_adds_handler():
+    # Use a unique logger name so we don't conflict
+    root = logging.getLogger("threetears")
+    original_handlers = list(root.handlers)
+    try:
+        # Clear any existing handlers
+        root.handlers.clear()
+        configure_logging("DEBUG")
+        assert len(root.handlers) == 1
+        assert isinstance(root.handlers[0], logging.StreamHandler)
+    finally:
+        root.handlers = original_handlers
+
+
+def test_configure_logging_idempotent():
+    root = logging.getLogger("threetears")
+    original_handlers = list(root.handlers)
+    try:
+        root.handlers.clear()
+        configure_logging("INFO")
+        configure_logging("INFO")  # second call should be no-op
+        assert len(root.handlers) == 1
+    finally:
+        root.handlers = original_handlers

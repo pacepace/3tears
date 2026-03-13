@@ -21,7 +21,7 @@ from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 _VALID_MEMORY_TYPES = {t.value for t in MemoryType}
 
@@ -78,7 +78,7 @@ class MemoryExtractor:
                 turn_count,
             )
             if not passed:
-                _logger.debug(
+                log.debug(
                     "Memory extraction skipped by heuristic gate: %s",
                     reason,
                 )
@@ -87,7 +87,7 @@ class MemoryExtractor:
             # Layer 2: Rate limit
             rate_passed, cooldown = await self._check_rate_limit(conversation_id)
             if not rate_passed:
-                _logger.debug(
+                log.debug(
                     "Memory extraction skipped by rate limit, cooldown=%d",
                     cooldown,
                 )
@@ -99,7 +99,7 @@ class MemoryExtractor:
                 assistant_response,
             )
             if not worthy:
-                _logger.debug(
+                log.debug(
                     "Memory extraction skipped by worthiness gate: %s",
                     worthiness_reason,
                 )
@@ -111,7 +111,7 @@ class MemoryExtractor:
                 assistant_response,
             )
             if not candidates_raw:
-                _logger.debug("No memories extracted from conversation turn")
+                log.debug("No memories extracted from conversation turn")
                 return
 
             # Embed and find similar memories
@@ -149,7 +149,7 @@ class MemoryExtractor:
             )
 
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "Memory extraction failed: %s",
                 exc,
                 exc_info=True,
@@ -185,7 +185,7 @@ class MemoryExtractor:
                 return False, self._config.extraction_rate_limit_cooldown_seconds
             return True, 0
         except Exception as exc:
-            _logger.warning("Rate limit check failed, allowing extraction: %s", exc)
+            log.warning("Rate limit check failed, allowing extraction: %s", exc)
             return True, 0
 
     async def _check_worthiness(
@@ -217,10 +217,10 @@ class MemoryExtractor:
             reason = result.get("reason", "no_reason")
             return bool(worthy), str(reason)
         except (json.JSONDecodeError, KeyError):
-            _logger.warning("Failed to parse worthiness gate response, allowing extraction")
+            log.warning("Failed to parse worthiness gate response, allowing extraction")
             return True, "parse_error"
         except Exception as exc:
-            _logger.warning("Worthiness gate LLM call failed, allowing extraction: %s", exc)
+            log.warning("Worthiness gate LLM call failed, allowing extraction: %s", exc)
             return True, "llm_error"
 
     async def _extract_candidates(
@@ -267,10 +267,10 @@ class MemoryExtractor:
                     )
             return valid
         except (json.JSONDecodeError, KeyError):
-            _logger.warning("Failed to parse memory extraction LLM response")
+            log.warning("Failed to parse memory extraction LLM response")
             return []
         except Exception as exc:
-            _logger.warning("Memory extraction LLM call failed: %s", exc)
+            log.warning("Memory extraction LLM call failed: %s", exc)
             return []
 
     async def _get_similar_memories(
@@ -383,10 +383,10 @@ class MemoryExtractor:
             return valid_actions
 
         except (json.JSONDecodeError, KeyError):
-            _logger.warning("Failed to parse memory resolution response, falling back to ADD all")
+            log.warning("Failed to parse memory resolution response, falling back to ADD all")
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
         except Exception as exc:
-            _logger.warning("Memory resolution LLM call failed: %s, falling back to ADD all", exc)
+            log.warning("Memory resolution LLM call failed: %s, falling back to ADD all", exc)
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
 
     def _build_resolution_prompt(
@@ -501,7 +501,7 @@ class MemoryExtractor:
                 # NOOP: nothing to do
 
             except Exception as exc:
-                _logger.warning(
+                log.warning(
                     "Failed to execute memory action %s: %s",
                     action,
                     exc,

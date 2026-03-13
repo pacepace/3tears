@@ -11,7 +11,7 @@ from threetears.core.logging import get_logger
 
 from threetears.agent.tools.types import ChatModelFactory
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Recall-intent detection
@@ -110,7 +110,7 @@ def _parse_routing_decision(response_text: str) -> dict[str, Any]:
             "reasoning": parsed.get("reasoning", ""),
         }
     except (json.JSONDecodeError, AttributeError):
-        _logger.warning(
+        log.warning(
             "Failed to parse routing response",
             extra={"extra_data": {"response": response_text[:200]}},
         )
@@ -217,7 +217,7 @@ class ToolRouter:
                     reasoning=reasoning,
                 )
 
-        _logger.warning(
+        log.warning(
             "Routing selected unknown tool",
             extra={"extra_data": {"selected": selected_name}},
         )

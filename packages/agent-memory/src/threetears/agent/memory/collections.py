@@ -16,7 +16,7 @@ from threetears.core.logging import get_logger
 
 from threetears.agent.memory.entities import MemoryEntity
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 # Field type mapping for JSON serialization/deserialization
 _FIELD_TYPES: dict[str, Any] = {

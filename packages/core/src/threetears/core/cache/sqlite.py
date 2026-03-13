@@ -26,7 +26,7 @@ try:
 except ImportError:
     _UUID_TYPES = (uuid.UUID,)
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 class _PooledConnection:
@@ -115,7 +115,7 @@ class SQLiteBackend:
         Builds a schema registry for type-aware serialization.
         """
         if self._initialized:
-            _logger.debug("SQLite already initialized, skipping")
+            log.debug("SQLite already initialized, skipping")
             return
 
         self._anchor_conn = self._make_connection()
@@ -124,7 +124,7 @@ class SQLiteBackend:
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
-            _logger.debug(f"Created SQLite table: {table.name}")
+            log.debug(f"Created SQLite table: {table.name}")
 
         # Register type adapters so UUID/datetime values are automatically
         # serialized at the SQLite boundary.
@@ -138,7 +138,7 @@ class SQLiteBackend:
             pass
 
         self._initialized = True
-        _logger.debug(
+        log.debug(
             "SQLite L1 cache initialized",
             extra={"extra_data": {"table_count": len(sa_metadata.tables)}},
         )
@@ -379,5 +379,5 @@ class SQLiteBackend:
         if isinstance(sa_type, ARRAY):
             return "TEXT_ARRAY"
 
-        _logger.warning(f"Unknown SQLAlchemy type {type(sa_type)}, defaulting to TEXT")
+        log.warning(f"Unknown SQLAlchemy type {type(sa_type)}, defaulting to TEXT")
         return "TEXT"

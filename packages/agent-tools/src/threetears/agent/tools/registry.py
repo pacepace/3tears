@@ -6,7 +6,11 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
+from threetears.core.logging import get_logger
+
 ToolFactory = Callable[[dict[str, Any], str], BaseTool]
+
+log = get_logger(__name__)
 
 
 class ToolRegistry:
@@ -51,15 +55,12 @@ class ToolRegistry:
         optional ``config`` dict.  Unknown tool types are logged and skipped
         (never crash).
         """
-        from threetears.core.logging import get_logger
-
-        _logger = get_logger(__name__)
         tools: list[BaseTool] = []
         for cfg in tool_configs:
             tool_type = cfg["tool_type"]
             factory = self._factories.get(tool_type)
             if factory is None:
-                _logger.warning(
+                log.warning(
                     "Unknown tool type, skipping",
                     extra={"extra_data": {"tool_type": tool_type}},
                 )
@@ -68,7 +69,7 @@ class ToolRegistry:
                 t = factory(cfg.get("config", {}), cfg["description"])
                 tools.append(t)
             except Exception as exc:
-                _logger.warning(
+                log.warning(
                     "Failed to create tool",
                     extra={"extra_data": {"tool_type": tool_type, "error": str(exc)}},
                 )

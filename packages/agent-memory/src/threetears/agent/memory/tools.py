@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, model_validator
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 # -- Defaults -----------------------------------------------------------------
 

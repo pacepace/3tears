@@ -7,7 +7,7 @@ from typing import Any
 
 from threetears.core.logging import get_logger
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 INVALIDATION_SUBJECT = "threetears.cache.invalidate"
 
@@ -100,7 +100,7 @@ class CollectionRegistry:
                 table = payload.get("table")
                 entity_id = payload.get("entity_id")
                 if not table or not entity_id:
-                    _logger.warning(
+                    log.warning(
                         "Malformed invalidation signal",
                         extra={"extra_data": {"raw": data[:200].decode(errors="replace")}},
                     )
@@ -114,7 +114,7 @@ class CollectionRegistry:
                 if l1 is not None:
                     l1.delete_by_id(table, str(entity_id), collection._primary_key_column)
             except Exception as exc:
-                _logger.warning(
+                log.warning(
                     "Error processing invalidation signal",
                     extra={"extra_data": {"error": str(exc)}},
                 )
@@ -134,7 +134,7 @@ class CollectionRegistry:
             payload = json.dumps({"table": table_name, "entity_id": str(entity_id)}).encode()
             await nats_client.publish(INVALIDATION_SUBJECT, payload)
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "Failed to publish invalidation signal",
                 extra={
                     "extra_data": {
