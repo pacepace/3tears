@@ -475,9 +475,7 @@ class TestSubscriptGetterPullThrough:
     """Tests for __getitem__ transparent three-tier pull-through."""
 
     @pytest.mark.asyncio
-    async def test_getitem_entity_l1_hit(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_getitem_entity_l1_hit(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] returns entity from L1 without touching L2/L3."""
         nats = _make_nats_mock()
         coll = StubCollection(registry, config_always, nats_client=nats)
@@ -490,9 +488,7 @@ class TestSubscriptGetterPullThrough:
         nats.get.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_getitem_field_l1_hit(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_getitem_field_l1_hit(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id, field] returns field value from L1."""
         coll = StubCollection(registry, config_always)
         coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
@@ -524,9 +520,7 @@ class TestSubscriptGetterPullThrough:
 
         assert coll["e1", "name"] == "Alice"
 
-    def test_getitem_pulls_through_l2(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_getitem_pulls_through_l2(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] pulls through L2 on L1 miss."""
         nats = _make_nats_mock()
         l2_data = {"id": "e1", "name": "Bob", "score": 50}
@@ -568,9 +562,7 @@ class TestSubscriptGetterPullThrough:
         with pytest.raises(KeyError, match="field not found"):
             _ = coll["e1", "nonexistent_field"]
 
-    def test_contains_checks_l1_only(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_contains_checks_l1_only(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """'in' operator checks L1 only, does not pull through."""
         pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
         coll = StubCollection(registry, config_always, pg_store=pg_store)
@@ -664,9 +656,7 @@ class TestSubscriptSetterPropagation:
         assert buf.pending_count() == 1
 
     @pytest.mark.asyncio
-    async def test_dict_setter_propagates(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_dict_setter_propagates(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] = data_dict propagates to L1, L2, and L3."""
         import time
 
@@ -710,9 +700,7 @@ class TestSubscriptSetterPropagation:
         # date_updated should be close to now
         assert du >= before
 
-    def test_setter_rejects_non_dict(
-        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_setter_rejects_non_dict(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] = non_dict raises TypeError."""
         coll = StubCollection(registry, config_always)
 
@@ -738,9 +726,7 @@ class TestMultiPodSimulation:
         return StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, pg_store=pg_store)
 
     @pytest.mark.asyncio
-    async def test_write_on_pod_a_visible_on_pod_b_via_l2(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_write_on_pod_a_visible_on_pod_b_via_l2(self, config_always: DefaultCoreConfig) -> None:
         """Data written on pod A is visible on pod B through shared L2."""
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
@@ -757,9 +743,7 @@ class TestMultiPodSimulation:
         assert entity_b.name == "Alice"
 
     @pytest.mark.asyncio
-    async def test_stale_l1_on_pod_b_after_pod_a_update(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_stale_l1_on_pod_b_after_pod_a_update(self, config_always: DefaultCoreConfig) -> None:
         """Pod B's L1 cache becomes stale after pod A updates via setter.
 
         This demonstrates the cache coherence gap that signaling will fix.
@@ -797,9 +781,7 @@ class TestMultiPodSimulation:
         assert entity_b.name == "Bob"
 
     @pytest.mark.asyncio
-    async def test_setter_propagation_reaches_l3(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_setter_propagation_reaches_l3(self, config_always: DefaultCoreConfig) -> None:
         """Setter with ALWAYS strategy writes through to shared L3."""
         import time
 
@@ -826,9 +808,7 @@ class TestMultiPodSimulation:
         assert entity_b.name == "Updated"
 
     @pytest.mark.asyncio
-    async def test_setter_deferred_does_not_reach_l3(
-        self, config_deferred: DefaultCoreConfig
-    ) -> None:
+    async def test_setter_deferred_does_not_reach_l3(self, config_deferred: DefaultCoreConfig) -> None:
         """Setter with deferred strategy buffers but doesn't write L3."""
         import time
 

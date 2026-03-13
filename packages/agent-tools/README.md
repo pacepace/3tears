@@ -1,0 +1,134 @@
+# 3tears Agent Tools
+
+Tool framework for LLM agents. Provides tool routing, execution, context management, MCP integration, and a set of builtin tools.
+
+Part of the [3tears](https://github.com/pacepace/3tears) framework.
+
+## Installation
+
+```bash
+pip install 3tears-agent-tools
+
+# Optional extras for builtin tools
+pip install "3tears-agent-tools[calculator]"   # simpleeval
+pip install "3tears-agent-tools[units]"        # pint
+pip install "3tears-agent-tools[fetch]"        # trafilatura
+pip install "3tears-agent-tools[document]"     # PyMuPDF, python-docx, openpyxl
+pip install "3tears-agent-tools[all]"          # everything
+```
+
+## Components
+
+### ToolRouter
+
+Routes user messages to the appropriate tool using a lightweight LLM call. Includes recall-intent detection to avoid re-invoking tools when users ask about previous results.
+
+```python
+from threetears.agent.tools import ToolRouter, is_recall_intent
+
+# Quick check — no LLM call needed
+if is_recall_intent("show me what the calculator said"):
+    # User wants to recall, not invoke
+
+# Full routing with LLM
+router = ToolRouter(chat_model)
+decision = await router.route(user_message, tool_descriptions)
+# decision.tool_name, decision.reasoning
+```
+
+### ToolExecutor
+
+Invokes a tool-LLM: sends the user message to a secondary model configured for a specific task.
+
+```python
+from threetears.agent.tools import ToolExecutor
+
+executor = ToolExecutor()
+result = await executor.invoke_with_tools(
+    chat_model=tool_model,
+    user_message="What is 42 * 17?",
+    tools=[calculator_tool],
+    tool_name="calculator",
+)
+# result.content, result.tool_calls
+```
+
+### ToolContextManager
+
+Tracks tool invocations and results across a conversation for recall support.
+
+```python
+from threetears.agent.tools import ToolContextManager
+
+ctx = ToolContextManager()
+await ctx.record_invocation("calculator", "42 * 17", "714")
+await ctx.get_recall_context("calculator")  # Returns formatted recall string
+```
+
+### McpClient
+
+MCP (Model Context Protocol) integration for connecting to external tool servers.
+
+```python
+from threetears.agent.tools import McpClient
+
+async with McpClient(server_config) as client:
+    tools = await client.list_tools()
+    result = await client.invoke_tool("tool_name", {"param": "value"})
+```
+
+### Builtin Tools
+
+Register all builtin tools at once:
+
+```python
+from threetears.agent.tools import register_builtins, ToolRegistry
+
+registry = ToolRegistry()
+register_builtins(registry)
+# Registers: calculator, unit_converter, dice_roller, date_time,
+#            random_number, web_fetch, text_transform, parse_document
+```
+
+### Todo Tools
+
+Todo list management behind a storage protocol:
+
+```python
+from threetears.agent.tools import TodoStorage, load_todo_tools_from_storage
+
+class MyTodoStorage(TodoStorage):
+    async def add(self, conv_id, user_id, title, list_name, msg_id) -> dict: ...
+    async def list_all(self, conv_id) -> list[dict]: ...
+    # ... other methods
+
+tools = load_todo_tools_from_storage(my_storage, snapshot_callback=on_snapshot)
+```
+
+### Protocols
+
+For media-related capabilities, implement these protocols:
+
+```python
+from threetears.agent.tools import (
+    ImageGenerationBackend,
+    MediaStorage,
+    VisionProvider,
+    TranscriptionProvider,
+)
+```
+
+### Document Parsing
+
+Parse PDF, DOCX, XLSX, and plain text with optional OCR:
+
+```python
+from threetears.agent.tools import parse_document, OcrConfig
+
+result = await parse_document(
+    file_bytes=data,
+    filename="report.pdf",
+    ocr_config=OcrConfig(enabled=True),
+)
+# result.sections — list of DocumentSection with title, content, page numbers
+```

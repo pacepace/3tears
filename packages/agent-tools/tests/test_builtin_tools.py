@@ -88,31 +88,37 @@ class TestTimezoneConverter:
 
     def test_convert(self):
         tool = self._create()
-        result = tool.invoke({
-            "time_str": "2024-01-15 14:00",
-            "from_timezone": "America/New_York",
-            "to_timezone": "Europe/London",
-        })
+        result = tool.invoke(
+            {
+                "time_str": "2024-01-15 14:00",
+                "from_timezone": "America/New_York",
+                "to_timezone": "Europe/London",
+            }
+        )
         assert "=" in result
         assert "EST" in result or "New_York" in result or "PM" in result
 
     def test_bad_timezone(self):
         tool = self._create()
-        result = tool.invoke({
-            "time_str": "2024-01-15 14:00",
-            "from_timezone": "Fake/Timezone",
-            "to_timezone": "UTC",
-        })
+        result = tool.invoke(
+            {
+                "time_str": "2024-01-15 14:00",
+                "from_timezone": "Fake/Timezone",
+                "to_timezone": "UTC",
+            }
+        )
         assert "[TOOL ERROR]" in result
         assert "unknown timezone" in result
 
     def test_time_only_format(self):
         tool = self._create()
-        result = tool.invoke({
-            "time_str": "3:00 PM",
-            "from_timezone": "America/New_York",
-            "to_timezone": "UTC",
-        })
+        result = tool.invoke(
+            {
+                "time_str": "3:00 PM",
+                "from_timezone": "America/New_York",
+                "to_timezone": "UTC",
+            }
+        )
         # Should not contain year 1900
         assert "1900" not in result
         assert "=" in result
@@ -162,9 +168,7 @@ class TestDictionary:
                 "meanings": [
                     {
                         "partOfSpeech": "noun",
-                        "definitions": [
-                            {"definition": "A greeting", "example": "She said hello."}
-                        ],
+                        "definitions": [{"definition": "A greeting", "example": "She said hello."}],
                         "synonyms": ["hi", "greetings"],
                         "antonyms": ["goodbye"],
                     }

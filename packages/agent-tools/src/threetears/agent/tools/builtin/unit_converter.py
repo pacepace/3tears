@@ -9,13 +9,13 @@ from pydantic import BaseModel, Field
 
 from threetears.agent.tools.utils import tool_error
 
+_ureg: Any = None
 try:
     import pint
 
     _ureg = pint.UnitRegistry()
     _HAS_PINT = True
 except ImportError:
-    _ureg = None  # type: ignore[assignment]
     _HAS_PINT = False
 
 

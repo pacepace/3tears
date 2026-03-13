@@ -50,9 +50,11 @@ def test_recall_context_not_found():
 
 def test_declare_workflow_tool():
     ctx, tools = _make_tools()
-    result = tools["declare_workflow"].invoke({
-        "plan": "Test plan",
-        "steps": ["step1", "step2"],
-    })
+    result = tools["declare_workflow"].invoke(
+        {
+            "plan": "Test plan",
+            "steps": ["step1", "step2"],
+        }
+    )
     assert "Workflow declared" in result
     assert ctx.has_active_workflow

@@ -5,9 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
-from threetears.agent.tools.executor import ToolExecutor, ToolExecutionResult
+from threetears.agent.tools.executor import ToolExecutor
 
 
 def _make_text_response(text: str) -> MagicMock:
@@ -47,9 +46,11 @@ async def test_invoke_text_response():
 
 async def test_invoke_with_tool_calls():
     tool = _make_mock_tool("calculator", "42")
-    tc_response = _make_tool_call_response([
-        {"name": "calculator", "args": {"expr": "6*7"}, "id": "tc_1"},
-    ])
+    tc_response = _make_tool_call_response(
+        [
+            {"name": "calculator", "args": {"expr": "6*7"}, "id": "tc_1"},
+        ]
+    )
     text_response = _make_text_response("The answer is 42.")
 
     model = AsyncMock()
@@ -67,9 +68,11 @@ async def test_invoke_with_tool_calls():
 
 async def test_max_rounds_exhausted():
     tool = _make_mock_tool("search", "result")
-    tc_response = _make_tool_call_response([
-        {"name": "search", "args": {"q": "test"}, "id": "tc_1"},
-    ])
+    tc_response = _make_tool_call_response(
+        [
+            {"name": "search", "args": {"q": "test"}, "id": "tc_1"},
+        ]
+    )
     final_response = _make_text_response("Done after exhaustion.")
 
     model = AsyncMock()
@@ -86,9 +89,11 @@ async def test_max_rounds_exhausted():
 
 
 async def test_tool_not_found():
-    tc_response = _make_tool_call_response([
-        {"name": "nonexistent", "args": {}, "id": "tc_1"},
-    ])
+    tc_response = _make_tool_call_response(
+        [
+            {"name": "nonexistent", "args": {}, "id": "tc_1"},
+        ]
+    )
     text_response = _make_text_response("Handled.")
 
     model = AsyncMock()
@@ -103,10 +108,12 @@ async def test_tool_not_found():
 
 async def test_execution_result_fields():
     tool = _make_mock_tool("t1", "r1")
-    tc_response = _make_tool_call_response([
-        {"name": "t1", "args": {"a": 1}, "id": "tc_1"},
-        {"name": "t1", "args": {"a": 2}, "id": "tc_2"},
-    ])
+    tc_response = _make_tool_call_response(
+        [
+            {"name": "t1", "args": {"a": 1}, "id": "tc_1"},
+            {"name": "t1", "args": {"a": 2}, "id": "tc_2"},
+        ]
+    )
     text_response = _make_text_response("Final.")
 
     model = AsyncMock()

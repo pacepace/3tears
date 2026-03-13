@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from threetears.agent.tools.protocols import (
     GeneratedImage,
@@ -62,7 +62,11 @@ class FakeMediaStorage:
         return None
 
     async def store_content(
-        self, media_id: UUID, user_id: UUID, content_type: str, content: str,
+        self,
+        media_id: UUID,
+        user_id: UUID,
+        content_type: str,
+        content: str,
     ) -> str:
         return "stored"
 

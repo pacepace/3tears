@@ -135,6 +135,7 @@ class NatsClient:
                         )
 
             import asyncio
+
             asyncio.create_task(_dispatch())
             return sub
         except Exception as exc:
@@ -235,9 +236,7 @@ class NatsClient:
         except KeyNotFoundError:
             return None
         except Exception as exc:
-            log.warning(
-                "KV get_entry failed", extra={"extra_data": {"bucket": bucket, "key": key, "error": str(exc)}}
-            )
+            log.warning("KV get_entry failed", extra={"extra_data": {"bucket": bucket, "key": key, "error": str(exc)}})
             return None
 
     async def ping(self) -> bool:

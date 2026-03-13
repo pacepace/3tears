@@ -95,7 +95,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _get_row_sync(self, entity_id: Any) -> dict[str, Any] | None:
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, str(entity_id), self._primary_key_column)
+        return self._l1.select_by_id(self.table_name, str(entity_id), self._primary_key_column)  # type: ignore[no-any-return]
 
     def _write_to_cache_sync(self, data: dict[str, Any], primary_key: str | None = None) -> bool:
         if self._l1 is None:
@@ -113,7 +113,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     # --- L2 cache (NATS KV, async) ---
 
     def _l2_bucket(self) -> str:
-        return self._nats_client.bucket_name("collections")
+        return self._nats_client.bucket_name("collections")  # type: ignore[no-any-return]
 
     def _l2_key(self, entity_id: Any) -> str:
         return f"{self.table_name}.{entity_id}"
@@ -143,7 +143,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return False
         try:
-            return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self._serialize(data))
+            return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self._serialize(data))  # type: ignore[no-any-return]
         except Exception as exc:
             log.warning(
                 "L2 cache write failed",
@@ -161,7 +161,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return False
         try:
-            return await self._nats_client.delete(self._l2_bucket(), self._l2_key(entity_id))
+            return await self._nats_client.delete(self._l2_bucket(), self._l2_key(entity_id))  # type: ignore[no-any-return]
         except Exception as exc:
             log.warning(
                 "L2 cache delete failed",
@@ -185,7 +185,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is not None:
             row = self._l1.select_by_id(self.table_name, str(entity_id), self._primary_key_column)
             if row is not None:
-                return row
+                return row  # type: ignore[no-any-return]
         return sync_await(self._pull_through(entity_id))
 
     async def _pull_through(self, entity_id: Any) -> dict[str, Any] | None:
@@ -294,6 +294,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             and self._write_buffer is not None
         )
         if should_defer:
+            assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
             try:
@@ -327,6 +328,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Set an attribute on the current OTel span, if available."""
         try:
             from opentelemetry import trace as _trace
+
             span = _trace.get_current_span()
             span.set_attribute(key, value)
         except ImportError:
@@ -363,7 +365,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         try:
             result = self[entity_id]
             self._set_span_attr("cache.hit_tier", "L1+")
-            return result
+            return result  # type: ignore[no-any-return]
         except KeyError:
             self._set_span_attr("cache.hit_tier", "miss")
             return None
@@ -392,6 +394,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self._primary_key_column)
             await self._save_to_l2(entity_id, data)
+            assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, data)
             entity.mark_clean()
             entity._original_date_updated = data.get("date_updated")

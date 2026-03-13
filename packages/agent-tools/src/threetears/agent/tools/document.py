@@ -138,7 +138,9 @@ async def parse_document(
 
 
 def _parse_pdf(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse PDF using PyMuPDF with OCR fallback for scanned pages."""
     try:
@@ -249,7 +251,9 @@ def _extract_pdf_tables(page: Any) -> str:
 
 
 def _extract_pdf_headings(
-    page: Any, text: str, page_number: int,
+    page: Any,
+    text: str,
+    page_number: int,
 ) -> list[DocumentSection]:
     """Use font-size heuristic to identify headings on a PDF page."""
     try:
@@ -284,10 +288,7 @@ def _extract_pdf_headings(
                 if block.get("type") == 0:
                     for bline in block.get("lines", []):
                         for span in bline.get("spans", []):
-                            if (
-                                span.get("text", "").strip() == line_text
-                                and span.get("size", 12) > median_size * 1.2
-                            ):
+                            if span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.2:
                                 is_heading = True
 
             if is_heading:
@@ -303,8 +304,7 @@ def _extract_pdf_headings(
                     current_text = []
 
                 if any(
-                    span.get("text", "").strip() == line_text
-                    and span.get("size", 12) > median_size * 1.5
+                    span.get("text", "").strip() == line_text and span.get("size", 12) > median_size * 1.5
                     for block in blocks
                     if block.get("type") == 0
                     for bline in block.get("lines", [])
@@ -364,7 +364,9 @@ def _ocr_page(pdf_data: bytes, page_num: int, language: str) -> str | None:
 
 
 def _parse_docx(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse DOCX using python-docx."""
     try:
@@ -510,7 +512,9 @@ def _docx_table_to_markdown(table: Any) -> str:
 
 
 def _parse_xlsx(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse XLSX using openpyxl."""
     try:
@@ -603,7 +607,9 @@ def _parse_xlsx(
 
 
 def _parse_txt(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse plain text with encoding fallback."""
     try:
@@ -646,7 +652,9 @@ def _parse_txt(
 
 
 def _parse_markdown(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse markdown -- direct passthrough since it's already markdown."""
     try:
@@ -720,7 +728,9 @@ def _parse_markdown(
 
 
 def _parse_latex(
-    data: bytes, filename: str | None = None, ocr: OcrConfig = OcrConfig(),
+    data: bytes,
+    filename: str | None = None,
+    ocr: OcrConfig = OcrConfig(),
 ) -> DocumentResult:
     """Parse LaTeX into markdown using regex transformations."""
     try:
@@ -737,9 +747,9 @@ def _parse_latex(
         doc_start = re.search(r"\\begin\{document\}", text)
         doc_end = re.search(r"\\end\{document\}", text)
         if doc_start:
-            text = text[doc_start.end():]
+            text = text[doc_start.end() :]
         if doc_end:
-            text = text[:doc_end.start()]
+            text = text[: doc_end.start()]
 
         # Remove common preamble commands
         text = re.sub(r"\\(usepackage|documentclass|author|date|maketitle)\{[^}]*\}", "", text)
@@ -881,16 +891,17 @@ def create_parse_document_tool(
 
         if len(data) > _PARSE_DOCUMENT_MAX_BYTES:
             return _tool_error(
-                "parse_document", "decode",
+                "parse_document",
+                "decode",
                 f"Decoded content exceeds maximum size ({len(data)} > {_PARSE_DOCUMENT_MAX_BYTES} bytes)",
             )
 
         mime_type = detect_mime_from_filename(filename)
         if mime_type is None:
             return _tool_error(
-                "parse_document", "detect format",
-                f"Cannot determine format from filename '{filename}'. "
-                "Supported: .pdf, .docx, .xlsx, .txt, .md, .tex",
+                "parse_document",
+                "detect format",
+                f"Cannot determine format from filename '{filename}'. Supported: .pdf, .docx, .xlsx, .txt, .md, .tex",
             )
 
         try:

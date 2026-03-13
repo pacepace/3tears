@@ -5,12 +5,31 @@ build-backend = "hatchling.build"
 [project]
 name = "3tears-agent-tools"
 version = "0.1.0"
+description = "Tool framework for LLM agents — routing, execution, and builtin tools"
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
     "3tears",
     "langchain-core",
     "httpx",
 ]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
 
 [project.optional-dependencies]
 calculator = ["simpleeval"]

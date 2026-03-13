@@ -250,8 +250,7 @@ def load_todo_tools(
             return f"[TOOL ERROR] remove_todo: {exc}"
 
     remove_todo.description = (
-        "Remove a todo item from the conversation's persistent checklist. "
-        "Matches by title (exact or partial)."
+        "Remove a todo item from the conversation's persistent checklist. Matches by title (exact or partial)."
     )
     tools.append(remove_todo)
 
@@ -286,8 +285,7 @@ def load_todo_tools(
             return f"[TOOL ERROR] list_todos: {exc}"
 
     list_todos.description = (
-        "List all todo items in the conversation's persistent checklist, "
-        "showing their completion status."
+        "List all todo items in the conversation's persistent checklist, showing their completion status."
     )
     tools.append(list_todos)
 

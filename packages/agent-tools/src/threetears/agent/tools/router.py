@@ -158,15 +158,11 @@ class ToolRouter:
 
         # No tools → nothing to route to
         if not tool_llms and not mcp_tools:
-            return ToolRoutingDecision(
-                tool_name=None, tool_type=None, tool_id=None, reasoning="no tools available"
-            )
+            return ToolRoutingDecision(tool_name=None, tool_type=None, tool_id=None, reasoning="no tools available")
 
         # Pre-filter: recall intent
         if is_recall_intent(user_message):
-            return ToolRoutingDecision(
-                tool_name=None, tool_type=None, tool_id=None, reasoning="recall intent detected"
-            )
+            return ToolRoutingDecision(tool_name=None, tool_type=None, tool_id=None, reasoning="recall intent detected")
 
         # Build description string
         descriptions: list[str] = []
@@ -194,9 +190,7 @@ class ToolRouter:
         reasoning = parsed.get("reasoning", "")
 
         if selected_name is None:
-            return ToolRoutingDecision(
-                tool_name=None, tool_type=None, tool_id=None, reasoning=reasoning
-            )
+            return ToolRoutingDecision(tool_name=None, tool_type=None, tool_id=None, reasoning=reasoning)
 
         # Match to tool-LLM
         for t in tool_llms:

@@ -15,9 +15,8 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
@@ -168,10 +167,7 @@ def _wait_for_publish(nats: InMemoryNatsBus, target_count: int, timeout: float =
     deadline = time.monotonic() + timeout
     while nats._publish_count < target_count:
         if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Timed out waiting for {target_count} publishes "
-                f"(got {nats._publish_count})"
-            )
+            raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats._publish_count})")
         time.sleep(0.02)
 
 
@@ -683,17 +679,13 @@ class TestSignalFailureResilience:
     """Verify that signal failures don't break write operations."""
 
     @pytest.mark.asyncio
-    async def test_signal_publish_failure_does_not_break_save(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_signal_publish_failure_does_not_break_save(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, save_entity still succeeds."""
         nats = InMemoryNatsBus()
         pg_store: dict[str, dict] = {}
         pod_a, reg_a = _make_pod(nats, pg_store, config_always)
 
         # Sabotage publish
-        original_publish = nats.publish
-
         async def broken_publish(subject: str, data: bytes) -> bool:
             raise ConnectionError("NATS down")
 
@@ -707,9 +699,7 @@ class TestSignalFailureResilience:
         assert pg_store["e1"]["name"] == "Alice"
 
     @pytest.mark.asyncio
-    async def test_signal_publish_failure_does_not_break_setter(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_signal_publish_failure_does_not_break_setter(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, setter still writes to L1."""
         nats = InMemoryNatsBus()
         pg_store: dict[str, dict] = {}
@@ -730,9 +720,7 @@ class TestSignalFailureResilience:
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio
-    async def test_signal_publish_failure_does_not_break_delete(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_signal_publish_failure_does_not_break_delete(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, delete still succeeds."""
         nats = InMemoryNatsBus()
         pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
@@ -748,9 +736,7 @@ class TestSignalFailureResilience:
         assert "e1" not in pg_store
 
     @pytest.mark.asyncio
-    async def test_no_nats_client_no_signal_no_crash(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    async def test_no_nats_client_no_signal_no_crash(self, config_always: DefaultCoreConfig) -> None:
         """Collection with no NATS client skips signaling entirely."""
         l1 = SQLiteBackend(db_name=f"test_nosignal_{uuid.uuid4().hex[:8]}")
         l1.initialize(_make_metadata())

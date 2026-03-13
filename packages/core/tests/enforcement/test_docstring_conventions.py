@@ -19,10 +19,7 @@ _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears"
 
 def _collect_src_files() -> list[Path]:
     """Collect all Python source files under src/, excluding __init__.py."""
-    return sorted(
-        p for p in _SRC_ROOT.rglob("*.py")
-        if p.name != "__init__.py"
-    )
+    return sorted(p for p in _SRC_ROOT.rglob("*.py") if p.name != "__init__.py")
 
 
 def _parse_file(path: Path) -> ast.Module:
@@ -70,8 +67,7 @@ class TestNoTypeDirective:
         violations: list[str] = []
 
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                     ast.ClassDef, ast.Module)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
                 continue
             docstring = ast.get_docstring(node, clean=False)
             if not docstring:
@@ -79,8 +75,7 @@ class TestNoTypeDirective:
             for match in _TYPE_RE.finditer(docstring):
                 lineno = getattr(node, "lineno", 0)
                 violations.append(
-                    f"  line ~{lineno}: :type {match.group(1)}: found "
-                    f"(use :ptype {match.group(1)}: instead)"
+                    f"  line ~{lineno}: :type {match.group(1)}: found (use :ptype {match.group(1)}: instead)"
                 )
 
         if violations:
@@ -101,9 +96,7 @@ class TestDocstringsRequired:
         if violations:
             rel = src_file.relative_to(_SRC_ROOT)
             detail = "\n".join(violations)
-            pytest.fail(
-                f"{rel} has public functions without docstrings:\n{detail}"
-            )
+            pytest.fail(f"{rel} has public functions without docstrings:\n{detail}")
 
     def _check_node_children(
         self,
@@ -134,9 +127,7 @@ class TestDocstringsRequired:
 
             docstring = ast.get_docstring(node, clean=False)
             if not docstring:
-                violations.append(
-                    f"  line {node.lineno}: {node.name}() missing docstring"
-                )
+                violations.append(f"  line {node.lineno}: {node.name}() missing docstring")
 
         return violations
 
@@ -151,8 +142,7 @@ class TestParamPtypePairing:
         violations: list[str] = []
 
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                     ast.ClassDef, ast.Module)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
                 continue
             docstring = ast.get_docstring(node, clean=False)
             if not docstring:
@@ -167,13 +157,10 @@ class TestParamPtypePairing:
                 func_name = getattr(node, "name", "<module>")
                 for param in sorted(missing):
                     violations.append(
-                        f"  line ~{lineno} {func_name}(): "
-                        f":param {param}: without matching :ptype {param}:"
+                        f"  line ~{lineno} {func_name}(): :param {param}: without matching :ptype {param}:"
                     )
 
         if violations:
             rel = src_file.relative_to(_SRC_ROOT)
             detail = "\n".join(violations)
-            pytest.fail(
-                f"{rel} has :param: without matching :ptype::\n{detail}"
-            )
+            pytest.fail(f"{rel} has :param: without matching :ptype::\n{detail}")

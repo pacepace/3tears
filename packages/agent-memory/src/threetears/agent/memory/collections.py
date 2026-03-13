@@ -42,7 +42,7 @@ def _json_serializer(obj: object) -> str | int | float | bool | None:
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, Enum):
-        return obj.value
+        return obj.value  # type: ignore[no-any-return]
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
@@ -59,10 +59,10 @@ def _resolve_base_type(type_hint: Any) -> type | None:
             if non_none:
                 inner = non_none[0]
                 inner_origin = get_origin(inner)
-                return inner_origin if inner_origin is not None else inner
+                return inner_origin if inner_origin is not None else inner  # type: ignore[no-any-return]
             return None
-        return origin
-    return type_hint
+        return origin  # type: ignore[no-any-return]
+    return type_hint  # type: ignore[no-any-return]
 
 
 class MemoriesCollection(BaseCollection[MemoryEntity]):

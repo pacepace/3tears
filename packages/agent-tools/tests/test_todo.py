@@ -11,7 +11,6 @@ from threetears.agent.tools.todo import (
     AddTodoInput,
     CompleteTodoInput,
     RemoveTodoInput,
-    SnapshotCallback,
     TodoStorage,
     UpdateTodoInput,
     load_todo_tools,
@@ -36,7 +35,10 @@ class InMemoryTodoStorage:
         return list_name
 
     async def find_by_title(
-        self, conversation_id: UUID, title: str, list_name: str,
+        self,
+        conversation_id: UUID,
+        title: str,
+        list_name: str,
     ) -> dict[str, Any] | None:
         """Find by exact title first, then partial."""
         for t in self._todos:
@@ -48,8 +50,12 @@ class InMemoryTodoStorage:
         return None
 
     async def add(
-        self, conversation_id: UUID, user_id: UUID, title: str,
-        list_name: str, message_id: UUID | None,
+        self,
+        conversation_id: UUID,
+        user_id: UUID,
+        title: str,
+        list_name: str,
+        message_id: UUID | None,
     ) -> dict[str, Any]:
         """Add a todo, raise on duplicate."""
         for t in self._todos:
@@ -73,8 +79,11 @@ class InMemoryTodoStorage:
                 t["is_completed"] = True
 
     async def update(
-        self, todo_id: UUID, message_id: UUID | None,
-        new_title: str | None = None, is_completed: bool | None = None,
+        self,
+        todo_id: UUID,
+        message_id: UUID | None,
+        new_title: str | None = None,
+        is_completed: bool | None = None,
     ) -> None:
         """Update title/completion."""
         for t in self._todos:

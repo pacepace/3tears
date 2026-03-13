@@ -24,7 +24,7 @@ fi
 EXTRA_ARGS=("$@")
 
 if [ -n "$PACKAGE" ]; then
-    uv run pytest "packages/$PACKAGE/tests/" "${EXTRA_ARGS[@]}"
+    uv run pytest "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 else
-    uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ "${EXTRA_ARGS[@]}"
+    uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi

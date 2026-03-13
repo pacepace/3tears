@@ -47,8 +47,7 @@ def test_get_logger_has_null_handler():
 def test_get_logger_no_stream_handler():
     logger = get_logger("test.no_stream")
     has_stream = any(
-        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.NullHandler)
-        for h in logger.handlers
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.NullHandler) for h in logger.handlers
     )
     assert not has_stream, "get_logger should NOT add a StreamHandler"
 

@@ -8,8 +8,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import StructuredTool
 
-from threetears.agent.tools.utils import tool_error
-
 
 def _create_date_fn(user_timezone: str | None) -> Any:
     """Create a date function, optionally bound to a user timezone."""

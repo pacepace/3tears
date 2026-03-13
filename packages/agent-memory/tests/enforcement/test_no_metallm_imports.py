@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "memory"
 
@@ -23,8 +22,7 @@ def _collect_src_files() -> list[Path]:
 
 def _is_banned(module_name: str) -> bool:
     """Return True if the import starts with a banned prefix."""
-    return any(module_name.startswith(prefix) or module_name == prefix.rstrip(".")
-               for prefix in _BANNED_PREFIXES)
+    return any(module_name.startswith(prefix) or module_name == prefix.rstrip(".") for prefix in _BANNED_PREFIXES)
 
 
 class TestNoMetallmImports:
@@ -43,18 +41,11 @@ class TestNoMetallmImports:
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         if _is_banned(alias.name):
-                            violations.append(
-                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
-                                f"import {alias.name}"
-                            )
+                            violations.append(f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: import {alias.name}")
                 elif isinstance(node, ast.ImportFrom):
                     if node.module and _is_banned(node.module):
-                        violations.append(
-                            f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
-                            f"from {node.module} import ..."
-                        )
+                        violations.append(f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: from {node.module} import ...")
 
-        assert not violations, (
-            f"MetaLLM imports found in agent-memory ({len(violations)} location(s)):\n"
-            + "\n".join(violations)
+        assert not violations, f"MetaLLM imports found in agent-memory ({len(violations)} location(s)):\n" + "\n".join(
+            violations
         )

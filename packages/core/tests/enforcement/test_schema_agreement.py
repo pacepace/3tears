@@ -26,6 +26,7 @@ import pytest
 # For now, we know about MemoriesCollection in agent-memory.
 # This test lives in core but validates any package that registers collections.
 
+
 def _try_import_field_types(module_path: str) -> dict[str, Any] | None:
     """Try to import a module and return its _FIELD_TYPES, or None."""
     try:
@@ -41,11 +42,7 @@ def _try_get_collection_pk(module_path: str) -> str | None:
         mod = importlib.import_module(module_path)
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
-            if (
-                isinstance(obj, type)
-                and hasattr(obj, "_primary_key_column")
-                and attr_name not in ("BaseCollection",)
-            ):
+            if isinstance(obj, type) and hasattr(obj, "_primary_key_column") and attr_name not in ("BaseCollection",):
                 pk = getattr(obj, "_primary_key_column", None)
                 if pk:
                     return pk
@@ -60,11 +57,7 @@ def _try_get_entity_pk(module_path: str) -> str | None:
         mod = importlib.import_module(module_path)
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
-            if (
-                isinstance(obj, type)
-                and hasattr(obj, "_primary_key_field")
-                and attr_name not in ("BaseEntity",)
-            ):
+            if isinstance(obj, type) and hasattr(obj, "_primary_key_field") and attr_name not in ("BaseEntity",):
                 pk = getattr(obj, "_primary_key_field", None)
                 if pk:
                     return pk
@@ -98,16 +91,17 @@ class TestFieldTypesConsistency:
         ids=_COLLECTION_IDS,
     )
     def test_primary_key_in_field_types(
-        self, label: str, col_module: str, ent_module: str,
+        self,
+        label: str,
+        col_module: str,
+        ent_module: str,
     ) -> None:
         """The primary key column must appear in _FIELD_TYPES."""
         field_types = _try_import_field_types(col_module)
         assert field_types is not None
 
         collection_pk = _try_get_collection_pk(col_module)
-        assert collection_pk is not None, (
-            f"{label}: could not find _primary_key_column in {col_module}"
-        )
+        assert collection_pk is not None, f"{label}: could not find _primary_key_column in {col_module}"
 
         assert collection_pk in field_types, (
             f"{label}: _primary_key_column {collection_pk!r} is not in _FIELD_TYPES. "
@@ -124,7 +118,10 @@ class TestPrimaryKeyConsistency:
         ids=_COLLECTION_IDS,
     )
     def test_entity_pk_matches_collection(
-        self, label: str, col_module: str, ent_module: str,
+        self,
+        label: str,
+        col_module: str,
+        ent_module: str,
     ) -> None:
         """Entity PK field must match collection PK column."""
         collection_pk = _try_get_collection_pk(col_module)
@@ -134,8 +131,7 @@ class TestPrimaryKeyConsistency:
             pytest.skip(f"Could not resolve PKs for {label}")
 
         assert collection_pk == entity_pk, (
-            f"{label}: collection _primary_key_column={collection_pk!r} "
-            f"but entity _primary_key_field={entity_pk!r}"
+            f"{label}: collection _primary_key_column={collection_pk!r} but entity _primary_key_field={entity_pk!r}"
         )
 
 
@@ -148,7 +144,10 @@ class TestSaveToPostgresConsistency:
         ids=_COLLECTION_IDS,
     )
     def test_insert_columns_in_field_types(
-        self, label: str, col_module: str, ent_module: str,
+        self,
+        label: str,
+        col_module: str,
+        ent_module: str,
     ) -> None:
         """INSERT column names in _save_to_postgres must all be in _FIELD_TYPES."""
         field_types = _try_import_field_types(col_module)

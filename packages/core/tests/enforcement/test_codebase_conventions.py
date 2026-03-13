@@ -19,10 +19,7 @@ _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears"
 
 def _collect_src_files() -> list[Path]:
     """Collect all Python source files under src/, excluding __init__.py."""
-    return sorted(
-        p for p in _SRC_ROOT.rglob("*.py")
-        if p.name != "__init__.py"
-    )
+    return sorted(p for p in _SRC_ROOT.rglob("*.py") if p.name != "__init__.py")
 
 
 def _parse_file(path: Path) -> ast.Module:
@@ -119,10 +116,7 @@ class TestFutureAnnotations:
                         if alias.name == "annotations":
                             has_future = True
                             break
-        assert has_future, (
-            f"{src_file.relative_to(_SRC_ROOT)} is missing "
-            f"`from __future__ import annotations`"
-        )
+        assert has_future, f"{src_file.relative_to(_SRC_ROOT)} is missing `from __future__ import annotations`"
 
 
 class TestTypeAnnotations:
@@ -145,9 +139,7 @@ class TestTypeAnnotations:
                 if node.name.startswith("_"):
                     continue
                 if node.returns is None:
-                    violations.append(
-                        f"  line {node.lineno}: {node.name}() missing -> return type"
-                    )
+                    violations.append(f"  line {node.lineno}: {node.name}() missing -> return type")
         if violations:
             rel = src_file.relative_to(_SRC_ROOT)
             detail = "\n".join(violations)

@@ -53,9 +53,7 @@ class McpClient:
     async def list_tools(self) -> list[McpTool]:
         """Discover available tools from the MCP server."""
         try:
-            resp = await self._http.post(
-                f"{self._base_url}/mcp/v1/tools/list", json={}
-            )
+            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             data = resp.json()
             return [
@@ -74,9 +72,7 @@ class McpClient:
             return []
 
     @traced(record_args=True)
-    async def invoke_tool(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> McpToolResult:
+    async def invoke_tool(self, tool_name: str, arguments: dict[str, Any]) -> McpToolResult:
         """Invoke a tool on the MCP server."""
         try:
             resp = await self._http.post(
@@ -86,27 +82,17 @@ class McpClient:
             resp.raise_for_status()
             data = resp.json()
             content_parts = data.get("content", [])
-            text_content = "\n".join(
-                part.get("text", "")
-                for part in content_parts
-                if part.get("type") == "text"
-            )
-            return McpToolResult(
-                success=not data.get("isError", False), content=text_content
-            )
+            text_content = "\n".join(part.get("text", "") for part in content_parts if part.get("type") == "text")
+            return McpToolResult(success=not data.get("isError", False), content=text_content)
         except httpx.TimeoutException:
-            return McpToolResult(
-                success=False, content="", error="MCP tool invocation timed out"
-            )
+            return McpToolResult(success=False, content="", error="MCP tool invocation timed out")
         except Exception as exc:
             return McpToolResult(success=False, content="", error=str(exc))
 
     async def test_connection(self) -> bool:
         """Test whether the MCP server is reachable."""
         try:
-            resp = await self._http.post(
-                f"{self._base_url}/mcp/v1/tools/list", json={}
-            )
+            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             return True
         except Exception:

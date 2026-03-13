@@ -56,11 +56,11 @@ def clear_context() -> None:
 # ---------------------------------------------------------------------------
 
 _LEVEL_COLORS: dict[int, str] = {
-    logging.DEBUG: "\033[36m",      # cyan
-    logging.INFO: "\033[32m",       # green
-    logging.WARNING: "\033[33m",    # yellow
-    logging.ERROR: "\033[31m",      # red
-    logging.CRITICAL: "\033[1;31m", # bold red
+    logging.DEBUG: "\033[36m",  # cyan
+    logging.INFO: "\033[32m",  # green
+    logging.WARNING: "\033[33m",  # yellow
+    logging.ERROR: "\033[31m",  # red
+    logging.CRITICAL: "\033[1;31m",  # bold red
 }
 _RESET = "\033[0m"
 

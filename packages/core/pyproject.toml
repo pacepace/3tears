@@ -5,7 +5,23 @@ build-backend = "hatchling.build"
 [project]
 name = "3tears"
 version = "0.1.0"
+description = "Three-tier caching framework for Python — L1 SQLite, L2 NATS KV, L3 PostgreSQL"
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
     "sqlalchemy",
     "asyncpg",
@@ -16,6 +32,9 @@ dependencies = [
 [project.optional-dependencies]
 tracing = ["opentelemetry-api>=1.20"]
 duckdb = ["duckdb>=1.0"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]

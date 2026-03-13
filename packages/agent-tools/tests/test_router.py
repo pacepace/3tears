@@ -5,11 +5,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from threetears.agent.tools.router import (
     ToolRouter,
-    ToolRoutingDecision,
     _parse_routing_decision,
     is_recall_intent,
 )

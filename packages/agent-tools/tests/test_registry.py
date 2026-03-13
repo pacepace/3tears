@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.tools import BaseTool, StructuredTool
@@ -63,10 +62,12 @@ def test_has():
 async def test_create_tools_skips_unknown():
     reg = ToolRegistry()
     reg.register("known", _mock_factory)
-    tools = await reg.create_tools([
-        {"tool_type": "known", "description": "good"},
-        {"tool_type": "unknown", "description": "bad"},
-    ])
+    tools = await reg.create_tools(
+        [
+            {"tool_type": "known", "description": "good"},
+            {"tool_type": "unknown", "description": "bad"},
+        ]
+    )
     assert len(tools) == 1
     assert tools[0].name == "mock_tool"
 
@@ -75,9 +76,11 @@ async def test_create_tools_skips_on_error():
     reg = ToolRegistry()
     reg.register("broken", _error_factory)
     reg.register("good", _mock_factory)
-    tools = await reg.create_tools([
-        {"tool_type": "broken", "description": "breaks"},
-        {"tool_type": "good", "description": "works"},
-    ])
+    tools = await reg.create_tools(
+        [
+            {"tool_type": "broken", "description": "breaks"},
+            {"tool_type": "good", "description": "works"},
+        ]
+    )
     assert len(tools) == 1
     assert tools[0].name == "mock_tool"

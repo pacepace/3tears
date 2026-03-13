@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "core"
 
@@ -59,8 +58,7 @@ class TestNoLlmDeps:
                         banned = _is_banned(alias.name)
                         if banned:
                             violations.append(
-                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
-                                f"import {alias.name} (banned: {banned})"
+                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: import {alias.name} (banned: {banned})"
                             )
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
@@ -71,7 +69,6 @@ class TestNoLlmDeps:
                                 f"from {node.module} import ... (banned: {banned})"
                             )
 
-        assert not violations, (
-            f"LLM library imports found in core ({len(violations)} location(s)):\n"
-            + "\n".join(violations)
+        assert not violations, f"LLM library imports found in core ({len(violations)} location(s)):\n" + "\n".join(
+            violations
         )

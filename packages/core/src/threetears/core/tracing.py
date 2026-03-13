@@ -198,4 +198,4 @@ def traced(
 
     if func is not None:
         return decorator(func)
-    return decorator  # type: ignore[return-value]
+    return decorator

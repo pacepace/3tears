@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
@@ -59,10 +58,10 @@ def _extract_content_sync(html: str) -> tuple[str | None, str | None]:
         title = title_match.group(1).strip() if title_match else None
         return text, title
 
-    text = trafilatura.extract(html, include_comments=False, include_tables=True)
+    text_or_none: str | None = trafilatura.extract(html, include_comments=False, include_tables=True)
     metadata = trafilatura.extract_metadata(html)
     title = metadata.title if metadata and metadata.title else None
-    return text, title
+    return text_or_none, title
 
 
 def _validate_content(text: str | None, title: str | None) -> bool:

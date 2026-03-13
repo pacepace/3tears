@@ -86,7 +86,7 @@ def _fmt_dt(dt: Any) -> str:
     if dt is None:
         return ""
     if hasattr(dt, "strftime"):
-        return dt.strftime("%b %-d, %Y at %-I:%M %p")
+        return dt.strftime("%b %-d, %Y at %-I:%M %p")  # type: ignore[no-any-return]
     return str(dt)
 
 
@@ -97,7 +97,7 @@ def _extract_title(metadata_json: Any) -> str | None:
         meta = json.loads(meta)
     if not meta:
         return None
-    return meta.get("document_title") or meta.get("original_filename") or meta.get("title")
+    return meta.get("document_title") or meta.get("original_filename") or meta.get("title")  # type: ignore[no-any-return]
 
 
 # -- Memory search by IDs (batch lookup) --------------------------------------
@@ -127,7 +127,8 @@ async def _search_by_ids(
                 """SELECT memory_id, type_memory, content, date_created
                    FROM memories
                    WHERE memory_id = ANY($1::uuid[]) AND user_id = $2 AND is_deleted = false""",
-                valid_uuids, user_id,
+                valid_uuids,
+                user_id,
             ),
             pool.fetch(
                 """SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
@@ -135,7 +136,8 @@ async def _search_by_ids(
                    FROM media_content mc
                    JOIN media med ON mc.media_id = med.media_id
                    WHERE mc.content_id = ANY($1::uuid[]) AND mc.user_id = $2""",
-                valid_uuids, user_id,
+                valid_uuids,
+                user_id,
             ),
             pool.fetch(
                 """SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
@@ -143,7 +145,8 @@ async def _search_by_ids(
                    FROM memory_chunks mc
                    LEFT JOIN media med ON mc.media_id = med.media_id
                    WHERE mc.chunk_id = ANY($1::uuid[]) AND mc.user_id = $2""",
-                valid_uuids, user_id,
+                valid_uuids,
+                user_id,
             ),
         )
     except Exception as exc:
@@ -230,7 +233,9 @@ async def load_memory_search_tool(
 
     @tool("memory_search", args_schema=MemorySearchInput)
     async def memory_search(
-        query: str = "", type_filter: str | None = None, ids: list[str] | None = None,
+        query: str = "",
+        type_filter: str | None = None,
+        ids: list[str] | None = None,
     ) -> str:
         """Search the user's stored memories and document knowledge base by semantic similarity."""
         # -- Batch ID lookup path --
@@ -257,7 +262,8 @@ async def load_memory_search_tool(
             valid_types = {"preference", "fact", "decision", "topical_context"}
             if type_filter not in valid_types:
                 return _tool_error(
-                    "memory_search", "filter",
+                    "memory_search",
+                    "filter",
                     f"Invalid type_filter '{type_filter}'. Must be one of: {', '.join(sorted(valid_types))}",
                 )
             conditions.append(f"type_memory = ${param_idx}")
@@ -296,7 +302,8 @@ async def load_memory_search_tool(
         # FTS keyword results
         if fts_text:
             fts_conditions = [
-                "user_id = $2", "is_deleted = false",
+                "user_id = $2",
+                "is_deleted = false",
                 "search_vector @@ websearch_to_tsquery('english', $1)",
             ]
             fts_params: list[Any] = [fts_text, user_id]
@@ -322,13 +329,15 @@ async def load_memory_search_tool(
                     mid = str(row["memory_id"])
                     if mid not in seen_ids:
                         seen_ids.add(mid)
-                        memories.append({
-                            "memory_id": mid,
-                            "type": row["type_memory"],
-                            "content": row["content"],
-                            "date_created": row["date_created"],
-                            "similarity": None,
-                        })
+                        memories.append(
+                            {
+                                "memory_id": mid,
+                                "type": row["type_memory"],
+                                "content": row["content"],
+                                "date_created": row["date_created"],
+                                "similarity": None,
+                            }
+                        )
             except Exception:
                 pass  # FTS search is best-effort
 
@@ -348,7 +357,8 @@ async def load_memory_search_tool(
                 ORDER BY mc.embedding <=> $1::vector
                 LIMIT 5
                 """,
-                embedding_str, user_id,
+                embedding_str,
+                user_id,
             )
             mc_seen: set[str] = set()
             for row in mc_rows:
@@ -358,15 +368,17 @@ async def load_memory_search_tool(
                 cid = str(row["content_id"])
                 mc_seen.add(cid)
                 title = _extract_title(row["metadata_json"])
-                media_results.append({
-                    "content_id": cid,
-                    "content": row["content"],
-                    "media_id": str(row["media_id"]),
-                    "media_category": row["media_category"],
-                    "title": title,
-                    "date_created": row["date_created"],
-                    "similarity": sim,
-                })
+                media_results.append(
+                    {
+                        "content_id": cid,
+                        "content": row["content"],
+                        "media_id": str(row["media_id"]),
+                        "media_category": row["media_category"],
+                        "title": title,
+                        "date_created": row["date_created"],
+                        "similarity": sim,
+                    }
+                )
 
             # FTS for media_content
             if fts_text:
@@ -384,22 +396,25 @@ async def load_memory_search_tool(
                     ORDER BY fts_rank DESC
                     LIMIT 5
                     """,
-                    fts_text, user_id,
+                    fts_text,
+                    user_id,
                 )
                 for row in fts_mc_rows:
                     cid = str(row["content_id"])
                     if cid not in mc_seen:
                         mc_seen.add(cid)
                         title = _extract_title(row["metadata_json"])
-                        media_results.append({
-                            "content_id": cid,
-                            "content": row["content"],
-                            "media_id": str(row["media_id"]),
-                            "media_category": row["media_category"],
-                            "title": title,
-                            "date_created": row["date_created"],
-                            "similarity": None,
-                        })
+                        media_results.append(
+                            {
+                                "content_id": cid,
+                                "content": row["content"],
+                                "media_id": str(row["media_id"]),
+                                "media_category": row["media_category"],
+                                "title": title,
+                                "date_created": row["date_created"],
+                                "similarity": None,
+                            }
+                        )
         except Exception:
             pass
 
@@ -417,21 +432,24 @@ async def load_memory_search_tool(
                 ORDER BY mc.embedding <=> $1::vector
                 LIMIT 5
                 """,
-                embedding_str, user_id,
+                embedding_str,
+                user_id,
             )
             for row in chunk_rows:
                 sim = float(row["similarity"])
                 if sim <= sim_threshold:
                     continue
                 title = _extract_title(row["metadata_json"])
-                doc_chunks.append({
-                    "chunk_id": str(row["chunk_id"]),
-                    "content": row["content"],
-                    "title": title,
-                    "heading": row["heading_context"],
-                    "page": row["page_number"],
-                    "similarity": sim,
-                })
+                doc_chunks.append(
+                    {
+                        "chunk_id": str(row["chunk_id"]),
+                        "content": row["content"],
+                        "title": title,
+                        "heading": row["heading_context"],
+                        "page": row["page_number"],
+                        "similarity": sim,
+                    }
+                )
         except Exception:
             pass
 
@@ -526,32 +544,35 @@ async def load_recall_memory_tool(
         if item_type == "memory":
             row = await pool.fetchrow(
                 "SELECT content FROM memories WHERE memory_id = $1 AND user_id = $2 AND is_deleted = false",
-                item_uuid, user_id,
+                item_uuid,
+                user_id,
             )
             if not row:
                 return "Memory not found or access denied."
-            return row["content"]
+            return row["content"]  # type: ignore[no-any-return]
 
         elif item_type == "media":
             row = await pool.fetchrow(
                 "SELECT content FROM media_content WHERE content_id = $1 AND user_id = $2",
-                item_uuid, user_id,
+                item_uuid,
+                user_id,
             )
             if not row:
                 return "Media content not found or access denied."
             content = row["content"]
             if len(content) > 12000:
                 content = content[:12000] + "\n\n[Content truncated — full text is longer]"
-            return content
+            return content  # type: ignore[no-any-return]
 
         elif item_type == "chunk":
             row = await pool.fetchrow(
                 "SELECT content FROM memory_chunks WHERE chunk_id = $1 AND user_id = $2",
-                item_uuid, user_id,
+                item_uuid,
+                user_id,
             )
             if not row:
                 return "Document chunk not found or access denied."
-            return row["content"]
+            return row["content"]  # type: ignore[no-any-return]
 
         else:
             return f"Unknown type '{type}'. Use 'memory', 'media', or 'chunk'."

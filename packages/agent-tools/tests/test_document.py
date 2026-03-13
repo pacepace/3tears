@@ -9,7 +9,6 @@ import pytest
 
 from threetears.agent.tools.document import (
     DocumentResult,
-    DocumentSection,
     OcrConfig,
     ParseDocumentInput,
     create_parse_document_tool,
@@ -100,7 +99,7 @@ class TestParseText:
 
 class TestParseLaTeX:
     async def test_basic_latex(self):
-        tex = br"""\documentclass{article}
+        tex = rb"""\documentclass{article}
 \title{My Paper}
 \begin{document}
 \section{Introduction}
@@ -115,7 +114,7 @@ Hello world.
         assert result.was_ocr is False
 
     async def test_latex_lists(self):
-        tex = br"""\begin{document}
+        tex = rb"""\begin{document}
 \begin{itemize}
 \item First
 \item Second

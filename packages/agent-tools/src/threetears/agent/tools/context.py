@@ -41,15 +41,14 @@ class ToolContextManager:
         """Set or update a variable.  Returns the context_id."""
         if key not in self._variables and len(self._variables) >= self._var_limit:
             raise ValueError(
-                f"Variable limit reached ({self._var_limit}). "
-                "Delete unused variables before adding new ones."
+                f"Variable limit reached ({self._var_limit}). Delete unused variables before adding new ones."
             )
         # Truncate if needed
         if len(value) > self._var_max_chars:
             value = value[: self._var_max_chars]
 
         existing = self._variables.get(key)
-        context_id = existing["context_id"] if existing else str(uuid.uuid7())
+        context_id = existing["context_id"] if existing else str(uuid.uuid4())
 
         self._variables[key] = {
             "context_id": context_id,
@@ -85,7 +84,7 @@ class ToolContextManager:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Save a tool result.  Returns the generated context_id."""
-        context_id = str(uuid.uuid7())
+        context_id = str(uuid.uuid4())
         self._tool_results.append(
             {
                 "context_id": context_id,

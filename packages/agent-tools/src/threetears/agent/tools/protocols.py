@@ -45,15 +45,23 @@ class MediaStorage(Protocol):
     """Protocol for media item access and storage."""
 
     async def get_media(
-        self, media_id: UUID, user_id: UUID,
+        self,
+        media_id: UUID,
+        user_id: UUID,
     ) -> dict[str, Any] | None: ...
 
     async def get_content(
-        self, media_id: UUID, content_type: str,
+        self,
+        media_id: UUID,
+        content_type: str,
     ) -> str | None: ...
 
     async def store_content(
-        self, media_id: UUID, user_id: UUID, content_type: str, content: str,
+        self,
+        media_id: UUID,
+        user_id: UUID,
+        content_type: str,
+        content: str,
     ) -> str: ...
 
 
@@ -62,7 +70,10 @@ class VisionProvider(Protocol):
     """Protocol for image/document analysis via a vision-capable model."""
 
     async def analyze(
-        self, image_data: bytes, mime_type: str, prompt: str,
+        self,
+        image_data: bytes,
+        mime_type: str,
+        prompt: str,
     ) -> str: ...
 
 
@@ -71,5 +82,7 @@ class TranscriptionProvider(Protocol):
     """Protocol for audio/video transcription."""
 
     async def transcribe(
-        self, audio_data: bytes, mime_type: str,
+        self,
+        audio_data: bytes,
+        mime_type: str,
     ) -> str: ...

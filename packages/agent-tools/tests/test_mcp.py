@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
-import pytest
 
-from threetears.agent.tools.mcp import McpClient, McpTool, McpToolResult
+from threetears.agent.tools.mcp import McpClient
 
 
 def _mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
@@ -17,21 +16,23 @@ def _mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
     resp.json.return_value = json_data
     resp.raise_for_status = MagicMock()
     if status_code >= 400:
-        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "error", request=MagicMock(), response=resp
-        )
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError("error", request=MagicMock(), response=resp)
     return resp
 
 
 async def test_list_tools():
     client = McpClient("http://localhost:9000")
     client._http = AsyncMock()
-    client._http.post = AsyncMock(return_value=_mock_response({
-        "tools": [
-            {"name": "search", "description": "Search things", "inputSchema": {"type": "object"}},
-            {"name": "calc", "description": "Calculate"},
-        ]
-    }))
+    client._http.post = AsyncMock(
+        return_value=_mock_response(
+            {
+                "tools": [
+                    {"name": "search", "description": "Search things", "inputSchema": {"type": "object"}},
+                    {"name": "calc", "description": "Calculate"},
+                ]
+            }
+        )
+    )
 
     tools = await client.list_tools()
     assert len(tools) == 2
@@ -54,14 +55,18 @@ async def test_list_tools_error():
 async def test_invoke_tool_success():
     client = McpClient("http://localhost:9000")
     client._http = AsyncMock()
-    client._http.post = AsyncMock(return_value=_mock_response({
-        "content": [
-            {"type": "text", "text": "Hello "},
-            {"type": "text", "text": "World"},
-            {"type": "image", "data": "..."},
-        ],
-        "isError": False,
-    }))
+    client._http.post = AsyncMock(
+        return_value=_mock_response(
+            {
+                "content": [
+                    {"type": "text", "text": "Hello "},
+                    {"type": "text", "text": "World"},
+                    {"type": "image", "data": "..."},
+                ],
+                "isError": False,
+            }
+        )
+    )
 
     result = await client.invoke_tool("greet", {"name": "test"})
     assert result.success is True
@@ -72,10 +77,14 @@ async def test_invoke_tool_success():
 async def test_invoke_tool_error_flag():
     client = McpClient("http://localhost:9000")
     client._http = AsyncMock()
-    client._http.post = AsyncMock(return_value=_mock_response({
-        "content": [{"type": "text", "text": "something went wrong"}],
-        "isError": True,
-    }))
+    client._http.post = AsyncMock(
+        return_value=_mock_response(
+            {
+                "content": [{"type": "text", "text": "something went wrong"}],
+                "isError": True,
+            }
+        )
+    )
 
     result = await client.invoke_tool("failing", {})
     assert result.success is False

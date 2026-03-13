@@ -25,3 +25,34 @@ asyncio_mode = "auto"
 [tool.mypy]
 strict = true
 python_version = "3.11"
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = [
+    "packages/core/src",
+    "packages/agent-memory/src",
+    "packages/agent-tools/src",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "pgvector.*",
+    "simpleeval",
+    "fitz",
+    "pdf2image",
+    "pytesseract",
+    "docx",
+    "openpyxl",
+    "openpyxl.*",
+    "pint",
+]
+ignore_missing_imports = true
+
+# Suppress import-untyped for installed third-party libs without stubs
+[[tool.mypy.overrides]]
+module = [
+    "threetears.core.cache.sqlite",
+    "threetears.core.cache.duckdb",
+    "threetears.agent.tools.document",
+    "threetears.agent.tools.builtin.calculator",
+]
+disable_error_code = ["import-untyped"]

@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "tools"
 
@@ -49,8 +48,7 @@ class TestPackageBoundaries:
                         banned = _is_banned(alias.name)
                         if banned:
                             violations.append(
-                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
-                                f"import {alias.name} (banned: {banned})"
+                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: import {alias.name} (banned: {banned})"
                             )
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
