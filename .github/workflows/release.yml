@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   check:
@@ -19,8 +18,15 @@ jobs:
         with:
           version: "latest"
 
+      - name: Set up Python
+        run: uv python install 3.13
+
       - name: Install dependencies
-        run: uv sync
+        env:
+          UV_PYTHON: "3.13"
+        run: |
+          rm -f .python-version
+          uv sync
 
       - name: Lint
         run: |
@@ -33,10 +39,9 @@ jobs:
       - name: Test
         run: uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ -v
 
-  publish:
+  release:
     needs: check
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@v4
 
@@ -44,8 +49,8 @@ jobs:
         with:
           version: "latest"
 
-      - name: Install build tools
-        run: uv tool install build
+      - name: Set up Python
+        run: uv python install 3.13
 
       - name: Verify version matches tag
         run: |
@@ -61,13 +66,11 @@ jobs:
 
       - name: Build packages
         run: |
+          pip install build
           for PKG in core agent-memory agent-tools; do
             echo "Building packages/$PKG..."
             python -m build "packages/$PKG" --outdir dist/
           done
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Create GitHub Release
         env:

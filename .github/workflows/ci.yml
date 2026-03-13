@@ -23,7 +23,11 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
+        run: |
+          rm -f .python-version
+          uv sync
 
       - name: Lint
         run: |
