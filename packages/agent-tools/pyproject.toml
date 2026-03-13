@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-agent-tools"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "3tears",
+    "langchain-core",
+    "httpx",
+]
+
+[project.optional-dependencies]
+calculator = ["simpleeval"]
+units = ["pint"]
+fetch = ["trafilatura"]
+pdf = ["PyMuPDF"]
+docx = ["python-docx"]
+xlsx = ["openpyxl"]
+ocr = ["pytesseract", "pdf2image"]
+document = ["PyMuPDF", "python-docx", "openpyxl"]
+all = ["simpleeval", "pint", "trafilatura", "PyMuPDF", "python-docx", "openpyxl", "pytesseract", "pdf2image"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
