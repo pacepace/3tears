@@ -2,23 +2,14 @@
 
 from __future__ import annotations
 
-import pytest
-
 from threetears.core._bridge import drain, shutdown
 
 
-@pytest.fixture(autouse=True)
-def _drain_bridge() -> None:  # type: ignore[misc]
-    """Drain and shut down the async bridge after every test.
+def drain_and_shutdown_bridge() -> None:
+    """Drain pending async bridge tasks then stop the loop.
 
-    fire_and_forget() submits coroutines to a background thread. If a test
-    fixture tears down (e.g. SQLiteBackend.reset()) before those coroutines
-    finish, the bridge thread accesses closed connections — segfault on Linux.
-
-    drain() alone is insufficient: new coroutines can be submitted between
-    drain and fixture teardown. shutdown() stops the loop entirely so no
-    further work can execute against torn-down resources.
+    Must be called before closing any resources (SQLite connections, etc.)
+    that fire_and_forget coroutines may still be using.
     """
-    yield  # type: ignore[misc]
     drain()
     shutdown()
