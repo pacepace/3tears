@@ -47,7 +47,10 @@ def prepare_image_for_vision(
     """
     # Small images in web-safe formats: pass through unchanged
     if len(data) <= _SIZE_THRESHOLD and mime_type in (
-        "image/jpeg", "image/png", "image/gif", "image/webp",
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
     ):
         return data, mime_type
 
@@ -69,11 +72,13 @@ def prepare_image_for_vision(
             img = img.resize((new_w, new_h), Image.LANCZOS)
             _log.info(
                 "Resized image for vision model",
-                extra={"extra_data": {
-                    "original_size": f"{w}x{h}",
-                    "new_size": f"{new_w}x{new_h}",
-                    "original_bytes": len(data),
-                }},
+                extra={
+                    "extra_data": {
+                        "original_size": f"{w}x{h}",
+                        "new_size": f"{new_w}x{new_h}",
+                        "original_bytes": len(data),
+                    }
+                },
             )
 
         # Re-encode as JPEG
@@ -83,12 +88,14 @@ def prepare_image_for_vision(
 
         _log.debug(
             "Image prepared for vision",
-            extra={"extra_data": {
-                "original_bytes": len(data),
-                "original_mime": mime_type,
-                "output_bytes": len(result),
-                "dimensions": f"{img.size[0]}x{img.size[1]}",
-            }},
+            extra={
+                "extra_data": {
+                    "original_bytes": len(data),
+                    "original_mime": mime_type,
+                    "output_bytes": len(result),
+                    "dimensions": f"{img.size[0]}x{img.size[1]}",
+                }
+            },
         )
 
         return result, "image/jpeg"
@@ -96,10 +103,12 @@ def prepare_image_for_vision(
     except Exception as exc:
         _log.warning(
             "Image preprocessing failed, sending original",
-            extra={"extra_data": {
-                "error": str(exc),
-                "mime_type": mime_type,
-                "size_bytes": len(data),
-            }},
+            extra={
+                "extra_data": {
+                    "error": str(exc),
+                    "mime_type": mime_type,
+                    "size_bytes": len(data),
+                }
+            },
         )
         return data, mime_type

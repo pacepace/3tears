@@ -63,7 +63,11 @@ class FakeMediaStorage:
         return None
 
     async def get_content(
-        self, media_id: UUID, content_type: str, *, model_name: str | None = None,
+        self,
+        media_id: UUID,
+        content_type: str,
+        *,
+        model_name: str | None = None,
     ) -> str | None:
         return None
 

@@ -110,13 +110,15 @@ class FakeMediaStorage:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        self.store_calls.append({
-            "media_id": media_id,
-            "user_id": user_id,
-            "content_type": content_type,
-            "content": content,
-            "metadata": metadata,
-        })
+        self.store_calls.append(
+            {
+                "media_id": media_id,
+                "user_id": user_id,
+                "content_type": content_type,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
         key = (media_id, content_type, (metadata or {}).get("model_name"))
         self._content[key] = content
         return "stored"
@@ -201,11 +203,13 @@ class TestVisionAnalysis:
         )
 
         tool = _make_tool(storage, vision=vision, user_id=uuid4())
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe this image",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe this image",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "A beautiful sunset." in result
         assert len(vision.analyze_calls) == 1
@@ -222,11 +226,13 @@ class TestVisionAnalysis:
             user_id=uuid4(),
             media_url_fn=lambda mid_str: f"/custom/media/{mid_str}",
         )
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert f"![description](/custom/media/{mid})" in result
 
@@ -238,11 +244,13 @@ class TestVisionAnalysis:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage, user_id=uuid4())
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "![description]" not in result
         assert "A red square." in result
@@ -254,11 +262,13 @@ class TestVisionAnalysis:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage)
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "NonExistent",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "NonExistent",
+            }
+        )
 
         assert "Unknown analyzer" in result
         assert "TestVision" in result
@@ -272,11 +282,13 @@ class TestVisionAnalysis:
         # No download data added
 
         tool = _make_tool(storage)
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "No valid media" in result
 
@@ -300,14 +312,17 @@ class TestResponseSuffix:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(
-            storage, vision=vision,
+            storage,
+            vision=vision,
             response_suffix="Reply in JSON format.",
         )
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Analyze",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Analyze",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "JSON format" in vision.analyze_calls[0][2]
         assert "markdown" not in vision.analyze_calls[0][2].lower()
@@ -320,11 +335,13 @@ class TestResponseSuffix:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage, vision=vision, response_suffix="")
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Analyze",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Analyze",
+                "analyzer": "TestVision",
+            }
+        )
 
         prompt = vision.analyze_calls[0][2]
         assert prompt == "Analyze"
@@ -342,11 +359,13 @@ class TestCachedDescription:
         storage.add_content(mid, "description", "Cached result", model_name="TestVision")
 
         tool = _make_tool(storage, vision=vision)
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert result == "Cached result"
         assert len(vision.analyze_calls) == 0
@@ -367,11 +386,13 @@ class TestDocumentRouting:
         storage.add_content(mid, "extracted_text", "This is the document text.")
 
         tool = _make_tool(storage, text=text_prov, user_id=uuid4())
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Summarize",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Summarize",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "Summary of the document." in result
         assert len(text_prov.answer_calls) == 1
@@ -387,11 +408,13 @@ class TestDocumentRouting:
         )
 
         tool = _make_tool(storage, user_id=uuid4())
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Summarize",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Summarize",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "still being processed" in result
 
@@ -406,11 +429,13 @@ class TestDocumentRouting:
         # No extracted_text content added
 
         tool = _make_tool(storage, user_id=uuid4())
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Summarize",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Summarize",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "No text could be extracted" in result
 
@@ -434,11 +459,13 @@ class TestDocumentRouting:
             {"storage": storage, "analyzers": {"VisionOnly": acfg}},
             "Analyze",
         )
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Summarize",
-            "analyzer": "VisionOnly",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Summarize",
+                "analyzer": "VisionOnly",
+            }
+        )
 
         assert "no text QA capability" in result
 
@@ -464,11 +491,13 @@ class TestAudioVideoRouting:
             categories={"audio", "video"},
             user_id=uuid4(),
         )
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "What is said?",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "What is said?",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "Hello from audio." in result
         assert "Transcript" in result
@@ -492,11 +521,13 @@ class TestAudioVideoRouting:
             categories={"audio"},
             user_id=uuid4(),
         )
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "What is said?",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "What is said?",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "Previously transcribed." in result
         assert len(transcription.calls) == 0  # Not called
@@ -516,11 +547,13 @@ class TestCapabilityCheck:
         )
 
         tool = _make_tool(storage, categories={"image"})
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Analyze",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Analyze",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "doesn't support audio" in result
 
@@ -537,11 +570,13 @@ class TestDescriptionPersistence:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage, vision=vision, user_id=uid)
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert len(storage.store_calls) == 1
         call = storage.store_calls[0]
@@ -564,11 +599,13 @@ class TestDescriptionPersistence:
             callback_calls.append((media_id_str, content_type, text))
 
         tool = _make_tool(storage, user_id=uid, on_analysis=_cb)
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert len(callback_calls) == 1
         assert callback_calls[0][0] == str(mid)
@@ -600,11 +637,13 @@ class TestDescriptionPersistence:
             user_id=uid,
             on_analysis=_cb,
         )
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Transcribe",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Transcribe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert len(callback_calls) == 1
         assert callback_calls[0][1] == "transcript"
@@ -629,11 +668,13 @@ class TestDescriptionPersistence:
             callback_calls.append((media_id_str, content_type, text))
 
         tool = _make_tool(storage, text=text_prov, user_id=uid, on_analysis=_cb)
-        await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Summarize",
-            "analyzer": "TestVision",
-        })
+        await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Summarize",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert len(callback_calls) == 1
         assert callback_calls[0][1] == "description"
@@ -651,11 +692,13 @@ class TestNoUserIdMode:
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
 
         tool = _make_tool(storage, vision=vision, user_id=None)
-        result = await tool.ainvoke({
-            "media_ids": [str(mid)],
-            "question": "Describe",
-            "analyzer": "TestVision",
-        })
+        result = await tool.ainvoke(
+            {
+                "media_ids": [str(mid)],
+                "question": "Describe",
+                "analyzer": "TestVision",
+            }
+        )
 
         assert "No user result." in result
         assert len(storage.store_calls) == 0  # Nothing stored

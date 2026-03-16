@@ -7,7 +7,7 @@ any specific infrastructure (S3, specific vision APIs, etc.).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import io
 
-import pytest
-
 from threetears.agent.tools.builtin.image_prep import (
     _MAX_DIMENSION,
     _SIZE_THRESHOLD,
@@ -79,6 +77,7 @@ class TestResize:
         assert mime == "image/jpeg"
 
         from PIL import Image
+
         img = Image.open(io.BytesIO(result))
         assert img.size[0] <= _MAX_DIMENSION
         assert img.size[1] <= _MAX_DIMENSION
@@ -89,6 +88,7 @@ class TestResize:
         result, mime = prepare_image_for_vision(data, "image/jpeg")
 
         from PIL import Image
+
         img = Image.open(io.BytesIO(result))
         assert max(img.size) <= _MAX_DIMENSION
 

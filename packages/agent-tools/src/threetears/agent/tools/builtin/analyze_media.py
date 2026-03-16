@@ -91,9 +91,7 @@ def create_analyze_media_tool(
     """
     storage: MediaStorage | None = config.get("storage")
     if storage is None:
-        raise TypeError(
-            "create_analyze_media_tool requires 'storage' (MediaStorage) in config"
-        )
+        raise TypeError("create_analyze_media_tool requires 'storage' (MediaStorage) in config")
 
     analyzers: dict[str, AnalyzerConfig] = config.get("analyzers", {})
     user_id: UUID | None = config.get("user_id")
@@ -102,7 +100,8 @@ def create_analyze_media_tool(
     response_suffix: str = config.get("response_suffix", _DEFAULT_RESPONSE_SUFFIX)
     doc_max_chars: int = config.get("doc_max_chars", _DEFAULT_DOC_MAX_CHARS)
     transcript_max_chars: int = config.get(
-        "transcript_max_chars", _DEFAULT_TRANSCRIPT_MAX_CHARS,
+        "transcript_max_chars",
+        _DEFAULT_TRANSCRIPT_MAX_CHARS,
     )
 
     analyzer_names = list(analyzers.keys())
@@ -112,10 +111,7 @@ def create_analyze_media_tool(
             description="List of media UUID strings to analyze",
         )
         question: str = Field(
-            description=(
-                "What to ask about the media, e.g. 'Describe this image' "
-                "or 'What is said in this audio?'"
-            ),
+            description=("What to ask about the media, e.g. 'Describe this image' or 'What is said in this audio?'"),
         )
         analyzer: str = Field(
             description=(
@@ -132,19 +128,20 @@ def create_analyze_media_tool(
     ) -> str:
         _log.debug(
             "analyze_media invoked",
-            extra={"extra_data": {
-                "media_ids": media_ids,
-                "question": question[:100],
-                "analyzer": analyzer,
-            }},
+            extra={
+                "extra_data": {
+                    "media_ids": media_ids,
+                    "question": question[:100],
+                    "analyzer": analyzer,
+                }
+            },
         )
 
         acfg = analyzers.get(analyzer)
         if acfg is None:
             return _tool_error(
                 "resolve analyzer",
-                f"Unknown analyzer '{analyzer}'. "
-                f"Available: {', '.join(analyzer_names)}",
+                f"Unknown analyzer '{analyzer}'. Available: {', '.join(analyzer_names)}",
             )
 
         # Pre-fetch media info for all IDs (avoids redundant storage calls)
@@ -159,7 +156,11 @@ def create_analyze_media_tool(
             info = media_info.get(mid_str)
             if info and info.media_category == "document":
                 return await _handle_document(
-                    UUID(mid_str), mid_str, info, acfg, question,
+                    UUID(mid_str),
+                    mid_str,
+                    info,
+                    acfg,
+                    question,
                 )
 
         # --- Capability check ---
@@ -179,7 +180,11 @@ def create_analyze_media_tool(
                 info = media_info.get(mid_str)
                 if info and info.media_category in ("audio", "video"):
                     return await _handle_audio_video(
-                        UUID(mid_str), mid_str, info, acfg, question,
+                        UUID(mid_str),
+                        mid_str,
+                        info,
+                        acfg,
+                        question,
                     )
 
         # --- Cached description check (single-media) ---
@@ -192,10 +197,12 @@ def create_analyze_media_tool(
             if cached:
                 _log.debug(
                     "Returning cached description",
-                    extra={"extra_data": {
-                        "media_id": media_ids[0],
-                        "model": analyzer,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "media_id": media_ids[0],
+                            "model": analyzer,
+                        }
+                    },
                 )
                 return cached
 
@@ -209,7 +216,9 @@ def create_analyze_media_tool(
         return await _handle_vision(media_ids, acfg, question, analyzer)
 
     async def _fire_callback(
-        mid_str: str, content_type: str, text: str,
+        mid_str: str,
+        content_type: str,
+        text: str,
     ) -> None:
         """Invoke the on_analysis callback, swallowing errors."""
         if on_analysis:
@@ -263,32 +272,40 @@ def create_analyze_media_tool(
         except Exception as exc:
             _log.error(
                 "Document analysis failed",
-                extra={"extra_data": {
-                    "analyzer": acfg.name,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "analyzer": acfg.name,
+                        "error": str(exc),
+                    }
+                },
             )
             return _tool_error("document analysis", str(exc))
 
         if result_text and user_id:
             try:
                 await storage.store_content(
-                    mid, user_id, "description", result_text,
+                    mid,
+                    user_id,
+                    "description",
+                    result_text,
                     metadata={"model_name": acfg.name},
                 )
             except Exception as exc:
                 _log.warning(
                     "Failed to persist document description",
-                    extra={"extra_data": {
-                        "media_id": mid_str,
-                        "error": str(exc),
-                    }},
+                    extra={
+                        "extra_data": {
+                            "media_id": mid_str,
+                            "error": str(exc),
+                        }
+                    },
                 )
 
             await _fire_callback(mid_str, "description", result_text)
 
         return result_text or _tool_error(
-            "document analysis", "Model returned empty response.",
+            "document analysis",
+            "Model returned empty response.",
         )
 
     async def _handle_audio_video(
@@ -319,15 +336,18 @@ def create_analyze_media_tool(
 
             try:
                 transcript = await acfg.transcription.transcribe(
-                    data, mime_type,
+                    data,
+                    mime_type,
                 )
             except Exception as exc:
                 _log.error(
                     "Transcription failed",
-                    extra={"extra_data": {
-                        "media_id": mid_str,
-                        "error": str(exc),
-                    }},
+                    extra={
+                        "extra_data": {
+                            "media_id": mid_str,
+                            "error": str(exc),
+                        }
+                    },
                 )
                 return _tool_error("transcription", str(exc))
 
@@ -335,16 +355,21 @@ def create_analyze_media_tool(
             if user_id:
                 try:
                     await storage.store_content(
-                        mid, user_id, "transcript", transcript,
+                        mid,
+                        user_id,
+                        "transcript",
+                        transcript,
                         metadata={"model_name": acfg.name},
                     )
                 except Exception as exc:
                     _log.warning(
                         "Failed to persist transcript",
-                        extra={"extra_data": {
-                            "media_id": mid_str,
-                            "error": str(exc),
-                        }},
+                        extra={
+                            "extra_data": {
+                                "media_id": mid_str,
+                                "error": str(exc),
+                            }
+                        },
                     )
 
                 await _fire_callback(mid_str, "transcript", transcript)
@@ -353,8 +378,7 @@ def create_analyze_media_tool(
         description = await storage.get_content(mid, "description")
 
         parts = [
-            f"**Transcript** ({info.media_category}):\n"
-            f"{transcript[:transcript_max_chars]}",
+            f"**Transcript** ({info.media_category}):\n{transcript[:transcript_max_chars]}",
         ]
         if description:
             parts.append(f"\n\n**Analysis:**\n{description}")
@@ -388,7 +412,8 @@ def create_analyze_media_tool(
             data, mime_type = dl
             # Preprocess — resize large images, re-encode HEIC, etc.
             processed_data, processed_mime = prepare_image_for_vision(
-                data, mime_type,
+                data,
+                mime_type,
             )
             image_parts.append((processed_data, processed_mime))
 
@@ -404,7 +429,9 @@ def create_analyze_media_tool(
         try:
             if len(image_parts) == 1:
                 result_text = await acfg.vision.analyze(
-                    image_parts[0][0], image_parts[0][1], prompt,
+                    image_parts[0][0],
+                    image_parts[0][1],
+                    prompt,
                 )
             else:
                 # For multi-image, analyze each separately
@@ -416,10 +443,12 @@ def create_analyze_media_tool(
         except Exception as exc:
             _log.error(
                 "Vision model invocation failed",
-                extra={"extra_data": {
-                    "analyzer": analyzer_name,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "analyzer": analyzer_name,
+                        "error": str(exc),
+                    }
+                },
             )
             return _tool_error("vision model invocation", str(exc))
 
@@ -445,19 +474,13 @@ def create_analyze_media_tool(
         if len(media_ids) == 1 and media_url_fn:
             url = media_url_fn(media_ids[0])
             if url:
-                return (
-                    f"{result_text}\n\n"
-                    f"To display this image in your response, use: "
-                    f"![description]({url})"
-                )
+                return f"{result_text}\n\nTo display this image in your response, use: ![description]({url})"
         return result_text
 
     full_description = description
     if analyzer_names:
         analyzer_list = ", ".join(analyzer_names)
-        full_description = (
-            f"{description} Available analyzers: {analyzer_list}"
-        )
+        full_description = f"{description} Available analyzers: {analyzer_list}"
 
     return StructuredTool.from_function(
         coroutine=_analyze_media,
