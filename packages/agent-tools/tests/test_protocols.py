@@ -9,6 +9,7 @@ from threetears.agent.tools.protocols import (
     GeneratedImage,
     ImageGenerationBackend,
     MediaStorage,
+    TextProvider,
     TranscriptionProvider,
     VisionProvider,
 )
@@ -55,10 +56,19 @@ class FakeImageBackend:
 
 
 class FakeMediaStorage:
-    async def get_media(self, media_id: UUID, user_id: UUID) -> dict[str, Any] | None:
+    async def get_media(self, media_id: UUID) -> Any:
         return None
 
-    async def get_content(self, media_id: UUID, content_type: str) -> str | None:
+    async def download_media(self, media_id: UUID) -> tuple[bytes, str] | None:
+        return None
+
+    async def get_content(
+        self,
+        media_id: UUID,
+        content_type: str,
+        *,
+        model_name: str | None = None,
+    ) -> str | None:
         return None
 
     async def store_content(
@@ -67,6 +77,7 @@ class FakeMediaStorage:
         user_id: UUID,
         content_type: str,
         content: str,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         return "stored"
 
@@ -74,6 +85,11 @@ class FakeMediaStorage:
 class FakeVisionProvider:
     async def analyze(self, image_data: bytes, mime_type: str, prompt: str) -> str:
         return "analysis result"
+
+
+class FakeTextProvider:
+    async def answer(self, prompt: str) -> str:
+        return "answer result"
 
 
 class FakeTranscriptionProvider:
@@ -91,6 +107,9 @@ class TestProtocolCompliance:
     def test_vision_provider(self):
         assert isinstance(FakeVisionProvider(), VisionProvider)
 
+    def test_text_provider(self):
+        assert isinstance(FakeTextProvider(), TextProvider)
+
     def test_transcription_provider(self):
         assert isinstance(FakeTranscriptionProvider(), TranscriptionProvider)
 
@@ -101,3 +120,4 @@ class TestProtocolRejection:
         assert not isinstance(42, MediaStorage)
         assert not isinstance(object(), VisionProvider)
         assert not isinstance([], TranscriptionProvider)
+        assert not isinstance(123, TextProvider)

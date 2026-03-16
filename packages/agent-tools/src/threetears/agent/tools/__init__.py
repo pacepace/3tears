@@ -18,9 +18,15 @@ from threetears.agent.tools.document import (
 from threetears.agent.tools.protocols import (
     GeneratedImage,
     ImageGenerationBackend,
+    MediaInfo,
     MediaStorage,
+    TextProvider,
     TranscriptionProvider,
     VisionProvider,
+)
+from threetears.agent.tools.builtin.analyze_media import (
+    AnalyzerConfig,
+    create_analyze_media_tool,
 )
 from threetears.agent.tools.todo import (
     TodoStorage,
@@ -39,6 +45,7 @@ from threetears.agent.tools.mcp import McpClient, McpTool, McpToolResult
 from threetears.agent.tools.types import ChatModelFactory
 
 __all__ = [
+    "AnalyzerConfig",
     "ChatModelFactory",
     "DEFAULT_ROUTING_PROMPT",
     "DocumentResult",
@@ -48,8 +55,10 @@ __all__ = [
     "McpClient",
     "McpTool",
     "McpToolResult",
+    "MediaInfo",
     "MediaStorage",
     "OcrConfig",
+    "TextProvider",
     "ParseDocumentInput",
     "ToolContextManager",
     "ToolExecutionResult",
@@ -60,6 +69,7 @@ __all__ = [
     "ToolRoutingDecision",
     "TranscriptionProvider",
     "VisionProvider",
+    "create_analyze_media_tool",
     "create_parse_document_tool",
     "detect_mime_from_filename",
     "is_recall_intent",

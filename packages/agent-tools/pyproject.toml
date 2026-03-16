@@ -38,9 +38,12 @@ fetch = ["trafilatura"]
 pdf = ["PyMuPDF"]
 docx = ["python-docx"]
 xlsx = ["openpyxl"]
+vision = [
+    "pillow",
+]
 ocr = ["pytesseract", "pdf2image"]
 document = ["PyMuPDF", "python-docx", "openpyxl"]
-all = ["simpleeval", "pint", "trafilatura", "PyMuPDF", "python-docx", "openpyxl", "pytesseract", "pdf2image"]
+all = ["simpleeval", "pint", "trafilatura", "PyMuPDF", "python-docx", "openpyxl", "pytesseract", "pdf2image", "Pillow"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]

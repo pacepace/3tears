@@ -83,6 +83,7 @@ dependencies = [
 all = [
     { name = "openpyxl" },
     { name = "pdf2image" },
+    { name = "pillow" },
     { name = "pint" },
     { name = "pymupdf" },
     { name = "pytesseract" },
@@ -114,6 +115,9 @@ pdf = [
 units = [
     { name = "pint" },
 ]
+vision = [
+    { name = "pillow" },
+]
 xlsx = [
     { name = "openpyxl" },
 ]
@@ -128,6 +132,8 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'xlsx'" },
     { name = "pdf2image", marker = "extra == 'all'" },
     { name = "pdf2image", marker = "extra == 'ocr'" },
+    { name = "pillow", marker = "extra == 'all'" },
+    { name = "pillow", marker = "extra == 'vision'" },
     { name = "pint", marker = "extra == 'all'" },
     { name = "pint", marker = "extra == 'units'" },
     { name = "pymupdf", marker = "extra == 'all'" },
@@ -143,7 +149,7 @@ requires-dist = [
     { name = "trafilatura", marker = "extra == 'all'" },
     { name = "trafilatura", marker = "extra == 'fetch'" },
 ]
-provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "ocr", "document", "all"]
+provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "vision", "ocr", "document", "all"]
 
 [[package]]
 name = "aiosqlite"
