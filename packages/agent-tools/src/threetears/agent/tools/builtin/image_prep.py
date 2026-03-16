@@ -55,13 +55,12 @@ def prepare_image_for_vision(
         return data, mime_type
 
     try:
-        from PIL import Image  # type: ignore[import-not-found]
+        from PIL import Image
 
-        img = Image.open(io.BytesIO(data))
+        opened = Image.open(io.BytesIO(data))
 
         # Convert to RGB for JPEG output
-        if img.mode not in ("RGB",):
-            img = img.convert("RGB")
+        img = opened.convert("RGB") if opened.mode != "RGB" else opened.copy()
 
         # Resize if either dimension exceeds the limit
         w, h = img.size
@@ -69,7 +68,7 @@ def prepare_image_for_vision(
             ratio = _MAX_DIMENSION / max(w, h)
             new_w = int(w * ratio)
             new_h = int(h * ratio)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
             _log.info(
                 "Resized image for vision model",
                 extra={
