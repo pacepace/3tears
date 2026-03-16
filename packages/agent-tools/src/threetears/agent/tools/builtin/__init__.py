@@ -31,6 +31,7 @@ def register_builtins(registry: ToolRegistry) -> None:
         ("current_date", "threetears.agent.tools.builtin.current_date", "create_current_date_tool"),
         ("web_search", "threetears.agent.tools.builtin.web_search", "create_web_search_tool"),
         ("web_fetch", "threetears.agent.tools.builtin.web_fetch", "create_web_fetch_tool"),
+        ("analyze_media", "threetears.agent.tools.builtin.analyze_media", "create_analyze_media_tool"),
     ]
 
     import importlib
