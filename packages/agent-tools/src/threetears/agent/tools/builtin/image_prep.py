@@ -55,7 +55,7 @@ def prepare_image_for_vision(
         return data, mime_type
 
     try:
-        from PIL import Image
+        from PIL import Image  # type: ignore[import-not-found]
 
         img = Image.open(io.BytesIO(data))
 
