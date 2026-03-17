@@ -24,7 +24,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -54,7 +54,7 @@ provides-extras = ["tracing", "duckdb"]
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/agent-memory" }
 dependencies = [
     { name = "3tears" },
@@ -71,7 +71,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/agent-tools" }
 dependencies = [
     { name = "3tears" },
