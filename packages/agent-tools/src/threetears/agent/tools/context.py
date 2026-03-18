@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid7
 
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.tools.collections import ContextItemCollection
@@ -23,8 +23,8 @@ class ToolContextManager:
     def __init__(
         self,
         collection: ContextItemCollection,
-        conversation_id: str,
-        user_id: str,
+        conversation_id: UUID,
+        user_id: UUID,
         *,
         var_limit: int = 50,
         var_max_chars: int = 50_000,
@@ -59,12 +59,7 @@ class ToolContextManager:
         for entity in entities:
             self._items.append(entity.to_dict())
         if self._l3_pool is not None:
-            conv_uuid = (
-                uuid.UUID(self.conversation_id)
-                if isinstance(self.conversation_id, str)
-                else self.conversation_id
-            )
-            await self._ledger.load(self._l3_pool, conv_uuid)
+            await self._ledger.load(self._l3_pool, self.conversation_id)
 
     # ------------------------------------------------------------------
     # Variables
@@ -86,10 +81,8 @@ class ToolContextManager:
 
         now = datetime.now(UTC)
         data = {
-            "context_id": uuid.uuid4(),
-            "conversation_id": uuid.UUID(self.conversation_id)
-            if isinstance(self.conversation_id, str)
-            else self.conversation_id,
+            "context_id": uuid7(),
+            "conversation_id": self.conversation_id,
             "context_type": "variable",
             "key": key,
             "short_desc": value[:200],
@@ -194,12 +187,10 @@ class ToolContextManager:
         exceeds it, the least-recently-accessed items are evicted.
         """
         now = datetime.now(UTC)
-        context_id = uuid.uuid4()
+        context_id = uuid7()
         data = {
             "context_id": context_id,
-            "conversation_id": uuid.UUID(self.conversation_id)
-            if isinstance(self.conversation_id, str)
-            else self.conversation_id,
+            "conversation_id": self.conversation_id,
             "context_type": context_type,
             "key": tool_name,
             "short_desc": short_desc or result[:200],
@@ -285,12 +276,10 @@ class ToolContextManager:
     async def register_media(self, slot_name: str, **kwargs: Any) -> str:
         """Register a media slot.  Returns the context_id."""
         now = datetime.now(UTC)
-        context_id = uuid.uuid4()
+        context_id = uuid7()
         data = {
             "context_id": context_id,
-            "conversation_id": uuid.UUID(self.conversation_id)
-            if isinstance(self.conversation_id, str)
-            else self.conversation_id,
+            "conversation_id": self.conversation_id,
             "context_type": "media_slot",
             "key": slot_name,
             "short_desc": kwargs.get("description", slot_name),
@@ -413,13 +402,8 @@ class ToolContextManager:
         :param short_desc: short description (≤150 chars)
         :ptype short_desc: str
         """
-        conv_uuid = (
-            uuid.UUID(self.conversation_id)
-            if isinstance(self.conversation_id, str)
-            else self.conversation_id
-        )
         if self._l3_pool is not None:
-            await self._ledger.add_ref(self._l3_pool, conv_uuid, item_id, item_type, short_desc)
+            await self._ledger.add_ref(self._l3_pool, self.conversation_id, item_id, item_type, short_desc)
 
     def is_known(self, item_id: str) -> bool:
         """Check if an item is already tracked in the ledger.
