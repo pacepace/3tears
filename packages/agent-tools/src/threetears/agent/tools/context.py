@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.tools.collections import ContextItemCollection
 
 
@@ -28,6 +29,8 @@ class ToolContextManager:
         var_limit: int = 50,
         var_max_chars: int = 50_000,
         result_limit: int | None = None,
+        ledger: MemoryLedger | None = None,
+        l3_pool: Any = None,
     ) -> None:
         self._collection = collection
         self.conversation_id = conversation_id
@@ -35,6 +38,8 @@ class ToolContextManager:
         self._var_limit = var_limit
         self._var_max_chars = var_max_chars
         self._result_limit = result_limit
+        self._ledger = ledger or MemoryLedger()
+        self._l3_pool = l3_pool
 
         # Local projection of collection data for this conversation.
         # Populated by load_context(), updated by write methods.
@@ -48,11 +53,18 @@ class ToolContextManager:
     # ------------------------------------------------------------------
 
     async def load_context(self) -> None:
-        """Load all context items for this conversation from storage."""
+        """Load all context items and ledger for this conversation from storage."""
         entities = await self._collection.find_by_conversation(self.conversation_id)
         self._items = []
         for entity in entities:
             self._items.append(entity.to_dict())
+        if self._l3_pool is not None:
+            conv_uuid = (
+                uuid.UUID(self.conversation_id)
+                if isinstance(self.conversation_id, str)
+                else self.conversation_id
+            )
+            await self._ledger.load(self._l3_pool, conv_uuid)
 
     # ------------------------------------------------------------------
     # Variables
@@ -281,6 +293,55 @@ class ToolContextManager:
     def workflow_state(self) -> dict[str, Any] | None:
         """Current workflow state, or ``None``."""
         return self._workflow
+
+    # ------------------------------------------------------------------
+    # Memory ledger (tracks surfaced items to prevent re-retrieval)
+    # ------------------------------------------------------------------
+
+    @property
+    def ledger(self) -> MemoryLedger:
+        """Return the conversation's memory ledger.
+
+        :return: memory ledger instance
+        :rtype: MemoryLedger
+        """
+        return self._ledger
+
+    async def add_ledger_ref(self, item_id: str, item_type: str, short_desc: str) -> None:
+        """Track a surfaced item in the memory ledger.
+
+        :param item_id: UUID string of the surfaced item
+        :ptype item_id: str
+        :param item_type: type of the item (memory, media, chunk, finding, scan)
+        :ptype item_type: str
+        :param short_desc: short description (≤150 chars)
+        :ptype short_desc: str
+        """
+        conv_uuid = (
+            uuid.UUID(self.conversation_id)
+            if isinstance(self.conversation_id, str)
+            else self.conversation_id
+        )
+        if self._l3_pool is not None:
+            await self._ledger.add_ref(self._l3_pool, conv_uuid, item_id, item_type, short_desc)
+
+    def is_known(self, item_id: str) -> bool:
+        """Check if an item is already tracked in the ledger.
+
+        :param item_id: UUID string to check
+        :ptype item_id: str
+        :return: True if already in ledger
+        :rtype: bool
+        """
+        return item_id in self._ledger.ledgered_ids
+
+    def build_ledger_prompt(self) -> str:
+        """Format the memory ledger for inclusion in the system prompt.
+
+        :return: formatted ledger section or empty string
+        :rtype: str
+        """
+        return self._ledger.build_context()
 
     # ------------------------------------------------------------------
     # Context building
