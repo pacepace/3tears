@@ -1,135 +1,240 @@
-"""In-memory tool context manager with pluggable persistence."""
+"""Conversation-scoped context manager backed by three-tier collection."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+
+from threetears.agent.tools.collections import ContextItemCollection
 
 
 class ToolContextManager:
     """Manages conversation context: variables, tool results, media slots, and workflows.
 
-    All state is held in memory.  Consuming applications can persist via event
-    hooks or by subclassing.  No database dependency.
+    Backed by a :class:`ContextItemCollection` for three-tier persistence
+    (L1 SQLite → L2 NATS KV → L3 PostgreSQL).  Workflow state is transient
+    (in-memory, single-turn only).
+
+    Call :meth:`load_context` after construction to populate from storage.
     """
 
     def __init__(
         self,
+        collection: ContextItemCollection,
         conversation_id: str,
         user_id: str,
         *,
         var_limit: int = 50,
         var_max_chars: int = 50_000,
+        result_limit: int | None = None,
     ) -> None:
+        self._collection = collection
         self.conversation_id = conversation_id
         self.user_id = user_id
         self._var_limit = var_limit
         self._var_max_chars = var_max_chars
+        self._result_limit = result_limit
 
-        # In-memory stores
-        self._variables: dict[str, dict[str, Any]] = {}
-        self._tool_results: list[dict[str, Any]] = []
-        self._media_slots: dict[str, dict[str, Any]] = {}
+        # Local projection of collection data for this conversation.
+        # Populated by load_context(), updated by write methods.
+        self._items: list[dict[str, Any]] = []
+
+        # Workflow state (transient, single-turn, in-memory only)
         self._workflow: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
+    async def load_context(self) -> None:
+        """Load all context items for this conversation from storage."""
+        entities = await self._collection.find_by_conversation(self.conversation_id)
+        self._items = []
+        for entity in entities:
+            self._items.append(entity.to_dict())
 
     # ------------------------------------------------------------------
     # Variables
     # ------------------------------------------------------------------
 
-    def set_variable(self, key: str, value: str, value_type: str = "string") -> str:
+    async def set_variable(self, key: str, value: str, value_type: str = "string") -> str:
         """Set or update a variable.  Returns the context_id."""
-        if key not in self._variables and len(self._variables) >= self._var_limit:
+        var_count = sum(1 for i in self._items if i["context_type"] == "variable")
+        existing = next(
+            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            None,
+        )
+        if existing is None and var_count >= self._var_limit:
             raise ValueError(
                 f"Variable limit reached ({self._var_limit}). Delete unused variables before adding new ones."
             )
-        # Truncate if needed
         if len(value) > self._var_max_chars:
             value = value[: self._var_max_chars]
 
-        existing = self._variables.get(key)
-        context_id = existing["context_id"] if existing else str(uuid.uuid4())
-
-        self._variables[key] = {
-            "context_id": context_id,
+        now = datetime.now(UTC)
+        data = {
+            "context_id": uuid.uuid4(),
+            "conversation_id": uuid.UUID(self.conversation_id)
+            if isinstance(self.conversation_id, str)
+            else self.conversation_id,
+            "context_type": "variable",
             "key": key,
+            "summary": value[:200],
             "value": value,
-            "value_type": value_type,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"value_type": value_type},
+            "date_accessed": now,
+            "date_created": now,
+            "date_updated": now,
         }
-        return context_id
 
-    def get_variable(self, key: str) -> dict[str, Any] | None:
+        returned_id = await self._collection.upsert_variable(data)
+        context_id_str = str(returned_id)
+
+        # Update local projection
+        self._items = [i for i in self._items if not (i["context_type"] == "variable" and i["key"] == key)]
+        data["context_id"] = returned_id
+        self._items.append(data)
+
+        return context_id_str
+
+    async def get_variable(self, key: str) -> dict[str, Any] | None:
         """Get a variable by key, or ``None`` if not found."""
-        return self._variables.get(key)
+        for item in self._items:
+            if item["context_type"] == "variable" and item["key"] == key:
+                vtype = (item.get("metadata") or {}).get("value_type", "string")
+                return {"value": item["value"], "value_type": vtype}
+        return None
 
-    def get_all_variables(self) -> list[dict[str, Any]]:
+    async def get_all_variables(self) -> list[dict[str, Any]]:
         """Return all variables as a list of dicts."""
-        return list(self._variables.values())
+        return [i for i in self._items if i["context_type"] == "variable"]
 
-    def delete_variable(self, key: str) -> bool:
+    async def delete_variable(self, key: str) -> bool:
         """Delete a variable by key.  Returns ``True`` if it existed."""
-        return self._variables.pop(key, None) is not None
+        target = next(
+            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            None,
+        )
+        if target is None:
+            return False
+
+        self._items = [i for i in self._items if i is not target]
+        await self._collection.delete(target["context_id"])
+        return True
 
     # ------------------------------------------------------------------
     # Tool results
     # ------------------------------------------------------------------
 
-    def save_tool_result(
+    async def save_tool_result(
         self,
         tool_name: str,
         result: str,
         *,
+        summary: str | None = None,
         context_type: str = "tool_result",
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Save a tool result.  Returns the generated context_id."""
-        context_id = str(uuid.uuid4())
-        self._tool_results.append(
-            {
-                "context_id": context_id,
-                "context_type": context_type,
-                "key": tool_name,
-                "value": result,
-                "metadata": metadata or {},
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        return context_id
+        """Save a tool result.  Returns the generated context_id.
 
-    def get_context_item(self, context_id: str) -> dict[str, Any] | None:
-        """Retrieve a context item (variable or tool result) by id."""
-        for item in self._tool_results:
-            if item["context_id"] == context_id:
+        If ``result_limit`` is set and the count of tool_result items
+        exceeds it, the least-recently-accessed items are evicted.
+        """
+        now = datetime.now(UTC)
+        context_id = uuid.uuid4()
+        data = {
+            "context_id": context_id,
+            "conversation_id": uuid.UUID(self.conversation_id)
+            if isinstance(self.conversation_id, str)
+            else self.conversation_id,
+            "context_type": context_type,
+            "key": tool_name,
+            "summary": summary or result[:300],
+            "value": result,
+            "metadata": metadata or {},
+            "date_accessed": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+
+        await self._collection.save_entity(
+            self._collection.entity_class(data, is_new=True, collection=self._collection)
+        )
+        self._items.append(data)
+
+        # LRU eviction
+        if self._result_limit is not None:
+            evicted = await self._collection.evict_lru(self.conversation_id, self._result_limit)
+            if evicted:
+                # Refresh local projection to drop evicted items
+                evicted_ids = {
+                    str(i["context_id"])
+                    for i in self._items
+                    if i["context_type"] == "tool_result"
+                    and not self._collection._exists_in_cache_sync(i["context_id"])
+                }
+                if evicted_ids:
+                    self._items = [i for i in self._items if str(i["context_id"]) not in evicted_ids]
+
+        return str(context_id)
+
+    async def get_context_item(self, context_id: str) -> dict[str, Any] | None:
+        """Retrieve a context item by id.
+
+        Accessing an item updates its ``date_accessed`` for LRU tracking.
+        """
+        cid = str(context_id)
+        if cid.startswith("ctx:"):
+            cid = cid[4:]
+        for item in self._items:
+            if str(item["context_id"]) == cid:
+                await self._collection.touch(cid)
+                item["date_accessed"] = datetime.now(UTC)
                 return item
-        for var in self._variables.values():
-            if var["context_id"] == context_id:
-                return var
         return None
 
     # ------------------------------------------------------------------
     # Media slots
     # ------------------------------------------------------------------
 
-    def register_media(self, slot_name: str, **kwargs: Any) -> None:
-        """Register a media slot."""
-        self._media_slots[slot_name] = {
-            "slot_name": slot_name,
-            **kwargs,
-            "registered_at": datetime.now(timezone.utc).isoformat(),
+    async def register_media(self, slot_name: str, **kwargs: Any) -> str:
+        """Register a media slot.  Returns the context_id."""
+        now = datetime.now(UTC)
+        context_id = uuid.uuid4()
+        data = {
+            "context_id": context_id,
+            "conversation_id": uuid.UUID(self.conversation_id)
+            if isinstance(self.conversation_id, str)
+            else self.conversation_id,
+            "context_type": "media_slot",
+            "key": slot_name,
+            "summary": kwargs.get("description", slot_name),
+            "value": "",
+            "metadata": kwargs,
+            "date_accessed": now,
+            "date_created": now,
+            "date_updated": now,
         }
+
+        await self._collection.save_entity(
+            self._collection.entity_class(data, is_new=True, collection=self._collection)
+        )
+        self._items.append(data)
+        return str(context_id)
 
     def get_slots(self) -> dict[str, dict[str, Any]]:
         """Return all registered media slots."""
-        return dict(self._media_slots)
+        return {i["key"]: i for i in self._items if i["context_type"] == "media_slot"}
 
     def build_media_context(self) -> str | None:
         """Format media slots into a prompt string, or ``None`` if empty."""
-        if not self._media_slots:
+        slots = [i for i in self._items if i["context_type"] == "media_slot"]
+        if not slots:
             return None
         lines = ["[Active Media Slots]"]
-        for name, slot in self._media_slots.items():
-            lines.append(f"- {name}: {slot}")
+        for slot in slots:
+            lines.append(f"- {slot['key']}: {slot.get('metadata', {})}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -143,7 +248,7 @@ class ToolContextManager:
             "steps": steps,
             "current_step": 0,
             "status": "active",
-            "declared_at": datetime.now(timezone.utc).isoformat(),
+            "declared_at": datetime.now(UTC).isoformat(),
         }
         return self._workflow
 
@@ -182,25 +287,30 @@ class ToolContextManager:
 
         Returns ``None`` if there is no context to include.
         """
+        variables = [i for i in self._items if i["context_type"] == "variable"]
+        tool_results = [i for i in self._items if i["context_type"] == "tool_result"]
+
+        if not variables and not tool_results:
+            return None
+
         sections: list[str] = []
 
-        if self._variables:
+        if variables:
             lines = ["[Conversation Variables]"]
-            for var in self._variables.values():
-                lines.append(f"- {var['key']} ({var['value_type']}): {var['value']}")
+            for var in variables:
+                vtype = (var.get("metadata") or {}).get("value_type", "string")
+                lines.append(f"- {var['key']} ({vtype}): {var['value']}")
             sections.append("\n".join(lines))
 
-        if self._tool_results:
+        if tool_results:
             lines = ["[Tool Results]"]
-            for item in self._tool_results:
-                lines.append(f"- [{item['context_id']}] {item['key']}: {item['value']}")
+            for item in tool_results:
+                lines.append(f"- [{item['context_id']}] {item['key']}: {item['summary']}")
             sections.append("\n".join(lines))
 
-        if not sections:
-            return None
         return "\n\n".join(sections)
 
     @property
     def has_context(self) -> bool:
         """Whether there is any context (variables, tool results, or media)."""
-        return bool(self._variables or self._tool_results or self._media_slots)
+        return bool(self._items)

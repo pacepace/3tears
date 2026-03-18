@@ -34,12 +34,12 @@ class TimezoneConverterInput(BaseModel):
 def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> str:
     try:
         from_tz = ZoneInfo(from_timezone)
-    except (ZoneInfoNotFoundError, KeyError):
+    except ZoneInfoNotFoundError, KeyError:
         return tool_error("timezone_converter", "convert", f"unknown timezone: {from_timezone}")
 
     try:
         to_tz = ZoneInfo(to_timezone)
-    except (ZoneInfoNotFoundError, KeyError):
+    except ZoneInfoNotFoundError, KeyError:
         return tool_error("timezone_converter", "convert", f"unknown timezone: {to_timezone}")
 
     parsed: datetime | None = None

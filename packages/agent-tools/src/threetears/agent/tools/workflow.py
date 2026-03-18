@@ -43,27 +43,27 @@ class DeclareWorkflowInput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tool implementations
+# Tool implementations (async)
 # ---------------------------------------------------------------------------
 
 
-def _set_variable(tool_context: ToolContextManager, key: str, value: str, value_type: str = "string") -> str:
+async def _set_variable(tool_context: ToolContextManager, key: str, value: str, value_type: str = "string") -> str:
     try:
-        context_id = tool_context.set_variable(key, value, value_type)
+        context_id = await tool_context.set_variable(key, value, value_type)
         return f"Variable '{key}' saved (context_id: {context_id})"
     except ValueError as exc:
         return str(exc)
 
 
-def _get_variable(tool_context: ToolContextManager, key: str) -> str:
-    var = tool_context.get_variable(key)
+async def _get_variable(tool_context: ToolContextManager, key: str) -> str:
+    var = await tool_context.get_variable(key)
     if var is None:
         return f"Variable '{key}' not found"
-    return f"{var['key']} ({var['value_type']}): {var['value']}"
+    return f"{key} ({var['value_type']}): {var['value']}"
 
 
-def _recall_context(tool_context: ToolContextManager, context_id: str) -> str:
-    item = tool_context.get_context_item(context_id)
+async def _recall_context(tool_context: ToolContextManager, context_id: str) -> str:
+    item = await tool_context.get_context_item(context_id)
     if item is None:
         return f"Context item '{context_id}' not found"
     return f"{item.get('key', 'unknown')}: {item.get('value', '')}"
@@ -87,7 +87,8 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
     """
     return [
         StructuredTool.from_function(
-            func=lambda key, value, value_type="string": _set_variable(tool_context, key, value, value_type),
+            func=lambda key, value, value_type="string": None,
+            coroutine=lambda key, value, value_type="string": _set_variable(tool_context, key, value, value_type),
             name="set_variable",
             description=(
                 "Store a key-value variable in conversation context. "
@@ -96,13 +97,15 @@ def load_workflow_tools(tool_context: ToolContextManager) -> list[Any]:
             args_schema=SetVariableInput,
         ),
         StructuredTool.from_function(
-            func=lambda key: _get_variable(tool_context, key),
+            func=lambda key: None,
+            coroutine=lambda key: _get_variable(tool_context, key),
             name="get_variable",
             description="Retrieve a previously stored variable by key.",
             args_schema=GetVariableInput,
         ),
         StructuredTool.from_function(
-            func=lambda context_id: _recall_context(tool_context, context_id),
+            func=lambda context_id: None,
+            coroutine=lambda context_id: _recall_context(tool_context, context_id),
             name="recall_context",
             description="Recall a specific context item by its context_id.",
             args_schema=RecallContextInput,

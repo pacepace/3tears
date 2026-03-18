@@ -110,7 +110,7 @@ def _parse_routing_decision(response_text: str) -> dict[str, Any]:
             "tool_name": parsed.get("tool_name"),
             "reasoning": parsed.get("reasoning", ""),
         }
-    except (json.JSONDecodeError, AttributeError):
+    except json.JSONDecodeError, AttributeError:
         log.warning(
             "Failed to parse routing response",
             extra={"extra_data": {"response": response_text[:200]}},
