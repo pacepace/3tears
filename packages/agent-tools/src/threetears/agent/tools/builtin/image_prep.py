@@ -42,7 +42,9 @@ def prepare_image_for_vision(
     are resized and re-encoded as JPEG.
 
     :param data: raw image bytes
+    :ptype data: bytes
     :param mime_type: original MIME type (e.g. ``image/jpeg``, ``image/heic``)
+    :ptype mime_type: str
     :return: tuple of ``(bytes, mime_type)`` ready for base64 encoding
     """
     # Small images in web-safe formats: pass through unchanged

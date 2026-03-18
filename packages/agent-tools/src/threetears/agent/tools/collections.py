@@ -77,10 +77,20 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
     @property
     def table_name(self) -> str:
+        """Return the database table name.
+
+        :return: table name
+        :rtype: str
+        """
         return "context_items"
 
     @property
     def entity_class(self) -> type[ContextItemEntity]:
+        """Return the entity class for this collection.
+
+        :return: entity class
+        :rtype: type[ContextItemEntity]
+        """
         return ContextItemEntity
 
     # -- Standard BaseCollection abstract methods --
