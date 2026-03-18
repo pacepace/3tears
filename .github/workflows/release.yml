@@ -73,6 +73,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+          # Delete any pre-existing release for this tag (e.g. manually created)
+          gh release delete "$TAG" --yes 2>/dev/null || true
           gh release create "$TAG" dist/* \
             --title "$TAG" \
             --generate-notes
