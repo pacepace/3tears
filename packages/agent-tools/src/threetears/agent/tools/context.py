@@ -140,6 +140,44 @@ class ToolContextManager:
     # Tool results
     # ------------------------------------------------------------------
 
+    async def save_context_item(
+        self,
+        context_type: str,
+        key: str,
+        short_desc: str,
+        content: str,
+        long_desc: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Save a context item with full 3-tier descriptions.
+
+        General-purpose save that covers variables, tool results, and
+        any other context type. Returns the context_id.
+
+        :param context_type: type of context item (variable, tool_result, scan_result, etc.)
+        :ptype context_type: str
+        :param key: unique key within the conversation
+        :ptype key: str
+        :param short_desc: token-efficient summary (≤200 chars)
+        :ptype short_desc: str
+        :param content: full content for on-demand retrieval
+        :ptype content: str
+        :param long_desc: expanded description (≤1000 chars)
+        :ptype long_desc: str
+        :param metadata: optional metadata dict
+        :ptype metadata: dict[str, Any] | None
+        :return: context_id of the saved item
+        :rtype: str
+        """
+        return await self.save_tool_result(
+            tool_name=key,
+            result=content,
+            short_desc=short_desc,
+            long_desc=long_desc,
+            context_type=context_type,
+            metadata=metadata,
+        )
+
     async def save_tool_result(
         self,
         tool_name: str,
@@ -206,6 +244,37 @@ class ToolContextManager:
             if str(item["context_id"]) == cid:
                 await self._collection.touch(cid)
                 item["date_accessed"] = datetime.now(UTC)
+                return item
+        return None
+
+    def build_context_detail(self, context_id: str) -> str | None:
+        """Return the long_desc for a specific context item.
+
+        Used by two-tier enrichment to get more detail without
+        loading the full content.
+
+        :param context_id: UUID string of the context item
+        :ptype context_id: str
+        :return: long_desc or None if not found
+        :rtype: str | None
+        """
+        cid = str(context_id)
+        for item in self._items:
+            if str(item["context_id"]) == cid:
+                return item.get("long_desc", "")
+        return None
+
+    def get_by_context_id(self, context_id: str) -> dict[str, Any] | None:
+        """Retrieve a context item by its context_id from the local projection.
+
+        :param context_id: UUID string of the context item
+        :ptype context_id: str
+        :return: context item data or None
+        :rtype: dict[str, Any] | None
+        """
+        cid = str(context_id)
+        for item in self._items:
+            if str(item["context_id"]) == cid:
                 return item
         return None
 
@@ -293,6 +362,33 @@ class ToolContextManager:
     def workflow_state(self) -> dict[str, Any] | None:
         """Current workflow state, or ``None``."""
         return self._workflow
+
+    def build_workflow_prompt(self) -> str:
+        """Format the active workflow as a system prompt section.
+
+        Returns empty string if no workflow is active.
+
+        :return: formatted workflow prompt section
+        :rtype: str
+        """
+        if not self.has_active_workflow:
+            return ""
+        lines = [f"## Active Workflow: {self._workflow['plan']}"]
+        for i, step in enumerate(self._workflow["steps"]):
+            if isinstance(step, dict):
+                desc = step.get("description", str(step))
+                status = step.get("status", "pending")
+            else:
+                desc = str(step)
+                status = "completed" if i < self._workflow["current_step"] else "pending"
+            if status == "completed":
+                check = "[x]"
+            elif status == "skipped":
+                check = "[-]"
+            else:
+                check = "[ ]"
+            lines.append(f"{i + 1}. {check} {desc}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Memory ledger (tracks surfaced items to prevent re-retrieval)
