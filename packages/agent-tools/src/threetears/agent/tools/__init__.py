@@ -30,6 +30,15 @@ from threetears.agent.tools.builtin.analyze_media import (
     AnalyzerConfig,
     create_analyze_media_tool,
 )
+from threetears.agent.tools.chunker import (
+    ChunkResult,
+    ChunkStrategy,
+    chunk_by_headers,
+    chunk_by_lines,
+    chunk_by_sections,
+    chunk_content,
+    register_chunk_strategy,
+)
 from threetears.agent.tools.todo import (
     TodoStorage,
     load_todo_tools as load_todo_tools_from_storage,
@@ -48,6 +57,8 @@ from threetears.agent.tools.types import ChatModelFactory
 
 __all__ = [
     "AnalyzerConfig",
+    "ChunkResult",
+    "ChunkStrategy",
     "ChatModelFactory",
     "ContextItemCollection",
     "ContextItemEntity",
@@ -74,6 +85,10 @@ __all__ = [
     "ToolRoutingDecision",
     "TranscriptionProvider",
     "VisionProvider",
+    "chunk_by_headers",
+    "chunk_by_lines",
+    "chunk_by_sections",
+    "chunk_content",
     "create_analyze_media_tool",
     "create_parse_document_tool",
     "detect_mime_from_filename",
@@ -82,4 +97,5 @@ __all__ = [
     "load_workflow_tools",
     "parse_document",
     "register_builtins",
+    "register_chunk_strategy",
 ]
