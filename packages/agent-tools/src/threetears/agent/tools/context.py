@@ -80,8 +80,9 @@ class ToolContextManager:
             else self.conversation_id,
             "context_type": "variable",
             "key": key,
-            "summary": value[:200],
-            "value": value,
+            "short_desc": value[:200],
+            "long_desc": "",
+            "content": value,
             "metadata": {"value_type": value_type},
             "date_accessed": now,
             "date_created": now,
@@ -103,7 +104,7 @@ class ToolContextManager:
         for item in self._items:
             if item["context_type"] == "variable" and item["key"] == key:
                 vtype = (item.get("metadata") or {}).get("value_type", "string")
-                return {"value": item["value"], "value_type": vtype}
+                return {"value": item["content"], "value_type": vtype}
         return None
 
     async def get_all_variables(self) -> list[dict[str, Any]]:
@@ -132,7 +133,8 @@ class ToolContextManager:
         tool_name: str,
         result: str,
         *,
-        summary: str | None = None,
+        short_desc: str | None = None,
+        long_desc: str = "",
         context_type: str = "tool_result",
         metadata: dict[str, Any] | None = None,
     ) -> str:
@@ -150,8 +152,9 @@ class ToolContextManager:
             else self.conversation_id,
             "context_type": context_type,
             "key": tool_name,
-            "summary": summary or result[:300],
-            "value": result,
+            "short_desc": short_desc or result[:200],
+            "long_desc": long_desc[:1000] if long_desc else "",
+            "content": result,
             "metadata": metadata or {},
             "date_accessed": now,
             "date_created": now,
@@ -209,8 +212,9 @@ class ToolContextManager:
             else self.conversation_id,
             "context_type": "media_slot",
             "key": slot_name,
-            "summary": kwargs.get("description", slot_name),
-            "value": "",
+            "short_desc": kwargs.get("description", slot_name),
+            "long_desc": "",
+            "content": "",
             "metadata": kwargs,
             "date_accessed": now,
             "date_created": now,
@@ -299,13 +303,13 @@ class ToolContextManager:
             lines = ["[Conversation Variables]"]
             for var in variables:
                 vtype = (var.get("metadata") or {}).get("value_type", "string")
-                lines.append(f"- {var['key']} ({vtype}): {var['value']}")
+                lines.append(f"- {var['key']} ({vtype}): {var['content']}")
             sections.append("\n".join(lines))
 
         if tool_results:
             lines = ["[Tool Results]"]
             for item in tool_results:
-                lines.append(f"- [{item['context_id']}] {item['key']}: {item['summary']}")
+                lines.append(f"- [{item['context_id']}] {item['key']}: {item['short_desc']}")
             sections.append("\n".join(lines))
 
         return "\n\n".join(sections)
