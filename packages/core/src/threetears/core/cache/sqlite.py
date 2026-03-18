@@ -272,7 +272,7 @@ class SQLiteBackend:
             if value and isinstance(value, str):
                 try:
                     result = json.loads(value)
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     result = value if col_type == "TEXT_JSON" else (value or [])
             elif col_type in ("TEXT_ARRAY", "TEXT_VECTOR"):
                 result = value or []

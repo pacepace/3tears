@@ -6,6 +6,8 @@ __version__ = "0.1.0"
 
 from threetears.agent.tools.registry import ToolRegistry
 from threetears.agent.tools.context import ToolContextManager
+from threetears.agent.tools.entities import ContextItemEntity
+from threetears.agent.tools.collections import ContextItemCollection, context_items_table
 from threetears.agent.tools.document import (
     DocumentResult,
     DocumentSection,
@@ -47,6 +49,9 @@ from threetears.agent.tools.types import ChatModelFactory
 __all__ = [
     "AnalyzerConfig",
     "ChatModelFactory",
+    "ContextItemCollection",
+    "ContextItemEntity",
+    "context_items_table",
     "DEFAULT_ROUTING_PROMPT",
     "DocumentResult",
     "DocumentSection",

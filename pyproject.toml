@@ -16,7 +16,7 @@ dev-dependencies = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py314"
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
@@ -24,7 +24,7 @@ asyncio_mode = "auto"
 
 [tool.mypy]
 strict = true
-python_version = "3.11"
+python_version = "3.14"
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = [

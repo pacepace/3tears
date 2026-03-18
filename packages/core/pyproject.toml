@@ -4,17 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears"
-version = "0.2.0"
+version = "0.3.0"
 description = "Three-tier caching framework for Python — L1 SQLite, L2 NATS KV, L3 PostgreSQL"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 authors = [{name = "pace"}]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",

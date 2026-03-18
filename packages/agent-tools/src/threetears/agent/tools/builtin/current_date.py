@@ -21,7 +21,7 @@ def _create_date_fn(user_timezone: str | None) -> Any:
                 tz = ZoneInfo(user_timezone)
                 now_local = now_utc.astimezone(tz)
                 result += f"\nLocal ({user_timezone}): {now_local.strftime('%A, %B %d, %Y %I:%M %p %Z')}"
-            except (ZoneInfoNotFoundError, KeyError):
+            except ZoneInfoNotFoundError, KeyError:
                 result += f"\n(Could not resolve timezone: {user_timezone})"
 
         return result

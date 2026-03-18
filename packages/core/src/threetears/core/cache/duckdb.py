@@ -190,7 +190,7 @@ class DuckDBBackend:
             if value and isinstance(value, str):
                 try:
                     result = json.loads(value)
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     result = value if col_type == "VARCHAR_JSON" else (value or [])
             elif col_type in ("VARCHAR_ARRAY", "VARCHAR_VECTOR"):
                 result = value or []
