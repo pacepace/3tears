@@ -29,8 +29,9 @@ _FIELD_TYPES: dict[str, Any] = {
     "conversation_id": UUID,
     "context_type": str,
     "key": str,
-    "summary": str,
-    "value": str,
+    "short_desc": str,
+    "long_desc": str,
+    "content": str,
     "metadata": dict,
     "date_accessed": datetime,
     "date_created": datetime,
@@ -54,8 +55,9 @@ def context_items_table(metadata: MetaData) -> Table:
         Column("conversation_id", PgUUID(as_uuid=True), nullable=False),
         Column("context_type", Text(), nullable=False),
         Column("key", Text(), nullable=False),
-        Column("summary", Text(), nullable=False),
-        Column("value", Text(), nullable=False),
+        Column("short_desc", Text(), nullable=False),
+        Column("long_desc", Text(), nullable=False, server_default=""),
+        Column("content", Text(), nullable=False),
         Column("metadata", JSONB(), nullable=True),
         Column("date_accessed", DateTime(timezone=True), nullable=False),
         Column("date_created", DateTime(timezone=True), nullable=False),
@@ -75,10 +77,20 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
     @property
     def table_name(self) -> str:
+        """Return the database table name.
+
+        :return: table name
+        :rtype: str
+        """
         return "context_items"
 
     @property
     def entity_class(self) -> type[ContextItemEntity]:
+        """Return the entity class for this collection.
+
+        :return: entity class
+        :rtype: type[ContextItemEntity]
+        """
         return ContextItemEntity
 
     # -- Standard BaseCollection abstract methods --
@@ -107,12 +119,13 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
                 """
                 INSERT INTO context_items (
                     context_id, conversation_id, context_type, key,
-                    summary, value, metadata,
+                    short_desc, long_desc, content, metadata,
                     date_accessed, date_created, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
                 ON CONFLICT (context_id) DO UPDATE SET
-                    summary = EXCLUDED.summary,
-                    value = EXCLUDED.value,
+                    short_desc = EXCLUDED.short_desc,
+                    long_desc = EXCLUDED.long_desc,
+                    content = EXCLUDED.content,
                     metadata = EXCLUDED.metadata,
                     date_accessed = EXCLUDED.date_accessed,
                     date_updated = EXCLUDED.date_updated
@@ -121,8 +134,9 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
                 conversation_id,
                 data["context_type"],
                 data["key"],
-                data["summary"],
-                data["value"],
+                data["short_desc"],
+                data.get("long_desc", ""),
+                data["content"],
                 metadata_val,
                 data["date_accessed"],
                 data["date_created"],
@@ -132,13 +146,14 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             result = await self._l3_pool.execute(
                 """
                 UPDATE context_items SET
-                    summary = $2, value = $3, metadata = $4::jsonb,
-                    date_accessed = $5, date_updated = $6
-                WHERE context_id = $1 AND date_updated = $7
+                    short_desc = $2, long_desc = $3, content = $4, metadata = $5::jsonb,
+                    date_accessed = $6, date_updated = $7
+                WHERE context_id = $1 AND date_updated = $8
                 """,
                 context_id,
-                data["summary"],
-                data["value"],
+                data["short_desc"],
+                data.get("long_desc", ""),
+                data["content"],
                 metadata_val,
                 data["date_accessed"],
                 data["date_updated"],
@@ -200,13 +215,14 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             """
             INSERT INTO context_items (
                 context_id, conversation_id, context_type, key,
-                summary, value, metadata,
+                short_desc, long_desc, content, metadata,
                 date_accessed, date_created, date_updated
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
             ON CONFLICT (conversation_id, key) WHERE context_type = 'variable'
             DO UPDATE SET
-                summary = EXCLUDED.summary,
-                value = EXCLUDED.value,
+                short_desc = EXCLUDED.short_desc,
+                long_desc = EXCLUDED.long_desc,
+                content = EXCLUDED.content,
                 metadata = EXCLUDED.metadata,
                 date_accessed = EXCLUDED.date_accessed,
                 date_updated = EXCLUDED.date_updated
@@ -216,8 +232,9 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             conversation_id,
             "variable",
             data["key"],
-            data["summary"],
-            data["value"],
+            data["short_desc"],
+            data.get("long_desc", ""),
+            data["content"],
             metadata_val,
             data["date_accessed"],
             data["date_created"],

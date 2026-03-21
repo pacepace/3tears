@@ -62,23 +62,25 @@ class FakePool:
                     and row["key"] == key
                     and row["context_type"] == "variable"
                 ):
-                    row["summary"] = args[4]
-                    row["value"] = args[5]
-                    row["metadata"] = json.loads(args[6]) if args[6] else None
-                    row["date_accessed"] = args[7]
-                    row["date_updated"] = args[9]
+                    row["short_desc"] = args[4]
+                    row["long_desc"] = args[5]
+                    row["content"] = args[6]
+                    row["metadata"] = json.loads(args[7]) if args[7] else None
+                    row["date_accessed"] = args[8]
+                    row["date_updated"] = args[10]
                     return {"context_id": row["context_id"]}
             row_data = {
                 "context_id": context_id,
                 "conversation_id": conversation_id,
                 "context_type": "variable",
                 "key": key,
-                "summary": args[4],
-                "value": args[5],
-                "metadata": json.loads(args[6]) if args[6] else None,
-                "date_accessed": args[7],
-                "date_created": args[8],
-                "date_updated": args[9],
+                "short_desc": args[4],
+                "long_desc": args[5],
+                "content": args[6],
+                "metadata": json.loads(args[7]) if args[7] else None,
+                "date_accessed": args[8],
+                "date_created": args[9],
+                "date_updated": args[10],
             }
             self._rows[str(context_id)] = row_data
             return {"context_id": context_id}
@@ -125,18 +127,19 @@ class FakePool:
 
         if "insert into context_items" in sql_lower:
             context_id = args[0]
-            metadata_raw = args[6]
+            metadata_raw = args[7]
             row_data = {
                 "context_id": context_id,
                 "conversation_id": args[1],
                 "context_type": args[2],
                 "key": args[3],
-                "summary": args[4],
-                "value": args[5],
+                "short_desc": args[4],
+                "long_desc": args[5],
+                "content": args[6],
                 "metadata": json.loads(metadata_raw) if metadata_raw else None,
-                "date_accessed": args[7],
-                "date_created": args[8],
-                "date_updated": args[9],
+                "date_accessed": args[8],
+                "date_created": args[9],
+                "date_updated": args[10],
             }
             self._rows[str(context_id)] = row_data
             return "INSERT 0 1"
@@ -158,8 +161,9 @@ class FakePool:
         if "update context_items set" in sql_lower:
             cid = str(args[0])
             if cid in self._rows:
-                self._rows[cid]["summary"] = args[1]
-                self._rows[cid]["value"] = args[2]
+                self._rows[cid]["short_desc"] = args[1]
+                self._rows[cid]["long_desc"] = args[2]
+                self._rows[cid]["content"] = args[3]
                 return "UPDATE 1"
             return "UPDATE 0"
 
