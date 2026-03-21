@@ -252,7 +252,8 @@ class ToolContextManager:
         cid = str(context_id)
         for item in self._items:
             if str(item["context_id"]) == cid:
-                return item.get("long_desc", "")
+                val: str | None = item.get("long_desc", "")
+                return val
         return None
 
     def get_by_context_id(self, context_id: str) -> dict[str, Any] | None:
@@ -360,7 +361,7 @@ class ToolContextManager:
         :return: formatted workflow prompt section
         :rtype: str
         """
-        if not self.has_active_workflow:
+        if not self.has_active_workflow or self._workflow is None:
             return ""
         lines = [f"## Active Workflow: {self._workflow['plan']}"]
         for i, step in enumerate(self._workflow["steps"]):

@@ -69,7 +69,7 @@ def create_context_enrichment_node(
     :rtype: Any
     """
 
-    async def enrichment_node(state: dict) -> dict:
+    async def enrichment_node(state: dict[str, Any]) -> dict[str, Any]:
         """Search for related entities and inject as context.
 
         :param state: graph state with messages
@@ -158,7 +158,7 @@ def create_context_save_node(
             return True
         return any(tool_name.endswith(suffix) for suffix in saveable_suffixes)
 
-    async def context_save_node(state: dict) -> dict:
+    async def context_save_node(state: dict[str, Any]) -> dict[str, Any]:
         """Scan tool results and auto-save significant content.
 
         :param state: graph state with messages
@@ -170,11 +170,13 @@ def create_context_save_node(
         tool_messages = [m for m in messages if isinstance(m, ToolMessage)]
 
         for msg in tool_messages:
-            tool_name = getattr(msg, "name", None)
+            tool_name: str | None = getattr(msg, "name", None)
             if not _is_saveable(tool_name):
                 continue
+            assert tool_name is not None  # narrowed by _is_saveable
 
-            content = msg.content or ""
+            raw = msg.content or ""
+            content: str = raw if isinstance(raw, str) else str(raw)
             if len(content) > max_content:
                 content = content[:max_content] + "\n[Content truncated]"
 
