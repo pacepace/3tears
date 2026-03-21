@@ -67,16 +67,13 @@ class TestPackageBoundaries:
                     for alias in node.names:
                         banned = _is_banned(alias.name)
                         if banned:
-                            violations.append(
-                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: import {alias.name}"
-                            )
+                            violations.append(f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: import {alias.name}")
                 elif isinstance(node, ast.ImportFrom):
                     if node.module:
                         banned = _is_banned(node.module)
                         if banned:
                             violations.append(
-                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
-                                f"from {node.module} import ..."
+                                f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: from {node.module} import ..."
                             )
 
         assert not violations, (

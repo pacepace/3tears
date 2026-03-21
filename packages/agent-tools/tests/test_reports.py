@@ -12,7 +12,6 @@ from threetears.agent.tools.reports.markdown_compiler import MarkdownCompiler, R
 from threetears.agent.tools.reports.mermaid_generator import MermaidGenerator
 from threetears.agent.tools.reports.pdf_renderer import PandocNotFoundError, PdfRenderer
 from threetears.agent.tools.reports.severity import (
-    DEFAULT_SEVERITY_CONFIG,
     SeverityConfig,
     severity_label,
     sort_by_severity,

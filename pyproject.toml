@@ -12,6 +12,7 @@ dev-dependencies = [
     "simpleeval>=1.0.4",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",
+    "pillow>=10.0",
 ]
 
 [tool.ruff]
