@@ -58,8 +58,9 @@ def _make_item(
     conversation_id: str = "00000000-0000-0000-0000-000000000001",
     context_type: str = "tool_result",
     key: str = "calc",
-    summary: str = "42",
-    value: str = "The answer is 42",
+    short_desc: str = "42",
+    long_desc: str = "",
+    content: str = "The answer is 42",
     date_accessed: datetime | None = None,
 ) -> dict:
     now = datetime.now(UTC)
@@ -68,8 +69,9 @@ def _make_item(
         "conversation_id": uuid.UUID(conversation_id),
         "context_type": context_type,
         "key": key,
-        "summary": summary,
-        "value": value,
+        "short_desc": short_desc,
+        "long_desc": long_desc,
+        "content": content,
         "metadata": {},
         "date_accessed": date_accessed or now,
         "date_created": now,
@@ -111,22 +113,22 @@ class TestFindByConversation:
 class TestUpsertVariable:
     @pytest.mark.asyncio
     async def test_insert_new(self, collection: ContextItemCollection) -> None:
-        item = _make_item(context_type="variable", key="name", summary="Alice", value="Alice")
+        item = _make_item(context_type="variable", key="name", short_desc="Alice", content="Alice")
         returned_id = await collection.upsert_variable(item)
         assert returned_id == item["context_id"]
 
     @pytest.mark.asyncio
     async def test_upsert_existing(self, collection: ContextItemCollection, pool: FakePool) -> None:
-        item1 = _make_item(context_type="variable", key="name", summary="Alice", value="Alice")
+        item1 = _make_item(context_type="variable", key="name", short_desc="Alice", content="Alice")
         await collection.upsert_variable(item1)
 
-        item2 = _make_item(context_type="variable", key="name", summary="Bob", value="Bob")
+        item2 = _make_item(context_type="variable", key="name", short_desc="Bob", content="Bob")
         returned_id = await collection.upsert_variable(item2)
 
         # Should return the original context_id (conflict resolution)
         assert returned_id == item1["context_id"]
         # Value should be updated
-        assert pool._rows[str(item1["context_id"])]["value"] == "Bob"
+        assert pool._rows[str(item1["context_id"])]["content"] == "Bob"
 
 
 class TestTouch:
@@ -176,8 +178,8 @@ class TestEvictLru:
         var = _make_item(
             context_type="variable",
             key="name",
-            summary="Alice",
-            value="Alice",
+            short_desc="Alice",
+            content="Alice",
             date_accessed=now - timedelta(days=1),
         )
         pool._rows[str(var["context_id"])] = var
@@ -212,4 +214,4 @@ class TestThreeTierReadWrite:
 
         assert entity is not None
         assert entity.key == "calc"
-        assert entity.value == "The answer is 42"
+        assert entity.content == "The answer is 42"

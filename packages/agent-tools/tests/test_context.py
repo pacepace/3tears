@@ -128,7 +128,7 @@ async def test_save_tool_result(ctx: ToolContextManager) -> None:
     cid = await ctx.save_tool_result("calc", "42")
     item = await ctx.get_context_item(cid)
     assert item is not None
-    assert item["value"] == "42"
+    assert item["content"] == "42"
     assert item["key"] == "calc"
 
 

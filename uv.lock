@@ -14,6 +14,7 @@ dev = [
     { name = "duckdb", specifier = ">=1.0" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "opentelemetry-api", specifier = ">=1.20" },
+    { name = "pillow", specifier = ">=10.0" },
     { name = "pint", specifier = ">=0.25.2" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
@@ -24,7 +25,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "aiosqlite" },
@@ -54,7 +55,7 @@ provides-extras = ["tracing", "duckdb"]
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/agent-memory" }
 dependencies = [
     { name = "3tears" },
@@ -71,10 +72,11 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "packages/agent-tools" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-agent-memory" },
     { name = "httpx" },
     { name = "langchain-core" },
 ]
@@ -125,6 +127,7 @@ xlsx = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-agent-memory", editable = "packages/agent-memory" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "openpyxl", marker = "extra == 'all'" },

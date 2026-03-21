@@ -66,7 +66,7 @@ async def _recall_context(tool_context: ToolContextManager, context_id: str) -> 
     item = await tool_context.get_context_item(context_id)
     if item is None:
         return f"Context item '{context_id}' not found"
-    return f"{item.get('key', 'unknown')}: {item.get('value', '')}"
+    return f"{item.get('key', 'unknown')}: {item.get('content', '')}"
 
 
 def _declare_workflow(tool_context: ToolContextManager, plan: str, steps: list[str]) -> str:
