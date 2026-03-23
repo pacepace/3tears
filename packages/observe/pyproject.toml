@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "3tears"
-version = "0.4.0"
-description = "Three-tier caching framework for Python — L1 SQLite, L2 NATS KV, L3 PostgreSQL"
+name = "3tears-observe"
+version = "0.5.0"
+description = "Structured logging, tracing, and OpenTelemetry setup for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
@@ -18,27 +18,22 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Topic :: Database",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
-dependencies = [
-    "3tears-observe",
-    "sqlalchemy",
-    "asyncpg",
-    "nats-py",
-    "aiosqlite",
-]
+dependencies = []
 
 [project.optional-dependencies]
-tracing = ["opentelemetry-api>=1.20"]
-duckdb = ["duckdb>=1.0"]
+otel = [
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp>=1.28",
+]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
-
-[tool.uv.sources]
-3tears-observe = { workspace = true }

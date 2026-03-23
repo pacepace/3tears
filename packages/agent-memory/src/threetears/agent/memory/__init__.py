@@ -10,8 +10,10 @@ from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
 from threetears.agent.memory.tools import (
+    AddMemoryInput,
     MemorySearchInput,
     RecallMemoryInput,
+    load_add_memory_tool,
     load_memory_search_tool,
     load_recall_memory_tool,
 )
@@ -31,6 +33,7 @@ __all__ = [
     "MemoryType",
     "RecallMemoryInput",
     "RetrievalResult",
+    "load_add_memory_tool",
     "load_memory_search_tool",
     "load_recall_memory_tool",
 ]

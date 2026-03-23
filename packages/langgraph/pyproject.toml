@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "3tears"
-version = "0.4.0"
-description = "Three-tier caching framework for Python — L1 SQLite, L2 NATS KV, L3 PostgreSQL"
+name = "3tears-langgraph"
+version = "0.5.0"
+description = "Three-tier LangGraph checkpoint saver: L1 SQLite -> L2 NATS KV -> L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
@@ -15,24 +15,15 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
 dependencies = [
-    "3tears-observe",
-    "sqlalchemy",
+    "langgraph-checkpoint>=4.0",
     "asyncpg",
-    "nats-py",
-    "aiosqlite",
+    "uuid-utils",
 ]
-
-[project.optional-dependencies]
-tracing = ["opentelemetry-api>=1.20"]
-duckdb = ["duckdb>=1.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -40,5 +31,3 @@ Repository = "https://github.com/pacepace/3tears"
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
 
-[tool.uv.sources]
-3tears-observe = { workspace = true }

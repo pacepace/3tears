@@ -18,7 +18,7 @@ def test_traced_without_otel():
     def add(a: int, b: int) -> int:
         return a + b
 
-    with patch("threetears.core.tracing._check_otel", return_value=False):
+    with patch("threetears.observe.tracing._check_otel", return_value=False):
         result = add(2, 3)
 
     assert result == 5
@@ -42,7 +42,7 @@ def test_traced_sync_function():
         return a * b
 
     with (
-        patch("threetears.core.tracing._check_otel", return_value=True),
+        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         result = multiply(3, 4)
@@ -62,7 +62,7 @@ def test_traced_async_function():
         return a + b
 
     with (
-        patch("threetears.core.tracing._check_otel", return_value=True),
+        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         result = asyncio.run(async_add(5, 6))
@@ -82,7 +82,7 @@ def test_sensitive_params_filtered():
         return "ok"
 
     with (
-        patch("threetears.core.tracing._check_otel", return_value=True),
+        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         login("alice", "s3cret", token="tok-123")
@@ -92,9 +92,10 @@ def test_sensitive_params_filtered():
     for call in mock_span.set_attribute.call_args_list:
         attrs[call[0][0]] = call[0][1]
 
-    assert attrs.get("arg.username") == "'alice'"
-    assert attrs.get("arg.password") == "[REDACTED]"
-    assert attrs.get("arg.token") == "[REDACTED]"
+    assert attrs.get("arg.username") == "alice"
+    # Sensitive params are skipped entirely, not redacted
+    assert "arg.password" not in attrs
+    assert "arg.token" not in attrs
 
 
 def test_traced_records_exception():
@@ -108,7 +109,7 @@ def test_traced_records_exception():
         raise ValueError("boom")
 
     with (
-        patch("threetears.core.tracing._check_otel", return_value=True),
+        patch("threetears.observe.tracing._check_otel", return_value=True),
         patch("opentelemetry.trace.get_tracer", return_value=mock_tracer),
     ):
         with pytest.raises(ValueError, match="boom"):

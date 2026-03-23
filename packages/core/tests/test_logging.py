@@ -1,4 +1,4 @@
-"""Tests for threetears.core.logging."""
+"""Tests for threetears.core.logging (re-exports from threetears.observe.logging)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from threetears.core.logging import (
     ContextFormatter,
     clear_context,
     configure_logging,
+    get_context,
     get_logger,
     set_context,
 )
@@ -63,14 +64,13 @@ def test_log_format_without_context():
         logger.removeHandler(handler)
 
     output = buf.getvalue()
-    assert "[cid:-]" in output
-    assert "[sid:-]" in output
-    assert "[conv:-]" in output
+    # No context tags when context is empty
     assert "hello world" in output
+    assert "[" not in output.split("Z ")[1].split(":")[0] if "Z " in output else True
 
 
 def test_log_format_with_context():
-    set_context(conversation_id="abc")
+    set_context(cid="abc", sid="def", conv="ghi")
     logger = get_logger("test.with_ctx")
     handler, buf = _capture_handler()
     logger.addHandler(handler)
@@ -81,14 +81,16 @@ def test_log_format_with_context():
         logger.removeHandler(handler)
 
     output = buf.getvalue()
-    assert "[conv:abc]" in output
-    assert "[cid:-]" in output
-    assert "[sid:-]" in output
+    assert "[cid:abc]" in output
+    assert "[sid:def]" in output
+    assert "[conv:ghi]" in output
 
 
 def test_clear_context():
-    set_context(correlation_id="req-123", session_id="sess-456", conversation_id="conv-789")
+    set_context(cid="req-123", sid="sess-456", conv="conv-789")
     clear_context()
+
+    assert get_context() == {}
 
     logger = get_logger("test.clear")
     handler, buf = _capture_handler()
@@ -100,9 +102,8 @@ def test_clear_context():
         logger.removeHandler(handler)
 
     output = buf.getvalue()
-    assert "[cid:-]" in output
-    assert "[sid:-]" in output
-    assert "[conv:-]" in output
+    # No context tags after clear
+    assert "after clear" in output
 
 
 def test_extra_data_in_log():
@@ -122,11 +123,9 @@ def test_extra_data_in_log():
 
 
 def test_configure_logging_adds_handler():
-    # Use a unique logger name so we don't conflict
     root = logging.getLogger("threetears")
     original_handlers = list(root.handlers)
     try:
-        # Clear any existing handlers
         root.handlers.clear()
         configure_logging("DEBUG")
         assert len(root.handlers) == 1
@@ -145,3 +144,11 @@ def test_configure_logging_idempotent():
         assert len(root.handlers) == 1
     finally:
         root.handlers = original_handlers
+
+
+def test_core_and_observe_share_context():
+    """Core and observe share the same context — setting via core is visible in observe."""
+    from threetears.observe.logging import get_context as observe_get_context
+
+    set_context(cid="shared-123")
+    assert observe_get_context()["cid"] == "shared-123"

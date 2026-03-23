@@ -338,3 +338,73 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             )
 
         return evicted
+
+
+async def migrate_context_items_schema(pool: Any) -> bool:
+    """Migrate context_items table from legacy schema to v0.5.0 schema.
+
+    Detects old column names (``summary``, ``value``) and renames them
+    to the current schema (``short_desc``, ``long_desc``, ``content``).
+    Backfills ``long_desc`` from the first 1000 chars of ``content``.
+
+    Safe to call on every startup — detects whether migration is needed
+    by probing the column list, and is a no-op if already up to date.
+    Idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
+
+    :param pool: asyncpg connection pool.
+    :returns: True if columns were migrated, False if already current.
+    """
+    # Probe current columns
+    cols = await pool.fetch(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'context_items'
+        """
+    )
+    if not cols:
+        return False  # Table doesn't exist yet
+
+    col_names = {row["column_name"] for row in cols}
+
+    needs_migration = "summary" in col_names or ("value" in col_names and "content" not in col_names)
+    if not needs_migration:
+        return False
+
+    log.info("Migrating context_items schema to v0.5.0")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Rename summary → short_desc
+            if "summary" in col_names and "short_desc" not in col_names:
+                await conn.execute(
+                    "ALTER TABLE context_items RENAME COLUMN summary TO short_desc"
+                )
+                log.info("Renamed context_items.summary → short_desc")
+
+            # Rename value → content
+            if "value" in col_names and "content" not in col_names:
+                await conn.execute(
+                    "ALTER TABLE context_items RENAME COLUMN value TO content"
+                )
+                log.info("Renamed context_items.value → content")
+
+            # Add long_desc if missing, backfill from content
+            if "long_desc" not in col_names:
+                await conn.execute(
+                    "ALTER TABLE context_items "
+                    "ADD COLUMN IF NOT EXISTS long_desc TEXT NOT NULL DEFAULT ''"
+                )
+                await conn.execute(
+                    "UPDATE context_items SET long_desc = LEFT(content, 1000) "
+                    "WHERE long_desc = ''"
+                )
+                log.info("Added context_items.long_desc, backfilled from content")
+
+            # Drop legacy check constraint (allow any context_type)
+            await conn.execute(
+                "ALTER TABLE context_items "
+                "DROP CONSTRAINT IF EXISTS ck_context_items_type"
+            )
+
+    log.info("context_items schema migration complete")
+    return True
