@@ -1,6 +1,6 @@
 """Agent memory package -- memory entities, collections, and embedding protocol."""
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.embedding import EmbeddingProvider
