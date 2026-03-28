@@ -1,0 +1,270 @@
+"""tests for DiscoveryHandler."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.discovery import (
+    DiscoverRequest,
+    DiscoverToolEntry,
+    DiscoveryHandler,
+)
+
+
+# -- helpers --
+
+
+def _make_entry(
+    tool_name: str = "threetears.calculator",
+    tool_version: str = "1.0.0",
+    pod_id: str = "pod-001",
+    status: str = "available",
+) -> CatalogEntry:
+    """create catalog entry for testing.
+
+    :param tool_name: namespaced tool name
+    :ptype tool_name: str
+    :param tool_version: semver version string
+    :ptype tool_version: str
+    :param pod_id: identifier of serving pod
+    :ptype pod_id: str
+    :param status: availability status
+    :ptype status: str
+    :return: test catalog entry
+    :rtype: CatalogEntry
+    """
+    result = CatalogEntry(
+        tool_name=tool_name,
+        tool_version=tool_version,
+        full_name=f"{tool_name}@{tool_version}",
+        pod_id=pod_id,
+        description=f"test tool {tool_name}",
+        input_schema={"type": "object", "properties": {"x": {"type": "integer"}}},
+        output_schema={"type": "object", "properties": {"result": {"type": "number"}}},
+        status=status,
+    )
+    return result
+
+
+def _make_nats_msg(
+    data: bytes,
+    reply: str | None = "reply.subject",
+) -> MagicMock:
+    """create mock NATS message.
+
+    :param data: raw message payload bytes
+    :ptype data: bytes
+    :param reply: optional reply subject
+    :ptype reply: str | None
+    :return: mock NATS message
+    :rtype: MagicMock
+    """
+    msg = MagicMock()
+    msg.data = data
+    msg.reply = reply
+    return msg
+
+
+def _make_discover_request(
+    agent_id: str = "agent-001",
+    tools: list[dict[str, str]] | None = None,
+) -> DiscoverRequest:
+    """create discovery request for testing.
+
+    :param agent_id: agent identifier
+    :ptype agent_id: str
+    :param tools: optional list of tool dicts with name and version
+    :ptype tools: list[dict[str, str]] | None
+    :return: test discovery request
+    :rtype: DiscoverRequest
+    """
+    if tools is None:
+        tools = [{"name": "threetears.calculator", "version": "1.0.0"}]
+    tool_entries = [DiscoverToolEntry(**t) for t in tools]
+    result = DiscoverRequest(agent_id=agent_id, tool_manifest=tool_entries)
+    return result
+
+
+# -- available tool resolution tests --
+
+
+class TestDiscoveryAvailable:
+    """tests for discovery of available tools."""
+
+    @pytest.mark.asyncio
+    async def test_returns_schema_for_available_tool(self) -> None:
+        """discovery returns full schema for available tool in catalog."""
+        catalog = ToolCatalog()
+        entry = _make_entry()
+        await catalog.register(entry)
+
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert response_data["agent_id"] == "agent-001"
+        assert len(response_data["tools"]) == 1
+        tool_result = response_data["tools"][0]
+        assert tool_result["name"] == "threetears.calculator"
+        assert tool_result["version"] == "1.0.0"
+        assert tool_result["status"] == "available"
+        assert tool_result["description"] == "test tool threetears.calculator"
+        assert tool_result["input_schema"] == {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}},
+        }
+        assert tool_result["output_schema"] == {
+            "type": "object",
+            "properties": {"result": {"type": "number"}},
+        }
+
+
+# -- unavailable tool resolution tests --
+
+
+class TestDiscoveryUnavailable:
+    """tests for discovery of unavailable or missing tools."""
+
+    @pytest.mark.asyncio
+    async def test_returns_unavailable_for_missing_tool(self) -> None:
+        """discovery returns unavailable status for tool not in catalog."""
+        catalog = ToolCatalog()
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request(
+            tools=[{"name": "threetears.nonexistent", "version": "1.0.0"}],
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert len(response_data["tools"]) == 1
+        tool_result = response_data["tools"][0]
+        assert tool_result["name"] == "threetears.nonexistent"
+        assert tool_result["version"] == "1.0.0"
+        assert tool_result["status"] == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_returns_unavailable_for_tool_with_unavailable_status(self) -> None:
+        """discovery returns unavailable for tool registered but not available."""
+        catalog = ToolCatalog()
+        entry = _make_entry(status="unavailable")
+        await catalog.register(entry)
+
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert len(response_data["tools"]) == 1
+        assert response_data["tools"][0]["status"] == "unavailable"
+
+
+# -- mixed manifest resolution tests --
+
+
+class TestDiscoveryMixed:
+    """tests for discovery with partially available manifest."""
+
+    @pytest.mark.asyncio
+    async def test_returns_mixed_results(self) -> None:
+        """discovery returns mixed available/unavailable for partial manifest."""
+        catalog = ToolCatalog()
+        await catalog.register(_make_entry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+        ))
+
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request(
+            tools=[
+                {"name": "threetears.calculator", "version": "1.0.0"},
+                {"name": "threetears.dictionary", "version": "2.0.0"},
+            ],
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert len(response_data["tools"]) == 2
+
+        by_name = {t["name"]: t for t in response_data["tools"]}
+        assert by_name["threetears.calculator"]["status"] == "available"
+        assert by_name["threetears.dictionary"]["status"] == "unavailable"
+
+
+# -- empty manifest tests --
+
+
+class TestDiscoveryEmpty:
+    """tests for discovery with empty manifest."""
+
+    @pytest.mark.asyncio
+    async def test_empty_manifest_returns_empty_list(self) -> None:
+        """discovery returns empty tools list for empty manifest."""
+        catalog = ToolCatalog()
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request(tools=[])
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert response_data["tools"] == []
+
+
+# -- lifecycle tests --
+
+
+class TestDiscoveryLifecycle:
+    """tests for discovery handler start/stop lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_start_subscribes_with_queue_group(self) -> None:
+        """start subscribes to {namespace}.tools.discover with queue group."""
+        catalog = ToolCatalog()
+        handler = DiscoveryHandler(catalog, namespace="myns")
+        nc = AsyncMock()
+        await handler.start(nc)
+        nc.subscribe.assert_called_once()
+        call_args = nc.subscribe.call_args
+        assert call_args[0][0] == "myns.tools.discover"
+        assert call_args[1]["queue"] == "registry"
+
+    @pytest.mark.asyncio
+    async def test_stop_unsubscribes(self) -> None:
+        """stop unsubscribes from discovery subject."""
+        catalog = ToolCatalog()
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        mock_sub = AsyncMock()
+        nc.subscribe = AsyncMock(return_value=mock_sub)
+        await handler.start(nc)
+        await handler.stop()
+        mock_sub.unsubscribe.assert_called_once()
