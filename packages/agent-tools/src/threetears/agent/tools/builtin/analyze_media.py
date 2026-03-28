@@ -28,6 +28,7 @@ from uuid import UUID
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.core.logging import get_logger
 from threetears.agent.tools.protocols import (
     MediaInfo,
@@ -488,3 +489,151 @@ def create_analyze_media_tool(
         description=full_description,
         args_schema=MediaAnalysisInput,
     )
+
+
+class AnalyzeMediaTool(TearsTool):
+    """TearsTool wrapper for media analysis via vision/transcription providers.
+
+    analyzes images, documents, audio, and video using configurable
+    analyzer backends. requires MediaStorage and AnalyzerConfig
+    instances to be provided at construction time.
+
+    :param storage: media storage implementation for accessing media items
+    :ptype storage: MediaStorage
+    :param analyzers: mapping of analyzer display names to AnalyzerConfig
+    :ptype analyzers: dict[str, AnalyzerConfig]
+    :param user_id: optional user UUID for content provenance
+    :ptype user_id: UUID | None
+    :param media_url_fn: optional callable to build display URLs from media IDs
+    :ptype media_url_fn: Callable[[str], str | None] | None
+    :param on_analysis: optional async callback after analysis completes
+    :ptype on_analysis: OnAnalysisCallback | None
+    :param response_suffix: suffix appended to provider prompts
+    :ptype response_suffix: str
+    :param doc_max_chars: max chars of extracted text for document QA
+    :ptype doc_max_chars: int
+    :param transcript_max_chars: max transcript chars returned
+    :ptype transcript_max_chars: int
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "media_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "list of media UUID strings to analyze",
+            },
+            "question": {
+                "type": "string",
+                "description": "what to ask about media (e.g. 'Describe this image')",
+            },
+            "analyzer": {
+                "type": "string",
+                "description": "display name of analysis model to use",
+            },
+        },
+        "required": ["media_ids", "question", "analyzer"],
+    }
+
+    def __init__(
+        self,
+        storage: MediaStorage,
+        analyzers: dict[str, AnalyzerConfig] | None = None,
+        user_id: UUID | None = None,
+        media_url_fn: Callable[[str], str | None] | None = None,
+        on_analysis: OnAnalysisCallback | None = None,
+        response_suffix: str = _DEFAULT_RESPONSE_SUFFIX,
+        doc_max_chars: int = _DEFAULT_DOC_MAX_CHARS,
+        transcript_max_chars: int = _DEFAULT_TRANSCRIPT_MAX_CHARS,
+    ) -> None:
+        """initialize analyze media tool with provider dependencies.
+
+        :param storage: media storage implementation
+        :ptype storage: MediaStorage
+        :param analyzers: mapping of analyzer names to AnalyzerConfig
+        :ptype analyzers: dict[str, AnalyzerConfig] | None
+        :param user_id: optional user UUID for content provenance
+        :ptype user_id: UUID | None
+        :param media_url_fn: optional callable to build display URLs
+        :ptype media_url_fn: Callable[[str], str | None] | None
+        :param on_analysis: optional async callback after analysis
+        :ptype on_analysis: OnAnalysisCallback | None
+        :param response_suffix: suffix appended to provider prompts
+        :ptype response_suffix: str
+        :param doc_max_chars: max chars for document QA
+        :ptype doc_max_chars: int
+        :param transcript_max_chars: max transcript chars returned
+        :ptype transcript_max_chars: int
+        """
+        self._storage = storage
+        self._analyzers = analyzers or {}
+        self._user_id = user_id
+        self._media_url_fn = media_url_fn
+        self._on_analysis = on_analysis
+        self._response_suffix = response_suffix
+        self._doc_max_chars = doc_max_chars
+        self._transcript_max_chars = transcript_max_chars
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """analyze media items using configured providers.
+
+        :param kwargs: must include 'media_ids', 'question', 'analyzer' keys
+        :ptype kwargs: Any
+        :return: result containing analysis text or error
+        :rtype: ToolResult
+        """
+        media_ids = kwargs.get("media_ids", [])
+        question = kwargs.get("question", "")
+        analyzer = kwargs.get("analyzer", "")
+        config: dict[str, Any] = {
+            "storage": self._storage,
+            "analyzers": self._analyzers,
+            "user_id": self._user_id,
+            "media_url_fn": self._media_url_fn,
+            "on_analysis": self._on_analysis,
+            "response_suffix": self._response_suffix,
+            "doc_max_chars": self._doc_max_chars,
+            "transcript_max_chars": self._transcript_max_chars,
+        }
+        lc_tool = create_analyze_media_tool(config, "analyze media")
+        content = await lc_tool.ainvoke(
+            {"media_ids": media_ids, "question": question, "analyzer": analyzer},
+        )
+        success = not content.startswith("[analyze_media/")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for analyze media.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="analyze images, documents, audio, and video using vision/transcription providers",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.analyze_media"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"
