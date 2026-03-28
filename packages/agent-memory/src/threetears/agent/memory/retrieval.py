@@ -200,6 +200,50 @@ def _format_memory_context(
     return "\n".join(lines)
 
 
+def _build_scope_clause(
+    user_id: UUID,
+    *,
+    agent_id: UUID | None = None,
+    customer_id: UUID | None = None,
+    start_param: int = 2,
+    table_prefix: str = "",
+) -> tuple[str, list[UUID], int]:
+    """Build WHERE clause fragments for agent/customer/user scoping.
+
+    :param user_id: user ID (always included)
+    :ptype user_id: UUID
+    :param agent_id: optional agent ID scope
+    :ptype agent_id: UUID | None
+    :param customer_id: optional customer ID scope
+    :ptype customer_id: UUID | None
+    :param start_param: starting positional parameter index
+    :ptype start_param: int
+    :param table_prefix: optional table alias prefix for column names
+    :ptype table_prefix: str
+    :return: tuple of (conditions string, param values, last param index used)
+    :rtype: tuple[str, list[UUID], int]
+    """
+    prefix = f"{table_prefix}." if table_prefix else ""
+    conditions: list[str] = []
+    params: list[UUID] = []
+    idx = start_param
+
+    if agent_id is not None:
+        conditions.append(f"{prefix}agent_id = ${idx}")
+        params.append(agent_id)
+        idx += 1
+
+    if customer_id is not None:
+        conditions.append(f"{prefix}customer_id = ${idx}")
+        params.append(customer_id)
+        idx += 1
+
+    conditions.append(f"{prefix}user_id = ${idx}")
+    params.append(user_id)
+
+    return " AND ".join(conditions), params, idx
+
+
 @dataclass
 class RetrievalResult:
     """Structured output from memory retrieval.
@@ -232,9 +276,30 @@ class MemoryRetriever:
         user_id: UUID,
         user_text: str,
         ledger: MemoryLedger | None = None,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> str | None:
-        """Full retrieval pipeline. Returns formatted context string or None."""
-        result = await self.retrieve_with_candidates(pool, user_id, user_text, ledger)
+        """Full retrieval pipeline. Returns formatted context string or None.
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param user_id: user whose memories to search
+        :ptype user_id: UUID
+        :param user_text: query text for similarity search
+        :ptype user_text: str
+        :param ledger: optional ledger for dedup tracking
+        :ptype ledger: MemoryLedger | None
+        :param agent_id: optional agent ID scope for filtering results
+        :ptype agent_id: UUID | None
+        :param customer_id: optional customer ID scope for filtering results
+        :ptype customer_id: UUID | None
+        :return: formatted context string or None if no results
+        :rtype: str | None
+        """
+        result = await self.retrieve_with_candidates(
+            pool, user_id, user_text, ledger, agent_id=agent_id, customer_id=customer_id,
+        )
         return result.context
 
     @traced(record_args=False)
@@ -244,11 +309,29 @@ class MemoryRetriever:
         user_id: UUID,
         user_text: str,
         ledger: MemoryLedger | None = None,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> RetrievalResult:
         """Full retrieval pipeline returning structured results.
 
         Use this when you need both the formatted context and the raw
         candidate data (e.g. for event dispatch or token tracking).
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param user_id: user whose memories to search
+        :ptype user_id: UUID
+        :param user_text: query text for similarity search
+        :ptype user_text: str
+        :param ledger: optional ledger for dedup tracking
+        :ptype ledger: MemoryLedger | None
+        :param agent_id: optional agent ID scope for filtering results
+        :ptype agent_id: UUID | None
+        :param customer_id: optional customer ID scope for filtering results
+        :ptype customer_id: UUID | None
+        :return: structured retrieval results
+        :rtype: RetrievalResult
         """
         empty = RetrievalResult()
         if not user_text.strip():
@@ -261,9 +344,9 @@ class MemoryRetriever:
         cfg = self._config
 
         memories, media_content, memory_chunks = await asyncio.gather(
-            self._query_memories(pool, embedding, user_id, user_text),
-            self._query_media_content(pool, embedding, user_id, user_text),
-            self._query_chunks(pool, embedding, user_id, user_text),
+            self._query_memories(pool, embedding, user_id, user_text, agent_id=agent_id, customer_id=customer_id),
+            self._query_media_content(pool, embedding, user_id, user_text, agent_id=agent_id, customer_id=customer_id),
+            self._query_chunks(pool, embedding, user_id, user_text, agent_id=agent_id, customer_id=customer_id),
         )
 
         # Cross-type MMR
@@ -342,44 +425,75 @@ class MemoryRetriever:
         embedding: list[float],
         user_id: UUID,
         user_text: str,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
-        """Query memories with parallel vector + FTS, three-signal hybrid scoring."""
+        """Query memories with parallel vector + FTS, three-signal hybrid scoring.
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param embedding: query embedding vector
+        :ptype embedding: list[float]
+        :param user_id: user whose memories to search
+        :ptype user_id: UUID
+        :param user_text: raw query text for FTS
+        :ptype user_text: str
+        :param agent_id: optional agent ID scope for filtering
+        :ptype agent_id: UUID | None
+        :param customer_id: optional customer ID scope for filtering
+        :ptype customer_id: UUID | None
+        :return: scored memory candidates
+        :rtype: list[dict[str, Any]]
+        """
         cfg = self._config
         embedding_str = json.dumps(embedding)
         top_k = cfg.top_k
         candidate_limit = top_k * cfg.candidate_multiplier
         weights = cfg.signal_weights
 
+        scope_conditions, scope_params, param_offset = _build_scope_clause(
+            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2,
+        )
+
+        vec_where = f"WHERE {scope_conditions} AND is_deleted = false"
+        limit_param = f"${param_offset + 1}"
+
         vec_coro = pool.fetch(
-            """
+            f"""
             SELECT memory_id, content, summary, type_memory, date_created,
                    embedding,
                    1 - (embedding <=> $1::vector) AS similarity
             FROM memories
-            WHERE user_id = $2 AND is_deleted = false
+            {vec_where}
             ORDER BY embedding <=> $1::vector
-            LIMIT $3
+            LIMIT {limit_param}
             """,
             embedding_str,
-            user_id,
+            *scope_params,
             candidate_limit,
         )
 
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
+                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2,
+            )
+            fts_where = f"WHERE {fts_scope_conditions} AND is_deleted = false"
+            fts_limit_param = f"${fts_param_offset + 1}"
             fts_coro = pool.fetch(
-                """
+                f"""
                 SELECT memory_id, content, summary, type_memory, date_created,
                        embedding,
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
-                WHERE user_id = $2 AND is_deleted = false
+                {fts_where}
                   AND search_vector @@ websearch_to_tsquery('english', $1)
                 ORDER BY fts_rank DESC
-                LIMIT $3
+                LIMIT {fts_limit_param}
                 """,
                 fts_text,
-                user_id,
+                *fts_scope_params,
                 candidate_limit,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
@@ -448,48 +562,76 @@ class MemoryRetriever:
         embedding: list[float],
         user_id: UUID,
         user_text: str,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
-        """Query media_content with parallel vector + FTS, three-signal hybrid scoring."""
+        """Query media_content with parallel vector + FTS, three-signal hybrid scoring.
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param embedding: query embedding vector
+        :ptype embedding: list[float]
+        :param user_id: user whose media content to search
+        :ptype user_id: UUID
+        :param user_text: raw query text for FTS
+        :ptype user_text: str
+        :param agent_id: optional agent ID scope for filtering
+        :ptype agent_id: UUID | None
+        :param customer_id: optional customer ID scope for filtering
+        :ptype customer_id: UUID | None
+        :return: scored media content candidates
+        :rtype: list[dict[str, Any]]
+        """
         cfg = self._config
         embedding_str = json.dumps(embedding)
         top_k = cfg.media_top_k
         candidate_limit = top_k * cfg.media_candidate_multiplier
         weights = cfg.signal_weights
 
+        scope_conditions, scope_params, param_offset = _build_scope_clause(
+            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+        )
+        limit_param = f"${param_offset + 1}"
+
         vec_coro = pool.fetch(
-            """
+            f"""
             SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
                    mc.media_id, mc.date_created, mc.embedding,
                    med.media_category, med.metadata_json,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM media_content mc
             JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.user_id = $2 AND mc.embedding IS NOT NULL
+            WHERE {scope_conditions} AND mc.embedding IS NOT NULL
             ORDER BY mc.embedding <=> $1::vector
-            LIMIT $3
+            LIMIT {limit_param}
             """,
             embedding_str,
-            user_id,
+            *scope_params,
             candidate_limit,
         )
 
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
+                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+            )
+            fts_limit_param = f"${fts_param_offset + 1}"
             fts_coro = pool.fetch(
-                """
+                f"""
                 SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
                        mc.media_id, mc.date_created, mc.embedding,
                        med.media_category, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM media_content mc
                 JOIN media med ON mc.media_id = med.media_id
-                WHERE mc.user_id = $2 AND mc.embedding IS NOT NULL
+                WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                 ORDER BY fts_rank DESC
-                LIMIT $3
+                LIMIT {fts_limit_param}
                 """,
                 fts_text,
-                user_id,
+                *fts_scope_params,
                 candidate_limit,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
@@ -578,47 +720,75 @@ class MemoryRetriever:
         embedding: list[float],
         user_id: UUID,
         user_text: str,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
-        """Query memory_chunks with parallel vector + FTS, two-signal hybrid scoring."""
+        """Query memory_chunks with parallel vector + FTS, two-signal hybrid scoring.
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param embedding: query embedding vector
+        :ptype embedding: list[float]
+        :param user_id: user whose chunks to search
+        :ptype user_id: UUID
+        :param user_text: raw query text for FTS
+        :ptype user_text: str
+        :param agent_id: optional agent ID scope for filtering
+        :ptype agent_id: UUID | None
+        :param customer_id: optional customer ID scope for filtering
+        :ptype customer_id: UUID | None
+        :return: scored chunk candidates
+        :rtype: list[dict[str, Any]]
+        """
         cfg = self._config
         embedding_str = json.dumps(embedding)
         candidate_k = cfg.chunk_candidate_k
         chunk_weights = cfg.chunk_signal_weights
 
+        scope_conditions, scope_params, param_offset = _build_scope_clause(
+            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+        )
+        limit_param = f"${param_offset + 1}"
+
         vec_coro = pool.fetch(
-            """
+            f"""
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                    mc.page_number, mc.media_id,
                    mc.embedding, med.metadata_json,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM memory_chunks mc
             LEFT JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.user_id = $2
+            WHERE {scope_conditions}
             ORDER BY mc.embedding <=> $1::vector
-            LIMIT $3
+            LIMIT {limit_param}
             """,
             embedding_str,
-            user_id,
+            *scope_params,
             candidate_k,
         )
 
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
+                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+            )
+            fts_limit_param = f"${fts_param_offset + 1}"
             fts_coro = pool.fetch(
-                """
+                f"""
                 SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
                        mc.page_number, mc.media_id,
                        mc.embedding, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
                 LEFT JOIN media med ON mc.media_id = med.media_id
-                WHERE mc.user_id = $2
+                WHERE {fts_scope_conditions}
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                 ORDER BY fts_rank DESC
-                LIMIT $3
+                LIMIT {fts_limit_param}
                 """,
                 fts_text,
-                user_id,
+                *fts_scope_params,
                 candidate_k,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)

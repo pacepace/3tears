@@ -24,6 +24,8 @@ def _make_metadata() -> MetaData:
         "memories",
         metadata,
         Column("memory_id", String(255), primary_key=True),
+        Column("agent_id", String(255)),
+        Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("conversation_id", String(255)),
         Column("message_id_source", String(255)),
@@ -42,6 +44,8 @@ def _make_metadata() -> MetaData:
 def _sample_data() -> dict:
     return {
         "memory_id": uuid.uuid7(),
+        "agent_id": uuid.uuid7(),
+        "customer_id": uuid.uuid7(),
         "user_id": uuid.uuid7(),
         "conversation_id": uuid.uuid7(),
         "message_id_source": uuid.uuid7(),
@@ -70,6 +74,8 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         if "INSERT" in query:
             data_keys = [
                 "memory_id",
+                "agent_id",
+                "customer_id",
                 "user_id",
                 "conversation_id",
                 "message_id_source",
