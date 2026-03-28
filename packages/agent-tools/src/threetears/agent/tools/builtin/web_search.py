@@ -8,6 +8,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 
@@ -71,3 +72,79 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
         description=description,
         args_schema=WebSearchInput,
     )
+
+
+class WebSearchTool(TearsTool):
+    """TearsTool wrapper for web search via SearXNG.
+
+    performs web searches against SearXNG instance and returns
+    formatted results with titles, URLs, and snippets.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "search query",
+            },
+        },
+        "required": ["query"],
+    }
+
+    def __init__(self, base_url: str) -> None:
+        """initialize web search tool with SearXNG base URL.
+
+        :param base_url: base URL of SearXNG instance (trailing slash stripped)
+        :ptype base_url: str
+        """
+        self._base_url = base_url.rstrip("/")
+        self._search_fn = _create_search_fn(self._base_url)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """perform web search.
+
+        :param kwargs: must include 'query' key with search query string
+        :ptype kwargs: Any
+        :return: result containing formatted search results or error
+        :rtype: ToolResult
+        """
+        query = kwargs.get("query", "")
+        content = self._search_fn(query)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for web search.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="search web using SearXNG and return formatted results",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.web_search"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"
