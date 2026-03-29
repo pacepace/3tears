@@ -296,16 +296,19 @@ def configure_logging(
     use_color = color if color is not None else _color_enabled()
 
     logging.setLoggerClass(ThreeTearsLogger)
-    root = logging.getLogger("threetears")
-    if root.handlers:
-        # Already configured -- just update level
-        root.setLevel(level_val)
-        return
 
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(ContextFormatter(use_color=use_color))
-    root.addHandler(handler)
-    root.setLevel(level_val)
+    # Configure root logger so ALL loggers get output (not just threetears.*)
+    py_root = logging.getLogger()
+    if not any(isinstance(h, logging.StreamHandler) and getattr(h, "_threetears", False) for h in py_root.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(ContextFormatter(use_color=use_color))
+        handler._threetears = True  # type: ignore[attr-defined]
+        py_root.addHandler(handler)
+    py_root.setLevel(level_val)
+
+    # Also set the threetears hierarchy level
+    tt_root = logging.getLogger("threetears")
+    tt_root.setLevel(level_val)
 
 
 def configure_third_party_logging(name: str, level: str | None = None) -> None:
