@@ -9,6 +9,7 @@ members = [
     "3tears-agent-tools",
     "3tears-langgraph",
     "3tears-observe",
+    "3tears-registry",
 ]
 
 [manifest.dependency-groups]
@@ -29,7 +30,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-observe" },
@@ -61,7 +62,7 @@ provides-extras = ["tracing", "duckdb"]
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/agent-memory" }
 dependencies = [
     { name = "3tears" },
@@ -78,7 +79,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "packages/agent-tools" }
 dependencies = [
     { name = "3tears" },
@@ -196,6 +197,21 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.28" },
 ]
 provides-extras = ["otel"]
+
+[[package]]
+name = "3tears-registry"
+version = "0.5.0"
+source = { editable = "packages/registry" }
+dependencies = [
+    { name = "3tears-agent-tools" },
+    { name = "nats-py" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears-agent-tools", editable = "packages/agent-tools" },
+    { name = "nats-py", specifier = ">=2.0" },
+]
 
 [[package]]
 name = "aiosqlite"
