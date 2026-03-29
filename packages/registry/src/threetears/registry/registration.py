@@ -12,11 +12,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
+import hashlib
+
 from threetears.agent.tools.server import RegistrationManifest
 from threetears.core.logging import get_logger
+from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 class RegistrationResponse(BaseModel):
@@ -46,16 +49,24 @@ class RegistrationHandler:
     idempotent re-registration from same pod.
     """
 
-    def __init__(self, catalog: ToolCatalog, namespace: str = "aibots") -> None:
+    def __init__(
+        self,
+        catalog: ToolCatalog,
+        namespace: str = "aibots",
+        authenticator: ToolPodAuthenticator | None = None,
+    ) -> None:
         """initialize registration handler.
 
         :param catalog: tool catalog to register tools into
         :ptype catalog: ToolCatalog
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
+        :param authenticator: optional tool pod authenticator for token verification
+        :ptype authenticator: ToolPodAuthenticator | None
         """
         self._catalog = catalog
         self._namespace = namespace
+        self._authenticator = authenticator
         self._nc: Any | None = None
         self._sub: Any | None = None
 
@@ -68,7 +79,7 @@ class RegistrationHandler:
         self._nc = nc
         subject = f"{self._namespace}.tools.register"
         self._sub = await nc.subscribe(subject, cb=self._handle_registration)
-        _logger.info(
+        log.info(
             "registration handler started",
             extra={"extra_data": {"subject": subject}},
         )
@@ -78,7 +89,7 @@ class RegistrationHandler:
         if self._sub is not None:
             await self._sub.unsubscribe()
             self._sub = None
-        _logger.info("registration handler stopped")
+        log.info("registration handler stopped")
 
     async def _handle_registration(self, msg: Any) -> None:
         """handle incoming registration manifest.
@@ -118,6 +129,21 @@ class RegistrationHandler:
                 )
             return
 
+        # authenticate tool pod and filter tools to allowed namespaces
+        auth_error = await self._authenticate_and_filter(manifest)
+        if auth_error is not None:
+            response = RegistrationResponse(
+                success=False,
+                pod_id=manifest.pod_id,
+                error=auth_error,
+            )
+            if msg.reply:
+                await self._nc.publish(
+                    msg.reply,
+                    response.model_dump_json().encode("utf-8"),
+                )
+            return
+
         conflict_error = self._check_conflicts(manifest)
         if conflict_error is not None:
             response = RegistrationResponse(
@@ -144,13 +170,84 @@ class RegistrationHandler:
                 msg.reply,
                 response.model_dump_json().encode("utf-8"),
             )
-        _logger.info(
+        log.info(
             "registration completed",
             extra={"extra_data": {
                 "pod_id": manifest.pod_id,
                 "tools_count": len(registered),
             }},
         )
+
+    async def _authenticate_and_filter(self, manifest: RegistrationManifest) -> str | None:
+        """authenticate tool pod and filter tools to allowed namespaces.
+
+        if no authenticator is configured, all tools are allowed (open mode).
+        if authenticator is configured, verifies bootstrap token and filters
+        tools to only those within the pod's allowed_namespaces.
+
+        :param manifest: registration manifest to authenticate and filter
+        :ptype manifest: RegistrationManifest
+        :return: error message if authentication fails, None if successful
+        :rtype: str | None
+        """
+        if self._authenticator is None:
+            return None
+
+        if manifest.bootstrap_token is None:
+            return "bootstrap_token required for registration"
+
+        token_hash = hashlib.sha256(manifest.bootstrap_token.encode("utf-8")).hexdigest()
+        pod_auth: ToolPodAuth | None = await self._authenticator.verify_pod(token_hash)
+
+        if pod_auth is None:
+            log.warning(
+                "tool pod registration rejected: invalid token",
+                extra={"extra_data": {"pod_id": manifest.pod_id}},
+            )
+            return "invalid bootstrap token"
+
+        # filter tools to allowed namespaces
+        allowed_tools = []
+        rejected_tools = []
+        for tool in manifest.tools:
+            authorized = False
+            for ns in pod_auth.allowed_namespaces:
+                if tool.name.startswith(ns):
+                    authorized = True
+                    break
+            if authorized:
+                allowed_tools.append(tool)
+            else:
+                rejected_tools.append(tool.name)
+
+        if rejected_tools:
+            log.warning(
+                "tool pod tools rejected (outside allowed namespaces)",
+                extra={"extra_data": {
+                    "pod_id": manifest.pod_id,
+                    "pod_name": pod_auth.name,
+                    "rejected": rejected_tools,
+                    "allowed_namespaces": pod_auth.allowed_namespaces,
+                }},
+            )
+
+        if not allowed_tools:
+            return "no tools authorized for this pod's namespaces"
+
+        # replace manifest tools with filtered list
+        manifest.tools = allowed_tools
+
+        log.info(
+            "tool pod authenticated",
+            extra={"extra_data": {
+                "pod_id": manifest.pod_id,
+                "pod_name": pod_auth.name,
+                "tools_accepted": len(allowed_tools),
+                "tools_rejected": len(rejected_tools),
+            }},
+        )
+        result: str | None = None
+        return result
 
     def _validate_manifest(self, manifest: RegistrationManifest) -> str | None:
         """validate registration manifest fields.

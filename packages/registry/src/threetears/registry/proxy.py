@@ -12,9 +12,10 @@ from typing import Any
 from pydantic import BaseModel
 
 from threetears.core.logging import get_logger
+from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ class CallProxy:
         catalog: ToolCatalog,
         namespace: str = "aibots",
         timeout: float = 30.0,
+        authorizer: AgentToolAuthorizer | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -98,10 +100,13 @@ class CallProxy:
         :ptype namespace: str
         :param timeout: timeout in seconds for forwarded NATS requests
         :ptype timeout: float
+        :param authorizer: optional agent tool authorizer for access control
+        :ptype authorizer: AgentToolAuthorizer | None
         """
         self._catalog = catalog
         self._namespace = namespace
         self._timeout = timeout
+        self._authorizer = authorizer
         self._nc: Any | None = None
         self._sub: Any | None = None
 
@@ -118,7 +123,7 @@ class CallProxy:
             queue="registry",
             cb=self._handle_call,
         )
-        _logger.info(
+        log.info(
             "call proxy started",
             extra={"extra_data": {"subject": subject, "timeout": self._timeout}},
         )
@@ -128,7 +133,7 @@ class CallProxy:
         if self._sub is not None:
             await self._sub.unsubscribe()
             self._sub = None
-        _logger.info("call proxy stopped")
+        log.info("call proxy stopped")
 
     async def _handle_call(self, msg: Any) -> None:
         """handle incoming tool call request.
@@ -156,6 +161,34 @@ class CallProxy:
                 )
             return
 
+        # check agent authorization before catalog lookup
+        if self._authorizer is not None:
+            authorized = await self._authorizer.is_authorized(
+                request.agent_id, request.tool_name,
+            )
+            if not authorized:
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"agent not authorized for tool {request.tool_name}",
+                    error_code="TOOL_NOT_AUTHORIZED",
+                    correlation_id=request.correlation_id,
+                )
+                if msg.reply:
+                    await self._nc.publish(
+                        msg.reply,
+                        response.model_dump_json().encode("utf-8"),
+                    )
+                log.warning(
+                    "agent tool call denied",
+                    extra={"extra_data": {
+                        "agent_id": request.agent_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": request.correlation_id,
+                    }},
+                )
+                return
+
         full_name = f"{request.tool_name}@{request.tool_version}"
         entry = self._catalog.get(full_name)
 
@@ -172,7 +205,7 @@ class CallProxy:
                     msg.reply,
                     response.model_dump_json().encode("utf-8"),
                 )
-            _logger.warning(
+            log.warning(
                 "tool unavailable for call",
                 extra={"extra_data": {
                     "full_name": full_name,
@@ -214,7 +247,7 @@ class CallProxy:
             )
             response = ProxyCallResponse.model_validate_json(reply.data)
         except TimeoutError:
-            _logger.warning(
+            log.warning(
                 "tool call timed out",
                 extra={"extra_data": {
                     "pod_id": pod_id,

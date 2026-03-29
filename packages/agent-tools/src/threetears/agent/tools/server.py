@@ -19,7 +19,7 @@ from threetears.agent.tools.base_tool import TearsTool
 from threetears.core.logging import get_logger
 from threetears.core.tracing import traced
 
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +71,13 @@ class RegistrationManifest(BaseModel):
     :ptype pod_id: str
     :param tools: list of tool definitions served by this pod
     :ptype tools: list[ToolManifestEntry]
+    :param bootstrap_token: optional authentication token for registry verification
+    :ptype bootstrap_token: str | None
     """
 
     pod_id: str
     tools: list[ToolManifestEntry]
+    bootstrap_token: str | None = None
 
 
 class CallRequest(BaseModel):
@@ -152,6 +155,7 @@ class ToolServer:
         namespace: str = "aibots",
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
+        bootstrap_token: str | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -163,11 +167,14 @@ class ToolServer:
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
         :ptype heartbeat_interval: float
+        :param bootstrap_token: authentication token for registry verification
+        :ptype bootstrap_token: str | None
         """
         self._nats_url = nats_url
         self._namespace = namespace
         self._pod_id = pod_id or str(uuid7())
         self._heartbeat_interval = heartbeat_interval
+        self._bootstrap_token = bootstrap_token
         self._tools: dict[str, TearsTool] = {}
         self._nc: NatsClient | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -182,7 +189,7 @@ class ToolServer:
         """
         key = f"{tool.mcp_name()}@{tool.mcp_version()}"
         self._tools[key] = tool
-        _logger.info(
+        log.info(
             "registered tool",
             extra={"extra_data": {"tool_key": key, "pod_id": self._pod_id}},
         )
@@ -197,7 +204,7 @@ class ToolServer:
         """
         self._nc = await nats_connect(self._nats_url)
         self._running = True
-        _logger.info(
+        log.info(
             "connected to NATS",
             extra={"extra_data": {
                 "nats_url": self._nats_url,
@@ -209,7 +216,7 @@ class ToolServer:
 
         call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
         await self._nc.subscribe(call_subject, cb=self._handle_call)
-        _logger.info(
+        log.info(
             "subscribed to call subject",
             extra={"extra_data": {"subject": call_subject}},
         )
@@ -239,11 +246,12 @@ class ToolServer:
         manifest = RegistrationManifest(
             pod_id=self._pod_id,
             tools=tools_list,
+            bootstrap_token=self._bootstrap_token,
         )
 
         subject = f"{self._namespace}.tools.register"
         await self._nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
-        _logger.info(
+        log.info(
             "published registration manifest",
             extra={"extra_data": {
                 "subject": subject,
@@ -284,7 +292,7 @@ class ToolServer:
                 correlation_id=request.correlation_id,
             )
             await msg.respond(error_response.model_dump_json().encode("utf-8"))
-            _logger.warning(
+            log.warning(
                 "unknown tool requested",
                 extra={"extra_data": {
                     "tool_key": tool_key,
@@ -303,7 +311,7 @@ class ToolServer:
                 correlation_id=request.correlation_id,
             )
         except Exception as exc:
-            _logger.error(
+            log.error(
                 "tool execution failed",
                 extra={"extra_data": {
                     "tool_key": tool_key,
@@ -336,7 +344,7 @@ class ToolServer:
             try:
                 await self._nc.publish(subject, heartbeat.model_dump_json().encode("utf-8"))
             except Exception as exc:
-                _logger.warning(
+                log.warning(
                     "heartbeat publish failed",
                     extra={"extra_data": {"error": str(exc)}},
                 )
@@ -349,7 +357,7 @@ class ToolServer:
         stops heartbeat loop, drains NATS subscriptions, and closes
         NATS connection.
         """
-        _logger.info(
+        log.info(
             "shutting down tool server",
             extra={"extra_data": {"pod_id": self._pod_id}},
         )
