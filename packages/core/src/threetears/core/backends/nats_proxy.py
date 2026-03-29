@@ -37,7 +37,7 @@ def _serialize_param(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
     if isinstance(value, bytes):
-        return value.hex()
+        return "\\x" + value.hex()
     return value
 
 
