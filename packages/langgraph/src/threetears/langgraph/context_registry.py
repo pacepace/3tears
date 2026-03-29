@@ -47,6 +47,8 @@ class ContextManagerRegistry:
     :ptype var_limit: int
     :param result_limit: max tool results before LRU eviction
     :ptype result_limit: int | None
+    :param max_managers: max concurrent conversation managers before LRU eviction
+    :ptype max_managers: int
     """
 
     def __init__(
@@ -55,6 +57,7 @@ class ContextManagerRegistry:
         l3_pool: Any = None,
         var_limit: int = 50,
         result_limit: int | None = None,
+        max_managers: int = 500,
     ) -> None:
         """initialize registry with shared collection and pool.
 
@@ -66,25 +69,31 @@ class ContextManagerRegistry:
         :ptype var_limit: int
         :param result_limit: max tool results before LRU eviction
         :ptype result_limit: int | None
+        :param max_managers: max concurrent conversation managers before LRU eviction
+        :ptype max_managers: int
         """
         self._collection = context_collection
         self._l3_pool = l3_pool
         self._var_limit = var_limit
         self._result_limit = result_limit
+        self._max_managers = max_managers
         self._managers: dict[str, Any] = {}
+        self._access_order: list[str] = []
 
     def _get_current(self) -> Any:
         """resolve context manager for active conversation.
 
         creates a new ToolContextManager on first access for each
-        conversation_id. uses current_conversation_id contextvar
-        to determine which conversation is active.
+        conversation_id. evicts least-recently-used managers when
+        max_managers is exceeded. uses current_conversation_id
+        contextvar to determine which conversation is active.
 
         :return: ToolContextManager for the active conversation
         :rtype: Any
         """
         conv_id = current_conversation_id.get()
         if conv_id not in self._managers:
+            self._evict_if_full()
             from threetears.agent.tools.context import ToolContextManager
 
             conv_uuid = UUID(conv_id) if conv_id != "default" else UUID(int=0)
@@ -96,7 +105,23 @@ class ContextManagerRegistry:
                 result_limit=self._result_limit,
                 l3_pool=self._l3_pool,
             )
+        # update access order for LRU
+        if conv_id in self._access_order:
+            self._access_order.remove(conv_id)
+        self._access_order.append(conv_id)
         return self._managers[conv_id]
+
+    def _evict_if_full(self) -> None:
+        """evict least-recently-used manager if at capacity.
+
+        removes the oldest accessed manager to stay within
+        max_managers limit. the underlying context data is
+        persisted in three-tier storage and will be reloaded
+        if the conversation resumes.
+        """
+        while len(self._managers) >= self._max_managers and self._access_order:
+            oldest = self._access_order.pop(0)
+            self._managers.pop(oldest, None)
 
     async def save_context_item(self, **kwargs: Any) -> Any:
         """save context item to active conversation.
