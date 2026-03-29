@@ -54,6 +54,28 @@ class CheckpointL2Cache(Protocol):
 
 
 @runtime_checkable
+class AsyncQueryExecutor(Protocol):
+    """Protocol for async SQL query execution.
+
+    abstracts the database access layer so checkpoint savers can work
+    with any backend: direct asyncpg, NATS L3 proxy, or other transports.
+    implementations return dict-like rows with string keys.
+    """
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
+        """execute query and return all matching rows as dicts."""
+        ...
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
+        """execute query and return first row as dict, or None if empty."""
+        ...
+
+    async def execute(self, query: str, *args: object) -> str:
+        """execute statement and return status string."""
+        ...
+
+
+@runtime_checkable
 class FlushCallback(Protocol):
     """Protocol for an optional write-buffer flush on checkpoint.
 
