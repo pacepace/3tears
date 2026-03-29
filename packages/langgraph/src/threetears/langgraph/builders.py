@@ -1,8 +1,17 @@
 """pre-built LangGraph graph builders with 3tears integration.
 
 provides zero-friction agent creation with checkpointing, context
-memory, and tool calling pre-wired. agents compile the returned
-StateGraph with their checkpointer and run via standard LangGraph.
+memory, data store access, and tool calling pre-wired. agents compile
+the returned StateGraph with their checkpointer and run via standard
+LangGraph.
+
+recognized config["configurable"] keys across all builders:
+    - chat_model: BaseChatModel instance (required)
+    - system_prompt: system prompt string (optional override)
+    - tools: list of tool instances (optional override)
+    - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+    - data_store: DataStore or dict of BaseCollection instances (optional)
+    - thread_id: conversation identifier for checkpoint persistence (optional)
 """
 
 from __future__ import annotations
@@ -35,10 +44,12 @@ def build_chat_agent(
     context_manager is in config, conversation context (variables,
     previous tool results) is injected into the system prompt.
 
-    the compiled graph expects config["configurable"] to contain:
-    - chat_model: BaseChatModel instance
-    - system_prompt: override prompt (optional, defaults to constructor value)
-    - context_manager: optional ToolContextManager or ContextManagerRegistry
+    config["configurable"] recognized keys:
+        - chat_model: BaseChatModel instance (required)
+        - system_prompt: override prompt (optional)
+        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - data_store: DataStore for three-tier entity access in custom nodes (optional)
+        - thread_id: conversation ID for checkpoint persistence (optional)
 
     :param system_prompt: default system prompt prepended to messages
     :ptype system_prompt: str
@@ -72,11 +83,13 @@ def build_tool_agent(
     if a context_manager is in config, conversation context is
     injected into the system prompt automatically.
 
-    the compiled graph expects config["configurable"] to contain:
-    - chat_model: BaseChatModel instance
-    - tools: list of tool instances (overrides constructor tools)
-    - system_prompt: override prompt (optional, defaults to constructor value)
-    - context_manager: optional ToolContextManager or ContextManagerRegistry
+    config["configurable"] recognized keys:
+        - chat_model: BaseChatModel instance (required)
+        - tools: list of tool instances (optional, overrides constructor tools)
+        - system_prompt: override prompt (optional)
+        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - data_store: DataStore for three-tier entity access in custom nodes (optional)
+        - thread_id: conversation ID for checkpoint persistence (optional)
 
     :param tools: default tool instances for agent to use
     :ptype tools: list[Any] | None
