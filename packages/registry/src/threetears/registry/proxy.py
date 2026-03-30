@@ -1,8 +1,9 @@
 """call proxy for routing tool calls to tool pods.
 
 subscribes to NATS call subject, validates tool availability
-in catalog, forwards calls to appropriate tool pod via
-NATS request-reply, and returns results transparently.
+in catalog, selects endpoint via pluggable routing strategy,
+tracks in-flight calls, and forwards to tool pod via
+NATS request-reply.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from threetears.core.logging import get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 log = get_logger(__name__)
 
@@ -79,10 +81,9 @@ class CallProxy:
     """proxies tool calls from agents to tool pods.
 
     subscribes to call subject with queue group for HA,
-    validates tool availability in catalog, forwards calls
-    to appropriate tool pod via NATS request-reply, and
-    returns results transparently without modifying arguments
-    or results.
+    validates tool availability in catalog, selects endpoint
+    via configurable routing strategy, tracks in-flight call
+    counts, and forwards calls via NATS request-reply.
     """
 
     def __init__(
@@ -91,6 +92,7 @@ class CallProxy:
         namespace: str = "aibots",
         timeout: float = 30.0,
         authorizer: AgentToolAuthorizer | None = None,
+        routing_strategy: RoutingStrategy | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -102,11 +104,14 @@ class CallProxy:
         :ptype timeout: float
         :param authorizer: optional agent tool authorizer for access control
         :ptype authorizer: AgentToolAuthorizer | None
+        :param routing_strategy: endpoint selection strategy (defaults to least-connections)
+        :ptype routing_strategy: RoutingStrategy | None
         """
         self._catalog = catalog
         self._namespace = namespace
         self._timeout = timeout
         self._authorizer = authorizer
+        self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._nc: Any | None = None
         self._sub: Any | None = None
 
@@ -138,9 +143,9 @@ class CallProxy:
     async def _handle_call(self, msg: Any) -> None:
         """handle incoming tool call request.
 
-        validates tool exists and is available, forwards call to
-        tool pod via NATS request-reply, and returns result
-        transparently.
+        validates tool exists, selects endpoint via routing strategy,
+        tracks in-flight count, forwards call to tool pod, and
+        returns result transparently.
 
         :param msg: incoming NATS message containing call request
         :ptype msg: Any
@@ -161,7 +166,6 @@ class CallProxy:
                 )
             return
 
-        # check agent authorization before catalog lookup
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
                 request.agent_id, request.tool_name,
@@ -192,7 +196,7 @@ class CallProxy:
         full_name = f"{request.tool_name}@{request.tool_version}"
         entry = self._catalog.get(full_name)
 
-        if entry is None or entry.status != "available":
+        if entry is None:
             response = ProxyCallResponse(
                 success=False,
                 content="",
@@ -206,7 +210,7 @@ class CallProxy:
                     response.model_dump_json().encode("utf-8"),
                 )
             log.warning(
-                "tool unavailable for call",
+                "tool not found for call",
                 extra={"extra_data": {
                     "full_name": full_name,
                     "agent_id": request.agent_id,
@@ -215,7 +219,37 @@ class CallProxy:
             )
             return
 
-        response = await self._forward_call(request, entry.pod_id)
+        endpoint = self._routing_strategy.select(entry.endpoints)
+
+        if endpoint is None:
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"tool {full_name} has no available endpoints",
+                error_code="TOOL_UNAVAILABLE",
+                correlation_id=request.correlation_id,
+            )
+            if msg.reply:
+                await self._nc.publish(
+                    msg.reply,
+                    response.model_dump_json().encode("utf-8"),
+                )
+            log.warning(
+                "no available endpoints for call",
+                extra={"extra_data": {
+                    "full_name": full_name,
+                    "endpoint_count": len(entry.endpoints),
+                    "agent_id": request.agent_id,
+                    "correlation_id": request.correlation_id,
+                }},
+            )
+            return
+
+        endpoint.in_flight += 1
+        try:
+            response = await self._forward_call(request, endpoint.pod_id)
+        finally:
+            endpoint.in_flight -= 1
         if msg.reply:
             await self._nc.publish(
                 msg.reply,

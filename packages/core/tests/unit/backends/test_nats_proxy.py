@@ -12,6 +12,7 @@ import pytest
 
 from threetears.core.backends.nats_proxy import (
     NatsProxyL3Backend,
+    _deserialize_row,
     _detect_operation,
     _serialize_param,
 )
@@ -71,7 +72,7 @@ class TestSerializeParam:
 
     def test_bytes(self) -> None:
         b = b"\xde\xad\xbe\xef"
-        assert _serialize_param(b) == "deadbeef"
+        assert _serialize_param(b) == "\\xdeadbeef"
 
     def test_string_passthrough(self) -> None:
         assert _serialize_param("hello") == "hello"
@@ -533,3 +534,106 @@ class TestPayloadFormat:
         assert payload["timeout_ms"] == 10000
         nats_timeout = call_args[1].get("timeout") or call_args[0][2]
         assert nats_timeout == 12.0
+
+
+# -- row deserialization tests (bytes round-trip) --
+
+
+class TestDeserializeRow:
+    """tests for _deserialize_row hex bytes decoding."""
+
+    def test_hex_string_decoded_to_bytes(self) -> None:
+        """\\x-prefixed hex strings are decoded back to bytes."""
+        row = {"id": "abc", "blob": "\\x800102ff"}
+        result = _deserialize_row(row)
+        assert result["blob"] == b"\x80\x01\x02\xff"
+        assert result["id"] == "abc"
+
+    def test_non_hex_strings_unchanged(self) -> None:
+        """regular strings without \\x prefix pass through unchanged."""
+        row = {"name": "hello", "type": "msgpack"}
+        result = _deserialize_row(row)
+        assert result == row
+
+    def test_non_string_values_unchanged(self) -> None:
+        """int, None, bool values pass through unchanged."""
+        row = {"count": 42, "active": True, "nullable": None}
+        result = _deserialize_row(row)
+        assert result == row
+
+    def test_empty_hex_decoded_to_empty_bytes(self) -> None:
+        """\\x with no hex digits decodes to empty bytes."""
+        row = {"empty": "\\x"}
+        result = _deserialize_row(row)
+        assert result["empty"] == b""
+
+    def test_checkpoint_blob_round_trip(self) -> None:
+        """binary checkpoint data survives hex encode/decode round-trip."""
+        original_blob = bytes(range(256))
+        hex_encoded = "\\x" + original_blob.hex()
+        row = {"checkpoint": hex_encoded, "metadata_": hex_encoded, "type": "msgpack"}
+        result = _deserialize_row(row)
+        assert result["checkpoint"] == original_blob
+        assert result["metadata_"] == original_blob
+        assert result["type"] == "msgpack"
+
+
+class TestFetchDeserializesBytes:
+    """tests that fetch() deserializes hex-encoded bytes in rows."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_decodes_hex_bytes_in_rows(self) -> None:
+        """fetch returns rows with bytes restored from hex encoding."""
+        blob = b"\x80\x01\x02"
+        hex_blob = "\\x" + blob.hex()
+        mock_nc = AsyncMock()
+        response_data = {
+            "success": True,
+            "rows": [
+                {"thread_id": "t1", "checkpoint": hex_blob, "type": "msgpack"},
+            ],
+            "duration_ms": 5,
+        }
+        mock_reply = MagicMock()
+        mock_reply.data = json.dumps(response_data).encode()
+        mock_nc.request = AsyncMock(return_value=mock_reply)
+
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="aibots",
+            agent_id="agent-test",
+        )
+
+        rows = await proxy.fetch("SELECT thread_id, checkpoint, type FROM checkpoints")
+        assert len(rows) == 1
+        assert rows[0]["checkpoint"] == blob
+        assert rows[0]["type"] == "msgpack"
+        assert rows[0]["thread_id"] == "t1"
+
+    @pytest.mark.asyncio
+    async def test_fetchrow_decodes_hex_bytes(self) -> None:
+        """fetchrow returns single row with bytes restored from hex encoding."""
+        blob = b"\xde\xad\xbe\xef"
+        hex_blob = "\\x" + blob.hex()
+        mock_nc = AsyncMock()
+        response_data = {
+            "success": True,
+            "rows": [
+                {"id": "r1", "data": hex_blob},
+            ],
+            "duration_ms": 3,
+        }
+        mock_reply = MagicMock()
+        mock_reply.data = json.dumps(response_data).encode()
+        mock_nc.request = AsyncMock(return_value=mock_reply)
+
+        proxy = NatsProxyL3Backend(
+            nats_client=mock_nc,
+            namespace_prefix="aibots",
+            agent_id="agent-test",
+        )
+
+        row = await proxy.fetchrow("SELECT id, data FROM test WHERE id = $1", "r1")
+        assert row is not None
+        assert row["data"] == blob
+        assert row["id"] == "r1"

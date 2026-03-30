@@ -11,7 +11,7 @@ Three-tier data framework for Python applications with LLM agent support.
 | [3tears-agent-memory](packages/agent-memory/) | `pip install 3tears-agent-memory` | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search for LLM agents |
 | [3tears-agent-tools](packages/agent-tools/) | `pip install 3tears-agent-tools` | `threetears.agent.tools` | TearsTool ABC, ToolServer (NATS), ToolContextManager, built-in tools |
 | [3tears-langgraph](packages/langgraph/) | `pip install 3tears-langgraph` | `threetears.langgraph` | LangGraph integration: checkpoint savers, graph builders, context registry |
-| [3tears-registry](packages/registry/) | `pip install 3tears-registry` | `threetears.registry` | Tool registry: catalog, discovery, call proxy, heartbeat, pod auth |
+| [3tears-registry](packages/registry/) | `pip install 3tears-registry` | `threetears.registry` | Tool registry: multi-pod catalog, discovery, load-balanced call proxy (least-connections), heartbeat monitor, pod auth, pluggable routing strategies |
 
 ## Architecture
 
@@ -41,10 +41,12 @@ graph TB
     end
 
     subgraph "3tears Registry"
-        CAT[ToolCatalog]
+        CAT[ToolCatalog<br/>multi-endpoint]
         DISC[DiscoveryHandler]
-        PROXY[CallProxy + ACL]
+        PROXY[CallProxy + LB<br/>least-connections]
+        ROUTE[RoutingStrategy<br/>pluggable]
         REG_AUTH[Pod Auth + Namespace]
+        HB[HeartbeatMonitor<br/>endpoint pruning]
     end
 
     AGENT --> BUILD

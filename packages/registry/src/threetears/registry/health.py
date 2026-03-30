@@ -1,7 +1,9 @@
 """heartbeat monitor for tool pod liveness tracking.
 
 subscribes to heartbeat subjects, tracks per-pod status, and
-periodically deregisters pods that exceed timeout threshold.
+periodically removes endpoints for pods that exceed timeout
+threshold. only removes individual endpoints, not entire tool
+entries, so surviving pods continue serving.
 """
 
 from __future__ import annotations
@@ -42,8 +44,10 @@ class HeartbeatMonitor:
     """monitors tool pod health via heartbeat messages.
 
     subscribes to heartbeat wildcard subject, tracks per-pod
-    liveness, and periodically deregisters pods that exceed
-    configured timeout.
+    liveness, marks pod endpoints available on heartbeat, and
+    periodically removes endpoints for pods that exceed
+    configured timeout. only removes individual endpoints so
+    tools with surviving pods remain available.
     """
 
     def __init__(
@@ -55,7 +59,7 @@ class HeartbeatMonitor:
     ) -> None:
         """initialize heartbeat monitor.
 
-        :param catalog: tool catalog for deregistering timed-out pods
+        :param catalog: tool catalog for marking endpoints available/unavailable
         :ptype catalog: ToolCatalog
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
@@ -128,9 +132,9 @@ class HeartbeatMonitor:
     async def _handle_heartbeat(self, msg: Any) -> None:
         """handle incoming heartbeat message from tool pod.
 
-        updates pod status with current timestamp and resets
-        consecutive miss counter. marks all tools from pod as
-        available.
+        updates pod status with current timestamp, resets
+        consecutive miss counter, and marks all endpoints for
+        this pod as available in catalog.
 
         :param msg: incoming NATS message containing heartbeat
         :ptype msg: Any
@@ -157,25 +161,14 @@ class HeartbeatMonitor:
             pod_status.date_last_heartbeat = now
             pod_status.consecutive_misses = 0
 
-        self._mark_pod_tools_available(heartbeat.pod_id)
-
-    def _mark_pod_tools_available(self, pod_id: str) -> None:
-        """mark all tools from specified pod as available in catalog.
-
-        :param pod_id: identifier of pod whose tools to mark available
-        :ptype pod_id: str
-        """
-        pod_status = self._pods.get(pod_id)
-        if pod_status is None:
-            return
-        for full_name in pod_status.tools:
-            self._catalog.mark_available(full_name)
+        marked = self._catalog.mark_pod_endpoints_available(heartbeat.pod_id)
+        pod_status.tools = marked
 
     async def _health_check_loop(self) -> None:
         """periodically check pod health and deregister timed-out pods.
 
-        runs at configured interval, incrementing consecutive_misses
-        for each pod and deregistering those exceeding timeout.
+        runs at configured interval, deregistering endpoints for
+        pods that exceed timeout.
         """
         while self._running:
             await asyncio.sleep(self._check_interval)
@@ -184,8 +177,9 @@ class HeartbeatMonitor:
     async def _run_health_check(self) -> None:
         """execute single health check sweep across all tracked pods.
 
-        deregisters pods whose last heartbeat exceeds timeout
-        threshold.
+        removes endpoints for pods whose last heartbeat exceeds
+        timeout threshold. only removes individual endpoints so
+        tools with surviving pods remain available.
         """
         now = datetime.now(UTC)
         to_remove: list[str] = []
@@ -203,7 +197,7 @@ class HeartbeatMonitor:
                 )
                 removed = await self._catalog.deregister_pod(pod_id)
                 _logger.info(
-                    "deregistered timed-out pod",
+                    "deregistered timed-out pod endpoints",
                     extra={"extra_data": {
                         "pod_id": pod_id,
                         "removed_tools": removed,

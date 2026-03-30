@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
-from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.registration import RegistrationHandler, RegistrationResponse
 
 
@@ -60,6 +60,41 @@ def _make_nats_msg(
     msg.data = data
     msg.reply = reply
     return msg
+
+
+def _make_entry(
+    tool_name: str = "threetears.calculator",
+    tool_version: str = "1.0.0",
+    pod_id: str = "pod-001",
+    status: str = "available",
+) -> CatalogEntry:
+    """create catalog entry with single endpoint for testing.
+
+    :param tool_name: namespaced tool name
+    :ptype tool_name: str
+    :param tool_version: semver version string
+    :ptype tool_version: str
+    :param pod_id: pod identifier for endpoint
+    :ptype pod_id: str
+    :param status: endpoint availability status
+    :ptype status: str
+    :return: test catalog entry with one endpoint
+    :rtype: CatalogEntry
+    """
+    endpoint = ToolEndpoint(
+        pod_id=pod_id,
+        status=status,
+        in_flight=0,
+    )
+    result = CatalogEntry(
+        tool_name=tool_name,
+        tool_version=tool_version,
+        full_name=f"{tool_name}@{tool_version}",
+        description=f"{tool_name} tool",
+        input_schema={"type": "object"},
+        endpoints=[endpoint],
+    )
+    return result
 
 
 # -- manifest validation tests --
@@ -121,25 +156,17 @@ class TestRegistrationHandlerValidation:
         assert "tools" in response_data["error"]
 
 
-# -- conflict detection tests --
+# -- multi-pod registration tests --
 
 
-class TestRegistrationHandlerConflicts:
-    """tests for tool conflict detection."""
+class TestRegistrationHandlerMultiPod:
+    """tests for additive multi-pod registration."""
 
     @pytest.mark.asyncio
-    async def test_rejects_conflict_from_different_pod(self) -> None:
-        """handler rejects tool already registered by different pod."""
+    async def test_allows_registration_from_different_pod(self) -> None:
+        """handler allows same tool@version from different pod."""
         catalog = ToolCatalog()
-        existing = CatalogEntry(
-            tool_name="threetears.calculator",
-            tool_version="1.0.0",
-            full_name="threetears.calculator@1.0.0",
-            pod_id="pod-OTHER",
-            description="existing tool",
-            input_schema={"type": "object"},
-            status="available",
-        )
+        existing = _make_entry(pod_id="pod-OTHER")
         await catalog.register(existing)
 
         handler = RegistrationHandler(catalog, namespace="test")
@@ -152,23 +179,14 @@ class TestRegistrationHandlerConflicts:
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
-        assert response_data["success"] is False
-        assert "conflict" in response_data["error"]
-        assert "pod-OTHER" in response_data["error"]
+        assert response_data["success"] is True
+        assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
 
     @pytest.mark.asyncio
     async def test_allows_reregistration_from_same_pod(self) -> None:
         """handler allows re-registration of tool from same pod."""
         catalog = ToolCatalog()
-        existing = CatalogEntry(
-            tool_name="threetears.calculator",
-            tool_version="1.0.0",
-            full_name="threetears.calculator@1.0.0",
-            pod_id="pod-001",
-            description="existing tool",
-            input_schema={"type": "object"},
-            status="available",
-        )
+        existing = _make_entry(pod_id="pod-001")
         await catalog.register(existing)
 
         handler = RegistrationHandler(catalog, namespace="test")
@@ -183,6 +201,28 @@ class TestRegistrationHandlerConflicts:
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["success"] is True
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
+
+    @pytest.mark.asyncio
+    async def test_second_pod_adds_endpoint(self) -> None:
+        """registering from second pod adds endpoint to existing entry."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        manifest_a = _make_manifest(pod_id="pod-A")
+        msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg_a)
+
+        manifest_b = _make_manifest(pod_id="pod-B")
+        msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg_b)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert len(entry.endpoints) == 2
+        pod_ids = {ep.pod_id for ep in entry.endpoints}
+        assert pod_ids == {"pod-A", "pod-B"}
 
 
 # -- successful registration tests --
@@ -211,7 +251,8 @@ class TestRegistrationHandlerSuccess:
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
-        assert entry.pod_id == "pod-001"
+        assert len(entry.endpoints) == 1
+        assert entry.endpoints[0].pod_id == "pod-001"
         assert entry.status == "available"
 
     @pytest.mark.asyncio

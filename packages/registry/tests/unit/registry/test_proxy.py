@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
 
@@ -34,14 +34,14 @@ def _make_entry(
     :return: test catalog entry
     :rtype: CatalogEntry
     """
+    endpoint = ToolEndpoint(pod_id=pod_id, status=status)
     result = CatalogEntry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
-        pod_id=pod_id,
         description=f"test tool {tool_name}",
         input_schema={"type": "object", "properties": {}},
-        status=status,
+        endpoints=[endpoint],
     )
     return result
 
@@ -263,7 +263,7 @@ class TestCallProxyUnavailable:
 
     @pytest.mark.asyncio
     async def test_returns_tool_unavailable_for_unavailable_status(self) -> None:
-        """proxy returns TOOL_UNAVAILABLE for tool with unavailable status."""
+        """proxy returns TOOL_UNAVAILABLE when routing strategy finds no available endpoint."""
         catalog = ToolCatalog()
         entry = _make_entry(status="unavailable")
         await catalog.register(entry)
@@ -307,7 +307,7 @@ class TestCallProxyTimeout:
 
     @pytest.mark.asyncio
     async def test_returns_tool_timeout_on_nats_timeout(self) -> None:
-        """proxy returns TOOL_TIMEOUT when NATS request times out."""
+        """proxy returns TOOL_TIMEOUT when NATS request times out and resets in_flight."""
         catalog = ToolCatalog()
         entry = _make_entry(pod_id="pod-slow")
         await catalog.register(entry)
@@ -327,6 +327,9 @@ class TestCallProxyTimeout:
         assert response_data["error_code"] == "TOOL_TIMEOUT"
         assert "2.0" in response_data["error"]
 
+        endpoint = entry.endpoints[0]
+        assert endpoint.in_flight == 0
+
     @pytest.mark.asyncio
     async def test_timeout_preserves_correlation_id(self) -> None:
         """proxy preserves correlation_id in timeout error response."""
@@ -345,6 +348,144 @@ class TestCallProxyTimeout:
 
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["correlation_id"] == "corr-timeout-001"
+
+
+# -- in-flight tracking tests --
+
+
+class TestCallProxyInFlightTracking:
+    """tests for endpoint in-flight call count tracking."""
+
+    @pytest.mark.asyncio
+    async def test_in_flight_tracking(self) -> None:
+        """proxy increments in_flight during call and decrements after."""
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-tracked")
+        await catalog.register(entry)
+
+        endpoint = entry.endpoints[0]
+        assert endpoint.in_flight == 0
+
+        captured_in_flight: list[int] = []
+
+        async def capture_request(*args: Any, **kwargs: Any) -> MagicMock:
+            """capture in_flight value during NATS request execution.
+
+            :param args: positional arguments forwarded from NATS client
+            :ptype args: Any
+            :param kwargs: keyword arguments forwarded from NATS client
+            :ptype kwargs: Any
+            :return: mock NATS reply message
+            :rtype: MagicMock
+            """
+            captured_in_flight.append(endpoint.in_flight)
+            return _make_tool_response()
+
+        proxy = CallProxy(catalog, namespace="test")
+        nc = AsyncMock()
+        nc.request = AsyncMock(side_effect=capture_request)
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+
+        assert captured_in_flight == [1]
+        assert endpoint.in_flight == 0
+
+    @pytest.mark.asyncio
+    async def test_in_flight_decremented_on_error(self) -> None:
+        """proxy decrements in_flight even when NATS request raises."""
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-error")
+        await catalog.register(entry)
+
+        endpoint = entry.endpoints[0]
+        assert endpoint.in_flight == 0
+
+        proxy = CallProxy(catalog, namespace="test")
+        nc = AsyncMock()
+        nc.request = AsyncMock(side_effect=TimeoutError("timeout"))
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+
+        assert endpoint.in_flight == 0
+
+
+# -- routing strategy tests --
+
+
+class TestCallProxyRouting:
+    """tests for routing strategy integration."""
+
+    @pytest.mark.asyncio
+    async def test_routes_to_least_connections_endpoint(self) -> None:
+        """proxy routes call to endpoint with fewest in-flight connections."""
+        endpoint_busy = ToolEndpoint(pod_id="pod-busy", status="available", in_flight=5)
+        endpoint_idle = ToolEndpoint(pod_id="pod-idle", status="available", in_flight=0)
+
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[endpoint_busy, endpoint_idle],
+        )
+        await catalog.register(entry)
+
+        proxy = CallProxy(catalog, namespace="test", timeout=5.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+
+        nc.request.assert_called_once()
+        call_args = nc.request.call_args
+        assert call_args[0][0] == "test.tools.internal.pod-idle"
+
+    @pytest.mark.asyncio
+    async def test_custom_routing_strategy(self) -> None:
+        """proxy uses injected routing strategy for endpoint selection."""
+        endpoint_first = ToolEndpoint(pod_id="pod-first", status="available")
+        endpoint_second = ToolEndpoint(pod_id="pod-second", status="available")
+
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[endpoint_first, endpoint_second],
+        )
+        await catalog.register(entry)
+
+        strategy = MagicMock()
+        strategy.select = MagicMock(return_value=endpoint_second)
+
+        proxy = CallProxy(
+            catalog, namespace="test", timeout=5.0, routing_strategy=strategy,
+        )
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        request = _make_call_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+
+        strategy.select.assert_called_once_with(entry.endpoints)
+        nc.request.assert_called_once()
+        call_args = nc.request.call_args
+        assert call_args[0][0] == "test.tools.internal.pod-second"
 
 
 # -- lifecycle tests --

@@ -1,23 +1,22 @@
 """registration handler for tool pod manifests.
 
 subscribes to NATS registration subject, validates incoming
-manifests, checks for conflicts, and registers tools atomically
-in catalog.
+manifests, authenticates pods, and registers tools with
+additive endpoint merging for multi-pod horizontal scaling.
 """
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
 
-import hashlib
-
 from threetears.agent.tools.server import RegistrationManifest
 from threetears.core.logging import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
-from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
 log = get_logger(__name__)
 
@@ -45,8 +44,9 @@ class RegistrationHandler:
     """handles tool registration requests from tool pods.
 
     subscribes to registration subject, validates manifests,
-    detects conflicts, and registers tools in catalog. supports
-    idempotent re-registration from same pod.
+    and registers tools in catalog. multiple pods can register
+    the same tool -- endpoints are merged additively by the
+    catalog for horizontal scaling.
     """
 
     def __init__(
@@ -94,8 +94,9 @@ class RegistrationHandler:
     async def _handle_registration(self, msg: Any) -> None:
         """handle incoming registration manifest.
 
-        validates manifest, checks for conflicts, and registers
-        tools atomically. replies with success or error response.
+        validates manifest, authenticates pod, and registers
+        tools with additive endpoint merging. replies with
+        success or error response.
 
         :param msg: incoming NATS message containing registration manifest
         :ptype msg: Any
@@ -137,7 +138,6 @@ class RegistrationHandler:
                 )
             return
 
-        # authenticate tool pod and filter tools to allowed namespaces
         auth_error = await self._authenticate_and_filter(manifest)
         if auth_error is not None:
             log.warning(
@@ -148,24 +148,6 @@ class RegistrationHandler:
                 success=False,
                 pod_id=manifest.pod_id,
                 error=auth_error,
-            )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
-                )
-            return
-
-        conflict_error = self._check_conflicts(manifest)
-        if conflict_error is not None:
-            log.warning(
-                "registration rejected: conflict",
-                extra={"extra_data": {"pod_id": manifest.pod_id, "error": conflict_error}},
-            )
-            response = RegistrationResponse(
-                success=False,
-                pod_id=manifest.pod_id,
-                error=conflict_error,
             )
             if msg.reply:
                 await self._nc.publish(
@@ -222,7 +204,6 @@ class RegistrationHandler:
             )
             return "invalid bootstrap token"
 
-        # filter tools to allowed namespaces
         allowed_tools = []
         rejected_tools = []
         for tool in manifest.tools:
@@ -250,7 +231,6 @@ class RegistrationHandler:
         if not allowed_tools:
             return "no tools authorized for this pod's namespaces"
 
-        # replace manifest tools with filtered list
         manifest.tools = allowed_tools
 
         log.info(
@@ -280,49 +260,15 @@ class RegistrationHandler:
         result = None
         return result
 
-    def _check_conflicts(self, manifest: RegistrationManifest) -> str | None:
-        """check for tool name@version conflicts with different active pods.
-
-        same name@version from same pod is allowed (re-registration).
-        same name@version from different pod is conflict ONLY if the
-        existing pod's tools are still available. unavailable tools
-        (dead pod, no heartbeat) can be replaced by a new pod.
-
-        :param manifest: manifest to check for conflicts
-        :ptype manifest: RegistrationManifest
-        :return: error message if conflict found, None if no conflicts
-        :rtype: str | None
-        """
-        result: str | None = None
-        for tool in manifest.tools:
-            full_name = f"{tool.name}@{tool.version}"
-            existing = self._catalog.get(full_name)
-            if existing is None:
-                continue
-            if existing.pod_id == manifest.pod_id:
-                continue
-            if existing.status != "available":
-                log.info(
-                    "replacing stale tool registration from dead pod",
-                    extra={"extra_data": {
-                        "full_name": full_name,
-                        "old_pod": existing.pod_id,
-                        "new_pod": manifest.pod_id,
-                    }},
-                )
-                continue
-            result = (
-                f"conflict: {full_name} already registered by active pod "
-                f"{existing.pod_id}"
-            )
-            break
-        return result
-
     async def _register_tools(
         self,
         manifest: RegistrationManifest,
     ) -> list[str]:
-        """register all tools from manifest atomically.
+        """register all tools from manifest with endpoint for this pod.
+
+        creates catalog entry for each tool with a single endpoint
+        for the registering pod. catalog.register() handles merging
+        with existing entries for multi-pod support.
 
         :param manifest: validated manifest containing tools to register
         :ptype manifest: RegistrationManifest
@@ -333,16 +279,20 @@ class RegistrationHandler:
         now = datetime.now(UTC)
         for tool in manifest.tools:
             full_name = f"{tool.name}@{tool.version}"
+            endpoint = ToolEndpoint(
+                pod_id=manifest.pod_id,
+                status="available",
+                in_flight=0,
+                date_last_heartbeat=now,
+            )
             entry = CatalogEntry(
                 tool_name=tool.name,
                 tool_version=tool.version,
                 full_name=full_name,
-                pod_id=manifest.pod_id,
                 description=tool.description,
                 input_schema=tool.input_schema,
-                status="available",
+                endpoints=[endpoint],
                 date_registered=now,
-                date_last_heartbeat=now,
             )
             await self._catalog.register(entry)
             registered.append(full_name)

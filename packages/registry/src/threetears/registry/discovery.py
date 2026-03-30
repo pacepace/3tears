@@ -2,7 +2,8 @@
 
 subscribes to NATS discovery subject, resolves pinned tool
 manifests against catalog, and returns full schemas for
-available tools.
+available tools. each tool appears once regardless of how
+many pod endpoints serve it.
 """
 
 from __future__ import annotations
@@ -63,6 +64,8 @@ class DiscoverResultEntry(BaseModel):
     :ptype input_schema: dict[str, Any]
     :param output_schema: optional JSON Schema for tool output
     :ptype output_schema: dict[str, Any] | None
+    :param endpoint_count: number of pod endpoints serving this tool
+    :ptype endpoint_count: int
     """
 
     name: str
@@ -71,6 +74,7 @@ class DiscoverResultEntry(BaseModel):
     description: str = ""
     input_schema: dict[str, Any] = {}
     output_schema: dict[str, Any] | None = None
+    endpoint_count: int = 0
 
 
 class DiscoverResponse(BaseModel):
@@ -97,7 +101,8 @@ class DiscoveryHandler:
     subscribes to discovery subject with queue group for HA,
     resolves pinned tool manifests against catalog, and replies
     with full schemas for available tools or unavailable status
-    for missing ones.
+    for missing ones. each tool appears once regardless of how
+    many pod endpoints serve it.
     """
 
     def __init__(
@@ -196,6 +201,7 @@ class DiscoveryHandler:
         """return all available tools from catalog.
 
         used when agent sends empty manifest (discover all).
+        each tool appears once with endpoint_count for observability.
 
         :return: list of all available tool results with schemas
         :rtype: list[DiscoverResultEntry]
@@ -209,6 +215,7 @@ class DiscoveryHandler:
                 description=entry.description,
                 input_schema=entry.input_schema,
                 output_schema=entry.output_schema,
+                endpoint_count=len(entry.endpoints),
             ))
         return results
 
@@ -235,6 +242,7 @@ class DiscoveryHandler:
                     description=entry.description,
                     input_schema=entry.input_schema,
                     output_schema=entry.output_schema,
+                    endpoint_count=len(entry.endpoints),
                 )
             else:
                 result_entry = DiscoverResultEntry(

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.server import HeartbeatMessage
-from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.health import HeartbeatMonitor, PodStatus
 
 
@@ -55,14 +55,14 @@ def _make_entry(
     :return: test catalog entry
     :rtype: CatalogEntry
     """
+    endpoint = ToolEndpoint(pod_id=pod_id, status="available")
     result = CatalogEntry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
-        pod_id=pod_id,
         description=f"test tool {tool_name}",
         input_schema={"type": "object", "properties": {}},
-        status="available",
+        endpoints=[endpoint],
     )
     return result
 
@@ -173,10 +173,17 @@ class TestHeartbeatMonitorHandling:
 
     @pytest.mark.asyncio
     async def test_marks_pod_tools_available_on_heartbeat(self) -> None:
-        """monitor marks all tools from pod as available on heartbeat."""
+        """monitor marks all endpoints from pod as available on heartbeat."""
         catalog = ToolCatalog()
-        entry = _make_entry(pod_id="pod-001", tool_name="threetears.calculator")
-        entry.status = "unavailable"
+        endpoint = ToolEndpoint(pod_id="pod-001", status="unavailable")
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[endpoint],
+        )
         await catalog.register(entry)
 
         monitor = HeartbeatMonitor(catalog, namespace="test")
@@ -185,15 +192,13 @@ class TestHeartbeatMonitorHandling:
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await monitor.start(nc)
 
-        monitor._pods["pod-001"] = PodStatus(
-            pod_id="pod-001",
-            tools=["threetears.calculator@1.0.0"],
-        )
-
         msg = _make_heartbeat_msg(pod_id="pod-001")
         await monitor._handle_heartbeat(msg)
 
-        assert entry.status == "available"
+        registered = catalog.get("threetears.calculator@1.0.0")
+        assert registered is not None
+        assert registered.endpoints[0].status == "available"
+        assert "threetears.calculator@1.0.0" in monitor.pods["pod-001"].tools
         await monitor.stop()
 
 
@@ -205,7 +210,7 @@ class TestHeartbeatMonitorHealthCheck:
 
     @pytest.mark.asyncio
     async def test_deregisters_pod_after_timeout(self) -> None:
-        """health check deregisters pod exceeding timeout."""
+        """health check removes endpoint and entry when pod is only endpoint."""
         catalog = ToolCatalog()
         entry = _make_entry(pod_id="pod-stale")
         await catalog.register(entry)
@@ -252,6 +257,50 @@ class TestHeartbeatMonitorHealthCheck:
 
         assert "pod-healthy" in monitor.pods
         assert catalog.get("threetears.calculator@1.0.0") is not None
+
+    @pytest.mark.asyncio
+    async def test_deregister_preserves_entry_with_surviving_endpoints(self) -> None:
+        """health check removes stale endpoint but preserves entry with surviving pod."""
+        catalog = ToolCatalog()
+        endpoint_stale = ToolEndpoint(pod_id="pod-stale", status="available")
+        endpoint_healthy = ToolEndpoint(pod_id="pod-healthy", status="available")
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {}},
+            endpoints=[endpoint_stale, endpoint_healthy],
+        )
+        await catalog.register(entry)
+
+        monitor = HeartbeatMonitor(
+            catalog,
+            namespace="test",
+            timeout=30.0,
+        )
+
+        stale_time = datetime.now(UTC) - timedelta(seconds=60)
+        monitor._pods["pod-stale"] = PodStatus(
+            pod_id="pod-stale",
+            date_last_heartbeat=stale_time,
+            tools=["threetears.calculator@1.0.0"],
+        )
+        recent_time = datetime.now(UTC) - timedelta(seconds=5)
+        monitor._pods["pod-healthy"] = PodStatus(
+            pod_id="pod-healthy",
+            date_last_heartbeat=recent_time,
+            tools=["threetears.calculator@1.0.0"],
+        )
+
+        await monitor._run_health_check()
+
+        assert "pod-stale" not in monitor.pods
+        assert "pod-healthy" in monitor.pods
+        surviving = catalog.get("threetears.calculator@1.0.0")
+        assert surviving is not None
+        assert len(surviving.endpoints) == 1
+        assert surviving.endpoints[0].pod_id == "pod-healthy"
 
     @pytest.mark.asyncio
     async def test_deregisters_multiple_stale_pods(self) -> None:

@@ -41,6 +41,27 @@ def _serialize_param(value: Any) -> Any:
     return value
 
 
+def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
+    """deserialize row values returned from L3 broker proxy.
+
+    detects hex-encoded byte strings (``\\x`` prefix) produced by
+    broker proxy ``_serialize_row`` and converts them back to bytes.
+    all other values passed through unchanged.
+
+    :param row: row dictionary from broker response
+    :ptype row: dict[str, Any]
+    :return: row with bytes values restored
+    :rtype: dict[str, Any]
+    """
+    result: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, str) and value.startswith("\\x"):
+            result[key] = bytes.fromhex(value[2:])
+        else:
+            result[key] = value
+    return result
+
+
 def _detect_operation(query: str) -> str:
     """detect SQL operation type from query string.
 
@@ -128,7 +149,8 @@ class NatsProxyL3Backend:
         """
         response = await self._send_query(query, list(params), "select", namespace)
         rows: list[dict[str, Any]] = response.get("rows", [])
-        return rows
+        result = [_deserialize_row(row) for row in rows]
+        return result
 
     async def fetchrow(
         self,

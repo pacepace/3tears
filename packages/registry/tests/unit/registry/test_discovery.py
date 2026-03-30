@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.registry.catalog import CatalogEntry, ToolCatalog
+from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import (
     DiscoverRequest,
     DiscoverToolEntry,
@@ -38,15 +38,15 @@ def _make_entry(
     :return: test catalog entry
     :rtype: CatalogEntry
     """
+    endpoint = ToolEndpoint(pod_id=pod_id, status=status)
     result = CatalogEntry(
         tool_name=tool_name,
         tool_version=tool_version,
         full_name=f"{tool_name}@{tool_version}",
-        pod_id=pod_id,
         description=f"test tool {tool_name}",
         input_schema={"type": "object", "properties": {"x": {"type": "integer"}}},
         output_schema={"type": "object", "properties": {"result": {"type": "number"}}},
-        status=status,
+        endpoints=[endpoint],
     )
     return result
 
@@ -128,6 +128,7 @@ class TestDiscoveryAvailable:
             "type": "object",
             "properties": {"result": {"type": "number"}},
         }
+        assert tool_result["endpoint_count"] == 1
 
 
 # -- unavailable tool resolution tests --
@@ -157,6 +158,7 @@ class TestDiscoveryUnavailable:
         assert tool_result["name"] == "threetears.nonexistent"
         assert tool_result["version"] == "1.0.0"
         assert tool_result["status"] == "unavailable"
+        assert tool_result["endpoint_count"] == 0
 
     @pytest.mark.asyncio
     async def test_returns_unavailable_for_tool_with_unavailable_status(self) -> None:
@@ -177,6 +179,7 @@ class TestDiscoveryUnavailable:
         response_data = json.loads(nc.publish.call_args[0][1])
         assert len(response_data["tools"]) == 1
         assert response_data["tools"][0]["status"] == "unavailable"
+        assert response_data["tools"][0]["endpoint_count"] == 0
 
 
 # -- mixed manifest resolution tests --
@@ -213,7 +216,9 @@ class TestDiscoveryMixed:
 
         by_name = {t["name"]: t for t in response_data["tools"]}
         assert by_name["threetears.calculator"]["status"] == "available"
+        assert by_name["threetears.calculator"]["endpoint_count"] == 1
         assert by_name["threetears.dictionary"]["status"] == "unavailable"
+        assert by_name["threetears.dictionary"]["endpoint_count"] == 0
 
 
 # -- empty manifest tests --
@@ -237,6 +242,82 @@ class TestDiscoveryEmpty:
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["tools"] == []
+
+
+# -- multi-endpoint tests --
+
+
+class TestDiscoveryMultiEndpoint:
+    """tests for discovery with tools served by multiple endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_returns_correct_endpoint_count_for_multi_pod_tool(self) -> None:
+        """discovery returns endpoint_count matching number of registered endpoints."""
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}},
+            output_schema={"type": "object", "properties": {"result": {"type": "number"}}},
+            endpoints=[
+                ToolEndpoint(pod_id="pod-001", status="available"),
+                ToolEndpoint(pod_id="pod-002", status="available"),
+                ToolEndpoint(pod_id="pod-003", status="available"),
+            ],
+        )
+        await catalog.register(entry)
+
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request()
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert len(response_data["tools"]) == 1
+        tool_result = response_data["tools"][0]
+        assert tool_result["status"] == "available"
+        assert tool_result["endpoint_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_discover_all_returns_tools_once_with_multiple_endpoints(self) -> None:
+        """discover-all returns each tool once with correct endpoint_count."""
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="threetears.calculator",
+            tool_version="1.0.0",
+            full_name="threetears.calculator@1.0.0",
+            description="test tool threetears.calculator",
+            input_schema={"type": "object", "properties": {"x": {"type": "integer"}}},
+            output_schema={"type": "object", "properties": {"result": {"type": "number"}}},
+            endpoints=[
+                ToolEndpoint(pod_id="pod-001", status="available"),
+                ToolEndpoint(pod_id="pod-002", status="available"),
+            ],
+        )
+        await catalog.register(entry)
+
+        handler = DiscoveryHandler(catalog, namespace="test")
+        nc = AsyncMock()
+        await handler.start(nc)
+
+        request = _make_discover_request(tools=[])
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await handler._handle_discover(msg)
+
+        nc.publish.assert_called_once()
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert len(response_data["tools"]) == 1
+        tool_result = response_data["tools"][0]
+        assert tool_result["name"] == "threetears.calculator"
+        assert tool_result["version"] == "1.0.0"
+        assert tool_result["status"] == "available"
+        assert tool_result["endpoint_count"] == 2
 
 
 # -- lifecycle tests --
