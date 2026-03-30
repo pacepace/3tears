@@ -103,6 +103,10 @@ class RegistrationHandler:
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:
+            log.error(
+                "registration rejected: malformed manifest",
+                extra={"extra_data": {"error": str(exc)}},
+            )
             response = RegistrationResponse(
                 success=False,
                 pod_id="unknown",
@@ -117,6 +121,10 @@ class RegistrationHandler:
 
         validation_error = self._validate_manifest(manifest)
         if validation_error is not None:
+            log.warning(
+                "registration rejected: validation failed",
+                extra={"extra_data": {"pod_id": manifest.pod_id, "error": validation_error}},
+            )
             response = RegistrationResponse(
                 success=False,
                 pod_id=manifest.pod_id,
@@ -132,6 +140,10 @@ class RegistrationHandler:
         # authenticate tool pod and filter tools to allowed namespaces
         auth_error = await self._authenticate_and_filter(manifest)
         if auth_error is not None:
+            log.warning(
+                "registration rejected: auth failed",
+                extra={"extra_data": {"pod_id": manifest.pod_id, "error": auth_error}},
+            )
             response = RegistrationResponse(
                 success=False,
                 pod_id=manifest.pod_id,
@@ -146,6 +158,10 @@ class RegistrationHandler:
 
         conflict_error = self._check_conflicts(manifest)
         if conflict_error is not None:
+            log.warning(
+                "registration rejected: conflict",
+                extra={"extra_data": {"pod_id": manifest.pod_id, "error": conflict_error}},
+            )
             response = RegistrationResponse(
                 success=False,
                 pod_id=manifest.pod_id,
@@ -265,10 +281,12 @@ class RegistrationHandler:
         return result
 
     def _check_conflicts(self, manifest: RegistrationManifest) -> str | None:
-        """check for tool name@version conflicts with different pods.
+        """check for tool name@version conflicts with different active pods.
 
         same name@version from same pod is allowed (re-registration).
-        same name@version from different pod is conflict.
+        same name@version from different pod is conflict ONLY if the
+        existing pod's tools are still available. unavailable tools
+        (dead pod, no heartbeat) can be replaced by a new pod.
 
         :param manifest: manifest to check for conflicts
         :ptype manifest: RegistrationManifest
@@ -279,12 +297,25 @@ class RegistrationHandler:
         for tool in manifest.tools:
             full_name = f"{tool.name}@{tool.version}"
             existing = self._catalog.get(full_name)
-            if existing is not None and existing.pod_id != manifest.pod_id:
-                result = (
-                    f"conflict: {full_name} already registered by pod "
-                    f"{existing.pod_id}"
+            if existing is None:
+                continue
+            if existing.pod_id == manifest.pod_id:
+                continue
+            if existing.status != "available":
+                log.info(
+                    "replacing stale tool registration from dead pod",
+                    extra={"extra_data": {
+                        "full_name": full_name,
+                        "old_pod": existing.pod_id,
+                        "new_pod": manifest.pod_id,
+                    }},
                 )
-                break
+                continue
+            result = (
+                f"conflict: {full_name} already registered by active pod "
+                f"{existing.pod_id}"
+            )
+            break
         return result
 
     async def _register_tools(

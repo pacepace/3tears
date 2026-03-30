@@ -208,5 +208,8 @@ class RegistryServer:
 
 def _run_server() -> None:
     """create and run registry server in asyncio event loop."""
+    from threetears.observe import configure_logging
+
+    configure_logging(level="INFO")
     server = RegistryServer()
     asyncio.run(server.serve())
