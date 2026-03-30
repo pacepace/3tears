@@ -32,7 +32,10 @@ _logger = get_logger(__name__)
 
 
 async def nats_connect(url: str) -> NatsClient:
-    """connect to NATS server at given URL.
+    """connect to NATS server at given URL with reconnection support.
+
+    configures infinite reconnect attempts with 2-second wait between
+    attempts so registry survives NATS infrastructure restarts.
 
     :param url: NATS server URL
     :ptype url: str
@@ -40,8 +43,44 @@ async def nats_connect(url: str) -> NatsClient:
     :rtype: NatsClient
     """
     nc = NatsClient()
-    await nc.connect(url)
+    await nc.connect(
+        url,
+        max_reconnect_attempts=-1,
+        reconnect_time_wait=2,
+        reconnected_cb=_on_reconnected,
+        disconnected_cb=_on_disconnected,
+        error_cb=_on_error,
+    )
     return nc
+
+
+async def _on_reconnected() -> None:
+    """log NATS reconnection event.
+
+    :return: nothing
+    :rtype: None
+    """
+    _logger.info("NATS reconnected")
+
+
+async def _on_disconnected() -> None:
+    """log NATS disconnection event.
+
+    :return: nothing
+    :rtype: None
+    """
+    _logger.warning("NATS disconnected, attempting reconnect")
+
+
+async def _on_error(exc: Exception) -> None:
+    """log NATS client error.
+
+    :param exc: exception from NATS client
+    :ptype exc: Exception
+    :return: nothing
+    :rtype: None
+    """
+    _logger.error("NATS error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
