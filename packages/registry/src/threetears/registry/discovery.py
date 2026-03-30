@@ -167,7 +167,10 @@ class DiscoveryHandler:
                 )
             return
 
-        tools = self._resolve_manifest(request.tool_manifest)
+        if request.tool_manifest:
+            tools = self._resolve_manifest(request.tool_manifest)
+        else:
+            tools = self._list_all_available()
 
         response = DiscoverResponse(
             agent_id=request.agent_id,
@@ -188,6 +191,26 @@ class DiscoveryHandler:
                 ),
             }},
         )
+
+    def _list_all_available(self) -> list[DiscoverResultEntry]:
+        """return all available tools from catalog.
+
+        used when agent sends empty manifest (discover all).
+
+        :return: list of all available tool results with schemas
+        :rtype: list[DiscoverResultEntry]
+        """
+        results: list[DiscoverResultEntry] = []
+        for entry in self._catalog.list_available():
+            results.append(DiscoverResultEntry(
+                name=entry.tool_name,
+                version=entry.tool_version,
+                status="available",
+                description=entry.description,
+                input_schema=entry.input_schema,
+                output_schema=entry.output_schema,
+            ))
+        return results
 
     def _resolve_manifest(
         self,

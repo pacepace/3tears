@@ -329,10 +329,12 @@ class ToolServer:
         await msg.respond(response.model_dump_json().encode("utf-8"))
 
     async def _heartbeat_loop(self) -> None:
-        """publish periodic heartbeat messages until shutdown.
+        """publish periodic heartbeat and re-registration until shutdown.
 
         publishes heartbeat containing pod_id, timestamp, and tools_count
-        to heartbeat subject at configured interval.
+        to heartbeat subject at configured interval. re-publishes full
+        registration manifest alongside each heartbeat so the registry
+        recovers automatically if it restarts.
         """
         subject = f"{self._namespace}.tools.heartbeat.{self._pod_id}"
         while self._running:
@@ -346,6 +348,13 @@ class ToolServer:
             except Exception as exc:
                 log.warning(
                     "heartbeat publish failed",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
+            try:
+                await self._publish_registration()
+            except Exception as exc:
+                log.warning(
+                    "periodic re-registration failed",
                     extra={"extra_data": {"error": str(exc)}},
                 )
             await asyncio.sleep(self._heartbeat_interval)

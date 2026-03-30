@@ -17,6 +17,20 @@ from threetears.core.logging import get_logger
 _logger = get_logger(__name__)
 
 
+def _sanitize_kv_key(full_name: str) -> str:
+    """convert full_name to NATS KV-safe key.
+
+    NATS KV keys cannot contain dots or @ characters.
+    replaces dots with underscores and @ with _AT_.
+
+    :param full_name: tool full_name as name@version
+    :ptype full_name: str
+    :return: KV-safe key string
+    :rtype: str
+    """
+    return full_name.replace(".", "_").replace("@", "_AT_")
+
+
 @dataclass
 class CatalogEntry:
     """single tool entry in catalog.
@@ -123,7 +137,10 @@ class ToolCatalog:
         :ptype kv: Any
         """
         self._kv = kv
-        keys = await kv.keys()
+        try:
+            keys = await kv.keys()
+        except Exception:
+            keys = []
         for key in keys:
             kv_entry = await kv.get(key)
             data = json.loads(kv_entry.value.decode("utf-8"))
@@ -143,8 +160,9 @@ class ToolCatalog:
         """
         self._entries[entry.full_name] = entry
         if self._kv is not None:
+            kv_key = _sanitize_kv_key(entry.full_name)
             await self._kv.put(
-                entry.full_name,
+                kv_key,
                 json.dumps(entry.to_dict()).encode("utf-8"),
             )
         _logger.info(
@@ -164,7 +182,8 @@ class ToolCatalog:
         self._entries.pop(full_name, None)
         if self._kv is not None:
             try:
-                await self._kv.delete(full_name)
+                kv_key = _sanitize_kv_key(full_name)
+                await self._kv.delete(kv_key)
             except Exception:
                 pass
         _logger.info(

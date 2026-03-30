@@ -114,7 +114,14 @@ class RegistryServer:
         )
 
         js = self._nc.jetstream()
-        kv = await js.key_value(bucket=self._kv_bucket)
+        try:
+            kv = await js.key_value(bucket=self._kv_bucket)
+        except Exception:
+            kv = await js.create_key_value(bucket=self._kv_bucket)
+            _logger.info(
+                "created KV bucket",
+                extra={"extra_data": {"bucket": self._kv_bucket}},
+            )
         await self._catalog.load_from_kv(kv)
         _logger.info(
             "catalog loaded from KV",
