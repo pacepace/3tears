@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import io
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 _log = get_logger(__name__)
 

@@ -1,4 +1,4 @@
-"""Tests for threetears.core.logging (re-exports from threetears.observe.logging)."""
+"""Tests for threetears.observe.logging (structured logging)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from io import StringIO
 
 import pytest
 
-from threetears.core.logging import (
+from threetears.observe.logging import (
     ContextFormatter,
     clear_context,
     configure_logging,
@@ -123,32 +123,32 @@ def test_extra_data_in_log():
 
 
 def test_configure_logging_adds_handler():
-    root = logging.getLogger("threetears")
-    original_handlers = list(root.handlers)
+    py_root = logging.getLogger()
+    original_handlers = list(py_root.handlers)
     try:
-        root.handlers.clear()
+        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
         configure_logging("DEBUG")
-        assert len(root.handlers) == 1
-        assert isinstance(root.handlers[0], logging.StreamHandler)
+        tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+        assert len(tt_handlers) == 1
+        assert isinstance(tt_handlers[0], logging.StreamHandler)
     finally:
-        root.handlers = original_handlers
+        py_root.handlers = original_handlers
 
 
 def test_configure_logging_idempotent():
-    root = logging.getLogger("threetears")
-    original_handlers = list(root.handlers)
+    py_root = logging.getLogger()
+    original_handlers = list(py_root.handlers)
     try:
-        root.handlers.clear()
+        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
         configure_logging("INFO")
         configure_logging("INFO")  # second call should be no-op
-        assert len(root.handlers) == 1
+        tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+        assert len(tt_handlers) == 1
     finally:
-        root.handlers = original_handlers
+        py_root.handlers = original_handlers
 
 
-def test_core_and_observe_share_context():
-    """Core and observe share the same context — setting via core is visible in observe."""
-    from threetears.observe.logging import get_context as observe_get_context
-
+def test_context_shared_across_calls():
+    """Context set via set_context is visible in get_context."""
     set_context(cid="shared-123")
-    assert observe_get_context()["cid"] == "shared-123"
+    assert get_context()["cid"] == "shared-123"

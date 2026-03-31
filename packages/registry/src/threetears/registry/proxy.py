@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy

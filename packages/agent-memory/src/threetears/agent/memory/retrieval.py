@@ -13,7 +13,7 @@ from uuid import UUID
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.types import MemoryConfig
-from threetears.core.tracing import traced
+from threetears.observe import traced
 
 
 def _recency_decay(created: datetime, half_life_hours: float) -> float:

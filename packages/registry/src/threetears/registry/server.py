@@ -16,7 +16,7 @@ import signal
 
 from nats.aio.client import Client as NatsClient
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatMonitor

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.types import MemoryType
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 

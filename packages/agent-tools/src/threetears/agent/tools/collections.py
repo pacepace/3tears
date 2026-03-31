@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.base import BaseCollection
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
 from threetears.agent.tools.entities import ContextItemEntity

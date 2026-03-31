@@ -7,12 +7,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
 from nats.aio.client import Client as NatsClient
+
+
+def _nats_reachable() -> bool:
+    """Check whether NATS is listening on localhost:4222."""
+    try:
+        with socket.create_connection(("localhost", 4222), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not _nats_reachable(), reason="NATS not running on localhost:4222")
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer

@@ -1,4 +1,4 @@
-"""Tests for threetears.core.tracing."""
+"""Tests for threetears.observe.tracing."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from threetears.core.tracing import traced
+from threetears.observe.tracing import traced
 
 
 def test_traced_without_otel():

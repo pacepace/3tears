@@ -19,8 +19,7 @@ from uuid_utils import uuid7
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 

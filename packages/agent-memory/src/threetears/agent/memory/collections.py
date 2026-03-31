@@ -12,7 +12,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 from threetears.agent.memory.entities import MemoryEntity
 

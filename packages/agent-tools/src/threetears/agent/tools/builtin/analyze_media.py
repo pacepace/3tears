@@ -29,7 +29,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.agent.tools.protocols import (
     MediaInfo,
     MediaStorage,

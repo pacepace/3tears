@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from threetears.agent.tools.server import RegistrationManifest
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 

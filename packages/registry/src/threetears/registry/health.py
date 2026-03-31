@@ -9,13 +9,29 @@ entries, so surviving pods continue serving.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import Column, MetaData, String, Table, Text
 
 from threetears.agent.tools.server import HeartbeatMessage
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
+
+if TYPE_CHECKING:
+    from threetears.core.cache.sqlite import SQLiteBackend
+
+_HEALTH_L1_METADATA = MetaData()
+
+_pod_health_table = Table(
+    "pod_health",
+    _HEALTH_L1_METADATA,
+    Column("key", String, primary_key=True),
+    Column("value", Text, nullable=True),
+    Column("date_updated", String, nullable=True),
+)
 
 _logger = get_logger(__name__)
 
@@ -56,6 +72,7 @@ class HeartbeatMonitor:
         namespace: str = "aibots",
         check_interval: float = 5.0,
         timeout: float = 30.0,
+        l1_backend: SQLiteBackend | None = None,
     ) -> None:
         """initialize heartbeat monitor.
 
@@ -67,11 +84,16 @@ class HeartbeatMonitor:
         :ptype check_interval: float
         :param timeout: seconds after which pod is considered dead
         :ptype timeout: float
+        :param l1_backend: optional SQLiteBackend for persistent pod health state
+        :ptype l1_backend: SQLiteBackend | None
         """
         self._catalog = catalog
         self._namespace = namespace
         self._check_interval = check_interval
         self._timeout = timeout
+        self._l1 = l1_backend
+        if self._l1 is not None and not self._l1._initialized:
+            self._l1.initialize(_HEALTH_L1_METADATA)
         self._pods: dict[str, PodStatus] = {}
         self._nc: Any | None = None
         self._sub: Any | None = None
@@ -86,6 +108,32 @@ class HeartbeatMonitor:
         :rtype: dict[str, PodStatus]
         """
         return self._pods
+
+    def _persist_pod_to_l1(self, pod_id: str, status: PodStatus) -> None:
+        """persist pod status to L1 SQLiteBackend if available.
+
+        :param pod_id: unique pod identifier
+        :ptype pod_id: str
+        :param status: pod status to persist
+        :ptype status: PodStatus
+        """
+        if self._l1 is None:
+            return
+        serialized = json.dumps({
+            "pod_id": status.pod_id,
+            "date_last_heartbeat": status.date_last_heartbeat.isoformat(),
+            "tools": status.tools,
+            "consecutive_misses": status.consecutive_misses,
+        })
+        self._l1.upsert(
+            "pod_health",
+            {
+                "key": pod_id,
+                "value": serialized,
+                "date_updated": datetime.now(UTC).isoformat(),
+            },
+            primary_key="key",
+        )
 
     async def start(self, nc: Any) -> None:
         """start heartbeat monitoring.
@@ -163,6 +211,7 @@ class HeartbeatMonitor:
 
         marked = self._catalog.mark_pod_endpoints_available(heartbeat.pod_id)
         pod_status.tools = marked
+        self._persist_pod_to_l1(heartbeat.pod_id, pod_status)
 
     async def _health_check_loop(self) -> None:
         """periodically check pod health and deregister timed-out pods.
@@ -206,3 +255,5 @@ class HeartbeatMonitor:
                 to_remove.append(pod_id)
         for pod_id in to_remove:
             self._pods.pop(pod_id, None)
+            if self._l1 is not None:
+                self._l1.delete_by_id("pod_health", pod_id, primary_key="key")

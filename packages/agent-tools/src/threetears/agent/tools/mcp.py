@@ -7,8 +7,7 @@ from typing import Any
 
 import httpx
 
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 

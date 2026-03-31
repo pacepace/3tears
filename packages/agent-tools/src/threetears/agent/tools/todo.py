@@ -14,7 +14,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 

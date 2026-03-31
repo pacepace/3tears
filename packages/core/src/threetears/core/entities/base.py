@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.core.cache import MISSING
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 

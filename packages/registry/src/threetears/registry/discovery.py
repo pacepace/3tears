@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
 
 _logger = get_logger(__name__)

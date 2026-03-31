@@ -11,7 +11,7 @@ import os
 import signal
 
 from threetears.agent.tools.server import ToolServer
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 _logger = get_logger(__name__)
 

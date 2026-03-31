@@ -20,7 +20,7 @@ from langchain_core.messages import SystemMessage, ToolMessage
 
 from threetears.agent.tools.chunker import ChunkResult, chunk_content
 from threetears.agent.tools.context import ToolContextManager
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 logger = get_logger(__name__)
 

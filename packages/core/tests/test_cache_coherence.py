@@ -93,7 +93,11 @@ class StubCollection(BaseCollection[StubEntity]):
         return json.dumps(data, default=str).encode()
 
     def _deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+        raw = json.loads(data)
+        for key in ("date_created", "date_updated"):
+            if key in raw and isinstance(raw[key], str):
+                raw[key] = datetime.fromisoformat(raw[key])
+        return raw
 
 
 class InMemoryNatsBus:

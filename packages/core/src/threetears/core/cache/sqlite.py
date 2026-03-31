@@ -17,7 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 try:
     from uuid_utils import UUID as _UuidUtilsUUID

@@ -12,6 +12,13 @@ from sqlalchemy import MetaData
 from threetears.agent.tools.collections import context_items_table
 
 
+def _naive(dt: datetime) -> datetime:
+    """Strip timezone info for safe comparison in test mocks."""
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def make_context_metadata() -> MetaData:
     """Create SA metadata with the context_items table."""
     metadata = MetaData()
@@ -106,7 +113,7 @@ class FakePool:
         if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower:
             cid = str(args[0])
             rows = [r for r in self._rows.values() if str(r["conversation_id"]) == cid]
-            rows.sort(key=lambda r: r.get("date_created", datetime.min))
+            rows.sort(key=lambda r: _naive(r.get("date_created", datetime.min)))
             return rows
 
         if "select context_id from context_items" in sql_lower and "order by date_accessed asc" in sql_lower:
@@ -117,7 +124,7 @@ class FakePool:
                 for r in self._rows.values()
                 if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
             ]
-            tool_results.sort(key=lambda r: r.get("date_accessed", datetime.min))
+            tool_results.sort(key=lambda r: _naive(r.get("date_accessed", datetime.min)))
             return [{"context_id": r["context_id"]} for r in tool_results[:limit]]
 
         return []

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 

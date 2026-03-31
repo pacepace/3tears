@@ -14,7 +14,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.core.exceptions import DataLayerUnavailableError
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 _logger = get_logger(__name__)
 

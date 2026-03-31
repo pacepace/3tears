@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 _logger = get_logger(__name__)
 
