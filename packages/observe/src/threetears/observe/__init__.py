@@ -22,6 +22,7 @@ from threetears.observe.logging import (
     get_logger,
     set_context,
 )
+from threetears.observe.resilience import retry_with_backoff
 from threetears.observe.tracing import traced
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "get_context",
     "get_logger",
     "set_context",
+    "retry_with_backoff",
     "traced",
 ]

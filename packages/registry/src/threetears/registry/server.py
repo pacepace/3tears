@@ -17,10 +17,12 @@ import signal
 from nats.aio.client import Client as NatsClient
 
 from threetears.observe import get_logger
+from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
 from threetears.registry.health import HeartbeatMonitor
 from threetears.registry.proxy import CallProxy
+from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.registration import RegistrationHandler
 
 _logger = get_logger(__name__)
@@ -105,6 +107,7 @@ class RegistryServer:
         heartbeat_timeout: float = 30.0,
         call_timeout: float = 30.0,
         kv_bucket: str = "tool_catalog",
+        authorizer: AgentToolAuthorizer | None = None,
     ) -> None:
         """initialize registry server.
 
@@ -120,6 +123,8 @@ class RegistryServer:
         :ptype call_timeout: float
         :param kv_bucket: NATS KV bucket name for catalog persistence
         :ptype kv_bucket: str
+        :param authorizer: tool access authorizer for agent call verification (defaults to None, resolved by _run_server)
+        :ptype authorizer: AgentToolAuthorizer | None
         """
         self._nats_url = nats_url or os.environ.get(
             "THREETEARS_NATS_URL", "nats://localhost:4222",
@@ -131,6 +136,7 @@ class RegistryServer:
         self._heartbeat_timeout = heartbeat_timeout
         self._call_timeout = call_timeout
         self._kv_bucket = kv_bucket
+        self._authorizer = authorizer
         self._nc: NatsClient | None = None
         self._catalog = ToolCatalog()
         self._registration_handler: RegistrationHandler | None = None
@@ -153,18 +159,37 @@ class RegistryServer:
         )
 
         js = self._nc.jetstream()
-        try:
-            kv = await js.key_value(bucket=self._kv_bucket)
-        except Exception:
-            kv = await js.create_key_value(bucket=self._kv_bucket)
+
+        if hasattr(self._authorizer, "initialize"):
+            async def _initialize_authorizer() -> None:
+                """initialize authorizer with JetStream context."""
+                await self._authorizer.initialize(js, self._namespace)
+
+            await retry_with_backoff(
+                _initialize_authorizer,
+                "registry.authorizer_initialize",
+            )
+
+        async def _ensure_kv_and_load_catalog() -> None:
+            """ensure KV bucket exists and load catalog from it."""
+            nonlocal js
+            try:
+                kv = await js.key_value(bucket=self._kv_bucket)
+            except Exception:
+                kv = await js.create_key_value(bucket=self._kv_bucket)
+                _logger.info(
+                    "created KV bucket",
+                    extra={"extra_data": {"bucket": self._kv_bucket}},
+                )
+            await self._catalog.load_from_kv(kv)
             _logger.info(
-                "created KV bucket",
+                "catalog loaded from KV",
                 extra={"extra_data": {"bucket": self._kv_bucket}},
             )
-        await self._catalog.load_from_kv(kv)
-        _logger.info(
-            "catalog loaded from KV",
-            extra={"extra_data": {"bucket": self._kv_bucket}},
+
+        await retry_with_backoff(
+            _ensure_kv_and_load_catalog,
+            "registry.kv_catalog_load",
         )
 
         await self._start_handlers()
@@ -187,7 +212,10 @@ class RegistryServer:
         self._registration_handler = RegistrationHandler(
             self._catalog, namespace=self._namespace,
         )
-        await self._registration_handler.start(self._nc)
+        await retry_with_backoff(
+            lambda: self._registration_handler.start(self._nc),
+            "registry.registration_handler.start",
+        )
 
         self._heartbeat_monitor = HeartbeatMonitor(
             self._catalog,
@@ -195,19 +223,29 @@ class RegistryServer:
             check_interval=self._heartbeat_check_interval,
             timeout=self._heartbeat_timeout,
         )
-        await self._heartbeat_monitor.start(self._nc)
+        await retry_with_backoff(
+            lambda: self._heartbeat_monitor.start(self._nc),
+            "registry.heartbeat_monitor.start",
+        )
 
         self._discovery_handler = DiscoveryHandler(
             self._catalog, namespace=self._namespace,
         )
-        await self._discovery_handler.start(self._nc)
+        await retry_with_backoff(
+            lambda: self._discovery_handler.start(self._nc),
+            "registry.discovery_handler.start",
+        )
 
         self._call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
+            authorizer=self._authorizer,
         )
-        await self._call_proxy.start(self._nc)
+        await retry_with_backoff(
+            lambda: self._call_proxy.start(self._nc),
+            "registry.call_proxy.start",
+        )
 
     def _install_signal_handlers(self) -> None:
         """install SIGINT and SIGTERM handlers for graceful shutdown."""
@@ -246,9 +284,38 @@ class RegistryServer:
 
 
 def _run_server() -> None:
-    """create and run registry server in asyncio event loop."""
+    """create and run registry server in asyncio event loop.
+
+    reads FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS environment variable
+    to determine authorization mode. when set to "true", all tool calls
+    are permitted (development mode). otherwise, default-deny is enforced.
+    host applications should pass a custom AgentToolAuthorizer for
+    production use.
+    """
     from threetears.observe import configure_logging
 
     configure_logging(level="INFO")
-    server = RegistryServer()
+
+    allow_all = os.environ.get(
+        "FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS", "",
+    ).lower() == "true"
+
+    if allow_all:
+        from threetears.registry.auth import AllowAllAuthorizer
+
+        authorizer: AgentToolAuthorizer = AllowAllAuthorizer()
+        _logger.warning(
+            "registry running in allow-all mode (FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true)",
+            extra={"extra_data": {"mode": "allow_all"}},
+        )
+    else:
+        from threetears.registry.auth import KvAgentToolAuthorizer
+
+        authorizer = KvAgentToolAuthorizer()
+        _logger.info(
+            "registry running with KV-based tool authorization",
+            extra={"extra_data": {"mode": "kv_authorizer"}},
+        )
+
+    server = RegistryServer(authorizer=authorizer)
     asyncio.run(server.serve())

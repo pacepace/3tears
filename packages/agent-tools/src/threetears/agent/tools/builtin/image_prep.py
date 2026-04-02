@@ -13,8 +13,12 @@ Limits applied:
 
 from __future__ import annotations
 
+import base64
 import io
+import json
+from typing import Any
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
 
 _log = get_logger(__name__)
@@ -113,3 +117,109 @@ def prepare_image_for_vision(
             },
         )
         return data, mime_type
+
+
+class ImagePrepTool(TearsTool):
+    """TearsTool wrapper for image preprocessing before vision model calls.
+
+    accepts base64-encoded image bytes and MIME type, applies resizing
+    and re-encoding as needed, and returns processed image ready for
+    vision model APIs. requires Pillow for images exceeding size
+    threshold.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "image_data_base64": {
+                "type": "string",
+                "description": "base64-encoded image bytes",
+            },
+            "mime_type": {
+                "type": "string",
+                "description": "MIME type of image (e.g. image/jpeg, image/png, image/heic)",
+            },
+        },
+        "required": ["image_data_base64", "mime_type"],
+    }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """preprocess image for vision model API call.
+
+        :param kwargs: must include 'image_data_base64' and 'mime_type' keys
+        :ptype kwargs: Any
+        :return: result containing JSON with processed_base64 and effective_mime_type
+        :rtype: ToolResult
+        """
+        image_data_base64 = kwargs.get("image_data_base64", "")
+        mime_type = kwargs.get("mime_type", "")
+
+        if not image_data_base64:
+            result = ToolResult(
+                success=False,
+                content="",
+                error="image_data_base64 is required",
+            )
+            return result
+
+        if not mime_type:
+            result = ToolResult(
+                success=False,
+                content="",
+                error="mime_type is required",
+            )
+            return result
+
+        try:
+            raw_bytes = base64.b64decode(image_data_base64)
+        except Exception as exc:
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"failed to decode base64 image data: {exc}",
+            )
+            return result
+
+        processed_bytes, effective_mime = prepare_image_for_vision(raw_bytes, mime_type)
+        processed_base64 = base64.b64encode(processed_bytes).decode("ascii")
+
+        content = json.dumps({
+            "processed_base64": processed_base64,
+            "effective_mime_type": effective_mime,
+        })
+
+        result = ToolResult(
+            success=True,
+            content=content,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for image prep.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="preprocess image for vision model API (resize, re-encode)",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.image_prep"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

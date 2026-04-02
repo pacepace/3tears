@@ -8,6 +8,7 @@ NATS request-reply.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from pydantic import BaseModel
@@ -114,6 +115,7 @@ class CallProxy:
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._nc: Any | None = None
         self._sub: Any | None = None
+        self._active_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, nc: Any) -> None:
         """start listening for tool call requests.
@@ -134,14 +136,35 @@ class CallProxy:
         )
 
     async def stop(self) -> None:
-        """stop listening for tool call requests."""
+        """stop listening and drain in-flight tool call tasks."""
         if self._sub is not None:
             await self._sub.unsubscribe()
             self._sub = None
+        if self._active_tasks:
+            log.info(
+                "draining in-flight tool call tasks",
+                extra={"extra_data": {"count": len(self._active_tasks)}},
+            )
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
+            self._active_tasks.clear()
         log.info("call proxy stopped")
 
     async def _handle_call(self, msg: Any) -> None:
-        """handle incoming tool call request.
+        """dispatch incoming tool call to background task.
+
+        spawns _process_call as concurrent task so the NATS
+        subscription callback returns immediately, allowing
+        parallel processing of multiple tool call requests.
+
+        :param msg: incoming NATS message containing call request
+        :ptype msg: Any
+        """
+        task = asyncio.create_task(self._process_call(msg))
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
+
+    async def _process_call(self, msg: Any) -> None:
+        """process tool call request concurrently.
 
         validates tool exists, selects endpoint via routing strategy,
         tracks in-flight count, forwards call to tool pod, and
