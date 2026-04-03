@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -154,6 +155,7 @@ class TestCallProxySuccess:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.request.assert_called_once()
         call_args = nc.request.call_args
@@ -176,6 +178,7 @@ class TestCallProxySuccess:
         request = _make_call_request(arguments=original_args)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.request.assert_called_once()
         forwarded_payload = json.loads(nc.request.call_args[0][1])
@@ -201,6 +204,7 @@ class TestCallProxySuccess:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         publish_calls = nc.publish.call_args_list
         assert len(publish_calls) == 1
@@ -226,6 +230,7 @@ class TestCallProxySuccess:
         request = _make_call_request(correlation_id="corr-xyz-789")
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         forwarded_payload = json.loads(nc.request.call_args[0][1])
         assert forwarded_payload["correlation_id"] == "corr-xyz-789"
@@ -254,6 +259,7 @@ class TestCallProxyUnavailable:
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -275,6 +281,7 @@ class TestCallProxyUnavailable:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -295,6 +302,7 @@ class TestCallProxyUnavailable:
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.request.assert_not_called()
 
@@ -320,6 +328,7 @@ class TestCallProxyTimeout:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -345,6 +354,7 @@ class TestCallProxyTimeout:
         request = _make_call_request(correlation_id="corr-timeout-001")
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["correlation_id"] == "corr-timeout-001"
@@ -389,6 +399,7 @@ class TestCallProxyInFlightTracking:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         assert captured_in_flight == [1]
         assert endpoint.in_flight == 0
@@ -411,6 +422,7 @@ class TestCallProxyInFlightTracking:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         assert endpoint.in_flight == 0
 
@@ -446,6 +458,7 @@ class TestCallProxyRouting:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         nc.request.assert_called_once()
         call_args = nc.request.call_args
@@ -481,6 +494,7 @@ class TestCallProxyRouting:
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
+        await asyncio.sleep(0)
 
         strategy.select.assert_called_once_with(entry.endpoints)
         nc.request.assert_called_once()

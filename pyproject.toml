@@ -34,6 +34,7 @@ mypy_path = [
     "packages/core/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
+    "packages/channels/src",
     "packages/observe/src",
     "packages/langgraph/src",
 ]
@@ -49,6 +50,10 @@ module = [
     "openpyxl",
     "openpyxl.*",
     "pint",
+    "slack_bolt.*",
+    "slack_sdk.*",
+    "discord",
+    "discord.*",
 ]
 ignore_missing_imports = true
 
@@ -61,3 +66,11 @@ module = [
     "threetears.agent.tools.builtin.calculator",
 ]
 disable_error_code = ["import-untyped"]
+
+# Suppress no-untyped-call for modules calling into untyped third-party channel libraries
+[[tool.mypy.overrides]]
+module = [
+    "threetears.channels.slack",
+    "threetears.channels.discord",
+]
+disable_error_code = ["no-untyped-call"]

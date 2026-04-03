@@ -241,28 +241,37 @@ class TestConfigureLogging:
     """configure_logging() and configure_third_party_logging()."""
 
     def test_configure_logging_creates_handler(self):
-        root = logging.getLogger("threetears")
-        original_handlers = root.handlers[:]
+        py_root = logging.getLogger()
+        tt_root = logging.getLogger("threetears")
+        original_py_handlers = py_root.handlers[:]
+        original_tt_level = tt_root.level
         try:
-            root.handlers.clear()
+            # Remove any existing threetears handlers
+            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
             configure_logging(level="DEBUG", color=False)
-            assert len(root.handlers) == 1
-            assert isinstance(root.handlers[0].formatter, ContextFormatter)
-            assert root.level == logging.DEBUG
+            tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+            assert len(tt_handlers) == 1
+            assert isinstance(tt_handlers[0].formatter, ContextFormatter)
+            assert tt_root.level == logging.DEBUG
         finally:
-            root.handlers = original_handlers
+            py_root.handlers = original_py_handlers
+            tt_root.level = original_tt_level
 
     def test_configure_logging_idempotent(self):
-        root = logging.getLogger("threetears")
-        original_handlers = root.handlers[:]
+        py_root = logging.getLogger()
+        tt_root = logging.getLogger("threetears")
+        original_py_handlers = py_root.handlers[:]
+        original_tt_level = tt_root.level
         try:
-            root.handlers.clear()
+            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
             configure_logging(level="INFO", color=False)
-            handler_count = len(root.handlers)
+            tt_handler_count = len([h for h in py_root.handlers if getattr(h, "_threetears", False)])
             configure_logging(level="DEBUG", color=False)
-            assert len(root.handlers) == handler_count  # no new handler
+            new_tt_handler_count = len([h for h in py_root.handlers if getattr(h, "_threetears", False)])
+            assert new_tt_handler_count == tt_handler_count  # no new handler
         finally:
-            root.handlers = original_handlers
+            py_root.handlers = original_py_handlers
+            tt_root.level = original_tt_level
 
     def test_configure_logging_with_strip_prefixes(self):
         original = path_strip_prefixes[:]

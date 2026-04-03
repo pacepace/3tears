@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-channels"
+version = "0.5.0"
+description = "Unified message protocol for channel adapters in the 3tears platform"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+dependencies = [
+    "3tears-observe",
+]
+
+[project.optional-dependencies]
+slack = ["slack-bolt>=1.18", "slack-sdk>=3.26", "aiohttp>=3.9"]
+discord = ["discord.py>=2.3"]
+websocket = ["starlette>=0.36"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-observe = { workspace = true }
