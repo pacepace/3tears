@@ -45,6 +45,8 @@ class MCPToolDefinition:
     :ptype input_schema: dict[str, Any]
     :param output_schema: optional JSON Schema for tool output
     :ptype output_schema: dict[str, Any] | None
+    :param timeout_seconds: expected maximum execution time, None uses caller default
+    :ptype timeout_seconds: float | None
     """
 
     name: str
@@ -52,6 +54,7 @@ class MCPToolDefinition:
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None = None
+    timeout_seconds: float | None = None
 
 
 class TearsTool(ABC):

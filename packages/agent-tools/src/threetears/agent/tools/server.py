@@ -55,12 +55,15 @@ class ToolManifestEntry(BaseModel):
     :ptype description: str
     :param input_schema: JSON Schema for tool input parameters
     :ptype input_schema: dict[str, Any]
+    :param timeout_seconds: expected maximum execution time, None uses caller default
+    :ptype timeout_seconds: float | None
     """
 
     name: str
     version: str
     description: str
     input_schema: dict[str, Any]
+    timeout_seconds: float | None = None
 
 
 class RegistrationManifest(BaseModel):
@@ -239,6 +242,7 @@ class ToolServer:
                 version=schema.version,
                 description=schema.description,
                 input_schema=schema.input_schema,
+                timeout_seconds=schema.timeout_seconds,
             )
             tools_list.append(entry)
 
