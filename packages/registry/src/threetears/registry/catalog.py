@@ -280,6 +280,7 @@ class ToolCatalog:
             existing.description = entry.description
             existing.input_schema = entry.input_schema
             existing.output_schema = entry.output_schema
+            existing.timeout_seconds = entry.timeout_seconds
             for endpoint in entry.endpoints:
                 existing.add_endpoint(endpoint)
             target = existing

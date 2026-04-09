@@ -365,6 +365,41 @@ class TestToolCatalogCRUD:
         assert merged.output_schema == {"type": "number"}
 
     @pytest.mark.asyncio
+    async def test_register_updates_timeout_seconds_on_merge(self) -> None:
+        """register updates timeout_seconds when tool re-registers with new value.
+
+        regression test: catalog.register() previously preserved the old
+        timeout_seconds on merge, so a tool that changed its declared
+        timeout would be stuck at the original value forever.
+        """
+        catalog = ToolCatalog()
+        entry_a = CatalogEntry(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+            full_name="test.slow_wait@1.0",
+            description="slow tool",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=120.0,
+            endpoints=[ToolEndpoint(pod_id="pod-001")],
+        )
+        await catalog.register(entry_a)
+        assert catalog.get("test.slow_wait@1.0").timeout_seconds == 120.0
+
+        entry_b = CatalogEntry(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+            full_name="test.slow_wait@1.0",
+            description="slow tool",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=180.0,
+            endpoints=[ToolEndpoint(pod_id="pod-001")],
+        )
+        await catalog.register(entry_b)
+        assert catalog.get("test.slow_wait@1.0").timeout_seconds == 180.0, (
+            "timeout_seconds must update on re-registration, not stay at old value"
+        )
+
+    @pytest.mark.asyncio
     async def test_deregister_removes_entry(self) -> None:
         """deregister removes entry from catalog."""
         catalog = ToolCatalog()
