@@ -291,6 +291,7 @@ class RegistrationHandler:
                 full_name=full_name,
                 description=tool.description,
                 input_schema=tool.input_schema,
+                timeout_seconds=tool.timeout_seconds,
                 endpoints=[endpoint],
                 date_registered=now,
             )

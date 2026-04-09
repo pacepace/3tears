@@ -11,7 +11,23 @@ from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 
-_MCP_TIMEOUT_SECONDS = 30
+def _get_mcp_timeout() -> int:
+    """read MCP timeout from environment or return platform default.
+
+    env var: THREETEARS_MCP_TIMEOUT
+
+    :return: MCP timeout in seconds
+    :rtype: int
+    """
+    import os
+
+    raw = os.environ.get("THREETEARS_MCP_TIMEOUT")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return 120
 
 
 @dataclass
@@ -39,10 +55,10 @@ class McpClient:
     endpoints.
     """
 
-    def __init__(self, base_url: str, timeout: int = _MCP_TIMEOUT_SECONDS) -> None:
+    def __init__(self, base_url: str, timeout: int | None = None) -> None:
         self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
-        self._http = httpx.AsyncClient(timeout=timeout)
+        self._timeout = timeout if timeout is not None else _get_mcp_timeout()
+        self._http = httpx.AsyncClient(timeout=self._timeout)
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

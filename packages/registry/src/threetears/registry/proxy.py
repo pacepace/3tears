@@ -91,7 +91,7 @@ class CallProxy:
         self,
         catalog: ToolCatalog,
         namespace: str = "aibots",
-        timeout: float = 30.0,
+        timeout: float | None = None,
         authorizer: AgentToolAuthorizer | None = None,
         routing_strategy: RoutingStrategy | None = None,
     ) -> None:
@@ -101,16 +101,19 @@ class CallProxy:
         :ptype catalog: ToolCatalog
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
-        :param timeout: timeout in seconds for forwarded NATS requests
-        :ptype timeout: float
+        :param timeout: default timeout in seconds for forwarded NATS requests.
+            sourced from THREETEARS_REGISTRY_CALL_TIMEOUT env var if not provided.
+        :ptype timeout: float | None
         :param authorizer: optional agent tool authorizer for access control
         :ptype authorizer: AgentToolAuthorizer | None
         :param routing_strategy: endpoint selection strategy (defaults to least-connections)
         :ptype routing_strategy: RoutingStrategy | None
         """
+        from threetears.registry.config import get_call_timeout
+
         self._catalog = catalog
         self._namespace = namespace
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._nc: Any | None = None
@@ -279,12 +282,34 @@ class CallProxy:
                 response.model_dump_json().encode("utf-8"),
             )
 
+    def _resolve_timeout(self, tool_name: str, tool_version: str) -> float:
+        """resolve effective timeout for a tool call.
+
+        checks catalog entry for per-tool declared timeout, falls back
+        to proxy default (from env var or platform default).
+
+        :param tool_name: namespaced tool name
+        :ptype tool_name: str
+        :param tool_version: tool version string
+        :ptype tool_version: str
+        :return: effective timeout in seconds
+        :rtype: float
+        """
+        full_name = f"{tool_name}@{tool_version}"
+        entry = self._catalog.get(full_name)
+        if entry is not None and entry.timeout_seconds is not None:
+            return entry.timeout_seconds
+        return self._timeout
+
     async def _forward_call(
         self,
         request: ProxyCallRequest,
         pod_id: str,
     ) -> ProxyCallResponse:
         """forward tool call to target tool pod via NATS request-reply.
+
+        uses per-tool timeout from catalog if declared, otherwise
+        falls back to proxy default.
 
         :param request: original call request from agent
         :ptype request: ProxyCallRequest
@@ -295,12 +320,13 @@ class CallProxy:
         """
         internal_subject = f"{self._namespace}.tools.internal.{pod_id}"
         internal_payload = _build_internal_payload(request)
+        effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
 
         try:
             reply = await self._nc.request(
                 internal_subject,
                 internal_payload,
-                timeout=self._timeout,
+                timeout=effective_timeout,
             )
             response = ProxyCallResponse.model_validate_json(reply.data)
         except TimeoutError:
@@ -310,13 +336,13 @@ class CallProxy:
                     "pod_id": pod_id,
                     "tool_name": request.tool_name,
                     "correlation_id": request.correlation_id,
-                    "timeout": self._timeout,
+                    "timeout": effective_timeout,
                 }},
             )
             response = ProxyCallResponse(
                 success=False,
                 content="",
-                error=f"tool call timed out after {self._timeout}s",
+                error=f"tool call timed out after {effective_timeout}s",
                 error_code="TOOL_TIMEOUT",
                 correlation_id=request.correlation_id,
             )

@@ -103,9 +103,9 @@ class RegistryServer:
         self,
         nats_url: str | None = None,
         namespace: str | None = None,
-        heartbeat_check_interval: float = 5.0,
-        heartbeat_timeout: float = 30.0,
-        call_timeout: float = 30.0,
+        heartbeat_check_interval: float | None = None,
+        heartbeat_timeout: float | None = None,
+        call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
         authorizer: AgentToolAuthorizer | None = None,
     ) -> None:
@@ -115,26 +115,31 @@ class RegistryServer:
         :ptype nats_url: str | None
         :param namespace: NATS subject namespace prefix (defaults to FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE env var)
         :ptype namespace: str | None
-        :param heartbeat_check_interval: seconds between heartbeat check sweeps
-        :ptype heartbeat_check_interval: float
-        :param heartbeat_timeout: seconds after which pod is considered dead
-        :ptype heartbeat_timeout: float
-        :param call_timeout: timeout in seconds for forwarded tool calls
-        :ptype call_timeout: float
+        :param heartbeat_check_interval: seconds between heartbeat check sweeps.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL env var if not provided.
+        :ptype heartbeat_check_interval: float | None
+        :param heartbeat_timeout: seconds after which pod is considered dead.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var if not provided.
+        :ptype heartbeat_timeout: float | None
+        :param call_timeout: timeout in seconds for forwarded tool calls.
+            sourced from THREETEARS_REGISTRY_CALL_TIMEOUT env var if not provided.
+        :ptype call_timeout: float | None
         :param kv_bucket: NATS KV bucket name for catalog persistence
         :ptype kv_bucket: str
         :param authorizer: tool access authorizer for agent call verification (defaults to None, resolved by _run_server)
         :ptype authorizer: AgentToolAuthorizer | None
         """
+        from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
+
         self._nats_url = nats_url or os.environ.get(
             "THREETEARS_NATS_URL", "nats://localhost:4222",
         )
         self._namespace = namespace or os.environ.get(
             "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots",
         )
-        self._heartbeat_check_interval = heartbeat_check_interval
-        self._heartbeat_timeout = heartbeat_timeout
-        self._call_timeout = call_timeout
+        self._heartbeat_check_interval = heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
+        self._heartbeat_timeout = heartbeat_timeout if heartbeat_timeout is not None else get_heartbeat_timeout()
+        self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
         self._nc: NatsClient | None = None

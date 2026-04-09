@@ -119,6 +119,7 @@ class CatalogEntry:
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None = None
+    timeout_seconds: float | None = None
     endpoints: list[ToolEndpoint] = field(default_factory=list)
     date_registered: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -189,6 +190,7 @@ class CatalogEntry:
             "description": self.description,
             "input_schema": self.input_schema,
             "output_schema": self.output_schema,
+            "timeout_seconds": self.timeout_seconds,
             "endpoints": [ep.to_dict() for ep in self.endpoints],
             "date_registered": self.date_registered.isoformat(),
         }
@@ -214,6 +216,7 @@ class CatalogEntry:
             description=data["description"],
             input_schema=data["input_schema"],
             output_schema=data.get("output_schema"),
+            timeout_seconds=data.get("timeout_seconds"),
             endpoints=endpoints,
             date_registered=datetime.fromisoformat(data["date_registered"]),
         )

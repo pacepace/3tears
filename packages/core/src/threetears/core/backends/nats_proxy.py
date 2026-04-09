@@ -108,7 +108,7 @@ class NatsProxyL3Backend:
         namespace_prefix: str,
         agent_id: str,
         default_namespace: str | None = None,
-        timeout_ms: int = 5000,
+        timeout_ms: int | None = None,
     ) -> None:
         """initialize NatsProxyL3Backend.
 
@@ -120,14 +120,20 @@ class NatsProxyL3Backend:
         :ptype agent_id: str
         :param default_namespace: default namespace for queries
         :ptype default_namespace: str | None
-        :param timeout_ms: default query timeout in milliseconds
-        :ptype timeout_ms: int
+        :param timeout_ms: default query timeout in milliseconds.
+            sourced from THREETEARS_NATS_PROXY_TIMEOUT_MS env var if not provided (default 5000).
+        :ptype timeout_ms: int | None
         """
         self._nc = nats_client
         self._ns = namespace_prefix
         self._agent_id = agent_id
         self._default_namespace = default_namespace or f"agent.{agent_id}"
-        self._timeout_ms = timeout_ms
+        if timeout_ms is not None:
+            self._timeout_ms = timeout_ms
+        else:
+            import os
+            raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
+            self._timeout_ms = int(raw) if raw is not None else 5000
 
     async def fetch(
         self,

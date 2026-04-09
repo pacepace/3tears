@@ -70,8 +70,8 @@ class HeartbeatMonitor:
         self,
         catalog: ToolCatalog,
         namespace: str = "aibots",
-        check_interval: float = 5.0,
-        timeout: float = 30.0,
+        check_interval: float | None = None,
+        timeout: float | None = None,
         l1_backend: SQLiteBackend | None = None,
     ) -> None:
         """initialize heartbeat monitor.
@@ -80,17 +80,21 @@ class HeartbeatMonitor:
         :ptype catalog: ToolCatalog
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
-        :param check_interval: seconds between health check sweeps
-        :ptype check_interval: float
-        :param timeout: seconds after which pod is considered dead
-        :ptype timeout: float
+        :param check_interval: seconds between health check sweeps.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL env var if not provided.
+        :ptype check_interval: float | None
+        :param timeout: seconds after which pod is considered dead.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var if not provided.
+        :ptype timeout: float | None
         :param l1_backend: optional SQLiteBackend for persistent pod health state
         :ptype l1_backend: SQLiteBackend | None
         """
+        from threetears.registry.config import get_heartbeat_check_interval, get_heartbeat_timeout
+
         self._catalog = catalog
         self._namespace = namespace
-        self._check_interval = check_interval
-        self._timeout = timeout
+        self._check_interval = check_interval if check_interval is not None else get_heartbeat_check_interval()
+        self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
         self._l1 = l1_backend
         if self._l1 is not None and not self._l1._initialized:
             self._l1.initialize(_HEALTH_L1_METADATA)

@@ -359,6 +359,132 @@ class TestCallProxyTimeout:
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["correlation_id"] == "corr-timeout-001"
 
+    @pytest.mark.asyncio
+    async def test_default_timeout_is_120_not_30(self) -> None:
+        """proxy default timeout must be 120s (platform default), not 30s."""
+        catalog = ToolCatalog()
+        entry = _make_entry(pod_id="pod-001")
+        await catalog.register(entry)
+
+        proxy = CallProxy(catalog, namespace="test")
+        assert proxy._timeout == 120.0, (
+            f"CallProxy default is {proxy._timeout}s but must be 120s. "
+            f"Hardcoded 30s killed slow tools for an entire day."
+        )
+
+    @pytest.mark.asyncio
+    async def test_per_tool_timeout_from_catalog(self) -> None:
+        """proxy uses per-tool timeout_seconds from catalog entry when declared."""
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+            full_name="test.slow_wait@1.0",
+            description="a slow tool",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=300.0,
+            endpoints=[ToolEndpoint(pod_id="pod-slow", status="available")],
+        )
+        await catalog.register(entry)
+
+        proxy = CallProxy(catalog, namespace="test", timeout=120.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        request = _make_call_request(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+        await asyncio.sleep(0)
+
+        nc.request.assert_called_once()
+        call_kwargs = nc.request.call_args
+        assert call_kwargs[1]["timeout"] == 300.0, (
+            "proxy should use per-tool timeout (300s) from catalog, "
+            "not proxy default (120s)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_proxy_default_when_no_tool_timeout(self) -> None:
+        """proxy uses its own default when tool does not declare timeout_seconds."""
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="test.fast_tool",
+            tool_version="1.0",
+            full_name="test.fast_tool@1.0",
+            description="a fast tool",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=None,
+            endpoints=[ToolEndpoint(pod_id="pod-fast", status="available")],
+        )
+        await catalog.register(entry)
+
+        proxy = CallProxy(catalog, namespace="test", timeout=120.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        request = _make_call_request(
+            tool_name="test.fast_tool",
+            tool_version="1.0",
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+        await asyncio.sleep(0)
+
+        nc.request.assert_called_once()
+        call_kwargs = nc.request.call_args
+        assert call_kwargs[1]["timeout"] == 120.0
+
+    @pytest.mark.asyncio
+    async def test_slow_tool_survives_with_declared_timeout(self) -> None:
+        """slow_tool declaring timeout_seconds=120 must not be killed at 30s.
+
+        this is the exact scenario that broke us: slow_tool sleeps 100s,
+        proxy had a 30s default, tool got killed. with the fix, the tool's
+        declared timeout (120s) is used, so the 100s sleep completes.
+        """
+        catalog = ToolCatalog()
+        entry = CatalogEntry(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+            full_name="test.slow_wait@1.0",
+            description="waits then returns",
+            input_schema={"type": "object", "properties": {}},
+            timeout_seconds=120.0,
+            endpoints=[ToolEndpoint(pod_id="pod-slow", status="available")],
+        )
+        await catalog.register(entry)
+
+        proxy = CallProxy(catalog, namespace="test")
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=_make_tool_response(
+            content="waited 100 seconds successfully",
+        ))
+        await proxy.start(nc)
+
+        request = _make_call_request(
+            tool_name="test.slow_wait",
+            tool_version="1.0",
+            arguments={"seconds": 100},
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy._handle_call(msg)
+        await asyncio.sleep(0)
+
+        nc.request.assert_called_once()
+        call_kwargs = nc.request.call_args
+        assert call_kwargs[1]["timeout"] == 120.0, (
+            "slow_tool with timeout_seconds=120 must get 120s, not 30s"
+        )
+
+        response_data = json.loads(nc.publish.call_args[0][1])
+        assert response_data["success"] is True
+        assert "waited 100 seconds" in response_data["content"]
+
 
 # -- in-flight tracking tests --
 

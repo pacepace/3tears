@@ -64,6 +64,8 @@ class DiscoverResultEntry(BaseModel):
     :ptype input_schema: dict[str, Any]
     :param output_schema: optional JSON Schema for tool output
     :ptype output_schema: dict[str, Any] | None
+    :param timeout_seconds: per-tool timeout declaration from tool registration, None uses platform default
+    :ptype timeout_seconds: float | None
     :param endpoint_count: number of pod endpoints serving this tool
     :ptype endpoint_count: int
     """
@@ -74,6 +76,7 @@ class DiscoverResultEntry(BaseModel):
     description: str = ""
     input_schema: dict[str, Any] = {}
     output_schema: dict[str, Any] | None = None
+    timeout_seconds: float | None = None
     endpoint_count: int = 0
 
 
@@ -215,6 +218,7 @@ class DiscoveryHandler:
                 description=entry.description,
                 input_schema=entry.input_schema,
                 output_schema=entry.output_schema,
+                timeout_seconds=entry.timeout_seconds,
                 endpoint_count=len(entry.endpoints),
             ))
         return results
@@ -242,6 +246,7 @@ class DiscoveryHandler:
                     description=entry.description,
                     input_schema=entry.input_schema,
                     output_schema=entry.output_schema,
+                    timeout_seconds=entry.timeout_seconds,
                     endpoint_count=len(entry.endpoints),
                 )
             else:

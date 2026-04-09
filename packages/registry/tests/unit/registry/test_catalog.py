@@ -207,7 +207,7 @@ class TestCatalogEntry:
         expected_keys = {
             "tool_name", "tool_version", "full_name",
             "description", "input_schema", "output_schema",
-            "endpoints", "date_registered",
+            "timeout_seconds", "endpoints", "date_registered",
         }
         assert set(data.keys()) == expected_keys
 
