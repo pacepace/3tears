@@ -254,7 +254,7 @@ class ToolServer:
 
         subject = f"{self._namespace}.tools.register"
         await self._nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
-        log.info(
+        log.debug(
             "published registration manifest",
             extra={"extra_data": {
                 "subject": subject,

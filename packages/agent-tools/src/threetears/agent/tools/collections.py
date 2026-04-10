@@ -352,6 +352,7 @@ async def migrate_context_items_schema(pool: Any) -> bool:
     Idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
 
     :param pool: asyncpg connection pool.
+    :ptype pool: Any
     :returns: True if columns were migrated, False if already current.
     """
     # Probe current columns
