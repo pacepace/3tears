@@ -100,12 +100,26 @@ The Generative Agents showed importance scoring was critical for separating sign
 
 - **`preference`** — Likes, dislikes, tastes, working style. *"Bob prefers deep cuts over greatest hits."*
 - **`fact`** — Biographical, situational, or world-state facts. *"The campaign is in Act 2." "Customer has been on Enterprise since 2024."*
-- **`decision`** — Declared choices, established by authority. Never consumed by distillation — stays until explicitly superseded. *"The protagonist is a retired detective." "The refund exception was approved by the team lead."*
+- **`decision`** — Declared choices, established by authority. Never consumed by distillation — stays until explicitly superseded. Carries `supporting_evidence_ids` linking to the observations that informed the choice. *"The protagonist is a retired detective." "The refund exception was approved by the team lead."*
 - **`action`** — Something the owner did. Structurally distinct so retrieval can answer "what have I done with this entity?" and prevent repetition. (LARP research found action memory more important for consistency than identity descriptions.) *"I introduced Bob and Alice over shared Metallica fandom." "I escalated this ticket to Tier 2."*
 - **`belief`** — Theory of mind, motivational inference, hypotheses. Lower default confidence than facts; actively revised when contradicted. *"Brian positions others as shields — likely strategic self-preservation." "This customer is probably evaluating competitors."*
 - **`commitment`** — *[foundation]* Forward-looking promises or intentions. Lifecycle: active → fulfilled / broken / expired. *"I promised to find that Aphex Twin deep cut for Charlie." "I told the customer I'd follow up by Friday."*
 
 **Dropped:** `topical_context` (→ `fact` + entity scoping), `relational_context` (→ `fact` or `decision` + entity scoping).
+
+#### Supporting evidence for decisions
+
+A decision without its reasoning is an assertion without authority. "The protagonist is female" invites challenge; knowing *why* the group chose that — and what alternatives were considered — makes the decision defensible and revisitable with full context.
+
+Decisions carry `supporting_evidence_ids` — a UUID array linking to the observations that informed them. Three purposes:
+
+1. **Retrieval with reasoning.** When a decision surfaces, the retriever can follow `supporting_evidence_ids` and include the linked observations, even if they wouldn't have scored high enough independently. The consuming app gets the conclusion *and* the argument.
+2. **Distillation protection.** Observations in an active decision's `supporting_evidence_ids` are protected from CONSUME — distillation must KEEP or REFINE them. When a decision is superseded, protection releases.
+3. **Informed supersession.** When someone proposes overturning a decision, the evidence chain surfaces alongside it. The group evaluates the original reasoning before deciding whether to reaffirm or supersede.
+
+**Population:** The resolution pipeline populates `supporting_evidence_ids` when resolving a new decision — it sees existing observations about the same entity and identifies which informed the choice. Apps can also link evidence explicitly via `link_evidence(decision_id, observation_ids)`.
+
+**`supporting_evidence_ids` vs `derived_from_ids`:** `derived_from_ids` traces distillation provenance (what was this synthesized from?). `supporting_evidence_ids` traces reasoning (what justifies this?). They may overlap on patterns but serve different retrieval needs. Decisions are never products of distillation, so they only carry `supporting_evidence_ids`.
 
 ### D. Entity identity is external to 3tears
 
@@ -180,7 +194,7 @@ Patterns may further distill into principles via the same process.
 #### Type-aware distillation
 
 - **Observations** (preference, fact, action, belief) are the primary distillation input.
-- **Decisions** are skipped entirely — they persist until explicitly superseded.
+- **Decisions** are skipped entirely — they persist until explicitly superseded. Observations linked via a decision's `supporting_evidence_ids` are also protected from CONSUME (KEEP or REFINE only). Protection releases when the decision is superseded.
 - **Commitments** *[foundation]* have their own lifecycle, managed separately.
 - **Beliefs** distill into belief-type patterns with theory-of-mind language, not behavioral summaries. The prompts handle this.
 
@@ -277,6 +291,7 @@ Within each partition: multi-signal scoring + MMR selection. Ratios are configur
 - `relevant_entities` — entity IDs to boost
 - `tier_weights` — optional per-tier scoring adjustments
 - `type_filter` — *[foundation]* include/exclude memory types
+- `include_evidence` — follow `supporting_evidence_ids` on decisions and include linked observations in results (default: false)
 - `include_historical` — *[foundation]* include superseded memories (default: false)
 
 #### Two modes
@@ -371,6 +386,23 @@ Customer 4821 mentions customer 5102 referred them: `about_id=4821, mentioned_en
 A facilitator observes a channel but rarely speaks. Karen says to Brooks: "I don't remember when you were in Spain." The retriever runs with `relevant_entities=[Karen, Brooks]` and query text about Spain. A weeks-old memory surfaces: "Brooks traveled to Spain in March 2024" — strong entity boost plus semantic match, importance 6. The facilitator offers: "Brooks mentioned being in Spain last March."
 
 This works because extraction gates are configured with the response-length gate disabled (the facilitator doesn't speak to generate responses), and the app's behavioral logic treats high-scoring retrieval as grounds for proactive engagement.
+
+### Collaborative writing: revisiting a decision
+
+Three agents are co-writing a novel. After lengthy discussion, they decide the protagonist is female — extraction stores: `type=decision, about_id=protagonist, importance 9, supporting_evidence_ids=[obs_1, obs_2, obs_3, obs_4]`. The linked observations capture the reasoning: "Female perspective better serves the noir genre's themes of institutional corruption" (obs_1), "Male protagonist would recapitulate the genre's overrepresentation problem" (obs_2), "The client specifically requested diverse leads" (obs_3), "Agent B initially proposed male but was persuaded by the thematic argument" (obs_4).
+
+Weeks later, a new agent joins and says "let's change the protagonist to be male." Retrieval with `include_evidence=True` surfaces:
+
+> **Decision:** The protagonist is female (importance 9)
+> **Evidence:**
+> - Female perspective better serves the noir genre's corruption themes
+> - Male protagonist recapitulates genre overrepresentation
+> - Client specifically requested diverse leads
+> - Agent B initially proposed male but was persuaded by thematic argument
+
+The moderator has the full reasoning — not just the conclusion. The decision might still be revisited, but the discussion starts from "here's why we chose this and what was already considered" rather than relitigating from scratch. If the group ultimately changes to male, a new decision supersedes the old one (which gets `valid_until` stamped), the old evidence protection releases, and the new decision carries its own `supporting_evidence_ids`.
+
+Critically, obs_1 through obs_4 survived weeks of distillation because they were linked as supporting evidence. Without that protection, they'd likely have been CONSUMEd into a pattern like "Group consensus favors female protagonist" — accurate but missing the specific arguments that make the decision defensible.
 
 ---
 
@@ -589,13 +621,14 @@ v2 is a breaking change. No shims, no fallback. This covers every touching point
 | *(new)* | `epistemic_type` | Nullable text. *[foundation]* |
 | *(new)* | `derived_from_ids` | Nullable UUID[]. |
 | *(new)* | `consumed_by_id` | Nullable UUID. |
+| *(new)* | `supporting_evidence_ids` | Nullable UUID[]. |
 | *(new)* | `date_last_accessed` | Nullable timestamptz. |
 | *(new)* | `valid_until` | Nullable timestamptz. *[foundation]* |
 | `type_memory` | `type_memory` | `topical_context` → `fact`, `relational_context` → `fact`. New: `action`, `belief`, `commitment`. |
 
 Backfill provenance from old columns if audit matters. Rename `user_id` → `owner_id` on media_content, media, memory_chunks tables.
 
-**Indexes:** `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, GIN on `mentioned_entity_ids`.
+**Indexes:** `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, GIN on `mentioned_entity_ids`, GIN on `supporting_evidence_ids`.
 
 ### MemoryEntity
 
@@ -604,7 +637,7 @@ Backfill provenance from old columns if audit matters. Rename `user_id` → `own
 | `entity.user_id` | `entity.owner_id` |
 | `entity.conversation_id` | *(removed)* |
 | `entity.message_id_source` | *(removed)* |
-| *(new)* | `entity.about_id`, `.about_type`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.date_last_accessed`, `.valid_until` |
+| *(new)* | `entity.about_id`, `.about_type`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
 
 ### MemoryExtractor
 
@@ -667,7 +700,7 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### MemoriesCollection
 
-`find_by_user()` → `find_by_owner()`. New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`.
+`find_by_user()` → `find_by_owner()`. New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`, `find_supporting_evidence(decision_id)` (returns memories linked via `supporting_evidence_ids`).
 
 ### Protocols
 
