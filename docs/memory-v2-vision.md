@@ -341,6 +341,99 @@ This is static analysis — it examines prompt text for the presence or absence 
 
 For deeper analysis, the tool can optionally run sample scenarios through the extraction and distillation pipelines and evaluate the output. This uses the app's configured LLM and costs tokens, but produces more meaningful feedback: "Given this sample conversation, your extraction prompt produced 3 memories but none captured the owner's action of recommending a song."
 
+### Memory configuration skill for Claude Code
+
+The presets, diagnostics, and prompt review tool are all useful independently. But the highest-leverage developer tool is an interactive Claude Code skill that combines all three with app-specific context: it reads a consuming app's documentation and codebase, understands its domain, and generates tailored memory configuration — extraction prompts, distillation prompts, gate settings, and retrieval parameters — grounded in 3tears best practices.
+
+This skill lives in the 3tears repo and ships with the package. Developers invoke it from their consuming app's workspace.
+
+#### What the skill knows
+
+The skill definition (a markdown file in the 3tears repo) embeds or references:
+
+- **The memory v2 data model.** Field definitions for owner_id, about_id, about_name, about_type, source fields, tier, type_memory. The skill understands what each field means and how extraction prompts must guide the LLM to populate them.
+- **The prompt review checklist.** The full list of requirements that extraction, worthiness, and distillation prompts must satisfy: entity identification, action capture, belief acceptance, motivational inference, tier assignment, decision preservation, observer/facilitator support.
+- **The preset definitions.** The full configuration for each preset (assistant, social, collaborative, game) including prompt text, gate thresholds, retrieval weights, and distillation trigger settings. The skill uses these as starting points and adapts them.
+- **Scenario patterns.** Canonical scenarios that test memory quality: participant joins with known history, connecting entities with shared traits, cross-entity pattern synthesis, quiet observer surfacing a relevant memory, collaborative artifact persistence, relationship evolution and "don't repeat yourself." The skill uses these patterns to generate app-specific test scenarios.
+- **Anti-patterns.** Known failure modes and their signatures: shallow distillation (behavioral summary without motivational inference), missing action memory (owner repeats itself), empty about_id (entity-boosted retrieval finds nothing), worthiness gate rejecting beliefs, decisions being consumed by distillation instead of persisting.
+
+#### What the skill does
+
+**Step 1: Understand the app.**
+
+The developer invokes the skill and points it at their app's documentation directory (or specific doc files). The skill reads documentation to identify:
+
+- What kinds of owners exist (personas, bots, users). Their roles — active participant, quiet observer, facilitator, game master, moderator.
+- What kinds of entities the owners interact with (humans, other personas, projects, goals, game-world objects, topics).
+- What interaction patterns exist — stimulus/response, reflection, orchestrated turns, multi-party conversation, cross-platform.
+- What platforms or sources feed into the system (Discord, Mastodon, RSS, tools, reflection).
+- What the app needs from memory — social cognition, project tracking, user modeling, game state, facilitation.
+
+The skill asks clarifying questions if the documentation is ambiguous. It does not guess.
+
+**Step 2: Select and adapt a preset.**
+
+Based on the app analysis, the skill selects the closest preset (or blends elements from multiple presets) and explains its reasoning: "Your app has multi-persona social interaction with quiet facilitators and a game-master role. Starting from the social preset with elements of the game preset for the DM persona."
+
+If the app has multiple distinct owner types with different memory needs (a DJ persona vs. a facilitator persona vs. a DM persona), the skill produces per-owner-type configurations rather than a single global config.
+
+**Step 3: Generate prompts.**
+
+The skill produces concrete prompt text for:
+
+- **Extraction prompt.** Tailored to the app's entity types, source types, and interaction patterns. Includes guidance for entity identification using the app's specific entity vocabulary (personas, users, channels, projects — whatever the app calls them). Includes action capture guidance specific to what actions the owners take in this app.
+- **Worthiness prompt.** Gate thresholds tuned for the app. Observer/facilitator owners get relaxed response-length gates. Rate limiting tuned for the app's interaction frequency.
+- **Resolution prompt.** Tuned for the app's dedup needs. Apps with many similar interactions (DJ playing music every session) need aggressive dedup. Apps with diverse interactions (book club discussing different books) need lighter dedup.
+- **Distillation prompts.** Both within-entity and cross-entity. Motivational inference guidance specific to the domain: a DJ's distillation prompt asks about listener preferences and social dynamics; a DM's asks about player strategy and behavioral tendencies; a facilitator's asks about group dynamics and individual communication styles.
+- **Gate configuration.** Per-owner-type extraction gate thresholds. Active participants get standard gates. Quiet observers get relaxed or disabled response-length gates. Reflection-only owners get disabled turn-count gates.
+- **Retrieval configuration.** Entity boost weights, tier weights, context budgets, and MMR parameters tuned for the app's use case.
+
+All output is in the exact format 3tears expects — the developer can drop it into their configuration directly.
+
+**Step 4: Walk through scenarios.**
+
+The skill generates 3-5 scenarios specific to the app (modeled after the canonical scenario patterns but using the app's actual entities, owners, and interaction types). For each scenario, it walks through:
+
+- What the owner perceives
+- What extraction should produce (specific memories with owner, about, type, tier)
+- What distillation should produce after several similar interactions
+- What retrieval should surface when context changes (a new entity joins, a reflection turn fires, a topic from a previous session recurs)
+- Where the proposed prompts might fall short
+
+This is the "table-top exercise" step. It catches gaps that static analysis misses: a prompt might mention action capture but fail to handle the specific action vocabulary of this app.
+
+**Step 5: Output configuration files.**
+
+The skill writes the final configuration — prompt text, gate settings, retrieval parameters — to files in the consuming app's repo. If the app already has 3tears configuration, the skill shows a diff against the existing config with explanations for each change.
+
+#### Keeping the skill current
+
+The skill definition references the memory v2 data model, preset definitions, and checklist from the 3tears repo. When these change (new fields, new best practices, updated presets), the skill definition updates in the same commit. The skill is tested against a set of reference app descriptions (synthetic apps covering each preset category) to verify that updates don't degrade output quality.
+
+The scenario patterns and anti-patterns are maintained as structured data within the skill definition, not as prose. This makes them auditable and testable: each anti-pattern has a description, a detection heuristic, and a remediation suggestion.
+
+#### Invocation
+
+The skill is invocable as a Claude Code slash command. The developer runs it from their consuming app's workspace:
+
+```
+/3tears:configure-memory docs/
+```
+
+The argument is the path to the app's documentation (or omitted to scan the current directory for documentation files). The skill can also accept specific files:
+
+```
+/3tears:configure-memory docs/PERSONAS.md docs/ARCHITECTURE.md
+```
+
+For apps that already have 3tears configuration, a review mode checks existing config against current best practices:
+
+```
+/3tears:review-memory
+```
+
+This runs the prompt review checklist and memory health diagnostics against the existing configuration, flagging gaps and suggesting improvements without regenerating everything from scratch.
+
 ---
 
 ## Migration guide for existing consuming apps
