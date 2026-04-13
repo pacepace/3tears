@@ -54,6 +54,10 @@ class VoyageAIEmbeddingProvider:
         if self._model is not None:
             return self._model
 
+        from threetears.models.providers._voyageai_compat import apply_voyageai_compat
+
+        apply_voyageai_compat()
+
         from langchain_voyageai import VoyageAIEmbeddings
 
         kwargs: dict[str, Any] = {

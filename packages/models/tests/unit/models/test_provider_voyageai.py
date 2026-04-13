@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock
 
 from threetears.models.protocol import EmbeddingProvider
@@ -10,6 +11,38 @@ from threetears.models.providers.voyageai import (
     _DEFAULT_EMBEDDING_DIMENSIONS,
 )
 from threetears.models.results import EmbeddingResult
+
+
+class TestVoyageAICompat:
+    """tests for voyageai Python 3.14 compatibility shim."""
+
+    def test_compat_stubs_multimodal_module(self) -> None:
+        """apply_voyageai_compat injects stub module into sys.modules on 3.14+."""
+        from threetears.models.providers._voyageai_compat import apply_voyageai_compat
+
+        apply_voyageai_compat()
+        if sys.version_info >= (3, 14):
+            mod = sys.modules.get("voyageai.object.multimodal_embeddings")
+            assert mod is not None
+            assert hasattr(mod, "MultimodalEmbeddingsObject")
+            assert hasattr(mod, "MultimodalInputRequest")
+
+    def test_compat_safe_to_call_twice(self) -> None:
+        """apply_voyageai_compat is safe to call multiple times."""
+        from threetears.models.providers._voyageai_compat import apply_voyageai_compat
+
+        apply_voyageai_compat()
+        apply_voyageai_compat()
+
+    def test_compat_allows_voyageai_import(self) -> None:
+        """after compat patch, langchain_voyageai can be imported on 3.14+."""
+        from threetears.models.providers._voyageai_compat import apply_voyageai_compat
+
+        apply_voyageai_compat()
+        if sys.version_info >= (3, 14):
+            from langchain_voyageai import VoyageAIEmbeddings
+
+            assert hasattr(VoyageAIEmbeddings, "aembed_documents")
 
 
 class TestVoyageAIEmbeddingProvider:
