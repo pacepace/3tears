@@ -16,6 +16,7 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "anthropic", specifier = ">=0.94.0" },
     { name = "duckdb", specifier = ">=1.0" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "opentelemetry-api", specifier = ">=1.28" },

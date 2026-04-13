@@ -7,13 +7,20 @@ and model capabilities.
 
 from __future__ import annotations
 
+from threetears.models.cache import ModelCache
 from threetears.models.capabilities import ModelCapabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.errors import friendly_api_error, identify_provider
 from threetears.models.messages import (
     ChatMessage,
     MessageRole,
     ToolCallRequest,
     ToolDefinition,
+)
+from threetears.models.preprocessing import (
+    enforce_alternating_roles,
+    format_vision_content,
+    preprocess_messages,
 )
 from threetears.models.protocol import (
     ChatProvider,
@@ -23,6 +30,7 @@ from threetears.models.protocol import (
     SpeechProvider,
     TranscriptionProvider,
 )
+from threetears.models.registry import ProviderRegistry
 from threetears.models.results import (
     ChatChunk,
     ChatResult,
@@ -31,6 +39,11 @@ from threetears.models.results import (
     SpeechResult,
     TranscriptionResult,
     TranscriptionSegment,
+)
+from threetears.models.streaming import (
+    merge_chunks,
+    recover_invalid_tool_calls,
+    recover_split_tool_calls,
 )
 
 __all__ = [
@@ -60,4 +73,19 @@ __all__ = [
     "RerankingProvider",
     # capabilities
     "ModelCapabilities",
+    # preprocessing
+    "enforce_alternating_roles",
+    "format_vision_content",
+    "preprocess_messages",
+    # streaming
+    "merge_chunks",
+    "recover_split_tool_calls",
+    "recover_invalid_tool_calls",
+    # errors
+    "identify_provider",
+    "friendly_api_error",
+    # cache
+    "ModelCache",
+    # registry
+    "ProviderRegistry",
 ]
