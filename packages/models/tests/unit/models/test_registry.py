@@ -88,9 +88,18 @@ class TestProviderRegistry:
 
     def test_get_provider_import_error_has_install_hint(self) -> None:
         """builtin provider ImportError message includes install hint."""
-        registry = ProviderRegistry()
-        with pytest.raises(ImportError, match=r"3tears-models\[whisper\]"):
-            registry.get_provider("whisper")
+        # inject a fake builtin that cannot be imported to test hint message
+        from threetears.models import registry as registry_mod
+
+        original = registry_mod._BUILTIN_PROVIDERS.copy()
+        registry_mod._BUILTIN_PROVIDERS["fake-builtin"] = "totally.nonexistent.module"
+        try:
+            fresh = ProviderRegistry()
+            with pytest.raises(ImportError, match=r"3tears-models\[fake-builtin\]"):
+                fresh.get_provider("fake-builtin")
+        finally:
+            registry_mod._BUILTIN_PROVIDERS.clear()
+            registry_mod._BUILTIN_PROVIDERS.update(original)
 
     def test_get_provider_real_module(self) -> None:
         """registered real stdlib module loads successfully."""
