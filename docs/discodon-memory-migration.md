@@ -306,11 +306,158 @@ Role-based behavior is cognitive architecture. An observer's relaxed extraction 
 
 Hard cutover — no data migration, no dual-write. Entities start with empty 3tears memory and rebuild through normal operation. R&D phase, little data to lose.
 
-### Infrastructure prerequisites
-1. **Stand up PostgreSQL + pgvector.** New dependency.
-2. **Deploy 3tears-identity.** Empty — entities and people are discovered at runtime as the extraction pipeline encounters them.
-3. **Configure `EmbeddingProvider`.** ~20 lines in a config module.
-4. **Configure `social` memory profile preset** as baseline (DJ pattern with entity observation, action memory, cross-entity patterns).
+### What 3tears is
+
+3tears is a **Python library suite**, not a service. You `pip install 3tears-agent-memory` into discodon. No separate container, no sidecar, no API gateway. The library runs in-process inside discodon's existing container.
+
+But it brings infrastructure dependencies that discodon doesn't have today.
+
+### What discodon has now
+
+| Component | Technology | Where |
+|---|---|---|
+| Database | Azure Cosmos DB (NoSQL API) | Azure |
+| IPC | ZeroMQ (REQ/REP, PUB/SUB) | In-container |
+| LLM | OpenRouter (via LangChain) | API |
+| Deployment | Fly.io (single Docker container) | Cloud |
+| Embeddings | **None** | — |
+| PostgreSQL | **None** | — |
+| NATS | **None** | — |
+
+### What 3tears agent-memory requires
+
+| Dependency | What it does | Required? |
+|---|---|---|
+| **PostgreSQL + pgvector** | Memory storage, vector similarity search, full-text search. L3 (source of truth) in the three-tier cache. | Yes — core storage engine |
+| **NATS server** | L2 distributed cache (cross-pod KV store). Also used by 3tears-registry for tool discovery. | Yes for L2 cache, but **can skip in single-pod deployments** — L1 (SQLite) + L3 (PostgreSQL) still work. L2 matters when multiple pods need cache consistency. |
+| **Embedding API** | App implements `EmbeddingProvider` protocol. Any provider works (VoyageAI, OpenAI, local model). ~20 lines of code. | Yes — semantic search requires embeddings |
+| **LLM for extraction/distillation** | App implements `ChatModelFactory` protocol. Discodon already has OpenRouter — wrap it. | Yes — but discodon already has this |
+| **asyncpg connection pool** | Passed to 3tears at initialization. Pool lifecycle owned by the app. | Yes — new dependency, standard Python lib |
+
+### Infrastructure plan
+
+#### 1. PostgreSQL + pgvector
+
+**Option A: Managed service (recommended for Fly.io).** Fly Postgres or Supabase. Both support pgvector. Fly Postgres runs in the same region as your app VM — low latency. Supabase is managed with backups/monitoring out of the box.
+
+**Option B: Sidecar container.** Run PostgreSQL in a second Fly machine or docker-compose service. You manage backups and upgrades.
+
+**Option C: Azure Database for PostgreSQL.** Keeps everything in Azure alongside Cosmos DB. Higher latency from Fly.io unless you also move the app to Azure.
+
+Whichever option: enable the `vector` extension (`CREATE EXTENSION vector`), create the 3tears schema, and provide a connection string to discodon at startup.
+
+**Sizing:** Memory corpus will be small (R&D). A minimal Postgres instance (1 vCPU, 256MB) is fine to start. pgvector indexes don't matter until you have >10K memories per owner.
+
+#### 2. NATS (optional for now)
+
+Discodon runs as a single container on Fly.io. No multi-pod scaling. L2 cache provides cross-pod consistency — which you don't need with one pod.
+
+**Skip NATS initially.** Run with L1 (SQLite, in-process) + L3 (PostgreSQL). If you later scale to multiple pods, add NATS. The 3tears cache layer degrades gracefully — L2 miss just falls through to L3.
+
+This means the `3tears-registry` package (which requires NATS for tool discovery) isn't usable yet either, but discodon has its own tool routing via ZeroMQ.
+
+#### 3. Embedding provider
+
+Implement `EmbeddingProvider` — a protocol with two methods:
+
+```python
+class EmbeddingProvider(Protocol):
+    async def embed_text(self, text: str) -> tuple[list[float] | None, int]: ...
+
+    @property
+    def dimensions(self) -> int: ...
+```
+
+**Options:**
+- **VoyageAI** — best quality for retrieval, ~$0.01/1M tokens. Recommended.
+- **OpenAI text-embedding-3-small** — cheapest, good enough, $0.02/1M tokens.
+- **Run locally** — e.g., `sentence-transformers` on CPU. Zero cost, higher latency, no API dependency. Feasible on Fly.io shared-cpu-2x but adds startup time.
+
+The implementation is a thin HTTP client wrapper. Add the API key to discodon's Cosmos-backed secret store (same pattern as `DD_OPENROUTER_API_KEY`).
+
+#### 4. ChatModelFactory for extraction/distillation
+
+3tears needs an LLM for the extraction pipeline (worthiness gate, candidate extraction, resolution) and distillation. Discodon already has `OpenRouterClient` with LangChain integration. Wrap it:
+
+```python
+class ChatModelFactory(Protocol):
+    def create_chat_model(self, purpose: str) -> BaseChatModel: ...
+```
+
+The `purpose` parameter lets you route different 3tears operations to different models: `"extraction"` → cheap/fast (Haiku), `"distillation"` → better (Sonnet). Discodon already supports per-entity model overrides — same pattern.
+
+#### 5. asyncpg pool
+
+Add `asyncpg` to discodon's dependencies. Create a connection pool at startup (in `main.py` after Cosmos secrets load), pass it to 3tears initialization. Pool lifecycle follows discodon's process supervisor — create on start, close on drain.
+
+```python
+pool = await asyncpg.create_pool(dsn=config.threetears.postgres_dsn)
+```
+
+Add `DD_THREETEARS_POSTGRES_DSN` to the config system (new config section, 4 lines of Pydantic).
+
+#### 6. 3tears initialization in discodon
+
+Wire it together at entity coordinator startup:
+
+```python
+from threetears.agent.memory import MemoryExtractor, MemoryRetriever, MemoryConfig
+
+# Pool created earlier in startup
+memory_config = MemoryConfig(preset="social", ...)
+extractor = MemoryExtractor(pool, embedding_provider, chat_model_factory, memory_config)
+retriever = MemoryRetriever(pool, embedding_provider, memory_config)
+```
+
+These are passed to `PersonaComponent` (or a new memory adapter) and called during the turn pipeline.
+
+#### 7. Schema initialization
+
+3tears has a `MigrationRunner` that creates and migrates tables. Run it once at startup (idempotent):
+
+```python
+from threetears.core.data.migrations import MigrationRunner
+runner = MigrationRunner(pool)
+await runner.run()
+```
+
+Tables are created in an agent-namespaced schema (`agent_{agent_id.hex}`). pgvector indexes are created automatically.
+
+### Updated Dockerfile changes
+
+```dockerfile
+# Add to existing Dockerfile
+RUN pip install 3tears-agent-memory 3tears-identity asyncpg
+# No new services — everything runs in-process
+```
+
+No new containers. No new processes. The Docker image gets slightly larger (asyncpg + pgvector Python bindings). The only new external dependency is the PostgreSQL server.
+
+### Updated fly.toml changes
+
+If using Fly Postgres:
+
+```toml
+# Existing fly.toml — add the Postgres connection string as a secret
+# fly secrets set DD_THREETEARS_POSTGRES_DSN="postgres://user:pass@db.internal:5432/discodon"
+```
+
+If using an external embedding API:
+
+```toml
+# fly secrets set DD_EMBEDDING_API_KEY="voy-..."
+```
+
+### Operational summary
+
+| Before | After |
+|---|---|
+| 1 service: Cosmos DB | 2 services: Cosmos DB + PostgreSQL |
+| 0 embedding calls | Embedding calls on every extraction + every retrieval query |
+| Distillation: in-process LLM call | Distillation: in-process LLM call (same, but non-destructive) |
+| Memory in Cosmos entity doc | Memory in PostgreSQL, cognitive state in Cosmos entity doc |
+| No vector search | pgvector semantic search |
+| ~$0/month infra beyond Cosmos | +$0-7/month Fly Postgres + ~$1-5/month embeddings (R&D volume) |
 
 ### Discodon code changes
 
