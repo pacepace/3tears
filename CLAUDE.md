@@ -2,17 +2,21 @@
 
 ## Project
 
-Three-tier data object framework extracted from MetaLLM. Monorepo with three namespace packages:
+Three-tier data object framework extracted from MetaLLM. Monorepo with seven namespace packages:
 
 | PyPI package | Import | Purpose |
 |---|---|---|
-| `3tears` | `threetears.core` | Three-tier data objects (L1/L2/L3 caching) |
-| `3tears-agent-memory` | `threetears.agent.memory` | Chat agent memory system |
-| `3tears-agent-tools` | `threetears.agent.tools` | Chat agent tools framework |
+| `3tears` | `threetears.core` | Three-tier caching, BaseEntity/BaseCollection, DataStore |
+| `3tears-agent-memory` | `threetears.agent.memory` | Agent memory extraction, retrieval, hybrid search |
+| `3tears-agent-tools` | `threetears.agent.tools` | Tool routing, execution, builtins, MCP |
+| `3tears-channels` | `threetears.channels` | Unified message protocol, platform adapters |
+| `3tears-observe` | `threetears.observe` | Structured logging, OpenTelemetry tracing |
+| `3tears-langgraph` | `threetears.langgraph` | LangGraph checkpoint persistence, graph builders |
+| `3tears-registry` | `threetears.registry` | Multi-pod tool catalog, discovery, load balancing |
 
 ## Dev Environment
 
-Uses **uv workspaces**. Python 3.11+.
+Uses **uv workspaces**. Python 3.14+.
 
 ```bash
 uv sync                    # install all packages in dev mode
@@ -38,18 +42,22 @@ packages/
   core/               # PyPI: 3tears
   agent-memory/       # PyPI: 3tears-agent-memory
   agent-tools/        # PyPI: 3tears-agent-tools
+  channels/           # PyPI: 3tears-channels
+  observe/            # PyPI: 3tears-observe
+  langgraph/          # PyPI: 3tears-langgraph
+  registry/           # PyPI: 3tears-registry
 ```
 
 Each package has its own `pyproject.toml`, `src/`, and `tests/`.
 
 ## Namespace Packages
 
-The `threetears/` and `threetears/agent/` directories must **never** have `__init__.py` files. Only leaf packages (`threetears/core/`, `threetears/agent/memory/`, `threetears/agent/tools/`) get `__init__.py`. This is required for implicit namespace packages to work when packages are installed independently.
+The `threetears/` and `threetears/agent/` directories must **never** have `__init__.py` files. Only leaf packages (`threetears/core/`, `threetears/agent/memory/`, `threetears/agent/tools/`, `threetears/channels/`, `threetears/observe/`, `threetears/langgraph/`, `threetears/registry/`) get `__init__.py`. This is required for implicit namespace packages to work when packages are installed independently.
 
 ## Conventions
 
 - Build backend: hatchling
-- Linting: ruff (line-length 120, target py311)
+- Linting: ruff (line-length 120, target py314)
 - Type checking: mypy (strict)
 - Testing: pytest
 - No poetry — uv only

@@ -48,13 +48,19 @@ The agent-memory package provides:
 
 Memories are scoped by `user_id` (with optional `agent_id` and `customer_id`) and carry `conversation_id` and `message_id_source` as provenance. There's no concept of who or what a memory is *about*, no epistemic metadata, no abstraction tiers, and no automatic synthesis.
 
-The broader 3tears ecosystem now includes:
+The broader 3tears ecosystem (7 packages total):
 
-- **3tears-channels** — unified message protocol (`ChannelMessage`/`ChannelResponse`) with platform adapters (Slack, Discord, WebSocket) and rich formatting
-- **3tears-observe** — structured logging + OpenTelemetry tracing with zero-cost passthrough (no OTel dependency required)
-- **3tears-langgraph** — LangGraph integration with three-tier checkpoint persistence and graph builder factories
-- **3tears-registry** — multi-pod tool catalog with discovery, least-connections load balancing, and bootstrap token auth
-- **threetears.core.data** — `DataStore` with dynamic table creation, `MigrationRunner` with versioned schema migrations
+| PyPI package | Import | Purpose |
+|---|---|---|
+| `3tears` | `threetears.core` | Three-tier caching, BaseEntity/BaseCollection, DataStore, MigrationRunner |
+| `3tears-agent-memory` | `threetears.agent.memory` | Memory extraction, retrieval, ledger, tools (this package) |
+| `3tears-agent-tools` | `threetears.agent.tools` | Tool routing, execution, MCP, builtins (primary consumer of memory results) |
+| `3tears-channels` | `threetears.channels` | Unified message protocol, platform adapters (Slack, Discord, WebSocket) |
+| `3tears-observe` | `threetears.observe` | Structured logging, OpenTelemetry tracing (zero-cost passthrough) |
+| `3tears-langgraph` | `threetears.langgraph` | LangGraph checkpoint persistence, graph builder factories |
+| `3tears-registry` | `threetears.registry` | Multi-pod tool catalog, discovery, load balancing, auth |
+
+Dependency chain: `observe → core → agent-memory → agent-tools → registry`. Channels depends on observe only. LangGraph is standalone.
 
 ---
 
@@ -135,7 +141,7 @@ Decisions carry `supporting_evidence_ids` — a UUID array linking to the observ
 
 **Problem:** The same person appears as "discord:123456789" and "mastodon:@alice@social.example." The same project is "the novel" and "Chicago Noir."
 
-**Why this is a separate module:** Identity resolution is a distinct concern from memory. A DJ bot linking handles, a support system integrating Salesforce, an enterprise app federating SSO — these need different resolution strategies, but the underlying primitives (canonical IDs, platform mappings, merge/split operations, display names) are the same everywhere. Identity belongs in 3tears as a separate module that the memory module integrates with via opaque UUIDs.
+**Why this is a separate module:** Identity resolution is a distinct concern from memory. A DJ bot linking handles, a support system integrating Salesforce, an enterprise app federating SSO — these need different resolution strategies, but the underlying primitives (canonical IDs, platform mappings, merge/split operations, display names) are the same everywhere. Identity belongs in 3tears as a separate package — `3tears-identity` (`threetears.identity`) — that the memory module integrates with via opaque UUIDs. Following the established convention: `threetears.agent.*` for agent-specific packages, `threetears.*` for general utilities. Identity is general.
 
 **The memory module's contract:** `about_id` and `mentioned_entity_ids` are opaque canonical UUIDs. The memory module never resolves them — that's the identity module's job. Apps call the identity module to map platform identifiers to canonical IDs before calling `extract()` or `retrieve()`.
 
@@ -762,15 +768,15 @@ A (memory model + schema)
 
 **A is prerequisite to everything.** B and C are independent of each other. D depends on A+C (importance is a scoring signal). E depends on A+C (importance triggers distillation). F depends on E (cross-entity operates on patterns from within-entity). G is independent of everything except A.
 
-The identity module develops independently as a separate 3tears package. The only integration point with the memory module is `merge_entity_ids()` in A.
+`3tears-identity` develops independently. It sits alongside core in the package dependency graph (`observe → core → identity`, no memory dependency). Agent-memory gains an optional dependency on identity for name resolution. The only hard integration point with the memory module is `merge_entity_ids()` in A.
 
 Work within each item is incremental. D can ship with basic entity boosting before budget allocation. E can ship with session-boundary triggers before importance-sum triggers. [foundation] fields are in the schema from A; their processing logic ships with the item that uses them.
 
 ---
 
-## Appendix: Requirements for the identity module
+## Appendix: Requirements for `3tears-identity`
 
-The identity module is a separate 3tears package — it shares no code with the memory module beyond the canonical UUID contract. This section defines what it must provide.
+`3tears-identity` (`threetears.identity`) is a separate 3tears package — it shares no code with the memory module beyond the canonical UUID contract. This section defines what it must provide.
 
 ### Why identity is a separate module
 
