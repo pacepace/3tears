@@ -89,8 +89,8 @@ class TestProviderRegistry:
     def test_get_provider_import_error_has_install_hint(self) -> None:
         """builtin provider ImportError message includes install hint."""
         registry = ProviderRegistry()
-        with pytest.raises(ImportError, match=r"3tears-models\[anthropic\]"):
-            registry.get_provider("anthropic")
+        with pytest.raises(ImportError, match=r"3tears-models\[whisper\]"):
+            registry.get_provider("whisper")
 
     def test_get_provider_real_module(self) -> None:
         """registered real stdlib module loads successfully."""
