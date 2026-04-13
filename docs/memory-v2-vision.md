@@ -34,17 +34,27 @@ This design draws on the growing body of work on agent memory. We won't repeat t
 
 ---
 
-## Current state
+## Current state (v0.5.0)
 
 The agent-memory package provides:
 
-- **Memory extraction** via a gated, multi-stage LLM pipeline (heuristic gates, worthiness gate, candidate extraction, embedding, dedup, LLM resolution with ADD/UPDATE/DELETE/NOOP)
-- **Hybrid retrieval** combining semantic search (pgvector), keyword search (PostgreSQL FTS), and recency decay, with MMR reranking
+- **Memory extraction** via a three-gate pipeline: heuristic gates (message/response length, turn count), NATS KV rate limiter (configurable cooldown), LLM worthiness check — then candidate extraction, embedding, dedup, and LLM resolution (ADD/UPDATE/DELETE/NOOP). Fire-and-forget safe.
+- **Three-source hybrid retrieval** across memories, media content, and memory chunks — each scored with semantic search (pgvector), keyword search (PostgreSQL FTS), and recency decay (memories/media) or semantic + keyword only (chunks). Cross-type MMR reranking. Structured `RetrievalResult` output.
 - **Three-tier caching** (L1 SQLite / L2 NATS KV / L3 PostgreSQL) inherited from threetears.core
-- **Memory ledger** tracking surfaced items to prevent redundancy
+- **Memory ledger** tracking surfaced items (FIFO, capacity 50) to prevent redundancy, with optional SQLite crash recovery
 - **Five memory types**: preference, fact, decision, topical_context, relational_context
+- **Three LangChain tools**: `memory_search` (semantic + keyword + batch ID lookup), `recall_memory` (full-content by ID), `add_memory` (explicit storage with auto-dedup at 0.90 similarity)
+- **Multi-tenant scoping**: `agent_id` and `customer_id` alongside `user_id` — all queries apply scope filters via `find_by_scope()`
 
-Memories are scoped by `user_id` with `conversation_id` and `message_id_source` as provenance. There's no concept of who or what a memory is *about*, no epistemic metadata, no abstraction tiers, and no automatic synthesis.
+Memories are scoped by `user_id` (with optional `agent_id` and `customer_id`) and carry `conversation_id` and `message_id_source` as provenance. There's no concept of who or what a memory is *about*, no epistemic metadata, no abstraction tiers, and no automatic synthesis.
+
+The broader 3tears ecosystem now includes:
+
+- **3tears-channels** — unified message protocol (`ChannelMessage`/`ChannelResponse`) with platform adapters (Slack, Discord, WebSocket) and rich formatting
+- **3tears-observe** — structured logging + OpenTelemetry tracing with zero-cost passthrough (no OTel dependency required)
+- **3tears-langgraph** — LangGraph integration with three-tier checkpoint persistence and graph builder factories
+- **3tears-registry** — multi-pod tool catalog with discovery, least-connections load balancing, and bootstrap token auth
+- **threetears.core.data** — `DataStore` with dynamic table creation, `MigrationRunner` with versioned schema migrations
 
 ---
 
@@ -148,6 +158,8 @@ Requirements for an external identity system are in the appendix.
 - `source_context` — optional structured metadata (channel, ticket number, feed title)
 
 Provenance is mostly audit/debug metadata. The one exception: `epistemic_type=reported` memories (third-party information) may get lower confidence based on source type. A DJ learning about Bob's taste from Bob directly is more reliable than hearing about it from Charlie.
+
+**Alignment with 3tears-channels:** The channels package already defines platform adapters with a unified `ChannelMessage` protocol carrying `channel_type`, `sender_id`, `conversation_id`, and `metadata`. The provenance fields map naturally: `source_type` ← `channel_type`, `source_id` ← message ID from the adapter, `source_context` ← channel-specific metadata. Apps using channels get provenance population nearly for free.
 
 ### F. Memory tiers and distillation
 
@@ -598,15 +610,17 @@ Optionally: run sample scenarios through the pipeline and evaluate output. Costs
 
 ## Migration guide
 
-v2 is a breaking change. No shims, no fallback. This covers every touching point.
+v2 is a breaking change from v0.5.0. No shims, no fallback. This covers every touching point.
 
 ### Database schema
 
 **memories table:**
 
-| v1 column | v2 column | Action |
+| v0.5.0 column | v2 column | Action |
 |---|---|---|
 | `user_id` | `owner_id` | Rename |
+| `agent_id` | *(absorbed into `owner_id`)* | The agent persona becomes the memory owner. Apps that need to distinguish agent instances use `owner_id` directly. |
+| `customer_id` | `customer_id` | Retained — tenant isolation is orthogonal to the entity model. |
 | `conversation_id` | *(removed)* | Drop (→ `source_type`/`source_id`/`source_context`) |
 | `message_id_source` | *(removed)* | Drop (same) |
 | *(new)* | `about_id` | Nullable UUID. Existing → `NULL`. |
@@ -632,9 +646,11 @@ Backfill provenance from old columns if audit matters. Rename `user_id` → `own
 
 ### MemoryEntity
 
-| v1 | v2 |
+| v0.5.0 | v2 |
 |---|---|
 | `entity.user_id` | `entity.owner_id` |
+| `entity.agent_id` | *(absorbed into `owner_id`)* |
+| `entity.customer_id` | `entity.customer_id` |
 | `entity.conversation_id` | *(removed)* |
 | `entity.message_id_source` | *(removed)* |
 | *(new)* | `entity.about_id`, `.about_type`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
@@ -642,15 +658,17 @@ Backfill provenance from old columns if audit matters. Rename `user_id` → `own
 ### MemoryExtractor
 
 ```python
-# v1
+# v0.5.0
 extract(pool, user_id, conversation_id, message_id_source,
-        user_message, assistant_response, turn_count)
+        user_message, assistant_response, turn_count,
+        agent_id=None, customer_id=None)
 
 # v2
 extract(pool, owner_id, user_message, assistant_response,
         source_type, source_id,
         turn_count=..., source_context=...,
-        about_context=..., gate_config=...)
+        about_context=..., gate_config=...,
+        customer_id=None)
 ```
 
 `about_context` provides canonical entity IDs and metadata — the app resolves platform identifiers via its own identity service before passing them. When extraction identifies a name not in `about_context`, it emits the raw name for the app to resolve.
@@ -673,12 +691,16 @@ Extraction output format:
 ### MemoryRetriever
 
 ```python
-# v1
-retrieve(pool, user_id, user_text, ledger=None)
+# v0.5.0
+retrieve(pool, user_id, user_text, ledger=None,
+         agent_id=None, customer_id=None)
+# also: retrieve_with_candidates(...) → RetrievalResult
 
 # v2
 retrieve(pool, owner_id, query, relevant_entities=None,
-         tier_weights=None, mode="conversational", ledger=None)
+         tier_weights=None, mode="conversational", ledger=None,
+         customer_id=None, include_evidence=False)
+# RetrievalResult gains entity_groups and evidence fields
 ```
 
 `relevant_entities` matches against both `about_id` and `mentioned_entity_ids`. Results include epistemic metadata and entity grouping.
@@ -700,7 +722,7 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### MemoriesCollection
 
-`find_by_user()` → `find_by_owner()`. New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`, `find_supporting_evidence(decision_id)` (returns memories linked via `supporting_evidence_ids`).
+`find_by_user()` → `find_by_owner()`. `find_by_scope()` → `find_by_owner()` (agent scope absorbed into owner; customer_id remains as a filter parameter). New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`, `find_supporting_evidence(decision_id)` (returns memories linked via `supporting_evidence_ids`).
 
 ### Protocols
 
@@ -710,20 +732,20 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### Tools
 
-`user_id` → `owner_id`. `MemorySearchInput` adds `about_id`, `about_type`, `tier`, `type_memory`, `min_importance` filters.
+`user_id` → `owner_id`. Existing tools (`memory_search`, `recall_memory`, `add_memory`) all updated. `MemorySearchInput` adds `about_id`, `about_type`, `tier`, `type_memory`, `min_importance` filters. `AddMemoryInput` adds `about_id`, `about_type`, `mentioned_entity_ids`, `importance`.
 
-### Migration checklist
+### Migration checklist (from v0.5.0)
 
-1. **Database:** Schema migration. All existing memories → `tier='observation'`, `about_id=NULL`, `importance=NULL`. Migrate type values.
-2. **Entity access:** `user_id` → `owner_id` everywhere.
-3. **Extraction calls:** New signature. Minimal: rename, move IDs to source fields, pass `about_context=None`.
-4. **Retrieval calls:** New signature. Minimal: rename params. Add `relevant_entities` and `tier_weights` to opt in.
+1. **Database:** Schema migration. All existing memories → `tier='observation'`, `about_id=NULL`, `importance=NULL`. Migrate type values. Absorb `agent_id` into `owner_id`; keep `customer_id`.
+2. **Entity access:** `user_id` → `owner_id` everywhere. Remove `agent_id` as a separate dimension — the agent persona is now the owner.
+3. **Extraction calls:** New signature. Move `conversation_id`/`message_id_source` to `source_type`/`source_id`/`source_context`. Pass `about_context=None` to start; add entity context incrementally. Apps using 3tears-channels can derive provenance from `ChannelMessage` fields.
+4. **Retrieval calls:** New signature. `retrieve_with_candidates()` gains entity grouping and evidence fields. Add `relevant_entities` and `tier_weights` to opt in.
 5. **Custom prompts:** Update for new output format with importance, confidence, epistemic_type, mentioned entities.
 6. **ChatModelFactory:** Handle `"distillation"` purpose.
 7. **Result consumers:** Handle new fields, entity-grouped output, epistemic annotations.
-8. **Collection queries:** `find_by_user()` → `find_by_owner()`.
+8. **Collection queries:** `find_by_user()` and `find_by_scope()` → `find_by_owner()`.
 
-Steps 1-3 are required. Steps 4-8 are incremental — new params default to v1-like behavior. [foundation] fields are nullable and unused until ready.
+Steps 1-3 are required. Steps 4-8 are incremental — new params default to v0.5.0-like behavior. [foundation] fields are nullable and unused until ready.
 
 ---
 
