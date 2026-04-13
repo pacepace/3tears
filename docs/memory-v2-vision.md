@@ -123,6 +123,16 @@ Action memories participate in distillation normally. Individual actions ("I pla
 
 Without action memory, the owner has memories about what it *knows* but not what it *did*. It re-introduces people, re-recommends songs, re-asks questions — because it has no record of having done so before.
 
+#### Theory of mind in distillation
+
+Distillation that only summarizes behavior ("Brian frequently suggests risky actions") is shallow. Useful distillation asks *why*: "Brian consistently encourages persona players to take frontline risks while positioning himself safely — likely strategic self-preservation." The second version is far more useful for future reasoning because it gives the owner a mental model of the other person's motivations, not just a log of their actions.
+
+Default distillation prompts must guide the LLM to produce motivational inference, not just behavioral categorization. When synthesizing a cluster of observations about an entity, the prompt should encourage the LLM to consider: why might this person behave this way? What does the pattern suggest about their goals, values, or strategy? How should the owner adjust its own behavior in response?
+
+Theory of mind also requires that the extraction pipeline captures beliefs and inferences, not just facts. When a persona reflects "I think Brian is using me as a shield," that belief has different epistemic status than "Brian told me to charge the dragon" — but both are valuable memories. The extraction worthiness gate must not reject subjective interpretations about others' motivations; these are often the most durable and useful memories an owner forms.
+
+Theories revise naturally through distillation. When new evidence contradicts an existing pattern (Brian sacrifices himself to protect P1 after a history of risk-avoidance), distillation updates the theory: "Brian's earlier behavior may have been strategic optimization rather than disregard — he proved willing to sacrifice when it mattered." The REFINE operation handles this without special machinery.
+
 #### Pluggable prompts and strategies
 
 3tears provides the distillation engine (scheduling, memory scanning, threshold logic, tier management). Consuming apps provide:
@@ -268,6 +278,68 @@ The boundary test is reuse: if every app rebuilding the same capability would pr
 Retrieval scoring, distillation scheduling, tier management, and entity resolution are the same everywhere — only the configuration differs. These belong in 3tears.
 
 Entity semantics (what is a "project"?), behavioral rules (when should I speak?), and prompt formatting (how does my persona present memories?) are fundamentally domain-specific. These belong in consuming apps.
+
+**Boundaries are not walls.** The fact that distillation prompts are "the app's concern" doesn't mean 3tears shrugs and ships an empty text field. See the next section.
+
+---
+
+## Helping apps succeed
+
+The architecture is pluggable: apps provide prompts, configure gates, choose retrieval modes. This flexibility is necessary — a DJ bot and a journaling app need different memory behavior. But flexibility without guidance produces shallow memory systems. Most apps will ship with defaults, never revisit their prompts, and wonder why their personas feel flat. Theory of mind won't emerge from a distillation prompt that says "summarize recurring patterns." Action memories won't appear if extraction only looks for facts about users.
+
+3tears must take responsibility for the quality of the whole system, not just the correctness of the architecture. This means opinionated defaults, diagnostic tools, and presets that encode hard-won knowledge about what makes memory work.
+
+### Opinionated defaults
+
+The default extraction and distillation prompts are not neutral starting points — they are 3tears's best answer for the general case. They should encode:
+
+- **Entity awareness.** Default extraction prompts guide the LLM to identify who or what each memory is about, not just what the content says. Without this, about_id stays null and entity-boosted retrieval finds nothing.
+- **Action capture.** Default extraction prompts instruct the LLM to note the owner's own significant actions (introductions, recommendations, commitments), not just facts learned from others. Without this, the owner has no record of what it did and repeats itself.
+- **Motivational inference.** Default distillation prompts guide the LLM to ask "why might this person behave this way?" when synthesizing behavioral patterns — producing theory of mind, not just behavioral logs. Without this, patterns stay shallow.
+- **Belief acceptance.** Default extraction worthiness gates do not reject subjective interpretations about others' motivations. "I think Brian is using me as a shield" is a valuable memory even though it's not an objective fact.
+- **Tier-appropriate output.** Default distillation prompts produce genuinely synthetic patterns and principles, not concatenations of observations with slightly different wording.
+
+An app that uses every default and never customizes a prompt should still get entity-aware extraction, action memory, and basic theory of mind. The defaults are the floor, not the ceiling.
+
+### Memory profile presets
+
+Rather than requiring every app to write prompts from scratch, 3tears ships preset profiles tuned for common scenarios. Each preset bundles extraction prompts, distillation prompts, gate configuration, and retrieval defaults into a tested configuration.
+
+- **assistant** — single-user chatbot or copilot. One owner, one human. Extraction tuned for preferences, facts, and decisions. Distillation tuned for goal tracking and user modeling. No cross-entity distillation needed. Good default for apps getting started.
+- **social** — multi-persona social interaction (the discodon pattern). Multiple owners, many entities. Extraction tuned for social observation, action memory, and relationship dynamics. Distillation tuned for theory of mind and cross-entity patterns. Extraction gates relaxed for observer/facilitator personas.
+- **collaborative** — group work on shared artifacts (brainstorming, planning). Multiple owners, project/topic entities. Extraction tuned for decisions and commitments. Distillation preserves decisions rather than consuming them.
+- **game** — game master and players. Extraction tuned for world state, player behavior patterns, and strategic inference. Distillation tuned for cross-player patterns and theory of mind. Action memory emphasized for the DM.
+
+Apps pick a preset and customize from there. The preset handles the 80% case; the app overrides what's domain-specific. An app that outgrows its preset can export the preset's configuration and modify it directly.
+
+### Memory health diagnostics
+
+A diagnostic tool that analyzes an owner's actual memory corpus and reports on quality. This runs on-demand or periodically, not on every extraction. It examines:
+
+- **Entity coverage.** What percentage of memories have non-null about_id? If most memories are unassociated, entity-boosted retrieval is ineffective. The diagnostic flags this and suggests checking about_context in extraction calls.
+- **Tier distribution.** What's the ratio of observations to patterns to principles? A healthy corpus has distillation producing patterns over time. If there are 500 observations and 0 patterns, distillation isn't running or its prompts aren't producing synthesis.
+- **Action memory presence.** Are any memories recording the owner's own actions? If not, the owner will repeat itself. The diagnostic flags the absence and suggests checking extraction prompt configuration.
+- **Distillation depth.** Are patterns genuinely synthetic, or are they just slightly reworded observations? The diagnostic samples patterns and compares them to their source observations, flagging patterns that don't add abstraction.
+- **Theory of mind indicators.** Do patterns about person-type entities include motivational language (intent, belief, strategy, motivation, goal) or only behavioral language (frequently, usually, tends to)? The diagnostic flags shallow patterns and suggests distillation prompt improvements.
+- **Entity staleness.** Are there entities with only old observations and no recent memories? These may indicate relationships that have gone stale or entities that were seen once and never again — useful for apps that want to prune or archive.
+- **Retrieval simulation.** Given a sample query and set of relevant entities, what would the retriever actually return? Does entity boosting surface the right memories? Are there obvious gaps? This is a "dry run" that helps developers tune retrieval configuration without waiting for live interactions.
+
+The diagnostic output is structured (JSON) for programmatic consumption and also human-readable for developer review. It should feel like a linter for memory quality — something developers run during development and periodically in production.
+
+### Prompt review tool
+
+A lightweight analysis tool that examines an app's configured prompts (extraction, worthiness, distillation) against a checklist of known requirements:
+
+- Does the extraction prompt mention capturing the owner's own actions?
+- Does the extraction prompt guide entity identification (who is this memory about)?
+- Does the worthiness gate accept beliefs and inferences, not just objective facts?
+- Does the distillation prompt encourage motivational inference ("why"), not just behavioral summary ("what")?
+- Does the distillation prompt distinguish between observations that should be consumed and decisions that should persist?
+- Does the extraction prompt handle the case where the owner didn't respond (facilitator/observer personas)?
+
+This is static analysis — it examines prompt text for the presence or absence of key guidance, without running an LLM. It's fast, free, and can run in CI. It doesn't catch every problem (a prompt can mention "actions" without actually capturing them well), but it catches the common omissions.
+
+For deeper analysis, the tool can optionally run sample scenarios through the extraction and distillation pipelines and evaluate the output. This uses the app's configured LLM and costs tokens, but produces more meaningful feedback: "Given this sample conversation, your extraction prompt produced 3 memories but none captured the owner's action of recommending a song."
 
 ---
 
