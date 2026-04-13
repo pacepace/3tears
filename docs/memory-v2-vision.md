@@ -75,7 +75,7 @@ Multi-valued `about` (a set of co-equal primary entities) was considered and rej
 
 **Why `about=null` is critical:** General knowledge — wisdom not tied to any specific entity — is what transfers across contexts. A DM's principle "design encounters with initial barriers" applies regardless of which players are present. A customer support agent's principle "when the customer mentions 'manager,' de-escalation urgency doubles" applies regardless of which customer is present. General memories are always eligible for retrieval, never filtered out by entity-matching. They represent the owner's accumulated domain expertise.
 
-**`about_name` resolution:** Entity display names are resolved at read time from the entity resolution registry, not stored on every memory row. Storing per-row would create an update cascade problem (an entity referenced by 500 memories changes display name → 500 row updates). The retrieval layer looks up `about_id → display_name` once per retrieval call. This is a change from the original v1 design draft that stored `about_name` per row.
+**`about_name` resolution:** Entity display names are not stored on memory rows. Storing per-row would create an update cascade problem (an entity referenced by 500 memories changes display name → 500 row updates). Instead, the consuming app provides an entity name lookup — either a `Callable[[UUID], str]` passed to the retrieval formatting layer, or post-processing on the structured result. 3tears returns raw `about_id` UUIDs; the app decorates them with human-readable names from its own entity/identity management system. This keeps 3tears agnostic about entity metadata beyond the opaque ID.
 
 ### B. Epistemic metadata
 
@@ -120,22 +120,21 @@ Research validates this concern. The Generative Agents architecture assigns a 1-
 
 **Migration:** Existing `topical_context` memories map to `fact`. Existing `relational_context` memories map to `fact` or `decision` depending on content — the migration can default to `fact` with a backfill pass.
 
-### D. Entity resolution
+### D. Entity identity is external to 3tears
 
 **Problem:** The same entity appears under different identifiers on different platforms or in different contexts. "discord:123456789" and "mastodon:@alice@social.example" are the same person. "The novel project" and "Chicago Noir" are the same project.
 
-**Solution:** A lightweight identity resolution registry within 3tears.
+**Why this is not 3tears's problem:** Identity resolution fails the boundary test. A DJ bot auto-linking Discord and Mastodon handles, a customer support system integrating with Salesforce CRM, an enterprise app federating through SSO — these are fundamentally different implementations. Apps that need cross-platform identity already have (or need) a dedicated identity/directory service. Building a simplified version inside 3tears means maintaining an identity service that's worse than purpose-built alternatives and still not general enough for complex cases.
 
-- Maps multiple platform-qualified source IDs to a single canonical entity ID
-- When storing a memory, the consuming app can pass a raw source ID; 3tears resolves it to canonical form
-- When retrieving, resolution ensures that memories about "discord:123" and "mastodon:@alice" both surface when either identifier is queried
-- The consuming app registers identity links (e.g., "these identifiers refer to the same entity"); 3tears handles the fan-out
+**3tears's contract:** `about_id` and `mentioned_entity_ids` are opaque canonical UUIDs. 3tears never interprets, resolves, or maps them. The consuming app resolves platform identifiers to canonical IDs *before* calling `extract()` or `retrieve()`. If "discord:123" and "mastodon:@alice" are the same person, the app resolves both to the same canonical UUID before 3tears sees them.
 
-**Type-agnostic resolution:** The registry is not limited to person-type entities. Any entity type can have aliases. A project known as "the novel" in casual conversation and "Chicago Noir" in the writing tool needs the same resolution as a person known by different handles. The registry stores `(source_qualifier, source_id) → canonical_id` mappings without interpreting what kind of entity it is.
+**Entity merge utility:** When an external identity system merges two entities that 3tears already has memories about, the app calls `merge_entity_ids(old_id, new_id)`. This is a bulk update on `about_id` and `mentioned_entity_ids` — a dumb batch operation, not an identity service. It doesn't know *why* the IDs merged, just that they did. Apps should merge early to minimize the batch size.
 
-**Retroactive linking:** When identities are linked *after* memories have been stored, existing memories with the old identifier must be updated. 3tears provides a `link_identities(canonical_id, source_ids)` operation that: (1) registers the mapping, (2) updates `about_id` and entries in `mentioned_entity_ids` on existing memories that reference any of the source IDs. This is a batch update bounded by the number of affected memories. Consuming apps should link identities early to minimize the batch size.
+**Platform/channel awareness via provenance:** "Remember what I said on Slack?" is a `source_type`/`source_context` query, not an identity concern. Memories carry platform and channel metadata in their provenance fields: `source_type='slack_message', source_context={"channel": "#general", "workspace": "acme"}`. This is queryable metadata that doesn't require identity resolution.
 
-**What stays in consuming apps:** The decision of *when* to link identities. A DJ bot might auto-link when a user says "I'm @alice on Mastodon." A customer support system might link via CRM lookup. 3tears provides the registry; apps provide the data.
+**`about_context` implications:** The extraction pipeline's `about_context` parameter must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob talks about Charlie who isn't in the channel, the app needs Charlie's canonical ID available for the extraction prompt to associate the memory correctly. This is the consuming app's responsibility; 3tears provides the `about_context` mechanism but doesn't maintain entity directories.
+
+Requirements for an external identity management system are described in the appendix.
 
 ### E. Flexible provenance
 
@@ -365,7 +364,7 @@ When the user starts a new project months later, entity-specific patterns about 
 
 ### DJ: participant joins with known history
 
-A DJ persona is in a channel with humans Albert and Betty. Charlie joins. Charlie's discord ID resolves via entity resolution to a canonical person ID. The retriever runs with `relevant_entities=[Albert, Betty, Charlie]`. Memories about Charlie from previous sessions — different channels, weeks ago — surface via entity boosting. The DJ greets Charlie with awareness of their taste.
+A DJ persona is in a channel with humans Albert and Betty. Charlie joins. The consuming app resolves Charlie's discord ID to a canonical person ID via its identity service and passes it to the retriever as a relevant entity. The retriever runs with `relevant_entities=[Albert, Betty, Charlie]`. Memories about Charlie from previous sessions — different channels, weeks ago — surface via entity boosting. The DJ greets Charlie with awareness of their taste.
 
 Charlie's memories include: "Charlie loves jazz fusion, especially Snarky Puppy" (preference, stated, confidence 0.95, importance 7) and "I recommended Weather Report to Charlie and they loved it" (action, observed, importance 6). The DJ builds on the established relationship rather than starting from scratch.
 
@@ -523,18 +522,18 @@ One owner, very many entities (hundreds to thousands of customers), medium initi
 
 - **Memory storage and retrieval** — three-tier caching, embedding, multi-signal hybrid scoring (semantic + keyword + recency + importance), entity-boosted and topic-scan retrieval modes, entity-grouped output with budget allocation
 - **Memory model** — owner, about (generalized entities with mentioned_entity_ids), provenance, tier, type, epistemic metadata (importance, confidence, epistemic_type), temporal validity
-- **Entity resolution** — type-agnostic registry mapping platform IDs to canonical IDs, with retroactive linking
+- **Entity merge utility** — bulk update of `about_id` and `mentioned_entity_ids` when an external identity system merges entities
 - **Extraction pipeline** — gated, multi-stage extraction with entity identification, action capture, importance and confidence assignment, belief acceptance, configurable per-owner gates
 - **Distillation engine** — importance-sum and session-boundary triggers, within-entity and cross-entity pattern synthesis, non-destructive CONSUME with provenance, theory-of-mind-oriented defaults, pluggable prompts and strategies
 - **Memory ledger** — within-conversation tracking of surfaced items to prevent redundancy
 
 ### Consuming apps own
 
-- **Entity registry** — what entities exist and what they mean. 3tears stores `about_id`/`about_type`; the app decides what entities to create and how to model them.
-- **Relevance determination** — which entities are relevant for a given interaction. The app passes relevant entity IDs to the retriever; 3tears boosts them.
-- **Identity linking** — deciding *when* to link platform identities. The app registers links with the resolution registry; 3tears resolves and retroactively updates.
+- **Entity identity and directory** — what entities exist, what they mean, and how platform-specific identifiers map to canonical IDs. 3tears stores opaque `about_id`/`about_type` UUIDs; the app owns the entity registry, identity resolution, cross-platform linking, and display name management. See the appendix for requirements an identity system should satisfy.
+- **Relevance determination** — which entities are relevant for a given interaction. The app resolves platform identifiers to canonical IDs and passes them to the retriever; 3tears boosts them.
+- **Entity name resolution** — providing human-readable display names for `about_id` UUIDs in retrieval results, either via a lookup callback or post-processing.
 - **Behavioral rules** — "speak only when directly addressed or high-confidence memory available", etc. 3tears provides scored retrieval with importance; the app interprets scores and decides actions.
-- **Prompt formatting** — how retrieved memories are rendered into LLM prompts. 3tears provides entity-grouped structured output with epistemic metadata; the app formats it.
+- **Prompt formatting** — how retrieved memories are rendered into LLM prompts. 3tears provides entity-grouped structured output with epistemic metadata; the app formats it (including resolving entity IDs to display names).
 - **Distillation prompts** — domain-specific guidance for how observations should be synthesized. The app provides prompt templates; 3tears runs the engine.
 - **Multi-owner reconciliation** — if an app needs a canonical shared artifact from multi-persona collaboration, it reconciles across owners at the application layer.
 - **Cognitive/behavioral architecture** — persona traits, goals, scheduling, turn management, reflection triggers.
@@ -544,9 +543,9 @@ One owner, very many entities (hundreds to thousands of customers), medium initi
 
 The boundary test is reuse: if every app rebuilding the same capability would produce essentially the same code, it belongs in 3tears. If apps would produce meaningfully different implementations reflecting their domain, it belongs in the app.
 
-Retrieval scoring, distillation scheduling, tier management, entity resolution, and non-destructive CONSUME with provenance are the same everywhere — only the configuration differs. These belong in 3tears.
+Retrieval scoring, distillation scheduling, tier management, and non-destructive CONSUME with provenance are the same everywhere — only the configuration differs. These belong in 3tears.
 
-Entity semantics (what is a "project"?), behavioral rules (when should I speak?), privacy policy (what data can we retain?), and prompt formatting (how does my persona present memories?) are fundamentally domain-specific. These belong in consuming apps.
+Entity identity (how does "discord:123" map to a canonical user?), entity semantics (what is a "project"?), behavioral rules (when should I speak?), privacy policy (what data can we retain?), and prompt formatting (how does my persona present memories?) are fundamentally domain-specific. These belong in consuming apps.
 
 **Boundaries are not walls.** The fact that distillation prompts are "the app's concern" doesn't mean 3tears shrugs and ships an empty text field. See the next section.
 
@@ -743,8 +742,6 @@ Apps that stored `conversation_id` and `message_id_source` for audit purposes sh
 
 **conversation_memory_refs table:** Unchanged.
 
-**New table: entity_identities.** Stores the identity resolution registry (source-qualified IDs mapped to canonical entity IDs). Apps that don't use identity resolution can ignore this table, but it must exist.
-
 **Indexes:** New indexes on `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, and a GIN index on `mentioned_entity_ids` for entity-scoped queries. The existing `user_id` index becomes the `owner_id` index.
 
 ### MemoryEntity
@@ -793,7 +790,7 @@ Key changes at call sites:
 - `user_id` → `owner_id`
 - `conversation_id` and `message_id_source` replaced by `source_type` and `source_id`
 - New `source_context` for optional structured metadata
-- New `about_context` providing information about entities present in the interaction AND a broader entity vocabulary (known entities the conversation might reference), so extraction can populate `about_id`, `about_type`, and `mentioned_entity_ids`. When extraction identifies an entity not in the `about_context`, it sets `about_name` in the output and the consuming app can resolve it to a canonical ID or create a new entity.
+- New `about_context` providing canonical entity IDs and metadata for entities present in the interaction AND a broader entity vocabulary (known entities the conversation might reference), so extraction can populate `about_id`, `about_type`, and `mentioned_entity_ids`. The consuming app resolves platform identifiers to canonical IDs via its own identity service before passing them here. When extraction identifies an entity name not in the `about_context`, it emits the name in the output and the consuming app can resolve it to a canonical ID or create a new entity.
 - New `gate_config` for per-owner extraction gate overrides (or `None` to use defaults)
 - `turn_count` becomes optional/keyword-only since not all source types have a concept of turns
 
@@ -807,7 +804,7 @@ The extraction prompt's expected JSON output format:
   "type": "preference|fact|decision|action|belief|commitment",
   "content": "1-2 dense sentences",
   "tier": "observation|decision",
-  "about_name": "primary entity name or null",
+  "about_name": "primary entity name or null (app resolves to canonical ID)",
   "mentioned_names": ["other", "entity", "names"],
   "importance": 7,
   "confidence": 0.85,
@@ -916,15 +913,74 @@ Steps 1-3 are required for the app to function. Steps 4-8 can be done incrementa
 
 ```
 A (memory model + schema)
-├──> B (entity resolution)
-├──> C (provenance)
-├──> D (epistemic metadata + type taxonomy)
-├──> E (retrieval: multi-signal scoring, entity boosting, budget allocation)
-├──> F (within-entity distillation: triggers, non-destructive CONSUME, ToM prompts)
-├──> G (cross-entity distillation: clustering, principle synthesis)
-└──> H (temporal validity: supersession semantics)
+├──> B (provenance)
+├──> C (epistemic metadata + type taxonomy)
+├──> D (retrieval: multi-signal scoring, entity boosting, budget allocation)
+├──> E (within-entity distillation: triggers, non-destructive CONSUME, ToM prompts)
+├──> F (cross-entity distillation: clustering, principle synthesis)
+└──> G (temporal validity: supersession semantics)
 ```
 
-**A is prerequisite to everything.** The owner/about/mentioned/tier/importance schema is the foundation. B, C, and D are independent of each other and can ship in any order. E depends on A and D (importance is a scoring signal). F depends on A and D (importance triggers distillation, epistemic_type affects distillation behavior). G depends on F (cross-entity distillation operates on patterns produced by within-entity distillation). H is independent of everything except A.
+**A is prerequisite to everything.** The owner/about/mentioned/tier/importance schema is the foundation. B and C are independent of each other and can ship in any order. D depends on A and C (importance is a scoring signal). E depends on A and C (importance triggers distillation, epistemic_type affects distillation behavior). F depends on E (cross-entity distillation operates on patterns produced by within-entity distillation). G is independent of everything except A.
 
-Work within each item can be incremental. For example, E can ship with basic entity boosting before adding budget allocation. F can ship with session-boundary triggers before adding importance-sum triggers. The [foundation] fields are in the schema from A but their processing logic ships with the item that uses them.
+Entity identity resolution is external to 3tears and can be developed independently. The only integration point is the `merge_entity_ids()` utility in A, which is a simple batch update.
+
+Work within each item can be incremental. For example, D can ship with basic entity boosting before adding budget allocation. E can ship with session-boundary triggers before adding importance-sum triggers. The [foundation] fields are in the schema from A but their processing logic ships with the item that uses them.
+
+---
+
+## Appendix: Requirements for an identity management system
+
+Entity identity resolution is outside 3tears's scope, but consuming apps that operate across platforms or manage many entities need an identity service. This section describes what such a service must provide to integrate well with 3tears, preserving the design rationale from earlier iterations where identity resolution was considered for inclusion in the memory system.
+
+### Why identity is separate from memory
+
+Identity resolution fails 3tears's boundary test: "if apps would produce meaningfully different implementations reflecting their domain, it belongs in the app." A DJ bot auto-linking Discord and Mastodon handles, a customer support system integrating with Salesforce CRM, an enterprise app federating through SSO, a game managing character aliases — these are fundamentally different implementations. Building a simplified version inside a memory system means maintaining an identity service that's worse than purpose-built alternatives.
+
+The `source_type`/`source_context` fields on memories already capture platform and channel metadata. "Remember what I said on Slack?" is a provenance query (`source_type='slack_message'`), not an identity query.
+
+### What the identity system must provide
+
+**Canonical ID management.** Every entity (person, project, topic, location, game-world object) gets a stable canonical UUID. This UUID is what 3tears stores in `about_id` and `mentioned_entity_ids`. The identity system generates and manages these IDs.
+
+**Platform-to-canonical mapping.** Maps platform-specific identifiers to canonical IDs: `(platform, platform_id) → canonical_id`. Examples:
+- `("discord", "123456789")` → `UUID("abc-...")`
+- `("mastodon", "@alice@social.example")` → `UUID("abc-...")`  (same canonical ID if it's the same person)
+- `("salesforce", "CONTACT-4821")` → `UUID("def-...")`
+
+The mapping must be queryable in both directions: given a platform ID, find the canonical ID; given a canonical ID, list all known platform IDs.
+
+**Type-agnostic resolution.** The registry should not be limited to person-type entities. Projects, topics, game-world locations, and other entity types can have aliases across contexts ("the novel" and "Chicago Noir" are the same project). The same mapping infrastructure serves all entity types.
+
+**Entity metadata.** Display names, entity types (`person`, `project`, `topic`, etc.), and any app-specific attributes. 3tears needs display names for prompt rendering — the consuming app provides them by looking up `about_id` in the identity system. The identity system is the authoritative source; 3tears never caches or stores entity metadata.
+
+**Merge operation.** When the system discovers that two canonical IDs refer to the same entity, it must:
+1. Choose a surviving canonical ID (or create a new one).
+2. Update all internal mappings to point to the surviving ID.
+3. Call 3tears's `merge_entity_ids(old_id, new_id)` to update memory references.
+4. Notify any other systems that reference the old ID.
+
+Merges should be early and aggressive. Research on entity resolution in agent memory (KARMA, 2025) shows that resolution errors compound — a single missed merge causes an entity's memory to fork into two incomplete records, and the fragments may never be reunited via semantic search alone.
+
+**Split operation (optional).** If a merge was incorrect (two different people had the same name), the system may need to split them. This is harder: 3tears's `merge_entity_ids()` is one-way. Splitting requires the identity system to assign a new canonical ID for the separated entity and selectively update 3tears memories — which means the identity system needs enough context to determine which memories belong to which entity after the split. This is a rare but important edge case for apps with high entity volume (customer support).
+
+### Integration pattern with 3tears
+
+**At extraction time:** The consuming app receives a platform event (Discord message, support ticket, etc.). It resolves all entity identifiers in the event to canonical IDs via the identity system. It passes these canonical IDs in the `about_context` parameter to `extract()`. The `about_context` should include:
+- Entities directly participating (people in the channel, customer on the ticket)
+- Entities likely to be referenced (known contacts, active projects, recent topics)
+- For each entity: canonical ID, display name, entity type
+
+When the extraction prompt identifies an entity name that isn't in the `about_context`, it emits the raw name. The consuming app then checks the identity system — is this a known entity under a different name? A new entity? — and either maps it to an existing canonical ID or creates a new one.
+
+**At retrieval time:** The consuming app resolves relevant entities to canonical IDs and passes them to `retrieve()`. 3tears returns results with raw `about_id` UUIDs. The app decorates them with display names from the identity system for prompt rendering.
+
+**On identity merge:** The identity system calls 3tears's `merge_entity_ids(old_id, new_id)`. This updates `about_id` and `mentioned_entity_ids` across all affected memories. It's a batch SQL update, bounded by the number of memories referencing the old ID.
+
+### What the identity system does NOT need to know
+
+- Memory content, tiers, types, or epistemic metadata — these are 3tears's domain.
+- How memories are retrieved or scored — the identity system provides canonical IDs, 3tears handles the rest.
+- Distillation state — whether memories have been consumed into patterns is irrelevant to identity.
+
+The identity system and 3tears share a single integration surface: canonical UUIDs and the `merge_entity_ids()` batch update. This minimal coupling means the identity system can be simple (a lookup table) or sophisticated (a full CRM integration) without affecting 3tears's operation.
