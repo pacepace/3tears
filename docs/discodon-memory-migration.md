@@ -356,7 +356,7 @@ Discodon runs as a single container on Fly.io. No multi-pod scaling. L2 cache pr
 
 This means the `3tears-registry` package (which requires NATS for tool discovery) isn't usable yet either, but discodon has its own tool routing via ZeroMQ.
 
-#### 3. Embedding provider
+#### 3. Embedding provider: VoyageAI voyage-4-lite
 
 Implement `EmbeddingProvider` — a protocol with two methods:
 
@@ -368,12 +368,38 @@ class EmbeddingProvider(Protocol):
     def dimensions(self) -> int: ...
 ```
 
-**Options:**
-- **VoyageAI** — best quality for retrieval, ~$0.01/1M tokens. Recommended.
-- **OpenAI text-embedding-3-small** — cheapest, good enough, $0.02/1M tokens.
-- **Run locally** — e.g., `sentence-transformers` on CPU. Zero cost, higher latency, no API dependency. Feasible on Fly.io shared-cpu-2x but adds startup time.
+**Model choice: `voyage-4-lite`** at 1024 dimensions (default).
 
-The implementation is a thin HTTP client wrapper. Add the API key to discodon's Cosmos-backed secret store (same pattern as `DD_OPENROUTER_API_KEY`).
+The Voyage 4 family (Jan 2026) shares an embedding space across all models — embeddings from different models are interchangeable. This means you can upgrade the document embedding model later without re-embedding existing memories.
+
+| Model | Price/1M tokens | Quality (RTEB NDCG@10) | Notes |
+|---|---|---|---|
+| voyage-4-large | $0.12 | Best (MoE architecture) | 14% better than OpenAI v3 Large |
+| voyage-4 | $0.06 | Strong | Good balance |
+| **voyage-4-lite** | **$0.02** | Good | **Our choice** |
+| voyage-4-nano | Free (open weight) | Baseline | Self-hosted, Apache 2.0 |
+
+**Why voyage-4-lite:**
+
+- **R&D corpus is tiny.** Hundreds of memories, not millions. Quality differences between lite and large are negligible at this scale — they matter when retrieval must distinguish among thousands of similar memories.
+- **200M free tokens per account.** A memory is ~50 tokens. That's ~4 million memories embedded before we pay anything. We won't hit the paid tier for a long time.
+- **Upgrade path requires zero re-embedding.** When quality matters, switch new document embeddings to voyage-4 or voyage-4-large. Queries still use voyage-4-lite. Old lite-embedded documents remain searchable — shared embedding space. This is called asymmetric retrieval.
+- **voyage-4-nano (self-hosted) isn't worth it.** It runs on CPU — 100-500ms per embedding vs ~20ms for the API. Extraction isn't blocking the response, so latency is tolerable, but it competes for CPU on Fly.io's shared-cpu-2x with the LLM client and ZMQ mesh.
+
+**Configuration:**
+
+```
+model:       voyage-4-lite
+dimensions:  1024 (default)
+input_type:  "document" at extraction time, "query" at retrieval time
+output_type: float (default — storage isn't a concern at our scale)
+```
+
+Always pass `input_type`. It tells the model to optimize the embedding for its role — queries get a "find relevant documents" bias, documents get a "be findable" bias. Omitting it works but leaves retrieval quality on the table.
+
+**Secret:** Add `DD_VOYAGEAI_API_KEY` to discodon's Cosmos-backed secret store (same pattern as `DD_OPENROUTER_API_KEY`).
+
+The implementation is a thin `httpx` wrapper around the Voyage API (~20 lines).
 
 #### 4. ChatModelFactory for extraction/distillation
 
@@ -457,7 +483,7 @@ If using an external embedding API:
 | Distillation: in-process LLM call | Distillation: in-process LLM call (same, but non-destructive) |
 | Memory in Cosmos entity doc | Memory in PostgreSQL, cognitive state in Cosmos entity doc |
 | No vector search | pgvector semantic search |
-| ~$0/month infra beyond Cosmos | +$0-7/month Fly Postgres + ~$1-5/month embeddings (R&D volume) |
+| ~$0/month infra beyond Cosmos | +$0-7/month Fly Postgres + $0/month embeddings (200M free tokens covers ~4M memories) |
 
 ### Discodon code changes
 
