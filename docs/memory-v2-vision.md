@@ -2,37 +2,35 @@
 
 ## Purpose
 
-This document describes the next evolution of the 3tears agent-memory system. The changes extend the memory model, retrieval, and distillation to support multi-perspective, multi-entity, multi-platform applications — while keeping 3tears domain-agnostic so that the same framework serves DJ bots, game masters, customer support, personal assistants, and other use cases.
+This document describes the next evolution of the 3tears agent-memory system — extending the memory model, retrieval, and distillation to support multi-perspective, multi-entity, multi-platform applications while keeping 3tears domain-agnostic. The same framework should serve DJ bots, game masters, customer support agents, personal assistants, and whatever else people build.
 
-The guiding principle: if a capability is needed across different app types, it belongs in 3tears. If it's specific to a single domain, it belongs in the consuming app.
+**Guiding principle:** If a capability is needed across different app types, it belongs in 3tears. If it's specific to a single domain, it belongs in the consuming app.
 
-The foundation principle: **the schema defines the ceiling of what the processing pipelines can eventually do.** Several schema fields described here enable capabilities that won't be fully built in v2. We add them now because retrofitting columns into a populated database and migrating consuming apps is far more expensive than adding nullable columns to the initial schema. Fields that support future capabilities are marked with *[foundation]* — they're in the schema from day one but their processing pipelines ship incrementally.
+**Foundation principle:** The schema defines the ceiling of what the processing pipelines can eventually do. Several fields described here enable capabilities that won't ship in v2. We add them now because retrofitting columns into a populated database is painful, and adding nullable columns to the initial schema is cheap. Fields that support future capabilities are marked *[foundation]*.
 
 ---
 
 ## Research foundations
 
-The design in this document is informed by the academic and industry literature on agent memory systems. Key influences:
+This design draws on the growing body of work on agent memory. We won't repeat the full literature here — just the findings that directly shaped our architecture.
 
-- **Generative Agents** (Park et al., 2023): Demonstrated that a memory architecture with observation streams and a reflection mechanism produces significantly more believable agent behavior than flat memory. In ablation studies, reflection was the single most impactful component — removing it caused the largest degradation in human-rated believability. Their three-factor retrieval scoring (recency + importance + relevance) has become the de facto standard.
+**Generative Agents** (Park et al., 2023) showed that reflection — synthesizing observations into higher-level insights — was the single most impactful component in their agent architecture, outranking retrieval quality and planning in ablation studies. Their three-factor retrieval scoring (recency + importance + relevance) has become the de facto standard.
 
-- **MemGPT / Letta** (Packer et al., 2023): Showed that agents with active control over their own memory operations outperform passive memory systems. Their tiered architecture (core memory, recall memory, archival memory) validates the principle that different memory tiers serve different purposes with different access patterns. Their "sleep-time compute" concept — asynchronous memory refinement during idle periods — directly informs our distillation scheduling.
+**MemGPT / Letta** (Packer et al., 2023) demonstrated that agents controlling their own memory outperform passive systems. Their "sleep-time compute" — asynchronous refinement during idle periods — directly informs our distillation scheduling.
 
-- **Zep / Graphiti** (2024-2025): Demonstrated that temporal knowledge graphs with bi-temporal validity tracking significantly outperform flat vector retrieval for tasks requiring mutable state tracking. Their key finding: when facts change over time, systems that invalidate-but-preserve old facts dramatically outperform systems that overwrite.
+**Zep / Graphiti** (2024-2025) proved that when facts change over time, systems that invalidate-but-preserve old facts dramatically outperform systems that overwrite. This is why our UPDATE operation creates a new memory rather than clobbering the old one.
 
-- **ExpeL** (Zhao et al., 2023) and **Reflexion** (Shinn et al., 2023): Showed that agents that extract structured lessons from experience and store them for future retrieval significantly outperform agents without accumulated insights. Quality of insights matters more than quantity.
+**ExpeL** (Zhao et al., 2023) and **Reflexion** (Shinn et al., 2023) both showed that accumulated lessons from experience improve future performance — and that quality of insights matters more than quantity. A few good principles beat a hundred shallow observations.
 
-- **CoALA** (Sumers et al., 2024): Survey of 100+ agent architectures finding that the most capable systems distinguish between episodic memory (what happened) and semantic memory (what is generally true), with different write and retrieval strategies for each.
+**CoALA** (Sumers et al., 2024) surveyed 100+ agent architectures and found the best systems distinguish episodic memory (what happened) from semantic memory (what is generally true), with different strategies for each.
 
-- **LoCoMo** (Maharana et al., 2024), **StreamBench** (2024), **LONGMEM-Bench** (2024): Benchmarks showing that all existing memory systems degrade significantly beyond 20 interactions; temporal reasoning is the hardest task category; and hierarchical memory with consolidation outperforms flat stores by 15-25% at long horizons.
+**LoCoMo**, **StreamBench**, **LONGMEM-Bench** (2024) established that all memory systems degrade beyond ~20 interactions; temporal reasoning is the hardest task; and hierarchical memory with consolidation outperforms flat stores by 15-25% at long horizons.
 
-- **Memory drift research** (2024-2025): Documented that each LLM processing step introduces approximately 5-10% error at key decision points (entity identification, temporal disambiguation, contradiction detection). Error compounds through multi-stage pipelines. This directly informs our non-destructive distillation design.
+**Memory drift research** (2024-2025) documented ~5-10% error at key decision points per LLM processing step. Errors compound through multi-stage pipelines. This is why we don't hard-delete consumed observations.
 
-- **Project Sid** (Altera, 2024): Scaled the Generative Agents concept to 1,000+ agents and found that at scale, pure narrative memory becomes too noisy — agents needed explicit structured relationship state alongside free-text memory.
+**Project Sid** (Altera, 2024) scaled to 1,000+ agents and found that pure narrative memory becomes noise at scale — agents needed structured relationship state alongside free-text memory.
 
-- **LARP** (Shao et al., 2023): Found that agents remembering their own past actions were more consistent than agents with detailed persona descriptions but no action memory. Action memory is more important for persona consistency than identity descriptions.
-
-These references are cited throughout the document where they inform specific design decisions.
+**LARP** (Shao et al., 2023) found that action memory (remembering what the agent *did*) matters more for persona consistency than detailed identity descriptions. An agent that forgets its own actions will re-introduce people, re-recommend songs, and re-ask questions.
 
 ---
 
@@ -40,13 +38,13 @@ These references are cited throughout the document where they inform specific de
 
 The agent-memory package provides:
 
-- **Memory extraction** from conversations via a gated, multi-stage LLM pipeline (heuristic gates, worthiness gate, candidate extraction, embedding, similarity-based dedup, LLM resolution with ADD/UPDATE/DELETE/NOOP)
-- **Hybrid retrieval** combining semantic search (pgvector), keyword search (PostgreSQL FTS), and recency decay, with MMR reranking for diversity
+- **Memory extraction** via a gated, multi-stage LLM pipeline (heuristic gates, worthiness gate, candidate extraction, embedding, dedup, LLM resolution with ADD/UPDATE/DELETE/NOOP)
+- **Hybrid retrieval** combining semantic search (pgvector), keyword search (PostgreSQL FTS), and recency decay, with MMR reranking
 - **Three-tier caching** (L1 SQLite / L2 NATS KV / L3 PostgreSQL) inherited from threetears.core
-- **Memory ledger** tracking which items have been surfaced in a conversation to prevent redundancy
+- **Memory ledger** tracking surfaced items to prevent redundancy
 - **Five memory types**: preference, fact, decision, topical_context, relational_context
 
-Memories are scoped by `user_id` (who owns the memory), with `conversation_id` and `message_id_source` tracking provenance. There is no concept of who or what a memory is *about*, no epistemic metadata distinguishing facts from hypotheses, no memory tiers beyond the flat type classification, and no automatic distillation or pattern synthesis.
+Memories are scoped by `user_id` with `conversation_id` and `message_id_source` as provenance. There's no concept of who or what a memory is *about*, no epistemic metadata, no abstraction tiers, and no automatic synthesis.
 
 ---
 
@@ -54,187 +52,161 @@ Memories are scoped by `user_id` (who owns the memory), with `conversation_id` a
 
 ### A. Multi-perspective memory model
 
-**Problem:** Memories are scoped only by `user_id`. There is no way to express "DJ's memory about Bob's taste" versus "DJ's memory about Abigail's taste" versus "DJ's general wisdom about music." All memories for a given owner live in one undifferentiated pool.
+**Problem:** All memories for an owner live in one undifferentiated pool. There's no way to express "DJ's memory about Bob's taste" versus "DJ's general wisdom about music."
 
 **Solution:** Add entity association to every memory.
 
 - `owner_id` — who holds this memory (a persona, a bot, a user). Replaces `user_id`.
-- `about_id` — the canonical identifier of the primary entity this memory concerns. Nullable — null means the memory is general knowledge, not about any specific entity.
-- `about_type` — category hint: person, project, topic, location, goal, etc. Consuming apps define the vocabulary. Used for retrieval grouping and filtering.
-- `mentioned_entity_ids` — *[foundation]* array of canonical entity IDs referenced in the memory beyond the primary `about_id`. When a memory involves multiple entities, the primary goes in `about_id` and the rest go here.
+- `about_id` — the primary entity this memory concerns. Nullable — null means general knowledge.
+- `about_type` — category hint: person, project, topic, location, goal, etc. Apps define the vocabulary.
+- `mentioned_entity_ids` — *[foundation]* other entity IDs referenced in this memory beyond the primary `about_id`.
 
-The `about` fields are not limited to people. A memory can be about a person (Bob), a project (the novel we're brainstorming), a goal (career transition), a game-world location (the north bridge), or a topic (reinforcement learning). 3tears stores and indexes these fields without interpreting their semantics.
+Entities aren't limited to people. A DJ remembers venues. A DM remembers locations. A support agent remembers products. 3tears stores and indexes these fields without interpreting their semantics.
 
-**Why generalized entities, not just people:** Every app type needs memories about non-person things. A DJ has memories about venues. A DM has memories about locations and items. A customer support agent has memories about products and open tickets. Limiting `about` to people would push every app to reinvent topic-scoped memory.
+**Why `about` is singular with `mentioned_entity_ids`:** Embedding models are unreliable for proper nouns (ACM Web Conference 2024). Storing "Bob and Alice share Metallica fandom" as `about=Bob` and hoping semantic search finds "Alice" in the content is a gamble we'd rather not take. `mentioned_entity_ids=[Alice]` makes it explicit. Retrieval boosts memories where *any* relevant entity appears in either field.
 
-**Why `about` is singular with `mentioned_entity_ids`:** Research on embedding quality for proper nouns shows that entity names don't embed reliably (ACM Web Conference 2024 found cosine similarity can be "rendered meaningless" for proper nouns depending on regularization). A memory like "Bob and Alice share deep Metallica fandom" stored as `about=Bob` would be invisible to entity-boosted retrieval when Alice joins. Relying on semantic search to find "Alice" in the content text is unreliable.
+We considered multi-valued `about` (co-equal primary entities) and rejected it — it complicates entity-grouped output (which group does the memory appear in?) without clear benefit over the primary/mentioned split.
 
-`mentioned_entity_ids` solves this cheaply. The memory gets `about_id=Bob, mentioned_entity_ids=[Alice]`. Retrieval boosts memories where *any* relevant entity appears in either field. The primary `about_id` determines entity-grouped output organization; `mentioned_entity_ids` ensures multi-entity memories surface for all involved entities.
+**Why `about=null` matters:** General knowledge transfers across contexts. A DM's principle "design encounters with initial barriers" applies regardless of which players are present. A support agent's insight "customers who mention 'manager' need immediate de-escalation" works for any customer. These memories are always retrieval-eligible, never filtered out by entity-matching. They are the owner's accumulated expertise.
 
-Multi-valued `about` (a set of co-equal primary entities) was considered and rejected: it complicates entity-grouped output (which group does the memory appear in?), adds schema complexity to every query, and the primary/mentioned split handles the retrieval need without ambiguity.
-
-**Why `about=null` is critical:** General knowledge — wisdom not tied to any specific entity — is what transfers across contexts. A DM's principle "design encounters with initial barriers" applies regardless of which players are present. A customer support agent's principle "when the customer mentions 'manager,' de-escalation urgency doubles" applies regardless of which customer is present. General memories are always eligible for retrieval, never filtered out by entity-matching. They represent the owner's accumulated domain expertise.
-
-**`about_name` resolution:** Entity display names are not stored on memory rows. Storing per-row would create an update cascade problem (an entity referenced by 500 memories changes display name → 500 row updates). Instead, the consuming app provides an entity name lookup — either a `Callable[[UUID], str]` passed to the retrieval formatting layer, or post-processing on the structured result. 3tears returns raw `about_id` UUIDs; the app decorates them with human-readable names from its own entity/identity management system. This keeps 3tears agnostic about entity metadata beyond the opaque ID.
+**`about_name` resolution:** Display names are not stored on memory rows — that would mean updating 500 rows when someone changes their handle. Instead, the consuming app provides a name lookup (a callback or post-processing on results). 3tears returns opaque UUIDs; the app adds human-readable labels.
 
 ### B. Epistemic metadata
 
-**Problem:** All memories are treated as equally confident facts. But agents form memories with very different epistemic status: directly observed events, inferred facts, subjective beliefs about others' motivations, and speculative hypotheses. Treating "Bob lives in Melbourne" (inferred from one offhand comment) the same as "Bob likes thrash metal" (stated directly, confirmed repeatedly) leads to brittle behavior.
+**Problem:** "Bob lives in Melbourne" (inferred from one offhand comment) and "Bob likes thrash metal" (stated directly, confirmed repeatedly) are treated identically. They shouldn't be.
 
-Research validates this concern. The Generative Agents architecture assigns a 1-10 importance score at creation time; in ablation studies, importance scoring was critical for filtering mundane observations from significant ones (Park et al., 2023). The CoALA survey (Sumers et al., 2024) found that the most capable agent systems distinguish episodic from semantic memory with different retrieval strategies for each. LLM theory-of-mind research (PNAS 2024) shows ~25% error rate on false-belief tasks, meaning agent inferences about others' mental states will often be wrong — the system must track this uncertainty.
+The Generative Agents showed importance scoring was critical for separating signal from noise. CoALA found the best systems use different strategies for different epistemic categories. LLM theory-of-mind research (PNAS 2024) shows ~25% error on false-belief tasks — the system needs to track that uncertainty rather than pretending everything is equally certain.
 
 **Solution:** Add epistemic metadata to every memory.
 
-- `importance` — integer 1-10, assigned at extraction time. Measures how significant this memory is for future interactions. A DJ hearing "Bob said hello" (importance: 2) versus "Bob announced he's moving to London" (importance: 8). Used as a retrieval scoring signal and as a distillation trigger (see section F).
+- `importance` — integer 1-10, assigned at extraction. "Bob said hello" (2) vs "Bob announced he's moving to London" (8). Used for retrieval scoring and as a distillation trigger.
 
-- `confidence` — *[foundation]* float 0.0-1.0. How certain the agent is that this memory is accurate. Directly observed facts get high confidence. Inferences from context get medium. Hypotheses about motivations get low. The extraction prompt assigns this. Retrieval can use it to weight results; prompt rendering can annotate low-confidence memories so the LLM knows to treat them tentatively.
+- `confidence` — *[foundation]* float 0.0-1.0. Directly observed facts get high confidence; inferences get medium; hypotheses about motivations get low. Retrieval can weight by confidence; prompt rendering can flag low-confidence memories.
 
-- `epistemic_type` — *[foundation]* how the agent came to believe this: `observed` (directly witnessed), `stated` (told by the subject), `inferred` (derived from evidence), `hypothesized` (speculative theory about motivations or beliefs), `decided` (declared true by authority), `reported` (learned from a third party). This classification determines revision behavior: a `decided` memory persists until explicitly superseded; an `inferred` memory is open to revision by new evidence; a `hypothesized` memory actively invites contradiction.
+- `epistemic_type` — *[foundation]* how the agent came to believe this: `observed`, `stated`, `inferred`, `hypothesized`, `decided`, `reported`. This determines revision behavior: decisions persist until superseded; inferences are open to revision; hypotheses actively invite contradiction.
 
-**Examples across app types:**
+**In practice:**
 
-- **Chatbot:** "User prefers PostgreSQL over MongoDB" — `stated`, confidence 0.95, importance 7. "User seems frustrated with the deployment process" — `inferred`, confidence 0.6, importance 4.
-- **DJ:** "Bob loves Metallica, seen them live eight times" — `stated`, confidence 0.95, importance 8. "Bob probably lives near Melbourne" — `inferred`, confidence 0.5, importance 5.
-- **DM:** "P2 charged into combat without scouting" — `observed`, confidence 1.0, importance 6. "P2 is probably impatient rather than strategically aggressive — they don't scout even when they have time" — `hypothesized`, confidence 0.4, importance 7.
-- **Customer support:** "Customer's subscription expires next month" — `stated`, confidence 0.95, importance 7. "Customer may be evaluating competitors based on their questions about export formats" — `hypothesized`, confidence 0.3, importance 8.
+- **Chatbot:** "User prefers PostgreSQL over MongoDB" — `stated`, confidence 0.95, importance 7.
+- **DJ:** "Bob probably lives near Melbourne" — `inferred`, confidence 0.5, importance 5.
+- **DM:** "P2 is probably impatient rather than strategically aggressive" — `hypothesized`, confidence 0.4, importance 7.
+- **Support:** "Customer may be evaluating competitors" — `hypothesized`, confidence 0.3, importance 8. (Low confidence, but if it's true, it matters a lot.)
 
 ### C. Memory type taxonomy
 
-**Problem:** The v1 types (preference, fact, decision, topical_context, relational_context) were designed for a flat, single-entity model. With tiers, entity scoping, and epistemic metadata, some types are redundant and important categories are missing. `topical_context` is subsumed by entity scoping (`about_type=topic` + `fact`). `relational_context` is subsumed by `about_type=system` + `decision`. Meanwhile, there's no structural distinction between facts the agent learned and actions the agent took, no way to mark a memory as an uncertain belief versus an established fact, and no representation of forward-looking commitments.
+**Problem:** The v1 types were designed for a flat, single-entity model. `topical_context` and `relational_context` are now redundant with entity scoping. Meanwhile, there's no distinction between facts learned and actions taken, no representation of uncertain beliefs, and no forward-looking commitments.
 
-**Solution:** Revise the type taxonomy to cover the distinct epistemic categories an agent needs.
+**Solution:** Six types covering the distinct epistemic categories an agent needs.
 
-- **`preference`** — Likes, dislikes, tastes, working style. Retained from v1. *"Bob prefers deep cuts over greatest hits." "This customer always wants email follow-ups, never phone calls."*
+- **`preference`** — Likes, dislikes, tastes, working style. *"Bob prefers deep cuts over greatest hits."*
+- **`fact`** — Biographical, situational, or world-state facts. *"The campaign is in Act 2." "Customer has been on Enterprise since 2024."*
+- **`decision`** — Declared choices, established by authority. Never consumed by distillation — stays until explicitly superseded. *"The protagonist is a retired detective." "The refund exception was approved by the team lead."*
+- **`action`** — Something the owner did. Structurally distinct so retrieval can answer "what have I done with this entity?" and prevent repetition. (LARP research found action memory more important for consistency than identity descriptions.) *"I introduced Bob and Alice over shared Metallica fandom." "I escalated this ticket to Tier 2."*
+- **`belief`** — Theory of mind, motivational inference, hypotheses. Lower default confidence than facts; actively revised when contradicted. *"Brian positions others as shields — likely strategic self-preservation." "This customer is probably evaluating competitors."*
+- **`commitment`** — *[foundation]* Forward-looking promises or intentions. Lifecycle: active → fulfilled / broken / expired. *"I promised to find that Aphex Twin deep cut for Charlie." "I told the customer I'd follow up by Friday."*
 
-- **`fact`** — Biographical, situational, or world-state facts. Retained from v1, narrowed. *"Bob lives near Melbourne." "The campaign is in Act 2." "Customer has been on the Enterprise plan since 2024."*
-
-- **`decision`** — A declared choice, established by authority rather than inferred. Retained from v1, with explicit "persists through distillation" semantics. Decisions are never consumed by distillation — they stay until explicitly superseded. *"The protagonist is a retired detective." "We're using structured speaking order for this book club." "The refund policy exception was approved by the team lead."*
-
-- **`action`** — Something the memory owner did. New. Structurally distinct so the retrieval layer can answer "what have I done with this entity?" and prevent the agent from repeating itself. Research (LARP, Shao et al., 2023) found action memory more important for persona consistency than detailed persona descriptions. *"I introduced Bob and Alice over shared Metallica fandom." "I recommended Snarky Puppy to Charlie." "I escalated this ticket to Tier 2 support." "I set a trap at the north bridge for the players."*
-
-- **`belief`** — Theory of mind, motivational inference, hypotheses about others' mental states or future behavior. New. Distinguished from `fact` by lower default confidence and different revision behavior — beliefs are actively updated when contradicting evidence appears. *"Brian positions others as shields — likely strategic self-preservation." "This customer is probably evaluating competitors." "Alice seems to value literary craft over plot."*
-
-- **`commitment`** — *[foundation]* Forward-looking promise, plan, or intention. New. Has a lifecycle: active → fulfilled / broken / expired. Commitments should surface proactively when the relevant context arises. *"I promised to find that Aphex Twin deep cut for Charlie." "I told the customer I'd follow up by Friday." "I plan to connect Bob and Alice next time they're both online." "I need to resolve the plot thread about the missing artifact."*
-
-**Dropped:** `topical_context` (subsumed by entity scoping), `relational_context` (subsumed by entity scoping + decision type).
-
-**Migration:** Existing `topical_context` memories map to `fact`. Existing `relational_context` memories map to `fact` or `decision` depending on content — the migration can default to `fact` with a backfill pass.
+**Dropped:** `topical_context` (→ `fact` + entity scoping), `relational_context` (→ `fact` or `decision` + entity scoping).
 
 ### D. Entity identity is external to 3tears
 
-**Problem:** The same entity appears under different identifiers on different platforms or in different contexts. "discord:123456789" and "mastodon:@alice@social.example" are the same person. "The novel project" and "Chicago Noir" are the same project.
+**Problem:** The same person appears as "discord:123456789" and "mastodon:@alice@social.example." The same project is "the novel" and "Chicago Noir."
 
-**Why this is not 3tears's problem:** Identity resolution fails the boundary test. A DJ bot auto-linking Discord and Mastodon handles, a customer support system integrating with Salesforce CRM, an enterprise app federating through SSO — these are fundamentally different implementations. Apps that need cross-platform identity already have (or need) a dedicated identity/directory service. Building a simplified version inside 3tears means maintaining an identity service that's worse than purpose-built alternatives and still not general enough for complex cases.
+**Why this isn't 3tears's problem:** Identity resolution fails the boundary test. A DJ bot auto-linking handles, a support system integrating Salesforce, an enterprise app federating SSO — these are fundamentally different implementations. Building a simplified version inside a memory system means maintaining an identity service that's worse than purpose-built alternatives.
 
-**3tears's contract:** `about_id` and `mentioned_entity_ids` are opaque canonical UUIDs. 3tears never interprets, resolves, or maps them. The consuming app resolves platform identifiers to canonical IDs *before* calling `extract()` or `retrieve()`. If "discord:123" and "mastodon:@alice" are the same person, the app resolves both to the same canonical UUID before 3tears sees them.
+**3tears's contract:** `about_id` and `mentioned_entity_ids` are opaque canonical UUIDs. 3tears never resolves them. The consuming app maps platform identifiers to canonical IDs *before* calling `extract()` or `retrieve()`.
 
-**Entity merge utility:** When an external identity system merges two entities that 3tears already has memories about, the app calls `merge_entity_ids(old_id, new_id)`. This is a bulk update on `about_id` and `mentioned_entity_ids` — a dumb batch operation, not an identity service. It doesn't know *why* the IDs merged, just that they did. Apps should merge early to minimize the batch size.
+**Entity merge utility:** When an external identity system merges two entities, the app calls `merge_entity_ids(old_id, new_id)` — a bulk update, not an identity service. It doesn't know *why* the IDs merged, just that they did.
 
-**Platform/channel awareness via provenance:** "Remember what I said on Slack?" is a `source_type`/`source_context` query, not an identity concern. Memories carry platform and channel metadata in their provenance fields: `source_type='slack_message', source_context={"channel": "#general", "workspace": "acme"}`. This is queryable metadata that doesn't require identity resolution.
+**Platform/channel awareness:** "Remember what I said on Slack?" is a `source_context` query, not an identity question. Memories carry platform metadata in provenance fields: `source_type='slack_message', source_context={"channel": "#general"}`.
 
-**`about_context` implications:** The extraction pipeline's `about_context` parameter must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob talks about Charlie who isn't in the channel, the app needs Charlie's canonical ID available for the extraction prompt to associate the memory correctly. This is the consuming app's responsibility; 3tears provides the `about_context` mechanism but doesn't maintain entity directories.
+**`about_context` implications:** The extraction pipeline's `about_context` must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob mentions Charlie who isn't in the channel, the app needs Charlie's canonical ID available for extraction to associate the memory correctly.
 
-Requirements for an external identity management system are described in the appendix.
+Requirements for an external identity system are in the appendix.
 
 ### E. Flexible provenance
 
-**Problem:** Provenance is modeled as `conversation_id` + `message_id_source`, assuming a chat-app context. Memories can come from many sources: Discord messages, Mastodon posts, RSS feeds, tool results, support tickets, reflection turns, orchestrator instructions.
+**Problem:** Provenance assumes a chat context (`conversation_id` + `message_id_source`). Memories can come from Discord, Mastodon, RSS, tool results, support tickets, reflection turns, or orchestrator instructions.
 
-**Solution:** Replace the fixed provenance fields with a generic model:
+**Solution:** Replace fixed provenance with a generic model:
 
-- `source_type` — app-defined string identifying the source category (e.g., "discord_message", "support_ticket", "rss_item", "tool_result", "reflection", "orchestrator")
-- `source_id` — opaque string referencing the specific source item
-- `source_context` — optional structured metadata (channel name, ticket number, feed title — whatever the app considers useful for audit)
+- `source_type` — app-defined category (e.g., "discord_message", "support_ticket", "reflection")
+- `source_id` — opaque reference to the specific source item
+- `source_context` — optional structured metadata (channel, ticket number, feed title)
 
-**Design principle:** Provenance is audit/debug metadata with one exception: `epistemic_type=reported` memories (learned from third parties rather than direct observation) may receive lower confidence during extraction based on source type. A DJ learning about Bob's taste directly from Bob is more reliable than hearing about it from Charlie. The extraction pipeline can factor `source_type` into the `confidence` assignment. Beyond this, provenance is stored and queryable but not factored into relevance scoring.
+Provenance is mostly audit/debug metadata. The one exception: `epistemic_type=reported` memories (third-party information) may get lower confidence based on source type. A DJ learning about Bob's taste from Bob directly is more reliable than hearing about it from Charlie.
 
 ### F. Memory tiers and distillation
 
-**Problem:** Memories are flat — every memory is a 1-2 sentence fact at the same level of abstraction. Over weeks of interaction, a DJ accumulates hundreds of individual observations ("Bob liked this song", "Bob liked that song") with no mechanism to synthesize them into patterns ("Bob is a thrash metal fan") or principles ("Metallica fans tend to also enjoy Pantera"). Without synthesis, memory becomes noise. Research confirms this: LONGMEM-Bench (2024) showed hierarchical memory with consolidation outperforms flat stores by 15-25% at long horizons.
+**Problem:** Every memory is a 1-2 sentence fact at the same abstraction level. Over weeks, a DJ accumulates hundreds of "Bob liked this song" observations with no mechanism to synthesize "Bob is a thrash metal fan" or "Metallica fans tend to enjoy Pantera." Without synthesis, memory becomes noise. LONGMEM-Bench (2024) confirmed: hierarchical memory outperforms flat stores by 15-25% at long horizons.
 
-**Solution:** Introduce memory tiers and a pluggable distillation engine.
+**Solution:** Tiers and a pluggable distillation engine.
 
 #### Tiers
 
-Every memory belongs to a tier representing its level of abstraction:
+- **Observation** — a specific fact from a specific moment. *"Bob requested Aphex Twin SAW II and loved it." "Customer called about billing discrepancy, ref #4821."*
+- **Pattern** — a recurring theme synthesized from multiple observations. *"Bob is a deep-cuts ambient electronic fan." "This customer escalates when response time exceeds 24 hours."*
+- **Principle** — a generalized insight that transcends specific entities. *"Listeners who prefer deep cuts respond poorly to greatest-hits playlists." "Customers who mention competitors by name are 3x more likely to churn."*
 
-- **Observation** — a specific fact from a specific moment. "Bob requested Aphex Twin SAW II and loved it." "Customer called about billing discrepancy, reference #4821." Raw material for pattern recognition.
-- **Pattern** — a recurring theme synthesized from multiple observations. "Bob is a deep-cuts ambient electronic fan." "This customer escalates to manager requests when response time exceeds 24 hours." More durable and compact than individual observations.
-- **Principle** — a generalized insight that transcends specific entities or situations. "Listeners who prefer deep cuts respond poorly to greatest-hits playlists." "Customers who mention competitors by name are 3x more likely to churn within 30 days." Transfers across contexts.
-
-This hierarchy mirrors the Generative Agents' observation → reflection structure (Park et al., 2023), but with two key improvements: explicit tier management with CONSUME operations that keep the corpus manageable, and cross-entity distillation that the single-agent Generative Agents architecture cannot perform.
+This mirrors the Generative Agents' observation → reflection hierarchy, but with two improvements: explicit CONSUME operations that keep the corpus manageable, and cross-entity distillation that single-agent architectures can't do.
 
 #### Distillation triggers
 
-Distillation is not continuous. It fires at specific moments, informed by the Generative Agents' validated importance-sum trigger and Letta's sleep-time compute model.
+Distillation isn't continuous — it fires at specific moments.
 
 **Within-entity distillation** triggers when:
-1. An entity's accumulated importance score (sum of `importance` values on observations since last distillation) exceeds a configurable threshold (default: 50). This naturally fires more often for entities generating significant interactions and less often for entities with only mundane observations.
-2. A session boundary occurs (end of conversation, end of interaction period) and the entity has at least N new observations since last distillation (default: 5).
-3. The consuming app explicitly requests it (e.g., during a scheduled reflection turn).
+1. Accumulated importance on an entity's observations since last distillation exceeds a threshold (default: 50). Busy entities distill often; quiet ones rarely.
+2. A session boundary occurs with at least N new observations (default: 5).
+3. The app explicitly requests it (e.g., during a reflection turn).
 
-**Cross-entity distillation** triggers on a background schedule (default: daily or on explicit app request), matching Letta's sleep-time compute model. The detection algorithm:
-1. Retrieve all patterns produced since the last cross-entity run.
+**Cross-entity distillation** runs on a background schedule (default: daily), matching Letta's sleep-time compute model:
+1. Retrieve patterns produced since the last run.
 2. Cluster them by embedding similarity.
-3. For clusters spanning 3+ distinct `about_id` values, run the cross-entity distillation prompt to produce `about=null` principles.
+3. For clusters spanning 3+ distinct entities, synthesize `about=null` principles.
 
-Both triggers are configurable per-owner or per-preset. A DJ in a busy channel might trigger within-entity distillation after every session; a personal assistant might trigger it weekly.
+Both triggers are configurable per-owner or per-preset.
 
 #### Non-destructive distillation operations
 
-The LLM produces operations for each observation under review:
+The LLM produces one operation per observation under review:
 
-- **CONSUME** — observation is fully captured in a new or existing pattern. The observation is **soft-deleted** (`is_deleted=true`) and linked to the pattern via `consumed_by_id`. The consuming pattern records the observation in its `derived_from_ids`. The observation is excluded from future retrieval but remains in the database for audit, re-processing, and deletion tracing.
-- **REFINE** — extract the generalizable part into a pattern; rewrite the observation to keep only the operational/specific remainder. Both the pattern and the rewritten observation are preserved.
-- **KEEP** — observation is too recent, too unique, or too important to distill. Leave it unchanged.
+- **CONSUME** — observation fully captured in a pattern. The observation is **soft-deleted** and linked to the pattern via `consumed_by_id`. The pattern records the observation in `derived_from_ids`. The observation is excluded from retrieval but preserved for audit, re-processing, and deletion tracing.
+- **REFINE** — generalizable part becomes a pattern; observation is rewritten to keep only the specific remainder. Both are preserved.
+- **KEEP** — too recent, too unique, or too important to distill. Left alone.
 
 Patterns may further distill into principles via the same process.
 
-**Why non-destructive CONSUME:** Research on memory drift (2024-2025) documents that each LLM processing step introduces ~5-10% error at key decision points. The extraction pipeline already runs 3 LLM calls; distillation adds another. If CONSUME hard-deletes the source observations, the evidence for the pattern is permanently destroyed after 4+ error-prone processing steps. With soft-delete and provenance links:
-
-- Distillation quality is auditable ("which observations produced this pattern? were they accurately captured?")
-- Incorrect patterns can be reversed by restoring consumed observations and re-running distillation
-- GDPR/privacy deletion can trace which individual's data contributed to which patterns
-- The memory health diagnostic can compare patterns against their source observations to detect shallow distillation
-
-The storage cost is negligible — the rows already exist; we just keep them marked as consumed instead of hard-deleting.
+**Why non-destructive:** Memory drift research documents ~5-10% error per LLM processing step. By the time an observation is consumed, it's been through 4+ LLM calls. Hard-deleting the source evidence means you can never audit whether the pattern accurately captured what was consumed, you can't reverse bad distillation, and you can't trace which individual's data contributed to which patterns (hello, GDPR). The storage cost of keeping soft-deleted observations is negligible.
 
 #### Type-aware distillation
 
-Not all memory types distill the same way:
-
-- **Observations** (type=preference, fact, action, belief) are the primary input to distillation. They are consumed as patterns form.
-- **Decisions** persist and update-in-place. "The protagonist is a retired detective" is a decision — it shouldn't be consumed or generalized. It stays until explicitly superseded. The distillation engine skips `type_memory=decision` memories entirely.
-- **Commitments** *[foundation]* are not distilled. They have their own lifecycle (active → fulfilled/broken/expired) managed separately.
-- **Beliefs** distill differently from facts. A cluster of behavioral observations about an entity distills into a belief-type pattern with theory-of-mind language, not a fact-type pattern with behavioral summary. The distillation prompt handles this distinction.
+- **Observations** (preference, fact, action, belief) are the primary distillation input.
+- **Decisions** are skipped entirely — they persist until explicitly superseded.
+- **Commitments** *[foundation]* have their own lifecycle, managed separately.
+- **Beliefs** distill into belief-type patterns with theory-of-mind language, not behavioral summaries. The prompts handle this.
 
 #### Theory of mind in distillation
 
-Distillation that only summarizes behavior ("Brian frequently suggests risky actions") is shallow. Useful distillation asks *why*: "Brian consistently encourages persona players to take frontline risks while positioning himself safely — likely strategic self-preservation." The second version is far more useful because it gives the owner a predictive model, not just a behavioral log.
+"Brian frequently suggests risky actions" is shallow. "Brian consistently positions other players in high-risk roles while keeping himself safe — likely strategic self-preservation" is useful, because it's a predictive model, not a behavioral log.
 
-Research on LLM theory of mind (PNAS 2024) shows GPT-4-class models achieve ~75% accuracy on standard false-belief tasks and adult-level performance on higher-order recursive reasoning (up to 6th order). This is good enough to be useful but unreliable enough that the results must be tracked as hypotheses, not facts.
+GPT-4-class models achieve ~75% on standard false-belief tasks (PNAS 2024) and adult-level performance on higher-order recursive reasoning. Good enough to be useful; unreliable enough that results must be tracked as beliefs, not facts.
 
 Default distillation prompts guide the LLM to:
 
-1. **Infer motivations:** "Why might this person behave this way? What does the pattern suggest about their goals, values, or strategy?"
-2. **Classify epistemic status:** Theory-of-mind patterns are automatically assigned `type_memory=belief` and `confidence` reflecting the evidence strength.
-3. **Make predictions testable:** "If this theory is correct, what behavior would we expect to see next?" This gives the system a basis for future revision.
+1. **Infer motivations:** "Why might this person behave this way?"
+2. **Classify epistemic status:** Theory-of-mind patterns are automatically `type_memory=belief` with confidence reflecting evidence strength.
+3. **Make predictions testable:** "If this theory is correct, what would we expect next?" — giving the system a basis for future revision.
 
-Theory of mind also requires that the extraction pipeline captures beliefs and inferences, not just facts. When a DM reflects "I think Brian is using P1 as a shield," that belief has different epistemic status than "Brian told P1 to charge the dragon" — but both are valuable memories. The extraction worthiness gate must not reject subjective interpretations about others' motivations; these are often the most durable and useful memories an owner forms.
+The extraction pipeline must also capture beliefs and inferences, not just facts. When a DM reflects "I think Brian is using P1 as a shield," that's a valuable memory even though it's subjective. The worthiness gate must not reject it.
 
-Theories revise naturally through distillation. When new evidence contradicts an existing belief-type pattern (Brian sacrifices himself to protect P1 after a history of risk-avoidance), distillation updates the theory: "Brian's earlier behavior may have been strategic optimization rather than disregard — he proved willing to sacrifice when it mattered." The REFINE operation handles this without special machinery, and the `derived_from_ids` on the refined pattern links back to both the original evidence and the contradicting evidence.
+Theories revise naturally through distillation. When Brian sacrifices himself after a history of self-preservation, REFINE updates the theory and `derived_from_ids` links back to both the original evidence and the contradiction.
 
 #### Pluggable prompts and strategies
 
-3tears provides the distillation engine (scheduling, memory scanning, trigger logic, tier management). Consuming apps provide:
+3tears provides the engine (scheduling, scanning, triggers, tier management). Apps provide:
 
-- Distillation prompt templates (how should observations be synthesized in this domain?)
-- Tier names and semantics (if the defaults don't fit)
-- Trigger threshold overrides (importance-sum threshold, minimum observation count, background schedule)
-
-This separation keeps the engine reusable while letting each app tune the cognitive style of distillation.
-
-**DistillationStrategy protocol:**
+- Distillation prompt templates
+- Tier names and semantics (if defaults don't fit)
+- Trigger threshold overrides
 
 ```python
 class DistillationStrategy(Protocol):
@@ -246,273 +218,185 @@ class DistillationStrategy(Protocol):
     def tier_semantics(self) -> dict[str, str]: ...     # default: observation/pattern/principle
 ```
 
-A default strategy ships with 3tears. Apps that don't provide a custom strategy get default distillation behavior.
+A default strategy ships with 3tears. Apps that don't customize get sensible defaults.
 
 ### G. Relationship modeling
 
-**Problem:** Relationships are a core concern across app types — a DJ connecting listeners, a DM tracking inter-player dynamics, a support agent noting account relationships — but they don't fit cleanly into single-entity-scoped memory. Research at scale (Project Sid, 2024) found that agents needed explicit structured relationship state alongside narrative memory.
+**Problem:** Relationships — a DJ connecting listeners, a DM tracking player dynamics, a support agent noting account referrals — are inherently about the *connection between* entities, not about either one. Project Sid (2024) found this at scale: agents needed explicit relationship state alongside narrative memory.
 
-**Solution:** In v2, relationship awareness is achieved through the memory model rather than a separate data structure. The `about_id` + `mentioned_entity_ids` combination enables relationship memories to surface for all involved entities. Formal relationship modeling (dedicated relationship table with typed edges, trust scores, and strength metrics) is a future capability that the v2 schema supports but does not implement.
+**Solution for v2:** Relationship awareness through the memory model. `about_id` + `mentioned_entity_ids` ensures relationship memories surface for all involved entities. A DJ stores "I introduced Bob and Alice over Metallica" as `about_id=Bob, mentioned_entity_ids=[Alice], type=action`. When either is present, it surfaces. When both are, it gets double entity boost.
 
-**How relationship memories work in v2:**
+Distillation synthesizes relationship patterns from recurring entity-pair observations. "Bob and Alice have a strong shared connection around Metallica that I've actively cultivated."
 
-A DJ stores "Bob and Alice share deep Metallica fandom — I introduced them" as:
-- `about_id=Bob`, `mentioned_entity_ids=[Alice]`, `type_memory=action`
-
-When either Bob or Alice is in `relevant_entities`, this memory surfaces via entity boosting on either field. When both are present, it surfaces with even stronger entity boost (matching on both `about_id` and `mentioned_entity_ids`).
-
-Distillation can synthesize relationship-oriented patterns from observations involving the same entity pair. Individual observations ("I played Metallica for Bob and Alice", "Bob and Alice compared favorite Metallica albums", "Alice told Bob about a Metallica tribute band") distill into a pattern: "Bob and Alice have a strong shared connection around Metallica that I've actively cultivated." The pattern gets `about_id=Bob, mentioned_entity_ids=[Alice]`.
-
-**Retrieval support:** The retrieval layer matches `relevant_entities` against both `about_id` and `mentioned_entity_ids`. A memory scores as an entity match if any relevant entity appears in either field. This is implemented as a GIN index on `mentioned_entity_ids` and a simple OR in the entity-boost scoring.
-
-**What this doesn't handle (future direction):** Typed relationship edges (friend/rival/collaborator), explicit trust scores, relationship strength metrics, and efficient "show me all of Bob's relationships" queries. These would be served by a dedicated `relationships` table populated by distillation when it detects recurring entity-pair patterns. The v2 schema supports this evolution because `mentioned_entity_ids` already captures the entity pairs, and distillation can be extended to produce relationship records.
+**What this doesn't handle (future):** Typed relationship edges (friend/rival/collaborator), trust scores, relationship strength. These would live in a dedicated `relationships` table populated by distillation when it detects recurring entity-pair patterns. The v2 schema supports this — `mentioned_entity_ids` already captures the pairs.
 
 ### H. Temporal validity
 
-**Problem:** When facts change (Bob moves from Melbourne to Sydney, a customer changes plans, a character dies in the campaign), the current system overwrites the old memory with UPDATE. This destroys the history — "where did Bob used to live?" and "when did Bob move?" become unanswerable. Research confirms this matters: LoCoMo (2024) found temporal ordering to be the hardest task category across all evaluated memory systems. StreamBench (2024) showed most vector-retrieval systems fail when receiving contradictory information over time.
+**Problem:** When Bob moves from Melbourne to Sydney, UPDATE overwrites the old memory. Now "where did Bob used to live?" is unanswerable. LoCoMo (2024) found temporal ordering to be the hardest task category across all systems. StreamBench (2024) showed most vector systems fail when facts contradict over time.
 
-**Solution:** Add temporal validity tracking.
+**Solution:**
 
-- `valid_until` — *[foundation]* timestamptz, nullable. Null means "currently believed true." When a fact is superseded, the old memory gets `valid_until` set to the time of supersession. The new fact is stored as a new memory. Both coexist in the database; retrieval defaults to filtering for `valid_until IS NULL` (current facts) but can optionally include historical facts.
+- `valid_until` — *[foundation]* timestamptz, nullable. Null means "currently true." When a fact is superseded, the old memory gets `valid_until` set; the new fact is a new memory. Retrieval defaults to `valid_until IS NULL` but can include historical facts.
 
-This preserves history without the operational weight of a full bi-temporal model (Zep's four-timestamp approach). A DM can query "what was true about P2's character at the start of Act 2?" A customer support agent can see "this customer was on the Starter plan before upgrading to Enterprise." The DJ knows Bob used to be in Melbourne and recently moved to Sydney.
+The resolution pipeline's UPDATE is reinterpreted: instead of overwriting content, it (1) stamps `valid_until` on the old memory, (2) creates a new memory. The LLM still produces UPDATE with memory_id and new content; the engine handles the bookkeeping transparently.
 
-**How supersession works:** The resolution pipeline's UPDATE action is reinterpreted. Instead of overwriting the existing memory's content, UPDATE now: (1) sets `valid_until` on the existing memory, (2) creates a new memory with the updated content and `valid_until=NULL`. The old memory remains queryable for historical context. This is transparent to the resolution prompt — the LLM still produces UPDATE with memory_id and new content; the engine handles the temporal bookkeeping.
+This isn't a full bi-temporal model (Zep uses four timestamps), but it covers the common case without the operational weight.
 
 ### I. Entity-aware retrieval
 
-**Problem:** The retriever accepts a single query string and returns scored memories filtered by owner. It has no concept of "who is present" or "what are we working on" as retrieval signals, it lacks importance-based scoring, and its output format doesn't support pattern discovery across entities.
-
-**Solution:** Extend the retriever with richer query context, multi-signal scoring, and two retrieval modes.
+**Problem:** The retriever takes a query string, returns scored memories filtered by owner. No concept of "who is present," no importance scoring, no output structure for cross-entity reasoning.
 
 #### Multi-signal scoring
 
-The retriever scores memories using four signals, extending the Generative Agents' validated three-factor model (Park et al., 2023):
+Four signals, extending the Generative Agents' validated three-factor model:
 
-1. **Semantic similarity** — cosine distance between query embedding and memory embedding. The primary relevance signal.
-2. **Keyword match** — PostgreSQL FTS score. Catches exact matches that embeddings may miss, especially for proper nouns and domain terminology.
-3. **Recency** — exponential decay based on `date_last_accessed` (not just `date_created`). Memories that keep being retrieved stay fresh; unused memories naturally decay. This matches the Generative Agents' access-based recency, which produces a natural spaced-repetition effect. *[Change from v1: v1 used `date_created` only.]*
-4. **Importance** — the memory's `importance` score, normalized to [0, 1]. High-importance memories surface even when semantic and recency scores are marginal.
+1. **Semantic similarity** — cosine distance between query and memory embeddings.
+2. **Keyword match** — PostgreSQL FTS. Catches exact matches embeddings miss, especially proper nouns.
+3. **Recency** — exponential decay on `date_last_accessed`, not just `date_created`. Frequently-retrieved memories stay fresh; unused ones fade. *(Change from v1.)*
+4. **Importance** — the memory's importance score, normalized to [0, 1].
 
-Default signal weights: `semantic=0.40, keyword=0.10, recency=0.20, importance=0.15, entity_boost=0.15`. These are configurable per-preset and per-app.
+Default weights: `semantic=0.40, keyword=0.10, recency=0.20, importance=0.15, entity_boost=0.15`. Configurable per-preset.
 
 #### Entity boosting
 
-Memories where `about_id` or any entry in `mentioned_entity_ids` matches a relevant entity receive an additive entity-boost score. This is the primary mechanism for "who is present" and "what are we working on."
-
-Entity boosting operates independently of semantic similarity. A memory about Bob's Melbourne location surfaces when Bob is present, even if the current query is about music — because the memory is *about a relevant entity*, not because it's semantically similar to the query.
+Memories where `about_id` or `mentioned_entity_ids` matches a relevant entity get an additive boost — independent of semantic similarity. A memory about Bob's Melbourne location surfaces when Bob is present, even if the query is about music.
 
 #### Budget allocation
 
-To prevent general principles from crowding out entity-specific memories (or vice versa), the retrieval budget is partitioned:
+To prevent general principles from crowding out entity-specific context (or vice versa):
 
-- **Entity-specific budget** (default: 70% of `context_budget`) — memories where `about_id` or `mentioned_entity_ids` matches a relevant entity.
-- **General budget** (default: 30% of `context_budget`) — memories where `about_id IS NULL` (general principles and domain wisdom).
+- **Entity-specific budget** (default 70%) — memories matching a relevant entity.
+- **General budget** (default 30%) — `about_id IS NULL` memories (principles, domain wisdom).
 
-Within each partition, memories are ranked by the multi-signal score and selected via MMR. The partition percentages are configurable.
+Within each partition: multi-signal scoring + MMR selection. Ratios are configurable.
 
 #### Retrieval context
 
-The retriever accepts a structured query context:
+- `owner_id` — whose memories (required)
+- `query` — text for semantic/keyword search
+- `relevant_entities` — entity IDs to boost
+- `tier_weights` — optional per-tier scoring adjustments
+- `type_filter` — *[foundation]* include/exclude memory types
+- `include_historical` — *[foundation]* include superseded memories (default: false)
 
-- `owner_id` — whose memories to search (required, as today)
-- `query` — text for semantic and keyword search (as today)
-- `relevant_entities` — list of entity IDs to boost
-- `tier_weights` — optional per-tier scoring weights (e.g., boost principles during reflection, boost observations during active interaction)
-- `type_filter` — *[foundation]* optional list of memory types to include/exclude (e.g., retrieve only actions and commitments)
-- `include_historical` — *[foundation]* whether to include memories with non-null `valid_until` (default: false)
+#### Two modes
 
-#### Two retrieval modes
+**Conversational** — active interactions. Entity boosting, budget allocation, MMR, tight budget, entity-grouped output.
 
-**Conversational retrieval** — used during active interactions. Optimized for token efficiency and diversity.
+**Topic scan** — reflection and cross-entity analysis. No entity boosting, no MMR, all memories above threshold, entity-grouped, large budget.
 
-- Entity-boosted scoring with budget allocation
-- MMR reranking for diversity within each budget partition
-- Tight budget: returns a manageable number of results for prompt inclusion
-- Entity-grouped output: results organized by `about_id`, so the LLM sees "what I know about each participant" as a coherent picture
+Both share the same search infrastructure; the difference is post-processing.
 
-**Topic scan** — used during reflection, distillation, and cross-entity analysis. Optimized for completeness.
-
-- Content-first: no entity boosting, pure semantic/keyword/importance matching
-- No MMR: returns all memories above threshold
-- Entity-grouped output: essential for identifying which entities share a theme
-- Larger budget: comprehensive rather than token-efficient
-
-Both modes share the same underlying search infrastructure. The difference is in post-processing: whether entity boosting and MMR run, and how results are formatted.
-
-**Why entity-grouped output matters:** Flat lists of memories hide cross-entity patterns. When the retriever returns memories about Bob and Alice interleaved by score, the LLM may not notice they share Metallica fandom. When results are grouped by entity, the connection is visually obvious. This grouping aids the LLM's reasoning without requiring the memory system to do inference.
+**Why entity-grouped output:** Flat lists hide patterns. When memories about Bob and Alice are interleaved by score, the LLM might not notice they both love Metallica. Grouped output makes the connection obvious without requiring the memory system to do inference.
 
 #### Extraction gate configuration
 
-The extraction pipeline's heuristic gates (message length, response length, turn count, rate limiting) must be configurable per owner or per use case. A quiet facilitator persona that listens but rarely speaks will never pass the "assistant response length >= 100 chars" gate under the current defaults. A customer support bot processing ticket updates has no concept of "turn count." The gates themselves are sound; they need per-owner configuration rather than global defaults.
+Per-owner gate overrides are essential. A quiet facilitator that rarely speaks will never pass the default "response length >= 100 chars" gate. A support bot processing tickets has no concept of "turn count." The gates are sound; they just need per-owner configuration.
 
 ---
 
 ## Scenarios
 
-These scenarios illustrate how the components work together across different app types. They are not exhaustive but cover key interaction patterns that exercise different parts of the architecture.
+These illustrate how the components work together. Not exhaustive — just enough to exercise each part of the architecture.
 
 ### Chatbot: evolving user understanding
 
-A personal assistant chatbot serves one human over months. Early interactions produce observations: "User prefers PostgreSQL over MongoDB — cites JSONB, mature tooling, pgvector" (preference, stated, importance 7), "User is a senior backend engineer at Acme Corp" (fact, stated, importance 6), "User has a daughter named Lily starting kindergarten fall 2026" (fact, stated, importance 5).
+A personal assistant serves one human over months. Early observations: "User prefers PostgreSQL — cites JSONB, mature tooling, pgvector" (preference, stated, importance 7), "Senior backend engineer at Acme Corp" (fact, stated, importance 6).
 
-Over weeks, observations about the user's work patterns distill into patterns: "User is building a self-hosted LLM orchestrator (MetaLLM) with Python/FastAPI, LangGraph, pgvector, multi-provider support." The pattern is more durable and compact than the dozen individual observations about code changes, architecture decisions, and technology choices.
+Over weeks, observations distill into patterns: "User is building MetaLLM, a self-hosted LLM orchestrator with Python/FastAPI, LangGraph, pgvector." The pattern is more compact than the dozen individual observations about architecture decisions.
 
-The assistant stores its own actions too: "I suggested switching from OpenAI embeddings to VoyageAI and the user agreed" (action, importance 6). This prevents the assistant from re-suggesting the same migration. Over time, the action memories distill into a relationship pattern: "I've helped the user through several major architectural decisions; they trust my recommendations on infrastructure but prefer to make their own API design choices."
-
-When the user starts a new project months later, entity-specific patterns about their preferences and working style surface immediately. General principles about software architecture that emerged from their earlier work also surface via the general budget. The assistant is a better collaborator because of accumulated experience.
+The assistant stores actions too: "I suggested switching from OpenAI embeddings to VoyageAI and the user agreed" (action, importance 6). This prevents re-suggesting the same migration. Over time, actions distill into a relationship pattern: "User trusts my infrastructure recommendations but prefers to make their own API design choices."
 
 ### DJ: participant joins with known history
 
-A DJ persona is in a channel with humans Albert and Betty. Charlie joins. The consuming app resolves Charlie's discord ID to a canonical person ID via its identity service and passes it to the retriever as a relevant entity. The retriever runs with `relevant_entities=[Albert, Betty, Charlie]`. Memories about Charlie from previous sessions — different channels, weeks ago — surface via entity boosting. The DJ greets Charlie with awareness of their taste.
+Charlie joins a channel. The consuming app resolves Charlie's discord ID to a canonical UUID and passes it to the retriever. Memories from previous sessions — different channels, weeks ago — surface via entity boosting. Charlie's memories include: "Charlie loves jazz fusion, especially Snarky Puppy" and "I recommended Weather Report to Charlie and they loved it." The DJ builds on the relationship rather than starting from scratch.
 
-Charlie's memories include: "Charlie loves jazz fusion, especially Snarky Puppy" (preference, stated, confidence 0.95, importance 7) and "I recommended Weather Report to Charlie and they loved it" (action, observed, importance 6). The DJ builds on the established relationship rather than starting from scratch.
+### DJ: connecting listeners
 
-### DJ: connecting listeners with shared taste
+Bob mentions loving Metallica. Weeks later, Alice says the same in a different session. When both are later present, entity-grouped retrieval shows:
 
-Bob says he loves Metallica. Weeks later, Alice says something similar in a separate session. During Alice's session, semantic search surfaces Bob's Metallica memory even though Bob isn't present. The DJ notes the overlap. Later, when both are present, entity-grouped retrieval shows:
+> **About Bob:** loves Metallica, seen them live eight times (importance 8)
+> **About Alice:** deep Metallica fan, prefers deep cuts (importance 7)
 
-> **About Bob:** loves Metallica, seen them live eight times (preference, importance 8)
-> **About Alice:** deep Metallica fan, prefers deep cuts over radio hits (preference, importance 7)
-
-The connection is visually obvious in grouped output. The DJ introduces them.
-
-The DJ stores: "I introduced Bob and Alice over shared Metallica fandom" — `about_id=Bob, mentioned_entity_ids=[Alice], type=action, importance 7`. Next time both are present, this memory surfaces for *either* Bob or Alice via entity matching on both fields. The DJ doesn't repeat the introduction — it builds on the established connection.
+The connection is obvious in grouped output. The DJ introduces them and stores: `about_id=Bob, mentioned_entity_ids=[Alice], type=action, importance 7`. Next time either is present, the introduction memory surfaces. The DJ doesn't repeat it — it builds on the connection.
 
 ### DJ: cross-entity principles
 
-During a background distillation run, the engine notices patterns spanning 4+ listeners: "Listener A loves Metallica and Pantera", "Listener B loves Metallica and Megadeth", "Listener C liked Metallica but was unimpressed by Queensryche." Cross-entity distillation produces an `about=null` principle: "Metallica fans tend to enjoy other thrash metal (Pantera, Megadeth) but are less interested in progressive metal (Queensryche)." This principle surfaces in future interactions with any Metallica fan, including new listeners the DJ has never met.
+Background distillation notices patterns spanning 4+ listeners around Metallica, Pantera, and Megadeth. It synthesizes an `about=null` principle: "Metallica fans tend to enjoy other thrash metal but are less interested in progressive metal." This surfaces for any future Metallica fan, including people the DJ has never met.
 
 ### DM: theory of mind across a campaign
 
-A DM agent runs a D&D campaign with four players: two humans (Brian and Cass) and two AI personas (P1 and P3). Early sessions produce observations:
+A DM runs a D&D campaign with humans Brian and Cass and AI personas P1 and P3. Early observations:
 
-- "Brian told P1 to charge the dragon while Brian stayed behind cover" — about Brian, mentioned [P1], observed, importance 6
-- "Brian suggested P1 scout the cave alone" — about Brian, mentioned [P1], observed, importance 5
-- "Brian volunteered to guard the exit while others entered the dungeon" — about Brian, observed, importance 5
-- "Cass asked whether the village children were safe before agreeing to leave" — about Cass, observed, importance 6
+- "Brian told P1 to charge the dragon while Brian stayed behind cover" — about Brian, mentioned [P1], importance 6
+- "Brian suggested P1 scout the cave alone" — about Brian, mentioned [P1], importance 5
+- "Brian volunteered to guard the exit while others entered the dungeon" — about Brian, importance 5
 
-Within-entity distillation synthesizes the Brian observations into a belief-type pattern: "Brian consistently positions other players — especially P1 — in high-risk roles while keeping himself safe. Likely strategic self-preservation, using expendable allies as a buffer." Confidence 0.5 (hypothesis), importance 8. The `derived_from_ids` links back to all three source observations (which are soft-deleted but preserved).
+Distillation synthesizes a belief: "Brian consistently positions others — especially P1 — in high-risk roles while keeping himself safe. Likely strategic self-preservation." Confidence 0.5, importance 8. `derived_from_ids` links to all three source observations (soft-deleted but preserved).
 
-Later, Brian sacrifices his character to save Cass from a collapsing tunnel. The extraction pipeline captures this: "Brian sacrificed his character to save Cass in the collapsing tunnel" — about Brian, mentioned [Cass], observed, confidence 1.0, importance 9. On the next distillation trigger, this contradicts the existing theory. REFINE updates: "Brian's earlier self-preserving behavior may have been strategic resource management rather than cowardice — he proved willing to sacrifice when a valued ally was in genuine danger. Brian prioritizes meaningful stakes over routine risk." The refined pattern's `derived_from_ids` includes both the original evidence and the contradicting observation.
+Then Brian sacrifices his character to save Cass from a collapsing tunnel. Importance 9. On the next distillation trigger, REFINE updates the theory: "Brian's earlier self-preserving behavior may have been strategic resource management rather than cowardice — he proved willing to sacrifice when a valued ally was in genuine danger." The refined pattern links back to both the original evidence and the contradiction.
 
-The DM uses this updated theory to design future encounters that create meaningful moral dilemmas for Brian rather than routine combat.
+The DM uses this to design moral dilemmas for Brian rather than routine combat.
 
-For Cass, distillation produces: "Cass consistently prioritizes civilian safety and emotional stakes over tactical advantage. Appeals to protecting innocents are the strongest motivator for Cass." The DM designs hooks accordingly.
+### DM: campaign lifecycle
 
-Cross-entity distillation across all four players might produce a principle: "Players engage more deeply with encounters that have moral stakes than with encounters that are purely tactical."
+By the end of Campaign 1, hundreds of observations have been consumed into patterns and principles. Campaign 2 starts with different players. Player-specific memories from Campaign 1 don't surface (different entities, not in `relevant_entities`). But general principles do:
 
-### DM: campaign lifecycle and knowledge transfer
+- "Design encounters with initial barriers requiring planning."
+- "Players engage more when NPCs have personal stakes."
+- "Mixing puzzle and combat in the same encounter beats sequential encounters."
 
-Hundreds of session-specific observations from Campaign 1 are gradually consumed into patterns and principles. When the DM starts Campaign 2 with entirely different players, the Campaign 1 player-specific memories don't surface (different `about_id` values, not in `relevant_entities`). But general principles do:
-
-- "Design encounters with initial barriers that require planning before combat."
-- "Players engage more when NPCs have personal stakes in the outcome."
-- "Mixing puzzle and combat elements in the same encounter sustains engagement better than sequential encounters."
-
-The DM is better at running Campaign 2 because of what it learned in Campaign 1. If a player from Campaign 1 joins Campaign 2, their specific behavioral patterns surface immediately via entity boosting.
-
-Campaign-specific world state ("P3's character is named Elara") stays as a decision-type memory. Decisions don't decay through recency, but they also don't surface without entity boosting — and with no Campaign 1 entities in the relevant set, they effectively become dormant without needing explicit "campaign scope" tagging.
+The DM is better at Campaign 2 because of what it learned. If a Campaign 1 player joins Campaign 2, their behavioral patterns surface immediately.
 
 ### Customer support: escalation patterns
 
-A support agent persona handles tickets across hundreds of customers. Individual observations accumulate:
+A support agent handles hundreds of customers. Observations accumulate:
 
 - "Customer 4821 asked about data export formats twice in one week" — fact, importance 5
-- "Customer 4821 mentioned they were 'evaluating options' when asking about contract terms" — fact, importance 7
+- "Customer 4821 mentioned 'evaluating options' re: contract terms" — fact, importance 7
 - "Customer 4821's tone shifted from friendly to terse after the billing discrepancy" — belief (inferred), confidence 0.6, importance 6
 
-Distillation synthesizes: "Customer 4821 is likely evaluating competitors — repeated export questions, contract inquiries, and tone shift suggest churn risk." This is a belief-type pattern, confidence 0.4, importance 9. The low confidence reflects that it's a hypothesis; the high importance reflects the business impact if true.
+Distillation synthesizes: "Customer 4821 is likely evaluating competitors — churn risk." Belief-type pattern, confidence 0.4, importance 9.
 
-The agent also stores actions: "I escalated customer 4821's billing discrepancy to Tier 2" (action, importance 6) and commitments: "I told customer 4821 I'd follow up on the billing resolution by Friday" (commitment, importance 7). When the customer contacts support again, entity-boosted retrieval surfaces the escalation history, the churn-risk assessment, and the outstanding commitment — preventing the common support failure of asking the customer to re-explain their situation.
+Actions and commitments: "I escalated 4821's billing discrepancy to Tier 2" (action), "I told 4821 I'd follow up by Friday" (commitment, importance 7). When 4821 calls again, entity-boosted retrieval surfaces the escalation history, churn assessment, and outstanding commitment — preventing the classic support failure of "can you explain the situation again?"
 
-Cross-entity distillation produces general principles: "Customers who ask about data export formats and contract terms in the same week are 3x more likely to churn within 30 days." "When a customer mentions a competitor by name, immediately offer a proactive account review." These principles surface for any customer showing similar patterns.
+Cross-entity principles emerge: "Customers who ask about export formats and contract terms in the same week are 3x more likely to churn." These surface for any customer showing similar patterns.
 
 ### Customer support: multi-entity relationship
 
-Customer 4821 mentions that customer 5102 referred them. The extraction captures: "Customer 5102 referred customer 4821" — `about_id=4821, mentioned_entity_ids=[5102], type=fact, importance 6`. When either customer contacts support, the referral relationship surfaces. If customer 5102 later has a bad experience, the agent is aware that 4821's loyalty may also be affected.
+Customer 4821 mentions customer 5102 referred them: `about_id=4821, mentioned_entity_ids=[5102], type=fact`. When either contacts support, the referral surfaces. If 5102 has a bad experience, the agent knows 4821's loyalty may be affected.
 
-### Quiet facilitator: proactive memory surfacing
+### Quiet facilitator: proactive surfacing
 
-A facilitator persona observes a channel where humans discuss daily topics. It rarely speaks unless directly addressed or a highly relevant memory is available. Karen says to Brooks: "I don't remember when you were in Spain."
+A facilitator observes a channel but rarely speaks. Karen says to Brooks: "I don't remember when you were in Spain." The retriever runs with `relevant_entities=[Karen, Brooks]` and query text about Spain. A weeks-old memory surfaces: "Brooks traveled to Spain in March 2024" — strong entity boost plus semantic match, importance 6. The facilitator offers: "Brooks mentioned being in Spain last March."
 
-The retriever runs with `relevant_entities=[Karen, Brooks]` and query text about Spain. A memory from weeks ago — about Brooks: "Brooks traveled to Spain in March 2024" — surfaces with high relevance (entity boost plus strong semantic match, importance 6). The facilitator sees a high-confidence match and offers: "Brooks mentioned being in Spain last March."
-
-This works because: (1) the facilitator's extraction pipeline captures facts from conversations it observes, even when it doesn't respond — extraction gates are configured for this persona with the response-length gate disabled; (2) entity-boosted retrieval surfaces the Spain memory because Brooks is present; (3) the consuming app's behavioral logic interprets the combined retrieval score and importance as grounds for proactive engagement.
+This works because extraction gates are configured with the response-length gate disabled (the facilitator doesn't speak to generate responses), and the app's behavioral logic treats high-scoring retrieval as grounds for proactive engagement.
 
 ---
 
 ## Agent autonomy modes
 
-The same memory architecture supports a spectrum from passive assistants to fully autonomous agents. The differences are not in the schema — they're in which capabilities are activated and how aggressively. This section describes how different agent types use the memory system, informing the preset configurations.
+The same schema supports everything from passive assistants to fully autonomous agents. The differences are in configuration, not architecture.
 
 ### Passive assistants
 
-Single-user chatbots, copilots, journaling apps. One owner, one primary entity (the human).
-
-**Memory profile:**
-- Mostly observations and derived facts about the user. Some decisions. Few actions (the assistant responds to requests more than it initiates).
-- Little theory of mind — the human is the primary entity, and inferring their motivations is less useful than recording their stated preferences.
-- No relationship modeling (one relationship: agent ↔ human).
-- Simple retrieval: semantic + recency + importance, low entity complexity. Entity boosting is unnecessary when there's only one entity.
-- Distillation focused on preference synthesis and goal tracking. Within-entity only; cross-entity distillation is irrelevant.
-
-**What matters most:** Accurate preference capture, temporal validity (preferences change), and avoiding repetition (remembering what was already discussed or recommended).
+Single-user chatbots, copilots, journaling apps. One owner, one entity. Mostly preferences and facts, little theory of mind, simple retrieval. Distillation focuses on preference synthesis and goal tracking. What matters: accurate capture, temporal validity (preferences change), avoiding repetition.
 
 ### Facilitators and observers
 
-Channel observers, meeting note-takers, quiet helpers. One owner, many entities, low initiative.
-
-**Memory profile:**
-- Observations about multiple entities, captured passively from observed conversations.
-- Basic relationship awareness — who knows whom, shared interests.
-- Action memory for the facilitator's own interventions (to avoid repeating them).
-- Extraction gates relaxed: no response-length requirement (the facilitator may not speak), no turn-count requirement (it observes continuously).
-- Proactive retrieval: high-confidence entity-boosted matches may trigger engagement.
-- Limited distillation: within-entity patterns form naturally, but the facilitator's corpus is smaller than active participants'.
-
-**What matters most:** Extraction from observed conversations without participation. High precision on entity identification (the facilitator must correctly attribute "who said what"). Proactive surfacing of high-relevance memories at appropriate moments.
+Channel observers, meeting note-takers. One owner, many entities, low initiative. Extraction gates relaxed (no response-length requirement). Action memory prevents repeating interventions. What matters: extraction from observed conversations without participation, high-precision entity attribution, proactive surfacing at the right moment.
 
 ### Social agents
 
-DJ bots, book club moderators, community facilitators. One or more owners, many entities, high initiative, active relationship building.
-
-**Memory profile:**
-- All observation types including actions, beliefs, and commitments.
-- Active theory of mind — modeling each participant's preferences, motivations, and relationships.
-- `mentioned_entity_ids` heavily used for multi-entity relationship memories.
-- Cross-entity pattern detection (shared tastes, group dynamics).
-- Distillation running at session boundaries and on background schedule.
-- Both retrieval modes active: conversational during interaction, topic scan during reflection.
-
-**What matters most:** Theory of mind, action memory (don't repeat introductions, build on previous interactions), cross-entity distillation (discover connections between participants), and temporal validity (tastes evolve).
+DJs, book club moderators, community facilitators. Many entities, high initiative. Full theory of mind, heavy use of `mentioned_entity_ids`, cross-entity distillation, both retrieval modes. What matters: theory of mind, action memory (don't repeat introductions), cross-entity patterns, temporal validity.
 
 ### Autonomous creators
 
-DM agents, author agents, planners, project managers. One owner, many entities, high initiative, maintains a world model, makes creative or strategic decisions.
-
-**Memory profile:**
-- Everything the social agent needs, plus:
-- Decision memory with strong persistence (world-building and project decisions must never be forgotten or consumed).
-- Strategic belief patterns: "encounter design principles," "this player type responds well to X."
-- Commitment tracking: plot threads, promises to players, unresolved questions.
-- Action memory for the DM's own choices: "I placed the artifact in the northern ruins," "I introduced the BBEG via dream sequence."
-- Cross-entity distillation producing tactical principles.
-
-**What matters most:** Decision persistence, theory of mind about players/participants, strategic memory (what approaches work), commitment tracking (open plot threads, promises), and campaign/project lifecycle (knowledge that transfers to the next campaign/project).
+DM agents, author agents, planners. Everything social agents need, plus: persistent decisions (world-building choices must survive distillation), strategic beliefs, commitment tracking (open plot threads, promises to players), action memory for creative choices. What matters: decision persistence, strategic memory, commitment tracking, knowledge transfer across campaigns/projects.
 
 ### Customer support agents
 
-One owner, very many entities (hundreds to thousands of customers), medium initiative, relationship memory with business context.
-
-**Memory profile:**
-- High volume of per-entity observations, most at low-to-medium importance.
-- Actions and commitments are critical: "what did I promise this customer?" and "what actions have I already taken?"
-- Theory of mind focused on customer satisfaction and churn risk rather than personality modeling.
-- Cross-entity distillation is high-value: patterns across customers (escalation triggers, churn indicators) directly improve service quality.
-- Temporal validity matters — customer plans, contact preferences, and account status change frequently.
-
-**What matters most:** Commitment tracking (outstanding promises), action memory (don't ask the customer to repeat themselves), cross-entity principles (escalation and churn patterns), and temporal validity (customer status changes).
+One owner, very many entities. High-volume extraction at moderate importance thresholds. Actions and commitments are critical ("what did I promise this customer?"). Cross-entity distillation produces escalation and churn patterns. Temporal validity matters — customer status changes constantly. What matters: commitment tracking, action memory, cross-entity principles, temporal validity.
 
 ---
 
@@ -520,196 +404,169 @@ One owner, very many entities (hundreds to thousands of customers), medium initi
 
 ### 3tears owns
 
-- **Memory storage and retrieval** — three-tier caching, embedding, multi-signal hybrid scoring (semantic + keyword + recency + importance), entity-boosted and topic-scan retrieval modes, entity-grouped output with budget allocation
-- **Memory model** — owner, about (generalized entities with mentioned_entity_ids), provenance, tier, type, epistemic metadata (importance, confidence, epistemic_type), temporal validity
-- **Entity merge utility** — bulk update of `about_id` and `mentioned_entity_ids` when an external identity system merges entities
-- **Extraction pipeline** — gated, multi-stage extraction with entity identification, action capture, importance and confidence assignment, belief acceptance, configurable per-owner gates
-- **Distillation engine** — importance-sum and session-boundary triggers, within-entity and cross-entity pattern synthesis, non-destructive CONSUME with provenance, theory-of-mind-oriented defaults, pluggable prompts and strategies
-- **Memory ledger** — within-conversation tracking of surfaced items to prevent redundancy
+- **Memory storage and retrieval** — three-tier caching, multi-signal scoring, entity-boosted and topic-scan modes, entity-grouped output, budget allocation
+- **Memory model** — owner, about (with mentioned_entity_ids), provenance, tier, type, epistemic metadata, temporal validity
+- **Entity merge utility** — bulk ID update when external identity systems merge entities
+- **Extraction pipeline** — gated, multi-stage, with entity identification, action capture, importance/confidence assignment, belief acceptance, per-owner gate config
+- **Distillation engine** — triggers, within-entity and cross-entity synthesis, non-destructive CONSUME, theory-of-mind defaults, pluggable prompts
+- **Memory ledger** — within-conversation tracking to prevent redundancy
 
 ### Consuming apps own
 
-- **Entity identity and directory** — what entities exist, what they mean, and how platform-specific identifiers map to canonical IDs. 3tears stores opaque `about_id`/`about_type` UUIDs; the app owns the entity registry, identity resolution, cross-platform linking, and display name management. See the appendix for requirements an identity system should satisfy.
-- **Relevance determination** — which entities are relevant for a given interaction. The app resolves platform identifiers to canonical IDs and passes them to the retriever; 3tears boosts them.
-- **Entity name resolution** — providing human-readable display names for `about_id` UUIDs in retrieval results, either via a lookup callback or post-processing.
-- **Behavioral rules** — "speak only when directly addressed or high-confidence memory available", etc. 3tears provides scored retrieval with importance; the app interprets scores and decides actions.
-- **Prompt formatting** — how retrieved memories are rendered into LLM prompts. 3tears provides entity-grouped structured output with epistemic metadata; the app formats it (including resolving entity IDs to display names).
-- **Distillation prompts** — domain-specific guidance for how observations should be synthesized. The app provides prompt templates; 3tears runs the engine.
-- **Multi-owner reconciliation** — if an app needs a canonical shared artifact from multi-persona collaboration, it reconciles across owners at the application layer.
-- **Cognitive/behavioral architecture** — persona traits, goals, scheduling, turn management, reflection triggers.
-- **Privacy and access control** — who can read whose memories, sensitivity classification of entities, GDPR/deletion policy implementation. See the privacy section below.
+- **Entity identity and directory** — canonical ID management, cross-platform linking, display names. 3tears stores opaque UUIDs; the app owns everything else. (See appendix.)
+- **Relevance determination** — which entities matter for a given interaction
+- **Entity name resolution** — human-readable labels for `about_id` UUIDs in retrieval results
+- **Behavioral rules** — when to speak, when to stay quiet, how to interpret retrieval scores
+- **Prompt formatting** — how to render entity-grouped results into LLM prompts
+- **Distillation prompts** — domain-specific synthesis guidance
+- **Multi-owner reconciliation** — canonical shared artifacts from multi-persona collaboration
+- **Cognitive architecture** — persona traits, goals, scheduling, turn management
+- **Privacy and access control** — who reads whose memories, sensitivity classification, deletion policy
 
 ### Why these boundaries
 
-The boundary test is reuse: if every app rebuilding the same capability would produce essentially the same code, it belongs in 3tears. If apps would produce meaningfully different implementations reflecting their domain, it belongs in the app.
+The test is reuse. If every app would produce essentially the same code, it belongs in 3tears. If implementations would differ meaningfully, it belongs in the app.
 
-Retrieval scoring, distillation scheduling, tier management, and non-destructive CONSUME with provenance are the same everywhere — only the configuration differs. These belong in 3tears.
+Retrieval scoring, distillation scheduling, tier management, and non-destructive CONSUME are the same everywhere. Entity identity, behavioral rules, privacy policy, and prompt formatting are fundamentally domain-specific.
 
-Entity identity (how does "discord:123" map to a canonical user?), entity semantics (what is a "project"?), behavioral rules (when should I speak?), privacy policy (what data can we retain?), and prompt formatting (how does my persona present memories?) are fundamentally domain-specific. These belong in consuming apps.
-
-**Boundaries are not walls.** The fact that distillation prompts are "the app's concern" doesn't mean 3tears shrugs and ships an empty text field. See the next section.
+**Boundaries are not walls.** Distillation prompts are "the app's concern," but that doesn't mean 3tears ships an empty text field. See the next section.
 
 ---
 
 ## Privacy and deletion
 
-Agent memory raises privacy concerns that the architecture must support, even though policy decisions belong to consuming apps.
-
 ### What 3tears provides
 
-**Deletion by entity.** `delete_memories_about(entity_id)` finds all memories where `about_id = entity_id` OR `entity_id IN mentioned_entity_ids` and soft-deletes them. This handles the common "remove everything about this person" request.
+**Deletion by entity.** `delete_memories_about(entity_id)` finds all memories where `about_id` or `mentioned_entity_ids` matches and soft-deletes them.
 
-**Provenance tracing through distillation.** Because CONSUME is non-destructive and `derived_from_ids` links patterns to their source observations, it's possible to trace which entity's observations contributed to a given pattern or principle. When deleting entity X's data, the system can identify patterns that were derived partly from X's observations. The consuming app decides whether to delete the entire pattern, re-run distillation without X's observations, or leave the pattern (which no longer attributes anything to X specifically).
+**Provenance tracing through distillation.** Non-destructive CONSUME + `derived_from_ids` makes it possible to trace which entity's observations contributed to a given pattern. When deleting entity X, the system identifies patterns derived from X's observations. The app decides: delete the pattern, re-run distillation without X, or leave it.
 
-**Cross-entity principle contamination.** This is the hardest case. An `about=null` principle like "Metallica fans tend to enjoy Pantera" may have been derived from observations about multiple entities. Deleting one entity's data shouldn't necessarily invalidate the principle. 3tears provides `contributing_entity_ids` on pattern and principle memories — a metadata field populated during distillation that records which `about_id` values contributed to the synthesis. Consuming apps use this to decide: if the deleted entity was one of many contributors, the principle likely stands; if they were the primary or sole contributor, the principle should be reviewed.
+**Cross-entity principle contamination.** The hardest case. "Metallica fans enjoy Pantera" may derive from multiple entities. Deleting one shouldn't necessarily invalidate the principle. 3tears tracks `contributing_entity_ids` on patterns and principles — the app uses this to decide whether a principle survives a deletion.
 
 ### What consuming apps own
 
-- **When to delete.** GDPR requests, user opt-out, account closure, data retention policies. These are app-domain decisions.
-- **Sensitivity classification.** "Daughter named Lily, starting kindergarten fall 2026" and "prefers PostgreSQL" have very different privacy implications. If the app needs sensitivity-aware handling, it classifies entities or memory types at the application layer.
-- **Access control between owners.** In multi-owner systems, can persona A read persona B's memories about entity X? This is an app-level policy. 3tears's retrieval is scoped by `owner_id` — it never returns memories belonging to a different owner unless the app explicitly queries across owners.
-- **Retention policies.** How long to keep soft-deleted memories, when to hard-delete, how long to retain consumed observations. 3tears provides the soft-delete and provenance infrastructure; apps define the schedule.
+- **When to delete** — GDPR, opt-out, account closure, retention policies
+- **Sensitivity classification** — "Daughter named Lily, kindergarten fall 2026" and "prefers PostgreSQL" have very different implications
+- **Access control** — can persona A read persona B's memories about entity X? 3tears scopes retrieval by `owner_id`; the app defines cross-owner policy
+- **Retention schedules** — how long to keep soft-deleted memories, when to hard-delete
 
 ---
 
 ## Cost model
 
-Memory operations consume LLM tokens and database resources. Understanding the cost profile is essential for production deployment.
+### Extraction (per turn)
 
-### Extraction cost per turn
+Up to 3 LLM calls: worthiness gate (~350 tokens), candidate extraction (~1,000 tokens), resolution (~750 tokens). Total when extraction fires: ~2,100 tokens. Most turns are rejected by heuristic gates (zero cost) or worthiness (~350 tokens).
 
-Each extraction runs up to 3 LLM calls:
-1. **Worthiness gate** — ~300 input tokens (prompt + message preview), ~50 output tokens. Skipped if heuristic gates reject the turn.
-2. **Candidate extraction** — ~800 input tokens (prompt + full message + response), ~200 output tokens. Produces 0-3 candidate memories.
-3. **Resolution** — ~600 input tokens (prompt + candidates + similar existing memories), ~150 output tokens. Runs only if candidates were produced.
+### Within-entity distillation (per entity per run)
 
-Typical cost per turn: 1,700 input + 400 output tokens when extraction fires. Most turns are rejected by heuristic gates (zero cost) or the worthiness gate (~350 tokens).
+~2,000 tokens (prompt + 5-15 observations + existing patterns). Fires roughly every 5-15 interactions per entity with default triggers.
 
-### Distillation cost per entity per run
+### Cross-entity distillation (per daily cycle)
 
-Within-entity distillation reviews a cluster of observations:
-1. **Cluster retrieval** — database query, no LLM cost.
-2. **Distillation prompt** — ~1,500 input tokens (prompt + 5-15 observations + existing patterns), ~500 output tokens.
-3. **Re-embedding** — embedding API call for each new or modified memory.
+Depends on corpus. For a modest corpus (50 entities, 200 patterns): 2-5 clusters detected, ~12,000 tokens total.
 
-Typical cost per entity: 2,000 tokens per distillation run. With default triggers (importance-sum threshold 50, ~10 observations), this fires roughly every 5-15 interactions per entity.
+### Retrieval
 
-### Cross-entity distillation cost
+No LLM cost. Database queries only. p95 latency under 100ms at typical corpus sizes (<100K memories per owner).
 
-Depends on corpus size. The detection step (clustering recent patterns) is embedding-only. The synthesis step runs one LLM call per detected cluster: ~2,000 input tokens (prompt + clustered patterns across entities), ~300 output tokens. With daily background runs and a modest corpus (50 entities, 200 patterns), expect 2-5 clusters per run: ~12,000 tokens per daily cycle.
+### Scaling
 
-### Retrieval cost
-
-No LLM cost. Database queries (pgvector similarity + FTS) plus optional re-ranking. At typical corpus sizes (<100K memories per owner), p95 retrieval latency is under 100ms.
-
-### Scaling considerations
-
-Per-owner memory systems are unlikely to hit pgvector limits. Even a power user generates ~10K memories over years. The cross-entity topic scan is the most likely performance concern: it queries across all entities without entity boosting or MMR filtering. For owners with very large corpora (customer support agents with thousands of customers), topic scan queries should be bounded by recency or tier (scan only recent patterns, not all observations).
+Per-owner corpora are unlikely to hit pgvector limits (even power users generate ~10K memories over years). The cross-entity topic scan is the performance concern: it queries across all entities without MMR. For high-volume owners (support agents with thousands of customers), bound topic scans by recency or tier.
 
 ---
 
 ## Helping apps succeed
 
-The architecture is pluggable: apps provide prompts, configure gates, choose retrieval modes. This flexibility is necessary — a DJ bot and a customer support system need different memory behavior. But flexibility without guidance produces shallow memory systems. Most apps will ship with defaults, never revisit their prompts, and wonder why their personas feel flat. Theory of mind won't emerge from a distillation prompt that says "summarize recurring patterns." Action memories won't appear if extraction only looks for facts about users.
+Flexibility without guidance produces shallow memory systems. Most apps will ship with defaults, never revisit their prompts, and wonder why their personas feel flat. Theory of mind won't emerge from a prompt that says "summarize recurring patterns."
 
-3tears must take responsibility for the quality of the whole system, not just the correctness of the architecture. This means opinionated defaults, diagnostic tools, and presets that encode hard-won knowledge about what makes memory work.
+3tears takes responsibility for the quality of the whole system, not just the correctness of the architecture.
 
 ### Opinionated defaults
 
-The default extraction and distillation prompts are not neutral starting points — they are 3tears's best answer for the general case. They encode:
+The default prompts are 3tears's best answer for the general case, not neutral starting points:
 
-- **Entity awareness.** Default extraction prompts guide the LLM to identify the primary entity and any mentioned entities for each memory. Without this, `about_id` stays null and entity-boosted retrieval finds nothing.
-- **Action capture.** Default extraction prompts instruct the LLM to note the owner's own significant actions (introductions, recommendations, escalations, commitments), not just facts learned from others. Research (LARP, Shao et al., 2023) validates this as critical for persona consistency.
-- **Importance scoring.** Default extraction prompts assign a 1-10 importance score to each candidate memory, matching the Generative Agents' validated approach (Park et al., 2023). Without this, retrieval can't distinguish significant memories from noise, and distillation has no principled trigger.
-- **Epistemic classification.** Default extraction prompts classify each memory's epistemic type (observed, stated, inferred, hypothesized) and assign confidence. Without this, the system treats established facts and uncertain hypotheses identically.
-- **Motivational inference.** Default distillation prompts guide the LLM to ask "why might this person behave this way?" when synthesizing behavioral patterns — producing theory of mind, not just behavioral logs.
-- **Belief acceptance.** Default extraction worthiness gates do not reject subjective interpretations about others' motivations. "I think Brian is using me as a shield" is a valuable memory even though it's not an objective fact.
-- **Tier-appropriate output.** Default distillation prompts produce genuinely synthetic patterns and principles, not concatenations of observations with slightly different wording.
+- **Entity awareness** — extraction identifies the primary entity and mentioned entities for each memory
+- **Action capture** — extraction notes the owner's own actions, not just facts learned from others
+- **Importance scoring** — 1-10 per memory, matching the Generative Agents' validated approach
+- **Epistemic classification** — type and confidence on each memory
+- **Motivational inference** — distillation asks "why?" not just "what?"
+- **Belief acceptance** — worthiness gates don't reject subjective interpretations
+- **Tier-appropriate synthesis** — distillation produces genuine patterns, not reworded observations
 
-An app that uses every default and never customizes a prompt should still get entity-aware extraction, action memory, importance scoring, and basic theory of mind. The defaults are the floor, not the ceiling.
+An app running entirely on defaults should still get entity-aware extraction, action memory, importance scoring, and basic theory of mind. Defaults are the floor, not the ceiling.
 
 ### Memory profile presets
 
-Rather than requiring every app to write prompts from scratch, 3tears ships preset profiles tuned for common scenarios. Each preset bundles extraction prompts, distillation prompts, gate configuration, retrieval defaults, and distillation trigger thresholds into a tested configuration.
+Tested configurations bundling prompts, gates, retrieval defaults, and distillation thresholds:
 
-- **assistant** — single-user chatbot or copilot. One owner, one human. Extraction tuned for preferences, facts, and decisions. Distillation tuned for goal tracking and user modeling. No cross-entity distillation needed. Importance threshold relaxed (the single entity generates all observations). Good default for apps getting started.
-- **social** — multi-persona social interaction (the DJ pattern). Multiple owners, many entities. Extraction tuned for social observation, action memory, and relationship dynamics. Distillation tuned for theory of mind and cross-entity patterns. Extraction gates relaxed for observer/facilitator personas. `mentioned_entity_ids` heavily populated.
-- **collaborative** — group work on shared artifacts (brainstorming, planning). Multiple owners, project/topic entities. Extraction tuned for decisions and commitments. Distillation preserves decisions rather than consuming them. Commitment lifecycle tracking emphasized.
-- **game** — game master and players. Extraction tuned for world state, player behavior patterns, and strategic inference. Distillation tuned for cross-player patterns and theory of mind. Action memory emphasized for the DM. Belief-type patterns encouraged for player modeling.
-- **support** — customer-facing agent handling many entities. High-volume observation extraction with moderate importance thresholds. Action and commitment tracking critical. Cross-entity distillation emphasized for discovering escalation and churn patterns. Temporal validity important (customer status changes frequently).
+- **assistant** — single-user chatbot. Preferences, facts, decisions. Goal tracking. No cross-entity distillation.
+- **social** — multi-persona interaction (DJ pattern). Social observation, action memory, relationship dynamics, theory of mind, cross-entity patterns. Relaxed gates for observers.
+- **collaborative** — group work on shared artifacts. Decisions and commitments. Distillation preserves decisions.
+- **game** — game master and players. World state, player behavior, strategic inference, cross-player patterns, theory of mind. Heavy action memory for the DM.
+- **support** — customer-facing, many entities. Actions and commitments critical. Cross-entity distillation for escalation/churn patterns. Temporal validity important.
 
-Apps pick a preset and customize from there. The preset handles the 80% case; the app overrides what's domain-specific. An app that outgrows its preset can export the preset's configuration and modify it directly.
+Pick a preset, customize from there. Outgrow it, export and modify directly.
 
 ### Memory health diagnostics
 
-A diagnostic tool that analyzes an owner's actual memory corpus and reports on quality. This runs on-demand or periodically, not on every extraction. It examines:
+A linter for memory quality. Runs on-demand, examines an owner's corpus:
 
-- **Entity coverage.** What percentage of memories have non-null `about_id`? If most memories are unassociated, entity-boosted retrieval is ineffective. The diagnostic flags this and suggests checking `about_context` in extraction calls.
-- **Mentioned entity usage.** What percentage of multi-entity memories populate `mentioned_entity_ids`? If most only set `about_id`, relationship memories are invisible to secondary entities.
-- **Tier distribution.** What's the ratio of observations to patterns to principles? A healthy corpus has distillation producing patterns over time. If there are 500 observations and 0 patterns, distillation isn't running or its prompts aren't producing synthesis.
-- **Importance distribution.** Are importance scores well-distributed, or are most memories clustered at 5? Flat distributions suggest the extraction prompt isn't differentiating significance.
-- **Epistemic diversity.** Are beliefs and hypotheses present alongside facts? If all memories are `epistemic_type=stated` or `observed`, the system isn't capturing inferences or theory of mind.
-- **Action memory presence.** Are any memories recording the owner's own actions? If not, the owner will repeat itself.
-- **Distillation depth.** Are patterns genuinely synthetic, or just slightly reworded observations? The diagnostic samples patterns, retrieves their `derived_from_ids`, and compares content, flagging patterns that don't add abstraction.
-- **Theory of mind indicators.** Do belief-type patterns include motivational language (intent, belief, strategy, motivation, goal) or only behavioral language (frequently, usually, tends to)?
-- **Temporal health.** Are there memories that should have `valid_until` set but don't? (Multiple conflicting facts about the same entity and topic without temporal resolution.)
-- **Retrieval simulation.** Given a sample query and set of relevant entities, what would the retriever actually return? Does entity boosting surface the right memories? Does the budget allocation balance entity-specific and general memories appropriately?
+- **Entity coverage** — % of memories with non-null `about_id`
+- **Mentioned entity usage** — are multi-entity memories populating `mentioned_entity_ids`?
+- **Tier distribution** — observations vs patterns vs principles (500 observations and 0 patterns = distillation isn't working)
+- **Importance distribution** — well-spread or all clustered at 5?
+- **Epistemic diversity** — any beliefs/hypotheses, or all facts?
+- **Action memory presence** — if zero, the owner will repeat itself
+- **Distillation depth** — are patterns genuinely synthetic or just reworded observations?
+- **Theory of mind indicators** — motivational language (intent, strategy, goal) vs behavioral language (frequently, tends to)
+- **Temporal health** — conflicting facts without `valid_until` resolution
+- **Retrieval simulation** — dry run: what would the retriever return for a sample query?
 
-The diagnostic output is structured (JSON) for programmatic consumption and human-readable for developer review. It should feel like a linter for memory quality.
+Output is structured JSON and human-readable.
 
 ### Prompt review tool
 
-A lightweight analysis tool that examines an app's configured prompts (extraction, worthiness, distillation) against a checklist of known requirements:
+Static analysis of configured prompts against a checklist: action capture, entity identification, importance scoring, epistemic classification, belief acceptance, motivational inference, decision preservation, observer/facilitator support. Fast, free, runs in CI.
 
-- Does the extraction prompt mention capturing the owner's own actions?
-- Does the extraction prompt guide entity identification (primary and mentioned entities)?
-- Does the extraction prompt assign importance scores?
-- Does the extraction prompt classify epistemic type and confidence?
-- Does the worthiness gate accept beliefs and inferences, not just objective facts?
-- Does the distillation prompt encourage motivational inference ("why"), not just behavioral summary ("what")?
-- Does the distillation prompt distinguish between observations that should be consumed and decisions that should persist?
-- Does the extraction prompt handle the case where the owner didn't respond (facilitator/observer personas)?
+Optionally: run sample scenarios through the pipeline and evaluate output. Costs tokens but catches what static analysis misses.
 
-This is static analysis — fast, free, and can run in CI. For deeper analysis, the tool can optionally run sample scenarios through the extraction and distillation pipelines and evaluate the output against expected results.
+### Memory configuration skill
 
-### Memory configuration skill for Claude Code
-
-3tears ships an interactive Claude Code skill (`/3tears:configure-memory`) that reads a consuming app's documentation and codebase, selects and adapts presets, generates tailored extraction/distillation/retrieval configuration, and walks through app-specific test scenarios. The skill combines the presets, diagnostics, and prompt review tool with app-specific context.
-
-The skill specification is maintained as a separate document (see `docs/skills/configure-memory-skill.md`). It covers: what the skill knows (data model, presets, checklist, scenario patterns, anti-patterns), what it does (understand the app, select preset, generate prompts, walk through scenarios, output configuration), and how it stays current with the evolving memory system.
+3tears ships a Claude Code skill (`/3tears:configure-memory`) that reads an app's docs, selects and adapts presets, generates tailored configuration, and walks through test scenarios. Specification in `docs/skills/configure-memory-skill.md`.
 
 ---
 
 ## Known limitations and future directions
 
-### Limitations in v2
+### v2 limitations
 
-**No knowledge graph layer.** Research converges on hybrid architectures (Zep/Graphiti, Cognee, Mem0g) where a knowledge graph enables multi-hop reasoning that vector search alone cannot. 3tears v2 uses `about_id` + `mentioned_entity_ids` for entity association, which enables 1-hop entity queries but not graph traversal. A query like "which listeners have friends who like jazz?" requires application-level joins. The `mentioned_entity_ids` field is the foundation for a future graph layer — the entity pairs are captured, but traversal logic is not implemented.
+**No knowledge graph.** `about_id` + `mentioned_entity_ids` enables 1-hop entity queries, not graph traversal. "Which listeners have friends who like jazz?" requires app-level joins. `mentioned_entity_ids` is the foundation for a future graph layer.
 
-**No formal relationship model.** Relationships are represented as memories that mention multiple entities, but there's no typed relationship schema (friend/rival/collaborator), no trust scores, and no relationship strength metrics. The Beta Reputation System (Bayesian trust updating from interaction outcomes) and FIRE model (multi-dimensional trust combining direct experience, role-based trust, and witness information) from multi-agent systems research are natural future additions. The v2 distillation engine can be extended to produce relationship records when it detects recurring entity-pair patterns.
+**No formal relationship model.** No typed edges, trust scores, or strength metrics. The Beta Reputation System and FIRE model from multi-agent research are natural future additions, populated by distillation detecting recurring entity-pair patterns.
 
-**No full bi-temporal model.** `valid_until` provides basic temporal supersession ("what's true now" vs "what was true before") but not the four-timestamp model (event time, ingestion time, validity start, validity end) that Zep/Graphiti implements. For most use cases, the simpler model suffices. Apps requiring historical temporal queries ("what did we believe about Bob on March 15th?") would need the full model.
+**No full bi-temporal model.** `valid_until` handles "what's true now" vs "what was true before" but not Zep's four-timestamp model. Sufficient for most cases.
 
-**Commitment lifecycle is [foundation] only.** The `commitment` memory type is in the schema but the fulfillment/expiration lifecycle (tracking whether a promise was kept) is not implemented in the processing pipeline. Apps that need commitment tracking implement it at the application layer for now.
+**Commitment lifecycle is [foundation] only.** The type exists; the fulfillment/expiration engine doesn't. Apps implement tracking at the application layer for now.
 
-**Theory of mind accuracy.** LLM-based motivational inference is wrong ~25% of the time (PNAS 2024). The belief type with confidence tracking mitigates this but doesn't solve it. Consuming apps should treat belief-type patterns as working hypotheses, not established facts. The diagnostic tool's theory-of-mind indicators check for the presence of motivational inference but cannot verify its accuracy.
+**Theory of mind accuracy.** ~25% error rate (PNAS 2024). Beliefs + confidence tracking mitigates but doesn't solve. Treat belief-type patterns as hypotheses, not facts.
 
-**Memory drift through LLM processing.** Each LLM call in the extraction and distillation pipeline can introduce subtle errors. With 3-4 LLM calls per extraction and 1-2 per distillation, errors compound. Non-destructive CONSUME preserves the evidence chain for audit but doesn't prevent drift. The memory health diagnostic's distillation depth analysis helps detect it.
+**Memory drift.** Each LLM call can introduce subtle errors; extraction + distillation means 4+ calls. Non-destructive CONSUME preserves evidence for audit but doesn't prevent drift.
 
 ### Future directions
 
-- **Relationship table** populated by distillation: typed edges, trust scores, relationship strength, populated automatically when distillation detects recurring entity-pair patterns in the observation corpus.
-- **Graph traversal** for multi-hop reasoning: leverage `mentioned_entity_ids` and the relationship table to answer queries spanning entity connections.
-- **Commitment lifecycle engine**: track active commitments, surface them proactively, mark them fulfilled/broken/expired based on observed outcomes.
-- **Full bi-temporal model** if consuming apps demonstrate need for historical temporal queries.
-- **Sensitivity classification** at extraction time: LLM-assigned sensitivity scores on memories containing personal information (health, family, financial), enabling apps to implement tiered retention policies.
-- **Embedding model migration support**: re-embedding tooling that handles all tiers, including distillation-produced content that may reference consumed observations.
+- **Relationship table** populated by distillation: typed edges, trust scores, relationship strength
+- **Graph traversal** leveraging `mentioned_entity_ids` and the relationship table
+- **Commitment lifecycle engine**: proactive surfacing, fulfillment tracking
+- **Full bi-temporal model** if apps demonstrate need
+- **Sensitivity classification** at extraction: LLM-assigned scores for tiered retention
+- **Embedding migration tooling**: re-embedding across all tiers including distillation-produced content
 
 ---
 
-## Migration guide for existing consuming apps
+## Migration guide
 
-Memory v2 is a breaking change. There are no backward-compatibility shims or fallback modes. Consuming apps must migrate their database schema, API call sites, and configuration. This section covers every touching point.
+v2 is a breaking change. No shims, no fallback. This covers every touching point.
 
 ### Database schema
 
@@ -717,88 +574,56 @@ Memory v2 is a breaking change. There are no backward-compatibility shims or fal
 
 | v1 column | v2 column | Action |
 |---|---|---|
-| `user_id` | `owner_id` | Rename. Existing values carry over. |
-| `conversation_id` | *(removed)* | Drop. Provenance is now in `source_type`/`source_id`/`source_context`. |
-| `message_id_source` | *(removed)* | Drop. Same as above. |
-| *(new)* | `about_id` | Add, nullable UUID. Existing memories get `NULL`. |
-| *(new)* | `about_type` | Add, nullable text. |
-| *(new)* | `mentioned_entity_ids` | Add, nullable UUID[]. Default `NULL`. |
-| *(new)* | `source_type` | Add, nullable text. |
-| *(new)* | `source_id` | Add, nullable text. |
-| *(new)* | `source_context` | Add, nullable JSONB. |
-| *(new)* | `tier` | Add, NOT NULL text, default `'observation'`. All existing memories become observations. |
-| *(new)* | `importance` | Add, nullable smallint. Existing memories get `NULL` (treated as importance 5 in scoring). |
-| *(new)* | `confidence` | Add, nullable float. *[foundation]* |
-| *(new)* | `epistemic_type` | Add, nullable text. *[foundation]* |
-| *(new)* | `derived_from_ids` | Add, nullable UUID[]. |
-| *(new)* | `consumed_by_id` | Add, nullable UUID. |
-| *(new)* | `date_last_accessed` | Add, nullable timestamptz. |
-| *(new)* | `valid_until` | Add, nullable timestamptz. *[foundation]* |
-| `type_memory` | `type_memory` | Values updated: `topical_context` → `fact`, `relational_context` → `fact`. New values: `action`, `belief`, `commitment`. |
+| `user_id` | `owner_id` | Rename |
+| `conversation_id` | *(removed)* | Drop (→ `source_type`/`source_id`/`source_context`) |
+| `message_id_source` | *(removed)* | Drop (same) |
+| *(new)* | `about_id` | Nullable UUID. Existing → `NULL`. |
+| *(new)* | `about_type` | Nullable text. |
+| *(new)* | `mentioned_entity_ids` | Nullable UUID[]. |
+| *(new)* | `source_type` | Nullable text. |
+| *(new)* | `source_id` | Nullable text. |
+| *(new)* | `source_context` | Nullable JSONB. |
+| *(new)* | `tier` | NOT NULL text, default `'observation'`. |
+| *(new)* | `importance` | Nullable smallint. Existing → `NULL` (scored as 5). |
+| *(new)* | `confidence` | Nullable float. *[foundation]* |
+| *(new)* | `epistemic_type` | Nullable text. *[foundation]* |
+| *(new)* | `derived_from_ids` | Nullable UUID[]. |
+| *(new)* | `consumed_by_id` | Nullable UUID. |
+| *(new)* | `date_last_accessed` | Nullable timestamptz. |
+| *(new)* | `valid_until` | Nullable timestamptz. *[foundation]* |
+| `type_memory` | `type_memory` | `topical_context` → `fact`, `relational_context` → `fact`. New: `action`, `belief`, `commitment`. |
 
-Apps that stored `conversation_id` and `message_id_source` for audit purposes should migrate those values into `source_type`/`source_id`/`source_context` before dropping the old columns. For example, a chat app might set `source_type='conversation_message'`, `source_id=message_id_source`, `source_context='{"conversation_id": "..."}'`.
+Backfill provenance from old columns if audit matters. Rename `user_id` → `owner_id` on media_content, media, memory_chunks tables.
 
-**media_content, media, memory_chunks tables:** Rename `user_id` to `owner_id`. No other structural changes.
-
-**conversation_memory_refs table:** Unchanged.
-
-**Indexes:** New indexes on `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, and a GIN index on `mentioned_entity_ids` for entity-scoped queries. The existing `user_id` index becomes the `owner_id` index.
+**Indexes:** `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, GIN on `mentioned_entity_ids`.
 
 ### MemoryEntity
 
-All field access on the entity proxy changes:
-
-| v1 property | v2 property |
+| v1 | v2 |
 |---|---|
 | `entity.user_id` | `entity.owner_id` |
-| `entity.conversation_id` | *(removed — use source fields)* |
-| `entity.message_id_source` | *(removed — use source fields)* |
-| *(new)* | `entity.about_id` |
-| *(new)* | `entity.about_type` |
-| *(new)* | `entity.mentioned_entity_ids` |
-| *(new)* | `entity.source_type` |
-| *(new)* | `entity.source_id` |
-| *(new)* | `entity.source_context` |
-| *(new)* | `entity.tier` |
-| *(new)* | `entity.importance` |
-| *(new)* | `entity.confidence` |
-| *(new)* | `entity.epistemic_type` |
-| *(new)* | `entity.derived_from_ids` |
-| *(new)* | `entity.consumed_by_id` |
-| *(new)* | `entity.date_last_accessed` |
-| *(new)* | `entity.valid_until` |
+| `entity.conversation_id` | *(removed)* |
+| `entity.message_id_source` | *(removed)* |
+| *(new)* | `entity.about_id`, `.about_type`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.date_last_accessed`, `.valid_until` |
 
 ### MemoryExtractor
 
-The `extract()` method signature changes:
-
-**v1:**
 ```python
+# v1
 extract(pool, user_id, conversation_id, message_id_source,
         user_message, assistant_response, turn_count)
-```
 
-**v2:**
-```python
+# v2
 extract(pool, owner_id, user_message, assistant_response,
         source_type, source_id,
         turn_count=..., source_context=...,
         about_context=..., gate_config=...)
 ```
 
-Key changes at call sites:
-- `user_id` → `owner_id`
-- `conversation_id` and `message_id_source` replaced by `source_type` and `source_id`
-- New `source_context` for optional structured metadata
-- New `about_context` providing canonical entity IDs and metadata for entities present in the interaction AND a broader entity vocabulary (known entities the conversation might reference), so extraction can populate `about_id`, `about_type`, and `mentioned_entity_ids`. The consuming app resolves platform identifiers to canonical IDs via its own identity service before passing them here. When extraction identifies an entity name not in the `about_context`, it emits the name in the output and the consuming app can resolve it to a canonical ID or create a new entity.
-- New `gate_config` for per-owner extraction gate overrides (or `None` to use defaults)
-- `turn_count` becomes optional/keyword-only since not all source types have a concept of turns
+`about_context` provides canonical entity IDs and metadata — the app resolves platform identifiers via its own identity service before passing them. When extraction identifies a name not in `about_context`, it emits the raw name for the app to resolve.
 
-The extraction prompt's expected JSON output format:
+Extraction output format:
 
-**v1:** `{"type": "...", "content": "..."}`
-
-**v2:**
 ```json
 {
   "type": "preference|fact|decision|action|belief|commitment",
@@ -812,100 +637,60 @@ The extraction prompt's expected JSON output format:
 }
 ```
 
-Apps using default prompts get this automatically. Apps with custom prompts must update the output format.
-
 ### MemoryRetriever
 
-The `retrieve()` and `retrieve_with_candidates()` signatures change:
-
-**v1:**
 ```python
+# v1
 retrieve(pool, user_id, user_text, ledger=None)
-```
 
-**v2:**
-```python
+# v2
 retrieve(pool, owner_id, query, relevant_entities=None,
          tier_weights=None, mode="conversational", ledger=None)
 ```
 
-Key changes at call sites:
-- `user_id` → `owner_id`
-- `user_text` → `query`
-- New `relevant_entities`: list of entity IDs to boost (matched against both `about_id` and `mentioned_entity_ids`)
-- New `tier_weights`: per-tier scoring adjustments
-- New `mode`: `"conversational"` (default, with entity boosting, budget allocation, and MMR) or `"topic_scan"` (complete, entity-grouped, no MMR)
+`relevant_entities` matches against both `about_id` and `mentioned_entity_ids`. Results include epistemic metadata and entity grouping.
 
-**Return type changes:**
-
-`RetrievalResult` adds entity grouping. Each memory item includes `about_id`, `about_type`, `mentioned_entity_ids`, `tier`, `importance`, `confidence`, and `epistemic_type`. A new `entity_groups` field provides results pre-grouped by `about_id`.
-
-The `context` string (formatted text for prompt inclusion) presents memories grouped by entity with epistemic annotations (e.g., beliefs are marked as hypotheses, low-confidence memories are annotated).
-
-### MemoryConfig
-
-New configuration fields:
+### MemoryConfig additions
 
 | Field | Purpose |
 |---|---|
-| `importance_weight` | Scoring weight for the importance signal |
-| `entity_boost_weight` | Scoring weight for entity-match signal |
-| `entity_budget_ratio` | Fraction of context_budget for entity-specific memories (default: 0.7) |
-| `general_budget_ratio` | Fraction of context_budget for general memories (default: 0.3) |
-| `tier_weights` | Default per-tier scoring weights |
-| `topic_scan_budget` | Max results for topic scan mode |
-| `topic_scan_threshold` | Minimum score for topic scan mode |
-| `distillation_importance_threshold` | Importance-sum trigger for within-entity distillation (default: 50) |
-| `distillation_min_observations` | Minimum observations for session-boundary trigger (default: 5) |
-| `distillation_background_interval` | Interval for cross-entity distillation (default: 24h, None to disable) |
-
-Existing fields are unchanged. Apps can adopt new fields incrementally.
+| `importance_weight` | Scoring weight for importance signal |
+| `entity_boost_weight` | Scoring weight for entity match |
+| `entity_budget_ratio` | Fraction of budget for entity-specific memories (default: 0.7) |
+| `general_budget_ratio` | Fraction for general memories (default: 0.3) |
+| `tier_weights` | Per-tier scoring weights |
+| `topic_scan_budget` | Max results for topic scan |
+| `topic_scan_threshold` | Minimum score for topic scan |
+| `distillation_importance_threshold` | Within-entity trigger (default: 50) |
+| `distillation_min_observations` | Session-boundary trigger (default: 5) |
+| `distillation_background_interval` | Cross-entity schedule (default: 24h) |
 
 ### MemoriesCollection
 
-`find_by_user()` becomes `find_by_owner()`. New query methods:
-
-- `find_by_owner_and_entity(owner_id, about_id, ...)` — memories where `about_id` matches or `mentioned_entity_ids` contains the entity
-- `find_by_owner_and_tier(owner_id, tier, ...)`
-- `find_by_owner_and_type(owner_id, type_memory, ...)`
-- `find_consumed_by(pattern_id)` — observations consumed into a specific pattern
-- `find_derived_from(memory_id)` — patterns derived from a specific observation
+`find_by_user()` → `find_by_owner()`. New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`.
 
 ### Protocols
 
-**ChatModelFactory:** New purpose value `"distillation"` for creating models used by the distillation engine.
-
+**ChatModelFactory:** New `"distillation"` purpose.
+**DistillationStrategy:** New protocol. Default ships with 3tears.
 **EmbeddingProvider:** Unchanged.
-
-**New protocol — DistillationStrategy:** Apps that want custom distillation behavior implement this protocol. A default strategy ships with 3tears.
 
 ### Tools
 
-`load_memory_search_tool()` and `load_recall_memory_tool()` signature changes:
-
-- `user_id` → `owner_id`
-- `MemorySearchInput` adds optional `about_id`, `about_type`, `tier`, `type_memory`, and `min_importance` filter fields
-- Tool descriptions update to reflect entity, tier, and epistemic concepts
+`user_id` → `owner_id`. `MemorySearchInput` adds `about_id`, `about_type`, `tier`, `type_memory`, `min_importance` filters.
 
 ### Migration checklist
 
-1. **Database:** Run the schema migration (rename columns, add columns, add table, add indexes). Backfill provenance fields from old columns if needed. All existing memories get `tier='observation'`, `about_id=NULL`, `importance=NULL`. Migrate `topical_context` → `fact` and `relational_context` → `fact`.
+1. **Database:** Schema migration. All existing memories → `tier='observation'`, `about_id=NULL`, `importance=NULL`. Migrate type values.
+2. **Entity access:** `user_id` → `owner_id` everywhere.
+3. **Extraction calls:** New signature. Minimal: rename, move IDs to source fields, pass `about_context=None`.
+4. **Retrieval calls:** New signature. Minimal: rename params. Add `relevant_entities` and `tier_weights` to opt in.
+5. **Custom prompts:** Update for new output format with importance, confidence, epistemic_type, mentioned entities.
+6. **ChatModelFactory:** Handle `"distillation"` purpose.
+7. **Result consumers:** Handle new fields, entity-grouped output, epistemic annotations.
+8. **Collection queries:** `find_by_user()` → `find_by_owner()`.
 
-2. **Entity access:** Find-and-replace `user_id` → `owner_id` on all MemoryEntity property access, MemoriesCollection queries, and tool factory calls.
-
-3. **Extraction calls:** Update all `extract()` call sites with the new signature. At minimum: rename `user_id`, move conversation/message IDs to source fields, pass `about_context=None`.
-
-4. **Retrieval calls:** Update all `retrieve()` call sites. At minimum: rename parameters. Pass `relevant_entities` and `tier_weights` to opt into new retrieval behavior.
-
-5. **Custom prompts:** If using `ExtractionPrompts` with custom text, update prompt templates to include new placeholders and expect the expanded JSON output format with importance, confidence, epistemic_type, and mentioned entities.
-
-6. **ChatModelFactory:** Add handling for the `"distillation"` purpose.
-
-7. **Result consumers:** Update code that reads `RetrievalResult` to handle new fields. Update prompt formatting to use entity-grouped output with epistemic annotations.
-
-8. **Collection queries:** Replace `find_by_user()` calls with `find_by_owner()`.
-
-Steps 1-3 are required for the app to function. Steps 4-8 can be done incrementally — the new parameters have defaults that preserve v1-like behavior. [foundation] fields (confidence, epistemic_type, valid_until, commitment type) are nullable and unused by default; apps adopt them when ready.
+Steps 1-3 are required. Steps 4-8 are incremental — new params default to v1-like behavior. [foundation] fields are nullable and unused until ready.
 
 ---
 
@@ -921,66 +706,50 @@ A (memory model + schema)
 └──> G (temporal validity: supersession semantics)
 ```
 
-**A is prerequisite to everything.** The owner/about/mentioned/tier/importance schema is the foundation. B and C are independent of each other and can ship in any order. D depends on A and C (importance is a scoring signal). E depends on A and C (importance triggers distillation, epistemic_type affects distillation behavior). F depends on E (cross-entity distillation operates on patterns produced by within-entity distillation). G is independent of everything except A.
+**A is prerequisite to everything.** B and C are independent of each other. D depends on A+C (importance is a scoring signal). E depends on A+C (importance triggers distillation). F depends on E (cross-entity operates on patterns from within-entity). G is independent of everything except A.
 
-Entity identity resolution is external to 3tears and can be developed independently. The only integration point is the `merge_entity_ids()` utility in A, which is a simple batch update.
+Entity identity is external and develops independently. The only integration point is `merge_entity_ids()` in A.
 
-Work within each item can be incremental. For example, D can ship with basic entity boosting before adding budget allocation. E can ship with session-boundary triggers before adding importance-sum triggers. The [foundation] fields are in the schema from A but their processing logic ships with the item that uses them.
+Work within each item is incremental. D can ship with basic entity boosting before budget allocation. E can ship with session-boundary triggers before importance-sum triggers. [foundation] fields are in the schema from A; their processing logic ships with the item that uses them.
 
 ---
 
 ## Appendix: Requirements for an identity management system
 
-Entity identity resolution is outside 3tears's scope, but consuming apps that operate across platforms or manage many entities need an identity service. This section describes what such a service must provide to integrate well with 3tears, preserving the design rationale from earlier iterations where identity resolution was considered for inclusion in the memory system.
+Entity identity is outside 3tears's scope, but apps operating across platforms need an identity service. This describes what it must provide to integrate well with 3tears.
 
-### Why identity is separate from memory
+### Why identity is separate
 
-Identity resolution fails 3tears's boundary test: "if apps would produce meaningfully different implementations reflecting their domain, it belongs in the app." A DJ bot auto-linking Discord and Mastodon handles, a customer support system integrating with Salesforce CRM, an enterprise app federating through SSO, a game managing character aliases — these are fundamentally different implementations. Building a simplified version inside a memory system means maintaining an identity service that's worse than purpose-built alternatives.
-
-The `source_type`/`source_context` fields on memories already capture platform and channel metadata. "Remember what I said on Slack?" is a provenance query (`source_type='slack_message'`), not an identity query.
+Identity resolution fails the boundary test. A DJ bot auto-linking handles, a support system with Salesforce, an enterprise app with SSO — fundamentally different implementations. The `source_type`/`source_context` fields handle platform awareness. "Remember what I said on Slack?" is a provenance query, not identity.
 
 ### What the identity system must provide
 
-**Canonical ID management.** Every entity (person, project, topic, location, game-world object) gets a stable canonical UUID. This UUID is what 3tears stores in `about_id` and `mentioned_entity_ids`. The identity system generates and manages these IDs.
+**Canonical ID management.** Every entity gets a stable UUID — this is what 3tears stores in `about_id` and `mentioned_entity_ids`.
 
-**Platform-to-canonical mapping.** Maps platform-specific identifiers to canonical IDs: `(platform, platform_id) → canonical_id`. Examples:
-- `("discord", "123456789")` → `UUID("abc-...")`
-- `("mastodon", "@alice@social.example")` → `UUID("abc-...")`  (same canonical ID if it's the same person)
-- `("salesforce", "CONTACT-4821")` → `UUID("def-...")`
+**Platform-to-canonical mapping.** `(platform, platform_id) → canonical_id`. Queryable in both directions.
 
-The mapping must be queryable in both directions: given a platform ID, find the canonical ID; given a canonical ID, list all known platform IDs.
+**Type-agnostic resolution.** Projects, topics, and game-world locations can have aliases across contexts, not just people.
 
-**Type-agnostic resolution.** The registry should not be limited to person-type entities. Projects, topics, game-world locations, and other entity types can have aliases across contexts ("the novel" and "Chicago Noir" are the same project). The same mapping infrastructure serves all entity types.
+**Entity metadata.** Display names, types, app-specific attributes. 3tears needs display names for prompt rendering; the app provides them from the identity system.
 
-**Entity metadata.** Display names, entity types (`person`, `project`, `topic`, etc.), and any app-specific attributes. 3tears needs display names for prompt rendering — the consuming app provides them by looking up `about_id` in the identity system. The identity system is the authoritative source; 3tears never caches or stores entity metadata.
+**Merge operation.** When two canonical IDs turn out to be the same entity:
+1. Choose a surviving ID.
+2. Update internal mappings.
+3. Call 3tears's `merge_entity_ids(old_id, new_id)`.
+4. Notify other systems.
 
-**Merge operation.** When the system discovers that two canonical IDs refer to the same entity, it must:
-1. Choose a surviving canonical ID (or create a new one).
-2. Update all internal mappings to point to the surviving ID.
-3. Call 3tears's `merge_entity_ids(old_id, new_id)` to update memory references.
-4. Notify any other systems that reference the old ID.
+Merge early and aggressively. Entity resolution errors compound — a missed merge forks an entity's memory into two incomplete records that semantic search alone may never reunite (KARMA, 2025).
 
-Merges should be early and aggressive. Research on entity resolution in agent memory (KARMA, 2025) shows that resolution errors compound — a single missed merge causes an entity's memory to fork into two incomplete records, and the fragments may never be reunited via semantic search alone.
+**Split operation (optional).** If a merge was incorrect, the identity system assigns a new canonical ID and selectively updates 3tears memories. Rare but important for high-volume apps.
 
-**Split operation (optional).** If a merge was incorrect (two different people had the same name), the system may need to split them. This is harder: 3tears's `merge_entity_ids()` is one-way. Splitting requires the identity system to assign a new canonical ID for the separated entity and selectively update 3tears memories — which means the identity system needs enough context to determine which memories belong to which entity after the split. This is a rare but important edge case for apps with high entity volume (customer support).
+### Integration pattern
 
-### Integration pattern with 3tears
+**At extraction:** App resolves platform IDs to canonical IDs, passes them in `about_context` (including a broader vocabulary of entities that might be referenced, not just who's present). Unrecognized names are emitted raw for the app to resolve.
 
-**At extraction time:** The consuming app receives a platform event (Discord message, support ticket, etc.). It resolves all entity identifiers in the event to canonical IDs via the identity system. It passes these canonical IDs in the `about_context` parameter to `extract()`. The `about_context` should include:
-- Entities directly participating (people in the channel, customer on the ticket)
-- Entities likely to be referenced (known contacts, active projects, recent topics)
-- For each entity: canonical ID, display name, entity type
+**At retrieval:** App passes canonical IDs as `relevant_entities`. 3tears returns results with raw UUIDs. App decorates with display names.
 
-When the extraction prompt identifies an entity name that isn't in the `about_context`, it emits the raw name. The consuming app then checks the identity system — is this a known entity under a different name? A new entity? — and either maps it to an existing canonical ID or creates a new one.
+**On merge:** App calls `merge_entity_ids(old_id, new_id)`. 3tears does a batch update. Done.
 
-**At retrieval time:** The consuming app resolves relevant entities to canonical IDs and passes them to `retrieve()`. 3tears returns results with raw `about_id` UUIDs. The app decorates them with display names from the identity system for prompt rendering.
+### What identity does NOT need to know
 
-**On identity merge:** The identity system calls 3tears's `merge_entity_ids(old_id, new_id)`. This updates `about_id` and `mentioned_entity_ids` across all affected memories. It's a batch SQL update, bounded by the number of memories referencing the old ID.
-
-### What the identity system does NOT need to know
-
-- Memory content, tiers, types, or epistemic metadata — these are 3tears's domain.
-- How memories are retrieved or scored — the identity system provides canonical IDs, 3tears handles the rest.
-- Distillation state — whether memories have been consumed into patterns is irrelevant to identity.
-
-The identity system and 3tears share a single integration surface: canonical UUIDs and the `merge_entity_ids()` batch update. This minimal coupling means the identity system can be simple (a lookup table) or sophisticated (a full CRM integration) without affecting 3tears's operation.
+Memory content, tiers, types, epistemic metadata, retrieval scoring, distillation state. The integration surface is canonical UUIDs and one batch update. The identity system can be a lookup table or a full CRM — 3tears doesn't care.
