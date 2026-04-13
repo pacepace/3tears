@@ -70,22 +70,39 @@ Dependency chain: `observe → core → agent-memory → agent-tools → registr
 
 **Problem:** All memories for an owner live in one undifferentiated pool. There's no way to express "DJ's memory about Bob's taste" versus "DJ's general wisdom about music."
 
-**Solution:** Add entity association to every memory.
+**Solution:** Add entity association to every memory using a subject/reference model.
 
 - `owner_id` — who holds this memory (a persona, a bot, a user). Replaces `user_id`.
-- `about_id` — the primary entity this memory concerns. Nullable — null means general knowledge.
-- `about_type` — category hint: person, project, topic, location, goal, etc. Apps define the vocabulary.
-- `mentioned_entity_ids` — *[foundation]* other entity IDs referenced in this memory beyond the primary `about_id`.
+- `about_ids` — the entities this memory is *about* — its subjects. Nullable UUID array — null/empty means general knowledge. Most memories have one subject; relationship memories, introductions, and comparisons naturally have two or more.
+- `mentioned_entity_ids` — entities *referenced* in this memory but not its subjects. The source of information, the context, the bystander — not what the memory is about.
+
+The distinction is subject vs. reference:
+
+- "Bob and Alice share Metallica fandom" → `about_ids=[Bob, Alice]` — co-equal subjects.
+- "I introduced Bob and Alice over Metallica" → `about_ids=[Bob, Alice]` — the action involves both.
+- "Bob told me Alice likes jazz" → `about_ids=[Alice]`, `mentioned_entity_ids=[Bob]` — the memory is about Alice's taste; Bob is the source.
+- "Brian positions P1 in high-risk roles" → `about_ids=[Brian]`, `mentioned_entity_ids=[P1]` — the inference is about Brian's psychology; P1 is the object of his behavior.
+- "Customer 4821 mentioned that 5102 referred them" → `about_ids=[4821, 5102]` — the referral relationship involves both.
 
 Entities aren't limited to people. A DJ remembers venues. A DM remembers locations. A support agent remembers products. 3tears stores and indexes these fields without interpreting their semantics.
 
-**Why `about` is singular with `mentioned_entity_ids`:** Embedding models are unreliable for proper nouns (ACM Web Conference 2024). Storing "Bob and Alice share Metallica fandom" as `about=Bob` and hoping semantic search finds "Alice" in the content is a gamble we'd rather not take. `mentioned_entity_ids=[Alice]` makes it explicit. Retrieval boosts memories where *any* relevant entity appears in either field.
+**Why `about_ids` is a list, not singular:** An earlier draft used singular `about_id` with `mentioned_entity_ids` carrying secondary subjects. This forced the extraction pipeline to pick a "primary" entity for every memory — an arbitrary decision for genuinely multi-subject memories ("Bob and Alice share Metallica fandom" — who's primary?). That extra decision point introduces extraction error for no semantic gain. With a list, extraction emits all subjects and moves on.
 
-We considered multi-valued `about` (co-equal primary entities) and rejected it — it complicates entity-grouped output (which group does the memory appear in?) without clear benefit over the primary/mentioned split.
+Retrieval is unaffected: `WHERE $entity_id = ANY(about_ids)` is no more complex than `WHERE about_id = $id OR $id = ANY(mentioned_entity_ids)`.
 
-**Why `about=null` matters:** General knowledge transfers across contexts. A DM's principle "design encounters with initial barriers" applies regardless of which players are present. A support agent's insight "customers who mention 'manager' need immediate de-escalation" works for any customer. These memories are always retrieval-eligible, never filtered out by entity-matching. They are the owner's accumulated expertise.
+**Entity-grouped output with multi-subject memories:** A memory with `about_ids=[Bob, Alice]` appears in both entity groups. This is correct — when reviewing "what do I know about Alice," a shared fandom with Bob is relevant. If it appears redundantly, MMR handles it.
 
-**`about_name` resolution:** Display names are not stored on memory rows — that would mean updating 500 rows when someone changes their handle. Instead, the identity module provides name lookup (via callback or post-processing on retrieval results). The memory module returns opaque UUIDs; the identity module adds human-readable labels.
+**Budget allocation with multi-subject memories:** A multi-subject memory counts once against the entity-specific budget, not once per subject. Which subject's budget it draws from is an implementation detail — simplest is first-match. This is a secondary concern; we'll tune it based on real usage.
+
+**Distillation with multi-subject memories:** Within-entity distillation groups observations by entity. A `[Bob, Alice]` memory participates in both groups. Non-destructive CONSUME means this is safe: if it's consumed into a Bob-pattern, the source observation is preserved and remains available for Alice-distillation. The pattern records it in `derived_from_ids` either way.
+
+**Why not a single unified list?** The subject/reference distinction matters for distillation and theory of mind. "Brian positions P1 in high-risk roles" should produce a theory about Brian's psychology, not P1's vulnerability. If both are co-equal subjects, distillation prompts produce muddled inferences. Separating subjects from references tells the distillation engine whose behavior to analyze.
+
+**No `about_type`:** An earlier draft included `about_type` (person, project, topic, etc.) as a filter hint on the memory row. With `about_ids` as a list, this would need to be a parallel array — messy and a denormalization of entity metadata that belongs in the identity module. Entity types are queried from the identity module when needed for filtering.
+
+**Why `about_ids=null/empty` matters:** General knowledge transfers across contexts. A DM's principle "design encounters with initial barriers" applies regardless of which players are present. A support agent's insight "customers who mention 'manager' need immediate de-escalation" works for any customer. These memories are always retrieval-eligible, never filtered out by entity-matching. They are the owner's accumulated expertise.
+
+**Display name resolution:** Display names are not stored on memory rows — that would mean updating 500 rows when someone changes their handle. Instead, the identity module provides name lookup (via callback or post-processing on retrieval results). The memory module returns opaque UUIDs; the identity module adds human-readable labels.
 
 ### B. Epistemic metadata
 
@@ -143,13 +160,13 @@ Decisions carry `supporting_evidence_ids` — a UUID array linking to the observ
 
 **Why this is a separate module:** Identity resolution is a distinct concern from memory. A DJ bot linking handles, a support system integrating Salesforce, an enterprise app federating SSO — these need different resolution strategies, but the underlying primitives (canonical IDs, platform mappings, merge/split operations, display names) are the same everywhere. Identity belongs in 3tears as a separate package — `3tears-identity` (`threetears.identity`) — that the memory module integrates with via opaque UUIDs. Following the established convention: `threetears.agent.*` for agent-specific packages, `threetears.*` for general utilities. Identity is general.
 
-**The memory module's contract:** `about_id` and `mentioned_entity_ids` are opaque canonical UUIDs. The memory module never resolves them — that's the identity module's job. Apps call the identity module to map platform identifiers to canonical IDs before calling `extract()` or `retrieve()`.
+**The memory module's contract:** `about_ids` and `mentioned_entity_ids` are opaque canonical UUIDs. The memory module never resolves them — that's the identity module's job. Apps call the identity module to map platform identifiers to canonical IDs before calling `extract()` or `retrieve()`.
 
 **Entity merge:** When the identity module merges two entities, it calls `merge_entity_ids(old_id, new_id)` on the memory module — a bulk update. The memory module doesn't know *why* the IDs merged, just that they did.
 
 **Platform/channel awareness:** "Remember what I said on Slack?" is a `source_context` query, not an identity question. Memories carry platform metadata in provenance fields: `source_type='slack_message', source_context={"channel": "#general"}`.
 
-**`about_context` implications:** The extraction pipeline's `about_context` must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob mentions Charlie who isn't in the channel, the identity module needs to provide Charlie's canonical ID for extraction to associate the memory correctly.
+**`about_context` implications:** The extraction pipeline's `about_context` must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob mentions Charlie who isn't in the channel, the identity module needs to provide Charlie's canonical ID for extraction to populate `about_ids` correctly.
 
 Requirements for the identity module are in the appendix.
 
@@ -193,7 +210,7 @@ Distillation isn't continuous — it fires at specific moments.
 **Cross-entity distillation** runs on a background schedule (default: daily), matching Letta's sleep-time compute model:
 1. Retrieve patterns produced since the last run.
 2. Cluster them by embedding similarity.
-3. For clusters spanning 3+ distinct entities, synthesize `about=null` principles.
+3. For clusters spanning 3+ distinct entities, synthesize `about_ids=null` principles.
 
 Both triggers are configurable per-owner or per-preset.
 
@@ -256,11 +273,11 @@ A default strategy ships with 3tears. Apps that don't customize get sensible def
 
 **Problem:** Relationships — a DJ connecting listeners, a DM tracking player dynamics, a support agent noting account referrals — are inherently about the *connection between* entities, not about either one. Project Sid (2024) found this at scale: agents needed explicit relationship state alongside narrative memory.
 
-**Solution for v2:** Relationship awareness through the memory model. `about_id` + `mentioned_entity_ids` ensures relationship memories surface for all involved entities. A DJ stores "I introduced Bob and Alice over Metallica" as `about_id=Bob, mentioned_entity_ids=[Alice], type=action`. When either is present, it surfaces. When both are, it gets double entity boost.
+**Solution for v2:** Relationship awareness through the memory model. `about_ids` naturally handles multi-entity memories. A DJ stores "I introduced Bob and Alice over Metallica" as `about_ids=[Bob, Alice], type=action`. When either is present, it surfaces. When both are, it gets double entity boost.
 
 Distillation synthesizes relationship patterns from recurring entity-pair observations. "Bob and Alice have a strong shared connection around Metallica that I've actively cultivated."
 
-**What this doesn't handle (future):** Typed relationship edges (friend/rival/collaborator), trust scores, relationship strength. These would live in a dedicated `relationships` table populated by distillation when it detects recurring entity-pair patterns. The v2 schema supports this — `mentioned_entity_ids` already captures the pairs.
+**What this doesn't handle (future):** Typed relationship edges (friend/rival/collaborator), trust scores, relationship strength. These would live in a dedicated `relationships` table populated by distillation when it detects recurring entity-pair patterns. The v2 schema supports this — multi-subject `about_ids` already captures the pairs.
 
 ### H. Temporal validity
 
@@ -291,14 +308,14 @@ Default weights: `semantic=0.40, keyword=0.10, recency=0.20, importance=0.15, en
 
 #### Entity boosting
 
-Memories where `about_id` or `mentioned_entity_ids` matches a relevant entity get an additive boost — independent of semantic similarity. A memory about Bob's Melbourne location surfaces when Bob is present, even if the query is about music.
+Memories where `about_ids` or `mentioned_entity_ids` matches a relevant entity get an additive boost — independent of semantic similarity. A memory about Bob's Melbourne location surfaces when Bob is present, even if the query is about music.
 
 #### Budget allocation
 
 To prevent general principles from crowding out entity-specific context (or vice versa):
 
 - **Entity-specific budget** (default 70%) — memories matching a relevant entity.
-- **General budget** (default 30%) — `about_id IS NULL` memories (principles, domain wisdom).
+- **General budget** (default 30%) — `about_ids IS NULL` memories (principles, domain wisdom).
 
 Within each partition: multi-signal scoring + MMR selection. Ratios are configurable.
 
@@ -351,11 +368,11 @@ Bob mentions loving Metallica. Weeks later, Alice says the same in a different s
 > **About Bob:** loves Metallica, seen them live eight times (importance 8)
 > **About Alice:** deep Metallica fan, prefers deep cuts (importance 7)
 
-The connection is obvious in grouped output. The DJ introduces them and stores: `about_id=Bob, mentioned_entity_ids=[Alice], type=action, importance 7`. Next time either is present, the introduction memory surfaces. The DJ doesn't repeat it — it builds on the connection.
+The connection is obvious in grouped output. The DJ introduces them and stores: `about_ids=[Bob, Alice], type=action, importance 7`. Next time either is present, the introduction memory surfaces. The DJ doesn't repeat it — it builds on the connection.
 
 ### DJ: cross-entity principles
 
-Background distillation notices patterns spanning 4+ listeners around Metallica, Pantera, and Megadeth. It synthesizes an `about=null` principle: "Metallica fans tend to enjoy other thrash metal but are less interested in progressive metal." This surfaces for any future Metallica fan, including people the DJ has never met.
+Background distillation notices patterns spanning 4+ listeners around Metallica, Pantera, and Megadeth. It synthesizes an `about_ids=null` principle: "Metallica fans tend to enjoy other thrash metal but are less interested in progressive metal." This surfaces for any future Metallica fan, including people the DJ has never met.
 
 ### DM: theory of mind across a campaign
 
@@ -397,7 +414,7 @@ Cross-entity principles emerge: "Customers who ask about export formats and cont
 
 ### Customer support: multi-entity relationship
 
-Customer 4821 mentions customer 5102 referred them: `about_id=4821, mentioned_entity_ids=[5102], type=fact`. When either contacts support, the referral surfaces. If 5102 has a bad experience, the agent knows 4821's loyalty may be affected.
+Customer 4821 mentions customer 5102 referred them: `about_ids=[4821, 5102], type=fact`. When either contacts support, the referral surfaces. If 5102 has a bad experience, the agent knows 4821's loyalty may be affected.
 
 ### Quiet facilitator: proactive surfacing
 
@@ -407,7 +424,7 @@ This works because extraction gates are configured with the response-length gate
 
 ### Collaborative writing: revisiting a decision
 
-Three agents are co-writing a novel. After lengthy discussion, they decide the protagonist is female — extraction stores: `type=decision, about_id=protagonist, importance 9, supporting_evidence_ids=[obs_1, obs_2, obs_3, obs_4]`. The linked observations capture the reasoning: "Female perspective better serves the noir genre's themes of institutional corruption" (obs_1), "Male protagonist would recapitulate the genre's overrepresentation problem" (obs_2), "The client specifically requested diverse leads" (obs_3), "Agent B initially proposed male but was persuaded by the thematic argument" (obs_4).
+Three agents are co-writing a novel. After lengthy discussion, they decide the protagonist is female — extraction stores: `type=decision, about_ids=[protagonist], importance 9, supporting_evidence_ids=[obs_1, obs_2, obs_3, obs_4]`. The linked observations capture the reasoning: "Female perspective better serves the noir genre's themes of institutional corruption" (obs_1), "Male protagonist would recapitulate the genre's overrepresentation problem" (obs_2), "The client specifically requested diverse leads" (obs_3), "Agent B initially proposed male but was persuaded by the thematic argument" (obs_4).
 
 Weeks later, a new agent joins and says "let's change the protagonist to be male." Retrieval with `include_evidence=True` surfaces:
 
@@ -486,7 +503,7 @@ Retrieval scoring, distillation scheduling, tier management, non-destructive CON
 
 ### What 3tears provides
 
-**Deletion by entity.** `delete_memories_about(entity_id)` finds all memories where `about_id` or `mentioned_entity_ids` matches and soft-deletes them.
+**Deletion by entity.** `delete_memories_about(entity_id)` finds all memories where `about_ids` or `mentioned_entity_ids` matches and soft-deletes them.
 
 **Provenance tracing through distillation.** Non-destructive CONSUME + `derived_from_ids` makes it possible to trace which entity's observations contributed to a given pattern. When deleting entity X, the system identifies patterns derived from X's observations. The app decides: delete the pattern, re-run distillation without X, or leave it.
 
@@ -561,7 +578,7 @@ Pick a preset, customize from there. Outgrow it, export and modify directly.
 
 A linter for memory quality. Runs on-demand, examines an owner's corpus:
 
-- **Entity coverage** — % of memories with non-null `about_id`
+- **Entity coverage** — % of memories with non-empty `about_ids`
 - **Mentioned entity usage** — are multi-entity memories populating `mentioned_entity_ids`?
 - **Tier distribution** — observations vs patterns vs principles (500 observations and 0 patterns = distillation isn't working)
 - **Importance distribution** — well-spread or all clustered at 5?
@@ -590,7 +607,9 @@ Optionally: run sample scenarios through the pipeline and evaluate output. Costs
 
 ### v2 limitations
 
-**No knowledge graph.** `about_id` + `mentioned_entity_ids` enables 1-hop entity queries, not graph traversal. "Which listeners have friends who like jazz?" requires app-level joins. `mentioned_entity_ids` is the foundation for a future graph layer.
+**No knowledge graph.** `about_ids` + `mentioned_entity_ids` enables 1-hop entity queries, not graph traversal. "Which listeners have friends who like jazz?" requires app-level joins. Multi-subject `about_ids` and `mentioned_entity_ids` are the foundation for a future graph layer.
+
+**No structured queries over memory content.** `about_ids` tracks who a memory is about — interacting entities (people, bots, agents). Domain objects mentioned *within* memories (songs, albums, bands, venues, NPCs, products) are content, not entities. They're findable by semantic and keyword search, but not by structured query. "What bands have the current listeners requested?" requires the app to retrieve per-entity memories and extract band names from content. Apps that need this can maintain a lightweight domain-specific index populated from extraction results or tool action history. 3tears retrieves the memories; the app extracts and indexes domain-specific content.
 
 **No formal relationship model.** No typed edges, trust scores, or strength metrics. The Beta Reputation System and FIRE model from multi-agent research are natural future additions, populated by distillation detecting recurring entity-pair patterns.
 
@@ -628,8 +647,7 @@ v2 is a breaking change from v0.5.0. No shims, no fallback. This covers every to
 | `customer_id` | `customer_id` | Retained — tenant isolation is orthogonal to the entity model. |
 | `conversation_id` | *(removed)* | Drop (→ `source_type`/`source_id`/`source_context`) |
 | `message_id_source` | *(removed)* | Drop (same) |
-| *(new)* | `about_id` | Nullable UUID. Existing → `NULL`. |
-| *(new)* | `about_type` | Nullable text. |
+| *(new)* | `about_ids` | Nullable UUID[]. Existing → `NULL`. |
 | *(new)* | `mentioned_entity_ids` | Nullable UUID[]. |
 | *(new)* | `source_type` | Nullable text. |
 | *(new)* | `source_id` | Nullable text. |
@@ -647,7 +665,7 @@ v2 is a breaking change from v0.5.0. No shims, no fallback. This covers every to
 
 Backfill provenance from old columns if audit matters. Rename `user_id` → `owner_id` on media_content, media, memory_chunks tables.
 
-**Indexes:** `about_id`, `about_type`, `tier`, `importance`, `(owner_id, about_id)`, GIN on `mentioned_entity_ids`, GIN on `supporting_evidence_ids`.
+**Indexes:** GIN on `about_ids`, `tier`, `importance`, GIN on `mentioned_entity_ids`, GIN on `supporting_evidence_ids`.
 
 ### MemoryEntity
 
@@ -658,7 +676,7 @@ Backfill provenance from old columns if audit matters. Rename `user_id` → `own
 | `entity.customer_id` | `entity.customer_id` |
 | `entity.conversation_id` | *(removed)* |
 | `entity.message_id_source` | *(removed)* |
-| *(new)* | `entity.about_id`, `.about_type`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
+| *(new)* | `entity.about_ids`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
 
 ### MemoryExtractor
 
@@ -685,8 +703,8 @@ Extraction output format:
   "type": "preference|fact|decision|action|belief|commitment",
   "content": "1-2 dense sentences",
   "tier": "observation|decision",
-  "about_name": "primary entity name or null (identity module resolves to canonical ID)",
-  "mentioned_names": ["other", "entity", "names"],
+  "about_names": ["subject", "entity", "names or null (identity module resolves to canonical IDs)"],
+  "mentioned_names": ["referenced", "entity", "names"],
   "importance": 7,
   "confidence": 0.85,
   "epistemic_type": "observed|stated|inferred|hypothesized|decided|reported"
@@ -708,7 +726,7 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 # RetrievalResult gains entity_groups and evidence fields
 ```
 
-`relevant_entities` matches against both `about_id` and `mentioned_entity_ids`. Results include epistemic metadata and entity grouping.
+`relevant_entities` matches against both `about_ids` and `mentioned_entity_ids`. Results include epistemic metadata and entity grouping.
 
 ### MemoryConfig additions
 
@@ -727,7 +745,7 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### MemoriesCollection
 
-`find_by_user()` → `find_by_owner()`. `find_by_scope()` → `find_by_owner()` (agent scope absorbed into owner; customer_id remains as a filter parameter). New methods: `find_by_owner_and_entity()` (matches `about_id` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`, `find_supporting_evidence(decision_id)` (returns memories linked via `supporting_evidence_ids`).
+`find_by_user()` → `find_by_owner()`. `find_by_scope()` → `find_by_owner()` (agent scope absorbed into owner; customer_id remains as a filter parameter). New methods: `find_by_owner_and_entity()` (matches `about_ids` or `mentioned_entity_ids`), `find_by_owner_and_tier()`, `find_by_owner_and_type()`, `find_consumed_by()`, `find_derived_from()`, `find_supporting_evidence(decision_id)` (returns memories linked via `supporting_evidence_ids`).
 
 ### Protocols
 
@@ -737,11 +755,11 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### Tools
 
-`user_id` → `owner_id`. Existing tools (`memory_search`, `recall_memory`, `add_memory`) all updated. `MemorySearchInput` adds `about_id`, `about_type`, `tier`, `type_memory`, `min_importance` filters. `AddMemoryInput` adds `about_id`, `about_type`, `mentioned_entity_ids`, `importance`.
+`user_id` → `owner_id`. Existing tools (`memory_search`, `recall_memory`, `add_memory`) all updated. `MemorySearchInput` adds `about_ids`, `tier`, `type_memory`, `min_importance` filters. `AddMemoryInput` adds `about_ids`, `mentioned_entity_ids`, `importance`.
 
 ### Migration checklist (from v0.5.0)
 
-1. **Database:** Schema migration. All existing memories → `tier='observation'`, `about_id=NULL`, `importance=NULL`. Migrate type values. Absorb `agent_id` into `owner_id`; keep `customer_id`.
+1. **Database:** Schema migration. All existing memories → `tier='observation'`, `about_ids=NULL`, `importance=NULL`. Migrate type values. Absorb `agent_id` into `owner_id`; keep `customer_id`.
 2. **Entity access:** `user_id` → `owner_id` everywhere. Remove `agent_id` as a separate dimension — the agent persona is now the owner.
 3. **Extraction calls:** New signature. Move `conversation_id`/`message_id_source` to `source_type`/`source_id`/`source_context`. Pass `about_context=None` to start; add entity context incrementally. Apps using 3tears-channels can derive provenance from `ChannelMessage` fields.
 4. **Retrieval calls:** New signature. `retrieve_with_candidates()` gains entity grouping and evidence fields. Add `relevant_entities` and `tier_weights` to opt in.
@@ -784,7 +802,7 @@ Identity resolution is a different problem domain from memory. It has its own st
 
 ### What the identity module must provide
 
-**Canonical ID management.** Every entity gets a stable UUID — this is what 3tears stores in `about_id` and `mentioned_entity_ids`.
+**Canonical ID management.** Every entity gets a stable UUID — this is what 3tears stores in `about_ids` and `mentioned_entity_ids`.
 
 **Platform-to-canonical mapping.** `(platform, platform_id) → canonical_id`. Queryable in both directions.
 
