@@ -271,6 +271,200 @@ Entity semantics (what is a "project"?), behavioral rules (when should I speak?)
 
 ---
 
+## Migration guide for existing consuming apps
+
+Memory v2 is a breaking change. There are no backward-compatibility shims or fallback modes. Consuming apps must migrate their database schema, API call sites, and configuration. This section covers every touching point.
+
+### Database schema
+
+**memories table:**
+
+| v1 column | v2 column | Action |
+|---|---|---|
+| `user_id` | `owner_id` | Rename. Existing values carry over — they already represent "who owns this memory." |
+| `conversation_id` | *(removed)* | Drop. Provenance is now in `source_type`/`source_id`/`source_context`. |
+| `message_id_source` | *(removed)* | Drop. Same as above. |
+| *(new)* | `about_id` | Add, nullable. Existing memories get `NULL` (general knowledge, not about a specific entity). Apps can backfill if they can determine the subject from memory content. |
+| *(new)* | `about_name` | Add, nullable. Human-readable label for the entity. |
+| *(new)* | `about_type` | Add, nullable. Category hint (person, project, topic, etc.). |
+| *(new)* | `source_type` | Add, nullable. App-defined source category string. |
+| *(new)* | `source_id` | Add, nullable. Opaque reference to the source item. |
+| *(new)* | `source_context` | Add, nullable, JSONB. Structured metadata about the source. |
+| *(new)* | `tier` | Add, NOT NULL, default `'observation'`. All existing memories become observations. |
+| `type_memory` | `type_memory` | Unchanged. Existing values are valid. |
+
+Apps that stored `conversation_id` and `message_id_source` for audit purposes should migrate those values into `source_type`/`source_id`/`source_context` before dropping the columns. For example, a chat app might set `source_type='conversation_message'`, `source_id=message_id_source`, `source_context='{"conversation_id": "..."}'`.
+
+**media_content, media, memory_chunks tables:** Rename `user_id` to `owner_id`. No other structural changes.
+
+**conversation_memory_refs table:** Unchanged.
+
+**New table: entity_identities.** Stores the identity resolution registry (platform-qualified source IDs mapped to canonical entity IDs). Apps that don't use cross-platform identity can ignore this table, but it must exist.
+
+**Indexes:** New indexes on `about_id`, `about_type`, `tier`, and `(owner_id, about_id)` for entity-scoped queries. The existing `user_id` index becomes the `owner_id` index.
+
+### MemoryEntity
+
+All field access on the entity proxy changes:
+
+| v1 property | v2 property |
+|---|---|
+| `entity.user_id` | `entity.owner_id` |
+| `entity.conversation_id` | *(removed — use source fields)* |
+| `entity.message_id_source` | *(removed — use source fields)* |
+| *(new)* | `entity.about_id` |
+| *(new)* | `entity.about_name` |
+| *(new)* | `entity.about_type` |
+| *(new)* | `entity.source_type` |
+| *(new)* | `entity.source_id` |
+| *(new)* | `entity.source_context` |
+| *(new)* | `entity.tier` |
+
+Code that reads or writes `user_id`, `conversation_id`, or `message_id_source` on memory entities must be updated.
+
+### MemoryExtractor
+
+The `extract()` method signature changes:
+
+**v1:**
+```
+extract(pool, user_id, conversation_id, message_id_source,
+        user_message, assistant_response, turn_count)
+```
+
+**v2:**
+```
+extract(pool, owner_id, user_message, assistant_response,
+        source_type, source_id,
+        turn_count=..., source_context=...,
+        about_context=..., gate_config=...)
+```
+
+Key changes at call sites:
+- `user_id` → `owner_id`
+- `conversation_id` and `message_id_source` replaced by `source_type` and `source_id`
+- New `source_context` for optional structured metadata
+- New `about_context` providing information about entities present in the interaction, so extraction can populate `about_id`/`about_name`/`about_type` on extracted memories
+- New `gate_config` for per-owner extraction gate overrides (or `None` to use defaults)
+- `turn_count` becomes optional/keyword-only since not all source types have a concept of turns
+
+Apps must update every call to `extract()`. The minimal migration is renaming `user_id` → `owner_id`, moving conversation/message IDs into source fields, and passing `about_context=None` (extraction will produce `about=null` memories, same as v1 behavior).
+
+### Extraction prompts
+
+The default extraction, worthiness, and resolution prompts change to support:
+- Entity awareness (extracting who/what a memory is about)
+- Tier assignment (classifying memories as observations vs. decisions)
+- Action memory extraction (capturing the owner's own actions, not just learned facts)
+
+Apps using `ExtractionPrompts` with custom prompt text must update their prompts. The placeholder variables change:
+
+| v1 placeholder | v2 placeholder |
+|---|---|
+| `{user_message}` | `{user_message}` *(unchanged)* |
+| `{assistant_response}` | `{assistant_response}` *(unchanged)* |
+| *(new)* | `{about_context}` — entities present in the interaction |
+| *(new)* | `{owner_context}` — information about the memory owner |
+
+The expected JSON output format from the extraction prompt adds fields:
+
+**v1:** `{"type": "...", "content": "..."}`
+
+**v2:** `{"type": "...", "content": "...", "tier": "observation|decision", "about_name": "..." or null}`
+
+Apps using default prompts get this automatically. Apps with custom prompts must update the output format.
+
+### MemoryRetriever
+
+The `retrieve()` and `retrieve_with_candidates()` signatures change:
+
+**v1:**
+```
+retrieve(pool, user_id, user_text, ledger=None)
+retrieve_with_candidates(pool, user_id, user_text, ledger=None)
+```
+
+**v2:**
+```
+retrieve(pool, owner_id, query, relevant_entities=None,
+         tier_weights=None, mode="conversational", ledger=None)
+retrieve_with_candidates(pool, owner_id, query, relevant_entities=None,
+                         tier_weights=None, mode="conversational", ledger=None)
+```
+
+Key changes at call sites:
+- `user_id` → `owner_id`
+- `user_text` → `query`
+- New `relevant_entities`: list of entity IDs to boost. Omitting this preserves v1 behavior (no entity boosting)
+- New `tier_weights`: per-tier scoring adjustments. Omitting uses defaults
+- New `mode`: `"conversational"` (default, v1-like with MMR) or `"topic_scan"` (complete, entity-grouped, no MMR)
+
+**Return type changes:**
+
+`RetrievalResult` adds entity grouping. The `memories`, `media_content`, and `memory_chunks` lists now include `about_id`, `about_name`, `about_type`, and `tier` fields on each item. A new `entity_groups` field provides results pre-grouped by `about_id` for apps that want entity-organized output.
+
+The `context` string (formatted text for prompt inclusion) changes format to present memories grouped by entity rather than as a flat scored list.
+
+Apps that consume `RetrievalResult.memories` as a list of dicts will still work but should be updated to use entity-grouped output where it improves LLM reasoning.
+
+### MemoryConfig
+
+New configuration fields:
+
+| Field | Purpose |
+|---|---|
+| `entity_boost_weight` | Scoring weight for entity-match signal (memories about relevant entities) |
+| `tier_weights` | Default per-tier scoring weights (observation, pattern, principle) |
+| `topic_scan_budget` | Max results for topic scan mode |
+| `topic_scan_threshold` | Minimum score for topic scan mode |
+
+Existing fields are unchanged. Apps can adopt new fields incrementally.
+
+### MemoriesCollection
+
+`find_by_user()` becomes `find_by_owner()`. Signature changes from `(user_id, include_deleted)` to `(owner_id, include_deleted)`. New query methods:
+
+- `find_by_owner_and_entity(owner_id, about_id, ...)` — memories by one owner about one entity
+- `find_by_owner_and_tier(owner_id, tier, ...)` — memories by one owner at a given tier
+
+### Protocols
+
+**ChatModelFactory:** New purpose value `"distillation"` for creating models used by the distillation engine. Apps must handle this purpose in their factory implementation (it can return the same model as `"extraction"` if no differentiation is needed).
+
+**EmbeddingProvider:** Unchanged.
+
+**New protocol — DistillationStrategy:** Apps that want custom distillation behavior implement this protocol to provide prompt templates, tier semantics, and trigger thresholds. A default strategy ships with 3tears. Apps that don't implement this protocol get default distillation behavior.
+
+### Tools
+
+`load_memory_search_tool()` and `load_recall_memory_tool()` signature changes:
+
+- `user_id` → `owner_id`
+- `MemorySearchInput` adds optional `about_id`, `about_type`, and `tier` filter fields
+- Tool descriptions update to reflect entity and tier concepts
+
+### Migration checklist
+
+1. **Database:** Run the schema migration (rename columns, add columns, add table, add indexes). Backfill `source_type`/`source_id`/`source_context` from `conversation_id`/`message_id_source` if audit trail matters, then drop the old columns. All existing memories get `tier='observation'` and `about_id=NULL`.
+
+2. **Entity access:** Find-and-replace `user_id` → `owner_id` on all MemoryEntity property access, MemoriesCollection queries, and tool factory calls.
+
+3. **Extraction calls:** Update all `extract()` call sites with the new signature. At minimum: rename `user_id`, move conversation/message IDs to source fields, pass `about_context=None`.
+
+4. **Retrieval calls:** Update all `retrieve()` and `retrieve_with_candidates()` call sites. At minimum: rename `user_id` → `owner_id` and `user_text` → `query`. Pass `relevant_entities` and `tier_weights` to opt into new retrieval behavior.
+
+5. **Custom prompts:** If using `ExtractionPrompts` with custom text, update prompt templates to include new placeholders and expect the expanded JSON output format.
+
+6. **ChatModelFactory:** Add handling for the `"distillation"` purpose.
+
+7. **Result consumers:** Update code that reads `RetrievalResult` to handle new fields (`about_id`, `about_name`, `about_type`, `tier`, `entity_groups`). Update prompt formatting to use entity-grouped output.
+
+8. **Collection queries:** Replace `find_by_user()` calls with `find_by_owner()`.
+
+Steps 1-3 are required for the app to function. Steps 4-8 can be done incrementally — the new parameters have defaults that preserve v1-like behavior.
+
+---
+
 ## Dependency order
 
 ```
