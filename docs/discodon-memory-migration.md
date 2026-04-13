@@ -20,10 +20,11 @@ Discodon manages memory entirely in-process and in Cosmos DB. There is no vector
 
 Key architectural facts:
 - **No embeddings.** All retrieval is keyword-overlap scoring against current-turn perceptions.
-- **No deduplication by similarity.** Note dedup uses normalized word overlap heuristics, not cosine distance.
-- **Entity association is per-note.** `WorkingNote.about` (display name) and `about_source_id` (platform-qualified like `discord:123456`) tag person-specific notes. Wisdom has no entity tagging.
-- **Distillation is notes → wisdom only.** No tiers beyond that. No cross-entity synthesis.
+- **No deduplication by similarity.** Note dedup uses normalized word overlap heuristics, not cosine distance. Person-aware: notes about different people never replace each other even with high word overlap (20% threshold for same-person, 50% for general notes).
+- **Entity association is per-note, and more sophisticated than it appears.** `WorkingNote.about` (display name) and `about_source_id` (platform-qualified like `discord:123456`) tag person-specific notes. The system auto-resolves identity each turn: `behaviors.py` builds `_author_source_ids` from perception metadata, mapping lowercased display names (and Mastodon @handles) to platform IDs. When the LLM tags a note `about="Alice"`, the system stamps `about_source_id="discord:123456789"`. Retrieval in `section_formatters.py:compute_social_context()` matches on source_id first, falls back to display name, and presents notes under the person's **current** display name. This handles name changes transparently. Wisdom has no entity tagging.
+- **Distillation is notes → wisdom only.** No tiers beyond that. No cross-entity synthesis. Post-distillation consolidation pass dedup/merges overlapping wisdom entries when `len(wisdom) >= 10`.
 - **The LLM manages its own memory.** The reflect tool lets the entity create/update/delete notes and wisdom via tool calls during turns. 3tears extraction is a passive pipeline; discodon's is agent-driven.
+- **Cost tracking is comprehensive.** Per-call token/cost extraction from OpenRouter responses (`LLMUsage`), per-turn aggregation in `TurnRecord` (with per-round debug data including cache tokens), session-level rollup in `SessionTokenUsage` (per-model and per-tool breakdowns), and a three-tier budget hierarchy (entity → universe → system) with four states (healthy/cautious/tight/exhausted) mapping to enforcement tiers (none/warn/throttle/hardstop). Budget periods have category allocations (execution 60%, monitoring 15%, optimization 20%, reserve 5%). Cost events persist to Cosmos DB. Distillation and classifier costs tracked separately in `DistillationUsage` and `ClassifierUsage`.
 
 ---
 
@@ -40,10 +41,10 @@ Key architectural facts:
 | `content` | `content` | Direct |
 | `created_at` | `date_created` | Direct |
 | `created_turn` | `source_context.turn_number` | Turn number moves to provenance metadata |
-| `about` | *(resolved via identity module)* | Display name → canonical UUID via `threetears.identity` |
-| `about_source_id` | *(identity module platform mapping)* | `discord:123456` → `(discord, 123456) → canonical_id` via identity |
-| *(implied from content)* | `about_ids` | Canonical UUID(s) from identity resolution |
-| *(implied from content)* | `mentioned_entity_ids` | Secondary entities mentioned in the note |
+| `about` | `about_names` (Phase 1) → `about_ids` (Phase 2) | Phase 1: display name stored directly on memory row. Phase 2: identity module resolves to canonical UUID. |
+| `about_source_id` | `about_platform_ids` (Phase 1) → identity module (Phase 2) | Phase 1: `discord:123456` stored directly. Phase 2: identity module maps to canonical ID. |
+| *(implied from content)* | `about_ids` | NULL in Phase 1. Populated by identity module in Phase 2. |
+| *(implied from content)* | `mentioned_entity_ids` / `mentioned_names` / `mentioned_platform_ids` | Secondary entities mentioned in the note. Same phasing as about_ids. |
 | *(none)* | `importance` | Assigned at extraction (1-10) |
 | *(none)* | `tier` | `observation` |
 | *(none)* | `type_memory` | `preference`, `fact`, `action`, `belief` — determined by extraction |
@@ -52,7 +53,7 @@ Key architectural facts:
 
 **What changes:**
 - Notes stop being capacity-bounded FIFO. 3tears observations are permanent until consumed by distillation. The "50 notes max, oldest dropped" model is replaced by distillation's CONSUME operation.
-- Entity association switches from display-name-based (`about: "Alice"`) to canonical-UUID-based (`about_ids: [uuid]`). The identity module handles the mapping. This is a fundamental shift — discodon currently relies on the LLM writing display names into the `about` field; v2 requires the extraction pipeline to resolve names to canonical IDs.
+- Entity association switches from per-note fields (`about`/`about_source_id`) to memory-row arrays (`about_names`/`about_platform_ids`). In Phase 1 this is a location change, not a philosophy change — the LLM still writes display names, the system still auto-resolves to platform IDs from perception metadata, and retrieval still matches on platform IDs. The `_author_source_ids` dict becomes the `about_context` parameter to `extract()`. In Phase 2, the identity module resolves platform IDs to canonical UUIDs in `about_ids`.
 - Keyword-overlap scoring is replaced by multi-signal scoring (semantic + keyword + recency + importance + entity boost). This requires embeddings — the single biggest infrastructure addition.
 - Per-note relevance scoring moves from the prompt-injection layer (section_formatters.py) to the retrieval layer.
 - Note creation shifts from LLM tool calls (reflect__note) to the extraction pipeline. The LLM no longer explicitly decides what to remember — the extraction pipeline analyzes the conversation and extracts memories automatically.
@@ -114,27 +115,38 @@ Key architectural facts:
 
 **Migration complexity: HIGH.** The distillation engine is rewritten, not wrapped. Trigger logic, operation semantics (destructive → non-destructive), output format, and prompt structure all change. The app provides a `DistillationStrategy` implementation rather than a template string.
 
-### 4. Entity identity → 3tears-identity module
+### 4. Entity identity → 3tears entity references (Phase 1) → 3tears-identity module (Phase 2)
 
-**Current:** Discodon has no formal identity system. Entities are identified by Cosmos document ID (`id_entity`), and people the entity knows about are tracked by display name (`WorkingNote.about`) with an optional platform-qualified string (`about_source_id` like `discord:123456`). The MCP `entity people` action derives a "known people" list by grouping notes by `about` field.
+**Current:** Discodon has an effective but informal identity system — more sophisticated than "just display names." The LLM writes display names into `WorkingNote.about`. The system auto-resolves them: `behaviors.py` builds `_author_source_ids` from perception metadata each turn (lowercased display names and Mastodon @handles → platform-qualified IDs). When the LLM creates a note with `about="Alice"`, the system stamps `about_source_id="discord:123456789"`. Retrieval in `compute_social_context()` matches on source_id first (stable across name changes), falls back to display-name matching, and presents notes under the person's **current** display name. The MCP `entity people` action groups notes by `about` field. `entity person_notes` accepts either display name or source_id.
 
-**v2 mapping:**
+**What's NOT handled today:** Cross-platform identity (same person on Discord and Mastodon = two separate note sets), entity merge/split, and any identity resolution beyond the current turn's perception authors (if a person isn't in the current perceptions, their name can't be auto-resolved to a source_id).
 
-| Discodon identity concept | v2 identity concept | Notes |
+**Phased v2 mapping:**
+
+| Discodon identity concept | Phase 1 (no identity module) | Phase 2 (identity module) |
 |---|---|---|
-| `entity.id_entity` (UUID) | `owner_id` (canonical UUID) | The entity persona becomes a memory owner |
-| `WorkingNote.about` (display name) | Identity module: display name → canonical UUID | Name resolution moves to the identity module |
-| `WorkingNote.about_source_id` (`discord:123456`) | Identity module: `(platform, platform_id) → canonical_id` | Platform mapping is the identity module's core job |
-| *(none — notes grouped by display name)* | Identity module: canonical entity with platform mappings | Formal entity records with merge/split |
-| *(none)* | Cross-platform identity resolution | Same person on Discord and Mastodon gets one canonical ID |
+| `entity.id_entity` (UUID) | `owner_id` (same UUID) | `owner_id` (same UUID) |
+| `WorkingNote.about` (display name) | `about_names` on memory row | Identity module: display name → canonical UUID |
+| `WorkingNote.about_source_id` (`discord:123456`) | `about_platform_ids` on memory row | Identity module: `(platform, platform_id) → canonical_id` |
+| `_author_source_ids` dict (name → platform ID) | `about_context` dict passed to extraction/add_memory | Identity module resolves + `about_context` |
+| *(none — notes grouped by display name)* | Notes grouped by `about_platform_ids` | Identity module: canonical entity with platform mappings |
+| *(none)* | *(none — still per-platform)* | Cross-platform identity resolution, merge/split |
 
-**What changes:**
-- **Person identification becomes a first-class system.** Instead of the LLM writing "Alice" into a note's `about` field and hoping names are consistent, the identity module maintains a canonical registry with platform mappings.
-- **The `about_source_id` pattern gets formalized.** `discord:123456` becomes a platform mapping `(discord, 123456) → canonical_uuid`. This is what `about_source_id` was always trying to be — v2 makes it a real system.
-- **Entity merge becomes possible.** If "Alice" and "Alice_gaming" turn out to be the same person, the identity module merges their canonical IDs and calls `merge_entity_ids()` on the memory module. Discodon has no equivalent — notes about "Alice" and "Alice_gaming" would stay separate forever.
-- **The `entity people` MCP action becomes a query on the identity module** rather than a note-grouping heuristic.
+**Phase 1 (migration target):**
+- `about` → `about_names` (text array on memory row). The LLM still writes human-readable names.
+- `about_source_id` → `about_platform_ids` (text array on memory row). The system still auto-resolves from perception metadata.
+- The auto-resolution pattern (`_author_source_ids` dict) maps directly to 3tears extraction's `about_context` parameter. Discodon builds the dict from perception metadata each turn, same as today, and passes it to `extract()` and `add_memory()`.
+- Retrieval boosts by `about_platform_ids` match — same as the current `compute_social_context()` source_id matching, but in the retriever instead of section_formatters.
+- `entity people` MCP action queries 3tears memories grouped by `about_platform_ids` instead of note `about` field. Functionally identical.
+- **No identity module required.** No new infrastructure beyond the 3tears memory schema changes.
 
-**Migration complexity: MEDIUM.** The identity module is new infrastructure, but discodon already has the raw data (`about_source_id`). The migration is: for each unique `about_source_id`, create a canonical identity record. For notes without `about_source_id`, attempt name-based resolution.
+**Phase 2 (post-migration enhancement):**
+- The identity module maps `about_platform_ids` → canonical UUIDs and populates `about_ids`.
+- Cross-platform identity becomes possible: `discord:123456` and `mastodon:@alice@social.example` merge into one canonical ID.
+- `entity people` becomes a rich query on canonical entities with platform mappings, types, and metadata.
+- A backfill job resolves existing memories.
+
+**Migration complexity: LOW for Phase 1** (the patterns already exist in discodon — it's a field rename and location change). **MEDIUM for Phase 2** (new identity module, backfill, cross-platform resolution). Phase 1 is the migration target. Phase 2 is a post-migration enhancement.
 
 ### 5. Memory retrieval → 3tears entity-aware retrieval
 
@@ -257,12 +269,40 @@ Role-based behavior is cognitive architecture. An observer's relaxed extraction 
 - Token budgeting across prompt sections
 - Goals, todos, and turn history formatting (these aren't memories in v2)
 
+**Prompt compositor pattern:** `section_formatters.py` doesn't go away — it loses two sections (wisdom, notes) and gains one (3tears retrieval). The integration seam:
+
+```python
+# In discodon's turn prompt builder (replacing format_wisdom + format_notes):
+memory_result = await retriever.retrieve(
+    pool=pool,
+    owner_id=entity_id,
+    query=build_memory_query(perceptions),
+    relevant_entities=extract_author_platform_ids(perceptions),  # Phase 1: platform IDs
+    mode="conversational",
+    ledger=memory_ledger,
+    customer_id=None,
+)
+memory_section = memory_result.context  # Pre-formatted by 3tears
+
+# Existing sections remain:
+sections = [
+    format_traits(persona),
+    format_goals(persona),
+    format_todos(persona),
+    format_directives(persona),
+    memory_section,  # Replaces format_wisdom() + format_notes()
+]
+turn_prompt = "\n\n".join(s for s in sections if s)
+```
+
+**Attention budget interaction:** Discodon's attention budget allocates a token budget per prompt section. The retriever's `context_budget` (max items) and the retriever's formatted output must fit within the attention budget's memory allocation. The retriever accepts `max_items` but not a token limit directly — the app truncates the `context` string if it exceeds the section's token allocation. In practice, 15 memories at ~30 tokens each = ~450 tokens, well within typical section budgets.
+
 ### Seam 3: The reflect tool — what stays, what changes?
 
 | Reflect action | Migration | Notes |
 |---|---|---|
-| `reflect__note` | → `add_memory` (3tears tool) | Content becomes an observation-tier memory. `about` resolved via identity module. |
-| `reflect__note` with `update_index` | → 3tears UPDATE resolution | Instead of replacing a note by index, the extraction pipeline's UPDATE creates a new memory and stamps `valid_until` on the old one. The entity can't address memories by index. |
+| `reflect__note` | → **Keep as thin wrapper** over 3tears `add_memory` | Same tool name preserves eval compatibility (see eval section). Internally calls `add_memory` with `about` resolved to `about_platform_ids` via `about_context`. The v2 `add_memory` tool accepts `about` (display name), `type_memory`, and `importance` — enrichments over v0.5's content-only interface. |
+| `reflect__note` with `update_index` | → 3tears UPDATE resolution | Instead of replacing a note by index, the extraction pipeline's UPDATE creates a new memory and stamps `valid_until` on the old one. The entity can't address memories by index. The wrapper translates `update_index` to a semantic lookup ("find the memory most similar to this note"). |
 | `reflect__note_delete` | → app-level soft delete or importance downgrade | 3tears doesn't expose "delete memory by index." The entity could mark a memory as superseded or low-importance. |
 | `reflect__new_wisdom` | **Remove.** | Pattern synthesis is the distillation engine's job. The entity shouldn't manually create wisdom — that bypasses the evidence chain. |
 | `reflect__goal_update` | **Stays in discodon.** | Goals aren't 3tears memories. |
@@ -273,14 +313,16 @@ Role-based behavior is cognitive architecture. An observer's relaxed extraction 
 
 **Key design decision:** The entity loses index-based memory addressing. v2 memories are addressed by ID (UUID), not by position in a list. This means the entity can't say "update note 3" — it would need to say "update the memory about Alice's jazz preference." This is a significant UX change for the LLM.
 
+**Why keep `reflect__note` as a wrapper:** The eval system's `_extract_accumulated_state()` scans for `target_tool == "reflect"` and `action == "note"`. Keeping the tool name unchanged means the eval runner, social cognition templates, test cases, and accumulated-state extraction all work without modification. The wrapper is trivial (~15 lines) and can be retired after the eval system is updated to scan for `add_memory` instead.
+
 ### Seam 4: The MCP entity tool — what changes?
 
 | MCP action | Migration | Notes |
 |---|---|---|
 | `entity history` | **Stays.** Turn history is operational telemetry. | |
 | `entity distill` | → 3tears API for forced distillation | Trigger API changes; non-destructive semantics. |
-| `entity people` | → 3tears identity module query | No longer derived from note grouping. Query canonical entities with platform mappings. |
-| `entity person_notes` | → 3tears retrieval with `relevant_entities=[person_canonical_id]` | Entity-filtered retrieval replaces note-field filtering. |
+| `entity people` | → 3tears memory query grouped by `about_platform_ids` (Phase 1) / identity module query (Phase 2) | Phase 1: same concept as today's note-grouping, but queries `about_platform_ids` on memory rows. Phase 2: query canonical entities with platform mappings. |
+| `entity person_notes` | → 3tears retrieval with `relevant_entities=[platform_id]` (Phase 1) / `[canonical_id]` (Phase 2) | Entity-filtered retrieval replaces note-field filtering. |
 | `entity social_wisdom` | → 3tears retrieval with `type_filter=[belief]` or tier/type queries | Social wisdom filtering moves to type-aware retrieval. |
 | `entity export_bundle` | **Partially stays.** Export includes both 3tears memories and discodon-specific state (goals, todos, traits). | Two export sources: 3tears for memories, discodon for cognitive state. |
 | `entity import_bundle` | Same split. | |
@@ -299,6 +341,66 @@ Role-based behavior is cognitive architecture. An observer's relaxed extraction 
 - Token accounting for memory operations (extraction: ~2,100 tokens, distillation: ~2,000 tokens) becomes visible through 3tears-observe. Today discodon tracks distillation cost in `DistillationUsage` — that moves to 3tears instrumentation.
 
 **Integration pattern:** Discodon's turn-level trace creates a parent span. 3tears memory operations create child spans under it. The combined trace shows the full picture: turn → perception → retrieval → decision → action → extraction → distillation.
+
+### Seam 6: Cost tracking and budget enforcement
+
+**Current discodon model:** Comprehensive three-tier budget system.
+
+| Layer | How it works |
+|---|---|
+| Per-call | `extract_usage()` pulls tokens/cost from OpenRouter responses into `LLMUsage` |
+| Per-turn | `TurnRecord` accumulates across multi-round tool calls; `UsageTracker` rolls into `SessionTokenUsage` with per-model and per-tool breakdowns |
+| Budget enforcement | `BudgetEnforcer` checks hierarchy (entity → universe → system) before each turn. Four states (healthy/cautious/tight/exhausted) map to four tiers (none/warn/throttle/hardstop) |
+| Persistence | `CostEvent` and `BudgetPeriod` documents in Cosmos DB with cross-process cache invalidation via ZMQ |
+| Admin | MCP budget tool (8 actions: check, hierarchy, allocate, history, projection, summary, reset), REST API, category-based allocation |
+
+Cost sources tracked today: `entity_turn`, `classifier`, `distillation`, `optimization`, `monitoring`.
+
+**What 3tears adds:** New LLM and embedding calls that discodon's budget system needs to track:
+
+| 3tears operation | Token cost | When it fires |
+|---|---|---|
+| Extraction: worthiness gate | ~350 tokens | Most turns (after heuristic gates pass) |
+| Extraction: candidate extraction | ~1,000 tokens | When worthiness gate passes |
+| Extraction: resolution | ~750 tokens | When similar memories exist |
+| Distillation: within-entity | ~2,000 tokens | Per importance-sum threshold or session boundary |
+| Distillation: cross-entity | ~12,000 tokens | Daily background cycle |
+| Distillation: consolidation | ~1,500 tokens | When pattern count exceeds threshold post-distillation |
+| Embedding | ~50 tokens per call | Every extraction (per candidate) + every retrieval query |
+
+**3tears reports costs; discodon enforces budgets.** 3tears provides a `CostCallback` protocol — a function that fires after each LLM or embedding call with a `CostReport` (operation name, input/output/embed tokens, model, estimated cost). Discodon wires this to `BudgetEnforcer.record_cost()`.
+
+**Integration:**
+
+```python
+# In discodon's 3tears initialization:
+async def _memory_cost_callback(report: CostReport) -> None:
+    budget_enforcer.record_cost(
+        entity_id=current_entity_id,
+        universe_id=current_universe_id,
+        cost_usd=report.estimated_cost_usd or 0.0,
+        input_tokens=report.input_tokens,
+        output_tokens=report.output_tokens,
+        model=report.model,
+        turn_number=current_turn_number,
+        source=f"memory_{report.operation}",   # e.g., "memory_extraction_candidates"
+        category="execution",
+    )
+
+extractor = MemoryExtractor(pool, embedding, chat_model, config, cost_callback=_memory_cost_callback)
+retriever = MemoryRetriever(pool, embedding, config, cost_callback=_memory_cost_callback)
+```
+
+**New `CostEventSource` values:** Add `memory_extraction`, `memory_distillation`, `memory_embedding` to the enum. These appear in budget history, MCP budget tool queries, and cost projections.
+
+**Known bugs to fix during integration:**
+- ARIA optimizer uses `source="aria_optimization"` as a plain string instead of `CostEventSource` enum — costs silently drop out of the budget hierarchy.
+- Classifier and distillation costs bump `process_cost_usd` but are NOT recorded to `BudgetService` — they're invisible to budget enforcement. Fix: wire classifier and distillation through `record_cost()` like turn costs.
+- `CostTrackingCallback.summary()` is dead code (never called). Remove it.
+
+**Budget category for memory operations:** Memory extraction and distillation are `execution` category (same as entity turns). Embedding calls are negligible cost ($0.02/M tokens) but should still be tracked for completeness.
+
+**Budget enforcement timing:** Extraction runs after the turn completes (fire-and-forget). Its cost is recorded post-turn and affects the *next* turn's budget check. Retrieval runs before the decision and its embedding cost is negligible. This means memory costs don't block the current turn — they count against the next one. This is acceptable because extraction costs are modest (~2,100 tokens max) relative to turn costs (~5,000-15,000 tokens).
 
 ---
 
@@ -453,8 +555,9 @@ Tables are created in an agent-namespaced schema (`agent_{agent_id.hex}`). pgvec
 
 ```dockerfile
 # Add to existing Dockerfile
-RUN pip install 3tears-agent-memory 3tears-identity asyncpg
+RUN pip install 3tears-agent-memory asyncpg
 # No new services — everything runs in-process
+# 3tears-identity is NOT required for Phase 1 (platform ID-based entity references)
 ```
 
 No new containers. No new processes. The Docker image gets slightly larger (asyncpg + pgvector Python bindings). The only new external dependency is the PostgreSQL server.
@@ -489,30 +592,33 @@ If using an external embedding API:
 
 **Remove:**
 - `WorkingNote`, `NarrativeWisdom` from persona.py
-- `score_wisdom()`, `score_note()`, `format_wisdom()`, `format_notes()`, `extract_note_topics()`, `extract_perception_keywords()` from section_formatters.py
+- `score_wisdom()`, `score_note()`, `format_wisdom()`, `format_notes()`, `extract_note_topics()`, `extract_perception_keywords()`, `compute_social_context()`, `format_social_context()` from section_formatters.py
 - `distillation.py` (distill_notes, consolidate_wisdom, all models)
 - `distillation_manager.py` (DistillationManager)
-- `reflect__note`, `reflect__new_wisdom`, `reflect__note_delete` from reflect_tool.py
+- `reflect__new_wisdom` from reflect_tool.py
 - `notes`, `wisdom`, distillation config fields from PersonaComponent
 - `_note_should_replace()` dedup logic from behaviors.py
 - Note/wisdom fields from Cosmos entity document schema
 - `extract_social_wisdom()` from cognitive_style.py
 
 **Add:**
-- `EmbeddingProvider` implementation (config module)
+- `EmbeddingProvider` implementation (config module, ~20 lines wrapping VoyageAI)
 - `DistillationStrategy` implementation (derived from current `DEFAULT_DISTILLATION_PROMPT`, adapted for v2 output format)
 - 3tears `extract()` call after each turn in the turn pipeline (replaces reflect-based collection)
 - 3tears `retrieve()` call in prompt construction (replaces keyword scoring)
-- New prompt formatter for entity-grouped retrieval results
-- Identity resolution in the perception pipeline: Discord user IDs → canonical UUIDs via `threetears.identity`
+- Memory section in turn prompt (replaces `format_wisdom()` + `format_notes()` — uses `retrieval_result.context`)
+- `about_context` dict construction from perception metadata (same pattern as `_author_source_ids`, passed to `extract()` and `add_memory()`)
 - Per-entity-role gate config (observers need relaxed response-length gates)
+- `CostCallback` wiring: memory cost reports → `BudgetEnforcer.record_cost()` with new source values
+- New `CostEventSource` enum values: `memory_extraction`, `memory_distillation`, `memory_embedding`
 
 **Modify:**
-- reflect_tool.py: keep `reflect__goal_update`, `reflect__new_todo`, `reflect__complete_todo`, `reflect__pass`, `reflect__tool_change`
-- MCP entity tool: `people` → identity module query, `person_notes` → `retrieve(relevant_entities=[id])`, `social_wisdom` → `retrieve(type_filter=[belief])`, `distill` → 3tears forced distillation API
+- reflect_tool.py: `reflect__note` becomes thin wrapper over 3tears `add_memory` (preserves eval compatibility). `reflect__note_delete` becomes importance downgrade or app-level soft delete. Keep `reflect__goal_update`, `reflect__new_todo`, `reflect__complete_todo`, `reflect__pass`, `reflect__tool_change`.
+- MCP entity tool: `people` → 3tears memory query grouped by `about_platform_ids` (Phase 1), `person_notes` → `retrieve(relevant_entities=[platform_id])`, `social_wisdom` → `retrieve(type_filter=[belief])`, `distill` → 3tears forced distillation API
 - Entity export/import bundles: memories come from 3tears, cognitive state from Cosmos
-- Turn pipeline in behaviors.py: wire `extract()` where note processing used to happen
+- Turn pipeline in behaviors.py: wire `extract()` where note processing used to happen, pass `about_context` built from perception metadata
 - Prompt construction: single `retrieve()` replaces per-section scoring
+- Budget enforcement: fix existing bugs (classifier/distillation costs not recorded to BudgetService, ARIA source string mismatch), add memory cost sources
 
 ### Day-one experience
 
@@ -522,7 +628,7 @@ Entities start blank. First few sessions will feel like a new entity — no memo
 
 ## Eval system intersections
 
-The eval system has deep memory entanglement. Five areas need rework.
+The eval system has deep memory entanglement. Six areas need rework. The key mitigation: **keeping `reflect__note` as a wrapper** means most eval code works unchanged during migration. The wrapper emits the same tool name and action, so `_extract_accumulated_state()` continues to work, social cognition templates continue to work, and accumulated state flows across turns as before. The changes below describe what's needed for full v2 eval support after the migration stabilizes.
 
 ### 1. Context injection in the eval runner
 
@@ -540,28 +646,28 @@ The eval system has deep memory entanglement. Five areas need rework.
 
 **Current:** `_extract_accumulated_state()` scans actions for `reflect__note` and `reflect__new_wisdom` tool calls, extracts content from parameters, and carries them forward into subsequent turns as `ContextNote` objects and wisdom strings.
 
-**What changes:** With the reflect tool losing note/wisdom actions:
+**What changes during migration: nothing.** Because `reflect__note` survives as a wrapper, `_extract_accumulated_state()` still finds `target_tool == "reflect"` and `action == "note"` in the action list. Accumulated state flows across turns exactly as before. `reflect__new_wisdom` is removed, so wisdom accumulation stops — but this is correct, as pattern synthesis moves to the distillation engine.
 
-- If **extraction-primary** (recommended): the eval runner can't observe what the extraction pipeline would store, because extraction is a background process analyzing conversation content — not a tool call the entity makes. The runner would need to either:
-  - Call `extract()` on the turn's conversation content and use the result as accumulated state
-  - Skip accumulated state entirely and pre-seed all context per-turn in the test case
+**What changes for full v2 eval support (post-migration):** Once the `reflect__note` wrapper is retired in favor of native `add_memory`:
 
-- If **reflect-as-correction survives** as `add_memory`: the runner scans for `add_memory` tool calls instead of `reflect__note`. The `ContextNote` model changes — `about`/`about_source_id` become `about_ids` (canonical UUIDs), `age_label` might become recency metadata.
-
-**Recommendation:** For multi-turn evals, pre-seed each turn's context explicitly. Relying on extraction mid-eval adds LLM cost and non-determinism. The test case author controls exactly what memories are available at each turn.
+- The runner scans for `add_memory` tool calls instead of `reflect__note`. The `ContextNote` model gains `about_names`/`about_platform_ids` alongside (not replacing) `about`/`about_source_id`.
+- For multi-turn evals testing the extraction pipeline itself, the runner can call `extract()` on the turn's conversation content and use the result as accumulated state. This is an integration eval, not a unit eval.
+- For unit-style social cognition evals, continue pre-seeding each turn's context explicitly. Relying on extraction mid-eval adds LLM cost and non-determinism.
 
 ### 3. ContextNote model
 
 **Current:** `ContextNote` in `eval/models.py` has `content`, `age_label`, `about` (display name), `about_source_id` (platform-qualified ID).
 
-**What changes:** The model needs to align with v2 memory fields:
+**What changes during migration: nothing.** `ContextNote` keeps `about` and `about_source_id` — these map directly to `about_names` and `about_platform_ids` in v2 Phase 1. The fields are semantically identical.
 
-| Current ContextNote field | v2 equivalent | Notes |
+**What changes for full v2 eval support (Phase 3):** The model gains optional v2 fields:
+
+| Current ContextNote field | v2 addition | Notes |
 |---|---|---|
-| `content` | `content` | Direct |
-| `age_label` | Derivable from `date_created` + retrieval recency | Or keep as eval-specific synthetic metadata |
-| `about` | `about_ids` (canonical UUIDs) + identity module display names | The eval can use synthetic UUIDs |
-| `about_source_id` | Identity module platform mapping | Not needed if using canonical UUIDs |
+| `content` | — | Unchanged |
+| `age_label` | — | Keep as eval-specific synthetic metadata |
+| `about` | — | Unchanged. Maps to `about_names`. |
+| `about_source_id` | — | Unchanged. Maps to `about_platform_ids`. |
 | *(none)* | `type_memory` | preference, fact, action, belief |
 | *(none)* | `importance` | 1-10 |
 | *(none)* | `tier` | observation, pattern |
@@ -624,25 +730,82 @@ The `structured_inputs.items` field (optional structured items within a section)
 ## Risk analysis
 
 ### High risk: Collection philosophy change
-The shift from "entity manages its own memory" to "extraction pipeline manages memory" changes the agent's relationship with its memories. The entity might produce worse memories if it can't explicitly curate them, or better memories because the pipeline catches things the entity would miss. Worth monitoring extraction quality closely in the first week.
+The shift from "entity manages its own memory" to "extraction pipeline manages memory" changes the agent's relationship with its memories. The entity might produce worse memories if it can't explicitly curate them, or better memories because the pipeline catches things the entity would miss. Mitigated by keeping `reflect__note` as a correction/emphasis tool. Worth monitoring extraction quality closely in the first week.
 
 ### Medium risk: Retrieval quality
-Multi-signal scoring with embeddings is more powerful but less predictable than keyword overlap. The `social` preset should be a reasonable starting point, but expect a tuning period.
+Multi-signal scoring with embeddings is more powerful but less predictable than keyword overlap. The `social` preset should be a reasonable starting point, but expect a tuning period. The current `compute_social_context()` is well-tuned for discodon — regression testing against known-good social context output would catch quality drops.
 
 ### Medium risk: Corpus growth
-Without the 50-note FIFO cap, observation count grows until distillation consumes them. Importance-based scoring should handle this, but if thresholds aren't well-calibrated, retrieval could get noisy.
+Without the 50-note FIFO cap, observation count grows until distillation consumes them. Importance-based scoring should handle this, but if thresholds aren't well-calibrated, retrieval could get noisy. The consolidation sub-phase (dedup/merge patterns at threshold 10) prevents pattern-tier bloat.
+
+### Medium risk: Cost visibility gap during migration
+During migration, memory operations add LLM and embedding costs that weren't there before (~2,100 tokens per extraction firing, ~50 tokens per retrieval query). If the `CostCallback` isn't wired correctly, these costs become invisible to the budget system. Combined with the existing bugs (classifier/distillation costs not recorded to BudgetService), the budget hierarchy could show significantly less spending than reality. Fix the existing bugs before adding new cost sources.
 
 ### Low risk: Cold start
 Entities lose all memory. For R&D this is fine. In production this would be unacceptable — but we're not there yet.
 
+### Low risk: Identity regression
+Phase 1 identity (platform IDs on memory rows) is functionally equivalent to the current `about_source_id` system. The same auto-resolution pattern (`_author_source_ids` → `about_context`) applies. Cross-platform identity (the gap the identity module fills) doesn't exist today, so the migration doesn't regress it.
+
 ---
+
+## Resolved questions
+
+1. **Should reflect__note survive as an `add_memory` wrapper?** **Yes.** Keep `reflect__note` as a thin wrapper (~15 lines) over 3tears `add_memory`. This preserves eval system compatibility (`_extract_accumulated_state()` scans for `reflect__note`), avoids reworking social cognition templates, and gives the entity an explicit memory-correction tool (extraction-primary, reflect-as-override). The wrapper can be retired once the eval system is updated to scan for `add_memory`. See Seam 3.
+
+2. **How does the attention budget interact with extraction?** Extraction is a background process (fire-and-forget after the turn). It does NOT consume the entity's attention budget. Its cost is recorded post-turn and counts against the *next* turn's budget check via `CostCallback` → `BudgetEnforcer.record_cost()`. Retrieval runs pre-decision; its embedding cost is negligible (~50 tokens) and doesn't warrant attention budget tracking. The attention budget's memory allocation governs how many retrieved memories fit in the prompt (via `max_items` on the retriever). See Seam 2 and Seam 6.
+
+3. **Cross-entity distillation scope:** **Per-universe** (discodon's multi-tenant isolation boundary). A universe is the natural scope — entities within a universe share a domain context (e.g., all DJ entities in the same music universe). Cross-universe distillation would produce irrelevant principles.
+
+4. **MCP tool location:** **Stay in discodon as wrappers.** Memory-related MCP actions (`people`, `person_notes`, `social_wisdom`, `distill`) stay in discodon's MCP entity tool but call 3tears APIs internally. The eval MCP tool (51 actions) stays entirely in discodon. Rationale: MCP tools need discodon-specific context (entity IDs, universe IDs, persona state) that a standalone 3tears MCP server wouldn't have. The wrapper pattern is low-overhead and avoids a new service.
 
 ## Open questions
 
-1. **Should reflect__note survive as an `add_memory` wrapper?** Or remove explicit memory creation entirely and let the extraction pipeline handle everything?
+1. **`update_index` translation:** The `reflect__note` wrapper needs to translate index-based addressing to semantic lookup. What similarity threshold makes this reliable? Should the wrapper expose index-based addressing at all, or force the LLM to describe what it wants to update?
 
-2. **How does the attention budget interact with extraction?** Is extraction a background process, or does it consume the entity's cognitive resources?
+2. **Distillation prompt migration:** Discodon's `DEFAULT_DISTILLATION_PROMPT` is DJ-domain-specific. The `DistillationStrategy` implementation needs to generalize or remain DJ-specific. Should it be entity-role-aware (different prompts for DJ vs. facilitator)?
 
-3. **Cross-entity distillation scope:** Should it run across all entities globally, or scoped per-universe (discodon's multi-tenant isolation)?
+3. **Two-database operational story:** Cosmos DB (entities, turns, prompts, budgets, evals) + PostgreSQL (memories, embeddings). What's the backup/restore procedure? Is this permanent architecture or transitional toward all-PostgreSQL?
 
-4. **MCP tool location:** Should memory-related MCP actions move to a 3tears MCP server, or stay in discodon as wrappers?
+---
+
+## Implementation order
+
+Work is organized in phases. Items within a phase are independent and parallelizable.
+
+### Phase 1: 3tears schema and extraction (no identity module)
+
+| Item | Work | Where | Blocked by |
+|------|------|-------|-----------|
+| 1a | Add `about_names`, `about_platform_ids`, `mentioned_names`, `mentioned_platform_ids` columns to memories schema | 3tears agent-memory | Nothing |
+| 1b | Update extraction prompt to identify subjects; accept `about_context` dict for name → platform ID resolution | 3tears agent-memory | Nothing |
+| 1c | Add `CostCallback` protocol and wire through MemoryExtractor, MemoryRetriever, distillation | 3tears agent-memory | Nothing |
+| 1d | Enrich `add_memory` tool: accept `about` (display name), `type_memory`, `importance` | 3tears agent-memory | 1a |
+
+### Phase 2: Discodon integration
+
+| Item | Work | Where | Blocked by |
+|------|------|-------|-----------|
+| 2a | Implement `EmbeddingProvider` (VoyageAI wrapper), `ChatModelFactory` wrapper, asyncpg pool setup | discodon | Phase 1 |
+| 2b | Build `reflect__note` thin wrapper over `add_memory` | discodon | 1d |
+| 2c | Wire `extract()` into turn pipeline (post-turn, fire-and-forget) with `about_context` from perception metadata | discodon | 1b, 2a |
+| 2d | Replace `format_wisdom()` + `format_notes()` with `retrieve()` call in prompt construction | discodon | 1a, 2a |
+| 2e | Wire `CostCallback` → `BudgetEnforcer.record_cost()` with new `CostEventSource` values | discodon | 1c, 2a |
+| 2f | Fix existing budget bugs (classifier/distillation costs not recorded, ARIA source string) | discodon | Nothing |
+| 2g | Update MCP entity tool: `people`, `person_notes`, `social_wisdom`, `distill` as 3tears wrappers | discodon | 2c, 2d |
+| 2h | Remove `WorkingNote`, `NarrativeWisdom`, `distillation.py`, `distillation_manager.py`, old section formatters | discodon | 2b, 2c, 2d |
+| 2i | Implement `DistillationStrategy` (adapted from `DEFAULT_DISTILLATION_PROMPT`) | discodon | Phase 1 |
+
+### Phase 3: Post-migration enhancements (not blocking migration)
+
+| Item | Work | Where | Blocked by |
+|------|------|-------|-----------|
+| 3a | Build `3tears-identity` package (canonical UUIDs, platform mappings, merge/split) | 3tears | Nothing |
+| 3b | Backfill `about_ids` from `about_platform_ids` via identity module | 3tears + discodon | 3a |
+| 3c | Switch retrieval to boost by `about_ids` instead of `about_platform_ids` | 3tears | 3b |
+| 3d | Update eval system: `_extract_accumulated_state()` scans for `add_memory`, retire `reflect__note` wrapper | discodon | Phase 2 stable |
+| 3e | Add v2 eval capabilities: distillation quality, temporal validity, decision evidence, cross-entity patterns | discodon | Phase 2 stable |
+| 3f | Enrich `ContextNote` model with `type_memory`, `importance`, `tier`, `epistemic_type` | discodon | Phase 2 stable |
+| 3g | Cross-entity distillation (daily background, per-universe scope) | 3tears + discodon | 2i |
+
+Phase 1 is pure 3tears work — no discodon changes. Phase 2 is the actual migration. Phase 3 items are enhancements that build on a working migration.

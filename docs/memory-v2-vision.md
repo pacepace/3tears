@@ -104,6 +104,20 @@ Retrieval is unaffected: `WHERE $entity_id = ANY(about_ids)` is no more complex 
 
 **Display name resolution:** Display names are not stored on memory rows — that would mean updating 500 rows when someone changes their handle. Instead, the identity module provides name lookup (via callback or post-processing on retrieval results). The memory module returns opaque UUIDs; the identity module adds human-readable labels.
 
+#### Phased entity reference implementation
+
+The identity module is on the critical path for `about_ids` as designed — canonical UUIDs require a resolution system. But apps need entity-aware memory before the identity module ships. The schema accommodates this with a two-phase approach:
+
+**Phase 1 (no identity module):** Add `about_names` (text[]) and `about_platform_ids` (text[]) alongside the `about_ids` column. Extraction populates `about_names` from LLM output (e.g., `["Alice"]`) and `about_platform_ids` from conversation context metadata (e.g., `["discord:123456789"]`). `about_ids` stays NULL. Retrieval filters and boosts by `about_platform_ids`. This mirrors the pattern discodon already uses successfully — display names for the LLM, platform-qualified IDs for stable matching.
+
+The extraction pipeline accepts an `about_context` dict mapping display names to platform IDs, populated from the conversation's author metadata. When extraction identifies "Alice" as a subject, it resolves to `discord:123456789` via this context. Names not in context are stored in `about_names` only — unresolved but not lost.
+
+**Phase 2 (identity module exists):** The identity module maps `about_platform_ids` → canonical UUIDs and populates `about_ids`. A backfill job resolves existing memories. Retrieval switches to boosting by `about_ids`. `about_names` and `about_platform_ids` remain as denormalized context — useful for display and audit, but no longer the primary query path.
+
+This means apps can ship entity-aware memory immediately. The identity module is an enhancement, not a gate.
+
+**Schema implication:** The memories table gains three entity columns from the start: `about_ids` (UUID[], nullable), `about_names` (text[], nullable), `about_platform_ids` (text[], nullable). Same pattern for `mentioned_entity_ids` / `mentioned_names` / `mentioned_platform_ids`. Phase 1 uses the name/platform columns; Phase 2 adds UUIDs. All three persist long-term — UUIDs for queries, names for display, platform IDs for audit and identity-module-free deployments.
+
 ### B. Epistemic metadata
 
 **Problem:** "Bob lives in Melbourne" (inferred from one offhand comment) and "Bob likes thrash metal" (stated directly, confirmed repeatedly) are treated identically. They shouldn't be.
@@ -140,6 +154,8 @@ The Generative Agents showed importance scoring was critical for separating sign
 
 **Dropped:** `topical_context` (→ `fact` + entity scoping), `relational_context` (→ `fact` or `decision` + entity scoping).
 
+**Migration mapping for dropped types:** Existing `topical_context` memories ("ongoing project/goal with concrete details") become `fact`. Existing `relational_context` memories ("system decisions, workflow norms, technical constraints") become `fact` by default; those that record an explicit choice (identifiable by decision language — "we decided", "the team chose", "approved by") become `decision`. A migration script reclassifies; ambiguous cases default to `fact`.
+
 #### Supporting evidence for decisions
 
 A decision without its reasoning is an assertion without authority. "The protagonist is female" invites challenge; knowing *why* the group chose that — and what alternatives were considered — makes the decision defensible and revisitable with full context.
@@ -166,7 +182,7 @@ Decisions carry `supporting_evidence_ids` — a UUID array linking to the observ
 
 **Platform/channel awareness:** "Remember what I said on Slack?" is a `source_context` query, not an identity question. Memories carry platform metadata in provenance fields: `source_type='slack_message', source_context={"channel": "#general"}`.
 
-**`about_context` implications:** The extraction pipeline's `about_context` must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. If Bob mentions Charlie who isn't in the channel, the identity module needs to provide Charlie's canonical ID for extraction to populate `about_ids` correctly.
+**`about_context` implications:** The extraction pipeline's `about_context` must include not just "who's present" but a broader entity vocabulary — known entities the conversation might reference. In Phase 1, `about_context` is limited to current conversation participants (perception metadata). If Bob mentions Charlie who isn't in the channel, Charlie's name is stored in `about_names` but `about_platform_ids` stays empty for Charlie — an unresolved reference. In Phase 2, the identity module can provide Charlie's canonical ID from its entity registry, enabling extraction to populate `about_ids` correctly even for non-present entities.
 
 Requirements for the identity module are in the appendix.
 
@@ -213,6 +229,18 @@ Distillation isn't continuous — it fires at specific moments.
 3. For clusters spanning 3+ distinct entities, synthesize `about_ids=null` principles.
 
 Both triggers are configurable per-owner or per-preset.
+
+**Fallback triggers:** Importance-sum thresholds alone may under-fire for entities with consistently low-importance observations, or over-fire for bursty high-importance conversations. Two fallback conditions prevent edge cases:
+- **Time-based floor:** If no distillation has run in 7 days and there are any new observations, trigger regardless of accumulated importance. Prevents indefinite accumulation for low-activity entities.
+- **Count-based ceiling:** If observation count since last distillation exceeds 50, trigger regardless of importance sum. Prevents unbounded corpus growth for high-volume entities with individually low-importance observations.
+
+These are configurable per-owner (or disabled) via `DistillationStrategy`.
+
+#### Consolidation (dedup/merge) as distillation sub-phase
+
+After within-entity distillation promotes observations to patterns, a consolidation pass dedup/merges overlapping patterns. This is the same concept as discodon's `consolidate_wisdom()` but integrated into the distillation pipeline rather than running as a separate post-processing step.
+
+Consolidation triggers when pattern count for an entity exceeds a threshold (default: 10) or when new patterns were created in the current distillation run. The LLM identifies overlapping patterns and merges them, preserving `derived_from_ids` from all source patterns. This prevents the pattern tier from accumulating near-duplicate insights over time.
 
 #### Non-destructive distillation operations
 
@@ -534,7 +562,34 @@ Depends on corpus. For a modest corpus (50 entities, 200 patterns): 2-5 clusters
 
 ### Retrieval
 
-No LLM cost. Database queries only. p95 latency under 100ms at typical corpus sizes (<100K memories per owner).
+No LLM cost. Embedding cost only (query embedding). Database queries only beyond that. p95 latency under 100ms at typical corpus sizes (<100K memories per owner).
+
+### Cost reporting
+
+3tears reports costs but does not enforce budgets. Budget enforcement is the consuming app's responsibility — different apps have different budget models, hierarchies, and enforcement tiers.
+
+**CostCallback protocol:** All cost-generating operations (extraction, distillation, embedding) accept an optional `cost_callback`:
+
+```python
+@dataclass
+class CostReport:
+    operation: str       # "extraction_worthiness", "extraction_candidates", "extraction_resolution",
+                         # "distillation_within_entity", "distillation_cross_entity",
+                         # "distillation_consolidation", "embedding"
+    input_tokens: int
+    output_tokens: int
+    embed_tokens: int
+    model: str
+    estimated_cost_usd: float | None
+
+CostCallback = Callable[[CostReport], Awaitable[None]]
+```
+
+The callback fires after each LLM or embedding call completes. The app aggregates, persists, and enforces as needed. This follows the existing callback pattern in agent-memory (`summary_callback`, `ledger_callback`).
+
+**OpenTelemetry integration:** When 3tears-observe is configured, cost data is added as span attributes (`threetears.tokens.input`, `threetears.tokens.output`, `threetears.tokens.embed`, `threetears.cost_usd`, `threetears.model`) on extraction and distillation spans. Apps using OTel get cost visibility in their tracing backend without wiring callbacks.
+
+**What apps need to provide:** Budget policies, enforcement tiers, persistence, admin UIs, and the mapping from 3tears cost reports to their budget model. For example, discodon maps extraction costs to `CostEventSource.memory_extraction` in its three-tier budget hierarchy (entity → universe → system).
 
 ### Scaling
 
@@ -647,8 +702,12 @@ v2 is a breaking change from v0.5.0. No shims, no fallback. This covers every to
 | `customer_id` | `customer_id` | Retained — tenant isolation is orthogonal to the entity model. |
 | `conversation_id` | *(removed)* | Drop (→ `source_type`/`source_id`/`source_context`) |
 | `message_id_source` | *(removed)* | Drop (same) |
-| *(new)* | `about_ids` | Nullable UUID[]. Existing → `NULL`. |
-| *(new)* | `mentioned_entity_ids` | Nullable UUID[]. |
+| *(new)* | `about_ids` | Nullable UUID[]. Existing → `NULL`. Phase 2 (identity module). |
+| *(new)* | `about_names` | Nullable text[]. Phase 1 (pre-identity). Display names from extraction. |
+| *(new)* | `about_platform_ids` | Nullable text[]. Phase 1 (pre-identity). Platform-qualified IDs (e.g., `discord:123456`). |
+| *(new)* | `mentioned_entity_ids` | Nullable UUID[]. Phase 2 (identity module). |
+| *(new)* | `mentioned_names` | Nullable text[]. Phase 1. |
+| *(new)* | `mentioned_platform_ids` | Nullable text[]. Phase 1. |
 | *(new)* | `source_type` | Nullable text. |
 | *(new)* | `source_id` | Nullable text. |
 | *(new)* | `source_context` | Nullable JSONB. |
@@ -665,7 +724,7 @@ v2 is a breaking change from v0.5.0. No shims, no fallback. This covers every to
 
 Backfill provenance from old columns if audit matters. Rename `user_id` → `owner_id` on media_content, media, memory_chunks tables.
 
-**Indexes:** GIN on `about_ids`, `tier`, `importance`, GIN on `mentioned_entity_ids`, GIN on `supporting_evidence_ids`.
+**Indexes:** GIN on `about_ids`, `about_platform_ids`, `tier`, `importance`, GIN on `mentioned_entity_ids`, `mentioned_platform_ids`, GIN on `supporting_evidence_ids`.
 
 ### MemoryEntity
 
@@ -676,7 +735,7 @@ Backfill provenance from old columns if audit matters. Rename `user_id` → `own
 | `entity.customer_id` | `entity.customer_id` |
 | `entity.conversation_id` | *(removed)* |
 | `entity.message_id_source` | *(removed)* |
-| *(new)* | `entity.about_ids`, `.mentioned_entity_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
+| *(new)* | `entity.about_ids`, `.about_names`, `.about_platform_ids`, `.mentioned_entity_ids`, `.mentioned_names`, `.mentioned_platform_ids`, `.source_type`, `.source_id`, `.source_context`, `.tier`, `.importance`, `.confidence`, `.epistemic_type`, `.derived_from_ids`, `.consumed_by_id`, `.supporting_evidence_ids`, `.date_last_accessed`, `.valid_until` |
 
 ### MemoryExtractor
 
@@ -694,7 +753,7 @@ extract(pool, owner_id, user_message, assistant_response,
         customer_id=None)
 ```
 
-`about_context` provides canonical entity IDs and metadata — the identity module resolves platform identifiers to canonical IDs before they're passed to extraction. When extraction identifies a name not in `about_context`, it emits the raw name for the identity module to resolve.
+`about_context` provides entity identification context. In Phase 1 (no identity module), this is a dict mapping display names to platform IDs, populated from conversation metadata (e.g., `{"alice": "discord:123456789"}`). In Phase 2 (identity module), the identity module resolves platform identifiers to canonical IDs before they're passed to extraction. When extraction identifies a name not in `about_context`, it stores the raw name in `about_names` for later resolution.
 
 Extraction output format:
 
@@ -703,13 +762,15 @@ Extraction output format:
   "type": "preference|fact|decision|action|belief|commitment",
   "content": "1-2 dense sentences",
   "tier": "observation|decision",
-  "about_names": ["subject", "entity", "names or null (identity module resolves to canonical IDs)"],
-  "mentioned_names": ["referenced", "entity", "names"],
+  "about_names": ["Alice"],
+  "mentioned_names": ["Bob"],
   "importance": 7,
   "confidence": 0.85,
   "epistemic_type": "observed|stated|inferred|hypothesized|decided|reported"
 }
 ```
+
+The LLM emits display names in `about_names` and `mentioned_names`. The extraction pipeline resolves these to `about_platform_ids` / `mentioned_platform_ids` via `about_context` (Phase 1) or to `about_ids` / `mentioned_entity_ids` via the identity module (Phase 2). Names not in context are preserved as-is in the name columns.
 
 ### MemoryRetriever
 
@@ -755,7 +816,7 @@ retrieve(pool, owner_id, query, relevant_entities=None,
 
 ### Tools
 
-`user_id` → `owner_id`. Existing tools (`memory_search`, `recall_memory`, `add_memory`) all updated. `MemorySearchInput` adds `about_ids`, `tier`, `type_memory`, `min_importance` filters. `AddMemoryInput` adds `about_ids`, `mentioned_entity_ids`, `importance`.
+`user_id` → `owner_id`. Existing tools (`memory_search`, `recall_memory`, `add_memory`) all updated. `MemorySearchInput` adds `about_ids`, `tier`, `type_memory`, `min_importance` filters. `AddMemoryInput` adds `about` (display name, resolved to platform ID via `about_context`), `about_ids` (canonical UUIDs, Phase 2), `mentioned_entity_ids`, `type_memory`, `importance`. The `about` parameter keeps the LLM-facing interface human-readable — the LLM writes "Alice", the system resolves to platform IDs or canonical UUIDs.
 
 ### Migration checklist (from v0.5.0)
 
@@ -775,18 +836,21 @@ Steps 1-3 are required. Steps 4-8 are incremental — new params default to v0.5
 ## Dependency order
 
 ```
-A (memory model + schema)
+A (memory model + schema — includes about_names/about_platform_ids columns)
 ├──> B (provenance)
 ├──> C (epistemic metadata + type taxonomy)
 ├──> D (retrieval: multi-signal scoring, entity boosting, budget allocation)
-├──> E (within-entity distillation: triggers, non-destructive CONSUME, ToM prompts)
+├──> E (within-entity distillation: triggers, non-destructive CONSUME, consolidation, ToM prompts)
 ├──> F (cross-entity distillation: clustering, principle synthesis)
-└──> G (temporal validity: supersession semantics)
+├──> G (temporal validity: supersession semantics)
+└──> H (cost reporting: CostCallback protocol, OTel span attributes)
 ```
 
-**A is prerequisite to everything.** B and C are independent of each other. D depends on A+C (importance is a scoring signal). E depends on A+C (importance triggers distillation). F depends on E (cross-entity operates on patterns from within-entity). G is independent of everything except A.
+**A is prerequisite to everything.** B, C, and H are independent of each other. D depends on A+C (importance is a scoring signal). E depends on A+C (importance triggers distillation). F depends on E (cross-entity operates on patterns from within-entity). G is independent of everything except A. H can ship with any item — it's a cross-cutting concern wired into extraction, distillation, and embedding calls.
 
 `3tears-identity` develops independently. It sits alongside core in the package dependency graph (`observe → core → identity`, no memory dependency). Agent-memory gains an optional dependency on identity for name resolution. The only hard integration point with the memory module is `merge_entity_ids()` in A.
+
+**Phase 1 independence:** With the phased entity reference implementation (see section A), the memory module ships entity-aware extraction and retrieval using `about_names` and `about_platform_ids` — no identity module required. Apps pass an `about_context` dict (display names → platform IDs) from their conversation metadata. The identity module becomes required only for canonical UUID resolution (Phase 2), cross-platform identity merging, and the `entity people` style queries that currently derive person lists from note grouping.
 
 Work within each item is incremental. D can ship with basic entity boosting before budget allocation. E can ship with session-boundary triggers before importance-sum triggers. [foundation] fields are in the schema from A; their processing logic ships with the item that uses them.
 
@@ -822,7 +886,7 @@ Merge early and aggressively. Entity resolution errors compound — a missed mer
 
 ### Integration pattern between modules
 
-**At extraction:** The consuming app (or an orchestration layer) calls the identity module to resolve platform IDs to canonical IDs, then passes them in `about_context` to the memory module. Unrecognized names are emitted raw for the identity module to resolve.
+**At extraction:** In Phase 1, the consuming app builds `about_context` from conversation metadata (display names → platform IDs). In Phase 2, the identity module enriches `about_context` with canonical UUIDs, and the extraction pipeline populates `about_ids`. Unrecognized names are stored in `about_names` for later resolution by the identity module.
 
 **At retrieval:** The consuming app passes canonical IDs (from the identity module) as `relevant_entities` to the memory module. The memory module returns results with raw UUIDs. The identity module decorates with display names.
 
