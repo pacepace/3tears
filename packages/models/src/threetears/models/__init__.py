@@ -9,6 +9,12 @@ from __future__ import annotations
 
 from threetears.models.cache import ModelCache
 from threetears.models.capabilities import ModelCapabilities
+from threetears.models.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerRegistry,
+    CircuitOpenError,
+    CircuitState,
+)
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 from threetears.models.errors import friendly_api_error, identify_provider
 from threetears.models.messages import (
@@ -45,6 +51,7 @@ from threetears.models.streaming import (
     recover_invalid_tool_calls,
     recover_split_tool_calls,
 )
+from threetears.models.tracking import LlmPurpose, UsageRecord, UsageTracker
 
 __all__ = [
     # enums
@@ -88,4 +95,13 @@ __all__ = [
     "ModelCache",
     # registry
     "ProviderRegistry",
+    # circuit breaker
+    "CircuitState",
+    "CircuitOpenError",
+    "CircuitBreaker",
+    "CircuitBreakerRegistry",
+    # tracking
+    "LlmPurpose",
+    "UsageRecord",
+    "UsageTracker",
 ]
