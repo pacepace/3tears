@@ -963,7 +963,7 @@ class ParseDocumentTool(TearsTool):
         """
         self._ocr_config = ocr_config
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """parse document content into markdown.
 
         :param kwargs: must include 'content_base64' and 'filename' keys

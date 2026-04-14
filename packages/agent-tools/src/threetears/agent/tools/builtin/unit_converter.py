@@ -80,7 +80,7 @@ class UnitConverterTool(TearsTool):
         "required": ["value", "from_unit", "to_unit"],
     }
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """convert value between units.
 
         :param kwargs: must include 'value', 'from_unit', 'to_unit' keys

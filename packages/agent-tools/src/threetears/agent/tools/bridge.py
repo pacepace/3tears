@@ -81,7 +81,7 @@ def _build_args_model(name: str, input_schema: dict[str, Any]) -> type[BaseModel
         else:
             fields[prop_name] = (prop_type | None, Field(default=None, description=description))
 
-    result = create_model(f"{name}_args", **fields)
+    result: type[BaseModel] = create_model(f"{name}_args", **fields)
     return result
 
 

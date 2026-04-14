@@ -62,7 +62,7 @@ class CurrentDateTool(TearsTool):
         self._timezone = timezone
         self._date_fn = _create_date_fn(timezone)
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """return current date and time.
 
         :param kwargs: ignored (no input parameters)

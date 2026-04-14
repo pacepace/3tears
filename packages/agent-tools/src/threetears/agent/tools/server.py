@@ -232,8 +232,14 @@ class ToolServer:
         """publish registration manifest to NATS.
 
         sends manifest containing all registered tool definitions
-        to registration subject for discovery by registry.
+        to registration subject for discovery by registry. requires
+        ``serve()`` to have established the NATS connection first.
+
+        :raises RuntimeError: if called before ``serve`` connects NATS
         """
+        nc = self._nc
+        if nc is None:
+            raise RuntimeError("_publish_registration called before NATS connected")
         tools_list: list[ToolManifestEntry] = []
         for tool in self._tools.values():
             schema = tool.mcp_schema()
@@ -253,7 +259,7 @@ class ToolServer:
         )
 
         subject = f"{self._namespace}.tools.register"
-        await self._nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
+        await nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
         log.debug(
             "published registration manifest",
             extra={"extra_data": {
@@ -337,8 +343,14 @@ class ToolServer:
         publishes heartbeat containing pod_id, timestamp, and tools_count
         to heartbeat subject at configured interval. re-publishes full
         registration manifest alongside each heartbeat so the registry
-        recovers automatically if it restarts.
+        recovers automatically if it restarts. requires ``serve()`` to
+        have connected NATS first.
+
+        :raises RuntimeError: if called before ``serve`` connects NATS
         """
+        nc = self._nc
+        if nc is None:
+            raise RuntimeError("_heartbeat_loop started before NATS connected")
         subject = f"{self._namespace}.tools.heartbeat.{self._pod_id}"
         while self._running:
             heartbeat = HeartbeatMessage(
@@ -347,7 +359,7 @@ class ToolServer:
                 tools_count=len(self._tools),
             )
             try:
-                await self._nc.publish(subject, heartbeat.model_dump_json().encode("utf-8"))
+                await nc.publish(subject, heartbeat.model_dump_json().encode("utf-8"))
             except Exception as exc:
                 log.warning(
                     "heartbeat publish failed",

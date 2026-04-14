@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.agent.tools._coercion import normalize_kwargs
+
 
 @dataclass
 class ToolResult:
@@ -64,13 +66,46 @@ class TearsTool(ABC):
     (called from agent code) and MCP server mode (served via
     ToolServer, called through Registry proxy). no platform
     dependencies required -- standalone by design.
+
+    ``execute`` is a template method that normalizes loose
+    LLM-supplied inputs (empty strings or JSON-encoded strings
+    for object/array fields) against this tool's declared
+    ``mcp_schema()`` input schema, then dispatches to subclass
+    ``_execute``. subclasses override ``_execute``, never
+    ``execute`` itself, so coercion always runs.
     """
 
-    @abstractmethod
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """execute tool with given parameters.
+        """normalize loose LLM-supplied kwargs then dispatch to subclass.
 
-        :param kwargs: tool-specific input parameters
+        coerces wrong-shape object/array values (empty strings or
+        JSON-encoded strings) toward their declared JSON schema
+        types, then calls subclass ``_execute`` with the normalized
+        kwargs. if ``mcp_schema`` itself raises, falls back to the
+        original kwargs so coercion never breaks a tool.
+
+        :param kwargs: raw tool input parameters
+        :ptype kwargs: Any
+        :return: execution result from subclass ``_execute``
+        :rtype: ToolResult
+        """
+        try:
+            schema = self.mcp_schema()
+            normalized = normalize_kwargs(kwargs, schema.input_schema)
+        except Exception:
+            normalized = kwargs
+        return await self._execute(**normalized)
+
+    @abstractmethod
+    async def _execute(self, **kwargs: Any) -> ToolResult:
+        """execute tool with normalized parameters.
+
+        subclasses implement this. ``execute`` runs coercion against
+        ``mcp_schema().input_schema`` before calling ``_execute``, so
+        object/array kwargs arrive as native containers even when the
+        LLM caller supplied empty strings or JSON-encoded strings.
+
+        :param kwargs: tool-specific input parameters, post-coercion
         :ptype kwargs: Any
         :return: execution result
         :rtype: ToolResult

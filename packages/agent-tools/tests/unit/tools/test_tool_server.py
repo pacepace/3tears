@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -39,7 +38,7 @@ class StubTool(TearsTool):
         self._name = name
         self._version = version
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """execute stub tool.
 
         :param kwargs: tool input parameters
@@ -87,7 +86,7 @@ class StubTool(TearsTool):
 class FailingTool(TearsTool):
     """stub TearsTool that always raises on execute."""
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """execute and raise.
 
         :param kwargs: ignored

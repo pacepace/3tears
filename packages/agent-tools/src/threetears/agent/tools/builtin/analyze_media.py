@@ -575,7 +575,7 @@ class AnalyzeMediaTool(TearsTool):
         self._doc_max_chars = doc_max_chars
         self._transcript_max_chars = transcript_max_chars
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """analyze media items using configured providers.
 
         :param kwargs: must include 'media_ids', 'question', 'analyzer' keys

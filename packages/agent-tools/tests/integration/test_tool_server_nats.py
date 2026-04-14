@@ -12,12 +12,18 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-
 from nats.aio.client import Client as NatsClient
+
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.server import ToolServer
 
 
 def _nats_reachable() -> bool:
-    """Check whether NATS is listening on localhost:4222."""
+    """check whether NATS is listening on localhost:4222.
+
+    :return: True when a TCP connect succeeds within one second
+    :rtype: bool
+    """
     try:
         with socket.create_connection(("localhost", 4222), timeout=1):
             return True
@@ -26,9 +32,6 @@ def _nats_reachable() -> bool:
 
 
 pytestmark = pytest.mark.skipif(not _nats_reachable(), reason="NATS not running on localhost:4222")
-
-from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.server import ToolServer
 
 _NATS_URL = "nats://localhost:4222"
 
@@ -39,7 +42,7 @@ _NATS_URL = "nats://localhost:4222"
 class IntegrationStubTool(TearsTool):
     """stub TearsTool for integration testing."""
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """execute stub tool echoing arguments.
 
         :param kwargs: tool input parameters

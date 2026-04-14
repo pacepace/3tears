@@ -22,7 +22,7 @@ class DummyTool(TearsTool):
         """
         self._succeed = succeed
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """return configured result.
 
         :param kwargs: tool input parameters
@@ -175,7 +175,7 @@ class TestTearsToolToLangchain:
         class FailNoErrorTool(TearsTool):
             """tool that returns failure with no error field."""
 
-            async def execute(self, **kwargs: Any) -> ToolResult:
+            async def _execute(self, **kwargs: Any) -> ToolResult:
                 """return failure without error.
 
                 :param kwargs: tool input

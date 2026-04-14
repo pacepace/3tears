@@ -103,7 +103,7 @@ class TimezoneConverterTool(TearsTool):
         "required": ["time_str", "from_timezone", "to_timezone"],
     }
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """convert time between timezones.
 
         :param kwargs: must include 'time_str', 'from_timezone', 'to_timezone' keys

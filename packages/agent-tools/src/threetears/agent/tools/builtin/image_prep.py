@@ -143,7 +143,7 @@ class ImagePrepTool(TearsTool):
         "required": ["image_data_base64", "mime_type"],
     }
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    async def _execute(self, **kwargs: Any) -> ToolResult:
         """preprocess image for vision model API call.
 
         :param kwargs: must include 'image_data_base64' and 'mime_type' keys
