@@ -556,3 +556,153 @@ class TestWireFormatModels:
         assert data["pod_id"] == "pod-xyz"
         assert data["tools_count"] == 3
         assert data["timestamp"] == "2026-01-01T00:00:00+00:00"
+
+
+# -- probe and wait_until_ready tests --
+
+
+class TestToolServerProbe:
+    """tests for reachability probe handling and wait_until_ready."""
+
+    @pytest.mark.asyncio
+    async def test_serve_subscribes_to_probe_subject(self) -> None:
+        """serve subscribes to {namespace}.tools.probe.{pod_id} before publishing registration."""
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="probe-pod-1",
+        )
+        tool = StubTool()
+        server.register(tool)
+
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        subscribe_calls = mock_nc.subscribe.call_args_list
+        subjects = [c[0][0] for c in subscribe_calls]
+        assert "testns.tools.probe.probe-pod-1" in subjects
+
+    @pytest.mark.asyncio
+    async def test_serve_subscribes_before_publishing_registration(self) -> None:
+        """probe and call subscriptions must be active before registration publish."""
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="order-pod",
+        )
+        tool = StubTool()
+        server.register(tool)
+
+        order: list[str] = []
+
+        async def record_subscribe(*args: Any, **kwargs: Any) -> AsyncMock:
+            """capture subscribe call order."""
+            subject = args[0] if args else kwargs.get("subject", "")
+            order.append(f"subscribe:{subject}")
+            return AsyncMock()
+
+        async def record_publish(*args: Any, **kwargs: Any) -> None:
+            """capture publish call order."""
+            subject = args[0] if args else kwargs.get("subject", "")
+            order.append(f"publish:{subject}")
+
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock(side_effect=record_subscribe)
+        mock_nc.publish = AsyncMock(side_effect=record_publish)
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        # find first registration publish index and ensure probe subscribe precedes it
+        first_register_idx = next(
+            (i for i, evt in enumerate(order) if "publish:testns.tools.register" in evt),
+            -1,
+        )
+        assert first_register_idx > 0, "registration publish must happen after subscriptions"
+        assert any(
+            evt == "subscribe:testns.tools.probe.order-pod"
+            for evt in order[:first_register_idx]
+        ), "probe subscription must be established before registration publish"
+
+    @pytest.mark.asyncio
+    async def test_handle_probe_responds_with_ack(self) -> None:
+        """_handle_probe replies with ProbeAck carrying pod_id and ready=True."""
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id="ack-pod")
+
+        msg = MagicMock()
+        msg.data = b'{"pod_id": "ack-pod"}'
+        msg.respond = AsyncMock()
+
+        await server._handle_probe(msg)
+
+        msg.respond.assert_called_once()
+        payload = json.loads(msg.respond.call_args[0][0])
+        assert payload["pod_id"] == "ack-pod"
+        assert payload["ready"] is True
+
+    @pytest.mark.asyncio
+    async def test_handle_probe_sets_ready_event(self) -> None:
+        """_handle_probe sets the internal ready event on first successful probe."""
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id="ready-pod")
+        assert server._ready_event.is_set() is False
+
+        msg = MagicMock()
+        msg.data = b'{"pod_id": "ready-pod"}'
+        msg.respond = AsyncMock()
+
+        await server._handle_probe(msg)
+
+        assert server._ready_event.is_set() is True
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_unblocks_after_probe(self) -> None:
+        """wait_until_ready returns True once a probe has been handled."""
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id="wait-pod")
+
+        msg = MagicMock()
+        msg.data = b'{"pod_id": "wait-pod"}'
+        msg.respond = AsyncMock()
+
+        async def probe_later() -> None:
+            """deliver probe after a small delay."""
+            await asyncio.sleep(0.02)
+            await server._handle_probe(msg)
+
+        probe_task = asyncio.create_task(probe_later())
+        ready = await server.wait_until_ready(timeout=1.0)
+        await probe_task
+
+        assert ready is True
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_returns_false_on_timeout(self) -> None:
+        """wait_until_ready returns False when no probe arrives within timeout."""
+        server = ToolServer(nats_url="nats://localhost:9999", pod_id="slow-pod")
+        ready = await server.wait_until_ready(timeout=0.05)
+        assert ready is False

@@ -1,0 +1,352 @@
+"""tests for three-phase tool pod registration barrier.
+
+covers the handshake: pod publishes manifest -> registry writes
+catalog entry in 'pending' state -> registry probes pod via
+request-reply -> on successful round-trip, registry promotes
+pending endpoints to 'available'. on probe failure, endpoints
+remain pending so the routing path refuses to forward.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.registry.catalog import ToolCatalog
+from threetears.registry.registration import (
+    ProbeRequest,
+    ProbeResponse,
+    RegistrationHandler,
+)
+
+
+# -- helpers --
+
+
+def _make_manifest(
+    pod_id: str = "pod-probe-001",
+    tools: list[dict[str, Any]] | None = None,
+) -> RegistrationManifest:
+    """create registration manifest for barrier tests.
+
+    :param pod_id: pod identifier
+    :ptype pod_id: str
+    :param tools: optional list of tool dicts
+    :ptype tools: list[dict[str, Any]] | None
+    :return: test registration manifest
+    :rtype: RegistrationManifest
+    """
+    if tools is None:
+        tools = [
+            {
+                "name": "threetears.calculator",
+                "version": "1.0.0",
+                "description": "calculator tool",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+        ]
+    tool_entries = [ToolManifestEntry(**t) for t in tools]
+    result = RegistrationManifest(pod_id=pod_id, tools=tool_entries)
+    return result
+
+
+def _make_nats_msg(
+    data: bytes,
+    reply: str | None = "reply.subject",
+) -> MagicMock:
+    """create mock NATS message.
+
+    :param data: raw message payload bytes
+    :ptype data: bytes
+    :param reply: optional reply subject
+    :ptype reply: str | None
+    :return: mock NATS message
+    :rtype: MagicMock
+    """
+    msg = MagicMock()
+    msg.data = data
+    msg.reply = reply
+    return msg
+
+
+# -- state machine tests --
+
+
+class TestRegistrationBarrierStateMachine:
+    """tests for pending -> available transition driven by probe."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_registration_lands_as_pending(self) -> None:
+        """newly registered endpoint starts in 'pending' state before probe completes."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(
+            catalog,
+            namespace="test",
+            probe_timeout=1.0,
+        )
+        nc = AsyncMock()
+        nc.request = AsyncMock(side_effect=TimeoutError("probe timeout"))
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert len(entry.endpoints) == 1
+        assert entry.endpoints[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_probe_success_promotes_to_available(self) -> None:
+        """successful probe round-trip transitions pending endpoint to available."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
+        nc = AsyncMock()
+        probe_reply = MagicMock()
+        probe_reply.data = ProbeResponse(
+            pod_id="pod-probe-001",
+            ready=True,
+        ).model_dump_json().encode("utf-8")
+        nc.request = AsyncMock(return_value=probe_reply)
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert entry.endpoints[0].status == "available"
+
+    @pytest.mark.asyncio
+    async def test_probe_failure_leaves_endpoint_pending(self) -> None:
+        """probe timeout or error leaves endpoint in 'pending' state."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
+        nc = AsyncMock()
+        nc.request = AsyncMock(side_effect=TimeoutError("probe timed out"))
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert entry.endpoints[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_probe_issued_to_pod_specific_subject(self) -> None:
+        """probe is issued to {namespace}.tools.probe.{pod_id} subject."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="custom-ns", probe_timeout=1.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc)
+
+        manifest = _make_manifest(pod_id="pod-subject-check")
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        nc.request.assert_called_once()
+        call_args = nc.request.call_args
+        assert call_args[0][0] == "custom-ns.tools.probe.pod-subject-check"
+
+    @pytest.mark.asyncio
+    async def test_probe_payload_carries_pod_id(self) -> None:
+        """probe payload is a ProbeRequest serialized to JSON carrying pod_id."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc)
+
+        manifest = _make_manifest(pod_id="pod-payload-001")
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        call_args = nc.request.call_args
+        payload_bytes = call_args[0][1]
+        payload = ProbeRequest.model_validate_json(payload_bytes)
+        assert payload.pod_id == "pod-payload-001"
+
+    @pytest.mark.asyncio
+    async def test_probe_timeout_applied_to_nats_request(self) -> None:
+        """probe timeout from config is passed as NATS request timeout kwarg."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=2.5)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        call_args = nc.request.call_args
+        assert call_args[1]["timeout"] == 2.5
+
+
+# -- multi-tool and multi-pod tests --
+
+
+class TestRegistrationBarrierMultipleTools:
+    """tests for probe promoting all pending endpoints for a pod at once."""
+
+    @pytest.mark.asyncio
+    async def test_probe_success_promotes_all_tools_for_pod(self) -> None:
+        """single probe round-trip promotes every pending endpoint for that pod."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc)
+
+        manifest = _make_manifest(
+            pod_id="pod-multi",
+            tools=[
+                {
+                    "name": "threetears.calculator",
+                    "version": "1.0.0",
+                    "description": "calculator",
+                    "input_schema": {"type": "object"},
+                },
+                {
+                    "name": "threetears.dictionary",
+                    "version": "1.0.0",
+                    "description": "dictionary",
+                    "input_schema": {"type": "object"},
+                },
+            ],
+        )
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        calc_entry = catalog.get("threetears.calculator@1.0.0")
+        dict_entry = catalog.get("threetears.dictionary@1.0.0")
+        assert calc_entry is not None
+        assert dict_entry is not None
+        assert calc_entry.endpoints[0].status == "available"
+        assert dict_entry.endpoints[0].status == "available"
+
+    @pytest.mark.asyncio
+    async def test_probe_only_affects_registering_pod(self) -> None:
+        """probe for pod-B does not promote pending endpoints for pod-A."""
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
+
+        # pod-A registers but probe fails; endpoints remain pending
+        nc_a = AsyncMock()
+        nc_a.request = AsyncMock(side_effect=TimeoutError("dead pod"))
+        await handler.start(nc_a)
+        manifest_a = _make_manifest(pod_id="pod-A")
+        msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg_a)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        pod_a_endpoint = entry.get_endpoint("pod-A")
+        assert pod_a_endpoint is not None
+        assert pod_a_endpoint.status == "pending"
+
+        # pod-B registers and probe succeeds; pod-A must stay pending
+        nc_b = AsyncMock()
+        nc_b.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc_b)
+        manifest_b = _make_manifest(pod_id="pod-B")
+        msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg_b)
+
+        entry_after = catalog.get("threetears.calculator@1.0.0")
+        assert entry_after is not None
+        pod_a_after = entry_after.get_endpoint("pod-A")
+        pod_b_after = entry_after.get_endpoint("pod-B")
+        assert pod_a_after is not None
+        assert pod_b_after is not None
+        assert pod_a_after.status == "pending"
+        assert pod_b_after.status == "available"
+
+
+# -- catalog mark_ready tests --
+
+
+class TestCatalogMarkReady:
+    """tests for ToolCatalog.mark_ready promotion method."""
+
+    @pytest.mark.asyncio
+    async def test_mark_ready_promotes_only_pending(self) -> None:
+        """mark_ready flips only 'pending' endpoints to 'available'."""
+        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+
+        catalog = ToolCatalog()
+        entry_pending = CatalogEntry(
+            tool_name="tool.warming",
+            tool_version="1.0",
+            full_name="tool.warming@1.0",
+            description="pending",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-A", status="pending")],
+        )
+        entry_unavailable = CatalogEntry(
+            tool_name="tool.down",
+            tool_version="1.0",
+            full_name="tool.down@1.0",
+            description="unavailable",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-A", status="unavailable")],
+        )
+        await catalog.register(entry_pending)
+        await catalog.register(entry_unavailable)
+
+        promoted = await catalog.mark_ready("pod-A")
+        assert promoted == ["tool.warming@1.0"]
+
+        warming_after = catalog.get("tool.warming@1.0")
+        down_after = catalog.get("tool.down@1.0")
+        assert warming_after is not None
+        assert down_after is not None
+        assert warming_after.endpoints[0].status == "available"
+        assert down_after.endpoints[0].status == "unavailable"
+
+    @pytest.mark.asyncio
+    async def test_mark_ready_returns_empty_for_unknown_pod(self) -> None:
+        """mark_ready returns empty list when pod has no pending endpoints."""
+        catalog = ToolCatalog()
+        promoted = await catalog.mark_ready("nonexistent-pod")
+        assert promoted == []
+
+    @pytest.mark.asyncio
+    async def test_mark_ready_persists_to_kv(self) -> None:
+        """mark_ready writes promoted entry to KV so recovery preserves the transition."""
+        import json
+        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+
+        catalog = ToolCatalog()
+        kv = AsyncMock()
+        kv.keys = AsyncMock(return_value=[])
+        kv.put = AsyncMock()
+        kv.delete = AsyncMock()
+        await catalog.load_from_kv(kv)
+
+        entry = CatalogEntry(
+            tool_name="tool.promote",
+            tool_version="1.0",
+            full_name="tool.promote@1.0",
+            description="promotion test",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-P", status="pending")],
+        )
+        await catalog.register(entry)
+        kv.put.reset_mock()
+
+        promoted = await catalog.mark_ready("pod-P")
+        assert promoted == ["tool.promote@1.0"]
+
+        kv.put.assert_called_once()
+        call_args = kv.put.call_args
+        payload = json.loads(call_args[0][1].decode("utf-8"))
+        assert payload["endpoints"][0]["status"] == "available"

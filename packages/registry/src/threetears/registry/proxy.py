@@ -175,7 +175,10 @@ class CallProxy:
 
         :param msg: incoming NATS message containing call request
         :ptype msg: Any
+        :raises RuntimeError: when invoked before ``start`` connects NATS
         """
+        if self._nc is None:
+            raise RuntimeError("_process_call invoked before NATS connected")
         try:
             request = ProxyCallRequest.model_validate_json(msg.data)
         except Exception as exc:
@@ -248,6 +251,36 @@ class CallProxy:
         endpoint = self._routing_strategy.select(entry.endpoints)
 
         if endpoint is None:
+            pending_only = (
+                len(entry.endpoints) > 0
+                and all(ep.status == "pending" for ep in entry.endpoints)
+            )
+            if pending_only:
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=(
+                        f"tool {full_name} endpoints have not yet "
+                        "confirmed reachability"
+                    ),
+                    error_code="TOOL_NOT_READY",
+                    correlation_id=request.correlation_id,
+                )
+                if msg.reply:
+                    await self._nc.publish(
+                        msg.reply,
+                        response.model_dump_json().encode("utf-8"),
+                    )
+                log.warning(
+                    "tool endpoints still pending probe confirmation",
+                    extra={"extra_data": {
+                        "full_name": full_name,
+                        "endpoint_count": len(entry.endpoints),
+                        "agent_id": request.agent_id,
+                        "correlation_id": request.correlation_id,
+                    }},
+                )
+                return
             response = ProxyCallResponse(
                 success=False,
                 content="",
@@ -298,7 +331,8 @@ class CallProxy:
         full_name = f"{tool_name}@{tool_version}"
         entry = self._catalog.get(full_name)
         if entry is not None and entry.timeout_seconds is not None:
-            return entry.timeout_seconds
+            result: float = entry.timeout_seconds
+            return result
         return self._timeout
 
     async def _forward_call(
@@ -317,7 +351,10 @@ class CallProxy:
         :ptype pod_id: str
         :return: response from tool pod or error response on timeout
         :rtype: ProxyCallResponse
+        :raises RuntimeError: when invoked before ``start`` connects NATS
         """
+        if self._nc is None:
+            raise RuntimeError("_forward_call invoked before NATS connected")
         internal_subject = f"{self._namespace}.tools.internal.{pod_id}"
         internal_payload = _build_internal_payload(request)
         effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)

@@ -3,6 +3,11 @@
 subscribes to NATS registration subject, validates incoming
 manifests, authenticates pods, and registers tools with
 additive endpoint merging for multi-pod horizontal scaling.
+freshly registered endpoints are parked in the 'pending'
+state until an end-to-end reachability probe round-trips;
+only then are they promoted to 'available' and exposed to
+routing. this eliminates the window where a pod is in the
+catalog but its NATS subscription has not yet propagated.
 """
 
 from __future__ import annotations
@@ -19,6 +24,29 @@ from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
 log = get_logger(__name__)
+
+
+class ProbeRequest(BaseModel):
+    """reachability probe sent from registry to pod after registration.
+
+    :param pod_id: identifier of pod being probed
+    :ptype pod_id: str
+    """
+
+    pod_id: str
+
+
+class ProbeResponse(BaseModel):
+    """reachability probe acknowledgment returned by pod.
+
+    :param pod_id: identifier of pod that answered the probe
+    :ptype pod_id: str
+    :param ready: whether pod reports itself ready to serve calls
+    :ptype ready: bool
+    """
+
+    pod_id: str
+    ready: bool = True
 
 
 class RegistrationResponse(BaseModel):
@@ -54,6 +82,7 @@ class RegistrationHandler:
         catalog: ToolCatalog,
         namespace: str = "aibots",
         authenticator: ToolPodAuthenticator | None = None,
+        probe_timeout: float | None = None,
     ) -> None:
         """initialize registration handler.
 
@@ -63,10 +92,17 @@ class RegistrationHandler:
         :ptype namespace: str
         :param authenticator: optional tool pod authenticator for token verification
         :ptype authenticator: ToolPodAuthenticator | None
+        :param probe_timeout: seconds to wait for reachability probe reply before
+            leaving endpoint pending. sourced from THREETEARS_REGISTRY_PROBE_TIMEOUT
+            env var if not provided.
+        :ptype probe_timeout: float | None
         """
+        from threetears.registry.config import get_probe_timeout
+
         self._catalog = catalog
         self._namespace = namespace
         self._authenticator = authenticator
+        self._probe_timeout = probe_timeout if probe_timeout is not None else get_probe_timeout()
         self._nc: Any | None = None
         self._sub: Any | None = None
 
@@ -100,7 +136,10 @@ class RegistrationHandler:
 
         :param msg: incoming NATS message containing registration manifest
         :ptype msg: Any
+        :raises RuntimeError: when invoked before ``start`` connects NATS
         """
+        if self._nc is None:
+            raise RuntimeError("_handle_registration invoked before NATS connected")
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:
@@ -264,11 +303,17 @@ class RegistrationHandler:
         self,
         manifest: RegistrationManifest,
     ) -> list[str]:
-        """register all tools from manifest with endpoint for this pod.
+        """register all tools from manifest with pending endpoint for this pod.
 
         creates catalog entry for each tool with a single endpoint
-        for the registering pod. catalog.register() handles merging
-        with existing entries for multi-pod support.
+        for the registering pod, parked in the 'pending' state.
+        catalog.register() handles merging with existing entries
+        for multi-pod support. after all tools are written, issues
+        a reachability probe to the pod; on successful round-trip
+        promotes every pending endpoint for the pod to 'available'
+        via ``catalog.mark_ready``. on probe failure, endpoints
+        remain pending so routing refuses to forward until the
+        next heartbeat can retry promotion.
 
         :param manifest: validated manifest containing tools to register
         :ptype manifest: RegistrationManifest
@@ -281,7 +326,7 @@ class RegistrationHandler:
             full_name = f"{tool.name}@{tool.version}"
             endpoint = ToolEndpoint(
                 pod_id=manifest.pod_id,
-                status="available",
+                status="pending",
                 in_flight=0,
                 date_last_heartbeat=now,
             )
@@ -297,5 +342,52 @@ class RegistrationHandler:
             )
             await self._catalog.register(entry)
             registered.append(full_name)
+
+        await self._probe_and_promote(manifest.pod_id)
+
         result = registered
         return result
+
+    async def _probe_and_promote(self, pod_id: str) -> None:
+        """issue reachability probe and promote pending endpoints on success.
+
+        sends a request-reply probe to the pod's probe subject and,
+        on successful reply within ``probe_timeout``, transitions all
+        pending endpoints for the pod to 'available'. on timeout or
+        any other failure, leaves endpoints pending so subsequent
+        heartbeats can complete the promotion. logs the registered ->
+        ready transition with per-pod latency so cold-start slowness
+        surfaces in observability data.
+
+        :param pod_id: identifier of pod whose pending endpoints to confirm
+        :ptype pod_id: str
+        """
+        if self._nc is None:
+            return
+        subject = f"{self._namespace}.tools.probe.{pod_id}"
+        payload = ProbeRequest(pod_id=pod_id).model_dump_json().encode("utf-8")
+        start = datetime.now(UTC)
+        try:
+            await self._nc.request(subject, payload, timeout=self._probe_timeout)
+        except Exception as exc:
+            log.warning(
+                "tool pod reachability probe failed; endpoints remain pending",
+                extra={"extra_data": {
+                    "pod_id": pod_id,
+                    "probe_subject": subject,
+                    "probe_timeout": self._probe_timeout,
+                    "error": str(exc),
+                }},
+            )
+            return
+        promoted = await self._catalog.mark_ready(pod_id)
+        ms_to_ready = (datetime.now(UTC) - start).total_seconds() * 1000.0
+        for tool_key in promoted:
+            log.info(
+                "tool endpoint transitioned registered -> ready",
+                extra={"extra_data": {
+                    "pod_id": pod_id,
+                    "tool_key": tool_key,
+                    "ms_to_ready": ms_to_ready,
+                }},
+            )

@@ -159,7 +159,10 @@ class DiscoveryHandler:
 
         :param msg: incoming NATS message containing discovery request
         :ptype msg: Any
+        :raises RuntimeError: when invoked before ``start`` connects NATS
         """
+        if self._nc is None:
+            raise RuntimeError("_handle_discover invoked before NATS connected")
         try:
             request = DiscoverRequest.model_validate_json(msg.data)
         except Exception as exc:

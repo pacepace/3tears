@@ -36,11 +36,16 @@ class ToolEndpoint:
     """single pod endpoint serving a tool.
 
     tracks liveness and in-flight call count for
-    load-balanced routing across multiple pods.
+    load-balanced routing across multiple pods. status values
+    follow a three-phase lifecycle: 'pending' on initial
+    registration (before reachability probe round-trips),
+    'available' after probe confirms reachability or heartbeat
+    refreshes liveness, and 'unavailable' after missed
+    heartbeats. calls route only to 'available' endpoints.
 
     :param pod_id: identifier of pod serving this tool
     :ptype pod_id: str
-    :param status: availability status ('available' or 'unavailable')
+    :param status: availability status ('pending', 'available', or 'unavailable')
     :ptype status: str
     :param in_flight: number of currently in-flight calls to this endpoint
     :ptype in_flight: int
@@ -126,6 +131,11 @@ class CatalogEntry:
     @property
     def status(self) -> str:
         """aggregate availability status from endpoints.
+
+        pending endpoints (awaiting probe confirmation) do not
+        count toward availability -- only fully-confirmed endpoints
+        do. an entry whose endpoints are all pending aggregates
+        to 'unavailable' so callers treat it as not-yet-routable.
 
         :return: 'available' if any endpoint is available, 'unavailable' otherwise
         :rtype: str
@@ -456,4 +466,38 @@ class ToolCatalog:
             endpoint.status = "available"
             marked.append(full_name)
         result = marked
+        return result
+
+    async def mark_ready(self, pod_id: str) -> list[str]:
+        """transition pending endpoints for pod to available and persist.
+
+        scans catalog for endpoints belonging to pod_id whose
+        status is 'pending' (freshly registered, probe not yet
+        confirmed). flips each to 'available' and writes the
+        updated entry to KV. endpoints already 'available' or
+        'unavailable' are skipped. this is the post-probe
+        readiness-barrier transition -- heartbeat-driven revival
+        continues to use ``mark_pod_endpoints_available``.
+
+        :param pod_id: identifier of pod whose pending endpoints to promote
+        :ptype pod_id: str
+        :return: list of full_name values that were promoted to available
+        :rtype: list[str]
+        """
+        promoted: list[str] = []
+        for full_name, entry in self._entries.items():
+            endpoint = entry.get_endpoint(pod_id)
+            if endpoint is None:
+                continue
+            if endpoint.status != "pending":
+                continue
+            endpoint.status = "available"
+            promoted.append(full_name)
+            if self._kv is not None:
+                kv_key = _sanitize_kv_key(full_name)
+                await self._kv.put(
+                    kv_key,
+                    json.dumps(entry.to_dict()).encode("utf-8"),
+                )
+        result = promoted
         return result

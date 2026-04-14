@@ -9,9 +9,11 @@ Three-tier data framework for Python applications with LLM agent support.
 | [3tears](packages/core/) | `pip install 3tears` | `threetears.core` | Three-tier entities, collections, caching (L1 SQLite, L2 NATS KV, L3 PostgreSQL), DataStore, migrations |
 | [3tears-observe](packages/observe/) | `pip install 3tears-observe` | `threetears.observe` | Structured logging, OpenTelemetry tracing, `@traced` decorator |
 | [3tears-agent-memory](packages/agent-memory/) | `pip install 3tears-agent-memory` | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search for LLM agents |
-| [3tears-agent-tools](packages/agent-tools/) | `pip install 3tears-agent-tools` | `threetears.agent.tools` | TearsTool ABC, ToolServer (NATS), ToolContextManager, built-in tools |
+| [3tears-agent-tools](packages/agent-tools/) | `pip install 3tears-agent-tools` | `threetears.agent.tools` | TearsTool base class (mcp_schema, mcp_name, mcp_version, execute), ToolServer (NATS registration, call subscription, heartbeat loop), ToolContextManager, built-in tools |
 | [3tears-langgraph](packages/langgraph/) | `pip install 3tears-langgraph` | `threetears.langgraph` | LangGraph integration: checkpoint savers, graph builders, context registry |
-| [3tears-registry](packages/registry/) | `pip install 3tears-registry` | `threetears.registry` | Tool registry: multi-pod catalog, discovery, load-balanced call proxy (least-connections), heartbeat monitor, pod auth, pluggable routing strategies |
+| [3tears-registry](packages/registry/) | `pip install 3tears-registry` | `threetears.registry` | Multi-pod tool routing: RegistrationHandler, ToolCatalog (NATS KV-backed), DiscoveryHandler, CallProxy (per-tool `timeout_seconds` propagation), HeartbeatMonitor, `RegistryServer` convenience runner, pluggable routing strategies |
+| [3tears-models](packages/models/) | `pip install 3tears-models` | `threetears.models` | Model provider protocols (chat, embedding, transcription, image generation); providers: Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, OpenAI Images, HuggingFace Images, A1111, ModelsLab, ComfyUI; circuit breaker, usage tracking, error translation, message preprocessing, streaming utilities, provider cache + registry |
+| [3tears-channels](packages/channels/) | `pip install 3tears-channels` | `threetears.channels` | Message protocol, Slack and Discord adapters, WebSocket handler |
 
 ## Architecture
 

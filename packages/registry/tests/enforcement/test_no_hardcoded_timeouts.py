@@ -136,9 +136,8 @@ class TestNoHardcodedTimeouts:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
 
-            # Check each parameter default
-            all_args = node.args.args + node.args.kwonlyargs
-            # defaults apply to the LAST len(defaults) of args
+            # Check each parameter default; defaults apply to the LAST
+            # len(defaults) of args
             num_args = len(node.args.args)
             num_defaults = len(node.args.defaults)
             offset = num_args - num_defaults

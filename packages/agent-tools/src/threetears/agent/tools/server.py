@@ -7,6 +7,7 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid7
@@ -19,6 +20,26 @@ from threetears.agent.tools.base_tool import TearsTool
 from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
+
+
+def _get_ready_timeout() -> float:
+    """read readiness wait timeout from environment or return platform default.
+
+    env var: THREETEARS_TOOLSERVER_READY_TIMEOUT
+
+    :return: ready wait timeout in seconds
+    :rtype: float
+    """
+    raw = os.environ.get("THREETEARS_TOOLSERVER_READY_TIMEOUT")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            log.warning(
+                "invalid THREETEARS_TOOLSERVER_READY_TIMEOUT=%r, using default",
+                raw,
+            )
+    return 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +160,19 @@ class HeartbeatMessage(BaseModel):
     tools_count: int
 
 
+class ProbeAck(BaseModel):
+    """acknowledgment of a reachability probe from the registry.
+
+    :param pod_id: unique identifier for this tool pod
+    :ptype pod_id: str
+    :param ready: whether pod is ready to serve calls
+    :ptype ready: bool
+    """
+
+    pod_id: str
+    ready: bool = True
+
+
 # ---------------------------------------------------------------------------
 # ToolServer
 # ---------------------------------------------------------------------------
@@ -182,6 +216,7 @@ class ToolServer:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._ready_event = asyncio.Event()
 
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
@@ -200,9 +235,13 @@ class ToolServer:
     async def serve(self) -> None:
         """connect to NATS and begin serving registered tools.
 
-        connects to NATS, publishes registration manifest, subscribes
-        to call subject, starts heartbeat loop, then waits for shutdown
-        signal.
+        connects to NATS, subscribes to call and probe subjects
+        first so both are live before the registry can attempt
+        a reachability probe, publishes the registration manifest,
+        starts the heartbeat loop, then waits for shutdown signal.
+        ordering matters: subscribing before publishing eliminates
+        the race where the registry issues a probe to a subject
+        the pod has not yet bound.
         """
         self._nc = await nats_connect(self._nats_url)
         self._running = True
@@ -214,8 +253,6 @@ class ToolServer:
             }},
         )
 
-        await self._publish_registration()
-
         call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
         await self._nc.subscribe(call_subject, cb=self._handle_call)
         log.info(
@@ -223,9 +260,61 @@ class ToolServer:
             extra={"extra_data": {"subject": call_subject}},
         )
 
+        probe_subject = f"{self._namespace}.tools.probe.{self._pod_id}"
+        await self._nc.subscribe(probe_subject, cb=self._handle_probe)
+        log.info(
+            "subscribed to probe subject",
+            extra={"extra_data": {"subject": probe_subject}},
+        )
+
+        await self._publish_registration()
+
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         await self._shutdown_event.wait()
+
+    async def _handle_probe(self, msg: NatsMsg) -> None:
+        """respond to reachability probe from registry.
+
+        replies with a ProbeAck carrying pod_id and ready=True so
+        the registry can promote this pod's pending endpoints to
+        available. sets the internal ready event on first probe
+        so local callers awaiting ``wait_until_ready`` unblock.
+
+        :param msg: incoming NATS message containing probe request
+        :ptype msg: NatsMsg
+        """
+        ack = ProbeAck(pod_id=self._pod_id, ready=True)
+        await msg.respond(ack.model_dump_json().encode("utf-8"))
+        self._ready_event.set()
+
+    async def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """block until registry has confirmed reachability of this pod.
+
+        returns once the registry's reachability probe has landed
+        and this pod has acknowledged it. intended as the developer-
+        friendly substitute for ``asyncio.sleep(1.0)`` after
+        ``serve`` -- callers can rely on the event signal rather
+        than a magic delay. readiness here means "the registry
+        probed this pod and this pod answered"; it does not
+        guarantee the registry's catalog KV write has propagated
+        to every consumer, only that the end-to-end round-trip
+        completed.
+
+        :param timeout: seconds to wait before giving up. sourced
+            from THREETEARS_TOOLSERVER_READY_TIMEOUT env var if not
+            provided.
+        :ptype timeout: float | None
+        :return: True if ready within timeout, False on timeout
+        :rtype: bool
+        """
+        effective_timeout = timeout if timeout is not None else _get_ready_timeout()
+        try:
+            await asyncio.wait_for(self._ready_event.wait(), timeout=effective_timeout)
+            ready = True
+        except TimeoutError:
+            ready = False
+        return ready
 
     @traced()
     async def _publish_registration(self) -> None:

@@ -14,7 +14,7 @@ from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, DiscoveryHandler
 from threetears.registry.health import HeartbeatMonitor, PodStatus
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
-from threetears.registry.registration import RegistrationHandler, RegistrationResponse
+from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
 
 

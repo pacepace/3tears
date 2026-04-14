@@ -165,10 +165,11 @@ class RegistryServer:
 
         js = self._nc.jetstream()
 
-        if hasattr(self._authorizer, "initialize"):
+        authorizer = self._authorizer
+        if authorizer is not None and hasattr(authorizer, "initialize"):
             async def _initialize_authorizer() -> None:
                 """initialize authorizer with JetStream context."""
-                await self._authorizer.initialize(js, self._namespace)
+                await authorizer.initialize(js, self._namespace)
 
             await retry_with_backoff(
                 _initialize_authorizer,
@@ -212,43 +213,53 @@ class RegistryServer:
         """initialize and start all registry handlers.
 
         starts registration handler, heartbeat monitor,
-        discovery handler, and call proxy.
+        discovery handler, and call proxy. requires ``serve`` to have
+        connected NATS first.
+
+        :raises RuntimeError: when invoked before NATS is connected
         """
-        self._registration_handler = RegistrationHandler(
+        if self._nc is None:
+            raise RuntimeError("_start_handlers invoked before NATS connected")
+        nc = self._nc
+        registration_handler = RegistrationHandler(
             self._catalog, namespace=self._namespace,
         )
+        self._registration_handler = registration_handler
         await retry_with_backoff(
-            lambda: self._registration_handler.start(self._nc),
+            lambda: registration_handler.start(nc),
             "registry.registration_handler.start",
         )
 
-        self._heartbeat_monitor = HeartbeatMonitor(
+        heartbeat_monitor = HeartbeatMonitor(
             self._catalog,
             namespace=self._namespace,
             check_interval=self._heartbeat_check_interval,
             timeout=self._heartbeat_timeout,
         )
+        self._heartbeat_monitor = heartbeat_monitor
         await retry_with_backoff(
-            lambda: self._heartbeat_monitor.start(self._nc),
+            lambda: heartbeat_monitor.start(nc),
             "registry.heartbeat_monitor.start",
         )
 
-        self._discovery_handler = DiscoveryHandler(
+        discovery_handler = DiscoveryHandler(
             self._catalog, namespace=self._namespace,
         )
+        self._discovery_handler = discovery_handler
         await retry_with_backoff(
-            lambda: self._discovery_handler.start(self._nc),
+            lambda: discovery_handler.start(nc),
             "registry.discovery_handler.start",
         )
 
-        self._call_proxy = CallProxy(
+        call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
         )
+        self._call_proxy = call_proxy
         await retry_with_backoff(
-            lambda: self._call_proxy.start(self._nc),
+            lambda: call_proxy.start(nc),
             "registry.call_proxy.start",
         )
 
