@@ -173,6 +173,68 @@ class ProbeAck(BaseModel):
     ready: bool = True
 
 
+class DiscoveryProbeToolEntry(BaseModel):
+    """single tool in a discovery probe request.
+
+    :param name: namespaced tool name
+    :ptype name: str
+    :param version: semver-compatible version string
+    :ptype version: str
+    """
+
+    name: str
+    version: str
+
+
+class DiscoveryProbeRequest(BaseModel):
+    """discovery request used by :meth:`ToolServer.wait_until_ready`.
+
+    mirrors :class:`threetears.registry.discovery.DiscoverRequest` so
+    the pod can poll the registry without importing from the registry
+    package (which would create a circular dependency).
+
+    :param agent_id: pod identifier standing in for agent_id in the wire
+    :ptype agent_id: str
+    :param tool_manifest: list of pinned tools to resolve
+    :ptype tool_manifest: list[DiscoveryProbeToolEntry]
+    """
+
+    agent_id: str
+    tool_manifest: list[DiscoveryProbeToolEntry]
+
+
+class DiscoveryProbeResultEntry(BaseModel):
+    """single tool result in a discovery probe response.
+
+    only the fields needed by readiness polling are modeled; extra
+    fields in the wire are ignored by pydantic default.
+
+    :param name: namespaced tool name
+    :ptype name: str
+    :param version: semver-compatible version string
+    :ptype version: str
+    :param status: availability status reported by registry
+    :ptype status: str
+    """
+
+    name: str
+    version: str
+    status: str
+
+
+class DiscoveryProbeResponse(BaseModel):
+    """discovery response used by :meth:`ToolServer.wait_until_ready`.
+
+    :param agent_id: identifier of requester echoed back
+    :ptype agent_id: str
+    :param tools: list of resolved tool results
+    :ptype tools: list[DiscoveryProbeResultEntry]
+    """
+
+    agent_id: str
+    tools: list[DiscoveryProbeResultEntry]
+
+
 # ---------------------------------------------------------------------------
 # ToolServer
 # ---------------------------------------------------------------------------
@@ -216,7 +278,6 @@ class ToolServer:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._shutdown_event = asyncio.Event()
-        self._ready_event = asyncio.Event()
 
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
@@ -276,30 +337,33 @@ class ToolServer:
     async def _handle_probe(self, msg: NatsMsg) -> None:
         """respond to reachability probe from registry.
 
-        replies with a ProbeAck carrying pod_id and ready=True so
-        the registry can promote this pod's pending endpoints to
-        available. sets the internal ready event on first probe
-        so local callers awaiting ``wait_until_ready`` unblock.
+        replies with a ProbeAck carrying pod_id and ready=True so the
+        registry can promote this pod's pending endpoints to available.
+        the probe handler does NOT set the readiness event directly --
+        readiness is determined by polling the registry's discovery
+        response until every registered tool reports as 'available',
+        which guarantees the registry's catalog state has completed
+        the pending -> available transition before ``wait_until_ready``
+        unblocks.
 
         :param msg: incoming NATS message containing probe request
         :ptype msg: NatsMsg
         """
         ack = ProbeAck(pod_id=self._pod_id, ready=True)
         await msg.respond(ack.model_dump_json().encode("utf-8"))
-        self._ready_event.set()
 
     async def wait_until_ready(self, timeout: float | None = None) -> bool:
-        """block until registry has confirmed reachability of this pod.
+        """block until registry catalog reports every tool as available.
 
-        returns once the registry's reachability probe has landed
-        and this pod has acknowledged it. intended as the developer-
-        friendly substitute for ``asyncio.sleep(1.0)`` after
-        ``serve`` -- callers can rely on the event signal rather
-        than a magic delay. readiness here means "the registry
-        probed this pod and this pod answered"; it does not
-        guarantee the registry's catalog KV write has propagated
-        to every consumer, only that the end-to-end round-trip
-        completed.
+        polls the registry's discovery subject with this pod's tool
+        manifest until the catalog reports every entry as 'available',
+        then returns True. unlike an event-driven probe-arrival signal,
+        this waits for the full probe -> mark_ready -> discovery round-
+        trip so routable state is guaranteed when the function returns
+        (no residual race where ``TOOL_NOT_READY`` could still fire for
+        a fresh caller). returns False on timeout. intended as the
+        developer-friendly substitute for ``asyncio.sleep(1.0)`` after
+        ``serve``.
 
         :param timeout: seconds to wait before giving up. sourced
             from THREETEARS_TOOLSERVER_READY_TIMEOUT env var if not
@@ -307,13 +371,54 @@ class ToolServer:
         :ptype timeout: float | None
         :return: True if ready within timeout, False on timeout
         :rtype: bool
+        :raises RuntimeError: if called before ``serve`` connects NATS
         """
+        if self._nc is None:
+            raise RuntimeError("wait_until_ready called before serve() connected NATS")
         effective_timeout = timeout if timeout is not None else _get_ready_timeout()
-        try:
-            await asyncio.wait_for(self._ready_event.wait(), timeout=effective_timeout)
-            ready = True
-        except TimeoutError:
-            ready = False
+        deadline = asyncio.get_event_loop().time() + effective_timeout
+        manifest_names = [
+            ToolManifestEntry(
+                name=t.mcp_schema().name,
+                version=t.mcp_schema().version,
+                description=t.mcp_schema().description,
+                input_schema=t.mcp_schema().input_schema,
+                timeout_seconds=t.mcp_schema().timeout_seconds,
+            )
+            for t in self._tools.values()
+        ]
+        # a tool-less server has nothing to become ready for -- return True
+        # immediately rather than timing out. callers still get the guarantee
+        # that whatever tools ARE registered have transitioned to available.
+        if not manifest_names:
+            return True
+        ready = False
+        poll_interval = 0.05
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                request = DiscoveryProbeRequest(
+                    agent_id=self._pod_id,
+                    tool_manifest=[
+                        DiscoveryProbeToolEntry(name=m.name, version=m.version)
+                        for m in manifest_names
+                    ],
+                )
+                reply = await self._nc.request(
+                    f"{self._namespace}.tools.discover",
+                    request.model_dump_json().encode("utf-8"),
+                    timeout=min(1.0, max(deadline - asyncio.get_event_loop().time(), 0.01)),
+                )
+                response = DiscoveryProbeResponse.model_validate_json(reply.data)
+                expected_count = len(manifest_names)
+                available_count = sum(
+                    1 for tool in response.tools if tool.status == "available"
+                )
+                if expected_count > 0 and available_count == expected_count:
+                    ready = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(poll_interval)
         return ready
 
     @traced()

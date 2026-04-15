@@ -203,7 +203,9 @@ class TestRegistrationBarrierMultipleTools:
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        probe_reply = MagicMock()
+        probe_reply.data = ProbeResponse(pod_id="pod-multi").model_dump_json().encode("utf-8")
+        nc.request = AsyncMock(return_value=probe_reply)
         await handler.start(nc)
 
         manifest = _make_manifest(
@@ -255,7 +257,9 @@ class TestRegistrationBarrierMultipleTools:
 
         # pod-B registers and probe succeeds; pod-A must stay pending
         nc_b = AsyncMock()
-        nc_b.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        probe_reply_b = MagicMock()
+        probe_reply_b.data = ProbeResponse(pod_id="pod-B").model_dump_json().encode("utf-8")
+        nc_b.request = AsyncMock(return_value=probe_reply_b)
         await handler.start(nc_b)
         manifest_b = _make_manifest(pod_id="pod-B")
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
@@ -350,3 +354,91 @@ class TestCatalogMarkReady:
         call_args = kv.put.call_args
         payload = json.loads(call_args[0][1].decode("utf-8"))
         assert payload["endpoints"][0]["status"] == "available"
+
+    @pytest.mark.asyncio
+    async def test_mark_ready_rolls_back_in_memory_on_kv_failure(self) -> None:
+        """KV write failure during mark_ready leaves in-memory state untouched.
+
+        atomicity invariant: if any KV write raises, no endpoint has its
+        in-memory status flipped, so a retry can safely re-run the whole
+        transition without a partially-applied state.
+        """
+        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+
+        catalog = ToolCatalog()
+        kv = AsyncMock()
+        kv.keys = AsyncMock(return_value=[])
+        kv.put = AsyncMock()
+        kv.delete = AsyncMock()
+        await catalog.load_from_kv(kv)
+
+        entry_one = CatalogEntry(
+            tool_name="tool.one",
+            tool_version="1.0",
+            full_name="tool.one@1.0",
+            description="one",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-X", status="pending")],
+        )
+        entry_two = CatalogEntry(
+            tool_name="tool.two",
+            tool_version="1.0",
+            full_name="tool.two@1.0",
+            description="two",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-X", status="pending")],
+        )
+        await catalog.register(entry_one)
+        await catalog.register(entry_two)
+        # arm the failure only after both successful registrations have written
+        # baseline state; mark_ready is now the failing path.
+        kv.put.side_effect = RuntimeError("kv write failed")
+
+        with pytest.raises(RuntimeError, match="kv write failed"):
+            await catalog.mark_ready("pod-X")
+
+        # both endpoints must still be pending; no partial in-memory flip
+        one_after = catalog.get("tool.one@1.0")
+        two_after = catalog.get("tool.two@1.0")
+        assert one_after is not None
+        assert two_after is not None
+        assert one_after.endpoints[0].status == "pending"
+        assert two_after.endpoints[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_mark_ready_preserves_date_registered_in_kv(self) -> None:
+        """mark_ready KV write retains the original date_registered.
+
+        prevents the KV snapshot from drifting the registration timestamp
+        to probe-promotion time on every transition.
+        """
+        import json
+        from datetime import UTC, datetime
+
+        from threetears.registry.catalog import CatalogEntry, ToolEndpoint
+
+        catalog = ToolCatalog()
+        kv = AsyncMock()
+        kv.keys = AsyncMock(return_value=[])
+        kv.put = AsyncMock()
+        kv.delete = AsyncMock()
+        await catalog.load_from_kv(kv)
+
+        original_date = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
+        entry = CatalogEntry(
+            tool_name="tool.dated",
+            tool_version="1.0",
+            full_name="tool.dated@1.0",
+            description="dated",
+            input_schema={},
+            endpoints=[ToolEndpoint(pod_id="pod-D", status="pending")],
+            date_registered=original_date,
+        )
+        await catalog.register(entry)
+        kv.put.reset_mock()
+
+        await catalog.mark_ready("pod-D")
+
+        kv.put.assert_called_once()
+        payload = json.loads(kv.put.call_args[0][1].decode("utf-8"))
+        assert payload["date_registered"] == original_date.isoformat()

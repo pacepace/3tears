@@ -667,10 +667,9 @@ class TestToolServerProbe:
         assert payload["ready"] is True
 
     @pytest.mark.asyncio
-    async def test_handle_probe_sets_ready_event(self) -> None:
-        """_handle_probe sets the internal ready event on first successful probe."""
+    async def test_handle_probe_does_not_mutate_server_state(self) -> None:
+        """_handle_probe is a pure responder -- readiness is driven by discovery."""
         server = ToolServer(nats_url="nats://localhost:9999", pod_id="ready-pod")
-        assert server._ready_event.is_set() is False
 
         msg = MagicMock()
         msg.data = b'{"pod_id": "ready-pod"}'
@@ -678,31 +677,103 @@ class TestToolServerProbe:
 
         await server._handle_probe(msg)
 
-        assert server._ready_event.is_set() is True
+        # probe handler only responds; it must not create a private ready-state
+        # attribute on the server. readiness is established by polling the
+        # registry's discovery subject instead (see wait_until_ready).
+        msg.respond.assert_called_once()
+        assert not hasattr(server, "_ready_event")
 
     @pytest.mark.asyncio
-    async def test_wait_until_ready_unblocks_after_probe(self) -> None:
-        """wait_until_ready returns True once a probe has been handled."""
+    async def test_wait_until_ready_unblocks_when_discovery_reports_available(self) -> None:
+        """wait_until_ready returns True once discovery reports every tool available."""
+        from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool
+
+        class _FakeTool(TearsTool):
+            """minimal TearsTool fake for readiness polling tests."""
+
+            def mcp_name(self) -> str:
+                """return name."""
+                return "test.probe"
+
+            def mcp_version(self) -> str:
+                """return version."""
+                return "1.0.0"
+
+            def mcp_schema(self) -> MCPToolDefinition:
+                """return a trivial manifest entry."""
+                return MCPToolDefinition(
+                    name="test.probe",
+                    version="1.0.0",
+                    description="probe fake",
+                    input_schema={"type": "object", "properties": {}},
+                )
+
+            async def _execute(self, **_kwargs: Any) -> dict[str, Any]:
+                """no-op execution path."""
+                return {"ok": True}
+
         server = ToolServer(nats_url="nats://localhost:9999", pod_id="wait-pod")
+        server.register(_FakeTool())
 
-        msg = MagicMock()
-        msg.data = b'{"pod_id": "wait-pod"}'
-        msg.respond = AsyncMock()
+        discovery_reply = MagicMock()
+        discovery_reply.data = json.dumps({
+            "agent_id": "wait-pod",
+            "tools": [
+                {"name": "test.probe", "version": "1.0.0", "status": "available"},
+            ],
+        }).encode("utf-8")
 
-        async def probe_later() -> None:
-            """deliver probe after a small delay."""
-            await asyncio.sleep(0.02)
-            await server._handle_probe(msg)
+        nc = MagicMock()
+        nc.request = AsyncMock(return_value=discovery_reply)
+        server._nc = nc
 
-        probe_task = asyncio.create_task(probe_later())
         ready = await server.wait_until_ready(timeout=1.0)
-        await probe_task
-
         assert ready is True
+        nc.request.assert_called()
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_returns_false_on_timeout(self) -> None:
-        """wait_until_ready returns False when no probe arrives within timeout."""
+        """wait_until_ready returns False when discovery never reports available."""
+        from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool
+
+        class _FakeTool(TearsTool):
+            """minimal TearsTool fake that stays unavailable."""
+
+            def mcp_name(self) -> str:
+                """return name."""
+                return "test.slow"
+
+            def mcp_version(self) -> str:
+                """return version."""
+                return "1.0.0"
+
+            def mcp_schema(self) -> MCPToolDefinition:
+                """return a trivial manifest entry."""
+                return MCPToolDefinition(
+                    name="test.slow",
+                    version="1.0.0",
+                    description="slow fake",
+                    input_schema={"type": "object", "properties": {}},
+                )
+
+            async def _execute(self, **_kwargs: Any) -> dict[str, Any]:
+                """no-op execution path."""
+                return {"ok": True}
+
         server = ToolServer(nats_url="nats://localhost:9999", pod_id="slow-pod")
+        server.register(_FakeTool())
+
+        discovery_reply = MagicMock()
+        discovery_reply.data = json.dumps({
+            "agent_id": "slow-pod",
+            "tools": [
+                {"name": "test.slow", "version": "1.0.0", "status": "unavailable"},
+            ],
+        }).encode("utf-8")
+
+        nc = MagicMock()
+        nc.request = AsyncMock(return_value=discovery_reply)
+        server._nc = nc
+
         ready = await server.wait_until_ready(timeout=0.05)
         assert ready is False

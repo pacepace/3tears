@@ -92,9 +92,15 @@ class TestToolEndpoint:
         assert isinstance(endpoint.date_last_heartbeat, datetime)
 
     def test_endpoint_defaults(self) -> None:
-        """ToolEndpoint defaults to available status and zero in-flight."""
+        """ToolEndpoint defaults to pending status and zero in-flight.
+
+        default is 'pending' so new endpoints require an explicit probe
+        confirmation before they become routable -- preventing the
+        footgun where a bare ``ToolEndpoint(pod_id=X)`` would otherwise
+        be picked up as routable immediately.
+        """
         endpoint = ToolEndpoint(pod_id="pod-x")
-        assert endpoint.status == "available"
+        assert endpoint.status == "pending"
         assert endpoint.in_flight == 0
 
     def test_endpoint_to_dict(self) -> None:

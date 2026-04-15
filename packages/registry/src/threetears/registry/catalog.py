@@ -31,6 +31,35 @@ def _sanitize_kv_key(full_name: str) -> str:
     return full_name.replace(".", "_").replace("@", "_AT_")
 
 
+def _replace_endpoint_status(
+    endpoint: ToolEndpoint, pod_id: str, status: str,
+) -> ToolEndpoint:
+    """return a new ToolEndpoint reflecting a projected status change.
+
+    used by ``mark_ready`` to build the KV snapshot that would be
+    persisted if the transition succeeded, without mutating the
+    in-memory endpoint ahead of the write. when ``endpoint.pod_id``
+    does not match ``pod_id``, returns a copy preserving the current
+    status.
+
+    :param endpoint: source endpoint to copy
+    :ptype endpoint: ToolEndpoint
+    :param pod_id: identifier of pod whose endpoint status should be set
+    :ptype pod_id: str
+    :param status: status value to apply when pod_id matches
+    :ptype status: str
+    :return: new ToolEndpoint instance with projected status
+    :rtype: ToolEndpoint
+    """
+    projected_status = status if endpoint.pod_id == pod_id else endpoint.status
+    return ToolEndpoint(
+        pod_id=endpoint.pod_id,
+        status=projected_status,
+        in_flight=endpoint.in_flight,
+        date_last_heartbeat=endpoint.date_last_heartbeat,
+    )
+
+
 @dataclass
 class ToolEndpoint:
     """single pod endpoint serving a tool.
@@ -54,7 +83,7 @@ class ToolEndpoint:
     """
 
     pod_id: str
-    status: str = "available"
+    status: str = "pending"
     in_flight: int = 0
     date_last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -473,31 +502,57 @@ class ToolCatalog:
 
         scans catalog for endpoints belonging to pod_id whose
         status is 'pending' (freshly registered, probe not yet
-        confirmed). flips each to 'available' and writes the
-        updated entry to KV. endpoints already 'available' or
-        'unavailable' are skipped. this is the post-probe
-        readiness-barrier transition -- heartbeat-driven revival
-        continues to use ``mark_pod_endpoints_available``.
+        confirmed). writes all updated entries to KV first with
+        the transition applied, and only flips the in-memory state
+        after every KV write succeeds. on KV failure the in-memory
+        state is left untouched so the caller can retry the whole
+        transition without leaving a partially-applied state behind.
+        endpoints already 'available' or 'unavailable' are skipped.
+        this is the post-probe readiness-barrier transition --
+        heartbeat-driven revival continues to use
+        ``mark_pod_endpoints_available``.
 
         :param pod_id: identifier of pod whose pending endpoints to promote
         :ptype pod_id: str
         :return: list of full_name values that were promoted to available
         :rtype: list[str]
+        :raises Exception: if any KV write fails; in-memory state unchanged
         """
-        promoted: list[str] = []
+        targets: list[tuple[str, CatalogEntry, ToolEndpoint]] = []
         for full_name, entry in self._entries.items():
             endpoint = entry.get_endpoint(pod_id)
             if endpoint is None:
                 continue
             if endpoint.status != "pending":
                 continue
-            endpoint.status = "available"
-            promoted.append(full_name)
-            if self._kv is not None:
+            targets.append((full_name, entry, endpoint))
+
+        if self._kv is not None:
+            for full_name, entry, endpoint in targets:
                 kv_key = _sanitize_kv_key(full_name)
+                projected_endpoints = [
+                    _replace_endpoint_status(ep, pod_id, "available")
+                    for ep in entry.endpoints
+                ]
+                projected_entry = CatalogEntry(
+                    tool_name=entry.tool_name,
+                    tool_version=entry.tool_version,
+                    full_name=entry.full_name,
+                    description=entry.description,
+                    input_schema=entry.input_schema,
+                    output_schema=entry.output_schema,
+                    timeout_seconds=entry.timeout_seconds,
+                    endpoints=projected_endpoints,
+                    date_registered=entry.date_registered,
+                )
                 await self._kv.put(
                     kv_key,
-                    json.dumps(entry.to_dict()).encode("utf-8"),
+                    json.dumps(projected_entry.to_dict()).encode("utf-8"),
                 )
+
+        promoted: list[str] = []
+        for full_name, _entry, endpoint in targets:
+            endpoint.status = "available"
+            promoted.append(full_name)
         result = promoted
         return result

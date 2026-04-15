@@ -251,11 +251,12 @@ class CallProxy:
         endpoint = self._routing_strategy.select(entry.endpoints)
 
         if endpoint is None:
-            pending_only = (
-                len(entry.endpoints) > 0
-                and all(ep.status == "pending" for ep in entry.endpoints)
-            )
-            if pending_only:
+            # TOOL_NOT_READY takes priority over TOOL_UNAVAILABLE: if ANY
+            # endpoint is still pending its probe confirmation, the caller
+            # should retry shortly rather than give up. TOOL_UNAVAILABLE is
+            # only reported when no pending endpoints exist either.
+            has_pending = any(ep.status == "pending" for ep in entry.endpoints)
+            if has_pending:
                 response = ProxyCallResponse(
                     success=False,
                     content="",

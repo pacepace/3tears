@@ -321,13 +321,30 @@ class RegistrationHandler:
         :rtype: list[str]
         """
         registered: list[str] = []
+        needs_probe = False
         now = datetime.now(UTC)
         for tool in manifest.tools:
             full_name = f"{tool.name}@{tool.version}"
+            existing_entry = self._catalog.get(full_name)
+            existing_endpoint = (
+                existing_entry.get_endpoint(manifest.pod_id)
+                if existing_entry is not None
+                else None
+            )
+            # Preserve status for endpoints the pod has previously registered
+            # so heartbeat-driven re-publication does not regress an already
+            # 'available' endpoint back to 'pending' (which would trigger a
+            # needless re-probe on every heartbeat). A brand-new endpoint
+            # enters 'pending' and drives exactly one probe round-trip.
+            if existing_endpoint is None:
+                endpoint_status = "pending"
+                needs_probe = True
+            else:
+                endpoint_status = existing_endpoint.status
             endpoint = ToolEndpoint(
                 pod_id=manifest.pod_id,
-                status="pending",
-                in_flight=0,
+                status=endpoint_status,
+                in_flight=existing_endpoint.in_flight if existing_endpoint else 0,
                 date_last_heartbeat=now,
             )
             entry = CatalogEntry(
@@ -343,7 +360,8 @@ class RegistrationHandler:
             await self._catalog.register(entry)
             registered.append(full_name)
 
-        await self._probe_and_promote(manifest.pod_id)
+        if needs_probe:
+            await self._probe_and_promote(manifest.pod_id)
 
         result = registered
         return result
@@ -352,12 +370,13 @@ class RegistrationHandler:
         """issue reachability probe and promote pending endpoints on success.
 
         sends a request-reply probe to the pod's probe subject and,
-        on successful reply within ``probe_timeout``, transitions all
-        pending endpoints for the pod to 'available'. on timeout or
-        any other failure, leaves endpoints pending so subsequent
-        heartbeats can complete the promotion. logs the registered ->
-        ready transition with per-pod latency so cold-start slowness
-        surfaces in observability data.
+        on a successful reply within ``probe_timeout`` that parses as
+        a :class:`ProbeResponse` with ``ready=True``, transitions all
+        pending endpoints for the pod to 'available'. on timeout, a
+        malformed reply, or ``ready=False``, leaves endpoints pending
+        so subsequent registrations can retry promotion. logs the
+        registered -> ready transition with per-pod latency so
+        cold-start slowness surfaces in observability data.
 
         :param pod_id: identifier of pod whose pending endpoints to confirm
         :ptype pod_id: str
@@ -368,7 +387,9 @@ class RegistrationHandler:
         payload = ProbeRequest(pod_id=pod_id).model_dump_json().encode("utf-8")
         start = datetime.now(UTC)
         try:
-            await self._nc.request(subject, payload, timeout=self._probe_timeout)
+            reply = await self._nc.request(
+                subject, payload, timeout=self._probe_timeout,
+            )
         except Exception as exc:
             log.warning(
                 "tool pod reachability probe failed; endpoints remain pending",
@@ -377,6 +398,27 @@ class RegistrationHandler:
                     "probe_subject": subject,
                     "probe_timeout": self._probe_timeout,
                     "error": str(exc),
+                }},
+            )
+            return
+        try:
+            ack = ProbeResponse.model_validate_json(reply.data)
+        except Exception as exc:
+            log.warning(
+                "tool pod probe reply was malformed; endpoints remain pending",
+                extra={"extra_data": {
+                    "pod_id": pod_id,
+                    "probe_subject": subject,
+                    "error": str(exc),
+                }},
+            )
+            return
+        if not ack.ready:
+            log.warning(
+                "tool pod probe reply reported not-ready; endpoints remain pending",
+                extra={"extra_data": {
+                    "pod_id": pod_id,
+                    "probe_subject": subject,
                 }},
             )
             return

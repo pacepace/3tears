@@ -10,10 +10,49 @@ import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.registration import RegistrationHandler, RegistrationResponse
+from threetears.registry.registration import (
+    ProbeResponse,
+    RegistrationHandler,
+    RegistrationResponse,
+)
 
 
 # -- helpers --
+
+
+def _make_probe_reply(pod_id: str, ready: bool = True) -> MagicMock:
+    """build a NATS reply mock carrying a valid ProbeResponse payload.
+
+    :param pod_id: pod identifier echoed into the ack
+    :ptype pod_id: str
+    :param ready: readiness flag asserted by the pod
+    :ptype ready: bool
+    :return: mock NATS message with JSON-encoded ProbeResponse in ``.data``
+    :rtype: MagicMock
+    """
+    reply = MagicMock()
+    reply.data = ProbeResponse(pod_id=pod_id, ready=ready).model_dump_json().encode("utf-8")
+    return reply
+
+
+def _make_registry_nc() -> AsyncMock:
+    """build an AsyncMock NATS client that replies to every probe subject.
+
+    probe subjects follow ``<ns>.tools.probe.<pod_id>``; the mock's
+    ``request`` method parses pod_id out of the subject and echoes it
+    back in a valid :class:`ProbeResponse`. tests never have to wire
+    probe replies per pod_id.
+
+    :return: configured AsyncMock NATS client
+    :rtype: AsyncMock
+    """
+    async def _reply(subject: str, *_args: Any, **_kwargs: Any) -> MagicMock:
+        pod_id = subject.rsplit(".", 1)[-1]
+        return _make_probe_reply(pod_id)
+
+    nc = AsyncMock()
+    nc.request = AsyncMock(side_effect=_reply)
+    return nc
 
 
 def _make_manifest(
@@ -108,7 +147,7 @@ class TestRegistrationHandlerValidation:
         """handler rejects message with invalid JSON payload."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         msg = _make_nats_msg(data=b"not json")
@@ -124,7 +163,7 @@ class TestRegistrationHandlerValidation:
         """handler rejects manifest with empty pod_id."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest(pod_id="")
@@ -141,7 +180,7 @@ class TestRegistrationHandlerValidation:
         """handler rejects manifest with empty tools list."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = RegistrationManifest(pod_id="pod-001", tools=[])
@@ -170,7 +209,7 @@ class TestRegistrationHandlerMultiPod:
         await catalog.register(existing)
 
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest(pod_id="pod-NEW")
@@ -190,7 +229,7 @@ class TestRegistrationHandlerMultiPod:
         await catalog.register(existing)
 
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest(pod_id="pod-001")
@@ -207,7 +246,7 @@ class TestRegistrationHandlerMultiPod:
         """registering from second pod adds endpoint to existing entry."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest_a = _make_manifest(pod_id="pod-A")
@@ -236,7 +275,7 @@ class TestRegistrationHandlerSuccess:
         """handler registers single tool from manifest."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest()
@@ -260,7 +299,7 @@ class TestRegistrationHandlerSuccess:
         """handler registers all tools from manifest atomically."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest(
@@ -294,7 +333,7 @@ class TestRegistrationHandlerSuccess:
         """handler does not publish response when no reply subject."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
 
         manifest = _make_manifest()
@@ -319,7 +358,7 @@ class TestRegistrationHandlerLifecycle:
         """start subscribes to {namespace}.tools.register."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="myns")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         await handler.start(nc)
         nc.subscribe.assert_called_once()
         call_args = nc.subscribe.call_args
@@ -330,7 +369,7 @@ class TestRegistrationHandlerLifecycle:
         """stop unsubscribes from registration subject."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
-        nc = AsyncMock()
+        nc = _make_registry_nc()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await handler.start(nc)
