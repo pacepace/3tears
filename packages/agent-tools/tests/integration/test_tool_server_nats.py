@@ -42,7 +42,7 @@ _NATS_URL = "nats://localhost:4222"
 class IntegrationStubTool(TearsTool):
     """stub TearsTool for integration testing."""
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """execute stub tool echoing arguments.
 
         :param kwargs: tool input parameters

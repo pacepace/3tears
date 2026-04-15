@@ -70,26 +70,53 @@ class TearsTool(ABC):
     ToolServer, called through Registry proxy). no platform
     dependencies required -- standalone by design.
 
-    ``execute`` is a template method that normalizes loose
-    LLM-supplied inputs (empty strings or JSON-encoded strings
+    ``run`` is the callable surface: a template method that normalizes
+    loose LLM-supplied inputs (empty strings or JSON-encoded strings
     for object/array fields) against this tool's declared
     ``mcp_schema()`` input schema, then dispatches to subclass
-    ``_execute``. subclasses override ``_execute``, never
-    ``execute`` itself, so coercion always runs.
+    ``execute``. subclasses override ``execute`` and never ``run``;
+    the ``__init_subclass__`` guard below enforces that contract at
+    class-creation time so the coercion step can never be bypassed.
     """
 
-    async def execute(self, **kwargs: Any) -> ToolResult:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """enforce the run/execute contract at subclass-creation time.
+
+        subclasses MUST NOT override ``run`` -- coercion is the
+        platform's job, not the subclass's. the "must define execute"
+        half of the contract is already handled by Python's abstract
+        method machinery: an intermediate base (SchemaTool, AdminTool)
+        can satisfy ``execute`` on behalf of its concrete subclasses,
+        and Python raises cleanly on instantiation if the abstract
+        set is nonempty. adding an explicit "execute in __dict__"
+        check here would wrongly reject those intermediate-base
+        dispatch patterns.
+
+        :param kwargs: forwarded to ``object.__init_subclass__``
+        :ptype kwargs: Any
+        :raises TypeError: when ``run`` is overridden by a subclass
+        """
+        super().__init_subclass__(**kwargs)
+        if "run" in cls.__dict__:
+            msg = (
+                f"{cls.__name__} overrides TearsTool.run; run is the "
+                "platform-owned template method that wraps input "
+                "coercion. override ``execute`` instead."
+            )
+            raise TypeError(msg)
+
+    async def run(self, **kwargs: Any) -> ToolResult:
         """normalize loose LLM-supplied kwargs then dispatch to subclass.
 
         coerces wrong-shape object/array values (empty strings or
         JSON-encoded strings) toward their declared JSON schema
-        types, then calls subclass ``_execute`` with the normalized
+        types, then calls subclass ``execute`` with the normalized
         kwargs. if ``mcp_schema`` itself raises, falls back to the
         original kwargs so coercion never breaks a tool.
 
         :param kwargs: raw tool input parameters
         :ptype kwargs: Any
-        :return: execution result from subclass ``_execute``
+        :return: execution result from subclass ``execute``
         :rtype: ToolResult
         """
         try:
@@ -106,14 +133,14 @@ class TearsTool(ABC):
                 exc_info=True,
             )
             normalized = kwargs
-        return await self._execute(**normalized)
+        return await self.execute(**normalized)
 
     @abstractmethod
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """execute tool with normalized parameters.
 
-        subclasses implement this. ``execute`` runs coercion against
-        ``mcp_schema().input_schema`` before calling ``_execute``, so
+        subclasses implement this. ``run`` runs coercion against
+        ``mcp_schema().input_schema`` before calling ``execute``, so
         object/array kwargs arrive as native containers even when the
         LLM caller supplied empty strings or JSON-encoded strings.
 

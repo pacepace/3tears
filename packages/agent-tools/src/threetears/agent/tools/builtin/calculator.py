@@ -99,7 +99,7 @@ class CalculatorTool(TearsTool):
         "required": ["expression"],
     }
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """evaluate mathematical expression.
 
         :param kwargs: must include 'expression' key with math expression string

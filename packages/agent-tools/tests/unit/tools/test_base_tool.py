@@ -19,7 +19,7 @@ from threetears.agent.tools.base_tool import (
 class DummyTool(TearsTool):
     """concrete test subclass of TearsTool."""
 
-    async def _execute(self, **kwargs):  # type: ignore[override]
+    async def execute(self, **kwargs):  # type: ignore[override]
         """execute dummy tool.
 
         :param kwargs: ignored

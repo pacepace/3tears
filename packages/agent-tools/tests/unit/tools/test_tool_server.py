@@ -38,7 +38,7 @@ class StubTool(TearsTool):
         self._name = name
         self._version = version
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """execute stub tool.
 
         :param kwargs: tool input parameters
@@ -86,7 +86,7 @@ class StubTool(TearsTool):
 class FailingTool(TearsTool):
     """stub TearsTool that always raises on execute."""
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """execute and raise.
 
         :param kwargs: ignored
@@ -708,7 +708,7 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def _execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
                 """no-op execution path."""
                 return {"ok": True}
 
@@ -756,7 +756,7 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def _execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
                 """no-op execution path."""
                 return {"ok": True}
 

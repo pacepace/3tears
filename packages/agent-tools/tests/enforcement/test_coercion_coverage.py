@@ -1,19 +1,23 @@
-"""enforcement: every TearsTool subclass must inherit coercion via ``execute``.
+"""enforcement: every TearsTool subclass must inherit coercion via ``run``.
 
-the input-coercion path (``TearsTool.execute`` -> ``normalize_kwargs`` ->
-subclass ``_execute``) only runs if subclasses override ``_execute`` and
-leave ``execute`` alone. a subclass that overrides ``execute`` directly
-bypasses coercion silently and reintroduces the 422 bug this task fixed
-(empty-string / JSON-encoded-string inputs for object/array fields).
+the input-coercion path (``TearsTool.run`` -> ``normalize_kwargs`` ->
+subclass ``execute``) only runs if subclasses override ``execute`` and
+leave ``run`` alone. a subclass that overrides ``run`` directly
+bypasses coercion silently and reintroduces the 422 bug this task
+fixed (empty-string / JSON-encoded-string inputs for object/array
+fields).
 
 this AST-based test scans every production Python source file under
 ``src/threetears/agent/tools`` and fails if any class whose base list
-mentions ``TearsTool`` defines an ``execute`` method. subclasses must
-override ``_execute`` instead. the test is intentionally narrow and
+mentions ``TearsTool`` defines a ``run`` method. subclasses must
+override ``execute`` instead. the test is intentionally narrow and
 fast: no imports, no instantiation, pure static analysis.
 
 behavioral coverage of the coercion itself lives in
-``tests/unit/tools/test_coercion.py``.
+``tests/unit/tools/test_coercion.py``; an ``__init_subclass__`` guard
+on ``TearsTool`` raises ``TypeError`` at class-creation time if the
+contract is violated, so the rules are enforced both statically here
+and at import time in production.
 """
 
 from __future__ import annotations
@@ -68,19 +72,19 @@ _SRC_FILES = _collect_src_files()
 _SRC_IDS = [str(p.relative_to(_SRC_ROOT)) for p in _SRC_FILES]
 
 
-class TestTearsToolSubclassesUseExecuteHook:
-    """TearsTool subclasses must override ``_execute``, never ``execute``."""
+class TestTearsToolSubclassesDoNotOverrideRun:
+    """TearsTool subclasses must override ``execute``, never ``run``."""
 
     @pytest.mark.parametrize("src_file", _SRC_FILES, ids=_SRC_IDS)
-    def test_subclass_does_not_override_execute(self, src_file: Path) -> None:
-        """verify no TearsTool subclass in this file defines ``execute``.
+    def test_subclass_does_not_override_run(self, src_file: Path) -> None:
+        """verify no TearsTool subclass in this file defines ``run``.
 
-        overriding ``execute`` bypasses ``normalize_kwargs`` and silently
-        skips input coercion. subclasses must override ``_execute``.
+        overriding ``run`` bypasses ``normalize_kwargs`` and silently
+        skips input coercion. subclasses must override ``execute``.
 
         :param src_file: source file under scan
         :ptype src_file: Path
-        :raises AssertionError: when a TearsTool subclass overrides ``execute``
+        :raises AssertionError: when a TearsTool subclass overrides ``run``
         """
         tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
         violations: list[str] = []
@@ -94,29 +98,29 @@ class TestTearsToolSubclassesUseExecuteHook:
             for member in node.body:
                 if isinstance(
                     member, (ast.FunctionDef, ast.AsyncFunctionDef),
-                ) and member.name == "execute":
+                ) and member.name == "run":
                     violations.append(
                         f"{src_file.relative_to(_SRC_ROOT)}:{member.lineno} -- "
-                        f"class {node.name} overrides execute(); rename to "
-                        f"_execute() so TearsTool.execute input coercion runs"
+                        f"class {node.name} overrides run(); override execute() "
+                        f"instead so TearsTool.run input coercion still fires"
                     )
         assert violations == [], "\n".join(violations)
 
 
 class TestTearsToolSubclassesDefineExecuteHook:
-    """TearsTool subclasses must define ``_execute`` (the abstract hook)."""
+    """TearsTool subclasses must define ``execute`` (the abstract hook)."""
 
     @pytest.mark.parametrize("src_file", _SRC_FILES, ids=_SRC_IDS)
     def test_subclass_defines_execute_hook(self, src_file: Path) -> None:
-        """verify every TearsTool subclass in this file defines ``_execute``.
+        """verify every TearsTool subclass in this file defines ``execute``.
 
-        the template method in ``TearsTool.execute`` delegates to
-        subclass ``_execute``. a subclass missing ``_execute`` cannot
-        be instantiated (abstract) and indicates an incomplete rename.
+        the template method in ``TearsTool.run`` delegates to subclass
+        ``execute``. a subclass missing ``execute`` cannot be
+        instantiated (abstract) and indicates an incomplete rename.
 
         :param src_file: source file under scan
         :ptype src_file: Path
-        :raises AssertionError: when a TearsTool subclass omits ``_execute``
+        :raises AssertionError: when a TearsTool subclass omits ``execute``
         """
         tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
         violations: list[str] = []
@@ -129,13 +133,13 @@ class TestTearsToolSubclassesDefineExecuteHook:
                 continue
             has_hook = any(
                 isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and member.name == "_execute"
+                and member.name == "execute"
                 for member in node.body
             )
             if not has_hook:
                 violations.append(
                     f"{src_file.relative_to(_SRC_ROOT)}:{node.lineno} -- "
                     f"class {node.name} extends TearsTool but does not define "
-                    f"_execute(); subclasses must implement the _execute hook"
+                    f"execute(); subclasses must implement the execute hook"
                 )
         assert violations == [], "\n".join(violations)

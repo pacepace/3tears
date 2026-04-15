@@ -183,7 +183,7 @@ class WebFetchTool(TearsTool):
         """
         self._fetch_fn = _create_fetch_fn(max_chars, credential_resolver)
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """fetch and extract content from URL.
 
         :param kwargs: must include 'url' key with URL to fetch

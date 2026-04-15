@@ -120,7 +120,7 @@ class DictionaryTool(TearsTool):
         self._language = language
         self._lookup_fn = _create_lookup_fn(language)
 
-    async def _execute(self, **kwargs: Any) -> ToolResult:
+    async def execute(self, **kwargs: Any) -> ToolResult:
         """look up word definition.
 
         :param kwargs: must include 'word' key with word to look up
