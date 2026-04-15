@@ -7,7 +7,6 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid7
@@ -17,29 +16,15 @@ from nats.aio.msg import Msg as NatsMsg
 from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import TearsTool
+from threetears.agent.tools.config import (
+    get_ready_poll_interval as _get_ready_poll_interval,
+)
+from threetears.agent.tools.config import (
+    get_ready_timeout as _get_ready_timeout,
+)
 from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
-
-
-def _get_ready_timeout() -> float:
-    """read readiness wait timeout from environment or return platform default.
-
-    env var: THREETEARS_TOOLSERVER_READY_TIMEOUT
-
-    :return: ready wait timeout in seconds
-    :rtype: float
-    """
-    raw = os.environ.get("THREETEARS_TOOLSERVER_READY_TIMEOUT")
-    if raw is not None:
-        try:
-            return float(raw)
-        except ValueError:
-            log.warning(
-                "invalid THREETEARS_TOOLSERVER_READY_TIMEOUT=%r, using default",
-                raw,
-            )
-    return 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +378,8 @@ class ToolServer:
         if not manifest_names:
             return True
         ready = False
-        poll_interval = 0.05
+        poll_interval = _get_ready_poll_interval()
+        expected_count = len(manifest_names)
         while asyncio.get_event_loop().time() < deadline:
             try:
                 request = DiscoveryProbeRequest(
@@ -409,15 +395,24 @@ class ToolServer:
                     timeout=min(1.0, max(deadline - asyncio.get_event_loop().time(), 0.01)),
                 )
                 response = DiscoveryProbeResponse.model_validate_json(reply.data)
-                expected_count = len(manifest_names)
                 available_count = sum(
                     1 for tool in response.tools if tool.status == "available"
                 )
-                if expected_count > 0 and available_count == expected_count:
+                if available_count == expected_count:
                     ready = True
                     break
-            except Exception:
-                pass
+            except Exception as exc:
+                # intentional: readiness polling must tolerate transient NATS
+                # hiccups and discovery schema drift without crashing the
+                # caller. log at debug so the symptom surfaces in diagnostics
+                # rather than a blanket silent swallow.
+                log.debug(
+                    "wait_until_ready poll iteration failed",
+                    extra={"extra_data": {
+                        "pod_id": self._pod_id,
+                        "error": str(exc),
+                    }},
+                )
             await asyncio.sleep(poll_interval)
         return ready
 

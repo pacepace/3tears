@@ -500,15 +500,22 @@ class ToolCatalog:
     async def mark_ready(self, pod_id: str) -> list[str]:
         """transition pending endpoints for pod to available and persist.
 
-        scans catalog for endpoints belonging to pod_id whose
-        status is 'pending' (freshly registered, probe not yet
-        confirmed). writes all updated entries to KV first with
-        the transition applied, and only flips the in-memory state
-        after every KV write succeeds. on KV failure the in-memory
-        state is left untouched so the caller can retry the whole
-        transition without leaving a partially-applied state behind.
-        endpoints already 'available' or 'unavailable' are skipped.
-        this is the post-probe readiness-barrier transition --
+        scans catalog for endpoints belonging to pod_id whose status is
+        'pending' (freshly registered, probe not yet confirmed). writes
+        all updated entries to KV first with the transition applied,
+        and only flips in-memory state after every KV write succeeds.
+
+        **partial-failure semantics**: if a mid-loop KV write fails,
+        earlier KV entries have already advanced to 'available' while
+        in-memory state is still 'pending'. the exception propagates
+        and in-memory stays untouched so the caller can safely retry
+        the whole transition. next ``load_from_kv`` forces every
+        endpoint back to 'unavailable', which reconverges both tiers
+        once heartbeat-driven revival runs. this KV-vs-memory drift
+        window only opens under a genuine KV outage; steady-state
+        operation never enters it.
+
+        endpoints already 'available' or 'unavailable' are skipped;
         heartbeat-driven revival continues to use
         ``mark_pod_endpoints_available``.
 

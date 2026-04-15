@@ -38,6 +38,8 @@ _ALLOWED_DEFAULT_FILES: set[str] = {
     "threetears/core/config.py",
     # Registry config -- single source of truth for registry timeout defaults
     "threetears/registry/config.py",
+    # Agent-tools config -- ToolServer readiness timeout defaults live here
+    "threetears/agent/tools/config.py",
 }
 
 # Specific (file_relative, param_name, line) tuples for narrow exceptions.

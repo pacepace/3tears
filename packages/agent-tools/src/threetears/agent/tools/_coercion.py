@@ -36,8 +36,11 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
     :rtype: Any
     """
     result = value
+    # only empty *strings* are treated as "give me the empty container" --
+    # literal 0, False, or empty tuple must pass through so type-strict
+    # subclasses still see the original value (and can reject it).
     if declared_type == "object" and not isinstance(value, dict):
-        if not value:
+        if value == "":
             result = {}
         elif isinstance(value, str):
             try:
@@ -47,7 +50,7 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
             if isinstance(parsed, dict):
                 result = parsed
     elif declared_type == "array" and not isinstance(value, list):
-        if not value:
+        if value == "":
             result = []
         elif isinstance(value, str):
             try:

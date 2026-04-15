@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.agent.tools._coercion import normalize_kwargs
+from threetears.observe import get_logger
+
+_log = get_logger(__name__)
 
 
 @dataclass
@@ -93,6 +96,15 @@ class TearsTool(ABC):
             schema = self.mcp_schema()
             normalized = normalize_kwargs(kwargs, schema.input_schema)
         except Exception:
+            # coercion never breaks a tool: fall back to raw kwargs if
+            # mcp_schema() or normalize_kwargs raises. log so the fallback
+            # is visible in diagnostics instead of silently masking a bug
+            # in the tool's schema.
+            _log.warning(
+                "tool input coercion fell back to raw kwargs",
+                extra={"extra_data": {"tool_class": type(self).__name__}},
+                exc_info=True,
+            )
             normalized = kwargs
         return await self._execute(**normalized)
 

@@ -305,6 +305,12 @@ class CallProxy:
             )
             return
 
+        # in_flight is read by routing strategies during endpoint selection
+        # and incremented/decremented here. the +=/-= pair is safe under
+        # asyncio (no preemption between the read and the store within a
+        # single bytecode op) but would race under threaded execution. if
+        # this proxy is ever moved off a single event loop, wrap these
+        # ops in an asyncio.Lock or swap to a threadsafe counter.
         endpoint.in_flight += 1
         try:
             response = await self._forward_call(request, endpoint.pod_id)
