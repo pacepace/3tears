@@ -140,6 +140,54 @@ class TestRegistrationBarrierStateMachine:
         assert entry.endpoints[0].status == "pending"
 
     @pytest.mark.asyncio
+    async def test_probe_malformed_reply_leaves_endpoint_pending(self) -> None:
+        """malformed probe reply (not a ProbeResponse) leaves endpoint pending.
+
+        a pod that returns non-ProbeResponse bytes on the probe subject
+        (e.g. a bare '{}') must not be promoted; endpoints stay pending
+        so the next heartbeat-driven registration can retry.
+        """
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
+        nc = AsyncMock()
+        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert entry.endpoints[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_probe_reply_with_ready_false_leaves_endpoint_pending(self) -> None:
+        """ProbeResponse(ready=False) does not promote endpoints.
+
+        a pod explicitly reporting itself not ready (e.g. still warming
+        caches) must not flip catalog state; endpoints remain pending
+        until a subsequent probe confirms readiness.
+        """
+        catalog = ToolCatalog()
+        handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
+        nc = AsyncMock()
+        not_ready_reply = MagicMock()
+        not_ready_reply.data = (
+            ProbeResponse(pod_id="pod-001", ready=False).model_dump_json().encode("utf-8")
+        )
+        nc.request = AsyncMock(return_value=not_ready_reply)
+        await handler.start(nc)
+
+        manifest = _make_manifest()
+        msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
+        await handler._handle_registration(msg)
+
+        entry = catalog.get("threetears.calculator@1.0.0")
+        assert entry is not None
+        assert entry.endpoints[0].status == "pending"
+
+    @pytest.mark.asyncio
     async def test_probe_issued_to_pod_specific_subject(self) -> None:
         """probe is issued to {namespace}.tools.probe.{pod_id} subject."""
         catalog = ToolCatalog()
