@@ -133,15 +133,16 @@ class TestTearsTool:
         tool = DummyTool()
         assert isinstance(tool, TearsTool)
 
-    def test_execute_is_async(self) -> None:
-        """execute method must be a coroutine function."""
+    def test_run_and_execute_are_async(self) -> None:
+        """both the public run template and the execute hook must be async."""
         tool = DummyTool()
+        assert inspect.iscoroutinefunction(tool.run)
         assert inspect.iscoroutinefunction(tool.execute)
 
-    def test_execute_returns_tool_result(self) -> None:
-        """execute returns ToolResult instance."""
+    def test_run_returns_tool_result(self) -> None:
+        """public run template returns ToolResult instance."""
         tool = DummyTool()
-        result = asyncio.run(tool.execute())
+        result = asyncio.run(tool.run())
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert result.content == "done"

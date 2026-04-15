@@ -45,7 +45,7 @@ class TestCalculatorTool:
     def test_execute_success(self) -> None:
         """CalculatorTool execute returns successful ToolResult for valid expression."""
         tool = CalculatorTool()
-        result = asyncio.run(tool.execute(expression="2 + 3"))
+        result = asyncio.run(tool.run(expression="2 + 3"))
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert result.content == "5"
@@ -54,14 +54,14 @@ class TestCalculatorTool:
     def test_execute_math_function(self) -> None:
         """CalculatorTool execute handles math functions like sqrt."""
         tool = CalculatorTool()
-        result = asyncio.run(tool.execute(expression="sqrt(16)"))
+        result = asyncio.run(tool.run(expression="sqrt(16)"))
         assert result.success is True
         assert result.content == "4"
 
     def test_execute_error(self) -> None:
         """CalculatorTool execute returns failure ToolResult for invalid expression."""
         tool = CalculatorTool()
-        result = asyncio.run(tool.execute(expression="invalid+++"))
+        result = asyncio.run(tool.run(expression="invalid+++"))
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None
@@ -99,7 +99,7 @@ class TestCurrentDateTool:
     def test_execute_success(self) -> None:
         """CurrentDateTool execute returns successful ToolResult with UTC date."""
         tool = CurrentDateTool()
-        result = asyncio.run(tool.execute())
+        result = asyncio.run(tool.run())
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert "UTC" in result.content
@@ -108,7 +108,7 @@ class TestCurrentDateTool:
     def test_execute_with_timezone(self) -> None:
         """CurrentDateTool execute includes local timezone when configured."""
         tool = CurrentDateTool(timezone="US/Eastern")
-        result = asyncio.run(tool.execute())
+        result = asyncio.run(tool.run())
         assert result.success is True
         assert "US/Eastern" in result.content
 

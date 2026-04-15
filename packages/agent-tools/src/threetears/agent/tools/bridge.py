@@ -15,7 +15,7 @@ def tears_tool_to_langchain(tool: TearsTool) -> BaseTool:
 
     creates dynamic BaseTool subclass with name, description,
     and args_schema from TearsTool's MCP definition.
-    _arun delegates to tool.execute().
+    _arun delegates to tool.run().
 
     :param tool: TearsTool instance to wrap
     :ptype tool: TearsTool
@@ -41,7 +41,7 @@ def tears_tool_to_langchain(tool: TearsTool) -> BaseTool:
             :return: result content or error message
             :rtype: str
             """
-            result = await tool.execute(**kwargs)
+            result = await tool.run(**kwargs)
             if result.success:
                 return result.content
             return f"Error: {result.error or result.content}"

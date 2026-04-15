@@ -66,7 +66,7 @@ class TestTimezoneConverterTool:
     def test_execute_success(self) -> None:
         """TimezoneConverterTool execute returns successful ToolResult for valid conversion."""
         tool = TimezoneConverterTool()
-        result = asyncio.run(tool.execute(
+        result = asyncio.run(tool.run(
             time_str="2024-01-15 14:30",
             from_timezone="America/New_York",
             to_timezone="Europe/London",
@@ -78,7 +78,7 @@ class TestTimezoneConverterTool:
     def test_execute_error_invalid_timezone(self) -> None:
         """TimezoneConverterTool execute returns failure for invalid timezone."""
         tool = TimezoneConverterTool()
-        result = asyncio.run(tool.execute(
+        result = asyncio.run(tool.run(
             time_str="14:30",
             from_timezone="Invalid/Zone",
             to_timezone="Europe/London",
@@ -123,7 +123,7 @@ class TestUnitConverterTool:
     def test_execute_success(self) -> None:
         """UnitConverterTool execute returns successful ToolResult for valid conversion."""
         tool = UnitConverterTool()
-        result = asyncio.run(tool.execute(value=1.0, from_unit="miles", to_unit="kilometers"))
+        result = asyncio.run(tool.run(value=1.0, from_unit="miles", to_unit="kilometers"))
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert "kilometers" in result.content
@@ -132,7 +132,7 @@ class TestUnitConverterTool:
     def test_execute_error_invalid_unit(self) -> None:
         """UnitConverterTool execute returns failure for invalid unit."""
         tool = UnitConverterTool()
-        result = asyncio.run(tool.execute(value=1.0, from_unit="miles", to_unit="kilograms"))
+        result = asyncio.run(tool.run(value=1.0, from_unit="miles", to_unit="kilograms"))
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None
@@ -173,7 +173,7 @@ class TestAnalyzeMediaTool:
     def test_execute_unknown_analyzer(self) -> None:
         """AnalyzeMediaTool execute returns error for unknown analyzer."""
         tool = AnalyzeMediaTool(storage=_FakeMediaStorage())
-        result = asyncio.run(tool.execute(
+        result = asyncio.run(tool.run(
             media_ids=["00000000-0000-0000-0000-000000000001"],
             question="describe this",
             analyzer="nonexistent",
@@ -218,7 +218,7 @@ class TestParseDocumentTool:
         """ParseDocumentTool execute returns successful ToolResult for valid text file."""
         tool = ParseDocumentTool()
         content = base64.b64encode(b"Hello world document content").decode()
-        result = asyncio.run(tool.execute(content_base64=content, filename="test.txt"))
+        result = asyncio.run(tool.run(content_base64=content, filename="test.txt"))
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert "Hello world" in result.content
@@ -227,7 +227,7 @@ class TestParseDocumentTool:
     def test_execute_error_bad_base64(self) -> None:
         """ParseDocumentTool execute returns failure for invalid base64."""
         tool = ParseDocumentTool()
-        result = asyncio.run(tool.execute(content_base64="!!!not-base64!!!", filename="test.txt"))
+        result = asyncio.run(tool.run(content_base64="!!!not-base64!!!", filename="test.txt"))
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None

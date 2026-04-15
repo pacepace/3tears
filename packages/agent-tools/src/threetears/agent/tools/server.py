@@ -500,7 +500,7 @@ class ToolServer:
             return
 
         try:
-            tool_result = await tool.execute(**request.arguments)
+            tool_result = await tool.run(**request.arguments)
             response = CallResponse(
                 success=tool_result.success,
                 content=tool_result.content,
