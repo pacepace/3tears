@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import ast
 import inspect
-import sys
 from datetime import UTC
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from threetears.channels.protocol import (
     Attachment,

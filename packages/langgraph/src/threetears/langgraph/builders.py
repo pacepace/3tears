@@ -34,7 +34,7 @@ _DEFAULT_MAX_ITERATIONS = 10
 def build_chat_agent(
     *,
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
-) -> StateGraph:
+) -> StateGraph[MessagesState, None, Any, Any]:
     """build minimal chat agent graph with no tools.
 
     creates graph with single flow: START -> agent -> END.
@@ -70,7 +70,7 @@ def build_tool_agent(
     tools: list[Any] | None = None,
     system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-) -> StateGraph:
+) -> StateGraph[MessagesState, None, Any, Any]:
     """build tool-calling agent graph with iteration loop.
 
     creates graph with flow:

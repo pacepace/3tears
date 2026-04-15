@@ -141,7 +141,7 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     }
 
     metadata = MetaData()
-    sa_columns: list[Column] = []
+    sa_columns: list[Column[Any]] = []
     for col in table_def.columns:
         sa_type = sa_type_map.get(col.column_type, String(255))
         sa_columns.append(
@@ -171,7 +171,7 @@ def create_dynamic_collection(
     registry: CollectionRegistry,
     config: CoreConfig,
     nats_client: Any = None,
-) -> BaseCollection[BaseEntity]:
+) -> BaseCollection[Any]:
     """create a BaseCollection subclass dynamically from a TableDef.
 
     generates the required abstract method implementations:
@@ -192,8 +192,10 @@ def create_dynamic_collection(
     :ptype config: CoreConfig
     :param nats_client: optional NATS client for L2 caching
     :ptype nats_client: Any
-    :return: instantiated BaseCollection for the given table
-    :rtype: BaseCollection[BaseEntity]
+    :return: instantiated BaseCollection for the given table; parameterized
+        over the dynamically generated entity class so the concrete type is
+        only known at runtime (hence ``BaseCollection[Any]``)
+    :rtype: BaseCollection[Any]
     """
     tbl_name = table_def.name
     pk_column = _find_pk_column(table_def)

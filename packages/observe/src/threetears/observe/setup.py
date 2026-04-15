@@ -14,8 +14,13 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from threetears.observe.logging import get_logger
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk._logs import LoggerProvider
+    from opentelemetry.sdk.trace import TracerProvider
 
 logger = get_logger(__name__)
 
@@ -50,8 +55,8 @@ class TelemetryConfig:
 # Module-level state
 # ---------------------------------------------------------------------------
 
-_tracer_provider: object | None = None
-_log_provider: object | None = None
+_tracer_provider: TracerProvider | None = None
+_log_provider: LoggerProvider | None = None
 _log_handler: logging.Handler | None = None
 _shutdown_called: bool = False
 
@@ -148,7 +153,7 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     # Needed on OTel SDK >=1.39 where set_tracer_provider is guarded by
     # _TRACER_PROVIDER_SET_ONCE which only allows a single set.
     try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
     except AttributeError:
         pass
     trace.set_tracer_provider(provider)
@@ -230,11 +235,11 @@ def shutdown_telemetry() -> None:
 
     if _log_provider is not None:
         try:
-            _log_provider.force_flush(timeout_millis=2000)  # type: ignore[union-attr]
+            _log_provider.force_flush(timeout_millis=2000)
         except Exception:
             pass
         try:
-            _log_provider.shutdown()  # type: ignore[union-attr]
+            _log_provider.shutdown()  # type: ignore[no-untyped-call]
         except Exception:
             pass
         _log_provider = None
@@ -246,18 +251,18 @@ def shutdown_telemetry() -> None:
     from opentelemetry.trace import NoOpTracerProvider
 
     try:
-        _tracer_provider.force_flush(timeout_millis=2000)  # type: ignore[union-attr]
+        _tracer_provider.force_flush(timeout_millis=2000)
     except Exception:
         pass
 
     try:
-        _tracer_provider.shutdown()  # type: ignore[union-attr]
+        _tracer_provider.shutdown()
     except Exception:
         pass
 
     # Reset the global provider so new init_telemetry calls work
     try:
-        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+        trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined, unused-ignore]
     except AttributeError:
         pass
     trace.set_tracer_provider(NoOpTracerProvider())

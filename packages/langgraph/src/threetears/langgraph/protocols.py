@@ -6,7 +6,7 @@ Host applications provide implementations matching these protocols.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -59,14 +59,16 @@ class AsyncQueryExecutor(Protocol):
 
     abstracts the database access layer so checkpoint savers can work
     with any backend: direct asyncpg, NATS L3 proxy, or other transports.
-    implementations return dict-like rows with string keys.
+    implementations return dict-like rows with string keys. row values
+    are typed ``Any`` because SQL column values are dynamically typed at
+    the database boundary; callers cast or validate at use sites.
     """
 
-    async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
         """execute query and return all matching rows as dicts."""
         ...
 
-    async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
+    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
         """execute query and return first row as dict, or None if empty."""
         ...
 

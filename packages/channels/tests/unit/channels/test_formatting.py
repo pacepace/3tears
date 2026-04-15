@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from threetears.channels.formatting import (
     _plain_text_fallback,

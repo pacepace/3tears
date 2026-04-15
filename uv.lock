@@ -16,8 +16,13 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
+    { name = "aiohttp", specifier = ">=3.9" },
     { name = "anthropic", specifier = ">=0.94.0" },
+    { name = "discord-py", specifier = ">=2.7" },
     { name = "duckdb", specifier = ">=1.0" },
+    { name = "langchain-anthropic", specifier = ">=1.4" },
+    { name = "langchain-openai", specifier = ">=1.1" },
+    { name = "langchain-voyageai", specifier = ">=0.3" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "opentelemetry-api", specifier = ">=1.28" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28" },
@@ -28,6 +33,8 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.3" },
     { name = "simpleeval", specifier = ">=1.0.4" },
+    { name = "slack-bolt", specifier = ">=1.28" },
+    { name = "slack-sdk", specifier = ">=3.41" },
     { name = "trafilatura", specifier = ">=2.0.0" },
 ]
 
@@ -189,9 +196,9 @@ websocket = [
 requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = ">=3.9" },
-    { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.3" },
-    { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.18" },
-    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.26" },
+    { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7" },
+    { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.28" },
+    { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.41" },
     { name = "starlette", marker = "extra == 'websocket'", specifier = ">=0.36" },
 ]
 provides-extras = ["slack", "discord", "websocket"]
@@ -251,10 +258,10 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", marker = "extra == 'image'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'whisper'", specifier = ">=0.27" },
-    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=0.3" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=0.3" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.4" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.1" },
     { name = "langchain-openrouter", marker = "extra == 'openrouter'", specifier = ">=0.1" },
-    { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.2" },
+    { name = "langchain-voyageai", marker = "extra == 'voyageai'", specifier = ">=0.3" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
 provides-extras = ["anthropic", "openai", "openrouter", "voyageai", "whisper", "image"]
@@ -1011,21 +1018,21 @@ wheels = [
 
 [[package]]
 name = "langchain-anthropic"
-version = "1.3.4"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/4e/7c1ffac126f5e62b0b9066f331f91ae69361e73476fd3ca1b19f8d8a3cc3/langchain_anthropic-1.3.4.tar.gz", hash = "sha256:000ed4c2d6fb8842b4ffeed22a74a3e84f9e9bcb63638e4abbb4a1d8ffa07211", size = 671858, upload-time = "2026-02-24T13:54:01.738Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/c7/259d4d805c6ac90c8695714fc15498a4557bb515eb24f692fd611966e383/langchain_anthropic-1.4.0.tar.gz", hash = "sha256:bbf64e99f9149a34ba67813e9582b2160a0968de9e9f54f7ba8d1658f253c2e5", size = 674360, upload-time = "2026-03-17T18:42:20.751Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/cf/b7c7b7270efbb3db2edbf14b09ba9110a41628f3a85a11cae9527a35641c/langchain_anthropic-1.3.4-py3-none-any.whl", hash = "sha256:cd112dcc8049aef09f58b3c4338b2c9db5ee98105e08664954a4e40d8bf120b9", size = 47454, upload-time = "2026-02-24T13:54:00.53Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/c0/77f99373276d4f06c38a887ef6023f101cfc7ba3b2bf9af37064cdbadde5/langchain_anthropic-1.4.0-py3-none-any.whl", hash = "sha256:c84f55722336935f7574d5771598e674f3959fdca0b51de14c9788dbf52761be", size = 48463, upload-time = "2026-03-17T18:42:19.742Z" },
 ]
 
 [[package]]
 name = "langchain-core"
-version = "1.2.18"
+version = "1.2.29"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch" },
@@ -1037,9 +1044,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/b7/8bbd0d99a6441b35d891e4b79e7d24c67722cdd363893ae650f24808cf5a/langchain_core-1.2.18.tar.gz", hash = "sha256:ffe53eec44636d092895b9fe25d28af3aaf79060e293fa7cda2a5aaa50c80d21", size = 836725, upload-time = "2026-03-09T20:40:07.229Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/d8/7bdf30e4bfc5175609201806e399506a0a78a48e14367dc8b776a9b4c89c/langchain_core-1.2.29.tar.gz", hash = "sha256:cfb89c92bca81ad083eafcdfe6ec40f9803c9abf7dd166d0f8a8de1d2de03ca6", size = 846121, upload-time = "2026-04-14T20:44:58.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/d8/9418564ed4ab4f150668b25cf8c188266267d829362e9c9106946afa628b/langchain_core-1.2.18-py3-none-any.whl", hash = "sha256:cccb79523e0045174ab826054e555fddc973266770e427588c8f1ec9d9d6212b", size = 503048, upload-time = "2026-03-09T20:40:06.115Z" },
+    { url = "https://files.pythonhosted.org/packages/72/37/fed31f80436b1d7bb222f1f2345300a77a88215416acf8d1cb7c8fda7388/langchain_core-1.2.29-py3-none-any.whl", hash = "sha256:11f02e57ee1c24e6e0e6577acbd35df77b205d4692a3df956b03b5389cbe44a0", size = 508733, upload-time = "2026-04-14T20:44:56.712Z" },
 ]
 
 [[package]]
@@ -2078,14 +2085,14 @@ wheels = [
 
 [[package]]
 name = "slack-bolt"
-version = "1.27.0"
+version = "1.28.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "slack-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/28/50ed0b86e48b48e6ddcc71de93b91c8ac14a55d1249e4bff0586494a2f90/slack_bolt-1.27.0.tar.gz", hash = "sha256:3db91d64e277e176a565c574ae82748aa8554f19e41a4fceadca4d65374ce1e0", size = 129101, upload-time = "2025-11-13T20:17:46.878Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/97/a62dde97e84027b252807f2044bed2edcda2d063a5cb0c535fb2be8d9b5d/slack_bolt-1.28.0.tar.gz", hash = "sha256:bfe367d867e8fb157a057248ebd4ac2d7f43acac6d0700fa31381db1e10f3b0f", size = 130768, upload-time = "2026-04-06T23:24:59.936Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/a8/1acb355759747ba4da5f45c1a33d641994b9e04b914908c9434f18bd97e8/slack_bolt-1.27.0-py2.py3-none-any.whl", hash = "sha256:c43c94bf34740f2adeb9b55566c83f1e73fed6ba2878bd346cdfd6fd8ad22360", size = 230428, upload-time = "2025-11-13T20:17:45.465Z" },
+    { url = "https://files.pythonhosted.org/packages/81/a9/697b6a92c728f09d5ef6b8e83dc6c8a87bc6d59499b2933ed067f11b7e30/slack_bolt-1.28.0-py2.py3-none-any.whl", hash = "sha256:738d1ca5e7c7039b6e18103d29267ced6e18c2517053eff18991fdd593acce5c", size = 234819, upload-time = "2026-04-06T23:24:58.278Z" },
 ]
 
 [[package]]

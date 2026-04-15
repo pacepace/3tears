@@ -347,7 +347,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         to hit L1 (when L1 is available).
         """
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(entity_id), self._primary_key_column)
+            row: dict[str, Any] | None = self._l1.select_by_id(
+                self.table_name, str(entity_id), self._primary_key_column,
+            )
             if row is not None:
                 return row
         data = await self._pull_through(entity_id)

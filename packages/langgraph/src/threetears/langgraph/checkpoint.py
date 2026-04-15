@@ -198,7 +198,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         type_len = int.from_bytes(data[:4], "big")
         type_str = data[4 : 4 + type_len].decode("utf-8")
         blob = data[4 + type_len :]
-        return self.serde.loads_typed((type_str, blob))
+        result: dict[str, Any] = self.serde.loads_typed((type_str, blob))
+        return result
 
     # ------------------------------------------------------------------
     # Async interface -- required by LangGraph

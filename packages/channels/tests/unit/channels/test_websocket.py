@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from threetears.channels.protocol import ChannelMessage, ChannelResponse, ChannelRouter
+from threetears.channels.protocol import ChannelMessage, ChannelResponse
 
 
 # -- MockWebSocket for testing --
@@ -764,7 +764,6 @@ class TestStreamingChannelRouter:
     @pytest.mark.asyncio
     async def test_streaming_router_can_return_none(self) -> None:
         """streaming router can return None when no final response needed."""
-        from threetears.channels.websocket import StreamingChannelRouter
 
         class _NullStreamRouter:
             async def route_inbound_streaming(

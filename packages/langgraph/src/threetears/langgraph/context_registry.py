@@ -189,7 +189,8 @@ class ContextManagerRegistry:
         :return: True if deleted, False if not found
         :rtype: bool
         """
-        return await self._get_current().delete_variable(key)
+        deleted: bool = await self._get_current().delete_variable(key)
+        return deleted
 
     def build_conversation_context(self) -> str | None:
         """build formatted context for system prompt injection.
@@ -197,7 +198,8 @@ class ContextManagerRegistry:
         :return: formatted context string or None if empty
         :rtype: str | None
         """
-        return self._get_current().build_conversation_context()
+        context: str | None = self._get_current().build_conversation_context()
+        return context
 
     def build_context_prompt(self) -> str:
         """build context prompt section for system message.
@@ -205,7 +207,8 @@ class ContextManagerRegistry:
         :return: formatted context including variables and tool results
         :rtype: str
         """
-        return self._get_current().build_context_prompt()
+        prompt: str = self._get_current().build_context_prompt()
+        return prompt
 
     def build_ledger_prompt(self) -> str:
         """build ledger prompt listing previously surfaced items.
@@ -213,7 +216,8 @@ class ContextManagerRegistry:
         :return: formatted ledger section
         :rtype: str
         """
-        return self._get_current().build_ledger_prompt()
+        ledger: str = self._get_current().build_ledger_prompt()
+        return ledger
 
     def build_workflow_prompt(self) -> str:
         """build workflow prompt with active checklist.
@@ -221,4 +225,5 @@ class ContextManagerRegistry:
         :return: formatted workflow section
         :rtype: str
         """
-        return self._get_current().build_workflow_prompt()
+        workflow: str = self._get_current().build_workflow_prompt()
+        return workflow

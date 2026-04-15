@@ -15,10 +15,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["langchain-anthropic>=0.3"]
-openai = ["langchain-openai>=0.3"]
+anthropic = ["langchain-anthropic>=1.4"]
+openai = ["langchain-openai>=1.1"]
 openrouter = ["langchain-openrouter>=0.1"]
-voyageai = ["langchain-voyageai>=0.2"]
+voyageai = ["langchain-voyageai>=0.3"]
 whisper = ["httpx>=0.27"]
 image = ["httpx>=0.27"]
 

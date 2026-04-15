@@ -16,6 +16,17 @@ dev-dependencies = [
     "trafilatura>=2.0.0",
     "pillow>=10.0",
     "anthropic>=0.94.0",
+    # optional model-provider adapters installed in dev so their test suites
+    # exercise the real langchain integrations rather than getting skipped.
+    "langchain-anthropic>=1.4",
+    "langchain-openai>=1.1",
+    "langchain-voyageai>=0.3",
+    # channel adapters installed in dev so the channels test suite exercises
+    # the real slack/discord libraries.
+    "slack-bolt>=1.28",
+    "slack-sdk>=3.41",
+    "aiohttp>=3.9",
+    "discord.py>=2.7",
 ]
 
 [tool.ruff]
@@ -39,6 +50,22 @@ mypy_path = [
     "packages/models/src",
     "packages/observe/src",
     "packages/langgraph/src",
+    "packages/registry/src",
+]
+# default scope when invoked with no arguments; avoids duplicate-module errors
+# from the per-package tests/ trees (each has an enforcement/ package).
+files = [
+    "packages/core/src",
+    "packages/agent-memory/src",
+    "packages/agent-tools/src",
+    "packages/channels/src",
+    "packages/models/src",
+    "packages/observe/src",
+    "packages/langgraph/src",
+    "packages/registry/src",
+]
+exclude = [
+    "^packages/[^/]+/tests/",
 ]
 
 [[tool.mypy.overrides]]
@@ -56,6 +83,16 @@ module = [
     "slack_sdk.*",
     "discord",
     "discord.*",
+    "asyncpg",
+    "asyncpg.*",
+    "langchain_anthropic",
+    "langchain_anthropic.*",
+    "langchain_openai",
+    "langchain_openai.*",
+    "langchain_openrouter",
+    "langchain_openrouter.*",
+    "langchain_voyageai",
+    "langchain_voyageai.*",
 ]
 ignore_missing_imports = true
 

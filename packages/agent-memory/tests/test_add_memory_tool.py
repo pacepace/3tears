@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
-import pytest
 
 from threetears.agent.memory.tools import AddMemoryInput, load_add_memory_tool
 

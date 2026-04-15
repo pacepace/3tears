@@ -100,7 +100,7 @@ class DataStore:
         :rtype: list[dict[str, Any]]
         """
         l3_pool = self._registry.get_l3_pool("_raw")
-        result = await l3_pool.fetch(sql, *params)
+        result: list[dict[str, Any]] = await l3_pool.fetch(sql, *params)
         return result
 
     @traced
@@ -115,7 +115,7 @@ class DataStore:
         :rtype: str
         """
         l3_pool = self._registry.get_l3_pool("_raw")
-        result = await l3_pool.execute(sql, *params)
+        result: str = await l3_pool.execute(sql, *params)
         return result
 
     @traced

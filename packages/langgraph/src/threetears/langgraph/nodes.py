@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState
-from langgraph.types import RunnableConfig
 
 import logging
 
@@ -78,6 +78,10 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
 
     last_message = state["messages"][-1]
     tool_messages: list[ToolMessage] = []
+
+    if not isinstance(last_message, AIMessage):
+        result = {"messages": tool_messages}
+        return result
 
     for tool_call in last_message.tool_calls:
         tool = tool_map.get(tool_call["name"])

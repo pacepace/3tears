@@ -20,6 +20,7 @@ from threetears.agent.memory.tools import (
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 
 __all__ = [
+    "AddMemoryInput",
     "ChatModelFactory",
     "EmbeddingProvider",
     "ExtractionPrompts",

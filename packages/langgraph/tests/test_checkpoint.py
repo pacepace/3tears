@@ -6,7 +6,6 @@ Full integration tests require a Postgres instance and are in the host app.
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,7 +37,6 @@ class TestUUIDSafeSerializer:
     def test_sanitizes_tuple(self):
         import uuid_utils
 
-        serde = _UUIDSafeSerializer()
         uid = uuid_utils.uuid7()
         sanitized = _UUIDSafeSerializer._sanitize((uid, "hello"))
         assert sanitized == (str(uid), "hello")
