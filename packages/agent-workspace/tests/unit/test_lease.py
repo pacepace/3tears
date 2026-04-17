@@ -38,12 +38,8 @@ class TestMakeKey:
         long_path = "A" * 500
         result = lease._make_key(_SAMPLE_WORKSPACE_ID, long_path)
         expected_digest = hashlib.sha256(long_path.encode("utf-8")).hexdigest()
-        assert result == (
-            f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:sha256:{expected_digest}"
-        )
-        assert re.match(
-            r"^workspace:[0-9a-f]{32}:sha256:[0-9a-f]{64}$", result
-        ) is not None
+        assert result == (f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:sha256:{expected_digest}")
+        assert re.match(r"^workspace:[0-9a-f]{32}:sha256:[0-9a-f]{64}$", result) is not None
 
     def test_sha256_form_is_shorter_than_raw_when_path_is_huge(self) -> None:
         """sha256 form bounds total length irrespective of input path length."""
@@ -77,18 +73,14 @@ class TestBucketName:
         lease = WorkspaceFileLease(fake, namespace="acme")
         assert lease.bucket_name == "acme_workspace_locks"
 
-    def test_env_namespace_forms_workspace_locks_bucket(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_namespace_forms_workspace_locks_bucket(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE=prod14 -> 'prod14_workspace_locks'."""
         monkeypatch.setenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "prod14")
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake)
         assert lease.bucket_name == "prod14_workspace_locks"
 
-    def test_env_unset_falls_back_to_workspace_locks(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_unset_falls_back_to_workspace_locks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """env unset + no arg -> unscoped 'workspace_locks' (no KeyError)."""
         monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
         fake = FakeNatsClient()
@@ -103,9 +95,7 @@ class TestAcquireRoundTrip:
         """acquire() returns handle whose key is the namespaced workspace key."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
-        handle = await lease.acquire(
-            _SAMPLE_WORKSPACE_ID, "a/b.yaml", ttl_seconds=30
-        )
+        handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a/b.yaml", ttl_seconds=30)
         assert isinstance(handle, LeaseHandle)
         assert handle.holder == "pod-test"
         expected_key = f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:a/b.yaml"
@@ -152,9 +142,7 @@ class TestExceptionPassthrough:
         fake = FakeNatsClient()
         first = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-1")
         second = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-2")
-        held = await first.acquire(
-            _SAMPLE_WORKSPACE_ID, "contended.yaml", ttl_seconds=30
-        )
+        held = await first.acquire(_SAMPLE_WORKSPACE_ID, "contended.yaml", ttl_seconds=30)
         try:
             with pytest.raises(LeaseUnavailable):
                 await second.acquire(

@@ -119,9 +119,7 @@ class SlackAdapter:
             "team",
             "files",
         }
-        metadata: dict[str, Any] = {
-            k: v for k, v in event.items() if k not in consumed_keys
-        }
+        metadata: dict[str, Any] = {k: v for k, v in event.items() if k not in consumed_keys}
 
         channel_message = ChannelMessage(
             channel_type="slack",

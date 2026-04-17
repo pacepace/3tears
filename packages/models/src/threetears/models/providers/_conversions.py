@@ -60,10 +60,7 @@ def ai_message_to_result(response: Any) -> ChatResult:
 
     tool_calls: list[ToolCallRequest] | None = None
     if response.tool_calls:
-        tool_calls = [
-            ToolCallRequest(id=tc["id"], name=tc["name"], args=tc["args"])
-            for tc in response.tool_calls
-        ]
+        tool_calls = [ToolCallRequest(id=tc["id"], name=tc["name"], args=tc["args"]) for tc in response.tool_calls]
 
     usage: dict[str, int] | None = None
     if response.usage_metadata:

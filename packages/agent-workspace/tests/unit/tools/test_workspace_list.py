@@ -101,9 +101,7 @@ async def test_execute_traps_collection_errors_as_data() -> None:
 async def test_execute_dates_use_iso_format() -> None:
     """date_updated values are emitted as ISO-8601 strings with tzinfo."""
     when = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-    coll = _FakeCollection(
-        [_FakeWorkspaceEntity(name="x", description=None, date_updated=when)]
-    )
+    coll = _FakeCollection([_FakeWorkspaceEntity(name="x", description=None, date_updated=when)])
     tool = WorkspaceListTool(workspace_collection=coll, agent_id=uuid4())
 
     result = await tool.execute()

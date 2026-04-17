@@ -53,10 +53,7 @@ class ProviderRegistry:
         :raises ImportError: if provider module or SDK dependencies not installed
         """
         if name not in self._providers:
-            raise KeyError(
-                f"Unknown provider: '{name}'. "
-                f"Registered: {sorted(self._providers.keys())}"
-            )
+            raise KeyError(f"Unknown provider: '{name}'. Registered: {sorted(self._providers.keys())}")
 
         if name in self._modules:
             result = self._modules[name]
@@ -72,10 +69,7 @@ class ProviderRegistry:
                         f"Install 3tears-models[{name}] to use "
                         f"the {name} provider"
                     ) from exc
-                raise ImportError(
-                    f"Failed to import provider '{name}' from "
-                    f"'{import_path}': {exc}"
-                ) from exc
+                raise ImportError(f"Failed to import provider '{name}' from '{import_path}': {exc}") from exc
             self._modules[name] = module
             result = module
         return result

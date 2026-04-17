@@ -179,9 +179,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await catalog.register(entry)
 
         reply = MagicMock()
-        reply.data = (
-            b'{"success": true, "content": "ok", "correlation_id": "corr-mixed"}'
-        )
+        reply.data = b'{"success": true, "content": "ok", "correlation_id": "corr-mixed"}'
 
         proxy = CallProxy(catalog, namespace="test")
         nc = AsyncMock()
@@ -223,7 +221,8 @@ class TestCallProxyRefusesPendingEndpoints:
 
         # pending endpoint: TOOL_NOT_READY
         req_pending = _make_call_request(
-            tool_name="tool.warming", tool_version="1.0",
+            tool_name="tool.warming",
+            tool_version="1.0",
         )
         msg_pending = _make_nats_msg(
             data=req_pending.model_dump_json().encode("utf-8"),
@@ -235,7 +234,8 @@ class TestCallProxyRefusesPendingEndpoints:
 
         # unavailable endpoint: TOOL_UNAVAILABLE
         req_unavail = _make_call_request(
-            tool_name="tool.down", tool_version="1.0",
+            tool_name="tool.down",
+            tool_version="1.0",
         )
         msg_unavail = _make_nats_msg(
             data=req_unavail.model_dump_json().encode("utf-8"),

@@ -107,10 +107,14 @@ class TestRegistrationBarrierStateMachine:
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
         nc = AsyncMock()
         probe_reply = MagicMock()
-        probe_reply.data = ProbeResponse(
-            pod_id="pod-probe-001",
-            ready=True,
-        ).model_dump_json().encode("utf-8")
+        probe_reply.data = (
+            ProbeResponse(
+                pod_id="pod-probe-001",
+                ready=True,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         nc.request = AsyncMock(return_value=probe_reply)
         await handler.start(nc)
 
@@ -173,9 +177,7 @@ class TestRegistrationBarrierStateMachine:
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
         nc = AsyncMock()
         not_ready_reply = MagicMock()
-        not_ready_reply.data = (
-            ProbeResponse(pod_id="pod-001", ready=False).model_dump_json().encode("utf-8")
-        )
+        not_ready_reply.data = ProbeResponse(pod_id="pod-001", ready=False).model_dump_json().encode("utf-8")
         nc.request = AsyncMock(return_value=not_ready_reply)
         await handler.start(nc)
 

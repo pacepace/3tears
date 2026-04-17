@@ -178,14 +178,7 @@ class TestNoPlatformImports:
 
     def test_no_platform_imports_in_base_tool(self) -> None:
         """base_tool.py must not import NATS, LangChain, or platform modules."""
-        source_path = (
-            Path(__file__).resolve().parents[3]
-            / "src"
-            / "threetears"
-            / "agent"
-            / "tools"
-            / "base_tool.py"
-        )
+        source_path = Path(__file__).resolve().parents[3] / "src" / "threetears" / "agent" / "tools" / "base_tool.py"
         source = source_path.read_text()
         tree = ast.parse(source)
 

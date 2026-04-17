@@ -60,6 +60,7 @@ class _UUIDSafeSerializer:
         """
         try:
             import uuid_utils
+
             if isinstance(obj, uuid_utils.UUID):
                 return str(obj)
         except ImportError:
@@ -224,7 +225,10 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
         return result
 
     def _bundle_to_tuple(
-        self, thread_id: str, checkpoint_ns: str, bundle: dict[str, Any],
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        bundle: dict[str, Any],
     ) -> CheckpointTuple:
         """convert deserialized cache bundle to CheckpointTuple."""
         checkpoint = bundle["checkpoint"]
@@ -237,8 +241,15 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
             "configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": cp_id}
         }
         parent_config: RunnableConfig | None = (
-            {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_checkpoint_id}}
-            if parent_checkpoint_id else None
+            {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": parent_checkpoint_id,
+                }
+            }
+            if parent_checkpoint_id
+            else None
         )
 
         return CheckpointTuple(
@@ -314,7 +325,9 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
                 "FROM checkpoints "
                 "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                 "AND checkpoint_id = $3",
-                thread_id, checkpoint_ns, checkpoint_id,
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
             )
         else:
             row = await self._exec.fetchrow(
@@ -323,7 +336,8 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
                 "FROM checkpoints "
                 "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                 "ORDER BY checkpoint_id DESC LIMIT 1",
-                thread_id, checkpoint_ns,
+                thread_id,
+                checkpoint_ns,
             )
 
         if row is None:
@@ -336,11 +350,10 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
         md_blob = bytes(row["metadata_"])
 
         checkpoint: Checkpoint = self.serde.loads_typed((cp_type or "msgpack", cp_blob))
-        metadata: CheckpointMetadata = cast(CheckpointMetadata, (
-            self.serde.loads_typed((cp_type or "msgpack", md_blob))
-            if md_blob and md_blob != b"\x00"
-            else {}
-        ))
+        metadata: CheckpointMetadata = cast(
+            CheckpointMetadata,
+            (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
+        )
 
         write_rows = await self._exec.fetch(
             "SELECT task_id, channel, type, blob "
@@ -348,22 +361,27 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
             "WHERE thread_id = $1 AND checkpoint_ns = $2 "
             "AND checkpoint_id = $3 "
             "ORDER BY idx",
-            thread_id, checkpoint_ns, cp_id,
+            thread_id,
+            checkpoint_ns,
+            cp_id,
         )
         pending_writes: list[tuple[str, str, Any]] = []
         for wr in write_rows:
-            pending_writes.append((
-                wr["task_id"],
-                wr["channel"],
-                self.serde.loads_typed((wr["type"] or "msgpack", bytes(wr["blob"]))),
-            ))
+            pending_writes.append(
+                (
+                    wr["task_id"],
+                    wr["channel"],
+                    self.serde.loads_typed((wr["type"] or "msgpack", bytes(wr["blob"]))),
+                )
+            )
 
         result_config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": cp_id}
         }
         parent_config: RunnableConfig | None = (
             {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_id}}
-            if parent_id else None
+            if parent_id
+            else None
         )
 
         tup = CheckpointTuple(
@@ -421,8 +439,13 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
             "DO UPDATE SET parent_checkpoint_id = EXCLUDED.parent_checkpoint_id, "
             "type = EXCLUDED.type, checkpoint = EXCLUDED.checkpoint, "
             "metadata_ = EXCLUDED.metadata_",
-            thread_id, checkpoint_ns, checkpoint["id"],
-            parent_checkpoint_id, cp_type, cp_blob, md_blob,
+            thread_id,
+            checkpoint_ns,
+            checkpoint["id"],
+            parent_checkpoint_id,
+            cp_type,
+            cp_blob,
+            md_blob,
         )
 
         result_config: RunnableConfig = {
@@ -472,8 +495,15 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
                 "ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) "
                 "DO NOTHING",
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                task_path, write_idx, channel, w_type, w_blob,
+                thread_id,
+                checkpoint_ns,
+                checkpoint_id,
+                task_id,
+                task_path,
+                write_idx,
+                channel,
+                w_type,
+                w_blob,
             )
 
     async def alist(
@@ -531,11 +561,10 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
             md_blob = bytes(row["metadata_"])
 
             checkpoint: Checkpoint = self.serde.loads_typed((cp_type or "msgpack", cp_blob))
-            metadata: CheckpointMetadata = cast(CheckpointMetadata, (
-                self.serde.loads_typed((cp_type or "msgpack", md_blob))
-                if md_blob and md_blob != b"\x00"
-                else {}
-            ))
+            metadata: CheckpointMetadata = cast(
+                CheckpointMetadata,
+                (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
+            )
 
             if filter and not all(metadata.get(k) == v for k, v in filter.items()):
                 continue
@@ -545,7 +574,8 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
             }
             parent_config: RunnableConfig | None = (
                 {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_id}}
-                if parent_id else None
+                if parent_id
+                else None
             )
 
             yield CheckpointTuple(
@@ -574,22 +604,32 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
         raise NotImplementedError("ProxyCheckpointSaver is async-only. Use aget_tuple().")
 
     def list(
-        self, config: RunnableConfig | None, *, filter: dict[str, Any] | None = None,
-        before: RunnableConfig | None = None, limit: int | None = None,
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
     ) -> Iterator[CheckpointTuple]:
         """not supported. use alist()."""
         raise NotImplementedError("ProxyCheckpointSaver is async-only. Use alist().")
 
     def put(
-        self, config: RunnableConfig, checkpoint: Checkpoint,
-        metadata: CheckpointMetadata, new_versions: ChannelVersions,
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
     ) -> RunnableConfig:
         """not supported. use aput()."""
         raise NotImplementedError("ProxyCheckpointSaver is async-only. Use aput().")
 
     def put_writes(
-        self, config: RunnableConfig, writes: Sequence[tuple[str, Any]],
-        task_id: str, task_path: str = "",
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
     ) -> None:
         """not supported. use aput_writes()."""
         raise NotImplementedError("ProxyCheckpointSaver is async-only. Use aput_writes().")

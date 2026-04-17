@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 current_conversation_id: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "current_conversation_id", default="default",
+    "current_conversation_id",
+    default="default",
 )
 
 
@@ -154,7 +155,10 @@ class ContextManagerRegistry:
         :rtype: Any
         """
         return await self._get_current().save_tool_result(
-            tool_name, result, short_desc, **kwargs,
+            tool_name,
+            result,
+            short_desc,
+            **kwargs,
         )
 
     async def set_variable(self, key: str, value: str, **kwargs: Any) -> Any:

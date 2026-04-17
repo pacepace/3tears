@@ -272,10 +272,12 @@ class TestModelsLabImageProvider:
         """generate returns GeneratedImage when API returns immediate success."""
         provider = ModelsLabImageProvider("ml-test")
 
-        submit_response = _mock_json_response({
-            "status": "success",
-            "output": ["https://example.com/image.png"],
-        })
+        submit_response = _mock_json_response(
+            {
+                "status": "success",
+                "output": ["https://example.com/image.png"],
+            }
+        )
         image_response = _mock_bytes_response(b"fake-ml-image")
 
         mock_client = AsyncMock()
@@ -296,10 +298,12 @@ class TestModelsLabImageProvider:
         """style parameter is prepended to prompt in request."""
         provider = ModelsLabImageProvider("ml-test")
 
-        submit_response = _mock_json_response({
-            "status": "success",
-            "output": ["https://example.com/image.png"],
-        })
+        submit_response = _mock_json_response(
+            {
+                "status": "success",
+                "output": ["https://example.com/image.png"],
+            }
+        )
         image_response = _mock_bytes_response(b"fake-ml-image")
 
         mock_client = AsyncMock()
@@ -319,11 +323,13 @@ class TestModelsLabImageProvider:
         """raises TimeoutError after max poll attempts exceeded."""
         provider = ModelsLabImageProvider("ml-test", max_polls=2, poll_interval=0.01)
 
-        submit_response = _mock_json_response({
-            "status": "processing",
-            "id": "req-123",
-            "fetch_result": "https://modelslab.com/api/v6/fetch/req-123",
-        })
+        submit_response = _mock_json_response(
+            {
+                "status": "processing",
+                "id": "req-123",
+                "fetch_result": "https://modelslab.com/api/v6/fetch/req-123",
+            }
+        )
         poll_response = _mock_json_response({"status": "processing"})
 
         mock_client = AsyncMock()
@@ -341,16 +347,20 @@ class TestModelsLabImageProvider:
         """succeeds after initial processing status followed by success on poll."""
         provider = ModelsLabImageProvider("ml-test", poll_interval=0.01)
 
-        submit_response = _mock_json_response({
-            "status": "processing",
-            "id": "req-123",
-            "fetch_result": "https://modelslab.com/api/v6/fetch/req-123",
-        })
+        submit_response = _mock_json_response(
+            {
+                "status": "processing",
+                "id": "req-123",
+                "fetch_result": "https://modelslab.com/api/v6/fetch/req-123",
+            }
+        )
         poll_processing = _mock_json_response({"status": "processing"})
-        poll_success = _mock_json_response({
-            "status": "success",
-            "output": ["https://example.com/result.png"],
-        })
+        poll_success = _mock_json_response(
+            {
+                "status": "success",
+                "output": ["https://example.com/result.png"],
+            }
+        )
         image_response = _mock_bytes_response(b"final-image")
 
         mock_client = AsyncMock()
@@ -383,15 +393,17 @@ class TestComfyUIImageProvider:
         provider = ComfyUIImageProvider(poll_interval=0.01)
 
         submit_response = _mock_json_response({"prompt_id": "pid-001"})
-        history_response = _mock_json_response({
-            "pid-001": {
-                "outputs": {
-                    "9": {
-                        "images": [{"filename": "ComfyUI_00001_.png"}],
+        history_response = _mock_json_response(
+            {
+                "pid-001": {
+                    "outputs": {
+                        "9": {
+                            "images": [{"filename": "ComfyUI_00001_.png"}],
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         image_response = _mock_bytes_response(b"comfy-image-data")
 
         mock_client = AsyncMock()
@@ -413,15 +425,17 @@ class TestComfyUIImageProvider:
         provider = ComfyUIImageProvider(poll_interval=0.01)
 
         submit_response = _mock_json_response({"prompt_id": "pid-002"})
-        history_response = _mock_json_response({
-            "pid-002": {
-                "outputs": {
-                    "9": {
-                        "images": [{"filename": "ComfyUI_00002_.png"}],
+        history_response = _mock_json_response(
+            {
+                "pid-002": {
+                    "outputs": {
+                        "9": {
+                            "images": [{"filename": "ComfyUI_00002_.png"}],
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         image_response = _mock_bytes_response(b"comfy-styled")
 
         mock_client = AsyncMock()
@@ -462,15 +476,17 @@ class TestComfyUIImageProvider:
 
         submit_response = _mock_json_response({"prompt_id": "pid-004"})
         empty_history = _mock_json_response({})
-        completed_history = _mock_json_response({
-            "pid-004": {
-                "outputs": {
-                    "9": {
-                        "images": [{"filename": "ComfyUI_00004_.png"}],
+        completed_history = _mock_json_response(
+            {
+                "pid-004": {
+                    "outputs": {
+                        "9": {
+                            "images": [{"filename": "ComfyUI_00004_.png"}],
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         image_response = _mock_bytes_response(b"delayed-image")
 
         mock_client = AsyncMock()

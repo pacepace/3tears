@@ -136,21 +136,11 @@ def _build_channel_message(message: Any) -> ChannelMessage:
     :return: normalized channel message
     :rtype: ChannelMessage
     """
-    workspace_id: str | None = (
-        str(message.guild.id) if message.guild else None
-    )
+    workspace_id: str | None = str(message.guild.id) if message.guild else None
 
-    conversation_id: str | None = (
-        str(message.channel.id)
-        if isinstance(message.channel, discord.Thread)
-        else None
-    )
+    conversation_id: str | None = str(message.channel.id) if isinstance(message.channel, discord.Thread) else None
 
-    reply_to_id: str | None = (
-        str(message.reference.message_id)
-        if message.reference
-        else None
-    )
+    reply_to_id: str | None = str(message.reference.message_id) if message.reference else None
 
     attachments = _map_discord_attachments(message.attachments)
 

@@ -20,9 +20,7 @@ import pytest
 
 import importlib
 
-materialize_module = importlib.import_module(
-    "threetears.agent.workspace.materialize"
-)
+materialize_module = importlib.import_module("threetears.agent.workspace.materialize")
 from threetears.agent.workspace.materialize import materialize  # noqa: E402
 
 
@@ -157,9 +155,7 @@ async def test_materialize_creates_parent_dirs_for_nested_paths(
 
 
 @pytest.mark.asyncio
-async def test_materialize_uses_atomic_write_primitive(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_materialize_uses_atomic_write_primitive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """every file write goes through :func:`atomic_write` (spied via monkeypatch)."""
     calls: list[tuple[Path, bytes]] = []
 

@@ -55,10 +55,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 _TARGET_REL = "audience_settings.yaml"
-_EXTERNAL_PAYLOAD = (
-    b"audience_units:\n"
-    b"  - audience_unit: external_modify\n"
-)
+_EXTERNAL_PAYLOAD = b"audience_units:\n  - audience_unit: external_modify\n"
 
 
 async def _run_policy_scenario(
@@ -100,7 +97,9 @@ async def _run_policy_scenario(
     )
     sandbox = WorkspaceSandbox.from_config(config)
     lease = WorkspaceFileLease(
-        fx.nats, namespace="test", pod_id="test-pod",
+        fx.nats,
+        namespace="test",
+        pod_id="test-pod",
     )
 
     result_content: str = ""
@@ -160,9 +159,7 @@ async def _run_policy_scenario(
         read_result = await fs_read.execute(relative_path=_TARGET_REL)
         assert read_result.success is True, read_result.error
         result_content = read_result.content
-        in_window_l3_bytes = fx.store.files[
-            (fx.workspace_id, _TARGET_REL)
-        ].content
+        in_window_l3_bytes = fx.store.files[(fx.workspace_id, _TARGET_REL)].content
 
     return result_content, in_window_l3_bytes
 
@@ -181,12 +178,12 @@ async def test_l3_wins_ignores_external_modify(
     :rtype: None
     """
     fx = workspace_with_audience_fixture
-    original_bytes = fx.store.files[
-        (fx.workspace_id, _TARGET_REL)
-    ].content
+    original_bytes = fx.store.files[(fx.workspace_id, _TARGET_REL)].content
 
     read_content, in_window_bytes = await _run_policy_scenario(
-        fx, tmp_path, BindConflictPolicy.L3_WINS,
+        fx,
+        tmp_path,
+        BindConflictPolicy.L3_WINS,
     )
 
     # fs_read returned the L3 (original) content, not the disk overwrite.
@@ -213,7 +210,9 @@ async def test_disk_wins_imports_external_modify(
     fx = workspace_with_audience_fixture
 
     read_content, in_window_bytes = await _run_policy_scenario(
-        fx, tmp_path, BindConflictPolicy.DISK_WINS,
+        fx,
+        tmp_path,
+        BindConflictPolicy.DISK_WINS,
     )
 
     # fs_read returned the externally-rewritten content the watcher

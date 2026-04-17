@@ -73,9 +73,7 @@ class ModelCache:
         :rtype: int
         """
         with self._lock:
-            keys_to_remove = [
-                key for key in self._cache if key[0] == provider_name
-            ]
+            keys_to_remove = [key for key in self._cache if key[0] == provider_name]
             for key in keys_to_remove:
                 del self._cache[key]
             count = len(keys_to_remove)

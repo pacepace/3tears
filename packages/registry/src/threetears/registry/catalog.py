@@ -32,7 +32,9 @@ def _sanitize_kv_key(full_name: str) -> str:
 
 
 def _replace_endpoint_status(
-    endpoint: ToolEndpoint, pod_id: str, status: str,
+    endpoint: ToolEndpoint,
+    pod_id: str,
+    status: str,
 ) -> ToolEndpoint:
     """return a new ToolEndpoint reflecting a projected status change.
 
@@ -244,10 +246,7 @@ class CatalogEntry:
         :return: reconstructed catalog entry
         :rtype: CatalogEntry
         """
-        endpoints = [
-            ToolEndpoint.from_dict(ep_data)
-            for ep_data in data.get("endpoints", [])
-        ]
+        endpoints = [ToolEndpoint.from_dict(ep_data) for ep_data in data.get("endpoints", [])]
         result = cls(
             tool_name=data["tool_name"],
             tool_version=data["tool_version"],
@@ -334,10 +333,12 @@ class ToolCatalog:
             )
         _logger.info(
             "registered tool in catalog",
-            extra={"extra_data": {
-                "full_name": target.full_name,
-                "endpoint_count": len(target.endpoints),
-            }},
+            extra={
+                "extra_data": {
+                    "full_name": target.full_name,
+                    "endpoint_count": len(target.endpoints),
+                }
+            },
         )
 
     async def deregister(self, full_name: str) -> None:
@@ -431,11 +432,7 @@ class ToolCatalog:
         :return: list of available catalog entries
         :rtype: list[CatalogEntry]
         """
-        result = [
-            entry
-            for entry in self._entries.values()
-            if entry.status == "available"
-        ]
+        result = [entry for entry in self._entries.values() if entry.status == "available"]
         return result
 
     def mark_available(self, full_name: str, pod_id: str) -> bool:
@@ -537,10 +534,7 @@ class ToolCatalog:
         if self._kv is not None:
             for full_name, entry, endpoint in targets:
                 kv_key = _sanitize_kv_key(full_name)
-                projected_endpoints = [
-                    _replace_endpoint_status(ep, pod_id, "available")
-                    for ep in entry.endpoints
-                ]
+                projected_endpoints = [_replace_endpoint_status(ep, pod_id, "available") for ep in entry.endpoints]
                 projected_entry = CatalogEntry(
                     tool_name=entry.tool_name,
                     tool_version=entry.tool_version,

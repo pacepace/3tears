@@ -214,8 +214,7 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
     )
 
     assert peak["value"] == 1, (
-        f"lease failed to serialize: peak concurrent bodies = {peak['value']}; "
-        f"order = {inside_order}"
+        f"lease failed to serialize: peak concurrent bodies = {peak['value']}; order = {inside_order}"
     )
     # both pods ran, and entries alternate: one full enter/exit before the other
     assert len(inside_order) == 4

@@ -187,8 +187,7 @@ class KvAgentToolAuthorizer:
                 )
             except Exception:
                 _logger.warning(
-                    "KV agent tool authorizer failed to open bucket, "
-                    "will fail-closed until bucket is available",
+                    "KV agent tool authorizer failed to open bucket, will fail-closed until bucket is available",
                     extra={"extra_data": {"bucket": bucket_name}},
                 )
 

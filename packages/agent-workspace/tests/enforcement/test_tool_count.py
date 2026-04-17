@@ -103,8 +103,7 @@ class TestWorkspaceToolCount:
         )
 
         assert len(_TOOL_BUILDERS) == _EXPECTED_WORKSPACE_TOOL_COUNT, (
-            f"expected {_EXPECTED_WORKSPACE_TOOL_COUNT} registered builders; "
-            f"found {len(_TOOL_BUILDERS)}"
+            f"expected {_EXPECTED_WORKSPACE_TOOL_COUNT} registered builders; found {len(_TOOL_BUILDERS)}"
         )
         tools = build_workspace_tools(**_stub_dependencies())
         assert len(tools) == _EXPECTED_WORKSPACE_TOOL_COUNT
@@ -140,12 +139,5 @@ class TestWorkspaceToolCount:
         from threetears.agent.workspace.factory import build_workspace_tools
 
         tools = build_workspace_tools(**_stub_dependencies())
-        violations = [
-            t.mcp_name()
-            for t in tools
-            if not t.mcp_name().startswith(_NAMESPACE_PREFIX)
-        ]
-        assert not violations, (
-            f"{len(violations)} tool(s) lack the {_NAMESPACE_PREFIX!r} prefix: "
-            f"{violations}"
-        )
+        violations = [t.mcp_name() for t in tools if not t.mcp_name().startswith(_NAMESPACE_PREFIX)]
+        assert not violations, f"{len(violations)} tool(s) lack the {_NAMESPACE_PREFIX!r} prefix: {violations}"

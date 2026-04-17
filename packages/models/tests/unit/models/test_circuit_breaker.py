@@ -81,9 +81,7 @@ class TestCircuitBreaker:
 
     def test_check_transitions_to_half_open_after_timeout(self) -> None:
         """check transitions OPEN to HALF_OPEN after recovery timeout elapses."""
-        cb = CircuitBreaker(
-            "test-provider", failure_threshold=2, recovery_timeout_seconds=10.0
-        )
+        cb = CircuitBreaker("test-provider", failure_threshold=2, recovery_timeout_seconds=10.0)
         cb.record_failure()
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
@@ -97,9 +95,7 @@ class TestCircuitBreaker:
 
     def test_check_open_error_has_remaining_seconds(self) -> None:
         """CircuitOpenError includes remaining seconds until timeout."""
-        cb = CircuitBreaker(
-            "test-provider", failure_threshold=1, recovery_timeout_seconds=30.0
-        )
+        cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=30.0)
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
@@ -119,9 +115,7 @@ class TestCircuitBreaker:
 
     def test_success_transitions_half_open_to_closed(self) -> None:
         """record_success transitions HALF_OPEN back to CLOSED."""
-        cb = CircuitBreaker(
-            "test-provider", failure_threshold=1, recovery_timeout_seconds=10.0
-        )
+        cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=10.0)
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
@@ -151,9 +145,7 @@ class TestCircuitBreaker:
 
     def test_failure_in_half_open_reopens(self) -> None:
         """failure in HALF_OPEN state transitions immediately to OPEN."""
-        cb = CircuitBreaker(
-            "test-provider", failure_threshold=1, recovery_timeout_seconds=10.0
-        )
+        cb = CircuitBreaker("test-provider", failure_threshold=1, recovery_timeout_seconds=10.0)
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
@@ -168,9 +160,7 @@ class TestCircuitBreaker:
 
     def test_full_cycle_closed_open_halfopen_closed(self) -> None:
         """circuit transitions through full lifecycle: CLOSED -> OPEN -> HALF_OPEN -> CLOSED."""
-        cb = CircuitBreaker(
-            "test-provider", failure_threshold=2, recovery_timeout_seconds=10.0
-        )
+        cb = CircuitBreaker("test-provider", failure_threshold=2, recovery_timeout_seconds=10.0)
 
         assert cb.state == CircuitState.CLOSED
 

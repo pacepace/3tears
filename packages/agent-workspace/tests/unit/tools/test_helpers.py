@@ -56,18 +56,14 @@ class _FakeWorkspaceCollection:
         self.by_name_calls: list[tuple[UUID, str]] = []
         self.by_id_calls: list[tuple[UUID, UUID]] = []
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         self.by_name_calls.append((agent_id, name))
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         self.by_id_calls.append((workspace_id, agent_id))
         for e in self._entities:
             if e.id == workspace_id:
@@ -97,9 +93,7 @@ async def test_resolve_workspace_explicit_name_hits() -> None:
     target = _FakeWorkspaceEntity(id=uuid4(), name="alpha")
     workspaces = _FakeWorkspaceCollection([target])
 
-    result = await _resolve_workspace(
-        "alpha", _FakeContext(), workspaces, agent_id
-    )
+    result = await _resolve_workspace("alpha", _FakeContext(), workspaces, agent_id)
 
     assert result is target
     assert workspaces.by_name_calls == [(agent_id, "alpha")]
@@ -111,9 +105,7 @@ async def test_resolve_workspace_explicit_name_miss_raises() -> None:
     """unknown workspace_arg raises WorkspaceNotFound."""
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(WorkspaceNotFound) as excinfo:
-        await _resolve_workspace(
-            "ghost", _FakeContext(), workspaces, uuid4()
-        )
+        await _resolve_workspace("ghost", _FakeContext(), workspaces, uuid4())
     assert "ghost" in str(excinfo.value)
 
 
@@ -146,9 +138,7 @@ async def test_resolve_workspace_pin_fallback_hits(
 
     monkeypatch.setattr(helpers_module._pin, "get_pin", _stub_get_pin)
 
-    result = await _resolve_workspace(
-        None, _FakeContext(), workspaces, agent_id
-    )
+    result = await _resolve_workspace(None, _FakeContext(), workspaces, agent_id)
 
     assert result is pinned
     assert workspaces.by_id_calls == [(pinned.id, agent_id)]
@@ -175,9 +165,7 @@ async def test_resolve_workspace_pin_stale_raises(
 @pytest.mark.asyncio
 async def test_resolve_workspace_soft_deleted_raises() -> None:
     """soft-deleted entity resolved by name raises WorkspaceNotFound."""
-    deleted = _FakeWorkspaceEntity(
-        id=uuid4(), name="rip", date_deleted=datetime.now(UTC)
-    )
+    deleted = _FakeWorkspaceEntity(id=uuid4(), name="rip", date_deleted=datetime.now(UTC))
     workspaces = _FakeWorkspaceCollection([deleted])
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
@@ -287,10 +275,7 @@ async def test_write_file_atomic_new_file_inserts_at_version_one() -> None:
 
     assert new_version == 1
     # sha256("hello")
-    assert (
-        new_sha
-        == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-    )
+    assert new_sha == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
     # two fetchrows (head SELECT + journal-max SELECT), both in tx;
     # three executes (journal insert, head upsert, workspace update).
     assert len(pool.conn.fetchrows) == 2
@@ -477,9 +462,7 @@ class _RefQueryConnection:
         self._row = row
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetchrow(
-        self, query: str, *args: Any
-    ) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         self.calls.append((query, args))
         return self._row
 
@@ -531,9 +514,7 @@ async def test_resolve_ref_non_numeric_string_treated_as_checkpoint_label() -> N
     workspace_id = uuid4()
     row = {"version": 2, "content": b"cp", "action": "checkpoint", "label": "v1-release"}
     conn = _RefQueryConnection(row)
-    result = await _resolve_ref(
-        conn, workspace_id, "a.txt", "v1-release"
-    )
+    result = await _resolve_ref(conn, workspace_id, "a.txt", "v1-release")
     assert result == row
     sql, args = conn.calls[0]
     assert "action = 'checkpoint'" in sql

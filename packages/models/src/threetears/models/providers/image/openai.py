@@ -77,7 +77,11 @@ class OpenAIImageProvider:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             if source_image is not None:
                 response = await self._img2img(
-                    client, headers, prompt, source_image, source_mime_type,
+                    client,
+                    headers,
+                    prompt,
+                    source_image,
+                    source_mime_type,
                 )
             else:
                 response = await self._txt2img(client, headers, prompt, style)

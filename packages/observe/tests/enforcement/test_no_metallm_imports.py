@@ -21,12 +21,6 @@ def test_no_metallm_imports(path: Path):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        assert "from src." not in stripped, (
-            f"{path.name}:{i} imports from metallm (src.*): {stripped}"
-        )
-        assert "import src." not in stripped, (
-            f"{path.name}:{i} imports from metallm (src.*): {stripped}"
-        )
-        assert "from metallm" not in stripped, (
-            f"{path.name}:{i} imports from metallm: {stripped}"
-        )
+        assert "from src." not in stripped, f"{path.name}:{i} imports from metallm (src.*): {stripped}"
+        assert "import src." not in stripped, f"{path.name}:{i} imports from metallm (src.*): {stripped}"
+        assert "from metallm" not in stripped, f"{path.name}:{i} imports from metallm: {stripped}"

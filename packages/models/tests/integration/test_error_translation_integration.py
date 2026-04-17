@@ -63,14 +63,13 @@ class TestErrorTranslation:
             OSError("network down"),
         ]
 
-        traceback_markers = ["Traceback", "File \"", "line ", "  at "]
+        traceback_markers = ["Traceback", 'File "', "line ", "  at "]
 
         for exc in exceptions:
             msg = friendly_api_error(exc)
             for marker in traceback_markers:
                 assert marker not in msg, (
-                    f"friendly message for {type(exc).__name__} "
-                    f"contains traceback marker: {marker!r}"
+                    f"friendly message for {type(exc).__name__} contains traceback marker: {marker!r}"
                 )
 
 

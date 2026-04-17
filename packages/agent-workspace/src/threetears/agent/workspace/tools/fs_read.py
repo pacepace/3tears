@@ -117,17 +117,12 @@ class FsReadTool(TearsTool):
                 self._agent_id,
             )
             self._sandbox.enforce("read", relative_path)
-            file_entity = await self._files.find_by_workspace_and_relative_path(
-                workspace.id, relative_path
-            )
+            file_entity = await self._files.find_by_workspace_and_relative_path(workspace.id, relative_path)
             if file_entity is None:
                 result = ToolResult(
                     success=False,
                     content="",
-                    error=(
-                        f"file {relative_path!r} not found in workspace "
-                        f"{workspace.name!r}"
-                    ),
+                    error=(f"file {relative_path!r} not found in workspace {workspace.name!r}"),
                 )
             else:
                 content_bytes = file_entity.content

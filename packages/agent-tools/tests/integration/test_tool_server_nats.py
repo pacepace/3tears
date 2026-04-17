@@ -122,12 +122,14 @@ class TestToolServerNatsIntegration:
 
             call_subject = f"{namespace}.tools.internal.{pod_id}"
             correlation_id = str(uuid4())
-            request_data = json.dumps({
-                "tool_name": "integration.stub",
-                "tool_version": "1.0",
-                "arguments": {"message": "hello"},
-                "correlation_id": correlation_id,
-            }).encode("utf-8")
+            request_data = json.dumps(
+                {
+                    "tool_name": "integration.stub",
+                    "tool_version": "1.0",
+                    "arguments": {"message": "hello"},
+                    "correlation_id": correlation_id,
+                }
+            ).encode("utf-8")
 
             response = await nc.request(call_subject, request_data, timeout=5.0)
             response_data = json.loads(response.data)

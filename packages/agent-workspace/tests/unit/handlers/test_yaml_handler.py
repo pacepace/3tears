@@ -63,16 +63,12 @@ class TestExtensions:
 class TestLoadDump:
     """load parses into CommentedMap/CommentedSeq; dump produces text."""
 
-    def test_load_returns_commented_map_for_mapping_root(
-        self, handler: Any
-    ) -> None:
+    def test_load_returns_commented_map_for_mapping_root(self, handler: Any) -> None:
         tree = handler.load("key: value\n")
         assert isinstance(tree, CommentedMap)
         assert tree["key"] == "value"
 
-    def test_load_returns_commented_seq_for_sequence_root(
-        self, handler: Any
-    ) -> None:
+    def test_load_returns_commented_seq_for_sequence_root(self, handler: Any) -> None:
         tree = handler.load("- a\n- b\n")
         assert isinstance(tree, CommentedSeq)
         assert list(tree) == ["a", "b"]
@@ -97,12 +93,7 @@ class TestRoundTripPreservation:
     """load -> dump -> load preserves comments, order, anchors, quotes."""
 
     def test_comments_preserved_line_and_eol(self, handler: Any) -> None:
-        source = (
-            "# top level comment\n"
-            "key1: value1  # eol comment\n"
-            "# between comment\n"
-            "key2: value2\n"
-        )
+        source = "# top level comment\nkey1: value1  # eol comment\n# between comment\nkey2: value2\n"
         dumped = handler.dump(handler.load(source))
         assert "# top level comment" in dumped
         assert "# eol comment" in dumped
@@ -117,14 +108,7 @@ class TestRoundTripPreservation:
         assert z_pos < a_pos < m_pos
 
     def test_anchors_and_aliases_preserved(self, handler: Any) -> None:
-        source = (
-            "defaults: &defaults\n"
-            "  timeout: 30\n"
-            "  retries: 3\n"
-            "service:\n"
-            "  <<: *defaults\n"
-            "  name: api\n"
-        )
+        source = "defaults: &defaults\n  timeout: 30\n  retries: 3\nservice:\n  <<: *defaults\n  name: api\n"
         dumped = handler.dump(handler.load(source))
         assert "&defaults" in dumped
         assert "*defaults" in dumped
@@ -146,9 +130,7 @@ class TestRoundTripPreservation:
         assert "'bare'" not in dumped
         assert '"bare"' not in dumped
 
-    def test_audience_settings_round_trip_preserves_structure(
-        self, handler: Any
-    ) -> None:
+    def test_audience_settings_round_trip_preserves_structure(self, handler: Any) -> None:
         """round-trip of real audience_settings.yaml keeps all keys and values.
 
         source indent is 4-space mapping; handler normalizes to 2-space, so
@@ -163,9 +145,7 @@ class TestRoundTripPreservation:
         assert "'>= 1000'" in dumped
         assert "= 0" in dumped
 
-    def test_standard_audience_units_round_trip_byte_stable(
-        self, handler: Any
-    ) -> None:
+    def test_standard_audience_units_round_trip_byte_stable(self, handler: Any) -> None:
         """standard_audience_units.yaml uses 2-space mapping indent -- matches.
 
         this fixture was written in the same indent style the handler uses,
@@ -175,9 +155,7 @@ class TestRoundTripPreservation:
         dumped = handler.dump(handler.load(text))
         assert dumped.strip() == text.strip()
 
-    def test_linkedin_audience_units_round_trip_byte_stable(
-        self, handler: Any
-    ) -> None:
+    def test_linkedin_audience_units_round_trip_byte_stable(self, handler: Any) -> None:
         """linkedin_audience_units.yaml uses 2-space mapping indent -- matches."""
         text = (FIXTURES_DIR / "linkedin_audience_units.yaml").read_text()
         dumped = handler.dump(handler.load(text))
@@ -237,15 +215,8 @@ class TestSet:
         handler.set(tree, "$.a[0].x", 42)
         assert tree["a"][0]["x"] == 42
 
-    def test_set_preserves_comments_on_unaffected_portions(
-        self, handler: Any
-    ) -> None:
-        source = (
-            "# header comment\n"
-            "a:\n"
-            "  b: 1  # inline comment\n"
-            "c: 2\n"
-        )
+    def test_set_preserves_comments_on_unaffected_portions(self, handler: Any) -> None:
+        source = "# header comment\na:\n  b: 1  # inline comment\nc: 2\n"
         tree = handler.load(source)
         handler.set(tree, "$.c", 99)
         dumped = handler.dump(tree)
@@ -253,9 +224,7 @@ class TestSet:
         assert "# inline comment" in dumped
         assert "c: 99" in dumped
 
-    def test_set_on_audience_fixture_preserves_comments_and_structure(
-        self, handler: Any
-    ) -> None:
+    def test_set_on_audience_fixture_preserves_comments_and_structure(self, handler: Any) -> None:
         """set on a real audience fixture leaves surrounding structure intact."""
         text = (FIXTURES_DIR / "audience_settings.yaml").read_text()
         tree = handler.load(text)
@@ -266,9 +235,7 @@ class TestSet:
         assert reloaded["audience_units"][0]["audience_unit"] == "knowwho_all"
         assert reloaded["audience_units"][3]["audience_unit"] == "donors"
         assert (
-            reloaded["audience_units"][3]["relationships"]["donors_to_candidate"][
-                "committee_transaction_amt"
-            ]
+            reloaded["audience_units"][3]["relationships"]["donors_to_candidate"]["committee_transaction_amt"]
             == ">= 1000"
         )
 
@@ -287,9 +254,7 @@ class TestMerge:
         handler.merge(tree, {"a": 99})
         assert tree["a"] == 99
 
-    def test_merge_recursively_merges_nested_mapping(
-        self, handler: Any
-    ) -> None:
+    def test_merge_recursively_merges_nested_mapping(self, handler: Any) -> None:
         tree = handler.load("a:\n  b: 1\n  c: 2\n")
         handler.merge(tree, {"a": {"c": 99, "d": 3}})
         assert tree["a"]["b"] == 1
@@ -332,9 +297,7 @@ class TestSelfRegistration:
         resolved = handler_for("foo.yaml")
         assert isinstance(resolved, mod.YamlHandler)
 
-    def test_package_import_triggers_registration(
-        self, clean_registry: None
-    ) -> None:
+    def test_package_import_triggers_registration(self, clean_registry: None) -> None:
         """importing threetears.agent.workspace top-level also registers.
 
         simulates a fresh process by evicting the package, its handlers
@@ -359,9 +322,7 @@ class TestSelfRegistration:
 
         assert isinstance(resolved, YamlHandler)
 
-    def test_registered_for_both_yaml_and_yml(
-        self, clean_registry: None
-    ) -> None:
+    def test_registered_for_both_yaml_and_yml(self, clean_registry: None) -> None:
         import sys
 
         sys.modules.pop("threetears.agent.workspace.handlers.yaml_handler", None)

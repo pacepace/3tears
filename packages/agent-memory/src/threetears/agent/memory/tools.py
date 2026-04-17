@@ -654,10 +654,7 @@ async def load_add_memory_tool(
         # Validate type
         mt = memory_type.lower().strip()
         if mt not in _VALID_MEMORY_TYPES:
-            return (
-                f"Invalid memory_type '{memory_type}'. "
-                f"Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
-            )
+            return f"Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
 
         # Generate embedding
         try:
@@ -710,16 +707,15 @@ async def load_add_memory_tool(
                     )
                     log.info(
                         "add_memory: updated existing similar memory",
-                        extra={"extra_data": {
-                            "memory_id": str(existing_id),
-                            "similarity": round(float(row["similarity"]), 3),
-                            "old_content": row["content"][:100],
-                        }},
+                        extra={
+                            "extra_data": {
+                                "memory_id": str(existing_id),
+                                "similarity": round(float(row["similarity"]), 3),
+                                "old_content": row["content"][:100],
+                            }
+                        },
                     )
-                    return (
-                        f"Updated existing memory (was similar at "
-                        f"{float(row['similarity']):.0%}): {content}"
-                    )
+                    return f"Updated existing memory (was similar at {float(row['similarity']):.0%}): {content}"
 
         except Exception as exc:
             # Dedup check failed — proceed with insert anyway
@@ -755,11 +751,13 @@ async def load_add_memory_tool(
 
             log.info(
                 "add_memory: stored new memory",
-                extra={"extra_data": {
-                    "memory_id": str(memory_id),
-                    "type": mt,
-                    "content": content[:100],
-                }},
+                extra={
+                    "extra_data": {
+                        "memory_id": str(memory_id),
+                        "type": mt,
+                        "content": content[:100],
+                    }
+                },
             )
             return f"Remembered: {content}"
 

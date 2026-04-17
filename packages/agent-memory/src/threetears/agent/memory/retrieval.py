@@ -298,7 +298,12 @@ class MemoryRetriever:
         :rtype: str | None
         """
         result = await self.retrieve_with_candidates(
-            pool, user_id, user_text, ledger, agent_id=agent_id, customer_id=customer_id,
+            pool,
+            user_id,
+            user_text,
+            ledger,
+            agent_id=agent_id,
+            customer_id=customer_id,
         )
         return result.context
 
@@ -453,7 +458,10 @@ class MemoryRetriever:
         weights = cfg.signal_weights
 
         scope_conditions, scope_params, param_offset = _build_scope_clause(
-            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2,
+            user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            start_param=2,
         )
 
         vec_where = f"WHERE {scope_conditions} AND is_deleted = false"
@@ -477,7 +485,10 @@ class MemoryRetriever:
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
             fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
-                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2,
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
             )
             fts_where = f"WHERE {fts_scope_conditions} AND is_deleted = false"
             fts_limit_param = f"${fts_param_offset + 1}"
@@ -590,7 +601,11 @@ class MemoryRetriever:
         weights = cfg.signal_weights
 
         scope_conditions, scope_params, param_offset = _build_scope_clause(
-            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+            user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            start_param=2,
+            table_prefix="mc",
         )
         limit_param = f"${param_offset + 1}"
 
@@ -614,7 +629,11 @@ class MemoryRetriever:
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
             fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
-                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
+                table_prefix="mc",
             )
             fts_limit_param = f"${fts_param_offset + 1}"
             fts_coro = pool.fetch(
@@ -747,7 +766,11 @@ class MemoryRetriever:
         chunk_weights = cfg.chunk_signal_weights
 
         scope_conditions, scope_params, param_offset = _build_scope_clause(
-            user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+            user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            start_param=2,
+            table_prefix="mc",
         )
         limit_param = f"${param_offset + 1}"
 
@@ -771,7 +794,11 @@ class MemoryRetriever:
         fts_text = _build_fts_query(user_text, cfg.fts_min_query_len, cfg.fts_max_query_len)
         if fts_text:
             fts_scope_conditions, fts_scope_params, fts_param_offset = _build_scope_clause(
-                user_id, agent_id=agent_id, customer_id=customer_id, start_param=2, table_prefix="mc",
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
+                table_prefix="mc",
             )
             fts_limit_param = f"${fts_param_offset + 1}"
             fts_coro = pool.fetch(

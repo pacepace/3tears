@@ -139,9 +139,7 @@ class ModelsLabImageProvider:
             if poll_data.get("status") == "success":
                 return str(poll_data["output"][0])
 
-        raise TimeoutError(
-            f"ModelsLab generation did not complete after {self._max_polls} polls"
-        )
+        raise TimeoutError(f"ModelsLab generation did not complete after {self._max_polls} polls")
 
 
 # register protocol compliance for static analysis

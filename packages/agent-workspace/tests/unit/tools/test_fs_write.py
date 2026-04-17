@@ -32,17 +32,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -170,11 +166,7 @@ def _build_tool(
     agent_id: UUID | None = None,
 ) -> tuple[FsWriteTool, _FakePool, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    ws_entity = (
-        workspace_entities[0]
-        if workspace_entities
-        else _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    )
+    ws_entity = workspace_entities[0] if workspace_entities else _FakeWorkspaceEntity(id=uuid4(), name="ws")
     workspaces = _FakeWorkspaceCollection(workspace_entities or [ws_entity])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_writes=deny_writes)
@@ -258,9 +250,7 @@ async def test_fs_write_update_existing_file_bumps_version_and_sha() -> None:
     tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head)
     pool.conn.journal_max_version = 5
 
-    result = await tool.execute(
-        relative_path="a.md", content="fresh", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", content="fresh", workspace="ws")
     assert result.success is True, result.error
     # journal action=update, version=6
     journal_args = pool.conn.executions[0][1]
@@ -315,9 +305,7 @@ async def test_fs_write_stale_expected_sha_returns_mismatch_error() -> None:
 async def test_fs_write_sandbox_denied_returns_clean_error_no_writes() -> None:
     """SandboxDenied on write -> clean error, no pool acquire."""
     tool, pool, sandbox, _ = _build_tool(deny_writes=["secret.env"])
-    result = await tool.execute(
-        relative_path="secret.env", content="x", workspace="ws"
-    )
+    result = await tool.execute(relative_path="secret.env", content="x", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "secret.env" in result.error

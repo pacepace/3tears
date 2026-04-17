@@ -20,12 +20,7 @@ from threetears.agent.workspace.tools.doc_get import DocGetTool
 # ---------------------------------------------------------------------------
 
 
-_FIXTURE_PATH = (
-    Path(__file__).parent.parent
-    / "handlers"
-    / "fixtures"
-    / "audience_settings.yaml"
-)
+_FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audience_settings.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -44,17 +39,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -113,9 +104,7 @@ def _build_tool(
     agent_id: UUID | None = None,
 ) -> tuple[DocGetTool, _FakeFileCollection, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    workspaces = _FakeWorkspaceCollection(
-        workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")]
-    )
+    workspaces = _FakeWorkspaceCollection(workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = DocGetTool(
@@ -148,13 +137,9 @@ async def test_doc_get_whole_document_returns_dumped_yaml_with_structure() -> No
         sha256="a" * 64,
         version=3,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
-    result = await tool.execute(
-        relative_path="audience_settings.yaml", workspace="ws"
-    )
+    result = await tool.execute(relative_path="audience_settings.yaml", workspace="ws")
 
     assert result.success is True, result.error
     # top-level key preserved
@@ -162,9 +147,7 @@ async def test_doc_get_whole_document_returns_dumped_yaml_with_structure() -> No
     # at least one audience unit name preserved
     assert "knowwho_all" in result.content
     # key ordering preserved -- audience_unit appears before vb_candidates
-    assert result.content.index("audience_unit:") < result.content.index(
-        "vb_candidates:"
-    )
+    assert result.content.index("audience_unit:") < result.content.index("vb_candidates:")
     # metadata carries sha and format
     assert result.metadata is not None
     assert result.metadata["sha256"] == "a" * 64
@@ -187,9 +170,7 @@ async def test_doc_get_jsonpath_scalar_returns_serialized_scalar() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -212,9 +193,7 @@ async def test_doc_get_jsonpath_not_found_returns_clean_error() -> None:
         sha256="c" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -243,9 +222,7 @@ async def test_doc_get_unknown_format_returns_clean_error() -> None:
         sha256="d" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(relative_path="notes.txt", workspace="ws")
 
@@ -271,9 +248,7 @@ async def test_doc_get_binary_file_with_known_suffix_returns_clean_error() -> No
         sha256="e" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(relative_path="rogue.yaml", workspace="ws")
 
@@ -322,13 +297,9 @@ async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch() -> None:
 async def test_doc_get_missing_file_returns_clean_error() -> None:
     """head row absent -> clean error naming file and workspace."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
 
-    result = await tool.execute(
-        relative_path="missing.yaml", workspace="ws"
-    )
+    result = await tool.execute(relative_path="missing.yaml", workspace="ws")
 
     assert result.success is False
     assert result.error is not None

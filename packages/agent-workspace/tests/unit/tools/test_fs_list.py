@@ -31,17 +31,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -71,9 +67,7 @@ class _FilteringSandbox:
     def __init__(self, deny_reads: list[str] | None = None) -> None:
         self._deny_reads = set(deny_reads or [])
 
-    def check_relative_key(
-        self, key: str, mode: str
-    ) -> SandboxDecision:
+    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
         if mode == "read" and key in self._deny_reads:
             return SandboxDecision.DENY
         return SandboxDecision.ALLOW

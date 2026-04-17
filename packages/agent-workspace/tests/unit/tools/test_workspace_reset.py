@@ -44,9 +44,7 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
@@ -190,9 +188,7 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
     (template_dir / "main.py").write_bytes(b"original = True\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(
-        id=ws_id, name="seed", template_name="starter", current_version=4
-    )
+    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=4)
     current_files = [
         _FakeFileEntity(relative_path="README.md", content=b"# tampered\n", sha256="x" * 64),
         _FakeFileEntity(relative_path="main.py", content=b"hacked = True\n", sha256="y" * 64),
@@ -220,9 +216,7 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
 
     # 2 file upserts, 2 journal revert rows, 1 version update
     file_upserts = [e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]]
-    journal_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     version_updates = [e for e in pool.conn.executions if "UPDATE workspaces SET current_version" in e[0]]
     assert len(file_upserts) == 2
     assert len(journal_inserts) == 2
@@ -247,9 +241,7 @@ async def test_reset_drops_files_template_no_longer_has(tmp_path: Path) -> None:
     (template_dir / "keep.md").write_bytes(b"keep me\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(
-        id=ws_id, name="seed", template_name="starter", current_version=1
-    )
+    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=1)
     current_files = [
         _FakeFileEntity(relative_path="keep.md", content=b"old\n", sha256="a" * 64),
         _FakeFileEntity(relative_path="dropped.md", content=b"orphan\n", sha256="b" * 64),
@@ -269,9 +261,7 @@ async def test_reset_drops_files_template_no_longer_has(tmp_path: Path) -> None:
     assert len(deletes) == 1
     assert deletes[0][1][1] == "dropped.md"
 
-    journal_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     actions = sorted(args[6] for _sql, args, _intx in journal_inserts)
     assert actions == ["delete", "revert"]
 
@@ -285,9 +275,7 @@ async def test_reset_creates_files_template_added(tmp_path: Path) -> None:
     (template_dir / "new.md").write_bytes(b"new\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(
-        id=ws_id, name="seed", template_name="starter", current_version=2
-    )
+    workspace = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=2)
     current_files = [
         _FakeFileEntity(relative_path="old.md", content=b"old\n", sha256="o" * 64),
     ]
@@ -302,9 +290,7 @@ async def test_reset_creates_files_template_added(tmp_path: Path) -> None:
     result = await tool.execute(name="seed")
 
     assert result.success is True
-    journal_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     by_action = {args[6]: args for _sql, args, _intx in journal_inserts}
     assert "create" in by_action
     assert by_action["create"][2] == "new.md"
@@ -322,9 +308,7 @@ async def test_reset_uses_pin_when_name_omitted(
     (template_dir / "x.md").write_bytes(b"x\n")
 
     ws_id = uuid4()
-    workspace = _FakeWorkspaceEntity(
-        id=ws_id, name="pinned", template_name="starter", current_version=0
-    )
+    workspace = _FakeWorkspaceEntity(id=ws_id, name="pinned", template_name="starter", current_version=0)
 
     async def _get_pin(_ctx: Any) -> _PinnedSnapshot:
         return _PinnedSnapshot(workspace_id=ws_id, workspace_name="pinned")
@@ -393,9 +377,7 @@ async def test_reset_workspace_not_found_returns_error() -> None:
 @pytest.mark.asyncio
 async def test_reset_workspace_without_template_returns_error() -> None:
     """workspace without template_name yields clean error and no writes."""
-    workspace = _FakeWorkspaceEntity(
-        id=uuid4(), name="empty", template_name=None, current_version=0
-    )
+    workspace = _FakeWorkspaceEntity(id=uuid4(), name="empty", template_name=None, current_version=0)
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),

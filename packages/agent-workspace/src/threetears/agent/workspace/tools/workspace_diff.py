@@ -50,15 +50,11 @@ _INPUT_SCHEMA: dict[str, Any] = {
         },
         "from_ref": {
             "type": ["string", "integer"],
-            "description": (
-                "origin ref: 'head', integer version, or checkpoint label"
-            ),
+            "description": ("origin ref: 'head', integer version, or checkpoint label"),
         },
         "to_ref": {
             "type": ["string", "integer"],
-            "description": (
-                "target ref: 'head', integer version, or checkpoint label"
-            ),
+            "description": ("target ref: 'head', integer version, or checkpoint label"),
         },
         "workspace": {
             "type": "string",
@@ -154,27 +150,19 @@ class WorkspaceDiffTool(TearsTool):
             )
             self._sandbox.enforce("read", relative_path)
             async with self._db_pool.acquire() as conn:
-                from_row = await _resolve_ref(
-                    conn, workspace.id, relative_path, from_ref
-                )
-                to_row = await _resolve_ref(
-                    conn, workspace.id, relative_path, to_ref
-                )
+                from_row = await _resolve_ref(conn, workspace.id, relative_path, from_ref)
+                to_row = await _resolve_ref(conn, workspace.id, relative_path, to_ref)
             if from_row is None:
                 result = ToolResult(
                     success=False,
                     content="",
-                    error=(
-                        f"ref {from_ref!r} not found for {relative_path!r}"
-                    ),
+                    error=(f"ref {from_ref!r} not found for {relative_path!r}"),
                 )
             elif to_row is None:
                 result = ToolResult(
                     success=False,
                     content="",
-                    error=(
-                        f"ref {to_ref!r} not found for {relative_path!r}"
-                    ),
+                    error=(f"ref {to_ref!r} not found for {relative_path!r}"),
                 )
             else:
                 try:

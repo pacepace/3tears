@@ -275,7 +275,9 @@ class ToolContextManager:
     # ------------------------------------------------------------------
 
     async def get_item_by_type_and_key(
-        self, context_type: str, key: str,
+        self,
+        context_type: str,
+        key: str,
     ) -> dict[str, Any] | None:
         """Fetch a single context item by ``(context_type, key)`` pair.
 
@@ -354,14 +356,18 @@ class ToolContextManager:
         }
         await self._collection.save_entity(
             self._collection.entity_class(
-                data, is_new=True, collection=self._collection,
+                data,
+                is_new=True,
+                collection=self._collection,
             )
         )
         self._items.append(data)
         return str(context_id)
 
     async def delete_item_by_type_and_key(
-        self, context_type: str, key: str,
+        self,
+        context_type: str,
+        key: str,
     ) -> bool:
         """Delete a context item by ``(context_type, key)`` pair.
 

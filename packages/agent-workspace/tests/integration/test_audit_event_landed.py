@@ -94,9 +94,7 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
     collection = _StubAuditEventCollection()
     consumer = _InProcessAuditConsumer(collection)
     namespace = "threetears-test"
-    fx.nats.register_subscription(
-        f"{namespace}.audit.workspace.", consumer.handle
-    )
+    fx.nats.register_subscription(f"{namespace}.audit.workspace.", consumer.handle)
 
     sandbox = WorkspaceSandbox.from_config(
         WorkspaceConfig(
@@ -133,11 +131,7 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
     assert result.success is True, result.error
 
     # the fake NATS bus captured exactly one publish on the expected subject.
-    audit_publishes = [
-        (s, p)
-        for s, p in fx.nats.published
-        if s.startswith(f"{namespace}.audit.workspace.")
-    ]
+    audit_publishes = [(s, p) for s, p in fx.nats.published if s.startswith(f"{namespace}.audit.workspace.")]
     assert len(audit_publishes) == 1, audit_publishes
     subject, payload = audit_publishes[0]
     assert subject == f"{namespace}.audit.workspace.set"

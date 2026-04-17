@@ -107,7 +107,9 @@ class TestMemoryEntityAgentId:
 
         assert entity.agent_id == new_agent
         coll._set_field_sync.assert_called_with(
-            data["memory_id"], "agent_id", new_agent,
+            data["memory_id"],
+            "agent_id",
+            new_agent,
         )
 
     def test_agent_id_in_to_dict(self) -> None:
@@ -162,7 +164,9 @@ class TestMemoryEntityCustomerId:
 
         assert entity.customer_id == new_customer
         coll._set_field_sync.assert_called_with(
-            data["memory_id"], "customer_id", new_customer,
+            data["memory_id"],
+            "customer_id",
+            new_customer,
         )
 
     def test_customer_id_in_to_dict(self) -> None:
@@ -233,7 +237,8 @@ class TestBuildScopeClause:
         agent_id = uuid7()
 
         conditions, params, last_idx = _build_scope_clause(
-            user_id, agent_id=agent_id,
+            user_id,
+            agent_id=agent_id,
         )
 
         assert "agent_id = $2" in conditions
@@ -247,7 +252,9 @@ class TestBuildScopeClause:
         customer_id = uuid7()
 
         conditions, params, last_idx = _build_scope_clause(
-            user_id, agent_id=agent_id, customer_id=customer_id,
+            user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
         )
 
         assert "agent_id = $2" in conditions
@@ -261,7 +268,9 @@ class TestBuildScopeClause:
         agent_id = uuid7()
 
         conditions, params, last_idx = _build_scope_clause(
-            user_id, agent_id=agent_id, table_prefix="mc",
+            user_id,
+            agent_id=agent_id,
+            table_prefix="mc",
         )
 
         assert "mc.agent_id = $2" in conditions
@@ -274,7 +283,9 @@ class TestBuildScopeClause:
         agent_id = uuid7()
 
         conditions, params, last_idx = _build_scope_clause(
-            user_id, agent_id=agent_id, start_param=5,
+            user_id,
+            agent_id=agent_id,
+            start_param=5,
         )
 
         assert "agent_id = $5" in conditions
@@ -286,7 +297,8 @@ class TestBuildScopeClause:
         customer_id = uuid7()
 
         conditions, params, last_idx = _build_scope_clause(
-            user_id, customer_id=customer_id,
+            user_id,
+            customer_id=customer_id,
         )
 
         assert "customer_id = $2" in conditions

@@ -60,55 +60,27 @@ def friendly_api_error(exc: Exception) -> str:
     """
     provider = identify_provider(exc)
 
-    message = (
-        f"Something unexpected went wrong ({type(exc).__name__}). "
-        f"Please retry or contact an administrator."
-    )
+    message = f"Something unexpected went wrong ({type(exc).__name__}). Please retry or contact an administrator."
 
     if _HAS_ANTHROPIC and isinstance(exc, APIStatusError):
         body = exc.body
         error_obj = body.get("error", {}) if isinstance(body, dict) else {}
-        is_overloaded = (
-            isinstance(error_obj, dict)
-            and error_obj.get("type") == "overloaded_error"
-        )
+        is_overloaded = isinstance(error_obj, dict) and error_obj.get("type") == "overloaded_error"
 
         if exc.status_code == 529 or is_overloaded:
-            message = (
-                f"{provider} is overloaded right now. "
-                f"Please retry in 1-2 minutes."
-            )
+            message = f"{provider} is overloaded right now. Please retry in 1-2 minutes."
         elif exc.status_code == 429:
-            message = (
-                f"{provider} rate-limited our request. "
-                f"Please retry in about 30 seconds."
-            )
+            message = f"{provider} rate-limited our request. Please retry in about 30 seconds."
         elif 500 <= exc.status_code < 600:
-            message = (
-                f"{provider} is having a server-side outage. "
-                f"Please retry in 2-3 minutes."
-            )
+            message = f"{provider} is having a server-side outage. Please retry in 2-3 minutes."
         elif exc.status_code == 401:
-            message = (
-                f"{provider} rejected our API key. "
-                f"Please contact an administrator."
-            )
+            message = f"{provider} rejected our API key. Please contact an administrator."
         else:
-            message = (
-                f"{provider} returned an unexpected error "
-                f"(HTTP {exc.status_code}). "
-                f"Please retry in a minute."
-            )
+            message = f"{provider} returned an unexpected error (HTTP {exc.status_code}). Please retry in a minute."
     elif _HAS_ANTHROPIC and isinstance(exc, APITimeoutError):
-        message = (
-            f"{provider} took too long to respond (request timed out). "
-            f"Please retry."
-        )
+        message = f"{provider} took too long to respond (request timed out). Please retry."
     elif _HAS_ANTHROPIC and isinstance(exc, APIConnectionError):
-        message = (
-            f"Could not connect to {provider} (network issue). "
-            f"Check connectivity and retry."
-        )
+        message = f"Could not connect to {provider} (network issue). Check connectivity and retry."
     elif isinstance(exc, ValueError) and "OpenRouter API" in str(exc):
         message = "OpenRouter returned an error. Please retry in 1-2 minutes."
 

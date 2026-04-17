@@ -47,17 +47,11 @@ _CREATE_MIGRATIONS_TABLE_SQL = (
     ")"
 )
 
-_SELECT_APPLIED_VERSIONS_SQL = (
-    "SELECT version FROM _schema_migrations ORDER BY version"
-)
+_SELECT_APPLIED_VERSIONS_SQL = "SELECT version FROM _schema_migrations ORDER BY version"
 
-_SELECT_MAX_VERSION_SQL = (
-    "SELECT COALESCE(MAX(version), 0) AS max_version FROM _schema_migrations"
-)
+_SELECT_MAX_VERSION_SQL = "SELECT COALESCE(MAX(version), 0) AS max_version FROM _schema_migrations"
 
-_INSERT_VERSION_SQL = (
-    "INSERT INTO _schema_migrations (version, description) VALUES ($1, $2)"
-)
+_INSERT_VERSION_SQL = "INSERT INTO _schema_migrations (version, description) VALUES ($1, $2)"
 
 
 class MigrationRunner:
@@ -89,6 +83,7 @@ class MigrationRunner:
         :rtype: Callable[[MigrationFunc], MigrationFunc]
         :raises ValueError: if version number already registered
         """
+
         def decorator(func: MigrationFunc) -> MigrationFunc:
             """register migration function at specified version.
 
@@ -121,9 +116,7 @@ class MigrationRunner:
         """
         await self._ensure_migrations_table()
         applied_versions = await self._get_applied_versions()
-        pending_versions = sorted(
-            v for v in self._migrations if v not in applied_versions
-        )
+        pending_versions = sorted(v for v in self._migrations if v not in applied_versions)
 
         count = 0
         for version_num in pending_versions:

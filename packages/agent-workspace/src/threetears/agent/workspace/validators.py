@@ -89,10 +89,7 @@ class WorkspaceValidationError(ValueError):
         self.pattern = pattern
         self.validator_path = validator_path
         self.reason = reason
-        super().__init__(
-            f"validation failed for pattern {pattern!r} "
-            f"(via {validator_path}): {reason}"
-        )
+        super().__init__(f"validation failed for pattern {pattern!r} (via {validator_path}): {reason}")
 
 
 _RESOLVED: dict[str, Callable[..., Any]] = {}
@@ -131,9 +128,7 @@ def _resolve_validator(dotted: str) -> Callable[..., Any]:
         return cached
     module_path, _, attr = dotted.rpartition(".")
     if not module_path:
-        raise ValueError(
-            f"validator must be a dotted import path, got {dotted!r}"
-        )
+        raise ValueError(f"validator must be a dotted import path, got {dotted!r}")
     module = importlib.import_module(module_path)
     fn = getattr(module, attr)
     if not callable(fn):

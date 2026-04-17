@@ -36,9 +36,7 @@ class CircuitOpenError(Exception):
     def __init__(self, provider_name: str, remaining_seconds: float) -> None:
         self.provider_name = provider_name
         self.remaining_seconds = remaining_seconds
-        super().__init__(
-            f"Circuit open for {provider_name}, retry in {remaining_seconds:.0f}s"
-        )
+        super().__init__(f"Circuit open for {provider_name}, retry in {remaining_seconds:.0f}s")
 
 
 class CircuitBreaker:
@@ -146,10 +144,7 @@ class CircuitBreaker:
                 )
                 return
 
-            if (
-                self._state == CircuitState.CLOSED
-                and self._failure_count >= self._failure_threshold
-            ):
+            if self._state == CircuitState.CLOSED and self._failure_count >= self._failure_threshold:
                 self._state = CircuitState.OPEN
                 logger.warning(
                     "circuit breaker opening for %s after %d failures",

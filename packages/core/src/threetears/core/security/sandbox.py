@@ -181,9 +181,7 @@ class PathSandbox(Sandbox):
         :return: None
         :rtype: None
         """
-        self._fs_roots: dict[str, Path] = {
-            name: Path(p).resolve() for name, p in fs_roots.items()
-        }
+        self._fs_roots: dict[str, Path] = {name: Path(p).resolve() for name, p in fs_roots.items()}
         self._allow_read: list[str] = list(allow_read)
         self._allow_write: list[str] = list(allow_write)
 
@@ -204,9 +202,7 @@ class PathSandbox(Sandbox):
         mode: Literal["read", "write"] = "read" if action == "read" else "write"
         return self.check_relative_key(target, mode)
 
-    def check_relative_key(
-        self, key: str, mode: Literal["read", "write"]
-    ) -> SandboxDecision:
+    def check_relative_key(self, key: str, mode: Literal["read", "write"]) -> SandboxDecision:
         """validate relative key syntactically then match against mode globs.
 
         validation sequence (first failing rule returns DENY):
@@ -267,9 +263,7 @@ class PathSandbox(Sandbox):
         try:
             candidate.relative_to(root)
         except ValueError as exc:
-            raise SandboxDenied(
-                "access", str(path), "path escapes root"
-            ) from exc
+            raise SandboxDenied("access", str(path), "path escapes root") from exc
         return candidate
 
     def _deny_reason(self, action: str, target: str) -> str:
@@ -294,9 +288,7 @@ class PathSandbox(Sandbox):
             result = reason
         return result
 
-    def _classify_relative_key(
-        self, key: str, mode: Literal["read", "write"]
-    ) -> tuple[SandboxDecision, str]:
+    def _classify_relative_key(self, key: str, mode: Literal["read", "write"]) -> tuple[SandboxDecision, str]:
         """joint implementation of decision + reason for a relative key.
 
         single source of truth behind :meth:`check_relative_key` and

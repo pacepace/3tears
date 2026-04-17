@@ -84,7 +84,9 @@ async def test_bind_live_watcher_imports_external_write(
     )
     sandbox = WorkspaceSandbox.from_config(config)
     lease = WorkspaceFileLease(
-        fx.nats, namespace="test", pod_id="test-pod",
+        fx.nats,
+        namespace="test",
+        pod_id="test-pod",
     )
     new_payload = b"audience_units:\n  - audience_unit: external_add\n"
     new_relpath = "externally_added.yaml"

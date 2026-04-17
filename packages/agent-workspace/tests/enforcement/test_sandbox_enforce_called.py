@@ -29,13 +29,7 @@ import ast
 from pathlib import Path
 
 
-_SRC_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "threetears"
-    / "agent"
-    / "workspace"
-)
+_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "workspace"
 _TOOLS_ROOT = _SRC_ROOT / "tools"
 
 
@@ -81,9 +75,7 @@ def _find_execute_function(
     result: ast.AsyncFunctionDef | ast.FunctionDef | None = None
     for cls in (n for n in tree.body if isinstance(n, ast.ClassDef)):
         for item in cls.body:
-            if isinstance(
-                item, (ast.AsyncFunctionDef, ast.FunctionDef)
-            ) and item.name == "execute":
+            if isinstance(item, (ast.AsyncFunctionDef, ast.FunctionDef)) and item.name == "execute":
                 result = item
                 break
         if result is not None:
@@ -168,9 +160,7 @@ class TestSandboxEnforceCalledBeforeWrite:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             execute_fn = _find_execute_function(tree)
             if execute_fn is None:
-                violations.append(
-                    f"{module_name}: no execute() method found on tool class"
-                )
+                violations.append(f"{module_name}: no execute() method found on tool class")
                 continue
 
             enforce_lines: list[int] = []
@@ -184,10 +174,7 @@ class TestSandboxEnforceCalledBeforeWrite:
                     write_lines.append(node.lineno)
 
             if not enforce_lines:
-                violations.append(
-                    f"{module_name}:{execute_fn.lineno}: execute() contains "
-                    f"no sandbox.enforce call"
-                )
+                violations.append(f"{module_name}:{execute_fn.lineno}: execute() contains no sandbox.enforce call")
                 continue
             # rule: every write must come after at least one enforce.
             first_enforce = min(enforce_lines)

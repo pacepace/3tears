@@ -72,15 +72,12 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "ref": {
             "type": ["string", "integer"],
-            "description": (
-                "target ref: 'head', integer version, or checkpoint label"
-            ),
+            "description": ("target ref: 'head', integer version, or checkpoint label"),
         },
         "relative_path": {
             "type": "string",
             "description": (
-                "optional single path to roll back; when omitted, every "
-                "head file in the workspace is rolled back"
+                "optional single path to roll back; when omitted, every head file in the workspace is rolled back"
             ),
         },
         "workspace": {
@@ -196,9 +193,7 @@ class WorkspaceRollbackTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
-            rollback_set = await self._collect_rollback_set(
-                workspace.id, relative_path
-            )
+            rollback_set = await self._collect_rollback_set(workspace.id, relative_path)
             # phase 2: enforce write on every path BEFORE any mutation.
             # shard-18 AST test relies on this ordering.
             for path in rollback_set:
@@ -206,9 +201,7 @@ class WorkspaceRollbackTool(TearsTool):
             # phase 3: per-file resolve + atomic write.
             async with self._db_pool.acquire() as conn:
                 for path in rollback_set:
-                    target = await _resolve_ref(
-                        conn, workspace.id, path, ref
-                    )
+                    target = await _resolve_ref(conn, workspace.id, path, ref)
                     if target is None:
                         continue
                     await _write_file_atomic(
@@ -252,9 +245,7 @@ class WorkspaceRollbackTool(TearsTool):
                 )
             result = ToolResult(
                 success=True,
-                content=(
-                    f"rolled back {n_changed} files to ref {ref!r}"
-                ),
+                content=(f"rolled back {n_changed} files to ref {ref!r}"),
                 metadata={"n_changed": n_changed, "ref": ref},
             )
         except WorkspaceValidationError as exc:
@@ -276,9 +267,7 @@ class WorkspaceRollbackTool(TearsTool):
             )
         return result
 
-    async def _collect_rollback_set(
-        self, workspace_id: UUID, relative_path: str | None
-    ) -> list[str]:
+    async def _collect_rollback_set(self, workspace_id: UUID, relative_path: str | None) -> list[str]:
         """
         enumerate the set of workspace-relative paths to roll back.
 
@@ -297,9 +286,7 @@ class WorkspaceRollbackTool(TearsTool):
         """
         result: list[str]
         if relative_path is not None and relative_path != "":
-            head = await self._files.find_by_workspace_and_relative_path(
-                workspace_id, relative_path
-            )
+            head = await self._files.find_by_workspace_and_relative_path(workspace_id, relative_path)
             result = [] if head is None else [head.relative_path]
         else:
             rows = await self._files.find_by_workspace(workspace_id)

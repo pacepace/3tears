@@ -24,6 +24,7 @@ from threetears.agent.tools.entities import ContextItemEntity
 
 log = get_logger(__name__)
 
+
 def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
     """ensure ``metadata`` on a row dict is a Python dict, not a JSON string.
 
@@ -44,7 +45,7 @@ def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(meta, str) and meta:
         try:
             row["metadata"] = json.loads(meta)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             # malformed jsonb on the wire: leave as-is so callers
             # surface the raw payload in their error path instead of
             # swallowing the corruption silently.
@@ -407,35 +408,24 @@ async def migrate_context_items_schema(pool: Any) -> bool:
         async with conn.transaction():
             # Rename summary → short_desc
             if "summary" in col_names and "short_desc" not in col_names:
-                await conn.execute(
-                    "ALTER TABLE context_items RENAME COLUMN summary TO short_desc"
-                )
+                await conn.execute("ALTER TABLE context_items RENAME COLUMN summary TO short_desc")
                 log.info("Renamed context_items.summary → short_desc")
 
             # Rename value → content
             if "value" in col_names and "content" not in col_names:
-                await conn.execute(
-                    "ALTER TABLE context_items RENAME COLUMN value TO content"
-                )
+                await conn.execute("ALTER TABLE context_items RENAME COLUMN value TO content")
                 log.info("Renamed context_items.value → content")
 
             # Add long_desc if missing, backfill from content
             if "long_desc" not in col_names:
                 await conn.execute(
-                    "ALTER TABLE context_items "
-                    "ADD COLUMN IF NOT EXISTS long_desc TEXT NOT NULL DEFAULT ''"
+                    "ALTER TABLE context_items ADD COLUMN IF NOT EXISTS long_desc TEXT NOT NULL DEFAULT ''"
                 )
-                await conn.execute(
-                    "UPDATE context_items SET long_desc = LEFT(content, 1000) "
-                    "WHERE long_desc = ''"
-                )
+                await conn.execute("UPDATE context_items SET long_desc = LEFT(content, 1000) WHERE long_desc = ''")
                 log.info("Added context_items.long_desc, backfilled from content")
 
             # Drop legacy check constraint (allow any context_type)
-            await conn.execute(
-                "ALTER TABLE context_items "
-                "DROP CONSTRAINT IF EXISTS ck_context_items_type"
-            )
+            await conn.execute("ALTER TABLE context_items DROP CONSTRAINT IF EXISTS ck_context_items_type")
 
     log.info("context_items schema migration complete")
     return True

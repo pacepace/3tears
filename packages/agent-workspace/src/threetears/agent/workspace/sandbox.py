@@ -84,13 +84,9 @@ class WorkspaceSandbox(PathSandbox):
         """
         result: str
         if action not in {"read", "write"}:
-            result = (
-                f"action {action!r} not understood; expected 'read' or 'write'"
-            )
+            result = f"action {action!r} not understood; expected 'read' or 'write'"
         else:
-            mode: Literal["read", "write"] = (
-                "read" if action == "read" else "write"
-            )
+            mode: Literal["read", "write"] = "read" if action == "read" else "write"
             _, core_reason = self._classify_relative_key(target, mode)
             result = self._reshape_reason(action, target, mode, core_reason)
         return result
@@ -128,9 +124,7 @@ class WorkspaceSandbox(PathSandbox):
             detail = core_reason.replace("key ", "", 1)
             result = f"invalid relative_path: {detail}"
         elif core_reason == "key contains NUL or control character":
-            result = (
-                "invalid relative_path: contains NUL or control character"
-            )
+            result = "invalid relative_path: contains NUL or control character"
         elif core_reason in (
             "absolute path not allowed",
             "parent-ref (..) not allowed in key",
@@ -138,10 +132,7 @@ class WorkspaceSandbox(PathSandbox):
             result = "relative_path must not be absolute or contain '..'"
         elif core_reason.startswith("no "):
             globs = self._allow_read if mode == "read" else self._allow_write
-            result = (
-                f"no glob in workspace.allow.{action} matched {target!r}; "
-                f"configured globs: {globs}"
-            )
+            result = f"no glob in workspace.allow.{action} matched {target!r}; configured globs: {globs}"
         else:
             result = f"invalid relative_path: {core_reason}"
         return result

@@ -210,9 +210,15 @@ class TestCatalogEntry:
         entry = _make_entry()
         data = entry.to_dict()
         expected_keys = {
-            "tool_name", "tool_version", "full_name",
-            "description", "input_schema", "output_schema",
-            "timeout_seconds", "endpoints", "date_registered",
+            "tool_name",
+            "tool_version",
+            "full_name",
+            "description",
+            "input_schema",
+            "output_schema",
+            "timeout_seconds",
+            "endpoints",
+            "date_registered",
         }
         assert set(data.keys()) == expected_keys
 
@@ -518,10 +524,12 @@ class TestToolCatalogSearch:
         """search filters entries by exact version match."""
         catalog = ToolCatalog()
         await catalog.register(_make_entry(tool_version="1.0.0"))
-        await catalog.register(_make_entry(
-            tool_name="threetears.other",
-            tool_version="2.0.0",
-        ))
+        await catalog.register(
+            _make_entry(
+                tool_name="threetears.other",
+                tool_version="2.0.0",
+            )
+        )
         results = catalog.search(version="2.0.0")
         assert len(results) == 1
         assert results[0].tool_version == "2.0.0"
@@ -530,14 +538,18 @@ class TestToolCatalogSearch:
     async def test_search_by_name_and_version(self) -> None:
         """search filters by both name and version."""
         catalog = ToolCatalog()
-        await catalog.register(_make_entry(
-            tool_name="threetears.calculator",
-            tool_version="1.0.0",
-        ))
-        await catalog.register(_make_entry(
-            tool_name="threetears.calculator",
-            tool_version="2.0.0",
-        ))
+        await catalog.register(
+            _make_entry(
+                tool_name="threetears.calculator",
+                tool_version="1.0.0",
+            )
+        )
+        await catalog.register(
+            _make_entry(
+                tool_name="threetears.calculator",
+                tool_version="2.0.0",
+            )
+        )
         results = catalog.search(name="calculator", version="2.0.0")
         assert len(results) == 1
         assert results[0].tool_version == "2.0.0"

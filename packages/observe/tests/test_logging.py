@@ -82,8 +82,13 @@ class TestContextFormatter:
         set_context(cid="cid-1", sid="sid-2", conv="conv-3")
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         output = formatter.format(record)
         assert "[cid:cid-1]" in output
@@ -94,8 +99,13 @@ class TestContextFormatter:
     def test_format_without_context(self):
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         output = formatter.format(record)
         # No context tags when context is empty
@@ -105,8 +115,13 @@ class TestContextFormatter:
     def test_format_with_color(self):
         formatter = ContextFormatter(use_color=True)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         output = formatter.format(record)
         assert "\033[32m" in output  # green for INFO
@@ -114,8 +129,13 @@ class TestContextFormatter:
     def test_format_with_extra_data(self):
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         record.extra_data = {"key": "value"}  # type: ignore[attr-defined]
         output = formatter.format(record)
@@ -125,8 +145,13 @@ class TestContextFormatter:
     def test_format_with_call_site_class(self):
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         record.call_site_file = "handler.py"  # type: ignore[attr-defined]
         record.call_site_class = "MyHandler"  # type: ignore[attr-defined]
@@ -141,11 +166,17 @@ class TestContextFormatter:
             raise ValueError("boom")
         except ValueError:
             import sys
+
             exc_info = sys.exc_info()
 
         record = logging.LogRecord(
-            name="test", level=logging.ERROR, pathname="test.py",
-            lineno=10, msg="error", args=(), exc_info=exc_info,
+            name="test",
+            level=logging.ERROR,
+            pathname="test.py",
+            lineno=10,
+            msg="error",
+            args=(),
+            exc_info=exc_info,
         )
         output = formatter.format(record)
         assert "ValueError: boom" in output
@@ -154,8 +185,13 @@ class TestContextFormatter:
         set_context(tenant="acme", trace_id="t-123")
         formatter = ContextFormatter(use_color=False)
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="test.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         output = formatter.format(record)
         assert "[tenant:acme]" in output

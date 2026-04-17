@@ -34,17 +34,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -74,9 +70,7 @@ class _FakeVersionCollection:
         self.by_workspace_calls: list[tuple[UUID, int]] = []
         self.by_path_calls: list[tuple[UUID, str, int]] = []
 
-    async def find_by_workspace(
-        self, workspace_id: UUID, limit: int
-    ) -> list[_FakeVersionRow]:
+    async def find_by_workspace(self, workspace_id: UUID, limit: int) -> list[_FakeVersionRow]:
         self.by_workspace_calls.append((workspace_id, limit))
         ordered = sorted(self._rows, key=lambda r: r.date_created, reverse=True)
         return ordered[:limit]
@@ -131,8 +125,7 @@ def _row(
         label=label,
         actor_id=uuid4(),
         correlation_id=uuid4(),
-        date_created=datetime(2026, 1, 1, tzinfo=UTC)
-        + timedelta(seconds=offset_seconds),
+        date_created=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=offset_seconds),
         sha256="s" * 64,
         content=content,
     )
@@ -187,9 +180,7 @@ async def test_history_workspace_wide_returns_newest_first_without_content() -> 
             offset_seconds=20,
         ),
     ]
-    tool, versions, _ = _build_tool(
-        workspace_entities=[ws], version_rows=rows
-    )
+    tool, versions, _ = _build_tool(workspace_entities=[ws], version_rows=rows)
     result = await tool.execute(workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -215,9 +206,7 @@ async def test_history_per_path_calls_enforce_and_narrow_query() -> None:
         _row(relative_path="b.md", version=1, offset_seconds=5),
         _row(relative_path="a.txt", version=2, offset_seconds=10),
     ]
-    tool, versions, sandbox = _build_tool(
-        workspace_entities=[ws], version_rows=rows
-    )
+    tool, versions, sandbox = _build_tool(workspace_entities=[ws], version_rows=rows)
     result = await tool.execute(relative_path="a.txt", workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -257,9 +246,7 @@ async def test_history_sandbox_denied_relative_path_returns_clean_error() -> Non
         version_rows=[_row(relative_path="secret.env", version=1)],
         deny_reads=["secret.env"],
     )
-    result = await tool.execute(
-        relative_path="secret.env", workspace="ws"
-    )
+    result = await tool.execute(relative_path="secret.env", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "secret.env" in result.error
@@ -294,9 +281,7 @@ async def test_history_limit_is_clamped_to_at_least_one() -> None:
 @pytest.mark.asyncio
 async def test_history_unknown_workspace_returns_clean_error() -> None:
     """unknown workspace name yields clean error."""
-    tool, _versions, _ = _build_tool(
-        workspace_entities=[], version_rows=[]
-    )
+    tool, _versions, _ = _build_tool(workspace_entities=[], version_rows=[])
     result = await tool.execute(workspace="ghost")
     assert result.success is False
     assert result.error is not None

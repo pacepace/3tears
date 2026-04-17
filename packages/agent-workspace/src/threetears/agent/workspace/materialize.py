@@ -225,7 +225,7 @@ def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
         try:
             resolved_candidate = candidate.resolve()
             resolved_candidate.relative_to(resolved_root)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             log.warning(
                 "workspace.snapshot_disk.skip_escape",
                 extra={
@@ -342,8 +342,7 @@ async def _seed_l3_from_disk(
             workspace.id,
         )
         existing_by_path: dict[str, tuple[str, int]] = {
-            row.relative_path: (row.sha256, row.version)
-            for row in existing_rows
+            row.relative_path: (row.sha256, row.version) for row in existing_rows
         }
         n_touched = await _seed_l3_disk_wins(
             workspace=workspace,
@@ -400,7 +399,9 @@ async def _seed_l3_import_all(
         async with conn.transaction():
             for rel, (content, sha) in disk.items():
                 new_version = await _next_journal_version(
-                    conn, workspace.id, rel,
+                    conn,
+                    workspace.id,
+                    rel,
                 )
                 if new_version > max_version:
                     max_version = new_version
@@ -504,7 +505,9 @@ async def _seed_l3_disk_wins(
             async with conn.transaction():
                 for rel, content, sha in creates:
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     if new_version > max_version:
                         max_version = new_version
@@ -534,7 +537,9 @@ async def _seed_l3_disk_wins(
                     )
                 for rel, content, sha in updates:
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     if new_version > max_version:
                         max_version = new_version
@@ -564,7 +569,9 @@ async def _seed_l3_disk_wins(
                     )
                 for rel in deletes:
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     if new_version > max_version:
                         max_version = new_version
@@ -598,7 +605,9 @@ async def _seed_l3_disk_wins(
 
 
 def _resolve_under_root(
-    candidate: Path, disk_root: Path, resolved_root: Path,
+    candidate: Path,
+    disk_root: Path,
+    resolved_root: Path,
 ) -> str | None:
     """return posix relative path under ``disk_root`` or ``None`` if escape.
 
@@ -622,7 +631,7 @@ def _resolve_under_root(
         resolved_candidate = candidate.resolve()
         resolved_candidate.relative_to(resolved_root)
         result = candidate.relative_to(disk_root).as_posix()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         log.warning(
             "workspace.watch.skip_escape",
             extra={
@@ -756,12 +765,16 @@ async def _handle_watch_batch(
                         # DISK_WINS delete-path: skip when nothing was
                         # there; otherwise emit a delete row.
                         head = await conn.fetchrow(
-                            _SELECT_HEAD_SQL, workspace.id, rel,
+                            _SELECT_HEAD_SQL,
+                            workspace.id,
+                            rel,
                         )
                         if head is None:
                             continue
                         new_version = await _next_journal_version(
-                            conn, workspace.id, rel,
+                            conn,
+                            workspace.id,
+                            rel,
                         )
                         if new_version > max_version:
                             max_version = new_version
@@ -792,17 +805,18 @@ async def _handle_watch_batch(
                             # the next cycle will pick up the delete.
                             continue
                         content = await asyncio.to_thread(
-                            _read_file_sync, candidate,
+                            _read_file_sync,
+                            candidate,
                         )
                         sha = _sha256_bytes(content)
                         if (rel, sha) in just_wrote:
                             continue
                         head = await conn.fetchrow(
-                            _SELECT_HEAD_SQL, workspace.id, rel,
+                            _SELECT_HEAD_SQL,
+                            workspace.id,
+                            rel,
                         )
-                        current_sha = (
-                            None if head is None else head["sha256"]
-                        )
+                        current_sha = None if head is None else head["sha256"]
                         if current_sha == sha:
                             continue
                         if on_conflict is BindConflictPolicy.L3_WINS:
@@ -819,7 +833,9 @@ async def _handle_watch_batch(
                             # agent cannot have produced.
                             if change is Change.added and head is None:
                                 new_version = await _next_journal_version(
-                                    conn, workspace.id, rel,
+                                    conn,
+                                    workspace.id,
+                                    rel,
                                 )
                                 if new_version > max_version:
                                     max_version = new_version
@@ -851,13 +867,13 @@ async def _handle_watch_batch(
                             continue
                         # DISK_WINS: import every add / modify event.
                         new_version = await _next_journal_version(
-                            conn, workspace.id, rel,
+                            conn,
+                            workspace.id,
+                            rel,
                         )
                         if new_version > max_version:
                             max_version = new_version
-                        action_to_use = (
-                            action_create if head is None else action_update
-                        )
+                        action_to_use = action_create if head is None else action_update
                         await conn.execute(
                             _INSERT_WORKSPACE_FILE_VERSION_SQL,
                             uuid7(),
@@ -893,11 +909,7 @@ async def _handle_watch_batch(
     return changed
 
 
-_SELECT_HEAD_SQL = (
-    "SELECT content, sha256, version "
-    "FROM workspace_files "
-    "WHERE workspace_id = $1 AND relative_path = $2"
-)
+_SELECT_HEAD_SQL = "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
 
 
 async def _watch_loop(
@@ -970,7 +982,8 @@ async def _watch_loop(
             # cannot starve other tasks.
             except Exception as iter_exc:
                 log.exception(
-                    "bind watcher iteration failed: %s", iter_exc,
+                    "bind watcher iteration failed: %s",
+                    iter_exc,
                 )
                 await asyncio.sleep(0)
     except asyncio.CancelledError:
@@ -1076,9 +1089,7 @@ async def _capture_back(
                     # derive version from journal so re-creating a path
                     # that was previously bind-deleted does not collide
                     # on (workspace_id, relative_path, version).
-                    new_version = await _next_journal_version(
-                        conn, workspace.id, rel
-                    )
+                    new_version = await _next_journal_version(conn, workspace.id, rel)
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -1116,7 +1127,9 @@ async def _capture_back(
                     # -- a naive bump would collide with the watcher's
                     # INSERT on (workspace_id, relative_path, version).
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     max_version = max(max_version, new_version)
                     await conn.execute(
@@ -1149,7 +1162,9 @@ async def _capture_back(
                 for rel in deletes:
                     # same watcher-collision rationale as updates above.
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     max_version = max(max_version, new_version)
                     await conn.execute(
@@ -1295,9 +1310,7 @@ async def bind(
     """
     workspace = await workspace_collection.find_by_id(workspace_id)
     if workspace is None:
-        raise ValueError(
-            f"workspace {workspace_id} not found or is soft-deleted"
-        )
+        raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
     disk_root.mkdir(parents=True, exist_ok=True)
 
@@ -1391,7 +1404,8 @@ async def bind(
                 pass
             except Exception as cancel_exc:
                 log.exception(
-                    "workspace.bind.watcher_cancel_error: %s", cancel_exc,
+                    "workspace.bind.watcher_cancel_error: %s",
+                    cancel_exc,
                 )
         if body_raised is not None:
             log.warning(
@@ -1481,15 +1495,11 @@ async def recover(
     """
     workspace = await workspace_collection.find_by_id(workspace_id)
     if workspace is None:
-        raise ValueError(
-            f"workspace {workspace_id} not found or is soft-deleted"
-        )
+        raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
 
     head_rows = await workspace_file_collection.find_by_workspace(workspace_id)
-    head_by_path: dict[str, tuple[str, int]] = {
-        row.relative_path: (row.sha256, row.version) for row in head_rows
-    }
+    head_by_path: dict[str, tuple[str, int]] = {row.relative_path: (row.sha256, row.version) for row in head_rows}
 
     disk = await _snapshot_disk(disk_root)
 
@@ -1515,9 +1525,7 @@ async def recover(
                     # derive version from journal, not the head cache,
                     # so re-created paths never collide with deleted
                     # history on the unique-constraint triple.
-                    new_version = await _next_journal_version(
-                        conn, workspace.id, rel
-                    )
+                    new_version = await _next_journal_version(conn, workspace.id, rel)
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -1552,7 +1560,9 @@ async def recover(
                     # journal in parallel; the unique constraint would
                     # reject a naive prior_version+1 INSERT.
                     new_version = await _next_journal_version(
-                        conn, workspace.id, rel,
+                        conn,
+                        workspace.id,
+                        rel,
                     )
                     max_version = max(max_version, new_version)
                     await conn.execute(

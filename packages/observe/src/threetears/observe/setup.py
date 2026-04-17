@@ -41,14 +41,16 @@ class TelemetryConfig:
     sample_rate: float = 1.0
     export_timeout_seconds: int = 10
     loki_endpoint: str | None = None
-    suppressed_env_vars: tuple[str, ...] = field(default=(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "OTEL_SERVICE_NAME",
-        "OTEL_TRACES_SAMPLER",
-        "OTEL_TRACES_SAMPLER_ARG",
-        "OTEL_RESOURCE_ATTRIBUTES",
-    ))
+    suppressed_env_vars: tuple[str, ...] = field(
+        default=(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_SERVICE_NAME",
+            "OTEL_TRACES_SAMPLER",
+            "OTEL_TRACES_SAMPLER_ARG",
+            "OTEL_RESOURCE_ATTRIBUTES",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +66,7 @@ _shutdown_called: bool = False
 # ---------------------------------------------------------------------------
 # Call-site enriching handler (bridges ThreeTearsLogger attrs to OTel)
 # ---------------------------------------------------------------------------
+
 
 class _CallSiteEnrichingHandler(logging.Handler):
     """Logging handler that enriches OTel LogRecords with call-site attributes.
@@ -101,6 +104,7 @@ class _CallSiteEnrichingHandler(logging.Handler):
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def init_telemetry(config: TelemetryConfig) -> bool:
     """Initialize OpenTelemetry tracing and (optionally) log export.
 
@@ -133,10 +137,12 @@ def init_telemetry(config: TelemetryConfig) -> bool:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
 
-    resource = Resource.create({
-        "service.name": config.service_name,
-        "service.version": config.service_version,
-    })
+    resource = Resource.create(
+        {
+            "service.name": config.service_name,
+            "service.version": config.service_version,
+        }
+    )
 
     sampler = TraceIdRatioBased(config.sample_rate)
     provider = TracerProvider(resource=resource, sampler=sampler)
@@ -162,11 +168,13 @@ def init_telemetry(config: TelemetryConfig) -> bool:
 
     logger.info(
         "OpenTelemetry tracing initialized",
-        extra={"extra_data": {
-            "endpoint": config.endpoint,
-            "service_name": config.service_name,
-            "sample_rate": config.sample_rate,
-        }},
+        extra={
+            "extra_data": {
+                "endpoint": config.endpoint,
+                "service_name": config.service_name,
+                "sample_rate": config.sample_rate,
+            }
+        },
     )
 
     # Log export (Python logging -> OTLP -> Loki)

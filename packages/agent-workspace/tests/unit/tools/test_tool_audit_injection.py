@@ -61,17 +61,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -236,9 +232,7 @@ async def test_fs_write_publishes_audit_on_success() -> None:
         nats_client=nats,
         namespace="ns",
     )
-    result = await tool.execute(
-        relative_path="a.md", content="hello", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
     assert _subject(nats) == "ns.audit.workspace.write"
     envelope = _only_envelope(nats)
@@ -272,9 +266,7 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
         nats_client=nats,
         namespace="ns",
     )
-    result = await tool.execute(
-        relative_path="a.md", content="hello", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
 
 
@@ -287,9 +279,7 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
 async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
     """fs_edit audit details include occurrences, bytes, and sha pair."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    existing = _FakeFileEntity(
-        relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1
-    )
+    existing = _FakeFileEntity(relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1)
     head = {"content": existing.content, "sha256": existing.sha256, "version": 1}
     pool = _FakePool()
     pool.conn.head_row = head
@@ -306,9 +296,7 @@ async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
         nats_client=nats,
         namespace="ns",
     )
-    result = await tool.execute(
-        relative_path="a.md", find="foo", replace="qux", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", find="foo", replace="qux", workspace="ws")
     assert result.success is True, result.error
     assert _subject(nats) == "ns.audit.workspace.edit"
     envelope = _only_envelope(nats)
@@ -419,6 +407,7 @@ async def test_workspace_create_publishes_audit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """empty-create emits workspace.create audit with files_changed=0."""
+
     async def _noop_set_pin(*args: Any, **kwargs: Any) -> None:
         return None
 
@@ -461,9 +450,7 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
     template_dir.mkdir()
     (template_dir / "a.md").write_bytes(b"hello\n")
     ws_id = uuid4()
-    ws = _FakeWorkspaceEntity(
-        id=ws_id, name="seed", template_name="starter", current_version=1
-    )
+    ws = _FakeWorkspaceEntity(id=ws_id, name="seed", template_name="starter", current_version=1)
     nats = _FakeNats()
     pool = _FakePool()
     tool = WorkspaceResetTool(
@@ -552,14 +539,16 @@ async def test_workspace_rollback_publishes_single_audit_event() -> None:
     pool.conn.head_row = None  # _resolve_ref returns None -> skip
     tool = WorkspaceRollbackTool(
         workspace_collection=_FakeWorkspaceCollection([ws]),  # type: ignore[arg-type]
-        workspace_file_collection=_FakeFileCollection([
-            _FakeFileEntity(
-                relative_path="a.md",
-                content=b"x",
-                sha256="aa" * 32,
-                version=1,
-            )
-        ]),  # type: ignore[arg-type]
+        workspace_file_collection=_FakeFileCollection(
+            [
+                _FakeFileEntity(
+                    relative_path="a.md",
+                    content=b"x",
+                    sha256="aa" * 32,
+                    version=1,
+                )
+            ]
+        ),  # type: ignore[arg-type]
         workspace_file_version_collection=_FakeVersionCollection(),  # type: ignore[arg-type]
         sandbox=_RecordingSandbox(),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),

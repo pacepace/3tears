@@ -403,8 +403,7 @@ class TestCallProxyTimeout:
         nc.request.assert_called_once()
         call_kwargs = nc.request.call_args
         assert call_kwargs[1]["timeout"] == 300.0, (
-            "proxy should use per-tool timeout (300s) from catalog, "
-            "not proxy default (120s)"
+            "proxy should use per-tool timeout (300s) from catalog, not proxy default (120s)"
         )
 
     @pytest.mark.asyncio
@@ -461,9 +460,11 @@ class TestCallProxyTimeout:
 
         proxy = CallProxy(catalog, namespace="test")
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=_make_tool_response(
-            content="waited 100 seconds successfully",
-        ))
+        nc.request = AsyncMock(
+            return_value=_make_tool_response(
+                content="waited 100 seconds successfully",
+            )
+        )
         await proxy.start(nc)
 
         request = _make_call_request(
@@ -477,9 +478,7 @@ class TestCallProxyTimeout:
 
         nc.request.assert_called_once()
         call_kwargs = nc.request.call_args
-        assert call_kwargs[1]["timeout"] == 120.0, (
-            "slow_tool with timeout_seconds=120 must get 120s, not 30s"
-        )
+        assert call_kwargs[1]["timeout"] == 120.0, "slow_tool with timeout_seconds=120 must get 120s, not 30s"
 
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["success"] is True
@@ -611,7 +610,10 @@ class TestCallProxyRouting:
         strategy.select = MagicMock(return_value=endpoint_second)
 
         proxy = CallProxy(
-            catalog, namespace="test", timeout=5.0, routing_strategy=strategy,
+            catalog,
+            namespace="test",
+            timeout=5.0,
+            routing_strategy=strategy,
         )
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())

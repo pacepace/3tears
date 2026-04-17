@@ -153,9 +153,7 @@ class _FakeFileCollection:
         else:
             # merge seeded files with conn-side head_by_path so tests can
             # observe what bind's capture-back snapshot would see.
-            by_path: dict[str, _FakeFile] = {
-                f.relative_path: f for f in self._files
-            }
+            by_path: dict[str, _FakeFile] = {f.relative_path: f for f in self._files}
             for rel, row in self._conn.head_by_path.items():
                 by_path[rel] = _FakeFile(
                     relative_path=rel,
@@ -218,7 +216,10 @@ class _FakeLeaseHandle:
         return self
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """exit the critical section.
 
@@ -283,7 +284,10 @@ class _FakeTransaction:
         return self
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """close the transaction.
 
@@ -350,7 +354,9 @@ class _FakeConnection:
         return "INSERT 0 1"
 
     async def fetchrow(
-        self, query: str, *args: Any,
+        self,
+        query: str,
+        *args: Any,
     ) -> dict[str, Any] | None:
         """route journal-max + head-row SELECTs to fake state.
 
@@ -388,7 +394,10 @@ class _FakeAcquireCM:
         return self.conn
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """no-op close.
 
@@ -513,14 +522,8 @@ async def test_empty_l3_populated_disk_imports_create_rows(
 
     await _enter_and_exit_bind(h)
 
-    journal_inserts = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
-    head_inserts = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_files" in e[0]
-    ]
+    journal_inserts = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
+    head_inserts = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_files" in e[0]]
     paths_journaled = {row[1][2] for row in journal_inserts}
     assert paths_journaled == {"a.txt", "sub/b.txt"}
     # every imported row lands as create at version 1.
@@ -557,10 +560,7 @@ async def test_populated_l3_does_not_reimport(tmp_path: Path) -> None:
     # expected: zero import-journal rows BEFORE capture-back. capture-back
     # still emits a create for orphan.txt on clean exit (that's part of
     # the existing bind contract, and test_bind.py already covers it).
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     # on-enter import would have created a version-1 row for seeded.txt;
     # that must NOT appear.
     seeded_rows = [row for row in journal if row[1][2] == "seeded.txt"]
@@ -595,8 +595,5 @@ async def test_second_bind_after_import_is_no_op_on_enter(
     await _enter_and_exit_bind(h)
 
     # expected: no journal rows at all (disk matches L3, gate trips).
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert journal == []

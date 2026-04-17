@@ -172,9 +172,7 @@ class TestNoHardcodedTimeouts:
 
         if violations:
             detail = "\n".join(violations)
-            pytest.fail(
-                f"{pkg_name}:{file_relative} has hardcoded timeout defaults:\n{detail}"
-            )
+            pytest.fail(f"{pkg_name}:{file_relative} has hardcoded timeout defaults:\n{detail}")
 
     @pytest.mark.parametrize(
         "pkg_name, src_root, src_file",
@@ -212,6 +210,4 @@ class TestNoHardcodedTimeouts:
 
         if violations:
             detail = "\n".join(violations)
-            pytest.fail(
-                f"{pkg_name}:{file_relative} has hardcoded timeout constants:\n{detail}"
-            )
+            pytest.fail(f"{pkg_name}:{file_relative} has hardcoded timeout constants:\n{detail}")

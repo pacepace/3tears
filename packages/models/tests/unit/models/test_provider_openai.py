@@ -244,9 +244,7 @@ class TestOpenAIEmbeddingProvider:
         """embed_batch returns list of EmbeddingResult for each input text."""
         provider = OpenAIEmbeddingProvider("text-embedding-3-small", "sk-test-key")
         mock_model = MagicMock()
-        mock_model.aembed_documents = AsyncMock(
-            return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
-        )
+        mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
         provider._model = mock_model
 
         results = await provider.embed_batch(["text one", "text two"])

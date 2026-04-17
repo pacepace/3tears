@@ -59,10 +59,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 255,
-            "description": (
-                "label for the checkpoint tag; 1-255 chars, unique per "
-                "workspace by convention"
-            ),
+            "description": ("label for the checkpoint tag; 1-255 chars, unique per workspace by convention"),
         },
         "workspace": {
             "type": "string",
@@ -167,7 +164,9 @@ class WorkspaceCheckpointTool(TearsTool):
                         # label, so the chosen number is purely an
                         # identifier.
                         tag_version = await _next_journal_version(
-                            conn, workspace.id, file_entity.relative_path,
+                            conn,
+                            workspace.id,
+                            file_entity.relative_path,
                         )
                         await conn.execute(
                             _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -185,9 +184,7 @@ class WorkspaceCheckpointTool(TearsTool):
                         )
             result = ToolResult(
                 success=True,
-                content=(
-                    f"checkpointed {len(head_files)} files with label {label!r}"
-                ),
+                content=(f"checkpointed {len(head_files)} files with label {label!r}"),
                 metadata={"n_files": len(head_files), "label": label},
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:

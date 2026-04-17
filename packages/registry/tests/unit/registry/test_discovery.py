@@ -191,10 +191,12 @@ class TestDiscoveryMixed:
     async def test_returns_mixed_results(self) -> None:
         """discovery returns mixed available/unavailable for partial manifest."""
         catalog = ToolCatalog()
-        await catalog.register(_make_entry(
-            tool_name="threetears.calculator",
-            tool_version="1.0.0",
-        ))
+        await catalog.register(
+            _make_entry(
+                tool_name="threetears.calculator",
+                tool_version="1.0.0",
+            )
+        )
 
         handler = DiscoveryHandler(catalog, namespace="test")
         nc = AsyncMock()

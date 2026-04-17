@@ -194,15 +194,13 @@ class TestFriendlyApiError:
             APITimeoutError(request=_make_request()),
             APIConnectionError(message="failed", request=_make_request()),
             ValueError("OpenRouter API error"),
-            RuntimeError("Traceback (most recent call last):\n  File \"test.py\", line 1"),
+            RuntimeError('Traceback (most recent call last):\n  File "test.py", line 1'),
         ]
         traceback_markers = ["Traceback", 'File "', "line "]
         for exc in exceptions:
             result = friendly_api_error(exc)
             for marker in traceback_markers:
-                assert marker not in result, (
-                    f"Message for {type(exc).__name__} contains traceback marker: {marker!r}"
-                )
+                assert marker not in result, f"Message for {type(exc).__name__} contains traceback marker: {marker!r}"
 
 
 class TestFriendlyApiErrorProviderNames:

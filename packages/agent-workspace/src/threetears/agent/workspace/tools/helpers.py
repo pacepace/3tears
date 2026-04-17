@@ -128,9 +128,7 @@ class Sha256Mismatch(RuntimeError):
         """
         self.expected = expected
         self.current = current
-        super().__init__(
-            f"sha256 mismatch: expected {expected!r}, current {current!r}"
-        )
+        super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
 
 
 async def _resolve_workspace(
@@ -170,38 +168,22 @@ async def _resolve_workspace(
     """
     result: Workspace | None
     if workspace_arg:
-        result = await workspace_collection.find_by_agent_and_name(
-            agent_id, workspace_arg
-        )
+        result = await workspace_collection.find_by_agent_and_name(agent_id, workspace_arg)
         if result is None:
-            raise WorkspaceNotFound(
-                f"workspace {workspace_arg!r} not found"
-            )
+            raise WorkspaceNotFound(f"workspace {workspace_arg!r} not found")
     else:
         snapshot = await _pin.get_pin(context)
         if snapshot is None:
-            raise NoWorkspacePinned(
-                "no workspace pinned; call workspace.use(name) first"
-            )
-        result = await workspace_collection.find_by_id_and_agent(
-            snapshot.workspace_id, agent_id
-        )
+            raise NoWorkspacePinned("no workspace pinned; call workspace.use(name) first")
+        result = await workspace_collection.find_by_id_and_agent(snapshot.workspace_id, agent_id)
         if result is None:
-            raise WorkspaceNotFound(
-                f"pinned workspace {snapshot.workspace_name!r} not found"
-            )
+            raise WorkspaceNotFound(f"pinned workspace {snapshot.workspace_name!r} not found")
     if result.date_deleted is not None:
-        raise WorkspaceNotFound(
-            f"workspace {result.name!r} is deleted"
-        )
+        raise WorkspaceNotFound(f"workspace {result.name!r} is deleted")
     return result
 
 
-_SELECT_HEAD_SQL = (
-    "SELECT content, sha256, version "
-    "FROM workspace_files "
-    "WHERE workspace_id = $1 AND relative_path = $2"
-)
+_SELECT_HEAD_SQL = "SELECT content, sha256, version FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
 
 _SELECT_JOURNAL_MAX_VERSION_SQL = (
     "SELECT COALESCE(MAX(version), 0) AS max_version "
@@ -211,7 +193,9 @@ _SELECT_JOURNAL_MAX_VERSION_SQL = (
 
 
 async def _next_journal_version(
-    conn: Any, workspace_id: UUID, relative_path: str,
+    conn: Any,
+    workspace_id: UUID,
+    relative_path: str,
 ) -> int:
     """
     compute the next journal version number for a workspace-relative path.
@@ -231,11 +215,10 @@ async def _next_journal_version(
     :return: next version number to use for an insert on this path
     :rtype: int
     """
-    row = await conn.fetchrow(
-        _SELECT_JOURNAL_MAX_VERSION_SQL, workspace_id, relative_path
-    )
+    row = await conn.fetchrow(_SELECT_JOURNAL_MAX_VERSION_SQL, workspace_id, relative_path)
     max_version = 0 if row is None else int(row["max_version"])
     return max_version + 1
+
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
@@ -359,14 +342,10 @@ async def _write_file_atomic(
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            head = await conn.fetchrow(
-                _SELECT_HEAD_SQL, workspace.id, relative_path
-            )
+            head = await conn.fetchrow(_SELECT_HEAD_SQL, workspace.id, relative_path)
             current_sha: str | None = None if head is None else head["sha256"]
             if expected_sha256 is not None and current_sha != expected_sha256:
-                raise Sha256Mismatch(
-                    expected=expected_sha256, current=current_sha
-                )
+                raise Sha256Mismatch(expected=expected_sha256, current=current_sha)
             if validators:
                 dispatch_validators(validators, relative_path, content)
             # derive next version from the journal, not the head row:
@@ -374,9 +353,7 @@ async def _write_file_atomic(
             # action while leaving the journal intact. a later re-create
             # at the same path would otherwise collide on the
             # (workspace_id, relative_path, version) unique constraint.
-            new_version = await _next_journal_version(
-                conn, workspace.id, relative_path
-            )
+            new_version = await _next_journal_version(conn, workspace.id, relative_path)
             await conn.execute(
                 _INSERT_WORKSPACE_FILE_VERSION_SQL,
                 uuid7(),
@@ -480,13 +457,9 @@ async def _resolve_ref(
     result: dict[str, Any] | None
     row: Any
     if isinstance(ref, int):
-        row = await conn.fetchrow(
-            _SELECT_VERSION_BY_NUMBER_SQL, workspace_id, relative_path, ref
-        )
+        row = await conn.fetchrow(_SELECT_VERSION_BY_NUMBER_SQL, workspace_id, relative_path, ref)
     elif ref == "head":
-        row = await conn.fetchrow(
-            _SELECT_LATEST_VERSION_ROW_SQL, workspace_id, relative_path
-        )
+        row = await conn.fetchrow(_SELECT_LATEST_VERSION_ROW_SQL, workspace_id, relative_path)
     elif ref.isdigit():
         row = await conn.fetchrow(
             _SELECT_VERSION_BY_NUMBER_SQL,
@@ -495,9 +468,7 @@ async def _resolve_ref(
             int(ref),
         )
     else:
-        row = await conn.fetchrow(
-            _SELECT_CHECKPOINT_ROW_SQL, workspace_id, relative_path, ref
-        )
+        row = await conn.fetchrow(_SELECT_CHECKPOINT_ROW_SQL, workspace_id, relative_path, ref)
     if row is None:
         result = None
     else:

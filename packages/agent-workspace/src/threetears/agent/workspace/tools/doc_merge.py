@@ -181,23 +181,15 @@ class DocMergeTool(TearsTool):
                     result = ToolResult(
                         success=False,
                         content="",
-                        error=(
-                            f"no FormatHandler for {relative_path!r}: {exc}; "
-                            "use fs_* tools for this file type"
-                        ),
+                        error=(f"no FormatHandler for {relative_path!r}: {exc}; use fs_* tools for this file type"),
                     )
                 else:
-                    existing = await self._files.find_by_workspace_and_relative_path(
-                        workspace.id, relative_path
-                    )
+                    existing = await self._files.find_by_workspace_and_relative_path(workspace.id, relative_path)
                     if existing is None:
                         result = ToolResult(
                             success=False,
                             content="",
-                            error=(
-                                f"file {relative_path!r} not found in workspace "
-                                f"{workspace.name!r}"
-                            ),
+                            error=(f"file {relative_path!r} not found in workspace {workspace.name!r}"),
                         )
                     else:
                         try:
@@ -240,9 +232,7 @@ class DocMergeTool(TearsTool):
                                         actor_id=self._agent_id,
                                         agent_id=self._agent_id,
                                         resource_type="workspace_file",
-                                        resource_id=(
-                                            f"{workspace.id}/{relative_path}"
-                                        ),
+                                        resource_id=(f"{workspace.id}/{relative_path}"),
                                         action="merge",
                                         details={
                                             "partial_keys": list(partial.keys()),
@@ -263,8 +253,7 @@ class DocMergeTool(TearsTool):
                             result = ToolResult(
                                 success=True,
                                 content=(
-                                    f"merged {len(partial)} top-level keys; "
-                                    f"sha256={new_sha256}, version={new_version}"
+                                    f"merged {len(partial)} top-level keys; sha256={new_sha256}, version={new_version}"
                                 ),
                                 metadata={
                                     "sha256": new_sha256,
@@ -276,10 +265,7 @@ class DocMergeTool(TearsTool):
             result = ToolResult(
                 success=False,
                 content="",
-                error=(
-                    f"sha256 mismatch: expected {exc.expected!r}, current "
-                    f"{exc.current!r}; re-read and retry"
-                ),
+                error=(f"sha256 mismatch: expected {exc.expected!r}, current {exc.current!r}; re-read and retry"),
             )
         except WorkspaceValidationError as exc:
             result = ToolResult(

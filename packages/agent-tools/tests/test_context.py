@@ -351,19 +351,20 @@ async def test_save_item_by_type_and_key_replaces_existing(
 ) -> None:
     """second save with same (type, key) replaces the first (single-item semantics)."""
     await ctx.save_item_by_type_and_key(
-        context_type="workspace_pin", key="current", content="first",
+        context_type="workspace_pin",
+        key="current",
+        content="first",
     )
     await ctx.save_item_by_type_and_key(
-        context_type="workspace_pin", key="current", content="second",
+        context_type="workspace_pin",
+        key="current",
+        content="second",
     )
     item = await ctx.get_item_by_type_and_key("workspace_pin", "current")
     assert item is not None
     assert item["content"] == "second"
     # only one item persists in the local projection
-    matching = [
-        i for i in ctx._items
-        if i["context_type"] == "workspace_pin" and i["key"] == "current"
-    ]
+    matching = [i for i in ctx._items if i["context_type"] == "workspace_pin" and i["key"] == "current"]
     assert len(matching) == 1
 
 
@@ -373,7 +374,9 @@ async def test_delete_item_by_type_and_key_returns_true_when_present(
 ) -> None:
     """delete returns True after removing an existing item."""
     await ctx.save_item_by_type_and_key(
-        context_type="bookmark", key="favorite", content="x",
+        context_type="bookmark",
+        key="favorite",
+        content="x",
     )
     result = await ctx.delete_item_by_type_and_key("bookmark", "favorite")
     assert result is True
@@ -395,10 +398,14 @@ async def test_save_item_by_type_and_key_scopes_by_type(
 ) -> None:
     """same key under different context_types co-exist without collision."""
     await ctx.save_item_by_type_and_key(
-        context_type="workspace_pin", key="current", content="pin",
+        context_type="workspace_pin",
+        key="current",
+        content="pin",
     )
     await ctx.save_item_by_type_and_key(
-        context_type="bookmark", key="current", content="bm",
+        context_type="bookmark",
+        key="current",
+        content="bm",
     )
     pin = await ctx.get_item_by_type_and_key("workspace_pin", "current")
     bm = await ctx.get_item_by_type_and_key("bookmark", "current")

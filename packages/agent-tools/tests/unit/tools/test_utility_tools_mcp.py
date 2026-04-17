@@ -66,11 +66,13 @@ class TestTimezoneConverterTool:
     def test_execute_success(self) -> None:
         """TimezoneConverterTool execute returns successful ToolResult for valid conversion."""
         tool = TimezoneConverterTool()
-        result = asyncio.run(tool.run(
-            time_str="2024-01-15 14:30",
-            from_timezone="America/New_York",
-            to_timezone="Europe/London",
-        ))
+        result = asyncio.run(
+            tool.run(
+                time_str="2024-01-15 14:30",
+                from_timezone="America/New_York",
+                to_timezone="Europe/London",
+            )
+        )
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert result.error is None
@@ -78,11 +80,13 @@ class TestTimezoneConverterTool:
     def test_execute_error_invalid_timezone(self) -> None:
         """TimezoneConverterTool execute returns failure for invalid timezone."""
         tool = TimezoneConverterTool()
-        result = asyncio.run(tool.run(
-            time_str="14:30",
-            from_timezone="Invalid/Zone",
-            to_timezone="Europe/London",
-        ))
+        result = asyncio.run(
+            tool.run(
+                time_str="14:30",
+                from_timezone="Invalid/Zone",
+                to_timezone="Europe/London",
+            )
+        )
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None
@@ -173,11 +177,13 @@ class TestAnalyzeMediaTool:
     def test_execute_unknown_analyzer(self) -> None:
         """AnalyzeMediaTool execute returns error for unknown analyzer."""
         tool = AnalyzeMediaTool(storage=_FakeMediaStorage())
-        result = asyncio.run(tool.run(
-            media_ids=["00000000-0000-0000-0000-000000000001"],
-            question="describe this",
-            analyzer="nonexistent",
-        ))
+        result = asyncio.run(
+            tool.run(
+                media_ids=["00000000-0000-0000-0000-000000000001"],
+                question="describe this",
+                analyzer="nonexistent",
+            )
+        )
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None

@@ -22,12 +22,7 @@ from threetears.agent.workspace.tools.doc_set import DocSetTool
 # ---------------------------------------------------------------------------
 
 
-_FIXTURE_PATH = (
-    Path(__file__).parent.parent
-    / "handlers"
-    / "fixtures"
-    / "audience_settings.yaml"
-)
+_FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audience_settings.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -46,17 +41,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -188,11 +179,7 @@ def _build_tool(
     agent_id: UUID | None = None,
 ) -> tuple[DocSetTool, _FakePool, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    ws_entity = (
-        workspace_entities[0]
-        if workspace_entities
-        else _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    )
+    ws_entity = workspace_entities[0] if workspace_entities else _FakeWorkspaceEntity(id=uuid4(), name="ws")
     workspaces = _FakeWorkspaceCollection(workspace_entities or [ws_entity])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_writes=deny_writes)
@@ -234,9 +221,7 @@ async def test_doc_set_mutates_scalar_preserves_key_order() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -251,9 +236,7 @@ async def test_doc_set_mutates_scalar_preserves_key_order() -> None:
     new_text = pool.conn.captured_writes[0].decode("utf-8")
     assert "vb_candidates: 99" in new_text
     # key order preserved: audience_unit still before vb_candidates
-    assert new_text.index("audience_unit:") < new_text.index(
-        "vb_candidates:"
-    )
+    assert new_text.index("audience_unit:") < new_text.index("vb_candidates:")
     # top-level key preserved
     assert "audience_units:" in new_text
     # the original had other audience units still present
@@ -293,9 +276,7 @@ async def test_doc_set_preserves_comments_round_trip() -> None:
         "sha256": sha_initial,
         "version": 1,
     }
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -368,9 +349,7 @@ async def test_doc_set_stale_expected_sha_returns_mismatch_error() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_current, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -405,9 +384,7 @@ async def test_doc_set_unknown_format_returns_clean_error() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(
         relative_path="notes.txt",
@@ -434,9 +411,7 @@ async def test_doc_set_unknown_format_returns_clean_error() -> None:
 async def test_doc_set_missing_file_returns_clean_error() -> None:
     """no head row -> clean error naming file and workspace, no writes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[]
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -470,9 +445,7 @@ async def test_doc_set_writes_inside_single_transaction() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     await tool.execute(
         relative_path="audience_settings.yaml",

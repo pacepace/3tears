@@ -189,9 +189,7 @@ class ComfyUIImageProvider:
                     if images:
                         return str(images[0]["filename"])
 
-        raise TimeoutError(
-            f"ComfyUI generation did not complete after {self._max_polls} polls"
-        )
+        raise TimeoutError(f"ComfyUI generation did not complete after {self._max_polls} polls")
 
 
 def _build_workflow(prompt_text: str) -> dict[str, Any]:

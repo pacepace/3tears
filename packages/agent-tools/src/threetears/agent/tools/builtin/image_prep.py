@@ -183,10 +183,12 @@ class ImagePrepTool(TearsTool):
         processed_bytes, effective_mime = prepare_image_for_vision(raw_bytes, mime_type)
         processed_base64 = base64.b64encode(processed_bytes).decode("ascii")
 
-        content = json.dumps({
-            "processed_base64": processed_base64,
-            "effective_mime_type": effective_mime,
-        })
+        content = json.dumps(
+            {
+                "processed_base64": processed_base64,
+                "effective_mime_type": effective_mime,
+            }
+        )
 
         result = ToolResult(
             success=True,

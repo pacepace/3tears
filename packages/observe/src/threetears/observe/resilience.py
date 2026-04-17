@@ -49,7 +49,8 @@ async def retry_with_backoff(
             if attempt > 1:
                 _logger.info(
                     "%s succeeded on attempt %d",
-                    name, attempt,
+                    name,
+                    attempt,
                 )
             result = True
             break
@@ -57,12 +58,18 @@ async def retry_with_backoff(
             if attempt >= max_attempts:
                 _logger.error(
                     "%s failed after %d attempts: %s",
-                    name, max_attempts, exc,
+                    name,
+                    max_attempts,
+                    exc,
                 )
                 break
             _logger.warning(
                 "%s attempt %d/%d failed (retrying in %.1fs): %s",
-                name, attempt, max_attempts, backoff, exc,
+                name,
+                attempt,
+                max_attempts,
+                backoff,
+                exc,
             )
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)

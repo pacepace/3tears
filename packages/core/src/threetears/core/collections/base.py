@@ -348,7 +348,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is not None:
             row: dict[str, Any] | None = self._l1.select_by_id(
-                self.table_name, str(entity_id), self._primary_key_column,
+                self.table_name,
+                str(entity_id),
+                self._primary_key_column,
             )
             if row is not None:
                 return row

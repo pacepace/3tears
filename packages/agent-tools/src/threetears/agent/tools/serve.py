@@ -43,6 +43,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     try:
         from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
+
         server.register(UnitConverterTool())
         registered_count += 1
     except ImportError:
@@ -55,6 +56,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     try:
         from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
+
         server.register(TimezoneConverterTool())
         registered_count += 1
     except ImportError:
@@ -67,6 +69,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     try:
         from threetears.agent.tools.builtin.web_fetch import WebFetchTool
+
         server.register(WebFetchTool())
         registered_count += 1
     except ImportError:
@@ -81,6 +84,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
     if searxng_url:
         try:
             from threetears.agent.tools.builtin.web_search import WebSearchTool
+
             server.register(WebSearchTool(base_url=searxng_url))
             registered_count += 1
         except ImportError:
@@ -93,6 +97,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     try:
         from threetears.agent.tools.document import ParseDocumentTool
+
         server.register(ParseDocumentTool())
         registered_count += 1
     except ImportError:
@@ -105,6 +110,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     try:
         from threetears.agent.tools.builtin.image_prep import ImagePrepTool
+
         server.register(ImagePrepTool())
         registered_count += 1
     except ImportError:
@@ -119,71 +125,69 @@ def _register_builtin_tools(server: ToolServer) -> None:
 
     skipped_count += 1
     skipped_reasons.append(
-        "analyze_media: requires MediaStorage and analyzer configuration "
-        "(host-application-provided)"
+        "analyze_media: requires MediaStorage and analyzer configuration (host-application-provided)"
     )
     _logger.info(
-        "skipping analyze_media (requires MediaStorage and analyzer "
-        "configuration, host-application-provided)",
-        extra={"extra_data": {
-            "tool": "threetears.analyze_media",
-            "hint": (
-                "register in your agent host via "
-                "AnalyzeMediaTool(storage=<MediaStorage>, "
-                "analyzers=<dict[str, AnalyzerConfig]>). "
-                "see threetears.agent.tools.builtin.analyze_media"
-            ),
-        }},
+        "skipping analyze_media (requires MediaStorage and analyzer configuration, host-application-provided)",
+        extra={
+            "extra_data": {
+                "tool": "threetears.analyze_media",
+                "hint": (
+                    "register in your agent host via "
+                    "AnalyzeMediaTool(storage=<MediaStorage>, "
+                    "analyzers=<dict[str, AnalyzerConfig]>). "
+                    "see threetears.agent.tools.builtin.analyze_media"
+                ),
+            }
+        },
     )
 
     skipped_count += 1
-    skipped_reasons.append(
-        "workflow tools: requires session-scoped ToolContextManager "
-        "(host-application-provided)"
-    )
+    skipped_reasons.append("workflow tools: requires session-scoped ToolContextManager (host-application-provided)")
     _logger.info(
-        "skipping workflow tools (requires session-scoped "
-        "ToolContextManager, host-application-provided)",
-        extra={"extra_data": {
-            "tools": [
-                "threetears.set_variable",
-                "threetears.get_variable",
-                "threetears.declare_workflow",
-            ],
-            "hint": (
-                "register per-session via "
-                "load_workflow_tools(tool_context=<ToolContextManager>). "
-                "see threetears.agent.tools.workflow"
-            ),
-        }},
+        "skipping workflow tools (requires session-scoped ToolContextManager, host-application-provided)",
+        extra={
+            "extra_data": {
+                "tools": [
+                    "threetears.set_variable",
+                    "threetears.get_variable",
+                    "threetears.declare_workflow",
+                ],
+                "hint": (
+                    "register per-session via "
+                    "load_workflow_tools(tool_context=<ToolContextManager>). "
+                    "see threetears.agent.tools.workflow"
+                ),
+            }
+        },
     )
 
     skipped_count += 1
-    skipped_reasons.append(
-        "todo: requires session-scoped TodoStorage "
-        "(host-application-provided)"
-    )
+    skipped_reasons.append("todo: requires session-scoped TodoStorage (host-application-provided)")
     _logger.info(
-        "skipping todo (requires session-scoped TodoStorage, "
-        "host-application-provided)",
-        extra={"extra_data": {
-            "tool": "threetears.todo",
-            "hint": (
-                "register per-session via "
-                "load_todo_tools(storage=<TodoStorage>, "
-                "conversation_id=<UUID>, user_id=<UUID>). "
-                "see threetears.agent.tools.todo"
-            ),
-        }},
+        "skipping todo (requires session-scoped TodoStorage, host-application-provided)",
+        extra={
+            "extra_data": {
+                "tool": "threetears.todo",
+                "hint": (
+                    "register per-session via "
+                    "load_todo_tools(storage=<TodoStorage>, "
+                    "conversation_id=<UUID>, user_id=<UUID>). "
+                    "see threetears.agent.tools.todo"
+                ),
+            }
+        },
     )
 
     _logger.info(
         "built-in tool registration complete",
-        extra={"extra_data": {
-            "registered": registered_count,
-            "skipped": skipped_count,
-            "skipped_reasons": skipped_reasons,
-        }},
+        extra={
+            "extra_data": {
+                "registered": registered_count,
+                "skipped": skipped_count,
+                "skipped_reasons": skipped_reasons,
+            }
+        },
     )
 
 
@@ -211,10 +215,12 @@ def main() -> None:
 
     _logger.info(
         "starting built-in tool server",
-        extra={"extra_data": {
-            "nats_url": nats_url,
-            "namespace": namespace,
-        }},
+        extra={
+            "extra_data": {
+                "nats_url": nats_url,
+                "namespace": namespace,
+            }
+        },
     )
 
     loop.run_until_complete(server.serve())

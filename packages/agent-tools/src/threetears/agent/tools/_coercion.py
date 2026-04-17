@@ -45,7 +45,7 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
         elif isinstance(value, str):
             try:
                 parsed = json.loads(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 parsed = None
             if isinstance(parsed, dict):
                 result = parsed
@@ -55,7 +55,7 @@ def coerce_value(value: Any, declared_type: str | None) -> Any:
         elif isinstance(value, str):
             try:
                 parsed = json.loads(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 parsed = None
             if isinstance(parsed, list):
                 result = parsed

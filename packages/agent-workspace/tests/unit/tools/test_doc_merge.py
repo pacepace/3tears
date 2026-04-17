@@ -22,12 +22,7 @@ from threetears.agent.workspace.tools.doc_merge import DocMergeTool
 # ---------------------------------------------------------------------------
 
 
-_FIXTURE_PATH = (
-    Path(__file__).parent.parent
-    / "handlers"
-    / "fixtures"
-    / "audience_settings.yaml"
-)
+_FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audience_settings.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -46,17 +41,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -187,11 +178,7 @@ def _build_tool(
     agent_id: UUID | None = None,
 ) -> tuple[DocMergeTool, _FakePool, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    ws_entity = (
-        workspace_entities[0]
-        if workspace_entities
-        else _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    )
+    ws_entity = workspace_entities[0] if workspace_entities else _FakeWorkspaceEntity(id=uuid4(), name="ws")
     workspaces = _FakeWorkspaceCollection(workspace_entities or [ws_entity])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_writes=deny_writes)
@@ -233,9 +220,7 @@ async def test_doc_merge_adds_new_top_level_key_preserves_structure() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -273,17 +258,11 @@ async def test_doc_merge_replaces_list_wholesale_per_handler_contract() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
-        partial={
-            "audience_units": [
-                {"audience_unit": "only_one", "vb_candidates": 1}
-            ]
-        },
+        partial={"audience_units": [{"audience_unit": "only_one", "vb_candidates": 1}]},
         workspace="ws",
     )
 
@@ -300,12 +279,7 @@ async def test_doc_merge_replaces_list_wholesale_per_handler_contract() -> None:
 @pytest.mark.asyncio
 async def test_doc_merge_deep_merges_nested_mappings() -> None:
     """mapping-in-mapping merges recursively rather than replacing."""
-    initial_yaml = (
-        "settings:\n"
-        "    existing: keep-me\n"
-        "    nested:\n"
-        "        a: 1\n"
-    ).encode("utf-8")
+    initial_yaml = ("settings:\n    existing: keep-me\n    nested:\n        a: 1\n").encode("utf-8")
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     sha_initial = hashlib.sha256(initial_yaml).hexdigest()
     file_entity = _FakeFileEntity(
@@ -315,9 +289,7 @@ async def test_doc_merge_deep_merges_nested_mappings() -> None:
         version=1,
     )
     head = {"content": initial_yaml, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="settings.yaml",
@@ -351,9 +323,7 @@ async def test_doc_merge_partial_not_a_dict_returns_clean_error() -> None:
         sha256=sha_initial,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     # tool called directly with a scalar; schema validator is upstream of
     # .execute in normal flows but direct call must still reject cleanly.
@@ -424,9 +394,7 @@ async def test_doc_merge_stale_expected_sha_returns_mismatch_error() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_current, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -458,9 +426,7 @@ async def test_doc_merge_unknown_format_returns_clean_error() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
     result = await tool.execute(
         relative_path="notes.txt",
@@ -485,9 +451,7 @@ async def test_doc_merge_unknown_format_returns_clean_error() -> None:
 async def test_doc_merge_missing_file_returns_clean_error() -> None:
     """no head row -> clean error naming file and workspace, no writes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[]
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -520,9 +484,7 @@ async def test_doc_merge_writes_inside_single_transaction() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], head_row=head
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
 
     await tool.execute(
         relative_path="audience_settings.yaml",

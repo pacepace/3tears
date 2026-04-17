@@ -24,13 +24,7 @@ import ast
 from pathlib import Path
 
 
-_SRC_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "threetears"
-    / "agent"
-    / "workspace"
-)
+_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "workspace"
 _TOOLS_ROOT = _SRC_ROOT / "tools"
 _MATERIALIZE_MODULE = _SRC_ROOT / "materialize.py"
 
@@ -85,9 +79,7 @@ def _extract_mode_string(call: ast.Call) -> str | None:
     # keyword mode=...
     for kw in call.keywords:
         if kw.arg == "mode":
-            if isinstance(kw.value, ast.Constant) and isinstance(
-                kw.value.value, str
-            ):
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                 result = kw.value.value
     return result
 
@@ -144,9 +136,7 @@ class TestAtomicWriteOnly:
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
-                is_open = _is_builtin_open_call(node) or _is_attribute_open_call(
-                    node
-                )
+                is_open = _is_builtin_open_call(node) or _is_attribute_open_call(node)
                 if not is_open:
                     continue
                 mode = _extract_mode_string(node)
@@ -155,9 +145,7 @@ class TestAtomicWriteOnly:
                     # we still flag non-literal mode expressions so a
                     # callable variable cannot smuggle write intent past
                     # the scan.
-                    if len(node.args) >= 2 or any(
-                        kw.arg == "mode" for kw in node.keywords
-                    ):
+                    if len(node.args) >= 2 or any(kw.arg == "mode" for kw in node.keywords):
                         violations.append(
                             f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: "
                             f"open(...) with non-literal mode; use atomic_write"

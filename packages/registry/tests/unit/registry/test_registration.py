@@ -46,6 +46,7 @@ def _make_registry_nc() -> AsyncMock:
     :return: configured AsyncMock NATS client
     :rtype: AsyncMock
     """
+
     async def _reply(subject: str, *_args: Any, **_kwargs: Any) -> MagicMock:
         pod_id = subject.rsplit(".", 1)[-1]
         return _make_probe_reply(pod_id)

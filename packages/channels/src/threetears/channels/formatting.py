@@ -56,19 +56,23 @@ def build_slack_blocks(content: str, format_hints: dict[str, Any]) -> list[dict[
 
     title = format_hints.get("title")
     if title:
-        blocks.append({
-            "type": "header",
-            "text": {"type": "plain_text", "text": str(title)},
-        })
+        blocks.append(
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": str(title)},
+            }
+        )
 
     paragraphs = _split_into_paragraphs(content)
     for paragraph in paragraphs:
         text_chunks = _split_long_text(paragraph, _SLACK_BLOCK_TEXT_LIMIT)
         for chunk in text_chunks:
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": chunk},
-            })
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": chunk},
+                }
+            )
 
     result = blocks
     return result

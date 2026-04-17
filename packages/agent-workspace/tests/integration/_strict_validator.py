@@ -27,6 +27,4 @@ def reject_any_audience_units(relative_path: str, content: bytes) -> None:
     """
     del relative_path
     if b"audience_units:" in content:
-        raise ValueError(
-            "strict test validator rejects any audience_units: payload"
-        )
+        raise ValueError("strict test validator rejects any audience_units: payload")

@@ -68,18 +68,10 @@ class WorkspaceFileLease:
         :rtype: None
         """
         effective_namespace = (
-            namespace
-            if namespace is not None
-            else os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE")
+            namespace if namespace is not None else os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE")
         )
-        bucket_name = (
-            f"{effective_namespace}_workspace_locks"
-            if effective_namespace
-            else "workspace_locks"
-        )
-        self._kvlease = KVLease(
-            nats_client, bucket_name=bucket_name, pod_id=pod_id
-        )
+        bucket_name = f"{effective_namespace}_workspace_locks" if effective_namespace else "workspace_locks"
+        self._kvlease = KVLease(nats_client, bucket_name=bucket_name, pod_id=pod_id)
 
     @property
     def bucket_name(self) -> str:

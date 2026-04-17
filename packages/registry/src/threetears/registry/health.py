@@ -123,12 +123,14 @@ class HeartbeatMonitor:
         """
         if self._l1 is None:
             return
-        serialized = json.dumps({
-            "pod_id": status.pod_id,
-            "date_last_heartbeat": status.date_last_heartbeat.isoformat(),
-            "tools": status.tools,
-            "consecutive_misses": status.consecutive_misses,
-        })
+        serialized = json.dumps(
+            {
+                "pod_id": status.pod_id,
+                "date_last_heartbeat": status.date_last_heartbeat.isoformat(),
+                "tools": status.tools,
+                "consecutive_misses": status.consecutive_misses,
+            }
+        )
         self._l1.upsert(
             "pod_health",
             {
@@ -155,11 +157,13 @@ class HeartbeatMonitor:
         self._check_task = asyncio.create_task(self._health_check_loop())
         _logger.info(
             "heartbeat monitor started",
-            extra={"extra_data": {
-                "subject": subject,
-                "check_interval": self._check_interval,
-                "timeout": self._timeout,
-            }},
+            extra={
+                "extra_data": {
+                    "subject": subject,
+                    "check_interval": self._check_interval,
+                    "timeout": self._timeout,
+                }
+            },
         )
 
     async def stop(self) -> None:
@@ -242,19 +246,23 @@ class HeartbeatMonitor:
                 pod_status.consecutive_misses += 1
                 _logger.warning(
                     "pod heartbeat timeout",
-                    extra={"extra_data": {
-                        "pod_id": pod_id,
-                        "elapsed_seconds": elapsed,
-                        "consecutive_misses": pod_status.consecutive_misses,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "pod_id": pod_id,
+                            "elapsed_seconds": elapsed,
+                            "consecutive_misses": pod_status.consecutive_misses,
+                        }
+                    },
                 )
                 removed = await self._catalog.deregister_pod(pod_id)
                 _logger.info(
                     "deregistered timed-out pod endpoints",
-                    extra={"extra_data": {
-                        "pod_id": pod_id,
-                        "removed_tools": removed,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "pod_id": pod_id,
+                            "removed_tools": removed,
+                        }
+                    },
                 )
                 to_remove.append(pod_id)
         for pod_id in to_remove:

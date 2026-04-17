@@ -149,13 +149,9 @@ KNOWN_VIOLATIONS: list[tuple[str, str, str, str]] = [
     ),
 ]
 
-_ALLOWLIST_SET: set[tuple[str, str, str]] = {
-    (path, cls, attr) for path, cls, attr, _ in ALLOWLIST
-}
+_ALLOWLIST_SET: set[tuple[str, str, str]] = {(path, cls, attr) for path, cls, attr, _ in ALLOWLIST}
 
-_KNOWN_VIOLATIONS_SET: set[tuple[str, str, str]] = {
-    (path, cls, attr) for path, cls, attr, _ in KNOWN_VIOLATIONS
-}
+_KNOWN_VIOLATIONS_SET: set[tuple[str, str, str]] = {(path, cls, attr) for path, cls, attr, _ in KNOWN_VIOLATIONS}
 
 
 def _is_dict_literal(node: ast.expr) -> bool:
@@ -248,12 +244,7 @@ def _is_bad_value(node: ast.expr) -> bool:
     :return: True if value represents raw dict state initialization
     :rtype: bool
     """
-    result = (
-        _is_dict_literal(node)
-        or _is_dict_call(node)
-        or _is_ordered_dict_call(node)
-        or _is_dict_or_fallback(node)
-    )
+    result = _is_dict_literal(node) or _is_dict_call(node) or _is_ordered_dict_call(node) or _is_dict_or_fallback(node)
     return result
 
 
@@ -305,8 +296,7 @@ def _find_dict_state_violations(
                     if attr_name is None:
                         continue
                     if _is_bad_value(stmt.value) or (
-                        _is_dict_type_annotation(stmt.annotation)
-                        and _is_bad_value(stmt.value)
+                        _is_dict_type_annotation(stmt.annotation) and _is_bad_value(stmt.value)
                     ):
                         violations.append((node.name, attr_name, stmt.lineno))
                 elif isinstance(stmt, ast.Assign):
@@ -315,9 +305,7 @@ def _find_dict_state_violations(
                         if attr_name is None:
                             continue
                         if _is_bad_value(stmt.value):
-                            violations.append(
-                                (node.name, attr_name, stmt.lineno)
-                            )
+                            violations.append((node.name, attr_name, stmt.lineno))
     result = violations
     return result
 
@@ -391,9 +379,7 @@ class TestDictStateDetection:
                 continue
             if key in _KNOWN_VIOLATIONS_SET:
                 continue
-            unknown.append(
-                f"  {rel_path}:{lineno} {class_name}.{attr_name}"
-            )
+            unknown.append(f"  {rel_path}:{lineno} {class_name}.{attr_name}")
         if unknown:
             detail = "\n".join(unknown)
             pytest.fail(
@@ -430,14 +416,8 @@ class TestDictStateDetection:
                     imports.append(f"  line {node.lineno}")
 
         # allow files that have known violations using OrderedDict
-        has_known_od = any(
-            rel_path == path
-            for path, _, _, _ in KNOWN_VIOLATIONS
-            if path == rel_path
-        ) or any(
-            rel_path == path
-            for path, _, _, _ in ALLOWLIST
-            if path == rel_path
+        has_known_od = any(rel_path == path for path, _, _, _ in KNOWN_VIOLATIONS if path == rel_path) or any(
+            rel_path == path for path, _, _, _ in ALLOWLIST if path == rel_path
         )
 
         if imports and not has_known_od:
@@ -485,14 +465,11 @@ class TestDictStateAllowlistIntegrity:
                     break
             if not found:
                 missing.append(
-                    f"  {composite_path}:{class_name}.{attr_name}: "
-                    f"not found in AST (stale allowlist entry?)"
+                    f"  {composite_path}:{class_name}.{attr_name}: not found in AST (stale allowlist entry?)"
                 )
         if missing:
             detail = "\n".join(missing)
-            pytest.fail(
-                f"ALLOWLIST contains entries not found in source:\n{detail}"
-            )
+            pytest.fail(f"ALLOWLIST contains entries not found in source:\n{detail}")
 
     def test_known_violations_exist(self) -> None:
         """verify every known violation entry matches real class and attribute in source.
@@ -526,12 +503,7 @@ class TestDictStateAllowlistIntegrity:
                     found = True
                     break
             if not found:
-                missing.append(
-                    f"  {composite_path}:{class_name}.{attr_name}: "
-                    f"not found in AST (already migrated?)"
-                )
+                missing.append(f"  {composite_path}:{class_name}.{attr_name}: not found in AST (already migrated?)")
         if missing:
             detail = "\n".join(missing)
-            pytest.fail(
-                f"KNOWN_VIOLATIONS contains entries not found in source:\n{detail}"
-            )
+            pytest.fail(f"KNOWN_VIOLATIONS contains entries not found in source:\n{detail}")

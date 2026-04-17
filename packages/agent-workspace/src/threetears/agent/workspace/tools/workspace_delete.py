@@ -48,9 +48,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-_SOFT_DELETE_WORKSPACE_SQL = (
-    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2"
-)
+_SOFT_DELETE_WORKSPACE_SQL = "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2"
 
 
 class WorkspaceDeleteTool(TearsTool):
@@ -125,9 +123,7 @@ class WorkspaceDeleteTool(TearsTool):
         correlation_id = uuid7()
         result: ToolResult
         try:
-            workspace = await self._workspaces.find_by_agent_and_name(
-                self._agent_id, name
-            )
+            workspace = await self._workspaces.find_by_agent_and_name(self._agent_id, name)
             if workspace is None or workspace.date_deleted is not None:
                 result = ToolResult(
                     success=False,
@@ -138,9 +134,7 @@ class WorkspaceDeleteTool(TearsTool):
                 now = datetime.now(UTC)
                 async with self._db_pool.acquire() as conn:
                     async with conn.transaction():
-                        await conn.execute(
-                            _SOFT_DELETE_WORKSPACE_SQL, now, workspace.id
-                        )
+                        await conn.execute(_SOFT_DELETE_WORKSPACE_SQL, now, workspace.id)
 
                 ctx = self._context_provider()
                 snapshot = await pin.get_pin(ctx)

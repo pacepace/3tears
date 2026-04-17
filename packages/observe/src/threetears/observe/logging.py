@@ -31,9 +31,7 @@ from typing import Any
 # Generic context -- apps set whatever keys they need
 # ---------------------------------------------------------------------------
 
-_log_context: ContextVar[dict[str, str]] = ContextVar(
-    "threetears_log_context", default={}
-)
+_log_context: ContextVar[dict[str, str]] = ContextVar("threetears_log_context", default={})
 
 
 def set_context(**kwargs: str | None) -> None:
@@ -94,10 +92,10 @@ def _shorten_path(filepath: str) -> str:
 # ---------------------------------------------------------------------------
 
 _LEVEL_COLORS: dict[int, str] = {
-    logging.DEBUG: "\033[36m",      # cyan
-    logging.INFO: "\033[32m",       # green
-    logging.WARNING: "\033[33m",    # yellow
-    logging.ERROR: "\033[31m",      # red
+    logging.DEBUG: "\033[36m",  # cyan
+    logging.INFO: "\033[32m",  # green
+    logging.WARNING: "\033[33m",  # yellow
+    logging.ERROR: "\033[31m",  # red
     logging.CRITICAL: "\033[1;31m",  # bold red
 }
 _RESET = "\033[0m"
@@ -162,7 +160,7 @@ class ContextFormatter(logging.Formatter):
         if extra_data:
             try:
                 parts.append(json.dumps(extra_data, default=str))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 parts.append(repr(extra_data))
 
         msg = " ".join(parts)
@@ -177,6 +175,7 @@ class ContextFormatter(logging.Formatter):
 # ---------------------------------------------------------------------------
 # ThreeTearsLogger -- custom Logger with call-site capture
 # ---------------------------------------------------------------------------
+
 
 class ThreeTearsLogger(logging.Logger):
     """Custom logger with automatic call-site capture.

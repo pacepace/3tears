@@ -155,8 +155,7 @@ class _FakeFileCollection:
             result = list(self._files)
         else:
             by_path: dict[str, _FakeFile] = {
-                f.relative_path: f for f in self._files
-                if f.relative_path in self._conn.head_by_path
+                f.relative_path: f for f in self._files if f.relative_path in self._conn.head_by_path
             }
             for rel, row in self._conn.head_by_path.items():
                 by_path[rel] = _FakeFile(
@@ -220,7 +219,10 @@ class _FakeLeaseHandle:
         return self
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """exit the critical section.
 
@@ -285,7 +287,10 @@ class _FakeTransaction:
         return self
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """close the transaction.
 
@@ -352,7 +357,9 @@ class _FakeConnection:
         return "INSERT 0 1"
 
     async def fetchrow(
-        self, query: str, *args: Any,
+        self,
+        query: str,
+        *args: Any,
     ) -> dict[str, Any] | None:
         """route journal-max + head-row SELECTs to fake state.
 
@@ -390,7 +397,10 @@ class _FakeAcquireCM:
         return self.conn
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """no-op close.
 
@@ -422,7 +432,8 @@ class _FakePool:
 
 
 def _harness(
-    tmp_path: Path, initial_files: list[_FakeFile],
+    tmp_path: Path,
+    initial_files: list[_FakeFile],
 ) -> dict[str, Any]:
     """build a fake bind harness rooted at ``tmp_path``.
 
@@ -531,10 +542,7 @@ async def test_l3_wins_seed_noop_when_l3_has_files(tmp_path: Path) -> None:
     # no-op here. capture-back may notice that the disk bytes differ
     # from the snapshot (bind projected L3 -> disk on enter so they
     # match), so no rows come from there either.
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     # L3 path remains the same version 1 (no reseed, no update).
     a_rows = [row for row in journal if row[1][2] == "a.txt"]
     assert a_rows == []
@@ -563,10 +571,7 @@ async def test_l3_wins_seed_imports_when_l3_empty(tmp_path: Path) -> None:
 
     await _enter_and_exit_bind(h, on_conflict=BindConflictPolicy.L3_WINS)
 
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     seed_rows = [row for row in journal if row[1][2] == "seed.txt"]
     assert len(seed_rows) == 1
     assert seed_rows[0][1][6] == "create"
@@ -604,27 +609,15 @@ async def test_disk_wins_seed_always_imports_from_disk(
 
     await _enter_and_exit_bind(h, on_conflict=BindConflictPolicy.DISK_WINS)
 
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     # a.txt: update row from the seed step (disk differs from L3).
-    a_seed_rows = [
-        row for row in journal
-        if row[1][2] == "a.txt" and row[1][6] == "update"
-    ]
+    a_seed_rows = [row for row in journal if row[1][2] == "a.txt" and row[1][6] == "update"]
     assert len(a_seed_rows) == 1
     # b.txt: create row from seed.
-    b_seed_rows = [
-        row for row in journal
-        if row[1][2] == "b.txt" and row[1][6] == "create"
-    ]
+    b_seed_rows = [row for row in journal if row[1][2] == "b.txt" and row[1][6] == "create"]
     assert len(b_seed_rows) == 1
     # old.txt: delete row from seed.
-    old_delete_rows = [
-        row for row in journal
-        if row[1][2] == "old.txt" and row[1][6] == "delete"
-    ]
+    old_delete_rows = [row for row in journal if row[1][2] == "old.txt" and row[1][6] == "delete"]
     assert len(old_delete_rows) == 1
     # head_by_path reflects the seed: a.txt updated, b.txt created,
     # old.txt removed.
@@ -701,10 +694,7 @@ async def test_l3_wins_watch_skips_modify_events(tmp_path: Path) -> None:
     )
     assert changed == []
     # no journal insert from the watcher.
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert journal == []
 
 
@@ -731,10 +721,7 @@ async def test_l3_wins_watch_imports_added_for_new_paths(
         on_conflict=BindConflictPolicy.L3_WINS,
     )
     assert changed == ["fresh.txt"]
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert len(journal) == 1
     assert journal[0][1][2] == "fresh.txt"
     assert journal[0][1][6] == "create"
@@ -771,10 +758,7 @@ async def test_l3_wins_watch_skips_added_for_existing_paths(
         on_conflict=BindConflictPolicy.L3_WINS,
     )
     assert changed == []
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert journal == []
 
 
@@ -804,10 +788,7 @@ async def test_l3_wins_watch_skips_deleted_events(tmp_path: Path) -> None:
         on_conflict=BindConflictPolicy.L3_WINS,
     )
     assert changed == []
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert journal == []
     # head row still present: L3 is authoritative.
     assert "d.txt" in h["pool"].conn.head_by_path
@@ -854,10 +835,7 @@ async def test_disk_wins_watch_imports_all(tmp_path: Path) -> None:
         on_conflict=BindConflictPolicy.DISK_WINS,
     )
     assert set(changed) == {"a.txt", "b.txt"}
-    journal = [
-        e for e in h["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in h["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     update_rows = [row for row in journal if row[1][6] == "update"]
     delete_rows = [row for row in journal if row[1][6] == "delete"]
     assert len(update_rows) == 1 and update_rows[0][1][2] == "a.txt"

@@ -115,9 +115,7 @@ class FakeKV:
         """
         entry = self._entries.get(key)
         if entry is None or entry.revision != last:
-            raise KeyWrongLastSequenceError(
-                description=f"revision mismatch on key {key!r}"
-            )
+            raise KeyWrongLastSequenceError(description=f"revision mismatch on key {key!r}")
         self._revision += 1
         self._entries[key] = FakeEntry(value=value, revision=self._revision)
         return self._revision
@@ -135,13 +133,9 @@ class FakeKV:
         """
         entry = self._entries.get(key)
         if entry is None:
-            raise KeyWrongLastSequenceError(
-                description=f"key {key!r} not found for delete"
-            )
+            raise KeyWrongLastSequenceError(description=f"key {key!r} not found for delete")
         if last is not None and entry.revision != last:
-            raise KeyWrongLastSequenceError(
-                description=f"revision mismatch on delete of key {key!r}"
-            )
+            raise KeyWrongLastSequenceError(description=f"revision mismatch on delete of key {key!r}")
         del self._entries[key]
         return True
 

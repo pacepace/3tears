@@ -141,23 +141,15 @@ class DocGetTool(TearsTool):
                 result = ToolResult(
                     success=False,
                     content="",
-                    error=(
-                        f"no FormatHandler for {suffix}; use fs_* tools for "
-                        "this file type"
-                    ),
+                    error=(f"no FormatHandler for {suffix}; use fs_* tools for this file type"),
                 )
             else:
-                file_entity = await self._files.find_by_workspace_and_relative_path(
-                    workspace.id, relative_path
-                )
+                file_entity = await self._files.find_by_workspace_and_relative_path(workspace.id, relative_path)
                 if file_entity is None:
                     result = ToolResult(
                         success=False,
                         content="",
-                        error=(
-                            f"file {relative_path!r} not found in workspace "
-                            f"{workspace.name!r}"
-                        ),
+                        error=(f"file {relative_path!r} not found in workspace {workspace.name!r}"),
                     )
                 else:
                     try:
@@ -176,9 +168,7 @@ class DocGetTool(TearsTool):
                                 result = ToolResult(
                                     success=False,
                                     content="",
-                                    error=(
-                                        f"jsonpath {jsonpath!r} returned no matches"
-                                    ),
+                                    error=(f"jsonpath {jsonpath!r} returned no matches"),
                                 )
                                 payload = None
                             else:

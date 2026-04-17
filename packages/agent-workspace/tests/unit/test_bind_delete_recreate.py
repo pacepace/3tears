@@ -116,11 +116,7 @@ class _FakeConnection:
         if "COALESCE(MAX(version)" in query:
             workspace_id: UUID = args[0]
             relative_path: str = args[1]
-            result = {
-                "max_version": self.journal_max_by_path.get(
-                    (workspace_id, relative_path), 0
-                )
-            }
+            result = {"max_version": self.journal_max_by_path.get((workspace_id, relative_path), 0)}
         else:
             result = None
         return result
@@ -198,11 +194,7 @@ async def test_capture_back_delete_then_recreate_emits_monotonic_versions(
     assert changed_delete == ["a.txt"]
 
     # walk the journal inserts and assert the delete landed at version 2.
-    delete_inserts = [
-        args
-        for query, args, _ in pool.conn.executions
-        if "INSERT INTO workspace_file_versions" in query
-    ]
+    delete_inserts = [args for query, args, _ in pool.conn.executions if "INSERT INTO workspace_file_versions" in query]
     assert len(delete_inserts) == 1
     # column positions per _INSERT_WORKSPACE_FILE_VERSION_SQL:
     # id, workspace_id, relative_path, version, content, sha256, action
@@ -229,11 +221,7 @@ async def test_capture_back_delete_then_recreate_emits_monotonic_versions(
     )
     assert changed_create == ["a.txt"]
 
-    all_inserts = [
-        args
-        for query, args, _ in pool.conn.executions
-        if "INSERT INTO workspace_file_versions" in query
-    ]
+    all_inserts = [args for query, args, _ in pool.conn.executions if "INSERT INTO workspace_file_versions" in query]
     # two INSERTs total: the delete at v2, then the re-create at v3.
     assert len(all_inserts) == 2
     recreate_args = all_inserts[1]

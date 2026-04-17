@@ -280,17 +280,13 @@ class TestChannelRouter:
 
     def test_channel_router_is_runtime_checkable(self) -> None:
         """ChannelRouter is a runtime_checkable Protocol."""
-        assert hasattr(ChannelRouter, "__protocol_attrs__") or hasattr(
-            ChannelRouter, "__abstractmethods__"
-        )
+        assert hasattr(ChannelRouter, "__protocol_attrs__") or hasattr(ChannelRouter, "__abstractmethods__")
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing route_inbound satisfies ChannelRouter isinstance check."""
 
         class _MockRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 return None
 
         router = _MockRouter()
@@ -311,9 +307,7 @@ class TestChannelRouter:
         """conforming ChannelRouter implementation can return ChannelResponse."""
 
         class _EchoRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 result = ChannelResponse(
                     content=f"echo: {message.content}",
                     conversation_id=message.conversation_id,
@@ -341,9 +335,7 @@ class TestChannelRouter:
         """conforming ChannelRouter implementation can return None."""
 
         class _NullRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 return None
 
         router = _NullRouter()

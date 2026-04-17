@@ -169,12 +169,8 @@ class FsWriteTool(TearsTool):
                 content_bytes = raw_content
             else:
                 content_bytes = str(raw_content).encode("utf-8")
-            existing = await self._files.find_by_workspace_and_relative_path(
-                workspace.id, relative_path
-            )
-            action: Literal["create", "update"] = (
-                "update" if existing is not None else "create"
-            )
+            existing = await self._files.find_by_workspace_and_relative_path(workspace.id, relative_path)
+            action: Literal["create", "update"] = "update" if existing is not None else "create"
             old_bytes: bytes = existing.content if existing is not None else b""
             old_sha: str | None = existing.sha256 if existing is not None else None
             new_version, new_sha256 = await _write_file_atomic(
@@ -215,14 +211,12 @@ class FsWriteTool(TearsTool):
             # NOSILENT: audit failure must never taint a successful write
             except Exception as audit_exc:
                 log.exception(
-                    "fs_write audit publish swallow caught: %s", audit_exc,
+                    "fs_write audit publish swallow caught: %s",
+                    audit_exc,
                 )
             result = ToolResult(
                 success=True,
-                content=(
-                    f"wrote {len(content_bytes)} bytes; "
-                    f"sha256={new_sha256}, version={new_version}"
-                ),
+                content=(f"wrote {len(content_bytes)} bytes; sha256={new_sha256}, version={new_version}"),
                 metadata={
                     "sha256": new_sha256,
                     "version": new_version,
@@ -233,10 +227,7 @@ class FsWriteTool(TearsTool):
             result = ToolResult(
                 success=False,
                 content="",
-                error=(
-                    f"sha256 mismatch: expected {exc.expected!r}, current "
-                    f"{exc.current!r}; re-read and retry"
-                ),
+                error=(f"sha256 mismatch: expected {exc.expected!r}, current {exc.current!r}; re-read and retry"),
             )
         except WorkspaceValidationError as exc:
             result = ToolResult(
@@ -267,10 +258,7 @@ class FsWriteTool(TearsTool):
         return MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description=(
-                "atomically write a workspace file with optimistic "
-                "concurrency via expected_sha256"
-            ),
+            description=("atomically write a workspace file with optimistic concurrency via expected_sha256"),
             input_schema=_INPUT_SCHEMA,
         )
 

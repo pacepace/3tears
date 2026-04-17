@@ -11,6 +11,7 @@ from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 
+
 def _get_mcp_timeout() -> int:
     """read MCP timeout from environment or return platform default.
 

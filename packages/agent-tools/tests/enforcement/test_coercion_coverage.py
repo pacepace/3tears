@@ -28,13 +28,7 @@ from pathlib import Path
 import pytest
 
 
-_SRC_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "threetears"
-    / "agent"
-    / "tools"
-)
+_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "tools"
 
 
 def _collect_src_files() -> list[Path]:
@@ -96,9 +90,13 @@ class TestTearsToolSubclassesDoNotOverrideRun:
             if not _base_mentions_tears_tool(node.bases):
                 continue
             for member in node.body:
-                if isinstance(
-                    member, (ast.FunctionDef, ast.AsyncFunctionDef),
-                ) and member.name == "run":
+                if (
+                    isinstance(
+                        member,
+                        (ast.FunctionDef, ast.AsyncFunctionDef),
+                    )
+                    and member.name == "run"
+                ):
                     violations.append(
                         f"{src_file.relative_to(_SRC_ROOT)}:{member.lineno} -- "
                         f"class {node.name} overrides run(); override execute() "
@@ -132,8 +130,7 @@ class TestTearsToolSubclassesDefineExecuteHook:
             if not _base_mentions_tears_tool(node.bases):
                 continue
             has_hook = any(
-                isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and member.name == "execute"
+                isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name == "execute"
                 for member in node.body
             )
             if not has_hook:

@@ -48,9 +48,7 @@ class _FakeWorkspaceCollection:
         self._entities = entities or []
         self.find_by_agent_and_name_calls: list[tuple[UUID, str]] = []
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         self.find_by_agent_and_name_calls.append((agent_id, name))
         for e in self._entities:
             if e.name == name:
@@ -230,8 +228,7 @@ def _build_tool(
     return WorkspaceCreateTool(
         workspace_collection=workspace_collection or _FakeWorkspaceCollection(),
         workspace_file_collection=workspace_file_collection or _FakeFileCollection(),
-        workspace_file_version_collection=workspace_file_version_collection
-        or _FakeVersionCollection(),
+        workspace_file_version_collection=workspace_file_version_collection or _FakeVersionCollection(),
         sandbox=sandbox or _NoTemplateSandbox(),
         context_provider=context_provider or (lambda: _FakeContext()),
         agent_id=agent_id or uuid4(),
@@ -271,9 +268,7 @@ async def test_create_empty_workspace_inserts_row_pins_and_logs_zero_files(
     assert pool.conn.transactions[0].exited is True
 
     # only the workspaces INSERT happened
-    inserts_into_workspaces = [
-        e for e in pool.conn.executions if "workspaces" in e[0]
-    ]
+    inserts_into_workspaces = [e for e in pool.conn.executions if "workspaces" in e[0]]
     assert len(inserts_into_workspaces) == 1
     workspaces_sql, workspaces_args, in_tx = inserts_into_workspaces[0]
     assert "INSERT INTO workspaces" in workspaces_sql
@@ -330,9 +325,7 @@ async def test_create_from_template_walks_directory_and_inserts_each_file(
     assert all(action == "read" for action, _t in sandbox.enforce_calls)
 
     # workspace insert: template_name="starter", current_version=1
-    workspaces_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]
-    ]
+    workspaces_inserts = [e for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]]
     assert len(workspaces_inserts) == 1
     _sql, args, _intx = workspaces_inserts[0]
     assert args[4] == "starter"
@@ -340,12 +333,8 @@ async def test_create_from_template_walks_directory_and_inserts_each_file(
     workspace_id = args[0]
 
     # 3 file head inserts + 3 journal inserts; each in transaction
-    file_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]
-    ]
-    journal_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    file_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]]
+    journal_inserts = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert len(file_inserts) == 3
     assert len(journal_inserts) == 3
     for _sql, _args, in_tx in file_inserts + journal_inserts:
@@ -364,9 +353,7 @@ async def test_create_from_template_walks_directory_and_inserts_each_file(
 
     # content sha256 for one of the files matches actual hash
     expected_sha = hashlib.sha256(b"# starter\n").hexdigest()
-    readme_journal = next(
-        row for row in journal_inserts if row[1][2] == "README.md"
-    )
+    readme_journal = next(row for row in journal_inserts if row[1][2] == "README.md")
     assert readme_journal[1][5] == expected_sha
     # contents bound as bytes
     assert readme_journal[1][4] == b"# starter\n"
@@ -402,21 +389,14 @@ async def test_create_from_workspace_copies_files_and_carries_template_name(
     # source lookup happened
     assert files_coll.find_by_workspace_calls == [source_id]
 
-    workspaces_inserts = [
-        e for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]
-    ]
+    workspaces_inserts = [e for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]]
     args = workspaces_inserts[0][1]
     # template_name carried over from source
     assert args[4] == "starter"
 
     # 2 file head + 2 journal rows
-    assert (
-        len([e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]])
-        == 2
-    )
-    journal = [
-        e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    assert len([e for e in pool.conn.executions if "INSERT INTO workspace_files" in e[0]]) == 2
+    journal = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert len(journal) == 2
     # journal copied content bytes
     contents = sorted(row[1][4] for row in journal)
@@ -429,9 +409,7 @@ async def test_create_pins_with_fresh_workspace_id(patch_set_pin: _RecordingPin)
     pool = _FakePool()
     tool = _build_tool(db_pool=pool)
     await tool.execute(name="x")
-    workspaces_args = [
-        e[1] for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]
-    ][0]
+    workspaces_args = [e[1] for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]][0]
     workspace_id = workspaces_args[0]
     assert patch_set_pin.calls[0]["workspace_id"] == workspace_id
 
@@ -448,9 +426,7 @@ async def test_create_with_both_sources_returns_clean_error(
     """specifying both from_template and from_workspace yields error-as-data."""
     pool = _FakePool()
     tool = _build_tool(db_pool=pool)
-    result = await tool.execute(
-        name="x", from_template="t", from_workspace="w"
-    )
+    result = await tool.execute(name="x", from_template="t", from_workspace="w")
     assert result.success is False
     assert result.error is not None
     assert "mutually exclusive" in result.error or "both" in result.error.lower()

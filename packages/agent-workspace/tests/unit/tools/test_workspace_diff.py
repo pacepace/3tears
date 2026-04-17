@@ -31,17 +31,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -86,14 +82,10 @@ class _JournalRow:
 class _FakeConnection:
     """scripts fetchrow by (relative_path, ref_selector) tuple."""
 
-    script: dict[tuple[str, Any], dict[str, Any] | None] = field(
-        default_factory=dict
-    )
+    script: dict[tuple[str, Any], dict[str, Any] | None] = field(default_factory=dict)
     fetchrows: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
 
-    async def fetchrow(
-        self, query: str, *args: Any
-    ) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         # selector: last positional matches the ref shape
         # for head: args = (ws_id, path)
@@ -176,12 +168,8 @@ async def test_diff_two_integer_versions_returns_unified_diff() -> None:
         ("a.txt", 1): _journal_row(b"first\nsecond\nthird\n", version=1),
         ("a.txt", 3): _journal_row(b"first\nchanged\nthird\n", version=3),
     }
-    tool, _pool, sandbox = _build_tool(
-        workspace_entities=[ws], script=script
-    )
-    result = await tool.execute(
-        relative_path="a.txt", from_ref=1, to_ref=3, workspace="ws"
-    )
+    tool, _pool, sandbox = _build_tool(workspace_entities=[ws], script=script)
+    result = await tool.execute(relative_path="a.txt", from_ref=1, to_ref=3, workspace="ws")
     assert result.success is True, result.error
     assert "--- a.txt@1" in result.content
     assert "+++ a.txt@3" in result.content
@@ -199,9 +187,7 @@ async def test_diff_checkpoint_label_resolves_via_label_selector() -> None:
         ("m.txt", "head"): _journal_row(b"alpha-plus\n"),
     }
     tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
-    result = await tool.execute(
-        relative_path="m.txt", from_ref="v1", to_ref="head", workspace="ws"
-    )
+    result = await tool.execute(relative_path="m.txt", from_ref="v1", to_ref="head", workspace="ws")
     assert result.success is True
     assert "--- m.txt@v1" in result.content
     assert "+++ m.txt@head" in result.content
@@ -221,9 +207,7 @@ async def test_diff_binary_content_returns_clean_error() -> None:
         ("bin.dat", 2): _journal_row(b"ok text\n"),
     }
     tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
-    result = await tool.execute(
-        relative_path="bin.dat", from_ref=1, to_ref=2, workspace="ws"
-    )
+    result = await tool.execute(relative_path="bin.dat", from_ref=1, to_ref=2, workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "diff only supported on text" in result.error
@@ -238,9 +222,7 @@ async def test_diff_missing_from_ref_returns_clean_error() -> None:
         ("a.txt", "head"): _journal_row(b"x\n"),
     }
     tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
-    result = await tool.execute(
-        relative_path="a.txt", from_ref=99, to_ref="head", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.txt", from_ref=99, to_ref="head", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "99" in result.error
@@ -256,9 +238,7 @@ async def test_diff_missing_to_ref_returns_clean_error() -> None:
         ("a.txt", "never"): None,
     }
     tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
-    result = await tool.execute(
-        relative_path="a.txt", from_ref="head", to_ref="never", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.txt", from_ref="head", to_ref="never", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "never" in result.error
@@ -268,9 +248,7 @@ async def test_diff_missing_to_ref_returns_clean_error() -> None:
 async def test_diff_sandbox_denied_returns_clean_error() -> None:
     """SandboxDenied surfaces as clean tool error; no ref queries issued."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, sandbox = _build_tool(
-        workspace_entities=[ws], script={}, deny_reads=["private.env"]
-    )
+    tool, pool, sandbox = _build_tool(workspace_entities=[ws], script={}, deny_reads=["private.env"])
     result = await tool.execute(
         relative_path="private.env",
         from_ref=1,
@@ -289,16 +267,12 @@ async def test_diff_sandbox_denied_returns_clean_error() -> None:
 
 
 def test_diff_mcp_name_is_exact_string() -> None:
-    tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")]
-    )
+    tool, _, _ = _build_tool(workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")])
     assert tool.mcp_name() == "threetears.workspace.diff"
 
 
 def test_diff_mcp_schema_shape() -> None:
-    tool, _, _ = _build_tool(
-        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")]
-    )
+    tool, _, _ = _build_tool(workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")])
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     schema = defn.input_schema

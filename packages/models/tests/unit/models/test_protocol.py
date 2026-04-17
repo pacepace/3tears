@@ -34,9 +34,7 @@ class TestChatProvider:
 
     def test_chat_provider_is_runtime_checkable(self) -> None:
         """ChatProvider is a runtime_checkable Protocol."""
-        assert hasattr(ChatProvider, "__protocol_attrs__") or hasattr(
-            ChatProvider, "__abstractmethods__"
-        )
+        assert hasattr(ChatProvider, "__protocol_attrs__") or hasattr(ChatProvider, "__abstractmethods__")
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing all ChatProvider methods satisfies isinstance check."""
@@ -87,9 +85,11 @@ class TestChatProvider:
                 return messages
 
         provider = _EchoChat()
-        result = await provider.complete([
-            ChatMessage(role=MessageRole.USER, content="hello"),
-        ])
+        result = await provider.complete(
+            [
+                ChatMessage(role=MessageRole.USER, content="hello"),
+            ]
+        )
         assert result.content == "echo: hello"
         assert result.model == "test-model"
 
@@ -113,9 +113,11 @@ class TestChatProvider:
 
         provider = _StreamChat()
         chunks: list[ChatChunk] = []
-        async for chunk in provider.stream([
-            ChatMessage(role=MessageRole.USER, content="hi"),
-        ]):
+        async for chunk in provider.stream(
+            [
+                ChatMessage(role=MessageRole.USER, content="hi"),
+            ]
+        ):
             chunks.append(chunk)
         assert len(chunks) == 2
         assert chunks[0].content == "hello "
@@ -130,9 +132,7 @@ class TestEmbeddingProvider:
 
     def test_embedding_provider_is_runtime_checkable(self) -> None:
         """EmbeddingProvider is a runtime_checkable Protocol."""
-        assert hasattr(EmbeddingProvider, "__protocol_attrs__") or hasattr(
-            EmbeddingProvider, "__abstractmethods__"
-        )
+        assert hasattr(EmbeddingProvider, "__protocol_attrs__") or hasattr(EmbeddingProvider, "__abstractmethods__")
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing all EmbeddingProvider methods satisfies isinstance check."""
@@ -205,9 +205,7 @@ class TestEmbeddingProvider:
                 return 2
 
             async def embed(self, text: str) -> EmbeddingResult:
-                return EmbeddingResult(
-                    vector=[0.1, 0.2], token_count=1, dimensions=2, model="test"
-                )
+                return EmbeddingResult(vector=[0.1, 0.2], token_count=1, dimensions=2, model="test")
 
             async def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
                 results = []
@@ -277,9 +275,7 @@ class TestTranscriptionProvider:
                 )
 
         provider = _SimpleTranscribe()
-        result = await provider.transcribe(
-            b"audio-bytes", "audio/wav", language_hint="en"
-        )
+        result = await provider.transcribe(b"audio-bytes", "audio/wav", language_hint="en")
         assert result.text == "transcribed text"
         assert result.language == "en"
         assert result.duration_seconds == 5.0
@@ -385,9 +381,7 @@ class TestSpeechProvider:
 
     def test_speech_provider_is_runtime_checkable(self) -> None:
         """SpeechProvider is a runtime_checkable Protocol."""
-        assert hasattr(SpeechProvider, "__protocol_attrs__") or hasattr(
-            SpeechProvider, "__abstractmethods__"
-        )
+        assert hasattr(SpeechProvider, "__protocol_attrs__") or hasattr(SpeechProvider, "__abstractmethods__")
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing synthesize satisfies SpeechProvider isinstance check."""
@@ -452,9 +446,7 @@ class TestRerankingProvider:
 
     def test_reranking_provider_is_runtime_checkable(self) -> None:
         """RerankingProvider is a runtime_checkable Protocol."""
-        assert hasattr(RerankingProvider, "__protocol_attrs__") or hasattr(
-            RerankingProvider, "__abstractmethods__"
-        )
+        assert hasattr(RerankingProvider, "__protocol_attrs__") or hasattr(RerankingProvider, "__abstractmethods__")
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing rerank satisfies RerankingProvider isinstance check."""
@@ -494,8 +486,7 @@ class TestRerankingProvider:
                 top_k: int | None = None,
             ) -> list[RerankResult]:
                 scored = [
-                    RerankResult(index=i, relevance_score=1.0 / (i + 1), text=doc)
-                    for i, doc in enumerate(documents)
+                    RerankResult(index=i, relevance_score=1.0 / (i + 1), text=doc) for i, doc in enumerate(documents)
                 ]
                 scored.sort(key=lambda r: r.relevance_score, reverse=True)
                 if top_k is not None:

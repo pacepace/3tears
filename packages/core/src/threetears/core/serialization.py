@@ -221,7 +221,5 @@ def handler_for(path: str | Path) -> FormatHandler:
     try:
         result = _HANDLERS[ext]
     except KeyError as e:
-        raise UnknownFormatError(
-            f"no FormatHandler registered for extension {ext!r}"
-        ) from e
+        raise UnknownFormatError(f"no FormatHandler registered for extension {ext!r}") from e
     return result

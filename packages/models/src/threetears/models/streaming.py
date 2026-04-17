@@ -67,12 +67,7 @@ def recover_split_tool_calls(
         # check if current + next match split pattern
         if idx + 1 < len(tool_calls):
             next_call = tool_calls[idx + 1]
-            is_split = (
-                current.name != ""
-                and current.args == {}
-                and next_call.name == ""
-                and next_call.args != {}
-            )
+            is_split = current.name != "" and current.args == {} and next_call.name == "" and next_call.args != {}
 
             if is_split:
                 result.append(
@@ -116,7 +111,7 @@ def recover_invalid_tool_calls(
 
         try:
             parsed: Any = json.loads(call_args)
-        except (ValueError, json.JSONDecodeError, TypeError):
+        except ValueError, json.JSONDecodeError, TypeError:
             still_invalid.append(call)
             continue
 

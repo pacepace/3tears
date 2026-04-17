@@ -250,7 +250,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     "FROM checkpoints "
                     "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                     "AND checkpoint_id = $3",
-                    thread_id, checkpoint_ns, checkpoint_id,
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
                 )
             else:
                 row = await conn.fetchrow(
@@ -259,7 +261,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     "FROM checkpoints "
                     "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                     "ORDER BY checkpoint_id DESC LIMIT 1",
-                    thread_id, checkpoint_ns,
+                    thread_id,
+                    checkpoint_ns,
                 )
 
             if row is None:
@@ -272,11 +275,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             md_blob = bytes(row["metadata_"])
 
             checkpoint: Checkpoint = self.serde.loads_typed((cp_type or "msgpack", cp_blob))
-            metadata: CheckpointMetadata = cast(CheckpointMetadata, (
-                self.serde.loads_typed((cp_type or "msgpack", md_blob))
-                if md_blob and md_blob != b"\x00"
-                else {}
-            ))
+            metadata: CheckpointMetadata = cast(
+                CheckpointMetadata,
+                (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
+            )
 
             write_rows = await conn.fetch(
                 "SELECT task_id, channel, type, blob, task_path "
@@ -284,15 +286,19 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "WHERE thread_id = $1 AND checkpoint_ns = $2 "
                 "AND checkpoint_id = $3 "
                 "ORDER BY idx",
-                thread_id, checkpoint_ns, cp_id,
+                thread_id,
+                checkpoint_ns,
+                cp_id,
             )
             pending_writes: list[tuple[str, str, Any]] = []
             for wr in write_rows:
-                pending_writes.append((
-                    wr["task_id"],
-                    wr["channel"],
-                    self.serde.loads_typed((wr["type"] or "msgpack", bytes(wr["blob"]))),
-                ))
+                pending_writes.append(
+                    (
+                        wr["task_id"],
+                        wr["channel"],
+                        self.serde.loads_typed((wr["type"] or "msgpack", bytes(wr["blob"]))),
+                    )
+                )
 
         result_config: RunnableConfig = {
             "configurable": {
@@ -303,7 +309,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         }
         parent_config: RunnableConfig | None = (
             {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_id}}
-            if parent_id else None
+            if parent_id
+            else None
         )
 
         tup = CheckpointTuple(
@@ -325,7 +332,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         return tup
 
     def _bundle_to_tuple(
-        self, thread_id: str, checkpoint_ns: str, bundle: dict[str, Any],
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        bundle: dict[str, Any],
     ) -> CheckpointTuple:
         """Convert a deserialized cache bundle back to CheckpointTuple."""
         checkpoint = bundle["checkpoint"]
@@ -339,8 +349,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": cp_id}
         }
         parent_config: RunnableConfig | None = (
-            {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_checkpoint_id}}
-            if parent_checkpoint_id else None
+            {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": checkpoint_ns,
+                    "checkpoint_id": parent_checkpoint_id,
+                }
+            }
+            if parent_checkpoint_id
+            else None
         )
 
         return CheckpointTuple(
@@ -395,11 +412,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             md_blob = bytes(row["metadata_"])
 
             checkpoint: Checkpoint = self.serde.loads_typed((cp_type or "msgpack", cp_blob))
-            metadata: CheckpointMetadata = cast(CheckpointMetadata, (
-                self.serde.loads_typed((cp_type or "msgpack", md_blob))
-                if md_blob and md_blob != b"\x00"
-                else {}
-            ))
+            metadata: CheckpointMetadata = cast(
+                CheckpointMetadata,
+                (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
+            )
 
             if filter and not all(metadata.get(k) == v for k, v in filter.items()):
                 continue
@@ -409,7 +425,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             }
             parent_config: RunnableConfig | None = (
                 {"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns, "checkpoint_id": parent_id}}
-                if parent_id else None
+                if parent_id
+                else None
             )
 
             yield CheckpointTuple(
@@ -448,8 +465,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 "DO UPDATE SET parent_checkpoint_id = EXCLUDED.parent_checkpoint_id, "
                 "type = EXCLUDED.type, checkpoint = EXCLUDED.checkpoint, "
                 "metadata_ = EXCLUDED.metadata_",
-                thread_id, checkpoint_ns, checkpoint["id"],
-                parent_checkpoint_id, cp_type, cp_blob, md_blob,
+                thread_id,
+                checkpoint_ns,
+                checkpoint["id"],
+                parent_checkpoint_id,
+                cp_type,
+                cp_blob,
+                md_blob,
             )
 
         result_config: RunnableConfig = {
@@ -499,8 +521,15 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
                     "ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) "
                     "DO NOTHING",
-                    thread_id, checkpoint_ns, checkpoint_id, task_id,
-                    task_path, write_idx, channel, w_type, w_blob,
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    task_id,
+                    task_path,
+                    write_idx,
+                    channel,
+                    w_type,
+                    w_blob,
                 )
 
     async def adelete_thread(self, thread_id: str) -> None:
@@ -520,20 +549,30 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         raise NotImplementedError("ThreeTierCheckpointSaver is async-only. Use aget_tuple().")
 
     def list(
-        self, config: RunnableConfig | None, *, filter: dict[str, Any] | None = None,
-        before: RunnableConfig | None = None, limit: int | None = None,
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
     ) -> Iterator[CheckpointTuple]:
         raise NotImplementedError("ThreeTierCheckpointSaver is async-only. Use alist().")
 
     def put(
-        self, config: RunnableConfig, checkpoint: Checkpoint,
-        metadata: CheckpointMetadata, new_versions: ChannelVersions,
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
     ) -> RunnableConfig:
         raise NotImplementedError("ThreeTierCheckpointSaver is async-only. Use aput().")
 
     def put_writes(
-        self, config: RunnableConfig, writes: Sequence[tuple[str, Any]],
-        task_id: str, task_path: str = "",
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
     ) -> None:
         raise NotImplementedError("ThreeTierCheckpointSaver is async-only. Use aput_writes().")
 

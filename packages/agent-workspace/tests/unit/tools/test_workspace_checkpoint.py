@@ -32,17 +32,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -62,9 +58,7 @@ class _FakeFileCollection:
         self._files = files
         self.calls: list[UUID] = []
 
-    async def find_by_workspace(
-        self, workspace_id: UUID
-    ) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
         self.calls.append(workspace_id)
         return list(self._files)
 

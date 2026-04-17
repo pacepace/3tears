@@ -165,9 +165,7 @@ class TestChatMessage:
 
     def test_chat_message_all_fields(self) -> None:
         """ChatMessage stores all fields correctly."""
-        tool_call = ToolCallRequest(
-            id="call-1", name="search", args={"q": "test"}
-        )
+        tool_call = ToolCallRequest(id="call-1", name="search", args={"q": "test"})
         msg = ChatMessage(
             role=MessageRole.ASSISTANT,
             content="calling tool",

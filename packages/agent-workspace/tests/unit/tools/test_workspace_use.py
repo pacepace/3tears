@@ -34,9 +34,7 @@ class _FakeCollection:
         self.find_by_agent_calls.append(agent_id)
         return list(self._entities)
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         self.find_by_agent_and_name_calls.append((agent_id, name))
         for entity in self._entities:
             if entity.name == name:

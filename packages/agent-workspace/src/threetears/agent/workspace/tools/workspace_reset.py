@@ -70,9 +70,7 @@ ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     date_updated = EXCLUDED.date_updated
 """
 
-_DELETE_WORKSPACE_FILE_BY_PATH_SQL = (
-    "DELETE FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
-)
+_DELETE_WORKSPACE_FILE_BY_PATH_SQL = "DELETE FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2"
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
@@ -81,9 +79,7 @@ INSERT INTO workspace_file_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
-_UPDATE_WORKSPACE_VERSION_SQL = (
-    "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3"
-)
+_UPDATE_WORKSPACE_VERSION_SQL = "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3"
 
 
 class WorkspaceResetTool(TearsTool):
@@ -167,9 +163,7 @@ class WorkspaceResetTool(TearsTool):
         result: ToolResult
         try:
             name = await self._resolve_name(name_arg)
-            workspace = await self._workspaces.find_by_agent_and_name(
-                self._agent_id, name
-            )
+            workspace = await self._workspaces.find_by_agent_and_name(self._agent_id, name)
             if workspace is None or workspace.date_deleted is not None:
                 result = ToolResult(
                     success=False,
@@ -196,10 +190,7 @@ class WorkspaceResetTool(TearsTool):
                     workspace_id=workspace.id,
                     current_version=workspace.current_version,
                     template_files=template_files,
-                    current_files=[
-                        (f.relative_path, f.content, f.sha256)
-                        for f in current_files
-                    ],
+                    current_files=[(f.relative_path, f.content, f.sha256) for f in current_files],
                     correlation_id=correlation_id,
                 )
                 # defense-in-depth: swallow audit-side exceptions so a
@@ -230,8 +221,7 @@ class WorkspaceResetTool(TearsTool):
                 result = ToolResult(
                     success=True,
                     content=(
-                        f"reset workspace {name!r} to template "
-                        f"{workspace.template_name!r}; {n_changed} files affected"
+                        f"reset workspace {name!r} to template {workspace.template_name!r}; {n_changed} files affected"
                     ),
                 )
         except _ResetError as exc:
@@ -265,13 +255,12 @@ class WorkspaceResetTool(TearsTool):
             return name_arg
         snapshot = await pin.get_pin(self._context_provider())
         if snapshot is None:
-            raise _ResetError(
-                "no workspace name provided and none pinned"
-            )
+            raise _ResetError("no workspace name provided and none pinned")
         return snapshot.workspace_name
 
     async def _read_template_files(
-        self, template_name: str,
+        self,
+        template_name: str,
     ) -> list[tuple[str, bytes, str]]:
         """
         walk the named template directory and gate every file via sandbox.
@@ -287,7 +276,8 @@ class WorkspaceResetTool(TearsTool):
         """
         templates_root = self._sandbox.resolve_fs_path(template_name, "templates")
         candidates = await asyncio.to_thread(
-            _collect_template_paths, templates_root,
+            _collect_template_paths,
+            templates_root,
         )
         for relative, _path in candidates:
             self._sandbox.enforce("read", relative)
@@ -339,9 +329,7 @@ class WorkspaceResetTool(TearsTool):
             async with conn.transaction():
                 for relative in sorted(revert_paths):
                     content, sha = template_by_path[relative]
-                    await self._upsert_file(
-                        conn, workspace_id, relative, content, sha, new_version, now
-                    )
+                    await self._upsert_file(conn, workspace_id, relative, content, sha, new_version, now)
                     await self._insert_journal(
                         conn,
                         workspace_id,
@@ -354,9 +342,7 @@ class WorkspaceResetTool(TearsTool):
                         correlation_id,
                     )
                 for relative in sorted(delete_paths):
-                    await conn.execute(
-                        _DELETE_WORKSPACE_FILE_BY_PATH_SQL, workspace_id, relative
-                    )
+                    await conn.execute(_DELETE_WORKSPACE_FILE_BY_PATH_SQL, workspace_id, relative)
                     await self._insert_journal(
                         conn,
                         workspace_id,
@@ -370,9 +356,7 @@ class WorkspaceResetTool(TearsTool):
                     )
                 for relative in sorted(create_paths):
                     content, sha = template_by_path[relative]
-                    await self._upsert_file(
-                        conn, workspace_id, relative, content, sha, new_version, now
-                    )
+                    await self._upsert_file(conn, workspace_id, relative, content, sha, new_version, now)
                     await self._insert_journal(
                         conn,
                         workspace_id,
@@ -384,9 +368,7 @@ class WorkspaceResetTool(TearsTool):
                         now,
                         correlation_id,
                     )
-                await conn.execute(
-                    _UPDATE_WORKSPACE_VERSION_SQL, new_version, now, workspace_id
-                )
+                await conn.execute(_UPDATE_WORKSPACE_VERSION_SQL, new_version, now, workspace_id)
         return n_changed
 
     async def _upsert_file(

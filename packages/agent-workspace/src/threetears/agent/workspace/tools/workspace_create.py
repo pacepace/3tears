@@ -185,10 +185,7 @@ class WorkspaceCreateTool(TearsTool):
             return ToolResult(
                 success=False,
                 content="",
-                error=(
-                    "from_template and from_workspace are mutually exclusive; "
-                    "specify at most one source"
-                ),
+                error=("from_template and from_workspace are mutually exclusive; specify at most one source"),
             )
 
         result: ToolResult
@@ -197,9 +194,7 @@ class WorkspaceCreateTool(TearsTool):
         files_count = 0
         workspace_id: UUID | None = None
         try:
-            files, source_template_name = await self._resolve_source_files(
-                from_template, from_workspace
-            )
+            files, source_template_name = await self._resolve_source_files(from_template, from_workspace)
             effective_template = from_template
             if effective_template is None and from_workspace is not None:
                 effective_template = source_template_name
@@ -220,7 +215,8 @@ class WorkspaceCreateTool(TearsTool):
                 )
             except Exception as pin_exc:
                 log.exception(
-                    "workspace_create pin failed after insert: %s", pin_exc,
+                    "workspace_create pin failed after insert: %s",
+                    pin_exc,
                 )
                 result = ToolResult(
                     success=False,
@@ -257,9 +253,7 @@ class WorkspaceCreateTool(TearsTool):
                     )
                 result = ToolResult(
                     success=True,
-                    content=(
-                        f"created workspace {name!r} (workspace_id={workspace_id})"
-                    ),
+                    content=(f"created workspace {name!r} (workspace_id={workspace_id})"),
                 )
         except _CreateError as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -307,14 +301,13 @@ class WorkspaceCreateTool(TearsTool):
         if from_template:
             files = await self._read_template_files(from_template)
         elif from_workspace:
-            files, inherited_template = await self._read_source_workspace_files(
-                from_workspace
-            )
+            files, inherited_template = await self._read_source_workspace_files(from_workspace)
         result = (files, inherited_template)
         return result
 
     async def _read_template_files(
-        self, template_name: str,
+        self,
+        template_name: str,
     ) -> list[tuple[str, bytes, str]]:
         """
         walk the named template directory and gate every file via sandbox.
@@ -336,12 +329,14 @@ class WorkspaceCreateTool(TearsTool):
         # on each relative key on the main loop (sandbox.enforce may raise
         # and surface cleanly that way).
         candidates = await asyncio.to_thread(
-            _collect_template_paths, templates_root,
+            _collect_template_paths,
+            templates_root,
         )
         for relative, _path in candidates:
             self._sandbox.enforce("read", relative)
         triples = await asyncio.to_thread(
-            _read_template_bytes, candidates,
+            _read_template_bytes,
+            candidates,
         )
         return triples
 
@@ -359,9 +354,7 @@ class WorkspaceCreateTool(TearsTool):
         :rtype: tuple[list[tuple[str, bytes, str]], str | None]
         :raises _CreateError: if source workspace does not exist
         """
-        source = await self._workspaces.find_by_agent_and_name(
-            self._agent_id, source_name
-        )
+        source = await self._workspaces.find_by_agent_and_name(self._agent_id, source_name)
         if source is None:
             raise _CreateError(f"source workspace {source_name!r} not found")
         rows = await self._files.find_by_workspace(source.id)

@@ -33,17 +33,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -86,9 +82,7 @@ class _RecordingSandbox:
         if action == "read" and target in self._deny_reads:
             raise SandboxDenied(action, target, "not in read globs")
 
-    def check_relative_key(
-        self, key: str, mode: str
-    ) -> SandboxDecision:
+    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
         if mode == "read" and key in self._deny_reads:
             return SandboxDecision.DENY
         return SandboxDecision.ALLOW
@@ -111,9 +105,7 @@ def _build_tool(
     agent_id: UUID | None = None,
 ) -> tuple[FsReadTool, _FakeFileCollection, _RecordingSandbox, UUID]:
     agent_id = agent_id or uuid4()
-    workspaces = _FakeWorkspaceCollection(
-        workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")]
-    )
+    workspaces = _FakeWorkspaceCollection(workspace_entities or [_FakeWorkspaceEntity(id=uuid4(), name="ws")])
     file_coll = _FakeFileCollection(files)
     sandbox = _RecordingSandbox(deny_reads=deny_reads)
     tool = FsReadTool(
@@ -141,13 +133,9 @@ async def test_fs_read_happy_returns_content_sha_version() -> None:
         sha256="a" * 64,
         version=2,
     )
-    tool, files, sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, files, sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
-    result = await tool.execute(
-        relative_path="docs/readme.md", workspace="ws"
-    )
+    result = await tool.execute(relative_path="docs/readme.md", workspace="ws")
 
     assert result.success is True, result.error
     assert result.content == "hello world"
@@ -171,13 +159,9 @@ async def test_fs_read_binary_returns_base64_with_is_binary_true() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
 
-    result = await tool.execute(
-        relative_path="img/logo.png", workspace="ws"
-    )
+    result = await tool.execute(relative_path="img/logo.png", workspace="ws")
 
     assert result.success is True, result.error
     assert result.content == base64.b64encode(raw).decode("ascii")
@@ -194,9 +178,7 @@ async def test_fs_read_binary_returns_base64_with_is_binary_true() -> None:
 async def test_fs_read_missing_file_returns_clean_error() -> None:
     """file not in head-state returns ToolResult.success=False."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[]
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
     result = await tool.execute(relative_path="missing.md", workspace="ws")
     assert result.success is False
     assert result.error is not None

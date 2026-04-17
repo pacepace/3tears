@@ -155,14 +155,10 @@ class _FakeStore:
         elif q.startswith("DELETE FROM workspace_files"):
             self._handle_delete_file(args)
         else:
-            raise NotImplementedError(
-                f"_FakeStore does not recognize SQL: {q[:120]!r}"
-            )
+            raise NotImplementedError(f"_FakeStore does not recognize SQL: {q[:120]!r}")
         return "OK 0 1"
 
-    async def fetchrow(
-        self, query: str, *args: Any
-    ) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         """
         route SELECT statements to the right lookup.
 
@@ -175,10 +171,7 @@ class _FakeStore:
         :rtype: dict[str, Any] | None
         """
         q = " ".join(query.split())
-        if (
-            q.startswith("SELECT content, sha256, version")
-            and "FROM workspace_files" in q
-        ):
+        if q.startswith("SELECT content, sha256, version") and "FROM workspace_files" in q:
             workspace_id: UUID = args[0]
             relative_path: str = args[1]
             row = self.files.get((workspace_id, relative_path))
@@ -193,10 +186,7 @@ class _FakeStore:
             workspace_id_j: UUID = args[0]
             relative_path_j: str = args[1]
             matches_j = [
-                v
-                for v in self.versions
-                if v.workspace_id == workspace_id_j
-                and v.relative_path == relative_path_j
+                v for v in self.versions if v.workspace_id == workspace_id_j and v.relative_path == relative_path_j
             ]
             max_version = max((v.version for v in matches_j), default=0)
             return {"max_version": max_version}
@@ -205,9 +195,7 @@ class _FakeStore:
             # the rollback integration; the full set of SELECTs appears
             # in helpers.py and is covered by unit tests.
             return self._handle_select_version(q, args)
-        raise NotImplementedError(
-            f"_FakeStore does not recognize SELECT: {q[:120]!r}"
-        )
+        raise NotImplementedError(f"_FakeStore does not recognize SELECT: {q[:120]!r}")
 
     def _handle_insert_workspace(self, args: tuple[Any, ...]) -> None:
         (
@@ -302,20 +290,13 @@ class _FakeStore:
         workspace_id, relative_path = args
         self.files.pop((workspace_id, relative_path), None)
 
-    def _handle_select_version(
-        self, query: str, args: tuple[Any, ...]
-    ) -> dict[str, Any] | None:
+    def _handle_select_version(self, query: str, args: tuple[Any, ...]) -> dict[str, Any] | None:
         """best-effort emulation of the _resolve_ref SELECTs."""
         # only the "ORDER BY version DESC LIMIT 1" case is exercised
         # today (ref='head') plus exact-version lookup.
         if "ORDER BY version DESC LIMIT 1" in query and "action = 'checkpoint'" not in query:
             workspace_id, relative_path = args[0], args[1]
-            matches = [
-                v
-                for v in self.versions
-                if v.workspace_id == workspace_id
-                and v.relative_path == relative_path
-            ]
+            matches = [v for v in self.versions if v.workspace_id == workspace_id and v.relative_path == relative_path]
             if not matches:
                 return None
             latest = max(matches, key=lambda v: v.version)
@@ -323,11 +304,7 @@ class _FakeStore:
         if re.search(r"AND version\s*=\s*\$3", query):
             workspace_id, relative_path, wanted = args[0], args[1], args[2]
             for v in self.versions:
-                if (
-                    v.workspace_id == workspace_id
-                    and v.relative_path == relative_path
-                    and v.version == wanted
-                ):
+                if v.workspace_id == workspace_id and v.relative_path == relative_path and v.version == wanted:
                     return _version_to_dict(v)
             return None
         if "action = 'checkpoint'" in query:
@@ -391,9 +368,7 @@ class _FakeConnection:
     async def execute(self, query: str, *args: Any) -> str:
         return await self.store.execute(query, *args)
 
-    async def fetchrow(
-        self, query: str, *args: Any
-    ) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         return await self.store.fetchrow(query, *args)
 
 
@@ -445,17 +420,13 @@ class _StoreBackedWorkspaceCollection:
     def __init__(self, store: _FakeStore) -> None:
         self._store = store
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _StoredWorkspace | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _StoredWorkspace | None:
         for ws in self._store.workspaces.values():
             if ws.agent_id == agent_id and ws.name == name:
                 return ws
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _StoredWorkspace | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _StoredWorkspace | None:
         ws = self._store.workspaces.get(workspace_id)
         if ws is None or ws.agent_id != agent_id:
             return None
@@ -484,9 +455,7 @@ class _StoreBackedFileCollection:
             version=row.version,
         )
 
-    async def find_by_workspace(
-        self, workspace_id: UUID
-    ) -> list[_StoreBackedFile]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[_StoreBackedFile]:
         return [
             _StoreBackedFile(
                 relative_path=row.relative_path,
@@ -505,12 +474,8 @@ class _StoreBackedVersionCollection:
     def __init__(self, store: _FakeStore) -> None:
         self._store = store
 
-    async def find_by_workspace(
-        self, workspace_id: UUID
-    ) -> list[_StoredVersion]:
-        return [
-            v for v in self._store.versions if v.workspace_id == workspace_id
-        ]
+    async def find_by_workspace(self, workspace_id: UUID) -> list[_StoredVersion]:
+        return [v for v in self._store.versions if v.workspace_id == workspace_id]
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +515,7 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
             if _subject_matches(subject, prefix):
                 await handler(_FakeMsg(subject=subject, data=payload))
 
-    def register_subscription(
-        self, subject_prefix: str, handler: Any
-    ) -> None:
+    def register_subscription(self, subject_prefix: str, handler: Any) -> None:
         """
         in-process subscription used by the audit-consumer stub.
 
@@ -636,7 +599,9 @@ class _FakeToolContextManager:
         self._collection = _InMemoryContextCollection()
 
     async def get_item_by_type_and_key(
-        self, context_type: str, key: str,
+        self,
+        context_type: str,
+        key: str,
     ) -> dict[str, Any] | None:
         result: dict[str, Any] | None = None
         for item in self._items:
@@ -656,6 +621,7 @@ class _FakeToolContextManager:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         from datetime import UTC, datetime
+
         existing = await self.get_item_by_type_and_key(context_type, key)
         if existing is not None:
             self._items = [i for i in self._items if i is not existing]
@@ -682,7 +648,9 @@ class _FakeToolContextManager:
         return str(context_id)
 
     async def delete_item_by_type_and_key(
-        self, context_type: str, key: str,
+        self,
+        context_type: str,
+        key: str,
     ) -> bool:
         existing = await self.get_item_by_type_and_key(context_type, key)
         result: bool

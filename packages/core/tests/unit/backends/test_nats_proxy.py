@@ -100,9 +100,7 @@ class TestDetectOperation:
         assert _detect_operation("INSERT INTO foo (a) VALUES ($1)") == "insert"
 
     def test_insert_on_conflict_upsert(self) -> None:
-        assert _detect_operation(
-            "INSERT INTO foo (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = $1"
-        ) == "upsert"
+        assert _detect_operation("INSERT INTO foo (a) VALUES ($1) ON CONFLICT (a) DO UPDATE SET a = $1") == "upsert"
 
     def test_update(self) -> None:
         assert _detect_operation("UPDATE foo SET a = $1 WHERE id = $2") == "update"
@@ -148,12 +146,14 @@ class TestFetch:
     async def test_fetch_returns_rows(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [{"id": "abc"}, {"id": "def"}],
-                "row_count": None,
-                "duration_ms": 5,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [{"id": "abc"}, {"id": "def"}],
+                    "row_count": None,
+                    "duration_ms": 5,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -166,12 +166,14 @@ class TestFetch:
     async def test_fetch_empty_rows(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 2,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 2,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -183,12 +185,14 @@ class TestFetch:
     async def test_fetch_subject_built_correctly(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -202,12 +206,14 @@ class TestFetch:
     async def test_fetch_with_custom_namespace(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [{"x": 1}],
-                "row_count": None,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [{"x": 1}],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -229,12 +235,14 @@ class TestFetchrow:
     async def test_fetchrow_returns_first_row(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [{"id": "first"}, {"id": "second"}],
-                "row_count": None,
-                "duration_ms": 3,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [{"id": "first"}, {"id": "second"}],
+                    "row_count": None,
+                    "duration_ms": 3,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -246,12 +254,14 @@ class TestFetchrow:
     async def test_fetchrow_returns_none_for_empty(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -270,12 +280,14 @@ class TestExecute:
     async def test_execute_returns_row_count(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": 3,
-                "duration_ms": 7,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": 3,
+                    "duration_ms": 7,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -289,12 +301,14 @@ class TestExecute:
     async def test_execute_returns_zero_for_null_row_count(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 2,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 2,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -308,12 +322,14 @@ class TestExecute:
     async def test_execute_detects_insert_operation(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": 1,
-                "duration_ms": 3,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": 1,
+                    "duration_ms": 3,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -334,21 +350,25 @@ class TestExecuteBatch:
     async def test_execute_batch_returns_results(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "results": [
-                    {"rows": [{"id": "a"}], "row_count": None},
-                    {"rows": [], "row_count": 1},
-                ],
-                "duration_ms": 10,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "results": [
+                        {"rows": [{"id": "a"}], "row_count": None},
+                        {"rows": [], "row_count": 1},
+                    ],
+                    "duration_ms": 10,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
-        results = await proxy.execute_batch([
-            {"query": "SELECT * FROM foo", "params": []},
-            {"query": "INSERT INTO bar (a) VALUES ($1)", "params": ["val"]},
-        ])
+        results = await proxy.execute_batch(
+            [
+                {"query": "SELECT * FROM foo", "params": []},
+                {"query": "INSERT INTO bar (a) VALUES ($1)", "params": ["val"]},
+            ]
+        )
 
         assert len(results) == 2
         call_args = mock_nc.request.call_args
@@ -359,34 +379,42 @@ class TestExecuteBatch:
     async def test_execute_batch_error_raises(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": False,
-                "error_code": "TRANSACTION_FAILED",
-                "error_message": "deadlock detected",
-            })
+            return_value=_make_reply(
+                {
+                    "success": False,
+                    "error_code": "TRANSACTION_FAILED",
+                    "error_message": "deadlock detected",
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
         with pytest.raises(DataLayerUnavailableError, match="batch query failed"):
-            await proxy.execute_batch([
-                {"query": "UPDATE foo SET a = 1", "params": []},
-            ])
+            await proxy.execute_batch(
+                [
+                    {"query": "UPDATE foo SET a = 1", "params": []},
+                ]
+            )
 
     @pytest.mark.asyncio
     async def test_execute_batch_auto_detects_operation(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "results": [{"rows": [], "row_count": 1}],
-                "duration_ms": 2,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "results": [{"rows": [], "row_count": 1}],
+                    "duration_ms": 2,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
-        await proxy.execute_batch([
-            {"query": "DELETE FROM foo WHERE id = $1", "params": ["abc"]},
-        ])
+        await proxy.execute_batch(
+            [
+                {"query": "DELETE FROM foo WHERE id = $1", "params": ["abc"]},
+            ]
+        )
 
         call_args = mock_nc.request.call_args
         payload = json.loads(call_args[0][1])
@@ -403,11 +431,13 @@ class TestErrorHandling:
     async def test_acl_denied_raises_data_layer_unavailable(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": False,
-                "error_code": "NAMESPACE_ACCESS_DENIED",
-                "error_message": "agent not authorized for this namespace",
-            })
+            return_value=_make_reply(
+                {
+                    "success": False,
+                    "error_code": "NAMESPACE_ACCESS_DENIED",
+                    "error_message": "agent not authorized for this namespace",
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -443,12 +473,14 @@ class TestPayloadFormat:
     async def test_query_payload_contains_required_fields(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -468,19 +500,23 @@ class TestPayloadFormat:
     async def test_params_are_serialized(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": 1,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": 1,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
         uid = UUID("12345678-1234-5678-1234-567812345678")
         dt = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 
         await proxy.execute(
-            "INSERT INTO foo (id, date_created) VALUES ($1, $2)", uid, dt,
+            "INSERT INTO foo (id, date_created) VALUES ($1, $2)",
+            uid,
+            dt,
         )
 
         call_args = mock_nc.request.call_args
@@ -492,11 +528,13 @@ class TestPayloadFormat:
     async def test_batch_payload_contains_required_fields(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "results": [],
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "results": [],
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = _make_proxy(mock_nc)
 
@@ -517,12 +555,14 @@ class TestPayloadFormat:
     async def test_custom_timeout_ms(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(
-            return_value=_make_reply({
-                "success": True,
-                "rows": [],
-                "row_count": None,
-                "duration_ms": 1,
-            })
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
         )
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
@@ -685,9 +725,7 @@ class _ScriptedReplyPlan:
         del timeout
         assert self._entries, f"no reply scripted for {subject}"
         expected_subject, response = self._entries.pop(0)
-        assert subject == expected_subject, (
-            f"expected {expected_subject!r}, got {subject!r}"
-        )
+        assert subject == expected_subject, f"expected {expected_subject!r}, got {subject!r}"
         self.calls.append((subject, json.loads(payload.decode("utf-8"))))
         return _make_reply(response)
 
@@ -695,9 +733,11 @@ class _ScriptedReplyPlan:
 @pytest.mark.asyncio
 async def test_acquire_outside_tx_routes_to_l3_query() -> None:
     """a proxy connection outside a transaction uses l3.query/l3.batch path."""
-    plan = _ScriptedReplyPlan([
-        ("test.l3.query", {"success": True, "rows": [{"n": 1}]}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.query", {"success": True, "rows": [{"n": 1}]}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -713,11 +753,13 @@ async def test_acquire_outside_tx_routes_to_l3_query() -> None:
 async def test_transaction_happy_path_commits() -> None:
     """entering + clean-exiting a transaction calls begin + commit."""
     tx_id = "019d9a00-0000-7000-8000-000000000000"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        ("test.l3.tx.execute", {"success": True, "row_count": 1}),
-        ("test.l3.tx.commit", {"success": True}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            ("test.l3.tx.execute", {"success": True, "row_count": 1}),
+            ("test.l3.tx.commit", {"success": True}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -725,7 +767,8 @@ async def test_transaction_happy_path_commits() -> None:
     async with proxy.acquire() as conn:
         async with conn.transaction():
             tag = await conn.execute(
-                "INSERT INTO t(x) VALUES ($1)", 42,
+                "INSERT INTO t(x) VALUES ($1)",
+                42,
             )
             # inside-tx execute returns the same asyncpg-shape tag as
             # outside-tx; collections that split on whitespace and
@@ -745,10 +788,12 @@ async def test_transaction_happy_path_commits() -> None:
 async def test_transaction_exception_rolls_back() -> None:
     """an exception inside the transaction body sends rollback, not commit."""
     tx_id = "019d9a00-0000-7000-8000-000000000001"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        ("test.l3.tx.rollback", {"success": True}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            ("test.l3.tx.rollback", {"success": True}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -769,11 +814,13 @@ async def test_transaction_exception_rolls_back() -> None:
 async def test_transaction_fetchrow_routes_through_tx_id() -> None:
     """fetchrow inside a tx goes to tx.fetchrow, carries tx_id."""
     tx_id = "019d9a00-0000-7000-8000-000000000002"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        ("test.l3.tx.fetchrow", {"success": True, "row": {"v": 7}}),
-        ("test.l3.tx.commit", {"success": True}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            ("test.l3.tx.fetchrow", {"success": True, "row": {"v": 7}}),
+            ("test.l3.tx.commit", {"success": True}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -790,13 +837,18 @@ async def test_transaction_fetchrow_routes_through_tx_id() -> None:
 @pytest.mark.asyncio
 async def test_transaction_begin_failure_raises() -> None:
     """a broker error on tx.begin surfaces as DataLayerUnavailableError."""
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {
-            "success": False,
-            "error_code": "NAMESPACE_ACCESS_DENIED",
-            "error_message": "no write grant",
-        }),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            (
+                "test.l3.tx.begin",
+                {
+                    "success": False,
+                    "error_code": "NAMESPACE_ACCESS_DENIED",
+                    "error_message": "no write grant",
+                },
+            ),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -813,10 +865,12 @@ async def test_transaction_begin_failure_raises() -> None:
 async def test_nested_transaction_rejected() -> None:
     """opening a transaction while one is already active raises."""
     tx_id = "019d9a00-0000-7000-8000-000000000003"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        ("test.l3.tx.rollback", {"success": True}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            ("test.l3.tx.rollback", {"success": True}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -839,11 +893,13 @@ async def test_dangling_tx_rolled_back_on_connection_close() -> None:
     broker-side as part of the rollback.
     """
     tx_id = "019d9a00-0000-7000-8000-000000000004"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        # no commit, but acquire-CM will send tx.rollback on exit.
-        ("test.l3.tx.rollback", {"success": True}),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            # no commit, but acquire-CM will send tx.rollback on exit.
+            ("test.l3.tx.rollback", {"success": True}),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)
@@ -866,14 +922,19 @@ async def test_transaction_commit_failure_raises() -> None:
     reach the caller instead of being swallowed like rollback errors.
     """
     tx_id = "019d9a00-0000-7000-8000-000000000005"
-    plan = _ScriptedReplyPlan([
-        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
-        ("test.l3.tx.commit", {
-            "success": False,
-            "error_code": "TX_COMMIT_FAILED",
-            "error_message": "serialization failure",
-        }),
-    ])
+    plan = _ScriptedReplyPlan(
+        [
+            ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+            (
+                "test.l3.tx.commit",
+                {
+                    "success": False,
+                    "error_code": "TX_COMMIT_FAILED",
+                    "error_message": "serialization failure",
+                },
+            ),
+        ]
+    )
     mock_nc = MagicMock()
     mock_nc.request = plan
     proxy = _make_proxy(mock_nc)

@@ -29,13 +29,7 @@ import ast
 from pathlib import Path
 
 
-_SRC_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "threetears"
-    / "agent"
-    / "workspace"
-)
+_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "workspace"
 _TOOLS_ROOT = _SRC_ROOT / "tools"
 
 
@@ -128,10 +122,7 @@ class TestValidatorsDispatched:
                 if _is_dispatch_validators_call(node):
                     has_direct_dispatch = True
             if not (has_atomic_write or has_direct_dispatch):
-                violations.append(
-                    f"{module_name}: no _write_file_atomic or "
-                    f"dispatch_validators call found in module"
-                )
+                violations.append(f"{module_name}: no _write_file_atomic or dispatch_validators call found in module")
         assert not violations, (
             f"{len(violations)} validator-dispatch violation(s):\n"
             + "\n".join(violations)

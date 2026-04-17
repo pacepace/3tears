@@ -172,17 +172,12 @@ class FsEditTool(TearsTool):
                     error="find string must not be empty",
                 )
             else:
-                existing = await self._files.find_by_workspace_and_relative_path(
-                    workspace.id, relative_path
-                )
+                existing = await self._files.find_by_workspace_and_relative_path(workspace.id, relative_path)
                 if existing is None:
                     result = ToolResult(
                         success=False,
                         content="",
-                        error=(
-                            f"file {relative_path!r} not found in workspace "
-                            f"{workspace.name!r}"
-                        ),
+                        error=(f"file {relative_path!r} not found in workspace {workspace.name!r}"),
                     )
                 else:
                     try:
@@ -191,10 +186,7 @@ class FsEditTool(TearsTool):
                         result = ToolResult(
                             success=False,
                             content="",
-                            error=(
-                                "fs_edit only supports text files; this file "
-                                "appears to be binary"
-                            ),
+                            error=("fs_edit only supports text files; this file appears to be binary"),
                         )
                     else:
                         if find_str not in text:
@@ -234,9 +226,7 @@ class FsEditTool(TearsTool):
                                         actor_id=self._agent_id,
                                         agent_id=self._agent_id,
                                         resource_type="workspace_file",
-                                        resource_id=(
-                                            f"{workspace.id}/{relative_path}"
-                                        ),
+                                        resource_id=(f"{workspace.id}/{relative_path}"),
                                         action="edit",
                                         details={
                                             "bytes_before": old_size,
@@ -270,10 +260,7 @@ class FsEditTool(TearsTool):
             result = ToolResult(
                 success=False,
                 content="",
-                error=(
-                    f"sha256 mismatch: expected {exc.expected!r}, current "
-                    f"{exc.current!r}; re-read and retry"
-                ),
+                error=(f"sha256 mismatch: expected {exc.expected!r}, current {exc.current!r}; re-read and retry"),
             )
         except WorkspaceValidationError as exc:
             result = ToolResult(

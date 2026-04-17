@@ -56,13 +56,14 @@ def _check_otel() -> bool:
 # Span attribute helpers
 # ---------------------------------------------------------------------------
 
+
 @functools.lru_cache(maxsize=256)
 def _get_param_names(fn: Callable[..., Any]) -> tuple[str, ...]:
     """Return ordered parameter names for *fn* (cached)."""
     try:
         sig = inspect.signature(fn)
         return tuple(sig.parameters.keys())
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return ()
 
 
@@ -118,6 +119,7 @@ def _inject_context_attrs(span: Any) -> None:
 # ---------------------------------------------------------------------------
 # @traced decorator
 # ---------------------------------------------------------------------------
+
 
 @overload
 def traced(func: F) -> F: ...

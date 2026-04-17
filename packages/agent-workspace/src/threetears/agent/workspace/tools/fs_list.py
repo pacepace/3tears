@@ -47,8 +47,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
         "glob": {
             "type": "string",
             "description": (
-                "optional posix glob pattern; matches use "
-                "PurePosixPath.full_match so ** anchors recursively"
+                "optional posix glob pattern; matches use PurePosixPath.full_match so ** anchors recursively"
             ),
         },
         "workspace": {

@@ -115,9 +115,7 @@ async def test_doc_set_on_audience_settings_preserves_structure(
     first_idx = updated_text.find("knowwho_all")
     donors_idx = updated_text.find("donors")
     assert first_idx != -1 and donors_idx != -1
-    assert first_idx < donors_idx, (
-        "knowwho_all must still precede donors in audience_units"
-    )
+    assert first_idx < donors_idx, "knowwho_all must still precede donors in audience_units"
     # the middle section marker survives the mutation
     assert "executive_coworkers_of_linkedin_execs" in updated_text
     # other value from the fixture still present verbatim
@@ -155,9 +153,7 @@ async def test_doc_set_bumps_version_and_updates_head(
         db_pool=fx.pool,
     )
 
-    initial_head = fx.store.files[
-        (fx.workspace_id, "audience_settings.yaml")
-    ]
+    initial_head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]
     assert initial_head.version == 1
 
     result = await doc_set.execute(
@@ -167,17 +163,10 @@ async def test_doc_set_bumps_version_and_updates_head(
     )
     assert result.success is True, result.error
 
-    new_head = fx.store.files[
-        (fx.workspace_id, "audience_settings.yaml")
-    ]
+    new_head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]
     assert new_head.version == 2
     assert b"vb_candidates: 99" in new_head.content
     # a fresh journal row landed with action=update
-    updates = [
-        v
-        for v in fx.store.versions
-        if v.relative_path == "audience_settings.yaml"
-        and v.action == "update"
-    ]
+    updates = [v for v in fx.store.versions if v.relative_path == "audience_settings.yaml" and v.action == "update"]
     assert len(updates) == 1
     assert updates[0].version == 2

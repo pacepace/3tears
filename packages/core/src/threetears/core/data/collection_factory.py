@@ -144,9 +144,7 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     sa_columns: list[Column[Any]] = []
     for col in table_def.columns:
         sa_type = sa_type_map.get(col.column_type, String(255))
-        sa_columns.append(
-            Column(col.name, sa_type, primary_key=col.primary_key, nullable=col.nullable)
-        )
+        sa_columns.append(Column(col.name, sa_type, primary_key=col.primary_key, nullable=col.nullable))
     Table(table_def.name, metadata, *sa_columns)
     return metadata
 
@@ -246,9 +244,7 @@ def create_dynamic_collection(
             result = rows[0] if rows else None
             return result
 
-        async def _save_to_postgres(
-            self, data: dict[str, Any], original_timestamp: datetime | None = None
-        ) -> int:
+        async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
             """persist entity data to L3 via upsert.
 
             when original_timestamp is provided, performs optimistic

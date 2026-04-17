@@ -308,15 +308,9 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         :rtype: list[Workspace]
         """
         if include_deleted:
-            sql = (
-                "SELECT * FROM workspaces WHERE agent_id = $1 "
-                "ORDER BY date_updated DESC"
-            )
+            sql = "SELECT * FROM workspaces WHERE agent_id = $1 ORDER BY date_updated DESC"
         else:
-            sql = (
-                "SELECT * FROM workspaces WHERE agent_id = $1 "
-                "AND date_deleted IS NULL ORDER BY date_updated DESC"
-            )
+            sql = "SELECT * FROM workspaces WHERE agent_id = $1 AND date_deleted IS NULL ORDER BY date_updated DESC"
         rows = await self._postgres_pool.fetch(sql, agent_id)
         entities: list[Workspace] = []
         for row in rows:
@@ -364,8 +358,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             )
         else:
             row = await self._postgres_pool.fetchrow(
-                "SELECT * FROM workspaces "
-                "WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
+                "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
                 workspace_id,
                 agent_id,
             )
@@ -377,9 +370,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             result = entity
         return result
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> Workspace | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> Workspace | None:
         """
         fetches workspace by id under ownership constraint of agent.
 
@@ -584,9 +575,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
             entity_id,
         )
 
-    async def find_by_workspace_and_relative_path(
-        self, workspace_id: UUID, relative_path: str
-    ) -> WorkspaceFile | None:
+    async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         """
         fetches head-state file row for given (workspace_id, relative_path).
 
@@ -604,8 +593,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         :rtype: WorkspaceFile | None
         """
         row = await self._postgres_pool.fetchrow(
-            "SELECT * FROM workspace_files "
-            "WHERE workspace_id = $1 AND relative_path = $2",
+            "SELECT * FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
             workspace_id,
             relative_path,
         )
@@ -798,9 +786,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
             entity_id,
         )
 
-    async def find_by_workspace(
-        self, workspace_id: UUID, limit: int
-    ) -> list[WorkspaceFileVersion]:
+    async def find_by_workspace(self, workspace_id: UUID, limit: int) -> list[WorkspaceFileVersion]:
         """
         fetches journal rows for workspace, newest-first, bounded by limit.
 
@@ -820,9 +806,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :rtype: list[WorkspaceFileVersion]
         """
         rows = await self._postgres_pool.fetch(
-            "SELECT * FROM workspace_file_versions "
-            "WHERE workspace_id = $1 "
-            "ORDER BY date_created DESC LIMIT $2",
+            "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
             workspace_id,
             limit,
         )

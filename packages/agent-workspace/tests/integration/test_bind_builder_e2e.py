@@ -62,9 +62,7 @@ async def test_bind_captures_back_stub_builder_edit(
         allow=AllowConfig(read=["**/*"], write=["**/*.yaml"]),
     )
     sandbox = WorkspaceSandbox.from_config(config)
-    lease = WorkspaceFileLease(
-        fx.nats, namespace="test", pod_id="test-pod"
-    )
+    lease = WorkspaceFileLease(fx.nats, namespace="test", pod_id="test-pod")
     new_payload = b"audience_units:\n  - audience_unit: test_override\n"
 
     async with bind(
@@ -84,9 +82,7 @@ async def test_bind_captures_back_stub_builder_edit(
         on_conflict=BindConflictPolicy.L3_WINS,
     ) as disk_root:
         # sanity: materialize placed all three fixture files.
-        files_on_disk = sorted(
-            p.name for p in disk_root.iterdir() if p.is_file()
-        )
+        files_on_disk = sorted(p.name for p in disk_root.iterdir() if p.is_file())
         assert files_on_disk == [
             "audience_settings.yaml",
             "linkedin_audience_units.yaml",
@@ -97,19 +93,12 @@ async def test_bind_captures_back_stub_builder_edit(
         target.write_bytes(new_payload)
 
     # L3 head row now carries the new bytes at version 2.
-    head = fx.store.files[
-        (fx.workspace_id, "audience_settings.yaml")
-    ]
+    head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]
     assert head.content == new_payload
     assert head.version == 2
 
     # journal has a matching update-action row at version 2.
-    update_rows = [
-        v
-        for v in fx.store.versions
-        if v.relative_path == "audience_settings.yaml"
-        and v.action == "update"
-    ]
+    update_rows = [v for v in fx.store.versions if v.relative_path == "audience_settings.yaml" and v.action == "update"]
     assert len(update_rows) == 1
     assert update_rows[0].version == 2
     assert update_rows[0].content == new_payload
@@ -120,6 +109,4 @@ async def test_bind_captures_back_stub_builder_edit(
         "standard_audience_units.yaml",
     ):
         still_head = fx.store.files[(fx.workspace_id, name)]
-        assert still_head.version == 1, (
-            f"{name} should remain at v1 (untouched on disk)"
-        )
+        assert still_head.version == 1, f"{name} should remain at v1 (untouched on disk)"

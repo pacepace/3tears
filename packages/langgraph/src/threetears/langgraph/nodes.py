@@ -89,9 +89,7 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             tool_result = await tool.ainvoke(tool_call["args"])
         else:
             tool_result = f"tool '{tool_call['name']}' not found"
-        tool_messages.append(
-            ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
-        )
+        tool_messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]))
 
     result = {"messages": tool_messages}
     return result

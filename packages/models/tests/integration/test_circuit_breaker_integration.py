@@ -18,9 +18,7 @@ class TestCircuitBreakerIntegration:
 
     def test_circuit_breaker_full_lifecycle(self) -> None:
         """CLOSED, OPEN, HALF_OPEN, CLOSED lifecycle via registry."""
-        registry = CircuitBreakerRegistry(
-            failure_threshold=3, recovery_timeout_seconds=0.05
-        )
+        registry = CircuitBreakerRegistry(failure_threshold=3, recovery_timeout_seconds=0.05)
         breaker = registry.get("anthropic")
 
         # normal operations
@@ -48,9 +46,7 @@ class TestCircuitBreakerIntegration:
 
     def test_circuit_breaker_probe_failure_reopens(self) -> None:
         """HALF_OPEN to OPEN on probe failure."""
-        registry = CircuitBreakerRegistry(
-            failure_threshold=2, recovery_timeout_seconds=0.05
-        )
+        registry = CircuitBreakerRegistry(failure_threshold=2, recovery_timeout_seconds=0.05)
         breaker = registry.get("openai")
 
         # trip the breaker
@@ -107,9 +103,7 @@ class TestCircuitBreakerIntegration:
 
     def test_status_reflects_all_provider_states(self) -> None:
         """registry status snapshot reflects current state of all breakers."""
-        registry = CircuitBreakerRegistry(
-            failure_threshold=1, recovery_timeout_seconds=0.05
-        )
+        registry = CircuitBreakerRegistry(failure_threshold=1, recovery_timeout_seconds=0.05)
 
         # create breakers in different states
         registry.get("healthy")

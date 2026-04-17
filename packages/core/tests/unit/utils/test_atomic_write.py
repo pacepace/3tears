@@ -121,8 +121,6 @@ class TestAtomicWriteParentDirFsync:
         target = tmp_path / "durable.txt"
         await atomic_write(target, b"payload")
 
-        assert len(fsync_kinds) >= 2, (
-            f"expected at least two fsync calls (file + directory), got {fsync_kinds}"
-        )
+        assert len(fsync_kinds) >= 2, f"expected at least two fsync calls (file + directory), got {fsync_kinds}"
         assert "dir" in fsync_kinds, "parent directory fd was never fsynced"
         assert "file" in fsync_kinds, "file fd was never fsynced"

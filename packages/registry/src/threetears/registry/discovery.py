@@ -194,13 +194,13 @@ class DiscoveryHandler:
             )
         _logger.info(
             "discovery completed",
-            extra={"extra_data": {
-                "agent_id": request.agent_id,
-                "requested_count": len(request.tool_manifest),
-                "available_count": sum(
-                    1 for t in tools if t.status == "available"
-                ),
-            }},
+            extra={
+                "extra_data": {
+                    "agent_id": request.agent_id,
+                    "requested_count": len(request.tool_manifest),
+                    "available_count": sum(1 for t in tools if t.status == "available"),
+                }
+            },
         )
 
     def _list_all_available(self) -> list[DiscoverResultEntry]:
@@ -214,16 +214,18 @@ class DiscoveryHandler:
         """
         results: list[DiscoverResultEntry] = []
         for entry in self._catalog.list_available():
-            results.append(DiscoverResultEntry(
-                name=entry.tool_name,
-                version=entry.tool_version,
-                status="available",
-                description=entry.description,
-                input_schema=entry.input_schema,
-                output_schema=entry.output_schema,
-                timeout_seconds=entry.timeout_seconds,
-                endpoint_count=len(entry.endpoints),
-            ))
+            results.append(
+                DiscoverResultEntry(
+                    name=entry.tool_name,
+                    version=entry.tool_version,
+                    status="available",
+                    description=entry.description,
+                    input_schema=entry.input_schema,
+                    output_schema=entry.output_schema,
+                    timeout_seconds=entry.timeout_seconds,
+                    endpoint_count=len(entry.endpoints),
+                )
+            )
         return results
 
     def _resolve_manifest(

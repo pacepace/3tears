@@ -209,10 +209,12 @@ class RegistrationHandler:
             )
         log.info(
             "registration completed",
-            extra={"extra_data": {
-                "pod_id": manifest.pod_id,
-                "tools_count": len(registered),
-            }},
+            extra={
+                "extra_data": {
+                    "pod_id": manifest.pod_id,
+                    "tools_count": len(registered),
+                }
+            },
         )
 
     async def _authenticate_and_filter(self, manifest: RegistrationManifest) -> str | None:
@@ -259,12 +261,14 @@ class RegistrationHandler:
         if rejected_tools:
             log.warning(
                 "tool pod tools rejected (outside allowed namespaces)",
-                extra={"extra_data": {
-                    "pod_id": manifest.pod_id,
-                    "pod_name": pod_auth.name,
-                    "rejected": rejected_tools,
-                    "allowed_namespaces": pod_auth.allowed_namespaces,
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": manifest.pod_id,
+                        "pod_name": pod_auth.name,
+                        "rejected": rejected_tools,
+                        "allowed_namespaces": pod_auth.allowed_namespaces,
+                    }
+                },
             )
 
         if not allowed_tools:
@@ -274,12 +278,14 @@ class RegistrationHandler:
 
         log.info(
             "tool pod authenticated",
-            extra={"extra_data": {
-                "pod_id": manifest.pod_id,
-                "pod_name": pod_auth.name,
-                "tools_accepted": len(allowed_tools),
-                "tools_rejected": len(rejected_tools),
-            }},
+            extra={
+                "extra_data": {
+                    "pod_id": manifest.pod_id,
+                    "pod_name": pod_auth.name,
+                    "tools_accepted": len(allowed_tools),
+                    "tools_rejected": len(rejected_tools),
+                }
+            },
         )
         result: str | None = None
         return result
@@ -326,11 +332,7 @@ class RegistrationHandler:
         for tool in manifest.tools:
             full_name = f"{tool.name}@{tool.version}"
             existing_entry = self._catalog.get(full_name)
-            existing_endpoint = (
-                existing_entry.get_endpoint(manifest.pod_id)
-                if existing_entry is not None
-                else None
-            )
+            existing_endpoint = existing_entry.get_endpoint(manifest.pod_id) if existing_entry is not None else None
             # Preserve status for endpoints the pod has previously registered
             # so heartbeat-driven re-publication does not regress an already
             # 'available' endpoint back to 'pending' (which would trigger a
@@ -388,17 +390,21 @@ class RegistrationHandler:
         start = datetime.now(UTC)
         try:
             reply = await self._nc.request(
-                subject, payload, timeout=self._probe_timeout,
+                subject,
+                payload,
+                timeout=self._probe_timeout,
             )
         except Exception as exc:
             log.warning(
                 "tool pod reachability probe failed; endpoints remain pending",
-                extra={"extra_data": {
-                    "pod_id": pod_id,
-                    "probe_subject": subject,
-                    "probe_timeout": self._probe_timeout,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "probe_subject": subject,
+                        "probe_timeout": self._probe_timeout,
+                        "error": str(exc),
+                    }
+                },
             )
             return
         try:
@@ -406,20 +412,24 @@ class RegistrationHandler:
         except Exception as exc:
             log.warning(
                 "tool pod probe reply was malformed; endpoints remain pending",
-                extra={"extra_data": {
-                    "pod_id": pod_id,
-                    "probe_subject": subject,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "probe_subject": subject,
+                        "error": str(exc),
+                    }
+                },
             )
             return
         if not ack.ready:
             log.warning(
                 "tool pod probe reply reported not-ready; endpoints remain pending",
-                extra={"extra_data": {
-                    "pod_id": pod_id,
-                    "probe_subject": subject,
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "probe_subject": subject,
+                    }
+                },
             )
             return
         promoted = await self._catalog.mark_ready(pod_id)
@@ -427,9 +437,11 @@ class RegistrationHandler:
         for tool_key in promoted:
             log.info(
                 "tool endpoint transitioned registered -> ready",
-                extra={"extra_data": {
-                    "pod_id": pod_id,
-                    "tool_key": tool_key,
-                    "ms_to_ready": ms_to_ready,
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_key": tool_key,
+                        "ms_to_ready": ms_to_ready,
+                    }
+                },
             )

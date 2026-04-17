@@ -85,15 +85,11 @@ class TestAcquireFailFast:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(
-            nats_client=client, bucket_name="test_leases", pod_id="pod-second"
-        )
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
 
-    async def test_fail_fast_does_not_sleep(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_fail_fast_does_not_sleep(self, monkeypatch: pytest.MonkeyPatch) -> None:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
@@ -104,12 +100,8 @@ class TestAcquireFailFast:
             sleeps.append(seconds)
             await original_sleep(0)
 
-        monkeypatch.setattr(
-            "threetears.core.coordination.lease.asyncio.sleep", _spy_sleep
-        )
-        second = KVLease(
-            nats_client=client, bucket_name="test_leases", pod_id="pod-second"
-        )
+        monkeypatch.setattr("threetears.core.coordination.lease.asyncio.sleep", _spy_sleep)
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert sleeps == []
@@ -126,14 +118,10 @@ class TestAcquireWaitThenSucceeds:
             await asyncio.sleep(0.1)
             await handle.release()
 
-        second = KVLease(
-            nats_client=client, bucket_name="test_leases", pod_id="pod-second"
-        )
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         release_task = asyncio.create_task(_release_after_delay())
         try:
-            second_handle = await second.acquire(
-                "lock/a", ttl_seconds=30, max_wait_seconds=5
-            )
+            second_handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=5)
         finally:
             await release_task
         assert second_handle.holder == "pod-second"
@@ -146,9 +134,7 @@ class TestAcquireTimeout:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(
-            nats_client=client, bucket_name="test_leases", pod_id="pod-second"
-        )
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         with pytest.raises(LeaseTimeout):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=1)
 
@@ -307,9 +293,7 @@ class TestStaleLease:
         )
         await bucket.update("lock/a", expired, last=first_handle.revision)
 
-        second = KVLease(
-            nats_client=client, bucket_name="test_leases", pod_id="pod-second"
-        )
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
         handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert handle.holder == "pod-second"
         entry = await bucket.get("lock/a")
@@ -320,9 +304,7 @@ class TestStaleLease:
 class TestBucketDefaults:
     """default bucket name derives from FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE."""
 
-    async def test_default_bucket_uses_namespace_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_default_bucket_uses_namespace_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "prod14")
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")
@@ -333,9 +315,7 @@ class TestBucketDefaults:
         envelope = _decode_envelope(entry.value)
         assert envelope["holder"] == "pod-alpha"
 
-    async def test_default_bucket_fallback_when_env_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_default_bucket_fallback_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")

@@ -259,18 +259,10 @@ class WebSocketHandler:
         self._router = router
         self._auth_validator = auth_validator
         self._config: dict[str, Any] = config if config is not None else {}
-        self._heartbeat_interval: int = self._config.get(
-            "heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL
-        )
-        self._max_message_size: int = self._config.get(
-            "max_message_size", _DEFAULT_MAX_MESSAGE_SIZE
-        )
-        self._rate_limit_messages: int = self._config.get(
-            "rate_limit_messages", _DEFAULT_RATE_LIMIT_MESSAGES
-        )
-        self._rate_limit_window: float = self._config.get(
-            "rate_limit_window", _DEFAULT_RATE_LIMIT_WINDOW
-        )
+        self._heartbeat_interval: int = self._config.get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
+        self._max_message_size: int = self._config.get("max_message_size", _DEFAULT_MAX_MESSAGE_SIZE)
+        self._rate_limit_messages: int = self._config.get("rate_limit_messages", _DEFAULT_RATE_LIMIT_MESSAGES)
+        self._rate_limit_window: float = self._config.get("rate_limit_window", _DEFAULT_RATE_LIMIT_WINDOW)
         self.registry = ConnectionRegistry()
 
     async def handle_connection(self, websocket: Any) -> None:
@@ -290,9 +282,7 @@ class WebSocketHandler:
 
         user_id = str(auth_payload.get("user_id", ""))
 
-        await websocket.send_text(
-            json.dumps({"type": "connected", "user_id": user_id})
-        )
+        await websocket.send_text(json.dumps({"type": "connected", "user_id": user_id}))
 
         self.registry.register(user_id, websocket)
         try:
@@ -300,9 +290,7 @@ class WebSocketHandler:
         finally:
             self.registry.unregister(user_id, websocket)
 
-    async def _authenticate(
-        self, websocket: Any
-    ) -> dict[str, Any] | None:
+    async def _authenticate(self, websocket: Any) -> dict[str, Any] | None:
         """authenticate websocket connection via query param or first message.
 
         checks query_params for token first. if not present, waits for
@@ -328,22 +316,16 @@ class WebSocketHandler:
                     token = data.get("token")
             except Exception:
                 log.warning("websocket disconnected during authentication")
-                await self._close_with_error(
-                    websocket, "authentication failed"
-                )
+                await self._close_with_error(websocket, "authentication failed")
                 return None
 
         if token is None:
-            await self._close_with_error(
-                websocket, "no authentication token provided"
-            )
+            await self._close_with_error(websocket, "no authentication token provided")
             return None
 
         payload = await self._auth_validator(token)
         if payload is None:
-            await self._close_with_error(
-                websocket, "authentication failed"
-            )
+            await self._close_with_error(websocket, "authentication failed")
             return None
 
         result = payload
@@ -378,9 +360,7 @@ class WebSocketHandler:
                 break
 
             if len(raw) > self._max_message_size:
-                await websocket.send_text(
-                    json.dumps({"type": "error", "message": "message too large"})
-                )
+                await websocket.send_text(json.dumps({"type": "error", "message": "message too large"}))
                 continue
 
             now = time.monotonic()
@@ -389,9 +369,7 @@ class WebSocketHandler:
                 rate_message_count = 0
             rate_message_count += 1
             if rate_message_count > self._rate_limit_messages:
-                await websocket.send_text(
-                    json.dumps({"type": "error", "message": "rate limit exceeded"})
-                )
+                await websocket.send_text(json.dumps({"type": "error", "message": "rate limit exceeded"}))
                 continue
 
             try:
@@ -422,9 +400,7 @@ class WebSocketHandler:
             else:
                 await self._route_standard(websocket, channel_message)
 
-    async def _route_standard(
-        self, websocket: Any, message: ChannelMessage
-    ) -> None:
+    async def _route_standard(self, websocket: Any, message: ChannelMessage) -> None:
         """route message through standard (non-streaming) router.
 
         :param websocket: websocket connection to send response to
@@ -436,16 +412,16 @@ class WebSocketHandler:
         if response is None:
             return
         await websocket.send_text(
-            json.dumps({
-                "type": "response",
-                "content": response.content,
-                "metadata": response.metadata,
-            })
+            json.dumps(
+                {
+                    "type": "response",
+                    "content": response.content,
+                    "metadata": response.metadata,
+                }
+            )
         )
 
-    async def _route_streaming(
-        self, websocket: Any, message: ChannelMessage
-    ) -> None:
+    async def _route_streaming(self, websocket: Any, message: ChannelMessage) -> None:
         """route message through streaming router with token callback.
 
         sends individual tokens as stream-type messages and final
@@ -463,26 +439,22 @@ class WebSocketHandler:
             :param token: individual token from language model
             :ptype token: str
             """
-            await websocket.send_text(
-                json.dumps({"type": "stream", "content": token})
-            )
+            await websocket.send_text(json.dumps({"type": "stream", "content": token}))
 
-        response = await self._router.route_inbound_streaming(
-            message, send_token
-        )
+        response = await self._router.route_inbound_streaming(message, send_token)
         if response is None:
             return
         await websocket.send_text(
-            json.dumps({
-                "type": "response",
-                "content": response.content,
-                "metadata": response.metadata,
-            })
+            json.dumps(
+                {
+                    "type": "response",
+                    "content": response.content,
+                    "metadata": response.metadata,
+                }
+            )
         )
 
-    async def _close_with_error(
-        self, websocket: Any, error_message: str
-    ) -> None:
+    async def _close_with_error(self, websocket: Any, error_message: str) -> None:
         """send error message and close websocket connection.
 
         :param websocket: websocket connection to close
@@ -491,9 +463,7 @@ class WebSocketHandler:
         :ptype error_message: str
         """
         try:
-            await websocket.send_text(
-                json.dumps({"type": "error", "message": error_message})
-            )
+            await websocket.send_text(json.dumps({"type": "error", "message": error_message}))
         except Exception:
             pass
         try:

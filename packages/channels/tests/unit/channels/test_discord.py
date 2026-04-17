@@ -248,13 +248,11 @@ class TestDiscordAdapterEnforcement:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert alias.name != "httpx", (
-                        "discord module must not import httpx"
-                    )
+                    assert alias.name != "httpx", "discord module must not import httpx"
             if isinstance(node, ast.ImportFrom):
-                assert node.module is None or not node.module.startswith(
-                    "httpx"
-                ), "discord module must not import from httpx"
+                assert node.module is None or not node.module.startswith("httpx"), (
+                    "discord module must not import from httpx"
+                )
 
     def test_discord_module_uses_discord_client(self) -> None:
         """discord adapter must reference discord.Client for gateway connection."""
@@ -271,15 +269,8 @@ class TestDiscordAdapterEnforcement:
         tree = ast.parse(source)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute):
-                if (
-                    isinstance(node.value, ast.Attribute)
-                    and node.value.attr == "_client"
-                    and node.attr == "run"
-                ):
-                    pytest.fail(
-                        "discord module must not use client.run(); "
-                        "use client.start() instead"
-                    )
+                if isinstance(node.value, ast.Attribute) and node.value.attr == "_client" and node.attr == "run":
+                    pytest.fail("discord module must not use client.run(); use client.start() instead")
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +282,7 @@ class TestDiscordAdapterConstructor:
     """tests for DiscordAdapter initialization."""
 
     @patch("threetears.channels.discord.discord")
-    def test_creates_discord_client_with_intents(
-        self, mock_discord: MagicMock
-    ) -> None:
+    def test_creates_discord_client_with_intents(self, mock_discord: MagicMock) -> None:
         """DiscordAdapter creates discord.Client with message_content intent."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -338,9 +327,7 @@ class TestDiscordAdapterConstructor:
         assert adapter._config == config
 
     @patch("threetears.channels.discord.discord")
-    def test_config_defaults_to_empty_dict(
-        self, mock_discord: MagicMock
-    ) -> None:
+    def test_config_defaults_to_empty_dict(self, mock_discord: MagicMock) -> None:
         """DiscordAdapter config defaults to empty dict when not provided."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -373,9 +360,7 @@ class TestDiscordAdapterLifecycle:
     """tests for DiscordAdapter start and stop methods."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_start_calls_client_start(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_start_calls_client_start(self, mock_discord: MagicMock) -> None:
         """start() calls client.start(bot_token), not client.run()."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -392,9 +377,7 @@ class TestDiscordAdapterLifecycle:
         mock_client.start.assert_awaited_once_with("test-bot-token")
 
     @patch("threetears.channels.discord.discord")
-    async def test_stop_calls_client_close(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_stop_calls_client_close(self, mock_discord: MagicMock) -> None:
         """stop() calls client.close()."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -420,9 +403,7 @@ class TestDiscordAdapterBotFiltering:
     """tests for self-message and bot filtering."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_filters_self_messages(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_filters_self_messages(self, mock_discord: MagicMock) -> None:
         """messages from the bot itself are filtered out."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -443,9 +424,7 @@ class TestDiscordAdapterBotFiltering:
         assert router.last_message is None
 
     @patch("threetears.channels.discord.discord")
-    async def test_filters_bot_messages(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_filters_bot_messages(self, mock_discord: MagicMock) -> None:
         """messages from other bots are filtered out."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -466,9 +445,7 @@ class TestDiscordAdapterBotFiltering:
         assert router.last_message is None
 
     @patch("threetears.channels.discord.discord")
-    async def test_processes_non_bot_messages(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_processes_non_bot_messages(self, mock_discord: MagicMock) -> None:
         """messages from regular users are processed."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -502,9 +479,7 @@ class TestDiscordAdapterInboundNormalization:
     """tests for Discord message -> ChannelMessage normalization."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_guild_channel_message(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_guild_channel_message(self, mock_discord: MagicMock) -> None:
         """guild channel message normalizes to ChannelMessage with correct fields."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -547,9 +522,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.workspace_id == "111222333"
 
     @patch("threetears.channels.discord.discord")
-    async def test_dm_message_has_no_workspace_id(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_dm_message_has_no_workspace_id(self, mock_discord: MagicMock) -> None:
         """DM message normalizes with workspace_id=None."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -578,9 +551,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.workspace_id is None
 
     @patch("threetears.channels.discord.discord")
-    async def test_thread_message_has_conversation_id(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_thread_message_has_conversation_id(self, mock_discord: MagicMock) -> None:
         """thread message sets conversation_id to thread channel id."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -595,9 +566,7 @@ class TestDiscordAdapterInboundNormalization:
             router=router,
         )
 
-        thread_channel = _make_mock_channel(
-            channel_id=444333222, is_thread=True
-        )
+        thread_channel = _make_mock_channel(channel_id=444333222, is_thread=True)
         message = _make_mock_message(
             channel=thread_channel,
             content="in thread",
@@ -610,9 +579,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.conversation_id == "444333222"
 
     @patch("threetears.channels.discord.discord")
-    async def test_non_thread_message_has_no_conversation_id(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_non_thread_message_has_no_conversation_id(self, mock_discord: MagicMock) -> None:
         """non-thread guild message has conversation_id=None."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -640,9 +607,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.conversation_id is None
 
     @patch("threetears.channels.discord.discord")
-    async def test_attachments_mapped(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_attachments_mapped(self, mock_discord: MagicMock) -> None:
         """discord attachments are mapped to Attachment dataclass instances."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -687,9 +652,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.attachments[1].content_type == "image/jpeg"
 
     @patch("threetears.channels.discord.discord")
-    async def test_reply_reference_sets_reply_to_id(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_reply_reference_sets_reply_to_id(self, mock_discord: MagicMock) -> None:
         """message.reference.message_id is captured as reply_to_id."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -723,9 +686,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.reply_to_id == "333444555"
 
     @patch("threetears.channels.discord.discord")
-    async def test_no_reply_reference_sets_reply_to_id_none(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_no_reply_reference_sets_reply_to_id_none(self, mock_discord: MagicMock) -> None:
         """message without reference has reply_to_id=None."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -757,9 +718,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.reply_to_id is None
 
     @patch("threetears.channels.discord.discord")
-    async def test_metadata_captures_discord_fields(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_metadata_captures_discord_fields(self, mock_discord: MagicMock) -> None:
         """metadata includes Discord-specific fields like message id."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -791,9 +750,7 @@ class TestDiscordAdapterInboundNormalization:
         assert msg.metadata.get("message_id") == "777888999"
 
     @patch("threetears.channels.discord.discord")
-    async def test_timestamp_is_utc_aware(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_timestamp_is_utc_aware(self, mock_discord: MagicMock) -> None:
         """inbound ChannelMessage timestamp is UTC-aware."""
         from datetime import UTC
 
@@ -832,9 +789,7 @@ class TestDiscordAdapterThreading:
     """tests for threading behavior of DiscordAdapter responses."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_dm_reply_goes_to_dm_channel_directly(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_dm_reply_goes_to_dm_channel_directly(self, mock_discord: MagicMock) -> None:
         """DM reply sends directly to DM channel without creating thread."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -862,9 +817,7 @@ class TestDiscordAdapterThreading:
         message.create_thread.assert_not_awaited()
 
     @patch("threetears.channels.discord.discord")
-    async def test_existing_thread_reply_goes_to_thread(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_existing_thread_reply_goes_to_thread(self, mock_discord: MagicMock) -> None:
         """reply in existing thread sends to the thread channel."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -879,9 +832,7 @@ class TestDiscordAdapterThreading:
             router=router,
         )
 
-        thread_channel = _make_mock_channel(
-            channel_id=444333222, is_thread=True
-        )
+        thread_channel = _make_mock_channel(channel_id=444333222, is_thread=True)
         message = _make_mock_message(
             channel=thread_channel,
             content="in thread",
@@ -893,9 +844,7 @@ class TestDiscordAdapterThreading:
         message.create_thread.assert_not_awaited()
 
     @patch("threetears.channels.discord.discord")
-    async def test_guild_channel_message_creates_thread(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_guild_channel_message_creates_thread(self, mock_discord: MagicMock) -> None:
         """guild channel message creates new thread, replies in thread."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -904,9 +853,7 @@ class TestDiscordAdapterThreading:
         mock_client.user = _make_mock_author(author_id=999)
         mock_discord.Client.return_value = mock_client
 
-        router = _MockRouter(
-            response=ChannelResponse(content="new thread reply")
-        )
+        router = _MockRouter(response=ChannelResponse(content="new thread reply"))
         adapter = DiscordAdapter(
             bot_token="test-bot-token",
             router=router,
@@ -937,9 +884,7 @@ class TestDiscordAdapterResponseRouting:
     """tests for outbound response delivery."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_router_called_with_correct_channel_message(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_router_called_with_correct_channel_message(self, mock_discord: MagicMock) -> None:
         """route_inbound receives correctly normalized ChannelMessage."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -957,9 +902,7 @@ class TestDiscordAdapterResponseRouting:
         channel = _make_mock_channel()
         mock_thread = MagicMock()
         mock_thread.send = AsyncMock()
-        message = _make_mock_message(
-            content="specific content", channel=channel
-        )
+        message = _make_mock_message(content="specific content", channel=channel)
         message.create_thread.return_value = mock_thread
         await adapter._handle_message(message)
 
@@ -970,9 +913,7 @@ class TestDiscordAdapterResponseRouting:
         assert msg.content == "specific content"
 
     @patch("threetears.channels.discord.discord")
-    async def test_none_response_skips_reply(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_none_response_skips_reply(self, mock_discord: MagicMock) -> None:
         """when router returns None, no message is sent."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -995,9 +936,7 @@ class TestDiscordAdapterResponseRouting:
         message.create_thread.assert_not_awaited()
 
     @patch("threetears.channels.discord.discord")
-    async def test_long_message_split_at_2000_chars(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_long_message_split_at_2000_chars(self, mock_discord: MagicMock) -> None:
         """messages longer than 2000 chars are split into multiple sends."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -1007,9 +946,7 @@ class TestDiscordAdapterResponseRouting:
         mock_discord.Client.return_value = mock_client
 
         long_content = "x" * 4500
-        router = _MockRouter(
-            response=ChannelResponse(content=long_content)
-        )
+        router = _MockRouter(response=ChannelResponse(content=long_content))
         adapter = DiscordAdapter(
             bot_token="test-bot-token",
             router=router,
@@ -1026,16 +963,11 @@ class TestDiscordAdapterResponseRouting:
 
         send_calls = dm_channel.send.await_args_list
         assert len(send_calls) == 3
-        total_sent = sum(
-            len(call.kwargs.get("content", ""))
-            for call in send_calls
-        )
+        total_sent = sum(len(call.kwargs.get("content", "")) for call in send_calls)
         assert total_sent == 4500
 
     @patch("threetears.channels.discord.discord")
-    async def test_response_with_file_attachments(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_response_with_file_attachments(self, mock_discord: MagicMock) -> None:
         """response attachments are sent via discord.File."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -1160,9 +1092,7 @@ class TestDiscordAdapterRichFormatting:
     """tests for rich formatting integration in _send_response."""
 
     @patch("threetears.channels.discord.discord")
-    async def test_rich_formatting_sends_embed(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_rich_formatting_sends_embed(self, mock_discord: MagicMock) -> None:
         """when format_hints has rich keys, send() receives embed kwarg."""
         from threetears.channels.discord import DiscordAdapter
 
@@ -1206,9 +1136,7 @@ class TestDiscordAdapterRichFormatting:
         assert "embed" in send_kwargs
 
     @patch("threetears.channels.discord.discord")
-    async def test_plain_formatting_sends_text_only(
-        self, mock_discord: MagicMock
-    ) -> None:
+    async def test_plain_formatting_sends_text_only(self, mock_discord: MagicMock) -> None:
         """when no format_hints, send() receives only content kwarg (no embed)."""
         from threetears.channels.discord import DiscordAdapter
 

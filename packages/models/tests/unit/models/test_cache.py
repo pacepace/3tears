@@ -132,10 +132,7 @@ class TestModelCache:
             except Exception as exc:
                 errors.append(exc)
 
-        threads = [
-            threading.Thread(target=put_entry, args=(i,))
-            for i in range(100)
-        ]
+        threads = [threading.Thread(target=put_entry, args=(i,)) for i in range(100)]
         for thread in threads:
             thread.start()
         for thread in threads:

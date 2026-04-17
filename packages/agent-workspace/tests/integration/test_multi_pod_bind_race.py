@@ -176,10 +176,7 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
         _run_pod("B", lease_b),
     )
 
-    assert peak["value"] == 1, (
-        f"lease failed to serialize: peak = {peak['value']}; "
-        f"observations = {observations}"
-    )
+    assert peak["value"] == 1, f"lease failed to serialize: peak = {peak['value']}; observations = {observations}"
     # each pod fully entered and exited exactly once.
     assert observations.count("A:enter") == 1
     assert observations.count("A:exit") == 1

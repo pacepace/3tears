@@ -74,8 +74,13 @@ class TestCallSiteEnrichingHandler:
         handler = _CallSiteEnrichingHandler(inner)
 
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="/full/path/module.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="/full/path/module.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         record.call_site_file = "module.py"  # type: ignore[attr-defined]
         record.call_site_class = "MyClass"  # type: ignore[attr-defined]
@@ -101,8 +106,13 @@ class TestCallSiteEnrichingHandler:
         handler = _CallSiteEnrichingHandler(inner)
 
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="/full/path/module.py",
-            lineno=10, msg="hello", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="/full/path/module.py",
+            lineno=10,
+            msg="hello",
+            args=(),
+            exc_info=None,
         )
         record.call_site_func = "my_function"  # type: ignore[attr-defined]
 

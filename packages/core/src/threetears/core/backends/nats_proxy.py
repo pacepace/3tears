@@ -71,11 +71,7 @@ def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
     for key, value in row.items():
         if isinstance(value, str) and value.startswith("\\x"):
             result[key] = bytes.fromhex(value[2:])
-        elif (
-            isinstance(value, str)
-            and key.startswith("date_")
-            and value
-        ):
+        elif isinstance(value, str) and key.startswith("date_") and value:
             result[key] = _parse_iso_datetime(value)
         else:
             result[key] = value
@@ -211,6 +207,7 @@ class NatsProxyL3Backend:
             self._timeout_ms = timeout_ms
         else:
             import os
+
             raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
             self._timeout_ms = int(raw) if raw is not None else 5000
 
@@ -403,9 +400,7 @@ class NatsProxyL3Backend:
             reply = await self._nc.request(subject, payload_bytes, timeout=nats_timeout)
             result: dict[str, Any] = json.loads(reply.data)
         except Exception as exc:
-            raise DataLayerUnavailableError(
-                f"NATS request failed: subject={subject}: {exc}"
-            ) from exc
+            raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
 
         return result
 
@@ -589,7 +584,9 @@ class _ProxyConnection:
         """
         if self.tx_id is None:
             return await self._backend.execute(
-                query, *params, namespace=namespace,
+                query,
+                *params,
+                namespace=namespace,
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
@@ -606,7 +603,8 @@ class _ProxyConnection:
                 f"{response.get('error_message', 'no details')}",
             )
         return _format_execute_tag(
-            _detect_operation(query), response.get("row_count"),
+            _detect_operation(query),
+            response.get("row_count"),
         )
 
     async def fetchrow(
@@ -628,7 +626,9 @@ class _ProxyConnection:
         """
         if self.tx_id is None:
             outside_row = await self._backend.fetchrow(
-                query, *params, namespace=namespace,
+                query,
+                *params,
+                namespace=namespace,
             )
             return outside_row
         payload: dict[str, Any] = {
@@ -669,7 +669,9 @@ class _ProxyConnection:
         """
         if self.tx_id is None:
             outside_rows = await self._backend.fetch(
-                query, *params, namespace=namespace,
+                query,
+                *params,
+                namespace=namespace,
             )
             return outside_rows
         payload: dict[str, Any] = {

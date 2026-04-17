@@ -12,24 +12,28 @@ log = get_logger(__name__)
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
-_ALLOWED_COLUMN_TYPES = frozenset({
-    "text",
-    "integer",
-    "bigint",
-    "boolean",
-    "timestamp",
-    "uuid",
-    "jsonb",
-    "decimal",
-    "bytea",
-})
+_ALLOWED_COLUMN_TYPES = frozenset(
+    {
+        "text",
+        "integer",
+        "bigint",
+        "boolean",
+        "timestamp",
+        "uuid",
+        "jsonb",
+        "decimal",
+        "bytea",
+    }
+)
 
-_ALLOWED_REFERENTIAL_ACTIONS = frozenset({
-    "CASCADE",
-    "SET NULL",
-    "RESTRICT",
-    "NO ACTION",
-})
+_ALLOWED_REFERENTIAL_ACTIONS = frozenset(
+    {
+        "CASCADE",
+        "SET NULL",
+        "RESTRICT",
+        "NO ACTION",
+    }
+)
 
 
 def _validate_identifier(value: str, label: str) -> str:

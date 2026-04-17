@@ -157,11 +157,7 @@ class YamlHandler:
         result: Any
         if isinstance(into, (CommentedMap, dict)) and isinstance(src, dict):
             for key, value in src.items():
-                if (
-                    key in into
-                    and isinstance(into[key], (CommentedMap, dict))
-                    and isinstance(value, dict)
-                ):
+                if key in into and isinstance(into[key], (CommentedMap, dict)) and isinstance(value, dict):
                     self._deep_merge(into[key], value)
                 else:
                     into[key] = value

@@ -307,12 +307,14 @@ class TestToolServerHandleCall:
         server.register(tool)
 
         correlation_id = str(uuid4())
-        msg = _make_nats_msg({
-            "tool_name": "test.stub",
-            "tool_version": "1.0",
-            "arguments": {"key": "value"},
-            "correlation_id": correlation_id,
-        })
+        msg = _make_nats_msg(
+            {
+                "tool_name": "test.stub",
+                "tool_version": "1.0",
+                "arguments": {"key": "value"},
+                "correlation_id": correlation_id,
+            }
+        )
 
         await server._handle_call(msg)
 
@@ -330,12 +332,14 @@ class TestToolServerHandleCall:
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
-        msg = _make_nats_msg({
-            "tool_name": "test.stub",
-            "tool_version": "1.0",
-            "arguments": {},
-            "correlation_id": "corr-1",
-        })
+        msg = _make_nats_msg(
+            {
+                "tool_name": "test.stub",
+                "tool_version": "1.0",
+                "arguments": {},
+                "correlation_id": "corr-1",
+            }
+        )
 
         await server._handle_call(msg)
 
@@ -348,12 +352,14 @@ class TestToolServerHandleCall:
         """_handle_call returns error response for unregistered tool."""
         server = ToolServer(nats_url="nats://localhost:9999")
 
-        msg = _make_nats_msg({
-            "tool_name": "nonexistent.tool",
-            "tool_version": "1.0",
-            "arguments": {},
-            "correlation_id": "corr-2",
-        })
+        msg = _make_nats_msg(
+            {
+                "tool_name": "nonexistent.tool",
+                "tool_version": "1.0",
+                "arguments": {},
+                "correlation_id": "corr-2",
+            }
+        )
 
         await server._handle_call(msg)
 
@@ -369,12 +375,14 @@ class TestToolServerHandleCall:
         tool = FailingTool()
         server.register(tool)
 
-        msg = _make_nats_msg({
-            "tool_name": "test.failing",
-            "tool_version": "1.0",
-            "arguments": {},
-            "correlation_id": "corr-3",
-        })
+        msg = _make_nats_msg(
+            {
+                "tool_name": "test.failing",
+                "tool_version": "1.0",
+                "arguments": {},
+                "correlation_id": "corr-3",
+            }
+        )
 
         await server._handle_call(msg)
 
@@ -437,10 +445,7 @@ class TestToolServerHeartbeat:
             except asyncio.CancelledError:
                 pass
 
-        heartbeat_calls = [
-            c for c in mock_nc.publish.call_args_list
-            if "heartbeat" in (c[0][0] if c[0] else "")
-        ]
+        heartbeat_calls = [c for c in mock_nc.publish.call_args_list if "heartbeat" in (c[0][0] if c[0] else "")]
         assert len(heartbeat_calls) >= 1
         subject = heartbeat_calls[0][0][0]
         assert subject == "testns.tools.heartbeat.hb-pod"
@@ -645,10 +650,9 @@ class TestToolServerProbe:
             -1,
         )
         assert first_register_idx > 0, "registration publish must happen after subscriptions"
-        assert any(
-            evt == "subscribe:testns.tools.probe.order-pod"
-            for evt in order[:first_register_idx]
-        ), "probe subscription must be established before registration publish"
+        assert any(evt == "subscribe:testns.tools.probe.order-pod" for evt in order[:first_register_idx]), (
+            "probe subscription must be established before registration publish"
+        )
 
     @pytest.mark.asyncio
     async def test_handle_probe_responds_with_ack(self) -> None:
@@ -716,12 +720,14 @@ class TestToolServerProbe:
         server.register(_FakeTool())
 
         discovery_reply = MagicMock()
-        discovery_reply.data = json.dumps({
-            "agent_id": "wait-pod",
-            "tools": [
-                {"name": "test.probe", "version": "1.0.0", "status": "available"},
-            ],
-        }).encode("utf-8")
+        discovery_reply.data = json.dumps(
+            {
+                "agent_id": "wait-pod",
+                "tools": [
+                    {"name": "test.probe", "version": "1.0.0", "status": "available"},
+                ],
+            }
+        ).encode("utf-8")
 
         nc = MagicMock()
         nc.request = AsyncMock(return_value=discovery_reply)
@@ -764,12 +770,14 @@ class TestToolServerProbe:
         server.register(_FakeTool())
 
         discovery_reply = MagicMock()
-        discovery_reply.data = json.dumps({
-            "agent_id": "slow-pod",
-            "tools": [
-                {"name": "test.slow", "version": "1.0.0", "status": "unavailable"},
-            ],
-        }).encode("utf-8")
+        discovery_reply.data = json.dumps(
+            {
+                "agent_id": "slow-pod",
+                "tools": [
+                    {"name": "test.slow", "version": "1.0.0", "status": "unavailable"},
+                ],
+            }
+        ).encode("utf-8")
 
         nc = MagicMock()
         nc.request = AsyncMock(return_value=discovery_reply)

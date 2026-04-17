@@ -132,12 +132,16 @@ class RegistryServer:
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
         self._nats_url = nats_url or os.environ.get(
-            "THREETEARS_NATS_URL", "nats://localhost:4222",
+            "THREETEARS_NATS_URL",
+            "nats://localhost:4222",
         )
         self._namespace = namespace or os.environ.get(
-            "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots",
+            "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
+            "aibots",
         )
-        self._heartbeat_check_interval = heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
+        self._heartbeat_check_interval = (
+            heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
+        )
         self._heartbeat_timeout = heartbeat_timeout if heartbeat_timeout is not None else get_heartbeat_timeout()
         self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
@@ -167,6 +171,7 @@ class RegistryServer:
 
         authorizer = self._authorizer
         if authorizer is not None and hasattr(authorizer, "initialize"):
+
             async def _initialize_authorizer() -> None:
                 """initialize authorizer with JetStream context."""
                 await authorizer.initialize(js, self._namespace)
@@ -222,7 +227,8 @@ class RegistryServer:
             raise RuntimeError("_start_handlers invoked before NATS connected")
         nc = self._nc
         registration_handler = RegistrationHandler(
-            self._catalog, namespace=self._namespace,
+            self._catalog,
+            namespace=self._namespace,
         )
         self._registration_handler = registration_handler
         await retry_with_backoff(
@@ -243,7 +249,8 @@ class RegistryServer:
         )
 
         discovery_handler = DiscoveryHandler(
-            self._catalog, namespace=self._namespace,
+            self._catalog,
+            namespace=self._namespace,
         )
         self._discovery_handler = discovery_handler
         await retry_with_backoff(
@@ -312,9 +319,13 @@ def _run_server() -> None:
 
     configure_logging(level="INFO")
 
-    allow_all = os.environ.get(
-        "FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS", "",
-    ).lower() == "true"
+    allow_all = (
+        os.environ.get(
+            "FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS",
+            "",
+        ).lower()
+        == "true"
+    )
 
     if allow_all:
         from threetears.registry.auth import AllowAllAuthorizer

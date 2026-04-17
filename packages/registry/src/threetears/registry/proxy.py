@@ -210,7 +210,8 @@ class CallProxy:
 
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
-                request.agent_id, request.tool_name,
+                request.agent_id,
+                request.tool_name,
             )
             if not authorized:
                 response = ProxyCallResponse(
@@ -227,11 +228,13 @@ class CallProxy:
                     )
                 log.warning(
                     "agent tool call denied",
-                    extra={"extra_data": {
-                        "agent_id": request.agent_id,
-                        "tool_name": request.tool_name,
-                        "correlation_id": request.correlation_id,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "agent_id": request.agent_id,
+                            "tool_name": request.tool_name,
+                            "correlation_id": request.correlation_id,
+                        }
+                    },
                 )
                 return
 
@@ -253,11 +256,13 @@ class CallProxy:
                 )
             log.warning(
                 "tool not found for call",
-                extra={"extra_data": {
-                    "full_name": full_name,
-                    "agent_id": request.agent_id,
-                    "correlation_id": request.correlation_id,
-                }},
+                extra={
+                    "extra_data": {
+                        "full_name": full_name,
+                        "agent_id": request.agent_id,
+                        "correlation_id": request.correlation_id,
+                    }
+                },
             )
             return
 
@@ -273,10 +278,7 @@ class CallProxy:
                 response = ProxyCallResponse(
                     success=False,
                     content="",
-                    error=(
-                        f"tool {full_name} endpoints have not yet "
-                        "confirmed reachability"
-                    ),
+                    error=(f"tool {full_name} endpoints have not yet confirmed reachability"),
                     error_code="TOOL_NOT_READY",
                     correlation_id=request.correlation_id,
                 )
@@ -287,12 +289,14 @@ class CallProxy:
                     )
                 log.warning(
                     "tool endpoints still pending probe confirmation",
-                    extra={"extra_data": {
-                        "full_name": full_name,
-                        "endpoint_count": len(entry.endpoints),
-                        "agent_id": request.agent_id,
-                        "correlation_id": request.correlation_id,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "full_name": full_name,
+                            "endpoint_count": len(entry.endpoints),
+                            "agent_id": request.agent_id,
+                            "correlation_id": request.correlation_id,
+                        }
+                    },
                 )
                 return
             response = ProxyCallResponse(
@@ -309,12 +313,14 @@ class CallProxy:
                 )
             log.warning(
                 "no available endpoints for call",
-                extra={"extra_data": {
-                    "full_name": full_name,
-                    "endpoint_count": len(entry.endpoints),
-                    "agent_id": request.agent_id,
-                    "correlation_id": request.correlation_id,
-                }},
+                extra={
+                    "extra_data": {
+                        "full_name": full_name,
+                        "endpoint_count": len(entry.endpoints),
+                        "agent_id": request.agent_id,
+                        "correlation_id": request.correlation_id,
+                    }
+                },
             )
             return
 
@@ -389,12 +395,14 @@ class CallProxy:
         except TimeoutError:
             log.warning(
                 "tool call timed out",
-                extra={"extra_data": {
-                    "pod_id": pod_id,
-                    "tool_name": request.tool_name,
-                    "correlation_id": request.correlation_id,
-                    "timeout": effective_timeout,
-                }},
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "tool_name": request.tool_name,
+                        "correlation_id": request.correlation_id,
+                        "timeout": effective_timeout,
+                    }
+                },
             )
             response = ProxyCallResponse(
                 success=False,

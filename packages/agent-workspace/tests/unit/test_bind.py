@@ -145,9 +145,7 @@ class _FakeLease:
         ttl_seconds: int = 30,
         max_wait_seconds: int = 60,
     ) -> _FakeLeaseHandle:
-        self.acquired.append(
-            (workspace_id, relative_path, ttl_seconds, max_wait_seconds)
-        )
+        self.acquired.append((workspace_id, relative_path, ttl_seconds, max_wait_seconds))
         handle = _FakeLeaseHandle(
             key=f"workspace:{workspace_id.hex}:{relative_path}",
             holder=f"pod-{len(self.handles)}",
@@ -212,9 +210,7 @@ class _FakeConnection:
         if "COALESCE(MAX(version)" in query:
             rel = args[1]
             per_path = self.journal_max_by_path.get(rel)
-            max_version = (
-                per_path if per_path is not None else self.journal_max_version
-            )
+            max_version = per_path if per_path is not None else self.journal_max_version
             result = {"max_version": max_version}
         else:
             result = self.head_row
@@ -271,9 +267,7 @@ def _build_harness(
     lease = _FakeLease()
     pool = _FakePool()
     for seed_file in files_seed:
-        pool.conn.journal_max_by_path[seed_file.relative_path] = (
-            seed_file.version
-        )
+        pool.conn.journal_max_by_path[seed_file.relative_path] = seed_file.version
     return {
         "workspace_id": ws_id,
         "workspace": ws,
@@ -344,12 +338,8 @@ async def test_bind_body_updates_file_emits_update_journal(
     tx = harness["pool"].conn.transactions[0]
     assert tx.entered is True and tx.exited is True
 
-    journal_rows = [
-        e for e in executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
-    head_rows = [
-        e for e in executions if "INSERT INTO workspace_files" in e[0]
-    ]
+    journal_rows = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0]]
+    head_rows = [e for e in executions if "INSERT INTO workspace_files" in e[0]]
     ws_rows = [e for e in executions if "UPDATE workspaces" in e[0]]
     assert len(journal_rows) == 1
     assert journal_rows[0][1][3] == 2  # new version is prior+1
@@ -369,9 +359,7 @@ async def test_bind_body_creates_new_file_emits_create_journal(
         (disk_root / "new.txt").write_bytes(b"brand new")
 
     executions = harness["pool"].conn.executions
-    journal_rows = [
-        e for e in executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal_rows = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert len(journal_rows) == 1
     assert journal_rows[0][1][3] == 1  # new version starts at 1
     assert journal_rows[0][1][6] == "create"
@@ -391,12 +379,8 @@ async def test_bind_body_deletes_file_emits_delete_journal(
         (disk_root / "bye.txt").unlink()
 
     executions = harness["pool"].conn.executions
-    journal_rows = [
-        e for e in executions if "INSERT INTO workspace_file_versions" in e[0]
-    ]
-    delete_head = [
-        e for e in executions if "DELETE FROM workspace_files" in e[0]
-    ]
+    journal_rows = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0]]
+    delete_head = [e for e in executions if "DELETE FROM workspace_files" in e[0]]
     assert len(journal_rows) == 1
     assert journal_rows[0][1][3] == 4  # prior+1
     assert journal_rows[0][1][6] == "delete"
@@ -666,10 +650,7 @@ async def test_bind_audit_publish_failure_does_not_break_capture_back(
     ) as disk_root:
         (disk_root / "new.txt").write_bytes(b"hello")
     # one journal+head row committed
-    journal = [
-        e for e in harness["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in harness["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     assert len(journal) == 1
 
 
@@ -742,10 +723,7 @@ async def test_bind_watch_batch_imports_new_disk_file(tmp_path: Path) -> None:
         )
         assert changed == ["mid_bind.txt"]
 
-    journal = [
-        e for e in harness["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in harness["pool"].conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     mid_rows = [row for row in journal if row[1][2] == "mid_bind.txt"]
     # at least one create from the live-watcher call. the fake file
     # collection used here does NOT reflect conn-side writes, so
@@ -782,7 +760,9 @@ async def test_watch_batch_deleted_change_emits_delete(tmp_path: Path) -> None:
         target = disk_root / "gone.txt"
         # seed the fake head row so the watcher's delete branch finds it.
         harness["pool"].conn.head_row = {
-            "content": content, "sha256": _sha(content), "version": 2,
+            "content": content,
+            "sha256": _sha(content),
+            "version": 2,
         }
         # have the deletion actually occur on disk first so capture-back
         # also notices the file is gone. the watcher batch is delivered
@@ -805,10 +785,7 @@ async def test_watch_batch_deleted_change_emits_delete(tmp_path: Path) -> None:
 
     executions = harness["pool"].conn.executions
     delete_head = [e for e in executions if "DELETE FROM workspace_files" in e[0]]
-    journal_deletes = [
-        e for e in executions
-        if "INSERT INTO workspace_file_versions" in e[0] and e[1][6] == "delete"
-    ]
+    journal_deletes = [e for e in executions if "INSERT INTO workspace_file_versions" in e[0] and e[1][6] == "delete"]
     assert len(journal_deletes) >= 1
     assert len(delete_head) >= 1
 
@@ -851,16 +828,16 @@ async def test_watch_batch_just_wrote_suppresses_roundtrip(
         # helper emitted no rows of its own; exact row count is
         # asserted AFTER bind exits so we can observe the final state.
         journal_during = [
-            e for e in harness["pool"].conn.executions
-            if "INSERT INTO workspace_file_versions" in e[0]
-            and e[1][2] == "own_write.txt"
+            e
+            for e in harness["pool"].conn.executions
+            if "INSERT INTO workspace_file_versions" in e[0] and e[1][2] == "own_write.txt"
         ]
         assert journal_during == []
     # OUTSIDE the bind: capture-back emitted exactly one create.
     journal_after = [
-        e for e in harness["pool"].conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-        and e[1][2] == "own_write.txt"
+        e
+        for e in harness["pool"].conn.executions
+        if "INSERT INTO workspace_file_versions" in e[0] and e[1][2] == "own_write.txt"
     ]
     assert len(journal_after) == 1
     assert journal_after[0][1][6] == "create"

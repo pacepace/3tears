@@ -64,18 +64,14 @@ class MockWebSocket:
 class _EchoRouter:
     """router that echoes message content back."""
 
-    async def route_inbound(
-        self, message: ChannelMessage
-    ) -> ChannelResponse | None:
+    async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
         return ChannelResponse(content=f"echo: {message.content}")
 
 
 class _NullRouter:
     """router that returns None for all messages."""
 
-    async def route_inbound(
-        self, message: ChannelMessage
-    ) -> ChannelResponse | None:
+    async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
         return None
 
 
@@ -114,14 +110,10 @@ class TestWebSocketEnforcement:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert not alias.name.startswith(
-                        "fastapi"
-                    ), f"websocket.py imports fastapi: {alias.name}"
+                    assert not alias.name.startswith("fastapi"), f"websocket.py imports fastapi: {alias.name}"
             elif isinstance(node, ast.ImportFrom):
                 if node.module is not None:
-                    assert not node.module.startswith(
-                        "fastapi"
-                    ), f"websocket.py imports from fastapi: {node.module}"
+                    assert not node.module.startswith("fastapi"), f"websocket.py imports from fastapi: {node.module}"
 
     def test_websocket_module_does_not_import_starlette(self) -> None:
         """websocket.py must not import starlette."""
@@ -135,14 +127,12 @@ class TestWebSocketEnforcement:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert not alias.name.startswith(
-                        "starlette"
-                    ), f"websocket.py imports starlette: {alias.name}"
+                    assert not alias.name.startswith("starlette"), f"websocket.py imports starlette: {alias.name}"
             elif isinstance(node, ast.ImportFrom):
                 if node.module is not None:
-                    assert not node.module.startswith(
-                        "starlette"
-                    ), f"websocket.py imports from starlette: {node.module}"
+                    assert not node.module.startswith("starlette"), (
+                        f"websocket.py imports from starlette: {node.module}"
+                    )
 
     def test_websocket_module_does_not_import_jwt(self) -> None:
         """websocket.py must not import jwt or any auth library."""
@@ -157,15 +147,11 @@ class TestWebSocketEnforcement:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    assert (
-                        alias.name not in banned_modules
-                    ), f"websocket.py imports auth library: {alias.name}"
+                    assert alias.name not in banned_modules, f"websocket.py imports auth library: {alias.name}"
             elif isinstance(node, ast.ImportFrom):
                 if node.module is not None:
                     root_module = node.module.split(".")[0]
-                    assert (
-                        root_module not in banned_modules
-                    ), f"websocket.py imports from auth library: {node.module}"
+                    assert root_module not in banned_modules, f"websocket.py imports from auth library: {node.module}"
 
 
 # ============================================================
@@ -180,9 +166,7 @@ class TestWebSocketProtocol:
         """WebSocketProtocol is a runtime_checkable Protocol."""
         from threetears.channels.websocket import WebSocketProtocol
 
-        assert hasattr(WebSocketProtocol, "__protocol_attrs__") or hasattr(
-            WebSocketProtocol, "__abstractmethods__"
-        )
+        assert hasattr(WebSocketProtocol, "__protocol_attrs__") or hasattr(WebSocketProtocol, "__abstractmethods__")
 
     def test_conforming_mock_satisfies_protocol(self) -> None:
         """MockWebSocket satisfies isinstance check for WebSocketProtocol."""
@@ -403,9 +387,7 @@ class TestWebSocketHandlerAuthFailure:
         from threetears.channels.websocket import WebSocketHandler
 
         router = _EchoRouter()
-        handler = WebSocketHandler(
-            router=router, auth_validator=_always_reject_auth
-        )
+        handler = WebSocketHandler(router=router, auth_validator=_always_reject_auth)
 
         auth_msg = json.dumps({"type": "auth", "token": "bad-token"})
         ws = MockWebSocket(
@@ -431,9 +413,7 @@ class TestWebSocketHandlerAuthFailure:
         from threetears.channels.websocket import WebSocketHandler
 
         router = _EchoRouter()
-        handler = WebSocketHandler(
-            router=router, auth_validator=_always_reject_auth
-        )
+        handler = WebSocketHandler(router=router, auth_validator=_always_reject_auth)
 
         auth_msg = json.dumps({"type": "auth", "token": "bad-token"})
         ws = MockWebSocket(messages=[auth_msg])
@@ -484,9 +464,7 @@ class TestWebSocketHandlerMessageLoop:
         router = _EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        user_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[user_msg],
             query_params={"token": "valid-token"},
@@ -507,9 +485,7 @@ class TestWebSocketHandlerMessageLoop:
         router = _NullRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        user_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[user_msg],
             query_params={"token": "valid-token"},
@@ -529,12 +505,8 @@ class TestWebSocketHandlerMessageLoop:
         router = _EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        msg_a = json.dumps(
-            {"type": "message", "content": "first", "metadata": {}}
-        )
-        msg_b = json.dumps(
-            {"type": "message", "content": "second", "metadata": {}}
-        )
+        msg_a = json.dumps({"type": "message", "content": "first", "metadata": {}})
+        msg_b = json.dumps({"type": "message", "content": "second", "metadata": {}})
         ws = MockWebSocket(
             messages=[msg_a, msg_b],
             query_params={"token": "valid-token"},
@@ -556,9 +528,7 @@ class TestWebSocketHandlerMessageLoop:
         received_messages: list[ChannelMessage] = []
 
         class _CapturingRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 received_messages.append(message)
                 return ChannelResponse(content="ok")
 
@@ -611,9 +581,7 @@ class TestWebSocketHandlerDisconnect:
         router = _EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        user_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[user_msg],
             query_params={"token": "valid-token"},
@@ -635,18 +603,14 @@ class TestWebSocketHandlerChannelMessage:
         received_messages: list[ChannelMessage] = []
 
         class _CapturingRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 received_messages.append(message)
                 return None
 
         router = _CapturingRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        user_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[user_msg],
             query_params={"token": "valid-token"},
@@ -669,9 +633,7 @@ class TestWebSocketHandlerConfig:
 
         router = _EchoRouter()
         config = {"heartbeat_interval": 15}
-        handler = WebSocketHandler(
-            router=router, auth_validator=_valid_auth, config=config
-        )
+        handler = WebSocketHandler(router=router, auth_validator=_valid_auth, config=config)
         assert handler._config["heartbeat_interval"] == 15
 
     @pytest.mark.asyncio
@@ -696,9 +658,9 @@ class TestStreamingChannelRouter:
         """StreamingChannelRouter is a runtime_checkable Protocol."""
         from threetears.channels.websocket import StreamingChannelRouter
 
-        assert hasattr(
-            StreamingChannelRouter, "__protocol_attrs__"
-        ) or hasattr(StreamingChannelRouter, "__abstractmethods__")
+        assert hasattr(StreamingChannelRouter, "__protocol_attrs__") or hasattr(
+            StreamingChannelRouter, "__abstractmethods__"
+        )
 
     def test_conforming_class_satisfies_protocol(self) -> None:
         """class implementing route_inbound_streaming satisfies protocol."""
@@ -805,9 +767,7 @@ class TestWebSocketHandlerStreaming:
         from threetears.channels.websocket import WebSocketHandler
 
         class _StreamRouter:
-            async def route_inbound(
-                self, message: ChannelMessage
-            ) -> ChannelResponse | None:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
                 return ChannelResponse(content="full response")
 
             async def route_inbound_streaming(
@@ -822,9 +782,7 @@ class TestWebSocketHandlerStreaming:
         router = _StreamRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
 
-        user_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[user_msg],
             query_params={"token": "valid-token"},
@@ -833,21 +791,13 @@ class TestWebSocketHandlerStreaming:
 
         # connected msg + streaming tokens + final response
         # tokens are sent as type "stream" messages
-        stream_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "stream"
-        ]
+        stream_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "stream"]
         assert len(stream_messages) == 2
         assert stream_messages[0]["content"] == "tok1"
         assert stream_messages[1]["content"] == "tok2"
 
         # final response also sent
-        response_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "response"
-        ]
+        response_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "response"]
         assert len(response_messages) == 1
         assert response_messages[0]["content"] == "tok1tok2"
 
@@ -904,9 +854,7 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         )
 
         large_content = "x" * 200
-        large_msg = json.dumps(
-            {"type": "message", "content": large_content, "metadata": {}}
-        )
+        large_msg = json.dumps({"type": "message", "content": large_content, "metadata": {}})
         ws = MockWebSocket(
             messages=[large_msg],
             query_params={"token": "valid-token"},
@@ -914,20 +862,12 @@ class TestWebSocketHandlerMessageSizeEnforcement:
         await handler.handle_connection(ws)
 
         # should have connected message and error message
-        error_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "error"
-        ]
+        error_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
         assert len(error_messages) == 1
         assert "too large" in error_messages[0]["message"]
 
         # should NOT have a response message (message was rejected)
-        response_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "response"
-        ]
+        response_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "response"]
         assert len(response_messages) == 0
 
     @pytest.mark.asyncio
@@ -942,20 +882,14 @@ class TestWebSocketHandlerMessageSizeEnforcement:
             config={"max_message_size": 65536},
         )
 
-        normal_msg = json.dumps(
-            {"type": "message", "content": "hello", "metadata": {}}
-        )
+        normal_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
         ws = MockWebSocket(
             messages=[normal_msg],
             query_params={"token": "valid-token"},
         )
         await handler.handle_connection(ws)
 
-        response_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "response"
-        ]
+        response_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "response"]
         assert len(response_messages) == 1
         assert response_messages[0]["content"] == "echo: hello"
 
@@ -994,11 +928,7 @@ class TestWebSocketHandlerRateLimiting:
         # send 4 messages -- first 2 should succeed, last 2 rate-limited
         messages = []
         for i in range(4):
-            messages.append(
-                json.dumps(
-                    {"type": "message", "content": f"msg-{i}", "metadata": {}}
-                )
-            )
+            messages.append(json.dumps({"type": "message", "content": f"msg-{i}", "metadata": {}}))
 
         ws = MockWebSocket(
             messages=messages,
@@ -1006,16 +936,8 @@ class TestWebSocketHandlerRateLimiting:
         )
         await handler.handle_connection(ws)
 
-        response_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "response"
-        ]
-        error_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "error"
-        ]
+        response_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "response"]
+        error_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
 
         assert len(response_messages) == 2
         assert len(error_messages) == 2
@@ -1038,16 +960,10 @@ class TestWebSocketHandlerRateLimiting:
         )
 
         # send 2 messages (exhaust rate limit)
-        msg_a = json.dumps(
-            {"type": "message", "content": "first", "metadata": {}}
-        )
-        msg_b = json.dumps(
-            {"type": "message", "content": "second", "metadata": {}}
-        )
+        msg_a = json.dumps({"type": "message", "content": "first", "metadata": {}})
+        msg_b = json.dumps({"type": "message", "content": "second", "metadata": {}})
         # then wait for window to expire (handled by tiny window) and send another
-        msg_c = json.dumps(
-            {"type": "message", "content": "third", "metadata": {}}
-        )
+        msg_c = json.dumps({"type": "message", "content": "third", "metadata": {}})
 
         # use a custom websocket that sleeps between messages
         class _SlowMockWebSocket(MockWebSocket):
@@ -1072,11 +988,7 @@ class TestWebSocketHandlerRateLimiting:
         )
         await handler.handle_connection(ws)
 
-        response_messages = [
-            json.loads(m)
-            for m in ws.sent
-            if json.loads(m).get("type") == "response"
-        ]
+        response_messages = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "response"]
         # all 3 should succeed because window resets before third message
         assert len(response_messages) == 3
 

@@ -262,9 +262,7 @@ class ToolServer:
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
-        context_factory: (
-            "Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None"
-        ) = None,
+        context_factory: ("Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None") = None,
     ) -> None:
         """initialize tool server.
 
@@ -366,11 +364,13 @@ class ToolServer:
         if removed:
             log.info(
                 "unregistered tool",
-                extra={"extra_data": {
-                    "mcp_name": mcp_name,
-                    "removed_keys": matched_keys,
-                    "pod_id": self._pod_id,
-                }},
+                extra={
+                    "extra_data": {
+                        "mcp_name": mcp_name,
+                        "removed_keys": matched_keys,
+                        "pod_id": self._pod_id,
+                    }
+                },
             )
         return removed
 
@@ -390,10 +390,12 @@ class ToolServer:
         self._running = True
         log.info(
             "connected to NATS",
-            extra={"extra_data": {
-                "nats_url": self._nats_url,
-                "pod_id": self._pod_id,
-            }},
+            extra={
+                "extra_data": {
+                    "nats_url": self._nats_url,
+                    "pod_id": self._pod_id,
+                }
+            },
         )
 
         call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
@@ -483,10 +485,7 @@ class ToolServer:
             try:
                 request = DiscoveryProbeRequest(
                     agent_id=self._pod_id,
-                    tool_manifest=[
-                        DiscoveryProbeToolEntry(name=m.name, version=m.version)
-                        for m in manifest_names
-                    ],
+                    tool_manifest=[DiscoveryProbeToolEntry(name=m.name, version=m.version) for m in manifest_names],
                 )
                 reply = await self._nc.request(
                     f"{self._namespace}.tools.discover",
@@ -494,9 +493,7 @@ class ToolServer:
                     timeout=min(1.0, max(deadline - asyncio.get_event_loop().time(), 0.01)),
                 )
                 response = DiscoveryProbeResponse.model_validate_json(reply.data)
-                available_count = sum(
-                    1 for tool in response.tools if tool.status == "available"
-                )
+                available_count = sum(1 for tool in response.tools if tool.status == "available")
                 if available_count == expected_count:
                     ready = True
                     break
@@ -507,10 +504,12 @@ class ToolServer:
                 # rather than a blanket silent swallow.
                 log.debug(
                     "wait_until_ready poll iteration failed",
-                    extra={"extra_data": {
-                        "pod_id": self._pod_id,
-                        "error": str(exc),
-                    }},
+                    extra={
+                        "extra_data": {
+                            "pod_id": self._pod_id,
+                            "error": str(exc),
+                        }
+                    },
                 )
             await asyncio.sleep(poll_interval)
         return ready
@@ -550,11 +549,13 @@ class ToolServer:
         await nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
         log.debug(
             "published registration manifest",
-            extra={"extra_data": {
-                "subject": subject,
-                "pod_id": self._pod_id,
-                "tools_count": len(tools_list),
-            }},
+            extra={
+                "extra_data": {
+                    "subject": subject,
+                    "pod_id": self._pod_id,
+                    "tools_count": len(tools_list),
+                }
+            },
         )
 
     @traced(record_args=True)
@@ -591,10 +592,12 @@ class ToolServer:
             await msg.respond(error_response.model_dump_json().encode("utf-8"))
             log.warning(
                 "unknown tool requested",
-                extra={"extra_data": {
-                    "tool_key": tool_key,
-                    "correlation_id": request.correlation_id,
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_key": tool_key,
+                        "correlation_id": request.correlation_id,
+                    }
+                },
             )
             return
 
@@ -612,11 +615,13 @@ class ToolServer:
         except Exception as exc:
             log.error(
                 "tool execution failed",
-                extra={"extra_data": {
-                    "tool_key": tool_key,
-                    "correlation_id": request.correlation_id,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_key": tool_key,
+                        "correlation_id": request.correlation_id,
+                        "error": str(exc),
+                    }
+                },
             )
             response = CallResponse(
                 success=False,
@@ -628,7 +633,8 @@ class ToolServer:
         await msg.respond(response.model_dump_json().encode("utf-8"))
 
     async def _build_call_scope(
-        self, request: CallRequest,
+        self,
+        request: CallRequest,
     ) -> ToolCallScope:
         """construct per-call scope from envelope identifiers.
 
@@ -670,13 +676,10 @@ class ToolServer:
             user_id,
             correlation_id,
         )
-        if (
-            self._context_factory is not None
-            and conversation_id is not None
-            and user_id is not None
-        ):
+        if self._context_factory is not None and conversation_id is not None and user_id is not None:
             context_manager = await self._context_factory(
-                conversation_id, user_id,
+                conversation_id,
+                user_id,
             )
         return ToolCallScope(
             context_manager=context_manager,

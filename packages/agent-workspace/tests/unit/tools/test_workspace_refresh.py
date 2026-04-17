@@ -59,7 +59,9 @@ class _FakeWorkspaceCollection:
         self._entities = entities
 
     async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str,
+        self,
+        agent_id: UUID,
+        name: str,
     ) -> _FakeWorkspaceEntity | None:
         """locate by (agent_id, name).
 
@@ -79,7 +81,9 @@ class _FakeWorkspaceCollection:
         return result
 
     async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID,
+        self,
+        workspace_id: UUID,
+        agent_id: UUID,
     ) -> _FakeWorkspaceEntity | None:
         """locate by (id, agent).
 
@@ -127,7 +131,8 @@ class _FakeFileCollection:
         self._files = files
 
     async def find_by_workspace(
-        self, workspace_id: UUID,
+        self,
+        workspace_id: UUID,
     ) -> list[_FakeFileEntity]:
         """return seeded files (copy).
 
@@ -189,7 +194,10 @@ class _FakeTransaction:
         return self
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """close the transaction.
 
@@ -246,7 +254,9 @@ class _FakeConnection:
         return "INSERT 0 1"
 
     async def fetchrow(
-        self, query: str, *args: Any,
+        self,
+        query: str,
+        *args: Any,
     ) -> dict[str, Any] | None:
         """resolve journal-max SELECT.
 
@@ -279,7 +289,10 @@ class _FakeAcquireCM:
         return self.conn
 
     async def __aexit__(
-        self, exc_type: Any, exc_val: Any, exc_tb: Any,
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
     ) -> None:
         """no-op close.
 
@@ -355,10 +368,7 @@ async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
     assert (result.metadata or {}).get("imported_count") == 2
     assert "2 files" in result.content
 
-    journal = [
-        e for e in pool.conn.executions
-        if "INSERT INTO workspace_file_versions" in e[0]
-    ]
+    journal = [e for e in pool.conn.executions if "INSERT INTO workspace_file_versions" in e[0]]
     rels = sorted(row[1][2] for row in journal)
     assert rels == ["alpha.yaml", "beta.md"]
     for row in journal:
@@ -417,7 +427,9 @@ async def test_refresh_idempotent_on_unchanged_files(tmp_path: Path) -> None:
     entity = _FakeWorkspaceEntity(id=workspace_id, name="ws_test")
     content = b"stable\n"
     head = _FakeFileEntity(
-        relative_path="alpha.yaml", sha256=_sha(content), version=1,
+        relative_path="alpha.yaml",
+        sha256=_sha(content),
+        version=1,
     )
     wcoll = _FakeWorkspaceCollection([entity])
     fcoll = _FakeFileCollection([head])

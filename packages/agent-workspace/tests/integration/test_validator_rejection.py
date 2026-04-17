@@ -80,18 +80,10 @@ async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_unt
     )
 
     # snapshot pre-call state so we can confirm zero mutations.
-    pre_head = fx.store.files[
-        (fx.workspace_id, "audience_settings.yaml")
-    ]
+    pre_head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]
     pre_head_content = pre_head.content
     pre_head_version = pre_head.version
-    pre_version_count = len(
-        [
-            v
-            for v in fx.store.versions
-            if v.relative_path == "audience_settings.yaml"
-        ]
-    )
+    pre_version_count = len([v for v in fx.store.versions if v.relative_path == "audience_settings.yaml"])
 
     fs_write = FsWriteTool(
         workspace_collection=fx.workspace_collection,
@@ -116,18 +108,10 @@ async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_unt
     assert "validation failed" in result.error
 
     # head row is unchanged
-    post_head = fx.store.files[
-        (fx.workspace_id, "audience_settings.yaml")
-    ]
+    post_head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]
     assert post_head.content == pre_head_content
     assert post_head.version == pre_head_version
 
     # no new journal row for this file
-    post_version_count = len(
-        [
-            v
-            for v in fx.store.versions
-            if v.relative_path == "audience_settings.yaml"
-        ]
-    )
+    post_version_count = len([v for v in fx.store.versions if v.relative_path == "audience_settings.yaml"])
     assert post_version_count == pre_version_count

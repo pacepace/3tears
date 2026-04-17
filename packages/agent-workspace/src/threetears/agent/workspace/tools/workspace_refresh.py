@@ -164,7 +164,8 @@ class WorkspaceRefreshTool(TearsTool):
             )
             try:
                 disk_root = self._sandbox.resolve_fs_path(
-                    workspace.name, "bind",
+                    workspace.name,
+                    "bind",
                 )
             except KeyError:
                 result = ToolResult(
@@ -227,9 +228,7 @@ class WorkspaceRefreshTool(TearsTool):
         """
         disk_by_path = await asyncio.to_thread(_scan_disk_sync, disk_root)
         head_rows = await self._files.find_by_workspace(workspace.id)
-        head_by_path: dict[str, str] = {
-            row.relative_path: row.sha256 for row in head_rows
-        }
+        head_by_path: dict[str, str] = {row.relative_path: row.sha256 for row in head_rows}
 
         creates: list[tuple[str, bytes, str]] = []
         updates: list[tuple[str, bytes, str]] = []
@@ -250,7 +249,9 @@ class WorkspaceRefreshTool(TearsTool):
                 async with conn.transaction():
                     for rel, content, sha in creates:
                         new_version = await _next_journal_version(
-                            conn, workspace.id, rel,
+                            conn,
+                            workspace.id,
+                            rel,
                         )
                         if new_version > max_version:
                             max_version = new_version
@@ -267,7 +268,9 @@ class WorkspaceRefreshTool(TearsTool):
                         )
                     for rel, content, sha in updates:
                         new_version = await _next_journal_version(
-                            conn, workspace.id, rel,
+                            conn,
+                            workspace.id,
+                            rel,
                         )
                         if new_version > max_version:
                             max_version = new_version
@@ -408,7 +411,7 @@ def _scan_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
         try:
             resolved_candidate = candidate.resolve()
             resolved_candidate.relative_to(resolved_root)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             log.warning(
                 "workspace.refresh_from_disk.skip_escape",
                 extra={

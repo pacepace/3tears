@@ -56,17 +56,14 @@ _INPUT_SCHEMA: dict[str, Any] = {
         "relative_path": {
             "type": "string",
             "description": (
-                "optional workspace-relative path; when omitted, history "
-                "spans every file in the workspace"
+                "optional workspace-relative path; when omitted, history spans every file in the workspace"
             ),
         },
         "limit": {
             "type": "integer",
             "minimum": 1,
             "maximum": _MAX_LIMIT,
-            "description": (
-                "maximum rows to return (newest first); default 50, max 500"
-            ),
+            "description": ("maximum rows to return (newest first); default 50, max 500"),
         },
         "workspace": {
             "type": "string",
@@ -154,20 +151,13 @@ class WorkspaceHistoryTool(TearsTool):
             rows: list[Any]
             if relative_path is not None and relative_path != "":
                 self._sandbox.enforce("read", relative_path)
-                rows = await self._versions.find_by_workspace_and_path(
-                    workspace.id, relative_path, limit
-                )
+                rows = await self._versions.find_by_workspace_and_path(workspace.id, relative_path, limit)
             else:
-                fetched = await self._versions.find_by_workspace(
-                    workspace.id, limit
-                )
+                fetched = await self._versions.find_by_workspace(workspace.id, limit)
                 rows = [
                     row
                     for row in fetched
-                    if self._sandbox.check_relative_key(
-                        row.relative_path, "read"
-                    )
-                    is SandboxDecision.ALLOW
+                    if self._sandbox.check_relative_key(row.relative_path, "read") is SandboxDecision.ALLOW
                 ]
             entries = [self._serialize_row(row) for row in rows]
             result = ToolResult(

@@ -864,9 +864,7 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        coll = WorkspaceFileVersionCollection(
-            registry, config_always, postgres_pool=pool
-        )
+        coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
 
         entities = await coll.find_by_workspace(workspace_id, 10)
         assert len(entities) == 2
@@ -901,13 +899,9 @@ class TestWorkspaceFileVersionCollectionHistoryQueries:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        coll = WorkspaceFileVersionCollection(
-            registry, config_always, postgres_pool=pool
-        )
+        coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
 
-        entities = await coll.find_by_workspace_and_path(
-            workspace_id, "a.md", 25
-        )
+        entities = await coll.find_by_workspace_and_path(workspace_id, "a.md", 25)
         assert len(entities) == 1
         assert entities[0].relative_path == "a.md"
         issued_sql = executed[0][0]

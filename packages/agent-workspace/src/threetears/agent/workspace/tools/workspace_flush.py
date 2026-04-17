@@ -142,7 +142,8 @@ class WorkspaceFlushTool(TearsTool):
             )
             try:
                 disk_root = self._sandbox.resolve_fs_path(
-                    workspace.name, "bind",
+                    workspace.name,
+                    "bind",
                 )
             except KeyError:
                 result = ToolResult(
@@ -212,7 +213,9 @@ class WorkspaceFlushTool(TearsTool):
             # so idempotent flush calls do not churn the mtimes of
             # unchanged files.
             if await asyncio.to_thread(
-                _disk_sha_matches, target, row.sha256,
+                _disk_sha_matches,
+                target,
+                row.sha256,
             ):
                 continue
             await atomic_write(target, row.content)
@@ -268,6 +271,7 @@ def _disk_sha_matches(path: Path, expected_sha: str) -> bool:
     :rtype: bool
     """
     import hashlib
+
     if not path.is_file():
         return False
     try:

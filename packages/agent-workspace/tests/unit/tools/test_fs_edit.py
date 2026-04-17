@@ -32,17 +32,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -232,9 +228,7 @@ async def test_fs_edit_happy_replaces_all_occurrences_and_writes() -> None:
 @pytest.mark.asyncio
 async def test_fs_edit_missing_file_returns_clean_error() -> None:
     tool, pool, _ = _build_tool(files=[])
-    result = await tool.execute(
-        relative_path="missing.md", find="x", replace="y", workspace="ws"
-    )
+    result = await tool.execute(relative_path="missing.md", find="x", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "missing.md" in result.error
@@ -245,13 +239,9 @@ async def test_fs_edit_missing_file_returns_clean_error() -> None:
 
 @pytest.mark.asyncio
 async def test_fs_edit_find_empty_returns_clean_error() -> None:
-    existing = _FakeFileEntity(
-        relative_path="a.md", content=b"x", sha256="a" * 64, version=1
-    )
+    existing = _FakeFileEntity(relative_path="a.md", content=b"x", sha256="a" * 64, version=1)
     tool, pool, _ = _build_tool(files=[existing])
-    result = await tool.execute(
-        relative_path="a.md", find="", replace="y", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", find="", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "empty" in result.error
@@ -267,9 +257,7 @@ async def test_fs_edit_find_missing_from_content_returns_clean_error() -> None:
         version=1,
     )
     tool, pool, _ = _build_tool(files=[existing])
-    result = await tool.execute(
-        relative_path="a.md", find="missing", replace="x", workspace="ws"
-    )
+    result = await tool.execute(relative_path="a.md", find="missing", replace="x", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "find string not found" in result.error
@@ -286,9 +274,7 @@ async def test_fs_edit_binary_file_returns_clean_error() -> None:
         version=1,
     )
     tool, pool, _ = _build_tool(files=[existing])
-    result = await tool.execute(
-        relative_path="logo.png", find="x", replace="y", workspace="ws"
-    )
+    result = await tool.execute(relative_path="logo.png", find="x", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "binary" in result.error
@@ -332,9 +318,7 @@ async def test_fs_edit_sandbox_denied_never_reads_or_writes() -> None:
         sha256="a" * 64,
         version=1,
     )
-    tool, pool, sandbox = _build_tool(
-        files=[existing], deny_writes=["secret.env"]
-    )
+    tool, pool, sandbox = _build_tool(files=[existing], deny_writes=["secret.env"])
     result = await tool.execute(
         relative_path="secret.env",
         find="TOKEN=",

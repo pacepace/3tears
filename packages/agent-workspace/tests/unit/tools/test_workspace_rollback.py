@@ -35,17 +35,13 @@ class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
-    async def find_by_agent_and_name(
-        self, agent_id: UUID, name: str
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_agent_and_name(self, agent_id: UUID, name: str) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.name == name:
                 return e
         return None
 
-    async def find_by_id_and_agent(
-        self, workspace_id: UUID, agent_id: UUID
-    ) -> _FakeWorkspaceEntity | None:
+    async def find_by_id_and_agent(self, workspace_id: UUID, agent_id: UUID) -> _FakeWorkspaceEntity | None:
         for e in self._entities:
             if e.id == workspace_id:
                 return e
@@ -64,9 +60,7 @@ class _FakeFileCollection:
     def __init__(self, files: list[_FakeFileEntity]) -> None:
         self._files = files
 
-    async def find_by_workspace(
-        self, workspace_id: UUID
-    ) -> list[_FakeFileEntity]:
+    async def find_by_workspace(self, workspace_id: UUID) -> list[_FakeFileEntity]:
         return list(self._files)
 
     async def find_by_workspace_and_relative_path(
@@ -113,17 +107,13 @@ class _FakePool:
     checkpoint label, "head" implied by two-arg call shape).
     """
 
-    script: dict[tuple[str, Any], dict[str, Any] | None] = field(
-        default_factory=dict
-    )
+    script: dict[tuple[str, Any], dict[str, Any] | None] = field(default_factory=dict)
     fetchrows: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
 
     def acquire(self) -> _FakeAcquireCM:
         return _FakeAcquireCM(conn=self)
 
-    async def fetchrow(
-        self, query: str, *args: Any
-    ) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         relative_path = args[1]
         if len(args) == 2:
@@ -175,9 +165,7 @@ def _install_atomic_recorder(
         calls.append(kwargs)
         return 99, "r" * 64
 
-    monkeypatch.setattr(
-        workspace_rollback_module, "_write_file_atomic", _recorder
-    )
+    monkeypatch.setattr(workspace_rollback_module, "_write_file_atomic", _recorder)
     return calls
 
 
@@ -209,9 +197,7 @@ async def test_rollback_whole_workspace_reverts_each_file(
         },
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _files = _build_tool(
-        workspace_entities=[ws], files=files, script=script
-    )
+    tool, _pool, sandbox, _files = _build_tool(workspace_entities=[ws], files=files, script=script)
     result = await tool.execute(ref=1, workspace="ws")
     assert result.success is True, result.error
     assert "2 files" in result.content
@@ -250,12 +236,8 @@ async def test_rollback_single_file_narrows_set(
         },
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=files, script=script
-    )
-    result = await tool.execute(
-        ref=2, relative_path="b.md", workspace="ws"
-    )
+    tool, _pool, sandbox, _ = _build_tool(workspace_entities=[ws], files=files, script=script)
+    result = await tool.execute(ref=2, relative_path="b.md", workspace="ws")
     assert result.success is True, result.error
     # enforce only called for the one path
     assert sandbox.enforce_calls == [("write", "b.md")]
@@ -284,9 +266,7 @@ async def test_rollback_skips_files_absent_at_ref(
         ("new.md", 1): None,
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=files, script=script
-    )
+    tool, _pool, sandbox, _ = _build_tool(workspace_entities=[ws], files=files, script=script)
     result = await tool.execute(ref=1, workspace="ws")
     assert result.success is True, result.error
     # n_changed is 1 -- only the path that had a target row
@@ -350,9 +330,7 @@ async def test_rollback_sandbox_denied_aborts_before_any_write(
 async def test_rollback_missing_ref_required_returns_error() -> None:
     """omitting ref returns clean error without mutations."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[]
-    )
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
     result = await tool.execute(workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -362,9 +340,7 @@ async def test_rollback_missing_ref_required_returns_error() -> None:
 @pytest.mark.asyncio
 async def test_rollback_unknown_workspace_returns_clean_error() -> None:
     """unknown workspace name -> clean error."""
-    tool, _pool, _sandbox, _ = _build_tool(
-        workspace_entities=[], files=[]
-    )
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[], files=[])
     result = await tool.execute(ref=1, workspace="ghost")
     assert result.success is False
     assert result.error is not None

@@ -54,8 +54,7 @@ CREATE TABLE IF NOT EXISTS workspace_files (
 """
 
 _CREATE_WORKSPACE_FILES_WORKSPACE_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_workspace_files_workspace "
-    "ON workspace_files (workspace_id)"
+    "CREATE INDEX IF NOT EXISTS idx_workspace_files_workspace ON workspace_files (workspace_id)"
 )
 
 _CREATE_WORKSPACE_FILE_VERSIONS_SQL = """
@@ -80,9 +79,7 @@ _CREATE_WORKSPACE_FILE_VERSIONS_HISTORY_IDX_SQL = (
     "ON workspace_file_versions (workspace_id, date_created)"
 )
 
-_ADD_DATE_DELETED_COLUMN_SQL = (
-    "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
-)
+_ADD_DATE_DELETED_COLUMN_SQL = "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
 
 
 async def create_workspace_tables(store: DataStore) -> None:

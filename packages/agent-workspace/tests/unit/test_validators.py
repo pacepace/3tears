@@ -152,13 +152,9 @@ def test_dispatch_validators_no_matching_pattern_skips(
     def _never(relpath: str, content: Any) -> None:
         calls.append((relpath, content))
 
-    _install_stub_module(
-        monkeypatch, "tests_validators_stub_a", {"never": _never}
-    )
+    _install_stub_module(monkeypatch, "tests_validators_stub_a", {"never": _never})
     entries = [
-        ValidatorEntry(
-            pattern="*.json", validator="tests_validators_stub_a.never"
-        ),
+        ValidatorEntry(pattern="*.json", validator="tests_validators_stub_a.never"),
     ]
     dispatch_validators(entries, "settings.yaml", b"{}")
     assert calls == []
@@ -173,9 +169,7 @@ def test_dispatch_validators_single_matching_runs_once(
     def _ok(relpath: str, content: Any) -> None:
         calls.append((relpath, content))
 
-    _install_stub_module(
-        monkeypatch, "tests_validators_stub_b", {"ok": _ok}
-    )
+    _install_stub_module(monkeypatch, "tests_validators_stub_b", {"ok": _ok})
     entries = [
         ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_b.ok"),
     ]
@@ -201,12 +195,8 @@ def test_dispatch_validators_multiple_matching_all_run(
         {"first": _first, "second": _second},
     )
     entries = [
-        ValidatorEntry(
-            pattern="*.yaml", validator="tests_validators_stub_c.first"
-        ),
-        ValidatorEntry(
-            pattern="*.yaml", validator="tests_validators_stub_c.second"
-        ),
+        ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_c.first"),
+        ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_c.second"),
     ]
     dispatch_validators(entries, "a.yaml", b"x")
     assert order == ["first", "second"]
@@ -220,9 +210,7 @@ def test_dispatch_validators_first_failure_aborts_later_validators(
 
     def _boom(relpath: str, content: Any) -> None:
         order.append("boom")
-        raise WorkspaceValidationError(
-            pattern="*.yaml", validator_path="ignored", reason="nope"
-        )
+        raise WorkspaceValidationError(pattern="*.yaml", validator_path="ignored", reason="nope")
 
     def _later(relpath: str, content: Any) -> None:
         order.append("later")
@@ -233,12 +221,8 @@ def test_dispatch_validators_first_failure_aborts_later_validators(
         {"boom": _boom, "later": _later},
     )
     entries = [
-        ValidatorEntry(
-            pattern="*.yaml", validator="tests_validators_stub_d.boom"
-        ),
-        ValidatorEntry(
-            pattern="*.yaml", validator="tests_validators_stub_d.later"
-        ),
+        ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_d.boom"),
+        ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_d.later"),
     ]
     with pytest.raises(WorkspaceValidationError) as excinfo:
         dispatch_validators(entries, "a.yaml", b"x")
@@ -250,9 +234,7 @@ def test_dispatch_validators_wve_from_validator_is_reraised_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """validator raising WVE -> same instance propagates, not re-wrapped."""
-    sentinel = WorkspaceValidationError(
-        pattern="kept", validator_path="kept", reason="kept"
-    )
+    sentinel = WorkspaceValidationError(pattern="kept", validator_path="kept", reason="kept")
 
     def _raise_wve(relpath: str, content: Any) -> None:
         raise sentinel
@@ -263,9 +245,7 @@ def test_dispatch_validators_wve_from_validator_is_reraised_unchanged(
         {"raise_wve": _raise_wve},
     )
     entries = [
-        ValidatorEntry(
-            pattern="*.yaml", validator="tests_validators_stub_e.raise_wve"
-        ),
+        ValidatorEntry(pattern="*.yaml", validator="tests_validators_stub_e.raise_wve"),
     ]
     with pytest.raises(WorkspaceValidationError) as excinfo:
         dispatch_validators(entries, "a.yaml", b"x")
@@ -312,9 +292,7 @@ def test_resolve_validator_caches_callable_object_identity(
     def _fn(relpath: str, content: Any) -> None:
         return None
 
-    module = _install_stub_module(
-        monkeypatch, "tests_validators_stub_g", {"fn": _fn}
-    )
+    module = _install_stub_module(monkeypatch, "tests_validators_stub_g", {"fn": _fn})
     first = _resolve_validator("tests_validators_stub_g.fn")
     # replace the module's attribute AFTER first resolve; a cached
     # callable must still return the original closure.
@@ -348,9 +326,7 @@ def test_resolve_validator_non_callable_raises_value_error(
 def test_resolve_validator_missing_module_propagates_import_error() -> None:
     """unknown module path -> ImportError propagates (config bug, fail loud)."""
     with pytest.raises(ImportError):
-        _resolve_validator(
-            "tests_validators_does_not_exist_ever.anything"
-        )
+        _resolve_validator("tests_validators_does_not_exist_ever.anything")
 
 
 def test_resolve_validator_missing_attr_propagates_attribute_error(
@@ -502,9 +478,7 @@ def test_dispatch_validators_single_segment_pattern_does_not_match_deep_path(
     def _validator(relpath: str, content: Any) -> None:
         calls.append((relpath, content))
 
-    _install_stub_module(
-        monkeypatch, "tests_validators_glob_a", {"fn": _validator}
-    )
+    _install_stub_module(monkeypatch, "tests_validators_glob_a", {"fn": _validator})
     entries = [
         ValidatorEntry(
             pattern="config/*.yaml",
@@ -524,9 +498,7 @@ def test_dispatch_validators_single_segment_pattern_matches_anchored_path(
     def _validator(relpath: str, content: Any) -> None:
         calls.append((relpath, content))
 
-    _install_stub_module(
-        monkeypatch, "tests_validators_glob_b", {"fn": _validator}
-    )
+    _install_stub_module(monkeypatch, "tests_validators_glob_b", {"fn": _validator})
     entries = [
         ValidatorEntry(
             pattern="config/*.yaml",
@@ -546,9 +518,7 @@ def test_dispatch_validators_recursive_glob_matches_any_depth(
     def _validator(relpath: str, content: Any) -> None:
         calls.append((relpath, content))
 
-    _install_stub_module(
-        monkeypatch, "tests_validators_glob_c", {"fn": _validator}
-    )
+    _install_stub_module(monkeypatch, "tests_validators_glob_c", {"fn": _validator})
     entries = [
         ValidatorEntry(
             pattern="**/*.yaml",

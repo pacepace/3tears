@@ -120,9 +120,7 @@ def _decode_envelope(value: bytes) -> _Envelope:
     holder = str(raw["holder"])
     date_expires = datetime.fromisoformat(str(raw["expires_at"]))
     date_acquired = datetime.fromisoformat(str(raw["acquired_at"]))
-    return _Envelope(
-        holder=holder, date_expires=date_expires, date_acquired=date_acquired
-    )
+    return _Envelope(holder=holder, date_expires=date_expires, date_acquired=date_acquired)
 
 
 class LeaseHandle:
@@ -318,9 +316,7 @@ class KVLease:
                 try:
                     self._bucket = await js.key_value(self._bucket_name)
                 except BucketNotFoundError:
-                    self._bucket = await js.create_key_value(
-                        bucket=self._bucket_name, history=1
-                    )
+                    self._bucket = await js.create_key_value(bucket=self._bucket_name, history=1)
                     log.info("KVLease created bucket %s", self._bucket_name)
         return self._bucket
 
@@ -367,22 +363,16 @@ class KVLease:
             now = datetime.now(UTC)
             remaining = (deadline - now).total_seconds()
             if max_wait_seconds == 0:
-                raise LeaseUnavailable(
-                    f"lease {key!r} held by another pod; fail-fast requested"
-                )
+                raise LeaseUnavailable(f"lease {key!r} held by another pod; fail-fast requested")
             if remaining <= 0:
                 timed_out = True
                 break
             await asyncio.sleep(min(1.0, remaining))
         if handle is None:
-            raise LeaseTimeout(
-                f"lease {key!r} not acquired within {max_wait_seconds}s"
-            )
+            raise LeaseTimeout(f"lease {key!r} not acquired within {max_wait_seconds}s")
         return handle
 
-    async def _try_once(
-        self, bucket: Any, key: str, ttl_seconds: int
-    ) -> LeaseHandle | None:
+    async def _try_once(self, bucket: Any, key: str, ttl_seconds: int) -> LeaseHandle | None:
         """single pass of create-or-reclaim-stale against the KV bucket.
 
         returns :class:`LeaseHandle` when lease is ours; returns ``None``
@@ -400,9 +390,7 @@ class KVLease:
         """
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=ttl_seconds)
-        payload = _encode_envelope(
-            holder=self._pod_id, date_expires=date_expires, date_acquired=now
-        )
+        payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
         result: LeaseHandle | None = None
         try:
             revision = await bucket.create(key, payload)
@@ -414,9 +402,7 @@ class KVLease:
                 ttl_seconds=ttl_seconds,
             )
         except KeyWrongLastSequenceError:
-            result = await self._maybe_reclaim_stale(
-                bucket, key, ttl_seconds, now, date_expires
-            )
+            result = await self._maybe_reclaim_stale(bucket, key, ttl_seconds, now, date_expires)
         return result
 
     async def _maybe_reclaim_stale(
@@ -453,9 +439,7 @@ class KVLease:
         if envelope.date_expires > now:
             # still held by a live holder
             return None
-        payload = _encode_envelope(
-            holder=self._pod_id, date_expires=date_expires, date_acquired=now
-        )
+        payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
         try:
             revision = await bucket.update(key, payload, last=entry.revision)
         except KeyWrongLastSequenceError:
@@ -470,9 +454,7 @@ class KVLease:
         )
         return result
 
-    async def _refresh(
-        self, handle: LeaseHandle, ttl_seconds: int | None
-    ) -> None:
+    async def _refresh(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
         """implementation of :meth:`LeaseHandle.refresh`.
 
         :param handle: handle requesting refresh
@@ -487,29 +469,20 @@ class KVLease:
         try:
             entry = await bucket.get(handle.key)
         except KeyNotFoundError as exc:
-            raise LeaseLost(
-                f"lease {handle.key!r} entry missing during refresh"
-            ) from exc
+            raise LeaseLost(f"lease {handle.key!r} entry missing during refresh") from exc
         envelope = _decode_envelope(entry.value)
         if envelope.holder != handle.holder:
             raise LeaseLost(
-                f"lease {handle.key!r} holder changed: "
-                f"expected {handle.holder!r}, found {envelope.holder!r}"
+                f"lease {handle.key!r} holder changed: expected {handle.holder!r}, found {envelope.holder!r}"
             )
         effective_ttl = ttl_seconds if ttl_seconds is not None else handle.ttl_seconds
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
-        payload = _encode_envelope(
-            holder=handle.holder, date_expires=date_expires, date_acquired=now
-        )
+        payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
         try:
-            new_revision = await bucket.update(
-                handle.key, payload, last=handle.revision
-            )
+            new_revision = await bucket.update(handle.key, payload, last=handle.revision)
         except KeyWrongLastSequenceError as exc:
-            raise LeaseLost(
-                f"lease {handle.key!r} revision advanced during refresh"
-            ) from exc
+            raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh") from exc
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
 

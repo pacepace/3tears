@@ -60,9 +60,9 @@ class TestSlackAdapterEnforcement:
                 for alias in node.names:
                     assert alias.name != "httpx", "slack module must not import httpx"
             if isinstance(node, ast.ImportFrom):
-                assert node.module is None or not node.module.startswith(
-                    "httpx"
-                ), "slack module must not import from httpx"
+                assert node.module is None or not node.module.startswith("httpx"), (
+                    "slack module must not import from httpx"
+                )
 
     def test_slack_adapter_uses_async_socket_mode_handler(self) -> None:
         """slack adapter must reference AsyncSocketModeHandler for socket mode."""
@@ -202,9 +202,7 @@ class TestSlackAdapterLifecycle:
 
     @patch("threetears.channels.slack.AsyncSocketModeHandler")
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_start_calls_start_async(
-        self, mock_app_cls: MagicMock, mock_handler_cls: MagicMock
-    ) -> None:
+    async def test_start_calls_start_async(self, mock_app_cls: MagicMock, mock_handler_cls: MagicMock) -> None:
         """start() calls handler.start_async()."""
         from threetears.channels.slack import SlackAdapter
 
@@ -222,9 +220,7 @@ class TestSlackAdapterLifecycle:
 
     @patch("threetears.channels.slack.AsyncSocketModeHandler")
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_stop_calls_close_async(
-        self, mock_app_cls: MagicMock, mock_handler_cls: MagicMock
-    ) -> None:
+    async def test_stop_calls_close_async(self, mock_app_cls: MagicMock, mock_handler_cls: MagicMock) -> None:
         """stop() calls handler.close_async()."""
         from threetears.channels.slack import SlackAdapter
 
@@ -291,9 +287,7 @@ class TestSlackAdapterBotFiltering:
         say.assert_not_awaited()
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_filters_event_with_bot_message_subtype(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_filters_event_with_bot_message_subtype(self, mock_app_cls: MagicMock) -> None:
         """events with subtype 'bot_message' are filtered out."""
         from threetears.channels.slack import SlackAdapter
 
@@ -364,9 +358,7 @@ class TestSlackAdapterInboundNormalization:
         assert msg.workspace_id == "T00001"
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_conversation_id_from_thread_ts(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_conversation_id_from_thread_ts(self, mock_app_cls: MagicMock) -> None:
         """conversation_id is set from thread_ts when present."""
         from threetears.channels.slack import SlackAdapter
 
@@ -398,9 +390,7 @@ class TestSlackAdapterInboundNormalization:
         assert msg.conversation_id == "1234567890.000001"
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_conversation_id_falls_back_to_ts(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_conversation_id_falls_back_to_ts(self, mock_app_cls: MagicMock) -> None:
         """conversation_id falls back to ts when thread_ts is absent."""
         from threetears.channels.slack import SlackAdapter
 
@@ -463,9 +453,7 @@ class TestSlackAdapterInboundNormalization:
         assert msg.reply_to_id == "1234567890.000001"
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_reply_to_id_none_without_thread_ts(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_reply_to_id_none_without_thread_ts(self, mock_app_cls: MagicMock) -> None:
         """reply_to_id is None when thread_ts is absent."""
         from threetears.channels.slack import SlackAdapter
 
@@ -574,9 +562,7 @@ class TestSlackAdapterInboundNormalization:
         assert msg.timestamp.tzinfo == UTC
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_metadata_contains_slack_specific_fields(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_metadata_contains_slack_specific_fields(self, mock_app_cls: MagicMock) -> None:
         """metadata captures Slack-specific fields not in standard ChannelMessage."""
         from threetears.channels.slack import SlackAdapter
 
@@ -620,9 +606,7 @@ class TestSlackAdapterThreading:
     """tests for threading behavior of SlackAdapter responses."""
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_threaded_reply_uses_existing_thread_ts(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_threaded_reply_uses_existing_thread_ts(self, mock_app_cls: MagicMock) -> None:
         """reply to threaded message uses thread_ts from event."""
         from threetears.channels.slack import SlackAdapter
 
@@ -647,14 +631,10 @@ class TestSlackAdapterThreading:
         }
         say = AsyncMock()
         await adapter._handle_message_event(event=event, say=say)
-        say.assert_awaited_once_with(
-            text="threaded reply", thread_ts="1234567890.000001"
-        )
+        say.assert_awaited_once_with(text="threaded reply", thread_ts="1234567890.000001")
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_channel_message_starts_new_thread(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_channel_message_starts_new_thread(self, mock_app_cls: MagicMock) -> None:
         """reply to top-level channel message starts new thread using event ts."""
         from threetears.channels.slack import SlackAdapter
 
@@ -679,14 +659,10 @@ class TestSlackAdapterThreading:
         }
         say = AsyncMock()
         await adapter._handle_message_event(event=event, say=say)
-        say.assert_awaited_once_with(
-            text="new thread reply", thread_ts="1234567890.123456"
-        )
+        say.assert_awaited_once_with(text="new thread reply", thread_ts="1234567890.123456")
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_dm_message_replies_without_thread(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_dm_message_replies_without_thread(self, mock_app_cls: MagicMock) -> None:
         """reply to DM message does not use thread_ts (replies in DM channel)."""
         from threetears.channels.slack import SlackAdapter
 
@@ -723,9 +699,7 @@ class TestSlackAdapterResponseRouting:
     """tests for outbound response delivery."""
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_router_called_with_correct_channel_message(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_router_called_with_correct_channel_message(self, mock_app_cls: MagicMock) -> None:
         """route_inbound receives correctly normalized ChannelMessage."""
         from threetears.channels.slack import SlackAdapter
 
@@ -761,9 +735,7 @@ class TestSlackAdapterResponseRouting:
         assert msg.workspace_id == "T00001"
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_no_response_from_router_skips_say(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_no_response_from_router_skips_say(self, mock_app_cls: MagicMock) -> None:
         """when router returns None, say() is not called."""
         from threetears.channels.slack import SlackAdapter
 
@@ -789,9 +761,7 @@ class TestSlackAdapterResponseRouting:
         say.assert_not_awaited()
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_response_with_attachments_uploads_files(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_response_with_attachments_uploads_files(self, mock_app_cls: MagicMock) -> None:
         """response attachments are uploaded via files_upload_v2."""
         from threetears.channels.slack import SlackAdapter
 
@@ -872,9 +842,7 @@ class TestSlackAdapterRichFormatting:
     """tests for rich formatting integration in _send_response."""
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_rich_formatting_sends_blocks(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_rich_formatting_sends_blocks(self, mock_app_cls: MagicMock) -> None:
         """when format_hints has format=rich, say() receives blocks kwarg."""
         from threetears.channels.slack import SlackAdapter
 
@@ -910,9 +878,7 @@ class TestSlackAdapterRichFormatting:
         assert len(call_kwargs["blocks"]) > 0
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_plain_formatting_sends_text_only(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_plain_formatting_sends_text_only(self, mock_app_cls: MagicMock) -> None:
         """when no format_hints, say() receives only text kwarg (no blocks)."""
         from threetears.channels.slack import SlackAdapter
 
@@ -944,9 +910,7 @@ class TestSlackAdapterRichFormatting:
         assert "blocks" not in call_kwargs
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_rich_formatting_includes_text_fallback(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_rich_formatting_includes_text_fallback(self, mock_app_cls: MagicMock) -> None:
         """when rich formatting, say() also receives plain text fallback."""
         from threetears.channels.slack import SlackAdapter
 
