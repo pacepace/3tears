@@ -515,7 +515,7 @@ class _ProxyAcquireCM:
             try:
                 await self._connection._abort_tx()
             except Exception as abort_exc:
-                log.warning(
+                _logger.warning(
                     "proxy connection close: dangling tx rollback failed: %s",
                     abort_exc,
                 )
@@ -829,7 +829,7 @@ class _ProxyTransaction:
                         f"{response.get('error_code', 'UNKNOWN')}: "
                         f"{response.get('error_message', 'no details')}",
                     )
-                log.warning(
+                _logger.warning(
                     "proxy tx.rollback reported failure: %s",
                     response.get("error_message"),
                 )
