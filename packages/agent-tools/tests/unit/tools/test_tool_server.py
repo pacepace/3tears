@@ -681,11 +681,14 @@ class TestToolServerProbe:
 
         await server._handle_probe(msg)
 
-        # probe handler only responds; it must not create a private ready-state
-        # attribute on the server. readiness is established by polling the
-        # registry's discovery subject instead (see wait_until_ready).
+        # probe handler only responds; it must not flip the serve()-caller
+        # ready signal. the _ready_event attribute itself is constructed at
+        # __init__ as the signal that serve() has finished subscribing -- that
+        # is a separate concern from probe dispatch. readiness from the
+        # caller's perspective is established by polling the registry's
+        # discovery subject (see wait_until_ready).
         msg.respond.assert_called_once()
-        assert not hasattr(server, "_ready_event")
+        assert not server._ready_event.is_set()
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_unblocks_when_discovery_reports_available(self) -> None:
