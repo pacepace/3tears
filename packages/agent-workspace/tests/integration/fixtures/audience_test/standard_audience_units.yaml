@@ -1,0 +1,46 @@
+audience_units:
+
+  - audience_unit: knowwho_all
+    facts_table: employment
+    where_filters:
+      - facts.source_name like '%knowwho%'
+
+  - audience_unit: donors
+    facts_table: contribution
+
+  - audience_unit: software_engineers
+    facts_table: employment
+    where_filters:
+      - (lower(facts.job_title) like '%software%'
+        OR lower(facts.job_title) like '%developer%'
+        OR lower(facts.job_title) like '%programmer%'
+        OR lower(facts.job_title) like '%data scientist%'
+        OR lower(facts.job_title) like '%data engineer%'
+        OR lower(facts.job_title) like '%machine learning%'
+        OR lower(facts.job_title) like '%ml engineer%'
+        OR lower(facts.job_title) like '%ai engineer%'
+        OR lower(facts.job_title) like '%devops%'
+        OR lower(facts.job_title) like '%site reliability%'
+        OR lower(facts.job_title) like '%cloud engineer%'
+        OR lower(facts.job_title) like '%platform engineer%'
+        OR lower(facts.job_title) like '%full stack%'
+        OR lower(facts.job_title) like '%frontend engineer%'
+        OR lower(facts.job_title) like '%backend engineer%'
+        OR lower(facts.job_title) like '%mobile developer%'
+        OR lower(facts.job_title) like '%systems engineer%'
+        OR lower(facts.job_title) like '%systems administrator%'
+        OR lower(facts.job_title) like '%database engineer%'
+        OR lower(facts.job_title) like '%database administrator%'
+        OR lower(facts.job_title) like '%cybersecurity%'
+        OR lower(facts.job_title) like '%security engineer%'
+        OR lower(facts.job_title) like '%qa engineer%'
+        OR lower(facts.job_title) like '%test engineer%'
+        OR lower(facts.job_title) like '%scrum master%'
+        OR lower(facts.job_title) like '%solutions architect%'
+        OR lower(facts.job_title) like '%cloud architect%'
+        OR lower(facts.job_title) like '%developer advocate%'
+        OR lower(facts.job_title) like '%engineering manager%'
+        OR lower(facts.job_title) like '%information technology%'
+        OR lower(facts.job_title) like 'it %'
+        )
+      - NOT lower(facts.job_title) like '%intern%'

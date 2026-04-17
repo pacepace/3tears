@@ -46,6 +46,7 @@ mypy_path = [
     "packages/core/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
+    "packages/agent-workspace/src",
     "packages/channels/src",
     "packages/models/src",
     "packages/observe/src",
@@ -58,6 +59,7 @@ files = [
     "packages/core/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
+    "packages/agent-workspace/src",
     "packages/channels/src",
     "packages/models/src",
     "packages/observe/src",
@@ -93,6 +95,8 @@ module = [
     "langchain_openrouter.*",
     "langchain_voyageai",
     "langchain_voyageai.*",
+    "jsonpath_ng",
+    "jsonpath_ng.*",
 ]
 ignore_missing_imports = true
 

@@ -264,6 +264,18 @@ class ToolServer:
         self._running = False
         self._shutdown_event = asyncio.Event()
 
+    @property
+    def pod_id(self) -> str:
+        """return the unique pod identifier this server was constructed with.
+
+        exposed as a public property so callers (agent runtime bootstrap)
+        can derive a UUID from it without reaching into ``_pod_id``.
+
+        :return: pod identifier string (UUID hex form)
+        :rtype: str
+        """
+        return self._pod_id
+
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
 
@@ -276,6 +288,39 @@ class ToolServer:
             "registered tool",
             extra={"extra_data": {"tool_key": key, "pod_id": self._pod_id}},
         )
+
+    def unregister(self, mcp_name: str) -> bool:
+        """remove tool registration by mcp_name, regardless of version.
+
+        supports atomic swap flows (hot-reload of workspace config,
+        per-agent plugin refresh) where a tool family is registered,
+        then replaced with a rebuilt instance bound to new dependencies.
+        matches on mcp_name prefix of the internal ``name@version`` key so
+        callers do not have to know the version. returns True when one or
+        more keys were removed; False when nothing matched so callers can
+        distinguish a no-op from a successful removal without silently
+        swallowing an invariant break.
+
+        :param mcp_name: namespaced tool name to remove
+        :ptype mcp_name: str
+        :return: True when one or more keys were removed
+        :rtype: bool
+        """
+        prefix = f"{mcp_name}@"
+        matched_keys = [key for key in self._tools if key.startswith(prefix)]
+        for key in matched_keys:
+            del self._tools[key]
+        removed = len(matched_keys) > 0
+        if removed:
+            log.info(
+                "unregistered tool",
+                extra={"extra_data": {
+                    "mcp_name": mcp_name,
+                    "removed_keys": matched_keys,
+                    "pod_id": self._pod_id,
+                }},
+            )
+        return removed
 
     @traced()
     async def serve(self) -> None:
