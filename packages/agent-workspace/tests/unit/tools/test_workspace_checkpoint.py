@@ -94,6 +94,9 @@ class _FakeConnection:
     executions: list[tuple[str, tuple[Any, ...], bool]] = field(default_factory=list)
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
+    # per-path running max version so _next_journal_version returns a
+    # monotonically increasing value inside a single test invocation.
+    _journal_max_by_path: dict[str, int] = field(default_factory=dict)
 
     def transaction(self) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
@@ -102,7 +105,26 @@ class _FakeConnection:
 
     async def execute(self, query: str, *args: Any) -> str:
         self.executions.append((query, args, self.transaction_open))
+        if "INSERT INTO workspace_file_versions" in query:
+            rel = args[2]
+            inserted_version = int(args[3])
+            prior = self._journal_max_by_path.get(rel, 0)
+            if inserted_version > prior:
+                self._journal_max_by_path[rel] = inserted_version
         return "INSERT 0 1"
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        """serve the ``_next_journal_version`` lookup from tracked state.
+
+        the helper only issues a ``COALESCE(MAX(version), 0)`` select
+        per-path; tests that exercise checkpoint don't issue any other
+        fetchrow shape, so returning the per-path max (or 0) covers
+        every call site.
+        """
+        if "COALESCE(MAX(version)" in query:
+            rel = args[1]
+            return {"max_version": self._journal_max_by_path.get(rel, 0)}
+        return None
 
 
 @dataclass

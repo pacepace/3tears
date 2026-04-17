@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import Any
-from uuid import uuid7
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from uuid import UUID, uuid7
 
 from nats.aio.client import Client as NatsClient
 from nats.aio.msg import Msg as NatsMsg
 from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import TearsTool
+from threetears.agent.tools.call_scope import (
+    ToolCallScope,
+    enter_call_scope,
+)
 from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
@@ -23,6 +27,9 @@ from threetears.agent.tools.config import (
     get_ready_timeout as _get_ready_timeout,
 )
 from threetears.observe import get_logger, traced
+
+if TYPE_CHECKING:
+    from threetears.agent.tools.context import ToolContextManager
 
 log = get_logger(__name__)
 
@@ -91,6 +98,14 @@ class RegistrationManifest(BaseModel):
 class CallRequest(BaseModel):
     """incoming tool call request from NATS.
 
+    optional ``conversation_id`` and ``user_id`` fields carry per-call
+    identity metadata so :mod:`threetears.agent.tools.call_scope` can
+    hand a :class:`ToolContextManager` to tools that need it
+    (workspace tools, pin-aware builtins). the fields are optional
+    because pure stateless tools (math, web search) do not require
+    conversation scope and the tool server degrades gracefully when
+    they are omitted.
+
     :param tool_name: namespaced name of tool to invoke
     :ptype tool_name: str
     :param tool_version: version of tool to invoke
@@ -99,12 +114,20 @@ class CallRequest(BaseModel):
     :ptype arguments: dict[str, Any]
     :param correlation_id: request correlation identifier
     :ptype correlation_id: str
+    :param conversation_id: conversation identifier for per-call context
+        resolution; string form of a UUID
+    :ptype conversation_id: str | None
+    :param user_id: invoking user identifier for per-call context
+        resolution; string form of a UUID
+    :ptype user_id: str | None
     """
 
     tool_name: str
     tool_version: str
     arguments: dict[str, Any]
     correlation_id: str
+    conversation_id: str | None = None
+    user_id: str | None = None
 
 
 class CallResponse(BaseModel):
@@ -239,6 +262,9 @@ class ToolServer:
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
+        context_factory: (
+            "Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None"
+        ) = None,
     ) -> None:
         """initialize tool server.
 
@@ -252,12 +278,24 @@ class ToolServer:
         :ptype heartbeat_interval: float
         :param bootstrap_token: authentication token for registry verification
         :ptype bootstrap_token: str | None
+        :param context_factory: optional async factory taking
+            ``(conversation_id, user_id)`` and returning a
+            :class:`ToolContextManager` scoped to that conversation.
+            when supplied, the server constructs a
+            :class:`ToolCallScope` per incoming call and installs it
+            via :func:`enter_call_scope` so conversation-aware tools
+            (workspace_*, pin-backed builtins) can resolve their
+            context through :func:`tool_context_provider`. when
+            omitted, tools that require a context crash with a
+            :class:`RuntimeError` at first use, same as today
+        :ptype context_factory: Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None
         """
         self._nats_url = nats_url
         self._namespace = namespace
         self._pod_id = pod_id or str(uuid7())
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
+        self._context_factory = context_factory
         self._tools: dict[str, TearsTool] = {}
         self._nc: NatsClient | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -545,7 +583,9 @@ class ToolServer:
             return
 
         try:
-            tool_result = await tool.run(**request.arguments)
+            scope = await self._build_call_scope(request)
+            async with enter_call_scope(scope):
+                tool_result = await tool.run(**request.arguments)
             response = CallResponse(
                 success=tool_result.success,
                 content=tool_result.content,
@@ -570,6 +610,64 @@ class ToolServer:
             )
 
         await msg.respond(response.model_dump_json().encode("utf-8"))
+
+    async def _build_call_scope(
+        self, request: CallRequest,
+    ) -> ToolCallScope:
+        """construct per-call scope from envelope identifiers.
+
+        converts the string identifiers on the wire back to UUIDs at
+        the border, resolves a :class:`ToolContextManager` by calling
+        the server's ``context_factory`` when both ``conversation_id``
+        and ``user_id`` are present, and hands the resulting scope to
+        :func:`enter_call_scope`. callers that do not need the context
+        (stateless tools) can safely omit the identifiers: the scope
+        simply carries ``context_manager=None`` and any tool that
+        requires it raises at first use.
+
+        factory exceptions propagate to :meth:`_handle_call`'s except
+        block so the call is surfaced as a failed tool result rather
+        than a silent no-context handoff.
+
+        :param request: parsed call request
+        :ptype request: CallRequest
+        :return: populated :class:`ToolCallScope`
+        :rtype: ToolCallScope
+        """
+        conversation_id: UUID | None = None
+        user_id: UUID | None = None
+        correlation_id: UUID | None = None
+        if request.conversation_id:
+            conversation_id = UUID(request.conversation_id)
+        if request.user_id:
+            user_id = UUID(request.user_id)
+        if request.correlation_id:
+            try:
+                correlation_id = UUID(request.correlation_id)
+            except ValueError:
+                correlation_id = None
+        context_manager: ToolContextManager | None = None
+        log.info(
+            "build_call_scope diag: factory=%s conv=%s user=%s corr=%s",
+            self._context_factory is not None,
+            conversation_id,
+            user_id,
+            correlation_id,
+        )
+        if (
+            self._context_factory is not None
+            and conversation_id is not None
+            and user_id is not None
+        ):
+            context_manager = await self._context_factory(
+                conversation_id, user_id,
+            )
+        return ToolCallScope(
+            context_manager=context_manager,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            correlation_id=correlation_id,
+        )
 
     async def _heartbeat_loop(self) -> None:
         """publish periodic heartbeat and re-registration until shutdown.

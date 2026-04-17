@@ -6,6 +6,20 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
+
+
+class BindConfig(BaseModel):
+    """
+    per-workspace bind-behavior configuration.
+
+    :param on_conflict: policy governing L3 vs disk authority inside
+        the bind window; see :class:`BindConflictPolicy` for semantics
+    :ptype on_conflict: BindConflictPolicy
+    """
+
+    on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS
+
 
 class ValidatorEntry(BaseModel):
     """
@@ -47,12 +61,15 @@ class WorkspaceConfig(BaseModel):
     :ptype allow: AllowConfig
     :param validators: per-pattern validator hooks invoked on every write
     :ptype validators: list[ValidatorEntry]
+    :param bind: bind-behavior configuration (conflict policy, etc.)
+    :ptype bind: BindConfig
     """
 
     templates_dir: Path | None = None
     bind_root: Path | None = None
     allow: AllowConfig = Field(default_factory=AllowConfig)
     validators: list[ValidatorEntry] = Field(default_factory=list)
+    bind: BindConfig = Field(default_factory=BindConfig)
 
     @model_validator(mode="after")
     def _resolve_paths(self) -> WorkspaceConfig:

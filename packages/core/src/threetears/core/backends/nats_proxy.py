@@ -8,7 +8,7 @@ this transparently without knowing queries are proxied.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid7
@@ -44,22 +44,101 @@ def _serialize_param(value: Any) -> Any:
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
     """deserialize row values returned from L3 broker proxy.
 
-    detects hex-encoded byte strings (``\\x`` prefix) produced by
-    broker proxy ``_serialize_row`` and converts them back to bytes.
-    all other values passed through unchanged.
+    three conversions run per row:
+
+    - hex-encoded byte strings (``"\\xHEX"`` prefix) are restored to
+      :class:`bytes`; the broker's :func:`_serialize_row` produces
+      this shape for ``BYTEA`` columns
+    - ``date_*`` columns arriving as ISO-8601 strings are rehydrated
+      to timezone-aware :class:`datetime` instances. asyncpg returns
+      ``TIMESTAMP`` values as native datetimes on direct connections,
+      but when the broker round-trips them through JSON they collapse
+      to strings. agent-side entity classes call ``.isoformat()`` on
+      ``date_*`` fields expecting datetime objects; the normalization
+      keeps their code path unchanged regardless of the backing pool
+    - every other value passes through unchanged
+
+    the date rehydration defers on parse failure (leaves value as a
+    string) so columns happening to start with ``date_`` but holding
+    non-ISO content do not corrupt on the wire.
 
     :param row: row dictionary from broker response
     :ptype row: dict[str, Any]
-    :return: row with bytes values restored
+    :return: row with bytes + datetime values restored
     :rtype: dict[str, Any]
     """
     result: dict[str, Any] = {}
     for key, value in row.items():
         if isinstance(value, str) and value.startswith("\\x"):
             result[key] = bytes.fromhex(value[2:])
+        elif (
+            isinstance(value, str)
+            and key.startswith("date_")
+            and value
+        ):
+            result[key] = _parse_iso_datetime(value)
         else:
             result[key] = value
     return result
+
+
+def _parse_iso_datetime(raw: str) -> Any:
+    """parse an ISO-8601 string to a timezone-aware datetime.
+
+    :func:`datetime.fromisoformat` accepts both timezone-aware
+    (``"...+00:00"``, ``"...Z"``) and naive (``"..."``) forms. naive
+    inputs are attached to UTC defensively so callers that expect
+    ``.tzinfo is not None`` do not blow up; aware inputs pass through
+    with their original offset. on parse failure the raw string is
+    returned so the caller sees the payload they shipped rather than
+    a silent :class:`None`.
+
+    :param raw: candidate ISO-8601 string
+    :ptype raw: str
+    :return: parsed datetime or the original string on failure
+    :rtype: Any
+    """
+    candidate = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _format_execute_tag(operation: str, row_count: Any) -> str:
+    """build an asyncpg-shape status tag for a given operation + row count.
+
+    asyncpg conventions:
+
+    - ``INSERT``: ``"INSERT {oid} {count}"`` with ``oid`` always 0 on
+      modern postgres; we emit ``"INSERT 0 {count}"`` so splits land
+      the count at index -1
+    - ``UPDATE`` / ``DELETE`` / ``UPSERT``: ``"{VERB} {count}"``
+    - ``SELECT`` (rare for execute): ``"SELECT {count}"``
+
+    ``row_count`` may be ``None`` when the broker did not populate it
+    (DDL, transactional no-ops). that's treated as zero so the tag
+    remains parseable by every caller.
+
+    :param operation: detected op verb (select/insert/update/delete/upsert)
+    :ptype operation: str
+    :param row_count: affected row count from the broker response
+    :ptype row_count: Any
+    :return: asyncpg-compatible status tag
+    :rtype: str
+    """
+    count = 0 if row_count is None else int(row_count)
+    verb = operation.upper()
+    if verb == "INSERT":
+        return f"INSERT 0 {count}"
+    if verb == "UPSERT":
+        # postgres never emits "UPSERT"; asyncpg reports INSERT for
+        # ON CONFLICT DO UPDATE. preserve that convention.
+        return f"INSERT 0 {count}"
+    return f"{verb} {count}"
 
 
 def _detect_operation(query: str) -> str:
@@ -185,8 +264,20 @@ class NatsProxyL3Backend:
         query: str,
         *params: Any,
         namespace: str | None = None,
-    ) -> int:
-        """execute INSERT/UPDATE/DELETE query and return rows affected.
+    ) -> str:
+        """execute INSERT/UPDATE/DELETE and return an asyncpg-shape tag.
+
+        asyncpg's :meth:`Connection.execute` returns a status string
+        of the shape ``"INSERT 0 1"`` / ``"UPDATE 3"`` /
+        ``"DELETE 2"``. collection implementations in agent-workspace,
+        agent-tools, and agent-memory all parse the final integer via
+        ``int(result.split()[-1])``. the previous proxy implementation
+        returned a bare ``int``, which silently crashed every one of
+        those callers with ``'int' has no attribute 'split'`` the
+        moment a real workspace_create / context-item write landed in
+        production. the fix aligns the return shape with asyncpg so
+        collections behave identically whether the pool is a real
+        asyncpg pool or this proxy.
 
         :param query: parameterized SQL query
         :ptype query: str
@@ -194,13 +285,13 @@ class NatsProxyL3Backend:
         :ptype params: Any
         :param namespace: target namespace
         :ptype namespace: str | None
-        :return: number of rows affected
-        :rtype: int
+        :return: asyncpg-style status tag (e.g. ``"UPDATE 3"``)
+        :rtype: str
         :raises DataLayerUnavailableError: if broker returns error
         """
         operation = _detect_operation(query)
         response = await self._send_query(query, list(params), operation, namespace)
-        return response.get("row_count", 0) or 0
+        return _format_execute_tag(operation, response.get("row_count"))
 
     async def execute_batch(
         self,
@@ -317,3 +408,430 @@ class NatsProxyL3Backend:
             ) from exc
 
         return result
+
+    def acquire(self) -> "_ProxyAcquireCM":
+        """return an asyncpg-Pool-style ``acquire()`` context manager.
+
+        emitted to make the proxy transparently usable by code that
+        expects an asyncpg :class:`Pool`. the returned context manager
+        yields a :class:`_ProxyConnection` on ``__aenter__`` and
+        rolls-back-and-releases any open transaction on
+        ``__aexit__``. outside a transaction the connection is a thin
+        façade over the backend's existing ``execute`` / ``fetch`` /
+        ``fetchrow`` round-trips (each call one request/response);
+        inside a transaction every op is routed through the broker-
+        minted ``tx_id`` so reads see prior writes within the same
+        transaction.
+
+        typical usage mirrors asyncpg::
+
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(SQL1, ...)
+                    row = await conn.fetchrow(SQL2, ...)
+                    await conn.execute(SQL3, ...)
+
+        :return: async context manager yielding a proxy connection
+        :rtype: _ProxyAcquireCM
+        """
+        return _ProxyAcquireCM(self)
+
+
+# ---------------------------------------------------------------------------
+# asyncpg-like acquire / transaction shim
+# ---------------------------------------------------------------------------
+#
+# the workspace-tool family was written against :class:`asyncpg.Pool`
+# semantics (``async with pool.acquire() as conn: async with
+# conn.transaction():``) with read-modify-write patterns that cannot
+# be expressed through ``execute_batch``. we don't want to move every
+# tool's transactional logic to the hub side, so the proxy keeps
+# asyncpg's shape and routes the tx lifecycle through broker-side
+# stateful sessions on ``l3.tx.*`` subjects. the broker pins a real
+# asyncpg connection for the duration of the tx window, so the tools
+# keep working unchanged while all traffic still flows through NATS.
+
+
+class _ProxyAcquireCM:
+    """async context manager returned by :meth:`NatsProxyL3Backend.acquire`.
+
+    symmetric with :class:`asyncpg.pool.PoolAcquireContext`. yields a
+    :class:`_ProxyConnection` on enter and, on exit, rolls back any
+    transaction the caller left open (defensive: well-behaved callers
+    exit the transaction explicitly, but an exception inside the body
+    or a forgotten ``commit`` would otherwise leak a pool slot on the
+    broker).
+
+    :param backend: backend instance to route NATS traffic through
+    :ptype backend: NatsProxyL3Backend
+    """
+
+    def __init__(self, backend: "NatsProxyL3Backend") -> None:
+        """capture the backend for lazy connection construction.
+
+        :param backend: backend instance
+        :ptype backend: NatsProxyL3Backend
+        :return: None
+        :rtype: None
+        """
+        self._backend = backend
+        self._connection: _ProxyConnection | None = None
+
+    async def __aenter__(self) -> "_ProxyConnection":
+        """return a fresh proxy connection.
+
+        :return: proxy connection
+        :rtype: _ProxyConnection
+        """
+        self._connection = _ProxyConnection(self._backend)
+        return self._connection
+
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
+    ) -> None:
+        """force-rollback any dangling transaction left by the caller.
+
+        exists purely as a safety net: well-behaved callers exit their
+        ``async with conn.transaction():`` before this hook fires, at
+        which point :attr:`_ProxyConnection.tx_id` is None and the
+        method is a no-op. if the caller forgot to close the tx the
+        broker's sweeper would eventually roll it back anyway, but
+        calling rollback here returns the pool slot immediately.
+
+        :param exc_type: exception type (unused)
+        :ptype exc_type: Any
+        :param exc_val: exception value (unused)
+        :ptype exc_val: Any
+        :param exc_tb: exception traceback (unused)
+        :ptype exc_tb: Any
+        :return: None
+        :rtype: None
+        """
+        del exc_type, exc_val, exc_tb
+        if self._connection is not None and self._connection.tx_id is not None:
+            try:
+                await self._connection._abort_tx()
+            except Exception as abort_exc:
+                log.warning(
+                    "proxy connection close: dangling tx rollback failed: %s",
+                    abort_exc,
+                )
+
+
+class _ProxyConnection:
+    """asyncpg-Connection-shaped proxy over the NATS L3 backend.
+
+    outside a transaction, every call round-trips to ``l3.query``
+    exactly as the backend's top-level ``execute`` / ``fetch`` /
+    ``fetchrow`` do today. inside a transaction (caller has entered
+    :meth:`transaction`), ops route through the session's ``tx_id``
+    via the ``l3.tx.*`` subjects so the broker can honor
+    read-modify-write semantics on a single pinned asyncpg connection.
+
+    :param backend: backend instance for NATS routing
+    :ptype backend: NatsProxyL3Backend
+    """
+
+    def __init__(self, backend: "NatsProxyL3Backend") -> None:
+        """capture the backend and initialize tx state.
+
+        :param backend: backend instance
+        :ptype backend: NatsProxyL3Backend
+        :return: None
+        :rtype: None
+        """
+        self._backend = backend
+        # set to the broker-minted tx_id while a transaction is open;
+        # reset to None on commit or rollback.
+        self.tx_id: UUID | None = None
+
+    def transaction(self) -> "_ProxyTransaction":
+        """return a ``conn.transaction()``-shaped context manager.
+
+        mirrors :meth:`asyncpg.Connection.transaction`. nested calls
+        are rejected at ``__aenter__`` so callers who unintentionally
+        open two transactions on one connection fail loudly instead
+        of silently sharing tx state.
+
+        :return: transaction context manager
+        :rtype: _ProxyTransaction
+        """
+        return _ProxyTransaction(self, self._backend)
+
+    async def execute(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+    ) -> str:
+        """execute DML; route through tx_id when inside a transaction.
+
+        matches :meth:`asyncpg.Connection.execute` and
+        :meth:`NatsProxyL3Backend.execute` by returning the asyncpg-
+        shape status tag (``"UPDATE 3"`` / ``"INSERT 0 1"`` etc.).
+        collection implementations parse this via
+        ``int(result.split()[-1])`` and would crash on a bare int
+        return.
+
+        :param query: parameterized SQL
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Any
+        :param namespace: override namespace for outside-tx calls
+            (ignored inside a tx since the session is bound at begin)
+        :ptype namespace: str | None
+        :return: asyncpg-shape status tag
+        :rtype: str
+        :raises DataLayerUnavailableError: on broker error
+        """
+        if self.tx_id is None:
+            return await self._backend.execute(
+                query, *params, namespace=namespace,
+            )
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "tx_id": str(self.tx_id),
+            "query": query,
+            "params": [_serialize_param(p) for p in params],
+        }
+        subject = f"{self._backend._ns}.l3.tx.execute"
+        response = await self._backend._nats_request(subject, payload)
+        if not response.get("success", False):
+            raise DataLayerUnavailableError(
+                f"tx.execute failed: {response.get('error_code', 'UNKNOWN')}: "
+                f"{response.get('error_message', 'no details')}",
+            )
+        return _format_execute_tag(
+            _detect_operation(query), response.get("row_count"),
+        )
+
+    async def fetchrow(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+    ) -> dict[str, Any] | None:
+        """single-row SELECT; routed through tx_id when inside a tx.
+
+        :param query: parameterized SELECT
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Any
+        :param namespace: override namespace for outside-tx calls
+        :ptype namespace: str | None
+        :return: first row dict or None
+        :rtype: dict[str, Any] | None
+        """
+        if self.tx_id is None:
+            outside_row = await self._backend.fetchrow(
+                query, *params, namespace=namespace,
+            )
+            return outside_row
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "tx_id": str(self.tx_id),
+            "query": query,
+            "params": [_serialize_param(p) for p in params],
+        }
+        subject = f"{self._backend._ns}.l3.tx.fetchrow"
+        response = await self._backend._nats_request(subject, payload)
+        if not response.get("success", False):
+            raise DataLayerUnavailableError(
+                f"tx.fetchrow failed: {response.get('error_code', 'UNKNOWN')}: "
+                f"{response.get('error_message', 'no details')}",
+            )
+        row = response.get("row")
+        if row is None:
+            return None
+        return _deserialize_row(row)
+
+    async def fetch(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """multi-row SELECT; routed through tx_id when inside a tx.
+
+        :param query: parameterized SELECT
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: Any
+        :param namespace: override namespace for outside-tx calls
+        :ptype namespace: str | None
+        :return: row dicts
+        :rtype: list[dict[str, Any]]
+        """
+        if self.tx_id is None:
+            outside_rows = await self._backend.fetch(
+                query, *params, namespace=namespace,
+            )
+            return outside_rows
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "tx_id": str(self.tx_id),
+            "query": query,
+            "params": [_serialize_param(p) for p in params],
+        }
+        subject = f"{self._backend._ns}.l3.tx.fetch"
+        response = await self._backend._nats_request(subject, payload)
+        if not response.get("success", False):
+            raise DataLayerUnavailableError(
+                f"tx.fetch failed: {response.get('error_code', 'UNKNOWN')}: "
+                f"{response.get('error_message', 'no details')}",
+            )
+        raw_rows: list[dict[str, Any]] = response.get("rows", [])
+        return [_deserialize_row(r) for r in raw_rows]
+
+    async def _abort_tx(self) -> None:
+        """send ``tx.rollback`` and clear the local tx_id.
+
+        invoked by :class:`_ProxyTransaction.__aexit__` on an exception
+        path and by :class:`_ProxyAcquireCM.__aexit__` as a safety net
+        when a caller forgets to end the transaction. idempotent on
+        double-call so the two exit hooks can both fire without
+        hitting the broker twice.
+
+        :return: None
+        :rtype: None
+        """
+        tx_id = self.tx_id
+        if tx_id is None:
+            return
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "tx_id": str(tx_id),
+        }
+        subject = f"{self._backend._ns}.l3.tx.rollback"
+        try:
+            await self._backend._nats_request(subject, payload)
+        finally:
+            # clear the tx_id even on network failure so subsequent
+            # ops on this connection route through the outside-tx
+            # path instead of trying to speak to a dead session.
+            self.tx_id = None
+
+
+class _ProxyTransaction:
+    """asyncpg-Transaction-shaped context manager.
+
+    on ``__aenter__`` requests ``l3.tx.begin`` and pins the returned
+    ``tx_id`` on the connection. on clean ``__aexit__`` sends
+    ``l3.tx.commit``; on exception sends ``l3.tx.rollback``. nested
+    transactions raise because the broker does not implement
+    savepoints yet and tools should not pretend they do.
+
+    :param connection: owning proxy connection
+    :ptype connection: _ProxyConnection
+    :param backend: backend instance for NATS routing
+    :ptype backend: NatsProxyL3Backend
+    """
+
+    def __init__(
+        self,
+        connection: "_ProxyConnection",
+        backend: "NatsProxyL3Backend",
+    ) -> None:
+        """capture the owning connection and backend.
+
+        :param connection: owning connection
+        :ptype connection: _ProxyConnection
+        :param backend: backend instance
+        :ptype backend: NatsProxyL3Backend
+        :return: None
+        :rtype: None
+        """
+        self._connection = connection
+        self._backend = backend
+
+    async def __aenter__(self) -> "_ProxyTransaction":
+        """send ``l3.tx.begin`` and pin the returned tx_id on the connection.
+
+        :return: self
+        :rtype: _ProxyTransaction
+        :raises DataLayerUnavailableError: on broker error
+        :raises RuntimeError: when nested on an already-open tx
+        """
+        if self._connection.tx_id is not None:
+            raise RuntimeError(
+                "NatsProxyL3Backend does not support nested transactions; "
+                "commit or rollback the outer tx before starting another",
+            )
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "namespace": self._backend._default_namespace,
+            "statement_timeout_ms": self._backend._timeout_ms,
+        }
+        subject = f"{self._backend._ns}.l3.tx.begin"
+        response = await self._backend._nats_request(subject, payload)
+        if not response.get("success", False):
+            raise DataLayerUnavailableError(
+                f"tx.begin failed: {response.get('error_code', 'UNKNOWN')}: "
+                f"{response.get('error_message', 'no details')}",
+            )
+        raw_tx_id = response.get("tx_id")
+        if not isinstance(raw_tx_id, str):
+            raise DataLayerUnavailableError(
+                "tx.begin response missing tx_id",
+            )
+        self._connection.tx_id = UUID(raw_tx_id)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
+    ) -> None:
+        """commit on clean exit, rollback on exception.
+
+        always clears :attr:`_ProxyConnection.tx_id` so subsequent
+        ops on the same connection fall back to the outside-tx path.
+
+        :param exc_type: exception type or None
+        :ptype exc_type: Any
+        :param exc_val: exception value or None
+        :ptype exc_val: Any
+        :param exc_tb: exception traceback or None
+        :ptype exc_tb: Any
+        :return: None
+        :rtype: None
+        :raises DataLayerUnavailableError: when commit/rollback fails
+        """
+        tx_id = self._connection.tx_id
+        if tx_id is None:
+            return
+        payload: dict[str, Any] = {
+            "correlation_id": str(uuid7()),
+            "agent_id": self._backend._agent_id,
+            "tx_id": str(tx_id),
+        }
+        action = "rollback" if exc_type is not None else "commit"
+        subject = f"{self._backend._ns}.l3.tx.{action}"
+        try:
+            response = await self._backend._nats_request(subject, payload)
+            if not response.get("success", False):
+                # swallow the failure on the rollback path (we already
+                # have an exception in flight) but surface it on the
+                # commit path so the caller learns the DB did not
+                # persist their work.
+                if action == "commit":
+                    raise DataLayerUnavailableError(
+                        f"tx.commit failed: "
+                        f"{response.get('error_code', 'UNKNOWN')}: "
+                        f"{response.get('error_message', 'no details')}",
+                    )
+                log.warning(
+                    "proxy tx.rollback reported failure: %s",
+                    response.get("error_message"),
+                )
+        finally:
+            self._connection.tx_id = None

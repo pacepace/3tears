@@ -279,9 +279,11 @@ class TestExecute:
         )
         proxy = _make_proxy(mock_nc)
 
-        count = await proxy.execute("UPDATE foo SET bar = $1", "baz")
+        tag = await proxy.execute("UPDATE foo SET bar = $1", "baz")
 
-        assert count == 3
+        # asyncpg-shape tag; collections parse via int(tag.split()[-1]).
+        assert tag == "UPDATE 3"
+        assert int(tag.split()[-1]) == 3
 
     @pytest.mark.asyncio
     async def test_execute_returns_zero_for_null_row_count(self) -> None:
@@ -296,9 +298,11 @@ class TestExecute:
         )
         proxy = _make_proxy(mock_nc)
 
-        count = await proxy.execute("DELETE FROM foo WHERE id = $1", "x")
+        tag = await proxy.execute("DELETE FROM foo WHERE id = $1", "x")
 
-        assert count == 0
+        # null row_count from the broker collapses to zero on the wire.
+        assert tag == "DELETE 0"
+        assert int(tag.split()[-1]) == 0
 
     @pytest.mark.asyncio
     async def test_execute_detects_insert_operation(self) -> None:
@@ -637,3 +641,315 @@ class TestFetchDeserializesBytes:
         assert row is not None
         assert row["data"] == blob
         assert row["id"] == "r1"
+
+
+# ------------------------------------------------------------------
+# acquire() + transaction() shim
+# ------------------------------------------------------------------
+
+
+class _ScriptedReplyPlan:
+    """drive mock ``nc.request`` with a scripted list of responses.
+
+    each call pops the next plan entry, checks the subject matches,
+    optionally records the payload for later assertion, and returns the
+    pre-built reply. lets tests assert both "the right subject was
+    called in the right order" and "the right payload was shipped"
+    without hand-rolling stateful mocks per test.
+    """
+
+    def __init__(self, entries: list[tuple[str, dict]]) -> None:
+        """capture ``(subject, response_dict)`` pairs in order.
+
+        :param entries: list of ``(expected_subject, response_dict)``
+        :ptype entries: list[tuple[str, dict]]
+        :return: None
+        :rtype: None
+        """
+        self._entries = list(entries)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def __call__(self, subject: str, payload: bytes, timeout: float = 0):
+        """mock coroutine for ``nc.request``.
+
+        :param subject: subject argument passed by the proxy
+        :ptype subject: str
+        :param payload: raw bytes payload
+        :ptype payload: bytes
+        :param timeout: ignored
+        :ptype timeout: float
+        :return: pre-built reply
+        :rtype: MagicMock
+        :raises AssertionError: when a subject is called out of order
+        """
+        del timeout
+        assert self._entries, f"no reply scripted for {subject}"
+        expected_subject, response = self._entries.pop(0)
+        assert subject == expected_subject, (
+            f"expected {expected_subject!r}, got {subject!r}"
+        )
+        self.calls.append((subject, json.loads(payload.decode("utf-8"))))
+        return _make_reply(response)
+
+
+@pytest.mark.asyncio
+async def test_acquire_outside_tx_routes_to_l3_query() -> None:
+    """a proxy connection outside a transaction uses l3.query/l3.batch path."""
+    plan = _ScriptedReplyPlan([
+        ("test.l3.query", {"success": True, "rows": [{"n": 1}]}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        rows = await conn.fetch("SELECT 1 AS n")
+
+    assert rows == [{"n": 1}]
+    assert plan.calls[0][0] == "test.l3.query"
+
+
+@pytest.mark.asyncio
+async def test_transaction_happy_path_commits() -> None:
+    """entering + clean-exiting a transaction calls begin + commit."""
+    tx_id = "019d9a00-0000-7000-8000-000000000000"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        ("test.l3.tx.execute", {"success": True, "row_count": 1}),
+        ("test.l3.tx.commit", {"success": True}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        async with conn.transaction():
+            tag = await conn.execute(
+                "INSERT INTO t(x) VALUES ($1)", 42,
+            )
+            # inside-tx execute returns the same asyncpg-shape tag as
+            # outside-tx; collections that split on whitespace and
+            # parse the trailing integer work unchanged.
+            assert tag == "INSERT 0 1"
+            assert int(tag.split()[-1]) == 1
+
+    subjects = [c[0] for c in plan.calls]
+    assert subjects == [
+        "test.l3.tx.begin",
+        "test.l3.tx.execute",
+        "test.l3.tx.commit",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transaction_exception_rolls_back() -> None:
+    """an exception inside the transaction body sends rollback, not commit."""
+    tx_id = "019d9a00-0000-7000-8000-000000000001"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        ("test.l3.tx.rollback", {"success": True}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    class _Boom(RuntimeError):
+        pass
+
+    with pytest.raises(_Boom):
+        async with proxy.acquire() as conn:
+            async with conn.transaction():
+                raise _Boom("body crashed")
+
+    subjects = [c[0] for c in plan.calls]
+    assert subjects == ["test.l3.tx.begin", "test.l3.tx.rollback"]
+
+
+@pytest.mark.asyncio
+async def test_transaction_fetchrow_routes_through_tx_id() -> None:
+    """fetchrow inside a tx goes to tx.fetchrow, carries tx_id."""
+    tx_id = "019d9a00-0000-7000-8000-000000000002"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        ("test.l3.tx.fetchrow", {"success": True, "row": {"v": 7}}),
+        ("test.l3.tx.commit", {"success": True}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow("SELECT MAX(v) AS v FROM t")
+
+    assert row == {"v": 7}
+    fetch_call = plan.calls[1]
+    assert fetch_call[1]["tx_id"] == tx_id
+
+
+@pytest.mark.asyncio
+async def test_transaction_begin_failure_raises() -> None:
+    """a broker error on tx.begin surfaces as DataLayerUnavailableError."""
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {
+            "success": False,
+            "error_code": "NAMESPACE_ACCESS_DENIED",
+            "error_message": "no write grant",
+        }),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    with pytest.raises(DataLayerUnavailableError) as excinfo:
+        async with proxy.acquire() as conn:
+            async with conn.transaction():
+                pass
+
+    assert "NAMESPACE_ACCESS_DENIED" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_nested_transaction_rejected() -> None:
+    """opening a transaction while one is already active raises."""
+    tx_id = "019d9a00-0000-7000-8000-000000000003"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        ("test.l3.tx.rollback", {"success": True}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    with pytest.raises(RuntimeError, match="nested transactions"):
+        async with proxy.acquire() as conn:
+            async with conn.transaction():
+                async with conn.transaction():  # <- should raise
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_dangling_tx_rolled_back_on_connection_close() -> None:
+    """forgetting to exit a transaction triggers a safety-net rollback.
+
+    asyncpg Pool.acquire as a context manager does NOT auto-commit
+    dangling transactions; the proxy's acquire() provides the same
+    safety net by rolling back whatever tx_id is pinned on the
+    connection at __aexit__ time. pool connection release happens
+    broker-side as part of the rollback.
+    """
+    tx_id = "019d9a00-0000-7000-8000-000000000004"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        # no commit, but acquire-CM will send tx.rollback on exit.
+        ("test.l3.tx.rollback", {"success": True}),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    async with proxy.acquire() as conn:
+        tx_ctx = conn.transaction()
+        await tx_ctx.__aenter__()
+        # deliberately skip __aexit__ so the acquire-CM rescues us.
+
+    subjects = [c[0] for c in plan.calls]
+    assert subjects[-1] == "test.l3.tx.rollback"
+
+
+@pytest.mark.asyncio
+async def test_transaction_commit_failure_raises() -> None:
+    """a broker error on tx.commit surfaces as DataLayerUnavailableError.
+
+    distinct from rollback-on-error: commit failure means the DB
+    did not persist the caller's work, so the exception needs to
+    reach the caller instead of being swallowed like rollback errors.
+    """
+    tx_id = "019d9a00-0000-7000-8000-000000000005"
+    plan = _ScriptedReplyPlan([
+        ("test.l3.tx.begin", {"success": True, "tx_id": tx_id}),
+        ("test.l3.tx.commit", {
+            "success": False,
+            "error_code": "TX_COMMIT_FAILED",
+            "error_message": "serialization failure",
+        }),
+    ])
+    mock_nc = MagicMock()
+    mock_nc.request = plan
+    proxy = _make_proxy(mock_nc)
+
+    with pytest.raises(DataLayerUnavailableError) as excinfo:
+        async with proxy.acquire() as conn:
+            async with conn.transaction():
+                pass
+
+    assert "TX_COMMIT_FAILED" in str(excinfo.value)
+
+
+# ------------------------------------------------------------------
+# _deserialize_row datetime rehydration
+# ------------------------------------------------------------------
+
+
+class TestDeserializeRowDatetimes:
+    """pins the proxy's date_* -> datetime normalization.
+
+    broker JSON-encodes TIMESTAMP columns to iso strings; entities on
+    the agent side call ``.isoformat()`` on those fields expecting
+    native datetime objects. without this rehydration every fs_list /
+    workspace_list / memory read blows up with ``'str' has no
+    attribute 'isoformat'``.
+    """
+
+    def test_aware_iso_string_rehydrates_to_datetime(self) -> None:
+        """explicit offsets round-trip without tz changes."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"date_updated": "2026-04-17T12:34:56+00:00"}
+        out = _deserialize_row(row)
+        assert isinstance(out["date_updated"], datetime)
+        assert out["date_updated"].tzinfo is not None
+        assert out["date_updated"].isoformat() == "2026-04-17T12:34:56+00:00"
+
+    def test_zulu_suffix_rehydrates_to_utc_datetime(self) -> None:
+        """``...Z`` trailing marker normalizes to +00:00."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"date_created": "2026-04-17T12:34:56Z"}
+        out = _deserialize_row(row)
+        assert isinstance(out["date_created"], datetime)
+        assert out["date_created"].tzinfo is not None
+
+    def test_naive_iso_string_gets_utc(self) -> None:
+        """naive iso strings gain UTC defensively so tz checks pass."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"date_created": "2026-04-17T12:34:56"}
+        out = _deserialize_row(row)
+        assert isinstance(out["date_created"], datetime)
+        assert out["date_created"].tzinfo is not None
+
+    def test_non_date_columns_left_alone(self) -> None:
+        """the rehydrator only touches ``date_*`` column names."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"name": "2026-04-17T12:34:56", "id": "some-uuid"}
+        out = _deserialize_row(row)
+        assert out["name"] == "2026-04-17T12:34:56"
+        assert out["id"] == "some-uuid"
+
+    def test_unparseable_date_string_passes_through(self) -> None:
+        """malformed date_* values survive so the caller sees them."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"date_created": "not an iso stamp"}
+        out = _deserialize_row(row)
+        assert out["date_created"] == "not an iso stamp"
+
+    def test_empty_date_string_not_parsed(self) -> None:
+        """empty string does not produce a surprise datetime."""
+        from threetears.core.backends.nats_proxy import _deserialize_row
+
+        row = {"date_created": ""}
+        out = _deserialize_row(row)
+        assert out["date_created"] == ""

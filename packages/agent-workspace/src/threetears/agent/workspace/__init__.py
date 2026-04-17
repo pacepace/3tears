@@ -4,12 +4,18 @@ __version__ = "0.1.0"
 
 from threetears.agent.workspace import handlers as handlers  # noqa: F401
 from threetears.agent.workspace.audit import WorkspaceAuditEnvelope
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
     WorkspaceFileVersionCollection,
 )
-from threetears.agent.workspace.config import AllowConfig, ValidatorEntry, WorkspaceConfig
+from threetears.agent.workspace.config import (
+    AllowConfig,
+    BindConfig,
+    ValidatorEntry,
+    WorkspaceConfig,
+)
 from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
 from threetears.agent.workspace.factory import build_workspace_tools
 from threetears.agent.workspace.handlers import YamlHandler
@@ -22,6 +28,8 @@ from threetears.agent.workspace.validators import WorkspaceValidationError
 
 __all__ = [
     "AllowConfig",
+    "BindConfig",
+    "BindConflictPolicy",
     "PinnedWorkspace",
     "ValidatorEntry",
     "Workspace",

@@ -30,6 +30,7 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.materialize import bind, recover
 
 
@@ -250,17 +251,29 @@ def _build_harness(
     workspace_name: str = "ws_test",
     initial_files: list[_FakeFile] | None = None,
 ) -> dict[str, Any]:
-    """assemble a fake bind environment wired against ``tmp_path``."""
+    """assemble a fake bind environment wired against ``tmp_path``.
+
+    seeds ``pool.conn.journal_max_by_path`` from ``initial_files`` so
+    ``_next_journal_version`` returns realistic prior+1 values. in
+    production every head row has at least one matching journal row,
+    so a fake harness claiming head version N without a journal entry
+    at N would diverge from the real DB state.
+    """
     ws_id = uuid7()
     ws = _FakeWorkspace(id=ws_id, name=workspace_name)
     bind_root = tmp_path / "bind_root"
     bind_root.mkdir(parents=True, exist_ok=True)
     sandbox = _FakeSandbox({"bind": bind_root})
     workspace_coll = _FakeWorkspaceCollection([ws])
-    file_coll = _FakeFileCollection(initial_files or [])
+    files_seed = list(initial_files or [])
+    file_coll = _FakeFileCollection(files_seed)
     version_coll = _FakeVersionCollection()
     lease = _FakeLease()
     pool = _FakePool()
+    for seed_file in files_seed:
+        pool.conn.journal_max_by_path[seed_file.relative_path] = (
+            seed_file.version
+        )
     return {
         "workspace_id": ws_id,
         "workspace": ws,
@@ -276,7 +289,11 @@ def _build_harness(
     }
 
 
-async def _call_bind(harness: dict[str, Any], root_name: str = "bind") -> Any:
+async def _call_bind(
+    harness: dict[str, Any],
+    root_name: str = "bind",
+    on_conflict: BindConflictPolicy = BindConflictPolicy.L3_WINS,
+) -> Any:
     return bind(
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
@@ -288,6 +305,7 @@ async def _call_bind(harness: dict[str, Any], root_name: str = "bind") -> Any:
         actor_id=harness["actor_id"],
         correlation_id=harness["correlation_id"],
         root_name=root_name,
+        on_conflict=on_conflict,
     )
 
 
@@ -680,3 +698,169 @@ async def test_bind_no_changes_publishes_no_audit_events(tmp_path: Path) -> None
     ):
         pass
     assert nats.published == []
+
+
+# ---------------------------------------------------------------------------
+# tests -- live watcher during bind window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bind_watch_batch_imports_new_disk_file(tmp_path: Path) -> None:
+    """feeding a simulated watch batch to the helper writes a create row.
+
+    exercising the watcher task via :func:`watchfiles.awatch` inside a
+    unit test is flaky -- OS-native events deliver after unpredictable
+    delays. we drive :func:`_handle_watch_batch` directly with a
+    synthesized batch; the production :func:`_watch_loop` forwards
+    awatch's batches into this same helper so the coverage is faithful
+    to the runtime path.
+    """
+    from collections import deque
+
+    from watchfiles import Change
+
+    from threetears.agent.workspace.materialize import _handle_watch_batch
+
+    harness = _build_harness(tmp_path, initial_files=[])
+    async with await _call_bind(harness) as disk_root:
+        # builder writes a file mid-bind.
+        target = disk_root / "mid_bind.txt"
+        target.write_bytes(b"written by external process")
+        # simulate a watchfiles event batch delivered for that change.
+        batch = {(Change.added, str(target))}
+        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
+        changed = await _handle_watch_batch(
+            batch=batch,
+            workspace=harness["workspace"],
+            disk_root=disk_root,
+            resolved_root=disk_root.resolve(),
+            db_pool=harness["pool"],
+            actor_id=harness["actor_id"],
+            correlation_id=harness["correlation_id"],
+            just_wrote=just_wrote,
+        )
+        assert changed == ["mid_bind.txt"]
+
+    journal = [
+        e for e in harness["pool"].conn.executions
+        if "INSERT INTO workspace_file_versions" in e[0]
+    ]
+    mid_rows = [row for row in journal if row[1][2] == "mid_bind.txt"]
+    # at least one create from the live-watcher call. the fake file
+    # collection used here does NOT reflect conn-side writes, so
+    # capture-back re-journals the same file via the existing snapshot-
+    # diff path -- a second row is acceptable. the first row is a
+    # create.
+    assert len(mid_rows) >= 1
+    assert mid_rows[0][1][6] == "create"
+    assert mid_rows[0][1][3] == 1  # first version starts at 1
+
+
+@pytest.mark.asyncio
+async def test_watch_batch_deleted_change_emits_delete(tmp_path: Path) -> None:
+    """Change.deleted on a tracked file emits delete journal + head delete.
+
+    the delete path requires disk-wins semantics: under the default
+    l3-wins policy external deletions are ignored because L3 is
+    authoritative. this test explicitly passes disk_wins so the
+    emit-delete branch is exercised.
+    """
+    from collections import deque
+
+    from watchfiles import Change
+
+    from threetears.agent.workspace.bind_policy import BindConflictPolicy
+    from threetears.agent.workspace.materialize import _handle_watch_batch
+
+    content = b"to-be-deleted"
+    harness = _build_harness(
+        tmp_path,
+        initial_files=[_FakeFile("gone.txt", content, _sha(content), 2)],
+    )
+    async with await _call_bind(harness) as disk_root:
+        target = disk_root / "gone.txt"
+        # seed the fake head row so the watcher's delete branch finds it.
+        harness["pool"].conn.head_row = {
+            "content": content, "sha256": _sha(content), "version": 2,
+        }
+        # have the deletion actually occur on disk first so capture-back
+        # also notices the file is gone. the watcher batch is delivered
+        # after the file is already removed from the FS.
+        target.unlink()
+        batch = {(Change.deleted, str(target))}
+        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
+        changed = await _handle_watch_batch(
+            batch=batch,
+            workspace=harness["workspace"],
+            disk_root=disk_root,
+            resolved_root=disk_root.resolve(),
+            db_pool=harness["pool"],
+            actor_id=harness["actor_id"],
+            correlation_id=harness["correlation_id"],
+            just_wrote=just_wrote,
+            on_conflict=BindConflictPolicy.DISK_WINS,
+        )
+        assert changed == ["gone.txt"]
+
+    executions = harness["pool"].conn.executions
+    delete_head = [e for e in executions if "DELETE FROM workspace_files" in e[0]]
+    journal_deletes = [
+        e for e in executions
+        if "INSERT INTO workspace_file_versions" in e[0] and e[1][6] == "delete"
+    ]
+    assert len(journal_deletes) >= 1
+    assert len(delete_head) >= 1
+
+
+@pytest.mark.asyncio
+async def test_watch_batch_just_wrote_suppresses_roundtrip(
+    tmp_path: Path,
+) -> None:
+    """change whose (rel, sha) is in just_wrote set is skipped.
+
+    models the bind-side round-trip: when the initial L3->disk sync wrote
+    a file and the OS delivers an ``added`` event for it, we must NOT
+    journal that as an external change.
+    """
+    from collections import deque
+
+    from watchfiles import Change
+
+    from threetears.agent.workspace.materialize import _handle_watch_batch
+
+    harness = _build_harness(tmp_path, initial_files=[])
+    async with await _call_bind(harness) as disk_root:
+        target = disk_root / "own_write.txt"
+        payload = b"our own bytes"
+        target.write_bytes(payload)
+        batch = {(Change.added, str(target))}
+        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
+        just_wrote.append(("own_write.txt", _sha(payload)))
+        changed = await _handle_watch_batch(
+            batch=batch,
+            workspace=harness["workspace"],
+            disk_root=disk_root,
+            resolved_root=disk_root.resolve(),
+            db_pool=harness["pool"],
+            actor_id=harness["actor_id"],
+            correlation_id=harness["correlation_id"],
+            just_wrote=just_wrote,
+        )
+        assert changed == []
+        # helper emitted no rows of its own; exact row count is
+        # asserted AFTER bind exits so we can observe the final state.
+        journal_during = [
+            e for e in harness["pool"].conn.executions
+            if "INSERT INTO workspace_file_versions" in e[0]
+            and e[1][2] == "own_write.txt"
+        ]
+        assert journal_during == []
+    # OUTSIDE the bind: capture-back emitted exactly one create.
+    journal_after = [
+        e for e in harness["pool"].conn.executions
+        if "INSERT INTO workspace_file_versions" in e[0]
+        and e[1][2] == "own_write.txt"
+    ]
+    assert len(journal_after) == 1
+    assert journal_after[0][1][6] == "create"

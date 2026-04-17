@@ -37,6 +37,7 @@ from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
+    _next_journal_version,
     _resolve_workspace,
 )
 
@@ -157,12 +158,23 @@ class WorkspaceCheckpointTool(TearsTool):
             async with self._db_pool.acquire() as conn:
                 async with conn.transaction():
                     for file_entity in head_files:
+                        # checkpoint is a labelled *tag* row, not a
+                        # new head; it must carry a fresh monotonic
+                        # version so the (workspace_id, relative_path,
+                        # version) unique constraint does not collide
+                        # with the head row's own journal entry at
+                        # file_entity.version. rollback resolves by
+                        # label, so the chosen number is purely an
+                        # identifier.
+                        tag_version = await _next_journal_version(
+                            conn, workspace.id, file_entity.relative_path,
+                        )
                         await conn.execute(
                             _INSERT_WORKSPACE_FILE_VERSION_SQL,
                             uuid7(),
                             workspace.id,
                             file_entity.relative_path,
-                            file_entity.version,
+                            tag_version,
                             file_entity.content,
                             file_entity.sha256,
                             "checkpoint",

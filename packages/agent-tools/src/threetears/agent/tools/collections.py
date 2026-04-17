@@ -24,6 +24,34 @@ from threetears.agent.tools.entities import ContextItemEntity
 
 log = get_logger(__name__)
 
+def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
+    """ensure ``metadata`` on a row dict is a Python dict, not a JSON string.
+
+    asyncpg returns ``JSONB`` columns as strings unless the pool has a
+    json codec registered (the devx hub's pool does not, and neither
+    does the NATS proxy wire format after a JSON round-trip). callers
+    downstream expect a dict so the collection normalizes the shape
+    here. ``None``/missing values pass through unchanged so the
+    absent-metadata case still resolves to ``{}`` at the call site.
+
+    :param row: dict-shaped row from ``self._l3_pool.fetch(row)``
+    :ptype row: dict[str, Any]
+    :return: same dict with ``metadata`` coerced to ``dict`` when it
+        arrived as a JSON string
+    :rtype: dict[str, Any]
+    """
+    meta = row.get("metadata")
+    if isinstance(meta, str) and meta:
+        try:
+            row["metadata"] = json.loads(meta)
+        except (ValueError, TypeError):
+            # malformed jsonb on the wire: leave as-is so callers
+            # surface the raw payload in their error path instead of
+            # swallowing the corruption silently.
+            pass
+    return row
+
+
 _FIELD_TYPES: dict[str, Any] = {
     "context_id": UUID,
     "conversation_id": UUID,
@@ -100,7 +128,9 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             "SELECT * FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        return _decode_metadata_in_row(dict(row))
 
     async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         context_id = data["context_id"]
@@ -188,7 +218,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         )
         entities: list[ContextItemEntity] = []
         for row in rows:
-            data = dict(row)
+            data = _decode_metadata_in_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity._original_date_updated = data.get("date_updated")
             self._write_to_cache_sync(data)

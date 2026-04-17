@@ -8,7 +8,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.agent.workspace.config import AllowConfig, ValidatorEntry, WorkspaceConfig
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
+from threetears.agent.workspace.config import (
+    AllowConfig,
+    BindConfig,
+    ValidatorEntry,
+    WorkspaceConfig,
+)
 
 
 def test_workspace_config_no_args_produces_valid_defaults() -> None:
@@ -18,6 +24,56 @@ def test_workspace_config_no_args_produces_valid_defaults() -> None:
     assert config.bind_root is None
     assert isinstance(config.allow, AllowConfig)
     assert config.validators == []
+    assert isinstance(config.bind, BindConfig)
+    assert config.bind.on_conflict is BindConflictPolicy.DISK_WINS
+
+
+def test_bind_config_default_on_conflict_is_disk_wins() -> None:
+    """BindConfig() defaults on_conflict to BindConflictPolicy.DISK_WINS.
+
+    the default changed from L3_WINS to DISK_WINS so that binding an
+    agent against an existing directory (the common Flow C case) picks
+    up pre-existing files from disk without the agent needing to opt in.
+    """
+    bind_config = BindConfig()
+    assert bind_config.on_conflict is BindConflictPolicy.DISK_WINS
+
+
+def test_bind_config_accepts_disk_wins_explicitly() -> None:
+    """BindConfig accepts on_conflict=BindConflictPolicy.DISK_WINS via enum."""
+    bind_config = BindConfig(on_conflict=BindConflictPolicy.DISK_WINS)
+    assert bind_config.on_conflict is BindConflictPolicy.DISK_WINS
+
+
+def test_bind_config_accepts_disk_wins_string() -> None:
+    """BindConfig accepts the string value 'disk_wins' and coerces to enum."""
+    bind_config = BindConfig.model_validate({"on_conflict": "disk_wins"})
+    assert bind_config.on_conflict is BindConflictPolicy.DISK_WINS
+
+
+def test_bind_config_rejects_unknown_policy_string() -> None:
+    """BindConfig rejects unknown on_conflict string via ValidationError."""
+    with pytest.raises(ValidationError):
+        BindConfig.model_validate({"on_conflict": "bogus_policy"})
+
+
+def test_workspace_config_round_trip_preserves_bind_on_conflict() -> None:
+    """model_dump -> model_validate preserves an explicit bind.on_conflict."""
+    original = WorkspaceConfig(
+        bind=BindConfig(on_conflict=BindConflictPolicy.DISK_WINS),
+    )
+    dumped = original.model_dump()
+    restored = WorkspaceConfig.model_validate(dumped)
+    assert restored.bind.on_conflict is BindConflictPolicy.DISK_WINS
+
+
+def test_workspace_config_yaml_like_dict_accepts_bind_block() -> None:
+    """YAML-parsed dict with nested bind: on_conflict validates cleanly."""
+    yaml_like: dict[str, Any] = {
+        "bind": {"on_conflict": "disk_wins"},
+    }
+    config = WorkspaceConfig.model_validate(yaml_like)
+    assert config.bind.on_conflict is BindConflictPolicy.DISK_WINS
 
 
 def test_allow_config_defaults_read_all_write_empty() -> None:

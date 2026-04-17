@@ -50,26 +50,28 @@ def _minimal_deps() -> dict[str, Any]:
     }
 
 
-def test_tool_builders_registry_has_seventeen_after_history_tools() -> None:
-    """importing the tools subpackage must register all seventeen tools.
+def test_tool_builders_registry_has_nineteen_after_history_tools() -> None:
+    """importing the tools subpackage must register all nineteen tools.
 
     six meta + lifecycle (shards 09+10) plus four fs_* tools (shard 11)
     plus three doc_* tools (shard 12) plus four history tools (shard 13:
-    history, diff, checkpoint, rollback_to).
+    history, diff, checkpoint, rollback_to) plus the refresh_from_disk
+    live-sync tool that landed alongside bind's watcher, plus the
+    flush_to_disk one-shot that projects L3 back onto disk.
     """
-    assert len(_TOOL_BUILDERS) == 17
+    assert len(_TOOL_BUILDERS) == 19
 
 
-def test_build_workspace_tools_returns_seventeen_tools() -> None:
+def test_build_workspace_tools_returns_nineteen_tools() -> None:
     """build_workspace_tools instantiates every registered builder."""
     tools = build_workspace_tools(**_minimal_deps())
 
-    assert len(tools) == 17
+    assert len(tools) == 19
     assert all(isinstance(t, TearsTool) for t in tools)
 
 
 def test_build_workspace_tools_includes_each_expected_mcp_name() -> None:
-    """built tools include exactly the seventeen expected mcp_name strings."""
+    """built tools include exactly the nineteen expected mcp_name strings."""
     tools = build_workspace_tools(**_minimal_deps())
 
     names = {t.mcp_name() for t in tools}
@@ -91,6 +93,8 @@ def test_build_workspace_tools_includes_each_expected_mcp_name() -> None:
         "threetears.workspace.diff",
         "threetears.workspace.checkpoint",
         "threetears.workspace.rollback_to",
+        "threetears.workspace.refresh_from_disk",
+        "threetears.workspace.flush_to_disk",
     }
 
 
@@ -109,7 +113,7 @@ def test_build_workspace_tools_tolerates_missing_optional_deps() -> None:
     deps = _minimal_deps()
     tools = build_workspace_tools(**deps)
 
-    assert len(tools) == 17
+    assert len(tools) == 19
 
 
 def test_register_tool_builder_appends_to_registry() -> None:
@@ -167,10 +171,12 @@ def test_register_tool_builder_appends_to_registry() -> None:
         "threetears.workspace.diff",
         "threetears.workspace.checkpoint",
         "threetears.workspace.rollback_to",
+        "threetears.workspace.refresh_from_disk",
+        "threetears.workspace.flush_to_disk",
     ],
 )
 def test_each_expected_mcp_name_present(expected: str) -> None:
-    """each of the seventeen required mcp_name strings is emitted."""
+    """each of the nineteen required mcp_name strings is emitted."""
     tools = build_workspace_tools(**_minimal_deps())
 
     names = [t.mcp_name() for t in tools]

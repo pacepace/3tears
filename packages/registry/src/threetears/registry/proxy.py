@@ -29,6 +29,11 @@ log = get_logger(__name__)
 class ProxyCallRequest(BaseModel):
     """incoming tool call request from agent.
 
+    optional ``conversation_id`` and ``user_id`` are passed through to
+    the target tool pod so conversation-aware tools (workspace_*,
+    pin-backed builtins) can resolve per-call context. the fields are
+    optional because stateless tools do not need identity scope.
+
     :param agent_id: unique identifier of requesting agent
     :ptype agent_id: str
     :param tool_name: namespaced name of tool to invoke
@@ -39,6 +44,12 @@ class ProxyCallRequest(BaseModel):
     :ptype arguments: dict[str, Any]
     :param correlation_id: request correlation identifier
     :ptype correlation_id: str
+    :param conversation_id: conversation identifier for per-call context
+        resolution; string form of a UUID
+    :ptype conversation_id: str | None
+    :param user_id: invoking user identifier for per-call context
+        resolution; string form of a UUID
+    :ptype user_id: str | None
     """
 
     agent_id: str
@@ -46,6 +57,8 @@ class ProxyCallRequest(BaseModel):
     tool_version: str
     arguments: dict[str, Any]
     correlation_id: str
+    conversation_id: str | None = None
+    user_id: str | None = None
 
 
 class ProxyCallResponse(BaseModel):
@@ -411,6 +424,8 @@ def _build_internal_payload(request: ProxyCallRequest) -> bytes:
         tool_version=request.tool_version,
         arguments=request.arguments,
         correlation_id=request.correlation_id,
+        conversation_id=request.conversation_id,
+        user_id=request.user_id,
     )
     result = internal_request.model_dump_json().encode("utf-8")
     return result

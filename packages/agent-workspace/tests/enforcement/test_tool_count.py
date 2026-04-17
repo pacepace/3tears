@@ -1,4 +1,4 @@
-"""enforcement: workspace tool registry matches frozen 17-name set.
+"""enforcement: workspace tool registry matches frozen 19-name set.
 
 importing :mod:`threetears.agent.workspace.tools` fires every tool
 module's ``register_tool_builder`` side-effect, populating
@@ -41,9 +41,11 @@ _EXPECTED_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
         "threetears.workspace.doc_get",
         "threetears.workspace.doc_set",
         "threetears.workspace.doc_merge",
+        "threetears.workspace.refresh_from_disk",
+        "threetears.workspace.flush_to_disk",
     }
 )
-_EXPECTED_WORKSPACE_TOOL_COUNT = 17
+_EXPECTED_WORKSPACE_TOOL_COUNT = 19
 _NAMESPACE_PREFIX = "threetears.workspace."
 
 
@@ -81,7 +83,7 @@ def _stub_dependencies() -> dict[str, Any]:
 class TestWorkspaceToolCount:
     """frozen tool-count + name-set enforcement."""
 
-    def test_factory_emits_exactly_seventeen_tools(self) -> None:
+    def test_factory_emits_exactly_nineteen_tools(self) -> None:
         """
         import the tools package, build via factory, assert exact count.
 
@@ -93,7 +95,7 @@ class TestWorkspaceToolCount:
         :return: None
         :rtype: None
         """
-        # side-effect import: registers all 17 builders.
+        # side-effect import: registers all 19 builders.
         from threetears.agent.workspace import tools as _tools  # noqa: F401
         from threetears.agent.workspace.factory import (
             _TOOL_BUILDERS,

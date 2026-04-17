@@ -27,6 +27,7 @@ from uuid import uuid7
 
 import pytest
 
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.config import (
     AllowConfig,
     WorkspaceConfig,
@@ -80,6 +81,7 @@ async def test_bind_captures_back_stub_builder_edit(
         lease_max_wait_seconds=10,
         nats_client=fx.nats,
         namespace="threetears-test",
+        on_conflict=BindConflictPolicy.L3_WINS,
     ) as disk_root:
         # sanity: materialize placed all three fixture files.
         files_on_disk = sorted(

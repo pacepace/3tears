@@ -67,16 +67,20 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import tempfile
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal
 from uuid import UUID, uuid7
 
+from watchfiles import Change, awatch
+
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import audit
+from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
 
 if TYPE_CHECKING:
@@ -249,6 +253,734 @@ async def _snapshot_disk(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     return await asyncio.to_thread(_snapshot_disk_sync, disk_root)
 
 
+async def _seed_l3_from_disk(
+    *,
+    workspace: Any,
+    disk_root: Path,
+    workspace_file_collection: WorkspaceFileCollection,
+    db_pool: Any,
+    actor_id: UUID,
+    correlation_id: UUID,
+    on_conflict: BindConflictPolicy,
+) -> int:
+    """seed L3 head-state from disk under the chosen conflict policy.
+
+    branches on ``on_conflict``:
+
+    - :attr:`BindConflictPolicy.L3_WINS` -- L3 is authoritative.
+      runs the original "seed if empty" gate: when
+      :meth:`WorkspaceFileCollection.find_by_workspace` returns rows
+      the helper is a no-op; otherwise every file under ``disk_root``
+      is imported as a ``create`` at version 1 in one transaction and
+      ``workspaces.current_version`` is bumped via ``GREATEST``. this
+      preserves the historical behavior of
+      ``_import_disk_to_l3_if_empty``.
+
+    - :attr:`BindConflictPolicy.DISK_WINS` -- disk is authoritative.
+      always walks disk. every disk path becomes a ``create`` journal
+      row + head upsert (when no head row exists) or an ``update``
+      journal row + head upsert (when the existing head sha differs).
+      every L3-only path (present in head-state, absent from disk)
+      becomes a ``delete`` journal row + head delete. unchanged files
+      (matching sha) are skipped. all writes land in a single asyncpg
+      transaction and ``workspaces.current_version`` is bumped via
+      ``GREATEST``.
+
+    validator dispatch is intentionally bypassed in both modes: the
+    bind-enter contract mirrors disk <-> L3 while validators target the
+    LLM-tool write surface, so re-seeding an existing directory does
+    not fail because some legacy file violates a schema the agent
+    author added later; the validator will reject the next LLM write
+    instead.
+
+    :param workspace: target workspace entity whose head-state to seed
+    :ptype workspace: Any
+    :param disk_root: absolute path to sandboxed bind root
+    :ptype disk_root: Path
+    :param workspace_file_collection: head-state collection used for
+        emptiness gate in L3_WINS mode
+    :ptype workspace_file_collection: WorkspaceFileCollection
+    :param db_pool: asyncpg pool supplying acquire + transaction
+    :ptype db_pool: Any
+    :param actor_id: identifier of actor running the seed
+    :ptype actor_id: UUID
+    :param correlation_id: originating tool-call envelope identifier
+    :ptype correlation_id: UUID
+    :param on_conflict: policy selecting the seed strategy
+    :ptype on_conflict: BindConflictPolicy
+    :return: count of files created + updated + deleted during seeding
+        (0 when the L3_WINS gate short-circuits and the workspace
+        already has head rows)
+    :rtype: int
+    """
+    n_touched = 0
+    if on_conflict is BindConflictPolicy.L3_WINS:
+        existing = await workspace_file_collection.find_by_workspace(
+            workspace.id,
+        )
+        if not existing:
+            disk = await _snapshot_disk(disk_root)
+            if disk:
+                n_touched = await _seed_l3_import_all(
+                    workspace=workspace,
+                    disk=disk,
+                    db_pool=db_pool,
+                    actor_id=actor_id,
+                    correlation_id=correlation_id,
+                )
+                log.info(
+                    "workspace.bind.seed_l3_wins",
+                    extra={
+                        "workspace_id": str(workspace.id),
+                        "file_count": n_touched,
+                        "disk_root": str(disk_root),
+                    },
+                )
+    else:
+        disk = await _snapshot_disk(disk_root)
+        existing_rows = await workspace_file_collection.find_by_workspace(
+            workspace.id,
+        )
+        existing_by_path: dict[str, tuple[str, int]] = {
+            row.relative_path: (row.sha256, row.version)
+            for row in existing_rows
+        }
+        n_touched = await _seed_l3_disk_wins(
+            workspace=workspace,
+            disk=disk,
+            existing_by_path=existing_by_path,
+            db_pool=db_pool,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+        )
+        log.info(
+            "workspace.bind.seed_disk_wins",
+            extra={
+                "workspace_id": str(workspace.id),
+                "file_count": n_touched,
+                "disk_root": str(disk_root),
+            },
+        )
+    return n_touched
+
+
+async def _seed_l3_import_all(
+    *,
+    workspace: Any,
+    disk: dict[str, tuple[bytes, str]],
+    db_pool: Any,
+    actor_id: UUID,
+    correlation_id: UUID,
+) -> int:
+    """bulk-import every disk path as a ``create`` journal row + head upsert.
+
+    L3_WINS-empty helper: the caller has already verified the workspace
+    head-state is empty, so every disk path is a legitimate new
+    ``create`` at version 1 and no sha-diff check is needed. the
+    transactional envelope matches the DISK_WINS variant so the two
+    share commit semantics.
+
+    :param workspace: target workspace entity
+    :ptype workspace: Any
+    :param disk: mapping of ``relative_path`` to ``(content, sha256)``
+    :ptype disk: dict[str, tuple[bytes, str]]
+    :param db_pool: asyncpg pool supplying acquire + transaction
+    :ptype db_pool: Any
+    :param actor_id: identifier of actor running the seed
+    :ptype actor_id: UUID
+    :param correlation_id: originating tool-call envelope identifier
+    :ptype correlation_id: UUID
+    :return: count of files imported
+    :rtype: int
+    """
+    now = datetime.now(UTC)
+    action_create: Literal["create"] = "create"
+    max_version = 0
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            for rel, (content, sha) in disk.items():
+                new_version = await _next_journal_version(
+                    conn, workspace.id, rel,
+                )
+                if new_version > max_version:
+                    max_version = new_version
+                await conn.execute(
+                    _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                    uuid7(),
+                    workspace.id,
+                    rel,
+                    new_version,
+                    content,
+                    sha,
+                    action_create,
+                    None,
+                    actor_id,
+                    correlation_id,
+                    now,
+                )
+                await conn.execute(
+                    _UPSERT_WORKSPACE_FILE_SQL,
+                    uuid7(),
+                    workspace.id,
+                    rel,
+                    content,
+                    sha,
+                    new_version,
+                    now,
+                )
+            await conn.execute(
+                _UPDATE_WORKSPACE_VERSION_SQL,
+                max_version,
+                now,
+                workspace.id,
+            )
+    return len(disk)
+
+
+async def _seed_l3_disk_wins(
+    *,
+    workspace: Any,
+    disk: dict[str, tuple[bytes, str]],
+    existing_by_path: dict[str, tuple[str, int]],
+    db_pool: Any,
+    actor_id: UUID,
+    correlation_id: UUID,
+) -> int:
+    """clobber L3 head-state with disk contents: create + update + delete.
+
+    DISK_WINS-enter helper. compares ``disk`` against
+    ``existing_by_path`` (head-state ``{rel: (sha, version)}``) and
+    inside a single asyncpg transaction:
+
+    - emits a ``create`` journal row + head upsert for every disk path
+      with no existing head row
+    - emits an ``update`` journal row + head upsert for every disk
+      path whose existing head sha differs
+    - emits a ``delete`` journal row + head delete for every existing
+      head path absent from disk
+    - bumps ``workspaces.current_version`` via ``GREATEST`` when any
+      of the above fired
+
+    unchanged files (matching sha) are skipped entirely.
+
+    :param workspace: target workspace entity
+    :ptype workspace: Any
+    :param disk: mapping of ``relative_path`` to ``(content, sha256)``
+        produced by :func:`_snapshot_disk`
+    :ptype disk: dict[str, tuple[bytes, str]]
+    :param existing_by_path: existing head-state indexed by relative
+        path, mapping to ``(sha256, version)``
+    :ptype existing_by_path: dict[str, tuple[str, int]]
+    :param db_pool: asyncpg pool supplying acquire + transaction
+    :ptype db_pool: Any
+    :param actor_id: identifier of actor running the seed
+    :ptype actor_id: UUID
+    :param correlation_id: originating tool-call envelope identifier
+    :ptype correlation_id: UUID
+    :return: count of journal rows emitted (create + update + delete)
+    :rtype: int
+    """
+    creates: list[tuple[str, bytes, str]] = []
+    updates: list[tuple[str, bytes, str]] = []
+    deletes: list[str] = []
+    for rel, (content, sha) in disk.items():
+        prior = existing_by_path.get(rel)
+        if prior is None:
+            creates.append((rel, content, sha))
+        elif prior[0] != sha:
+            updates.append((rel, content, sha))
+    for rel in existing_by_path:
+        if rel not in disk:
+            deletes.append(rel)
+
+    n_touched = 0
+    if creates or updates or deletes:
+        now = datetime.now(UTC)
+        action_create: Literal["create"] = "create"
+        action_update: Literal["update"] = "update"
+        action_delete: Literal["delete"] = "delete"
+        max_version = 0
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                for rel, content, sha in creates:
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
+                    if new_version > max_version:
+                        max_version = new_version
+                    await conn.execute(
+                        _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                        uuid7(),
+                        workspace.id,
+                        rel,
+                        new_version,
+                        content,
+                        sha,
+                        action_create,
+                        None,
+                        actor_id,
+                        correlation_id,
+                        now,
+                    )
+                    await conn.execute(
+                        _UPSERT_WORKSPACE_FILE_SQL,
+                        uuid7(),
+                        workspace.id,
+                        rel,
+                        content,
+                        sha,
+                        new_version,
+                        now,
+                    )
+                for rel, content, sha in updates:
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
+                    if new_version > max_version:
+                        max_version = new_version
+                    await conn.execute(
+                        _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                        uuid7(),
+                        workspace.id,
+                        rel,
+                        new_version,
+                        content,
+                        sha,
+                        action_update,
+                        None,
+                        actor_id,
+                        correlation_id,
+                        now,
+                    )
+                    await conn.execute(
+                        _UPSERT_WORKSPACE_FILE_SQL,
+                        uuid7(),
+                        workspace.id,
+                        rel,
+                        content,
+                        sha,
+                        new_version,
+                        now,
+                    )
+                for rel in deletes:
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
+                    if new_version > max_version:
+                        max_version = new_version
+                    await conn.execute(
+                        _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                        uuid7(),
+                        workspace.id,
+                        rel,
+                        new_version,
+                        b"",
+                        _sha256_bytes(b""),
+                        action_delete,
+                        None,
+                        actor_id,
+                        correlation_id,
+                        now,
+                    )
+                    await conn.execute(
+                        _DELETE_WORKSPACE_FILE_SQL,
+                        workspace.id,
+                        rel,
+                    )
+                await conn.execute(
+                    _UPDATE_WORKSPACE_VERSION_SQL,
+                    max_version,
+                    now,
+                    workspace.id,
+                )
+        n_touched = len(creates) + len(updates) + len(deletes)
+    return n_touched
+
+
+def _resolve_under_root(
+    candidate: Path, disk_root: Path, resolved_root: Path,
+) -> str | None:
+    """return posix relative path under ``disk_root`` or ``None`` if escape.
+
+    reuses the symlink-escape guard used by :func:`_snapshot_disk_sync`:
+    resolves the candidate and verifies its parentage against the
+    resolved root, dropping entries whose resolved target lives outside
+    the root (symlink exfiltration).
+
+    :param candidate: absolute filesystem path reported by a watch event
+    :ptype candidate: Path
+    :param disk_root: raw sandboxed root (pre-resolve)
+    :ptype disk_root: Path
+    :param resolved_root: :meth:`Path.resolve` of ``disk_root``, computed
+        once by the caller
+    :ptype resolved_root: Path
+    :return: posix relative path when safe, ``None`` when escape detected
+    :rtype: str | None
+    """
+    result: str | None = None
+    try:
+        resolved_candidate = candidate.resolve()
+        resolved_candidate.relative_to(resolved_root)
+        result = candidate.relative_to(disk_root).as_posix()
+    except (OSError, ValueError):
+        log.warning(
+            "workspace.watch.skip_escape",
+            extra={
+                "extra_data": {
+                    "candidate": str(candidate),
+                    "disk_root": str(disk_root),
+                },
+            },
+        )
+    return result
+
+
+def _read_file_sync(path: Path) -> bytes:
+    """sync body for :func:`asyncio.to_thread` dispatch of :meth:`Path.read_bytes`.
+
+    :param path: absolute path to file to read
+    :ptype path: Path
+    :return: raw file bytes
+    :rtype: bytes
+    """
+    return path.read_bytes()
+
+
+async def _handle_watch_batch(
+    *,
+    batch: set[tuple[Change, str]],
+    workspace: Any,
+    disk_root: Path,
+    resolved_root: Path,
+    db_pool: Any,
+    actor_id: UUID,
+    correlation_id: UUID,
+    just_wrote: deque[tuple[str, str]],
+    on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS,
+) -> list[str]:
+    """apply one batch of :func:`watchfiles.awatch` changes to L3 under policy.
+
+    coalesces the incoming change set by relative path so multiple
+    events on the same file in one batch collapse to a single DB write,
+    skips paths that escape ``disk_root`` via symlink, and filters the
+    "just-wrote-by-us" set so round-trip writes by the bind process
+    itself do not re-journal.
+
+    behavior under ``on_conflict``:
+
+    - :attr:`BindConflictPolicy.DISK_WINS` -- disk is authoritative
+      during the bind window. ``added`` and ``modified`` events read
+      the current bytes off disk (via :func:`asyncio.to_thread`),
+      compute the sha256, and emit either ``create`` (no head row
+      exists) or ``update`` (head row differs) as a single
+      transactional pair of ``INSERT INTO workspace_file_versions`` +
+      ``INSERT INTO workspace_files ... ON CONFLICT DO UPDATE``.
+      ``deleted`` events emit ``action="delete"`` + ``DELETE FROM
+      workspace_files``.
+
+    - :attr:`BindConflictPolicy.L3_WINS` -- L3 is authoritative during
+      the bind window. branches per event kind:
+
+      * ``added`` for a path NOT in L3: imports as ``create`` (the
+        agent never wrote this file, so external creation is new
+        content L3 must carry);
+      * ``added`` for a path ALREADY in L3: skipped (the disk copy is
+        almost certainly our L3 -> disk sync echoing back; the real
+        round-trip guard via ``just_wrote`` covers the common case
+        but the event can still arrive without a sha match, e.g.
+        editor save of identical content);
+      * ``modified``: skipped entirely (L3 holds truth; the external
+        modification is discarded and will be overwritten on the next
+        bind's L3 -> disk projection);
+      * ``deleted``: skipped (L3 holds truth; the file will be
+        re-materialized via ``atomic_write`` on the next bind enter).
+
+    validator dispatch is intentionally bypassed here in both modes:
+    the watcher observes disk mutations from arbitrary external
+    processes, and the bind contract places validators on the LLM-tool
+    write surface instead. document + fs tools still gate their writes.
+
+    :param batch: set of ``(Change, absolute_path_string)`` tuples
+        yielded by :func:`watchfiles.awatch`
+    :ptype batch: set[tuple[Change, str]]
+    :param workspace: target workspace entity whose pointer to advance
+    :ptype workspace: Any
+    :param disk_root: absolute path to sandboxed bind root
+    :ptype disk_root: Path
+    :param resolved_root: pre-resolved root for symlink-escape detection
+    :ptype resolved_root: Path
+    :param db_pool: asyncpg pool supplying acquire + transaction
+    :ptype db_pool: Any
+    :param actor_id: identifier of actor owning the bind window
+    :ptype actor_id: UUID
+    :param correlation_id: originating tool-call envelope identifier
+    :ptype correlation_id: UUID
+    :param just_wrote: bounded deque of ``(relative_path, sha256)``
+        entries recording writes the bind process itself performed; each
+        event whose ``(rel, sha)`` pair appears in the deque is skipped
+        so disk-round-trip writes do not re-journal
+    :ptype just_wrote: deque[tuple[str, str]]
+    :param on_conflict: policy selecting event-handling semantics;
+        defaults to :attr:`BindConflictPolicy.DISK_WINS`
+    :ptype on_conflict: BindConflictPolicy
+    :return: list of ``relative_path`` keys the batch mutated in L3
+    :rtype: list[str]
+    """
+    # coalesce by relative path: if a file is both added and modified
+    # inside the same batch we write once, using the disk state we
+    # observe at handle-time (the last event wins naturally).
+    coalesced: dict[str, Change] = {}
+    for change, abs_path in batch:
+        rel = _resolve_under_root(Path(abs_path), disk_root, resolved_root)
+        if rel is None:
+            continue
+        coalesced[rel] = change
+
+    action_create: Literal["create"] = "create"
+    action_update: Literal["update"] = "update"
+    action_delete: Literal["delete"] = "delete"
+    changed: list[str] = []
+    if coalesced:
+        now = datetime.now(UTC)
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                max_version = 0
+                for rel, change in coalesced.items():
+                    if change is Change.deleted:
+                        if on_conflict is BindConflictPolicy.L3_WINS:
+                            # L3_WINS: external deletion is ignored. the
+                            # file is still authoritative in L3 and will
+                            # be re-projected onto disk on the next bind
+                            # enter via atomic_write.
+                            continue
+                        # DISK_WINS delete-path: skip when nothing was
+                        # there; otherwise emit a delete row.
+                        head = await conn.fetchrow(
+                            _SELECT_HEAD_SQL, workspace.id, rel,
+                        )
+                        if head is None:
+                            continue
+                        new_version = await _next_journal_version(
+                            conn, workspace.id, rel,
+                        )
+                        if new_version > max_version:
+                            max_version = new_version
+                        await conn.execute(
+                            _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                            uuid7(),
+                            workspace.id,
+                            rel,
+                            new_version,
+                            b"",
+                            _sha256_bytes(b""),
+                            action_delete,
+                            None,
+                            actor_id,
+                            correlation_id,
+                            now,
+                        )
+                        await conn.execute(
+                            _DELETE_WORKSPACE_FILE_SQL,
+                            workspace.id,
+                            rel,
+                        )
+                        changed.append(rel)
+                    else:
+                        candidate = disk_root / rel
+                        if not candidate.is_file():
+                            # raced: file vanished before we could read.
+                            # the next cycle will pick up the delete.
+                            continue
+                        content = await asyncio.to_thread(
+                            _read_file_sync, candidate,
+                        )
+                        sha = _sha256_bytes(content)
+                        if (rel, sha) in just_wrote:
+                            continue
+                        head = await conn.fetchrow(
+                            _SELECT_HEAD_SQL, workspace.id, rel,
+                        )
+                        current_sha = (
+                            None if head is None else head["sha256"]
+                        )
+                        if current_sha == sha:
+                            continue
+                        if on_conflict is BindConflictPolicy.L3_WINS:
+                            # L3_WINS added for path already in L3:
+                            # skip (L3 holds truth; the agent would not
+                            # have created this path via external means
+                            # during the window, so any diff is either
+                            # an echo beyond our just_wrote window or
+                            # an external mutation we ignore).
+                            # L3_WINS modified: skip (external
+                            # modification discarded).
+                            # L3_WINS added for NEW path (head is None):
+                            # import as create -- net-new content the
+                            # agent cannot have produced.
+                            if change is Change.added and head is None:
+                                new_version = await _next_journal_version(
+                                    conn, workspace.id, rel,
+                                )
+                                if new_version > max_version:
+                                    max_version = new_version
+                                await conn.execute(
+                                    _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                                    uuid7(),
+                                    workspace.id,
+                                    rel,
+                                    new_version,
+                                    content,
+                                    sha,
+                                    action_create,
+                                    None,
+                                    actor_id,
+                                    correlation_id,
+                                    now,
+                                )
+                                await conn.execute(
+                                    _UPSERT_WORKSPACE_FILE_SQL,
+                                    uuid7(),
+                                    workspace.id,
+                                    rel,
+                                    content,
+                                    sha,
+                                    new_version,
+                                    now,
+                                )
+                                changed.append(rel)
+                            continue
+                        # DISK_WINS: import every add / modify event.
+                        new_version = await _next_journal_version(
+                            conn, workspace.id, rel,
+                        )
+                        if new_version > max_version:
+                            max_version = new_version
+                        action_to_use = (
+                            action_create if head is None else action_update
+                        )
+                        await conn.execute(
+                            _INSERT_WORKSPACE_FILE_VERSION_SQL,
+                            uuid7(),
+                            workspace.id,
+                            rel,
+                            new_version,
+                            content,
+                            sha,
+                            action_to_use,
+                            None,
+                            actor_id,
+                            correlation_id,
+                            now,
+                        )
+                        await conn.execute(
+                            _UPSERT_WORKSPACE_FILE_SQL,
+                            uuid7(),
+                            workspace.id,
+                            rel,
+                            content,
+                            sha,
+                            new_version,
+                            now,
+                        )
+                        changed.append(rel)
+                if changed:
+                    await conn.execute(
+                        _UPDATE_WORKSPACE_VERSION_SQL,
+                        max_version,
+                        now,
+                        workspace.id,
+                    )
+    return changed
+
+
+_SELECT_HEAD_SQL = (
+    "SELECT content, sha256, version "
+    "FROM workspace_files "
+    "WHERE workspace_id = $1 AND relative_path = $2"
+)
+
+
+async def _watch_loop(
+    *,
+    workspace: Any,
+    disk_root: Path,
+    db_pool: Any,
+    actor_id: UUID,
+    correlation_id: UUID,
+    just_wrote: deque[tuple[str, str]],
+    on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS,
+) -> None:
+    """drive :func:`watchfiles.awatch` over ``disk_root`` while bind is open.
+
+    each yielded batch is handed to :func:`_handle_watch_batch` along
+    with the configured ``on_conflict`` policy. inner iteration
+    exceptions are caught and logged at :meth:`log.exception` level so
+    a single bad file (transient I/O, symlink cycle, DB blip) does not
+    kill the task; the loop yields back to the event loop via
+    :func:`asyncio.sleep` on the error path so a tight-spinning failure
+    cannot starve other tasks. :class:`asyncio.CancelledError` cleanly
+    exits the loop without re-raising; bind's teardown code already
+    awaits the task with a bounded timeout and expects the task to
+    return rather than raise :class:`CancelledError`.
+
+    :param workspace: target workspace entity
+    :ptype workspace: Any
+    :param disk_root: absolute path to sandboxed bind root
+    :ptype disk_root: Path
+    :param db_pool: asyncpg pool supplying acquire + transaction
+    :ptype db_pool: Any
+    :param actor_id: identifier of actor running the bind window
+    :ptype actor_id: UUID
+    :param correlation_id: originating tool-call envelope identifier
+    :ptype correlation_id: UUID
+    :param just_wrote: bounded deque of ``(rel, sha)`` pairs recording
+        writes the bind process itself performed
+    :ptype just_wrote: deque[tuple[str, str]]
+    :param on_conflict: policy forwarded to each batch handler
+    :ptype on_conflict: BindConflictPolicy
+    :return: None
+    :rtype: None
+    """
+    resolved_root = disk_root.resolve()
+    try:
+        async for batch in awatch(disk_root, recursive=True):
+            try:
+                changed = await _handle_watch_batch(
+                    batch=batch,
+                    workspace=workspace,
+                    disk_root=disk_root,
+                    resolved_root=resolved_root,
+                    db_pool=db_pool,
+                    actor_id=actor_id,
+                    correlation_id=correlation_id,
+                    just_wrote=just_wrote,
+                    on_conflict=on_conflict,
+                )
+                if changed:
+                    log.info(
+                        "workspace.watch.batch",
+                        extra={
+                            "workspace_id": str(workspace.id),
+                            "changed_count": len(changed),
+                        },
+                    )
+            # NOSILENT: per-batch failure must not kill the watcher task.
+            # log at exception-level so SRE sees programmer-error
+            # regressions; yield to the loop so a persistent failure
+            # cannot starve other tasks.
+            except Exception as iter_exc:
+                log.exception(
+                    "bind watcher iteration failed: %s", iter_exc,
+                )
+                await asyncio.sleep(0)
+    except asyncio.CancelledError:
+        # bind's teardown cancels us on clean or exception-path exit;
+        # returning instead of re-raising lets the awaiting wait_for
+        # observe a completed task rather than a CancelledError that
+        # would propagate into bind's outer frame.
+        return
+
+
 async def _capture_back(
     *,
     workspace: Any,
@@ -316,19 +1048,19 @@ async def _capture_back(
     disk = await _snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
-    updates: list[tuple[str, bytes, str, int]] = []
-    deletes: list[tuple[str, int]] = []
+    updates: list[tuple[str, bytes, str]] = []
+    deletes: list[str] = []
 
     for rel, (content, sha) in disk.items():
         prior = snapshot.get(rel)
         if prior is None:
             creates.append((rel, content, sha))
         elif prior[0] != sha:
-            updates.append((rel, content, sha, prior[1]))
+            updates.append((rel, content, sha))
 
-    for rel, (prior_sha, prior_version) in snapshot.items():
+    for rel in snapshot:
         if rel not in disk:
-            deletes.append((rel, prior_version))
+            deletes.append(rel)
 
     changed: list[str] = []
     change_kinds: dict[str, str] = {}
@@ -375,8 +1107,17 @@ async def _capture_back(
                     changed.append(rel)
                     change_kinds[rel] = "create"
 
-                for rel, content, sha, prior_version in updates:
-                    new_version = prior_version + 1
+                for rel, content, sha in updates:
+                    # derive version from the journal rather than from
+                    # snapshot[rel].version + 1. the live watcher spawned
+                    # inside the bind window may already have committed
+                    # journal rows for this path, so the snapshot's
+                    # version is no longer a safe basis for "prior + 1"
+                    # -- a naive bump would collide with the watcher's
+                    # INSERT on (workspace_id, relative_path, version).
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -405,8 +1146,11 @@ async def _capture_back(
                     changed.append(rel)
                     change_kinds[rel] = "update"
 
-                for rel, prior_version in deletes:
-                    new_version = prior_version + 1
+                for rel in deletes:
+                    # same watcher-collision rationale as updates above.
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -487,6 +1231,7 @@ async def bind(
     lease_max_wait_seconds: int = 60,
     nats_client: Any = None,
     namespace: str | None = None,
+    on_conflict: BindConflictPolicy = BindConflictPolicy.DISK_WINS,
 ) -> AsyncIterator[Path]:
     """async context manager that sync L3 -> disk, yields path, captures on clean exit.
 
@@ -537,6 +1282,11 @@ async def bind(
     :ptype lease_ttl_seconds: int
     :param lease_max_wait_seconds: max total wait forwarded to :meth:`acquire`
     :ptype lease_max_wait_seconds: int
+    :param on_conflict: policy governing L3 vs disk authority during
+        the bind window; controls both seed-on-enter strategy and
+        live-watcher event handling; defaults to
+        :attr:`BindConflictPolicy.DISK_WINS`
+    :ptype on_conflict: BindConflictPolicy
     :return: async context manager yielding the sandboxed disk root
     :rtype: AsyncIterator[Path]
     :raises ValueError: if ``workspace_id`` does not resolve to a live workspace
@@ -558,12 +1308,34 @@ async def bind(
         max_wait_seconds=lease_max_wait_seconds,
     )
     async with handle:
+        # step 1: seed L3 from disk under the conflict policy. L3_WINS
+        # runs the historical "import if empty" gate; DISK_WINS walks
+        # disk unconditionally and mirrors create/update/delete rows.
+        # the gate re-queries find_by_workspace so the L3_WINS path
+        # does not re-import on a populated workspace.
+        await _seed_l3_from_disk(
+            workspace=workspace,
+            disk_root=disk_root,
+            workspace_file_collection=workspace_file_collection,
+            db_pool=db_pool,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            on_conflict=on_conflict,
+        )
+        # step 2: sync L3 -> disk (after import, this is a no-op on a
+        # freshly-empty workspace because L3 now matches disk; on a
+        # pre-populated workspace it projects head state over whatever
+        # disk state happens to be present, per the bind contract).
         files = await workspace_file_collection.find_by_workspace(workspace_id)
         snapshot: dict[str, tuple[str, int]] = {}
+        just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
         for file_entity in files:
             target = disk_root / file_entity.relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             await atomic_write(target, file_entity.content)
+            just_wrote.append(
+                (file_entity.relative_path, file_entity.sha256),
+            )
             snapshot[file_entity.relative_path] = (
                 file_entity.sha256,
                 file_entity.version,
@@ -577,9 +1349,51 @@ async def bind(
                 "file_count": len(files),
             },
         )
+        # step 3: spawn watcher task so external writes landing on disk
+        # during the bind window mirror into L3 in real time. the task
+        # owns its own awatch generator; cancellation on exit is
+        # bounded by asyncio.wait_for below.
+        watcher_task = asyncio.create_task(
+            _watch_loop(
+                workspace=workspace,
+                disk_root=disk_root,
+                db_pool=db_pool,
+                actor_id=actor_id,
+                correlation_id=correlation_id,
+                just_wrote=just_wrote,
+                on_conflict=on_conflict,
+            ),
+            name=f"workspace.bind.watch:{workspace_id.hex}:{root_name}",
+        )
+        body_raised: BaseException | None = None
         try:
             yield disk_root
-        except BaseException:
+        except BaseException as body_exc:
+            body_raised = body_exc
+        finally:
+            # tear the watcher down deterministically whether or not the
+            # body raised; the bounded wait_for guarantees bind exit does
+            # not hang on a stuck filesystem watcher.
+            watcher_task.cancel()
+            try:
+                await asyncio.wait_for(watcher_task, timeout=2.0)
+            except TimeoutError:
+                log.warning(
+                    "workspace.bind.watcher_cancel_timeout",
+                    extra={
+                        "workspace_id": str(workspace_id),
+                        "root_name": root_name,
+                    },
+                )
+            # NOSILENT: CancelledError on the awaited task is expected;
+            # any other exception is programmer error we want visible.
+            except asyncio.CancelledError:
+                pass
+            except Exception as cancel_exc:
+                log.exception(
+                    "workspace.bind.watcher_cancel_error: %s", cancel_exc,
+                )
+        if body_raised is not None:
             log.warning(
                 "workspace.bind.exception_skip_capture",
                 extra={
@@ -587,30 +1401,29 @@ async def bind(
                     "root_name": root_name,
                 },
             )
-            raise
-        else:
-            changed = await _capture_back(
-                workspace=workspace,
-                disk_root=disk_root,
-                snapshot=snapshot,
-                workspace_file_collection=workspace_file_collection,
-                workspace_file_version_collection=workspace_file_version_collection,
-                workspace_collection=workspace_collection,
-                db_pool=db_pool,
-                actor_id=actor_id,
-                correlation_id=correlation_id,
-                nats_client=nats_client,
-                namespace=namespace,
-                root_name=root_name,
-            )
-            log.info(
-                "workspace.bind.capture",
-                extra={
-                    "workspace_id": str(workspace_id),
-                    "root_name": root_name,
-                    "changed_count": len(changed),
-                },
-            )
+            raise body_raised
+        changed = await _capture_back(
+            workspace=workspace,
+            disk_root=disk_root,
+            snapshot=snapshot,
+            workspace_file_collection=workspace_file_collection,
+            workspace_file_version_collection=workspace_file_version_collection,
+            workspace_collection=workspace_collection,
+            db_pool=db_pool,
+            actor_id=actor_id,
+            correlation_id=correlation_id,
+            nats_client=nats_client,
+            namespace=namespace,
+            root_name=root_name,
+        )
+        log.info(
+            "workspace.bind.capture",
+            extra={
+                "workspace_id": str(workspace_id),
+                "root_name": root_name,
+                "changed_count": len(changed),
+            },
+        )
 
 
 async def recover(
@@ -681,14 +1494,14 @@ async def recover(
     disk = await _snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
-    updates: list[tuple[str, bytes, str, int]] = []
+    updates: list[tuple[str, bytes, str]] = []
 
     for rel, (content, sha) in disk.items():
         prior = head_by_path.get(rel)
         if prior is None:
             creates.append((rel, content, sha))
         elif prior[0] != sha:
-            updates.append((rel, content, sha, prior[1]))
+            updates.append((rel, content, sha))
 
     changed: list[str] = []
     if creates or updates:
@@ -732,8 +1545,15 @@ async def recover(
                     )
                     changed.append(rel)
 
-                for rel, content, sha, prior_version in updates:
-                    new_version = prior_version + 1
+                for rel, content, sha in updates:
+                    # derive from journal for the same reason as
+                    # _capture_back: recover runs without the bind lease,
+                    # so a concurrent bind on another pod could bump the
+                    # journal in parallel; the unique constraint would
+                    # reject a naive prior_version+1 INSERT.
+                    new_version = await _next_journal_version(
+                        conn, workspace.id, rel,
+                    )
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
