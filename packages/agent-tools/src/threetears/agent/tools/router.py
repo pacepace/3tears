@@ -7,8 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.types import ChatModelFactory
 

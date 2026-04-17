@@ -1,7 +1,13 @@
-"""JSON serialization helpers for cache storage (L2 NATS KV).
+"""JSON serialization helpers and pluggable format-handler registry.
 
 Provides a custom JSON encoder and type-aware deserializer that handles
-UUID, datetime, Decimal, bytes, and Enum round-trips through JSON.
+UUID, datetime, Decimal, bytes, and Enum round-trips through JSON, plus
+a runtime-checkable :class:`FormatHandler` Protocol and extension-keyed
+registry that external packages use to plug in YAML, TOML, .env, or any
+other structural document format.
+
+No concrete handlers are registered here — each format lives in its own
+package and self-registers on module import.
 """
 
 from __future__ import annotations
@@ -10,7 +16,8 @@ import json
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, get_args, get_origin
+from pathlib import Path
+from typing import Any, Protocol, get_args, get_origin, runtime_checkable
 from uuid import UUID
 
 
@@ -87,4 +94,132 @@ def deserialize_from_json(data: bytes, field_types: dict[str, Any]) -> dict[str,
             result[key] = value
         else:
             result[key] = value
+    return result
+
+
+class UnknownFormatError(LookupError):
+    """raised when no :class:`FormatHandler` is registered for given extension.
+
+    subclasses :class:`LookupError` so callers may catch broadly or narrowly.
+    """
+
+
+@runtime_checkable
+class FormatHandler(Protocol):
+    """structural contract for pluggable serialization format handlers.
+
+    implementations own parsing, serialization, and path-based access for
+    one or more file extensions. path expressions are interpreted by each
+    handler — no jsonpath grammar is imposed at protocol level.
+
+    :cvar extensions: tuple of file extensions handler owns, leading-dot
+        form (e.g. ``(".yaml", ".yml")``); registry normalizes to lowercase
+        without leading dot when indexing
+    """
+
+    extensions: tuple[str, ...]
+
+    def load(self, text: str) -> Any:
+        """parse serialized document body into in-memory tree.
+
+        :param text: serialized document body
+        :ptype text: str
+        :return: in-memory document tree
+        :rtype: Any
+        :raises ValueError: if text cannot be parsed as this format
+        """
+        ...
+
+    def dump(self, tree: Any) -> str:
+        """serialize in-memory tree back to document body text.
+
+        :param tree: in-memory document tree
+        :ptype tree: Any
+        :return: serialized document body
+        :rtype: str
+        :raises TypeError: if tree contains types handler cannot serialize
+        """
+        ...
+
+    def get(self, tree: Any, path: str) -> Any:
+        """resolve handler-interpreted path expression against tree.
+
+        :param tree: in-memory document tree
+        :ptype tree: Any
+        :param path: handler-interpreted path expression
+        :ptype path: str
+        :return: value at path within tree
+        :rtype: Any
+        :raises KeyError: if path does not resolve within tree
+        """
+        ...
+
+    def set(self, tree: Any, path: str, value: Any) -> Any:
+        """assign value at handler-interpreted path within tree.
+
+        handler may mutate tree in place and return same tree, or return
+        a new structure — callers must use the returned tree.
+
+        :param tree: in-memory document tree
+        :ptype tree: Any
+        :param path: handler-interpreted path expression
+        :ptype path: str
+        :param value: value to assign at path
+        :ptype value: Any
+        :return: possibly new document tree with value set at path
+        :rtype: Any
+        :raises KeyError: if path cannot be constructed within tree
+        """
+        ...
+
+    def merge(self, tree: Any, partial: dict[str, Any]) -> Any:
+        """merge partial document into tree according to handler's rules.
+
+        handler may mutate tree in place and return same tree, or return
+        a new structure — callers must use the returned tree.
+
+        :param tree: in-memory document tree
+        :ptype tree: Any
+        :param partial: partial document to merge into tree
+        :ptype partial: dict[str, Any]
+        :return: possibly new document tree with partial merged
+        :rtype: Any
+        """
+        ...
+
+
+_HANDLERS: dict[str, FormatHandler] = {}
+
+
+def register_handler(handler: FormatHandler) -> None:
+    """install handler in module-level registry under each of its extensions.
+
+    extension keys are normalized to lowercase with leading dot stripped.
+    registering the same extension twice replaces the prior handler.
+
+    :param handler: concrete handler implementing :class:`FormatHandler`
+    :ptype handler: FormatHandler
+    :return: None
+    :rtype: None
+    """
+    for ext in handler.extensions:
+        _HANDLERS[ext.lstrip(".").lower()] = handler
+
+
+def handler_for(path: str | Path) -> FormatHandler:
+    """resolve path's extension to registered handler.
+
+    extension matching is case-insensitive and strips leading dot.
+
+    :param path: filesystem path or string whose extension selects handler
+    :ptype path: str | Path
+    :return: registered handler for path's extension
+    :rtype: FormatHandler
+    :raises UnknownFormatError: if no handler is registered for extension
+    """
+    ext = Path(path).suffix.lstrip(".").lower()
+    try:
+        result = _HANDLERS[ext]
+    except KeyError as e:
+        raise UnknownFormatError(f"no FormatHandler registered for extension {ext!r}") from e
     return result

@@ -12,7 +12,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 from threetears.agent.memory.entities import MemoryEntity
 
@@ -21,6 +21,8 @@ log = get_logger(__name__)
 # Field type mapping for JSON serialization/deserialization
 _FIELD_TYPES: dict[str, Any] = {
     "memory_id": UUID,
+    "agent_id": UUID,
+    "customer_id": UUID,
     "user_id": UUID,
     "conversation_id": UUID,
     "message_id_source": UUID,
@@ -102,10 +104,11 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
             result = await self._postgres_pool.execute(
                 """
                 INSERT INTO memories (
-                    memory_id, user_id, conversation_id, message_id_source,
+                    memory_id, agent_id, customer_id, user_id,
+                    conversation_id, message_id_source,
                     type_memory, content, embedding, is_deleted,
                     media_id, date_created, date_deleted, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT (memory_id) DO UPDATE SET
                     content = EXCLUDED.content,
                     embedding = EXCLUDED.embedding,
@@ -114,6 +117,8 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
                     date_updated = EXCLUDED.date_updated
                 """,
                 data["memory_id"],
+                data.get("agent_id"),
+                data.get("customer_id"),
                 data["user_id"],
                 data["conversation_id"],
                 data["message_id_source"],
@@ -174,7 +179,15 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         return result
 
     async def find_by_user(self, user_id: UUID, include_deleted: bool = False) -> list[MemoryEntity]:
-        """Fetch all memories for a user from L3, promote to caches."""
+        """Fetch all memories for user from L3, promote to caches.
+
+        :param user_id: user whose memories to fetch
+        :ptype user_id: UUID
+        :param include_deleted: whether to include soft-deleted memories
+        :ptype include_deleted: bool
+        :return: list of memory entities belonging to user
+        :rtype: list[MemoryEntity]
+        """
         if include_deleted:
             rows = await self._postgres_pool.fetch(
                 "SELECT * FROM memories WHERE user_id = $1 ORDER BY date_created DESC",
@@ -192,6 +205,58 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
             entity._original_date_updated = data.get("date_updated")
             entity_id = data["memory_id"]
             # Promote to L2
+            await self._save_to_l2(entity_id, data)
+            entities.append(entity)
+        return entities
+
+    async def find_by_scope(
+        self,
+        agent_id: UUID,
+        customer_id: UUID | None = None,
+        user_id: UUID | None = None,
+        include_deleted: bool = False,
+    ) -> list[MemoryEntity]:
+        """Fetch memories scoped by agent, optionally narrowed by customer and user.
+
+        :param agent_id: agent ID scope (required)
+        :ptype agent_id: UUID
+        :param customer_id: optional customer ID to further narrow scope
+        :ptype customer_id: UUID | None
+        :param user_id: optional user ID to further narrow scope
+        :ptype user_id: UUID | None
+        :param include_deleted: whether to include soft-deleted memories
+        :ptype include_deleted: bool
+        :return: list of memory entities matching scope
+        :rtype: list[MemoryEntity]
+        """
+        conditions = ["agent_id = $1"]
+        params: list[object] = [agent_id]
+        param_idx = 2
+
+        if customer_id is not None:
+            conditions.append(f"customer_id = ${param_idx}")
+            params.append(customer_id)
+            param_idx += 1
+
+        if user_id is not None:
+            conditions.append(f"user_id = ${param_idx}")
+            params.append(user_id)
+            param_idx += 1
+
+        if not include_deleted:
+            conditions.append("is_deleted = false")
+
+        where_clause = " AND ".join(conditions)
+        query = f"SELECT * FROM memories WHERE {where_clause} ORDER BY date_created DESC"
+
+        rows = await self._postgres_pool.fetch(query, *params)
+
+        entities: list[MemoryEntity] = []
+        for row in rows:
+            data = dict(row)
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity._original_date_updated = data.get("date_updated")
+            entity_id = data["memory_id"]
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities

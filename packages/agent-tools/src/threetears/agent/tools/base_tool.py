@@ -1,0 +1,181 @@
+"""TearsTool abstract base class and supporting dataclasses.
+
+defines interface that all tools must implement to participate
+in both direct mode and MCP server mode. no platform dependencies.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+from threetears.agent.tools._coercion import normalize_kwargs
+from threetears.observe import get_logger
+
+_log = get_logger(__name__)
+
+
+@dataclass
+class ToolResult:
+    """result returned from tool execution.
+
+    :param success: whether execution succeeded
+    :ptype success: bool
+    :param content: result content string
+    :ptype content: str
+    :param metadata: optional additional metadata
+    :ptype metadata: dict[str, Any] | None
+    :param error: error message if execution failed
+    :ptype error: str | None
+    """
+
+    success: bool
+    content: str
+    metadata: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass
+class MCPToolDefinition:
+    """MCP-compatible tool definition schema.
+
+    :param name: tool name in namespace convention ({package}.{name})
+    :ptype name: str
+    :param version: semver-compatible version string
+    :ptype version: str
+    :param description: human-readable tool description
+    :ptype description: str
+    :param input_schema: JSON Schema for tool input parameters
+    :ptype input_schema: dict[str, Any]
+    :param output_schema: optional JSON Schema for tool output
+    :ptype output_schema: dict[str, Any] | None
+    :param timeout_seconds: expected maximum execution time, None uses caller default
+    :ptype timeout_seconds: float | None
+    """
+
+    name: str
+    version: str
+    description: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any] | None = None
+    timeout_seconds: float | None = None
+
+
+class TearsTool(ABC):
+    """abstract base class for all platform tools.
+
+    tools implement this interface to work in both direct mode
+    (called from agent code) and MCP server mode (served via
+    ToolServer, called through Registry proxy). no platform
+    dependencies required -- standalone by design.
+
+    ``run`` is the callable surface: a template method that normalizes
+    loose LLM-supplied inputs (empty strings or JSON-encoded strings
+    for object/array fields) against this tool's declared
+    ``mcp_schema()`` input schema, then dispatches to subclass
+    ``execute``. subclasses override ``execute`` and never ``run``;
+    the ``__init_subclass__`` guard below enforces that contract at
+    class-creation time so the coercion step can never be bypassed.
+    """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """enforce the run/execute contract at subclass-creation time.
+
+        subclasses MUST NOT override ``run`` -- coercion is the
+        platform's job, not the subclass's. the "must define execute"
+        half of the contract is already handled by Python's abstract
+        method machinery: an intermediate base (SchemaTool, AdminTool)
+        can satisfy ``execute`` on behalf of its concrete subclasses,
+        and Python raises cleanly on instantiation if the abstract
+        set is nonempty. adding an explicit "execute in __dict__"
+        check here would wrongly reject those intermediate-base
+        dispatch patterns.
+
+        :param kwargs: forwarded to ``object.__init_subclass__``
+        :ptype kwargs: Any
+        :raises TypeError: when ``run`` is overridden by a subclass
+        """
+        super().__init_subclass__(**kwargs)
+        if "run" in cls.__dict__:
+            msg = (
+                f"{cls.__name__} overrides TearsTool.run; run is the "
+                "platform-owned template method that wraps input "
+                "coercion. override ``execute`` instead."
+            )
+            raise TypeError(msg)
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        """normalize loose LLM-supplied kwargs then dispatch to subclass.
+
+        coerces wrong-shape object/array values (empty strings or
+        JSON-encoded strings) toward their declared JSON schema
+        types, then calls subclass ``execute`` with the normalized
+        kwargs. if ``mcp_schema`` itself raises, falls back to the
+        original kwargs so coercion never breaks a tool.
+
+        :param kwargs: raw tool input parameters
+        :ptype kwargs: Any
+        :return: execution result from subclass ``execute``
+        :rtype: ToolResult
+        """
+        try:
+            schema = self.mcp_schema()
+            normalized = normalize_kwargs(kwargs, schema.input_schema)
+        except Exception:
+            # coercion never breaks a tool: fall back to raw kwargs if
+            # mcp_schema() or normalize_kwargs raises. log so the fallback
+            # is visible in diagnostics instead of silently masking a bug
+            # in the tool's schema.
+            _log.warning(
+                "tool input coercion fell back to raw kwargs",
+                extra={"extra_data": {"tool_class": type(self).__name__}},
+                exc_info=True,
+            )
+            normalized = kwargs
+        return await self.execute(**normalized)
+
+    @abstractmethod
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """execute tool with normalized parameters.
+
+        subclasses implement this. ``run`` runs coercion against
+        ``mcp_schema().input_schema`` before calling ``execute``, so
+        object/array kwargs arrive as native containers even when the
+        LLM caller supplied empty strings or JSON-encoded strings.
+
+        :param kwargs: tool-specific input parameters, post-coercion
+        :ptype kwargs: Any
+        :return: execution result
+        :rtype: ToolResult
+        """
+        ...
+
+    @abstractmethod
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition.
+
+        :return: tool definition with name, version, description, schemas
+        :rtype: MCPToolDefinition
+        """
+        ...
+
+    @abstractmethod
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        format: {package}.{name} (e.g., 'threetears.calculator')
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        ...
+
+    @abstractmethod
+    def mcp_version(self) -> str:
+        """return semver-compatible tool version.
+
+        :return: version string (e.g., '1.0.0')
+        :rtype: str
+        """
+        ...

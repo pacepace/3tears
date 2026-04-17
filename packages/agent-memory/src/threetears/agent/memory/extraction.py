@@ -19,8 +19,7 @@ from uuid_utils import uuid7
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 
@@ -70,8 +69,34 @@ class MemoryExtractor:
         user_message: str,
         assistant_response: str,
         turn_count: int,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> None:
-        """Extract memories from a conversation turn. Fire-and-forget safe."""
+        """Extract memories from conversation turn. Fire-and-forget safe.
+
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param user_id: user who sent message
+        :ptype user_id: UUID
+        :param conversation_id: conversation this turn belongs to
+        :ptype conversation_id: UUID
+        :param message_id_source: source message ID for extracted memories
+        :ptype message_id_source: UUID
+        :param user_message: raw user message text
+        :ptype user_message: str
+        :param assistant_response: raw assistant response text
+        :ptype assistant_response: str
+        :param turn_count: number of turns in conversation so far
+        :ptype turn_count: int
+        :param agent_id: agent ID to tag extracted memories with
+        :ptype agent_id: UUID | None
+        :param customer_id: customer ID to tag extracted memories with
+        :ptype customer_id: UUID | None
+        :return: nothing
+        :rtype: None
+        :raises: never (fire-and-forget safe, logs errors internally)
+        """
         try:
             # Layer 1: Heuristic gates
             passed, reason = self._check_heuristic_gates(
@@ -148,6 +173,8 @@ class MemoryExtractor:
                 user_id,
                 conversation_id,
                 message_id_source,
+                agent_id=agent_id,
+                customer_id=customer_id,
             )
 
         except Exception as exc:
@@ -425,8 +452,31 @@ class MemoryExtractor:
         user_id: UUID,
         conversation_id: UUID,
         message_id_source: UUID,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
     ) -> None:
-        """Execute ADD/UPDATE/DELETE/NOOP actions against the database."""
+        """Execute ADD/UPDATE/DELETE/NOOP actions against database.
+
+        :param actions: resolved action list from _resolve_actions
+        :ptype actions: list[dict[str, Any]]
+        :param candidates: candidate memories with embeddings
+        :ptype candidates: list[dict[str, Any]]
+        :param pool: database connection pool
+        :ptype pool: Any
+        :param user_id: user who owns these memories
+        :ptype user_id: UUID
+        :param conversation_id: conversation this extraction belongs to
+        :ptype conversation_id: UUID
+        :param message_id_source: source message ID
+        :ptype message_id_source: UUID
+        :param agent_id: agent ID to tag new memories with
+        :ptype agent_id: UUID | None
+        :param customer_id: customer ID to tag new memories with
+        :ptype customer_id: UUID | None
+        :return: nothing
+        :rtype: None
+        """
         now = datetime.now(UTC)
 
         for act in actions:
@@ -441,12 +491,15 @@ class MemoryExtractor:
                     await pool.execute(
                         """
                         INSERT INTO memories (
-                            memory_id, user_id, conversation_id, message_id_source,
+                            memory_id, agent_id, customer_id,
+                            user_id, conversation_id, message_id_source,
                             type_memory, content, embedding, is_deleted,
                             date_created, date_updated
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, false, $8, $8)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, false, $10, $10)
                         """,
                         memory_id,
+                        agent_id,
+                        customer_id,
                         user_id,
                         conversation_id,
                         message_id_source,

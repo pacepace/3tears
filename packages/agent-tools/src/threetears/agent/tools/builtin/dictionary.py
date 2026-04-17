@@ -8,6 +8,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 _MAX_CHARS = 3000
@@ -90,3 +91,79 @@ def create_dictionary_tool(config: dict[str, Any], description: str) -> Structur
         description=description,
         args_schema=DictionaryInput,
     )
+
+
+class DictionaryTool(TearsTool):
+    """TearsTool wrapper for dictionary lookups via dictionaryapi.dev.
+
+    looks up word definitions, phonetics, synonyms, and antonyms
+    using free dictionary API. configurable language at construction.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "word": {
+                "type": "string",
+                "description": "word to look up",
+            },
+        },
+        "required": ["word"],
+    }
+
+    def __init__(self, language: str = "en") -> None:
+        """initialize dictionary tool with language.
+
+        :param language: ISO 639-1 language code for lookups
+        :ptype language: str
+        """
+        self._language = language
+        self._lookup_fn = _create_lookup_fn(language)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """look up word definition.
+
+        :param kwargs: must include 'word' key with word to look up
+        :ptype kwargs: Any
+        :return: result containing definition or error
+        :rtype: ToolResult
+        """
+        word = kwargs.get("word", "")
+        content = self._lookup_fn(word)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for dictionary.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="look up word definitions, phonetics, synonyms, and antonyms",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.dictionary"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

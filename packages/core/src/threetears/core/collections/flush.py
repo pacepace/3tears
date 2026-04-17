@@ -3,15 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
-from threetears.core.logging import get_logger
+from sqlalchemy import Column, Integer, MetaData, String, Table, Text
+
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
+    from threetears.core.cache.sqlite import SQLiteBackend
     from threetears.core.collections.registry import CollectionRegistry
 
 log = get_logger(__name__)
+
+_WRITE_BUFFER_METADATA = MetaData()
+
+_write_buffer_table = Table(
+    "write_buffer",
+    _WRITE_BUFFER_METADATA,
+    Column("key", String, primary_key=True),
+    Column("table_name", Text, nullable=False),
+    Column("entity_id", Text, nullable=False),
+    Column("data", Text, nullable=False),
+    Column("retries", Integer, nullable=False, default=0),
+    Column("date_updated", String, nullable=True),
+)
 
 _MAX_FLUSH_RETRIES = 10
 
@@ -31,21 +48,69 @@ class PendingWrite(NamedTuple):
 
 
 class WriteBuffer:
-    """Coalescing async write buffer keyed by (table_name, entity_id)."""
+    """Coalescing async write buffer keyed by (table_name, entity_id).
 
-    def __init__(self) -> None:
+    when l1_backend is provided, pending writes are persisted to
+    SQLite so they survive process crashes. dict is retained as
+    fast dedup index and fallback when l1_backend is None.
+    """
+
+    def __init__(self, l1_backend: SQLiteBackend | None = None) -> None:
+        """initialize write buffer with optional L1 persistence.
+
+        :param l1_backend: optional SQLiteBackend for crash-safe buffering
+        :ptype l1_backend: SQLiteBackend | None
+        """
         self._buf: dict[tuple[str, Any], PendingWrite] = {}
         self._lock = asyncio.Lock()
+        self._l1 = l1_backend
+        if self._l1 is not None and not self._l1._initialized:
+            self._l1.initialize(_WRITE_BUFFER_METADATA)
 
     async def add(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int = 0) -> None:
         """Add or replace a pending write for the given entity."""
         async with self._lock:
             key = (table_name, entity_id)
-            self._buf[key] = PendingWrite(table_name, entity_id, data, retries)
+            pw = PendingWrite(table_name, entity_id, data, retries)
+            self._buf[key] = pw
+            if self._l1 is not None:
+                from datetime import UTC, datetime
+
+                l1_key = f"{table_name}:{entity_id}"
+                self._l1.upsert(
+                    "write_buffer",
+                    {
+                        "key": l1_key,
+                        "table_name": table_name,
+                        "entity_id": str(entity_id),
+                        "data": json.dumps(data, default=str),
+                        "retries": retries,
+                        "date_updated": datetime.now(UTC).isoformat(),
+                    },
+                    primary_key="key",
+                )
 
     async def drain(self) -> list[PendingWrite]:
         """Drain all pending writes, returning them and clearing the buffer."""
         async with self._lock:
+            if self._l1 is not None:
+                rows = self._l1.execute_query("SELECT * FROM write_buffer")
+                items: list[PendingWrite] = []
+                for row in rows:
+                    raw_data = row["data"]
+                    parsed_data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                    items.append(
+                        PendingWrite(
+                            table_name=row["table_name"],
+                            entity_id=row["entity_id"],
+                            data=parsed_data,
+                            retries=row["retries"],
+                        )
+                    )
+                conn = self._l1.get_connection()
+                conn.execute("DELETE FROM write_buffer")
+                self._buf.clear()
+                return items
             items = list(self._buf.values())
             self._buf.clear()
             return items
@@ -53,7 +118,11 @@ class WriteBuffer:
     async def remove(self, table_name: str, entity_id: Any) -> bool:
         """Remove a pending write. Returns True if it existed."""
         async with self._lock:
-            return self._buf.pop((table_name, entity_id), None) is not None
+            existed = self._buf.pop((table_name, entity_id), None) is not None
+            if self._l1 is not None:
+                l1_key = f"{table_name}:{entity_id}"
+                self._l1.delete_by_id("write_buffer", l1_key, primary_key="key")
+            return existed
 
     def pending_count(self) -> int:
         """Return the number of pending writes in the buffer."""

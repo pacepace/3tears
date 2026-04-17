@@ -23,8 +23,8 @@ from typing import Any
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 
@@ -929,3 +929,92 @@ def create_parse_document_tool(
 
     parse_document_tool.description = description
     return parse_document_tool
+
+
+class ParseDocumentTool(TearsTool):
+    """TearsTool wrapper for document parsing into clean markdown.
+
+    parses binary document content (PDF, DOCX, XLSX, TXT, Markdown,
+    LaTeX) into markdown text. accepts base64-encoded content and
+    detects format from filename extension. optionally supports OCR
+    for scanned PDF pages.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "content_base64": {
+                "type": "string",
+                "description": "base64-encoded file content",
+            },
+            "filename": {
+                "type": "string",
+                "description": "original filename with extension, used for format detection",
+            },
+        },
+        "required": ["content_base64", "filename"],
+    }
+
+    def __init__(self, ocr_config: OcrConfig | None = None) -> None:
+        """initialize parse document tool with optional OCR configuration.
+
+        :param ocr_config: OCR configuration for scanned PDF fallback
+        :ptype ocr_config: OcrConfig | None
+        """
+        self._ocr_config = ocr_config
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """parse document content into markdown.
+
+        :param kwargs: must include 'content_base64' and 'filename' keys
+        :ptype kwargs: Any
+        :return: result containing parsed markdown or error
+        :rtype: ToolResult
+        """
+        content_base64 = kwargs.get("content_base64", "")
+        filename = kwargs.get("filename", "")
+        lc_tool = create_parse_document_tool(
+            config={},
+            description="parse document",
+            ocr_config=self._ocr_config,
+        )
+        content = await lc_tool.ainvoke(
+            {"content_base64": content_base64, "filename": filename},
+        )
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for parse document.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="parse binary document content into clean markdown text",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.parse_document"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

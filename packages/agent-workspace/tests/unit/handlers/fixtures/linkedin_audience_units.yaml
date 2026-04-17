@@ -1,0 +1,6 @@
+audience_units:
+  - audience_unit: exec_logic
+    where_filters:
+      - lower(empl.job_level) = 'executive'
+      - lower(empl.job_title) like 'chief%'
+      - industries IS NOT NULL

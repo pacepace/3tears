@@ -271,6 +271,127 @@ class ToolContextManager:
         return None
 
     # ------------------------------------------------------------------
+    # Arbitrary context items keyed by (context_type, key)
+    # ------------------------------------------------------------------
+
+    async def get_item_by_type_and_key(
+        self,
+        context_type: str,
+        key: str,
+    ) -> dict[str, Any] | None:
+        """Fetch a single context item by ``(context_type, key)`` pair.
+
+        General-purpose lookup for callers that store arbitrary items
+        (workspace pin, per-agent bookmarks, etc.) outside the variable
+        / tool_result taxonomies. Reads the local projection; returns
+        ``None`` when no item matches.
+
+        :param context_type: context taxonomy tag (e.g. ``"workspace_pin"``)
+        :ptype context_type: str
+        :param key: unique key within ``context_type`` scope
+        :ptype key: str
+        :return: item dict or ``None`` if absent
+        :rtype: dict[str, Any] | None
+        """
+        result: dict[str, Any] | None = None
+        for item in self._items:
+            if item["context_type"] == context_type and item["key"] == key:
+                result = item
+                break
+        return result
+
+    async def save_item_by_type_and_key(
+        self,
+        *,
+        context_type: str,
+        key: str,
+        content: str,
+        short_desc: str = "",
+        long_desc: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Save (or replace) a context item by ``(context_type, key)`` pair.
+
+        Mirrors :meth:`set_variable`'s delete-then-save pattern so any
+        existing item with the same ``(context_type, key)`` is replaced
+        atomically in the local projection, L1, L2, and L3 tiers.
+        Returns the fresh ``context_id`` as a string.
+
+        :param context_type: context taxonomy tag (e.g. ``"workspace_pin"``)
+        :ptype context_type: str
+        :param key: unique key within ``context_type`` scope
+        :ptype key: str
+        :param content: item content
+        :ptype content: str
+        :param short_desc: optional token-efficient summary
+        :ptype short_desc: str
+        :param long_desc: optional expanded description
+        :ptype long_desc: str
+        :param metadata: optional metadata dict
+        :ptype metadata: dict[str, Any] | None
+        :return: context_id of the saved item as string
+        :rtype: str
+        """
+        # drop any prior entry so we enforce single-item semantics across
+        # every storage tier (local projection, L1, L2, L3).
+        existing = await self.get_item_by_type_and_key(context_type, key)
+        if existing is not None:
+            self._items = [i for i in self._items if i is not existing]
+            await self._collection.delete(existing["context_id"])
+
+        now = datetime.now(UTC)
+        context_id = uuid7()
+        data: dict[str, Any] = {
+            "context_id": context_id,
+            "conversation_id": self.conversation_id,
+            "context_type": context_type,
+            "key": key,
+            "short_desc": short_desc,
+            "long_desc": long_desc,
+            "content": content,
+            "metadata": metadata or {},
+            "date_accessed": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+        await self._collection.save_entity(
+            self._collection.entity_class(
+                data,
+                is_new=True,
+                collection=self._collection,
+            )
+        )
+        self._items.append(data)
+        return str(context_id)
+
+    async def delete_item_by_type_and_key(
+        self,
+        context_type: str,
+        key: str,
+    ) -> bool:
+        """Delete a context item by ``(context_type, key)`` pair.
+
+        Idempotent: returns ``False`` when no item matches rather than
+        raising, so callers can invoke it unconditionally.
+
+        :param context_type: context taxonomy tag (e.g. ``"workspace_pin"``)
+        :ptype context_type: str
+        :param key: unique key within ``context_type`` scope
+        :ptype key: str
+        :return: ``True`` if an item was deleted, ``False`` if absent
+        :rtype: bool
+        """
+        existing = await self.get_item_by_type_and_key(context_type, key)
+        result: bool
+        if existing is None:
+            result = False
+        else:
+            self._items = [i for i in self._items if i is not existing]
+            await self._collection.delete(existing["context_id"])
+            result = True
+        return result
+
+    # ------------------------------------------------------------------
     # Media slots
     # ------------------------------------------------------------------
 

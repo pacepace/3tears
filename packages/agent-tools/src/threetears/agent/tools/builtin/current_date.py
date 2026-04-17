@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import StructuredTool
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+
 
 def _create_date_fn(user_timezone: str | None) -> Any:
     """Create a date function, optionally bound to a user timezone."""
@@ -37,3 +39,67 @@ def create_current_date_tool(config: dict[str, Any], description: str) -> Struct
         name="current_date",
         description=description,
     )
+
+
+class CurrentDateTool(TearsTool):
+    """TearsTool wrapper for retrieving current date and time.
+
+    returns current UTC date/time and optionally converts to
+    specified timezone. always succeeds (no external dependencies).
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {},
+    }
+
+    def __init__(self, timezone: str | None = None) -> None:
+        """initialize current date tool with optional timezone.
+
+        :param timezone: IANA timezone name for local time display
+        :ptype timezone: str | None
+        """
+        self._timezone = timezone
+        self._date_fn = _create_date_fn(timezone)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """return current date and time.
+
+        :param kwargs: ignored (no input parameters)
+        :ptype kwargs: Any
+        :return: result containing current date/time string
+        :rtype: ToolResult
+        """
+        content = self._date_fn()
+        result = ToolResult(success=True, content=content)
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for current date.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="return current date and time in UTC and optional local timezone",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.current_date"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

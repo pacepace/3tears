@@ -26,6 +26,26 @@ class MemoryEntity(BaseEntity):
         return _as_uuid(self.id)
 
     @property
+    def agent_id(self) -> UUID:
+        """Get agent ID for memory scoping."""
+        return _as_uuid(self._get_raw("agent_id"))
+
+    @agent_id.setter
+    def agent_id(self, value: UUID) -> None:
+        """Set agent ID."""
+        BaseEntity.__setattr__(self, "agent_id", value)
+
+    @property
+    def customer_id(self) -> UUID:
+        """Get customer ID for memory scoping."""
+        return _as_uuid(self._get_raw("customer_id"))
+
+    @customer_id.setter
+    def customer_id(self, value: UUID) -> None:
+        """Set customer ID."""
+        BaseEntity.__setattr__(self, "customer_id", value)
+
+    @property
     def user_id(self) -> UUID:
         """Get the user ID that owns this memory."""
         return _as_uuid(self._get_raw("user_id"))

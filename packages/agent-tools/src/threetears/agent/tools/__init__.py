@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 from threetears.agent.tools.registry import ToolRegistry
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.entities import ContextItemEntity
-from threetears.agent.tools.collections import ContextItemCollection, context_items_table
+from threetears.agent.tools.collections import (
+    ContextItemCollection,
+    context_items_table,
+    migrate_context_items_schema,
+)
 from threetears.agent.tools.document import (
     DocumentResult,
     DocumentSection,
@@ -63,6 +67,7 @@ __all__ = [
     "ContextItemCollection",
     "ContextItemEntity",
     "context_items_table",
+    "migrate_context_items_schema",
     "DEFAULT_ROUTING_PROMPT",
     "DocumentResult",
     "DocumentSection",

@@ -71,7 +71,7 @@ class TestLoggingConsistency:
 
     @pytest.mark.parametrize("src_file", _SRC_FILES, ids=_SRC_IDS)
     def test_uses_project_logger(self, src_file: Path) -> None:
-        """Files that log must import get_logger from threetears.core.logging."""
+        """Files that log must import get_logger from threetears.observe or threetears.core.logging."""
         tree = _parse_file(src_file)
         # Skip the logging module itself
         if src_file.name == "logging.py":
@@ -89,7 +89,7 @@ class TestLoggingConsistency:
         imports_get_logger = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                if node.module and "logging" in node.module:
+                if node.module and ("logging" in node.module or "observe" in node.module):
                     for alias in node.names:
                         if alias.name == "get_logger":
                             imports_get_logger = True

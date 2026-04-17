@@ -13,8 +13,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
-from threetears.core.logging import get_logger
-from threetears.core.tracing import traced
+from threetears.observe import get_logger, traced
 
 log = get_logger(__name__)
 
@@ -340,35 +339,35 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     # --- Three-tier operations ---
 
-    async def ensure(self, entity_id: Any) -> bool:
+    async def ensure(self, entity_id: Any) -> dict[str, Any] | None:
         """Pull entity into L1 cache through L2/L3 if not already present.
 
-        Returns True if entity was found (in any tier), False if not found
-        anywhere. After ensure() returns True, subscript access is guaranteed
-        to hit L1 (no bridge overhead).
+        Returns entity data dict if found (in any tier), None if not found
+        anywhere. After ensure() returns data, subscript access is guaranteed
+        to hit L1 (when L1 is available).
         """
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(entity_id), self._primary_key_column)
+            row: dict[str, Any] | None = self._l1.select_by_id(
+                self.table_name,
+                str(entity_id),
+                self._primary_key_column,
+            )
             if row is not None:
-                return True
+                return row
         data = await self._pull_through(entity_id)
-        return data is not None
+        return data
 
     @traced()
     async def get(self, entity_id: Any) -> EntityT | None:
         """Three-tier read: L1 -> L2 -> L3, promote on miss."""
         self._set_span_table()
-        found = await self.ensure(entity_id)
-        if not found:
+        data = await self.ensure(entity_id)
+        if data is None:
             self._set_span_attr("cache.hit_tier", "miss")
             return None
-        try:
-            result = self[entity_id]
-            self._set_span_attr("cache.hit_tier", "L1+")
-            return result  # type: ignore[no-any-return]
-        except KeyError:
-            self._set_span_attr("cache.hit_tier", "miss")
-            return None
+        self._set_span_attr("cache.hit_tier", "L1+")
+        result: EntityT = self.entity_class(data, is_new=False, collection=self)
+        return result
 
     @traced()
     async def save_entity(self, entity: BaseEntity) -> None:
@@ -383,6 +382,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             data["date_created"] = now
         if "date_updated" in data or not entity.is_new:
             data["date_updated"] = now
+
+        # Convert aware -> naive for TIMESTAMP columns at database border
+        for key, val in data.items():
+            if isinstance(val, datetime) and val.tzinfo is not None:
+                data[key] = val.replace(tzinfo=None)
 
         defer = (
             self._flush_strategy != FlushStrategy.ALWAYS
@@ -408,6 +412,9 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity._original_date_updated = data.get("date_updated")
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, data, self._primary_key_column)
+            else:
+                # No L1 backend: repopulate _changes so entity fields remain accessible
+                object.__setattr__(entity, "_changes", dict(data))
             await self._save_to_l2(entity_id, data)
 
         await self._publish_invalidation(entity_id)

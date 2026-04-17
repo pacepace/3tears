@@ -1,6 +1,6 @@
 """Agent memory package -- memory entities, collections, and embedding protocol."""
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.embedding import EmbeddingProvider
@@ -10,14 +10,17 @@ from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
 from threetears.agent.memory.tools import (
+    AddMemoryInput,
     MemorySearchInput,
     RecallMemoryInput,
+    load_add_memory_tool,
     load_memory_search_tool,
     load_recall_memory_tool,
 )
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 
 __all__ = [
+    "AddMemoryInput",
     "ChatModelFactory",
     "EmbeddingProvider",
     "ExtractionPrompts",
@@ -31,6 +34,7 @@ __all__ = [
     "MemoryType",
     "RecallMemoryInput",
     "RetrievalResult",
+    "load_add_memory_tool",
     "load_memory_search_tool",
     "load_recall_memory_tool",
 ]

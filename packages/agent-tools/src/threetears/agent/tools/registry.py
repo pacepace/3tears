@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 ToolFactory = Callable[[dict[str, Any], str], BaseTool]
 

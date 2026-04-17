@@ -9,6 +9,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 try:
@@ -147,3 +148,85 @@ def create_web_fetch_tool(config: dict[str, Any], description: str) -> Structure
         description=description,
         args_schema=WebFetchInput,
     )
+
+
+class WebFetchTool(TearsTool):
+    """TearsTool wrapper for fetching and extracting web page content.
+
+    fetches URL, follows redirects and meta-refresh, extracts main
+    content using trafilatura (with tag-stripping fallback), and
+    truncates to max character limit.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL to fetch and extract content from",
+            },
+        },
+        "required": ["url"],
+    }
+
+    def __init__(
+        self,
+        max_chars: int = _MAX_CHARS,
+        credential_resolver: Any | None = None,
+    ) -> None:
+        """initialize web fetch tool.
+
+        :param max_chars: maximum character length for extracted content
+        :ptype max_chars: int
+        :param credential_resolver: optional callable(url) returning extra headers dict
+        :ptype credential_resolver: Any | None
+        """
+        self._fetch_fn = _create_fetch_fn(max_chars, credential_resolver)
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """fetch and extract content from URL.
+
+        :param kwargs: must include 'url' key with URL to fetch
+        :ptype kwargs: Any
+        :return: result containing extracted page content or error
+        :rtype: ToolResult
+        """
+        url = kwargs.get("url", "")
+        content = self._fetch_fn(url)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for web fetch.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="fetch URL and extract main page content",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.web_fetch"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

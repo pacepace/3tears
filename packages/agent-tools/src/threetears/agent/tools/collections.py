@@ -17,12 +17,41 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.base import BaseCollection
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
 from threetears.agent.tools.entities import ContextItemEntity
 
 log = get_logger(__name__)
+
+
+def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
+    """ensure ``metadata`` on a row dict is a Python dict, not a JSON string.
+
+    asyncpg returns ``JSONB`` columns as strings unless the pool has a
+    json codec registered (the devx hub's pool does not, and neither
+    does the NATS proxy wire format after a JSON round-trip). callers
+    downstream expect a dict so the collection normalizes the shape
+    here. ``None``/missing values pass through unchanged so the
+    absent-metadata case still resolves to ``{}`` at the call site.
+
+    :param row: dict-shaped row from ``self._l3_pool.fetch(row)``
+    :ptype row: dict[str, Any]
+    :return: same dict with ``metadata`` coerced to ``dict`` when it
+        arrived as a JSON string
+    :rtype: dict[str, Any]
+    """
+    meta = row.get("metadata")
+    if isinstance(meta, str) and meta:
+        try:
+            row["metadata"] = json.loads(meta)
+        except ValueError, TypeError:
+            # malformed jsonb on the wire: leave as-is so callers
+            # surface the raw payload in their error path instead of
+            # swallowing the corruption silently.
+            pass
+    return row
+
 
 _FIELD_TYPES: dict[str, Any] = {
     "context_id": UUID,
@@ -100,7 +129,9 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             "SELECT * FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        return _decode_metadata_in_row(dict(row))
 
     async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         context_id = data["context_id"]
@@ -188,7 +219,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         )
         entities: list[ContextItemEntity] = []
         for row in rows:
-            data = dict(row)
+            data = _decode_metadata_in_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity._original_date_updated = data.get("date_updated")
             self._write_to_cache_sync(data)
@@ -338,3 +369,63 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             )
 
         return evicted
+
+
+async def migrate_context_items_schema(pool: Any) -> bool:
+    """Migrate context_items table from legacy schema to v0.5.0 schema.
+
+    Detects old column names (``summary``, ``value``) and renames them
+    to the current schema (``short_desc``, ``long_desc``, ``content``).
+    Backfills ``long_desc`` from the first 1000 chars of ``content``.
+
+    Safe to call on every startup — detects whether migration is needed
+    by probing the column list, and is a no-op if already up to date.
+    Idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
+
+    :param pool: asyncpg connection pool.
+    :ptype pool: Any
+    :returns: True if columns were migrated, False if already current.
+    """
+    # Probe current columns
+    cols = await pool.fetch(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'context_items'
+        """
+    )
+    if not cols:
+        return False  # Table doesn't exist yet
+
+    col_names = {row["column_name"] for row in cols}
+
+    needs_migration = "summary" in col_names or ("value" in col_names and "content" not in col_names)
+    if not needs_migration:
+        return False
+
+    log.info("Migrating context_items schema to v0.5.0")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Rename summary → short_desc
+            if "summary" in col_names and "short_desc" not in col_names:
+                await conn.execute("ALTER TABLE context_items RENAME COLUMN summary TO short_desc")
+                log.info("Renamed context_items.summary → short_desc")
+
+            # Rename value → content
+            if "value" in col_names and "content" not in col_names:
+                await conn.execute("ALTER TABLE context_items RENAME COLUMN value TO content")
+                log.info("Renamed context_items.value → content")
+
+            # Add long_desc if missing, backfill from content
+            if "long_desc" not in col_names:
+                await conn.execute(
+                    "ALTER TABLE context_items ADD COLUMN IF NOT EXISTS long_desc TEXT NOT NULL DEFAULT ''"
+                )
+                await conn.execute("UPDATE context_items SET long_desc = LEFT(content, 1000) WHERE long_desc = ''")
+                log.info("Added context_items.long_desc, backfilled from content")
+
+            # Drop legacy check constraint (allow any context_type)
+            await conn.execute("ALTER TABLE context_items DROP CONSTRAINT IF EXISTS ck_context_items_type")
+
+    log.info("context_items schema migration complete")
+    return True

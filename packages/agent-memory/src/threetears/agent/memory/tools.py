@@ -20,7 +20,8 @@ from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
 
 from threetears.agent.memory.embedding import EmbeddingProvider
-from threetears.core.logging import get_logger
+from threetears.agent.memory.types import MemoryType
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
@@ -585,3 +586,195 @@ async def load_recall_memory_tool(
     )
 
     return [recall_memory]
+
+
+# -- Add memory tool factory --------------------------------------------------
+
+_VALID_MEMORY_TYPES = frozenset(t.value for t in MemoryType)
+
+
+class AddMemoryInput(BaseModel):
+    """Input schema for add_memory tool."""
+
+    content: str = Field(
+        description=(
+            "The memory to store. Write as a concise, standalone fact about the user. "
+            "Example: 'User prefers Rust as their primary programming language.'"
+        ),
+    )
+    memory_type: str = Field(
+        default="preference",
+        description=(
+            "Memory category: 'preference' (likes, dislikes, style choices), "
+            "'fact' (biographical facts, skills, background), "
+            "'decision' (choices the user has made), "
+            "'topical_context' (ongoing projects, current focus areas), "
+            "or 'relational_context' (relationship dynamics, communication preferences)."
+        ),
+    )
+
+
+async def load_add_memory_tool(
+    pool: Any,
+    user_id: UUID,
+    conversation_id: UUID,
+    message_id: UUID,
+    embedding_provider: EmbeddingProvider,
+    *,
+    similarity_dedup_threshold: float = 0.90,
+) -> list[BaseTool]:
+    """Create an add_memory tool for explicit memory storage.
+
+    The assistant calls this when the user explicitly asks it to remember
+    something. The memory is embedded and stored immediately, with dedup
+    against existing similar memories.
+
+    Returns a single-element list (matching LangChain's bind_tools convention).
+
+    :param pool: asyncpg connection pool.
+    :ptype pool: Any
+    :param user_id: the owning user's UUID.
+    :ptype user_id: UUID
+    :param conversation_id: the current conversation UUID.
+    :ptype conversation_id: UUID
+    :param message_id: the current message UUID (source attribution).
+    :ptype message_id: UUID
+    :param embedding_provider: provider for generating embedding vectors.
+    :ptype embedding_provider: EmbeddingProvider
+    :param similarity_dedup_threshold: if an existing memory exceeds this
+        similarity score, the existing memory is updated instead of creating
+        a duplicate. Default 0.90 (very similar = same memory).
+    :ptype similarity_dedup_threshold: float
+    """
+    dedup_threshold = similarity_dedup_threshold
+
+    @tool("add_memory", args_schema=AddMemoryInput)
+    async def add_memory(content: str, memory_type: str = "preference") -> str:
+        """Store a memory about the user for future conversations."""
+        # Validate type
+        mt = memory_type.lower().strip()
+        if mt not in _VALID_MEMORY_TYPES:
+            return f"Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
+
+        # Generate embedding
+        try:
+            embedding, _token_count = await embedding_provider.embed_text(content)
+            if embedding is None:
+                return _tool_error("add_memory", "embed", "embedding provider returned None")
+        except Exception as exc:
+            log.warning(
+                "add_memory: embedding failed",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            return _tool_error("add_memory", "embed", str(exc))
+
+        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+
+        # Dedup: check for very similar existing memories
+        try:
+            similar_rows = await pool.fetch(
+                """
+                SELECT memory_id, content, type_memory,
+                       1 - (embedding <=> $1::vector) AS similarity
+                FROM memories
+                WHERE user_id = $2 AND is_deleted = false
+                ORDER BY embedding <=> $1::vector
+                LIMIT 3
+                """,
+                embedding_str,
+                user_id,
+            )
+
+            for row in similar_rows:
+                if float(row["similarity"]) >= dedup_threshold:
+                    # Update existing memory instead of creating duplicate
+                    existing_id = row["memory_id"]
+                    from datetime import UTC, datetime
+
+                    now = datetime.now(UTC)
+                    await pool.execute(
+                        """
+                        UPDATE memories
+                        SET content = $1, type_memory = $2, embedding = $3::vector,
+                            date_updated = $4
+                        WHERE memory_id = $5
+                        """,
+                        content,
+                        mt,
+                        embedding_str,
+                        now,
+                        existing_id,
+                    )
+                    log.info(
+                        "add_memory: updated existing similar memory",
+                        extra={
+                            "extra_data": {
+                                "memory_id": str(existing_id),
+                                "similarity": round(float(row["similarity"]), 3),
+                                "old_content": row["content"][:100],
+                            }
+                        },
+                    )
+                    return f"Updated existing memory (was similar at {float(row['similarity']):.0%}): {content}"
+
+        except Exception as exc:
+            # Dedup check failed — proceed with insert anyway
+            log.warning(
+                "add_memory: dedup check failed, inserting new",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+
+        # Insert new memory
+        try:
+            from datetime import UTC, datetime
+            from uuid import uuid4
+
+            now = datetime.now(UTC)
+            memory_id = uuid4()
+            await pool.execute(
+                """
+                INSERT INTO memories (
+                    memory_id, user_id, conversation_id, message_id_source,
+                    type_memory, content, embedding, is_deleted,
+                    date_created, date_updated
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, false, $8, $8)
+                """,
+                memory_id,
+                user_id,
+                conversation_id,
+                message_id,
+                mt,
+                content,
+                embedding_str,
+                now,
+            )
+
+            log.info(
+                "add_memory: stored new memory",
+                extra={
+                    "extra_data": {
+                        "memory_id": str(memory_id),
+                        "type": mt,
+                        "content": content[:100],
+                    }
+                },
+            )
+            return f"Remembered: {content}"
+
+        except Exception as exc:
+            log.warning(
+                "add_memory: insert failed",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            return _tool_error("add_memory", "store", str(exc))
+
+    add_memory.description = (
+        "Store a memory about the user for future conversations. "
+        "Use this when the user explicitly asks you to remember something "
+        "(e.g., 'remember that I prefer...', 'my X is Y', 'don't forget...'). "
+        "Write the memory as a concise, standalone fact. "
+        "Duplicate detection is automatic — if a very similar memory already "
+        "exists, it will be updated instead of creating a duplicate."
+    )
+
+    return [add_memory]

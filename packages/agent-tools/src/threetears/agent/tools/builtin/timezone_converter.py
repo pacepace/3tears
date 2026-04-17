@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 _TIME_FORMATS = [
@@ -74,3 +75,80 @@ def create_timezone_converter_tool(config: dict[str, Any], description: str) -> 
         description=description,
         args_schema=TimezoneConverterInput,
     )
+
+
+class TimezoneConverterTool(TearsTool):
+    """TearsTool wrapper for timezone conversion via stdlib zoneinfo.
+
+    converts time strings between IANA timezones. supports multiple
+    input formats including ISO 8601, 12-hour, and 24-hour notation.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "time_str": {
+                "type": "string",
+                "description": "time string to convert (e.g. '2024-01-15 14:30', '3:00 PM')",
+            },
+            "from_timezone": {
+                "type": "string",
+                "description": "source IANA timezone (e.g. 'America/New_York')",
+            },
+            "to_timezone": {
+                "type": "string",
+                "description": "target IANA timezone (e.g. 'Europe/London')",
+            },
+        },
+        "required": ["time_str", "from_timezone", "to_timezone"],
+    }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """convert time between timezones.
+
+        :param kwargs: must include 'time_str', 'from_timezone', 'to_timezone' keys
+        :ptype kwargs: Any
+        :return: result containing converted time or error
+        :rtype: ToolResult
+        """
+        time_str = kwargs.get("time_str", "")
+        from_timezone = kwargs.get("from_timezone", "")
+        to_timezone = kwargs.get("to_timezone", "")
+        content = _convert_timezone(time_str, from_timezone, to_timezone)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for timezone converter.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="convert time between IANA timezones",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.timezone_converter"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

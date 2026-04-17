@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from threetears.core.cache import MISSING
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 
@@ -147,17 +147,20 @@ class BaseEntity:
         return dict(object.__getattribute__(self, "_changes"))
 
     def to_dict(self) -> dict[str, Any]:
-        """Export entity data as dictionary from the L1 cache.
+        """Export entity data as dictionary from L1 cache or _changes fallback.
 
         Only returns columns that belong to this entity (tracked via
         _column_names).
         """
         collection = object.__getattribute__(self, "_collection")
+        changes = object.__getattribute__(self, "_changes")
         if collection is None:
-            return dict(object.__getattribute__(self, "_changes"))
+            return dict(changes)
         entity_id = object.__getattribute__(self, "_id")
         row = collection._get_row_sync(entity_id)
         if row is None:
+            if changes:
+                return dict(changes)
             raise RuntimeError(
                 f"L1 cache miss in to_dict() for {type(self).__name__} id={entity_id}; entity data must be in L1"
             )

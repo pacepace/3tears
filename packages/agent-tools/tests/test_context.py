@@ -311,3 +311,103 @@ async def test_load_context(ctx: ToolContextManager, pool: FakePool) -> None:
     await ctx.load_context()
     assert ctx.has_context is True
     assert len(ctx._items) == 2
+
+
+# -- Arbitrary context item tests (save/get/delete by (context_type, key)) --
+
+
+@pytest.mark.asyncio
+async def test_save_and_get_item_by_type_and_key(ctx: ToolContextManager) -> None:
+    """save_item_by_type_and_key then get_item_by_type_and_key round-trips."""
+    cid = await ctx.save_item_by_type_and_key(
+        context_type="workspace_pin",
+        key="current",
+        content="ws-uuid-content",
+        short_desc="main",
+        metadata={"workspace_name": "main"},
+    )
+    assert isinstance(cid, str)
+    item = await ctx.get_item_by_type_and_key("workspace_pin", "current")
+    assert item is not None
+    assert item["context_type"] == "workspace_pin"
+    assert item["key"] == "current"
+    assert item["content"] == "ws-uuid-content"
+    assert item["short_desc"] == "main"
+    assert item["metadata"]["workspace_name"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_get_item_by_type_and_key_missing_returns_none(
+    ctx: ToolContextManager,
+) -> None:
+    """no matching item -> None (not raised)."""
+    result = await ctx.get_item_by_type_and_key("workspace_pin", "current")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_save_item_by_type_and_key_replaces_existing(
+    ctx: ToolContextManager,
+) -> None:
+    """second save with same (type, key) replaces the first (single-item semantics)."""
+    await ctx.save_item_by_type_and_key(
+        context_type="workspace_pin",
+        key="current",
+        content="first",
+    )
+    await ctx.save_item_by_type_and_key(
+        context_type="workspace_pin",
+        key="current",
+        content="second",
+    )
+    item = await ctx.get_item_by_type_and_key("workspace_pin", "current")
+    assert item is not None
+    assert item["content"] == "second"
+    # only one item persists in the local projection
+    matching = [i for i in ctx._items if i["context_type"] == "workspace_pin" and i["key"] == "current"]
+    assert len(matching) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_item_by_type_and_key_returns_true_when_present(
+    ctx: ToolContextManager,
+) -> None:
+    """delete returns True after removing an existing item."""
+    await ctx.save_item_by_type_and_key(
+        context_type="bookmark",
+        key="favorite",
+        content="x",
+    )
+    result = await ctx.delete_item_by_type_and_key("bookmark", "favorite")
+    assert result is True
+    assert await ctx.get_item_by_type_and_key("bookmark", "favorite") is None
+
+
+@pytest.mark.asyncio
+async def test_delete_item_by_type_and_key_is_idempotent(
+    ctx: ToolContextManager,
+) -> None:
+    """delete returns False when no matching item; does not raise."""
+    result = await ctx.delete_item_by_type_and_key("bookmark", "none")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_save_item_by_type_and_key_scopes_by_type(
+    ctx: ToolContextManager,
+) -> None:
+    """same key under different context_types co-exist without collision."""
+    await ctx.save_item_by_type_and_key(
+        context_type="workspace_pin",
+        key="current",
+        content="pin",
+    )
+    await ctx.save_item_by_type_and_key(
+        context_type="bookmark",
+        key="current",
+        content="bm",
+    )
+    pin = await ctx.get_item_by_type_and_key("workspace_pin", "current")
+    bm = await ctx.get_item_by_type_and_key("bookmark", "current")
+    assert pin is not None and pin["content"] == "pin"
+    assert bm is not None and bm["content"] == "bm"

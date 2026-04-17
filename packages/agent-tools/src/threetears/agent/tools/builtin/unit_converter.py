@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 _ureg: Any = None
@@ -50,3 +51,81 @@ def create_unit_converter_tool(config: dict[str, Any], description: str) -> Stru
         description=description,
         args_schema=UnitConverterInput,
     )
+
+
+class UnitConverterTool(TearsTool):
+    """TearsTool wrapper for unit conversion via pint.
+
+    converts numeric values between physical units using pint
+    UnitRegistry. supports all standard unit types including
+    length, mass, temperature, and more.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": "number",
+                "description": "numeric value to convert",
+            },
+            "from_unit": {
+                "type": "string",
+                "description": "source unit (e.g. 'miles', 'kg', 'celsius')",
+            },
+            "to_unit": {
+                "type": "string",
+                "description": "target unit (e.g. 'kilometers', 'pounds', 'fahrenheit')",
+            },
+        },
+        "required": ["value", "from_unit", "to_unit"],
+    }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """convert value between units.
+
+        :param kwargs: must include 'value', 'from_unit', 'to_unit' keys
+        :ptype kwargs: Any
+        :return: result containing converted value or error
+        :rtype: ToolResult
+        """
+        value = kwargs.get("value", 0.0)
+        from_unit = kwargs.get("from_unit", "")
+        to_unit = kwargs.get("to_unit", "")
+        content = _convert(value, from_unit, to_unit)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for unit converter.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="convert numeric values between physical units",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.unit_converter"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"

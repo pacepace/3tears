@@ -15,7 +15,7 @@ from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
 from nats.js.kv import KeyValue
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
 
 log = get_logger(__name__)
 

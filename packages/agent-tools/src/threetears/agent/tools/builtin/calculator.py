@@ -8,6 +8,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
 try:
@@ -77,3 +78,71 @@ def create_calculator_tool(config: dict[str, Any], description: str) -> Structur
         description=description,
         args_schema=CalculatorInput,
     )
+
+
+class CalculatorTool(TearsTool):
+    """TearsTool wrapper for safe math evaluation via simpleeval.
+
+    evaluates mathematical expressions using a restricted set of
+    functions and constants. supports basic arithmetic, trigonometry,
+    logarithms, and common math constants.
+    """
+
+    _INPUT_SCHEMA: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": "mathematical expression to evaluate",
+            },
+        },
+        "required": ["expression"],
+    }
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        """evaluate mathematical expression.
+
+        :param kwargs: must include 'expression' key with math expression string
+        :ptype kwargs: Any
+        :return: result containing evaluated value or error
+        :rtype: ToolResult
+        """
+        expression = kwargs.get("expression", "")
+        content = _evaluate(expression)
+        success = not content.startswith("[TOOL ERROR]")
+        result = ToolResult(
+            success=success,
+            content=content,
+            error=content if not success else None,
+        )
+        return result
+
+    def mcp_schema(self) -> MCPToolDefinition:
+        """return MCP-compatible tool definition for calculator.
+
+        :return: tool definition with name, version, description, input schema
+        :rtype: MCPToolDefinition
+        """
+        result = MCPToolDefinition(
+            name=self.mcp_name(),
+            version=self.mcp_version(),
+            description="evaluate mathematical expressions safely",
+            input_schema=self._INPUT_SCHEMA,
+        )
+        return result
+
+    def mcp_name(self) -> str:
+        """return namespaced tool name.
+
+        :return: namespaced tool name
+        :rtype: str
+        """
+        return "threetears.calculator"
+
+    def mcp_version(self) -> str:
+        """return tool version.
+
+        :return: version string
+        :rtype: str
+        """
+        return "1.0"
