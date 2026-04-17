@@ -301,6 +301,7 @@ class ToolServer:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._shutdown_event = asyncio.Event()
+        self._ready_event = asyncio.Event()
 
     @property
     def pod_id(self) -> str:
@@ -313,6 +314,19 @@ class ToolServer:
         :rtype: str
         """
         return self._pod_id
+
+    async def wait_ready(self, timeout: float = 30.0) -> None:
+        """block until serve() has subscribed to NATS and published registration.
+
+        callers that spawn serve() in a background task should await this
+        before sending tool calls to avoid the race where the first call
+        arrives before the subscription is live.
+
+        :param timeout: maximum seconds to wait
+        :ptype timeout: float
+        :raises asyncio.TimeoutError: if serve() does not become ready in time
+        """
+        await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
 
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
@@ -397,6 +411,8 @@ class ToolServer:
         )
 
         await self._publish_registration()
+
+        self._ready_event.set()
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
