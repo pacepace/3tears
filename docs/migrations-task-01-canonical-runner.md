@@ -86,11 +86,11 @@ Things alembic costs us:
 ## Implementation Notes
 
 1. Expand the runner first in its own branch: multi-package composition + topological order + scope separation. Unit tests cover ordering, missing-dependency errors, idempotent re-apply, rollback on failure.
-2. Translate platform-schema alembic migrations to runner format. Checksum verification: apply runner to a fresh DB, apply alembic to another fresh DB, diff schemas — must match.
+2. Translate platform-schema alembic migrations to runner format. Checksum verification: apply runner to a fresh DB, apply alembic to another fresh DB, diff schemas — must match byte-for-byte.
 3. Translate agent-schema alembic migrations (001, 002, 003) to runner format. Same checksum verification per agent schema.
-4. Land runner + translations behind a feature flag (`USE_NEW_MIGRATION_RUNNER=true`). Provision a few test agents under the flag; verify behavior.
-5. Flip the flag default, remove alembic config, delete alembic files.
-6. Delete the old 3tears package-local `migrations.py` files that the runner now supersedes.
+4. Land the switchover in one coordinated PR: runner plugs into `provision_agent_namespace` and `hub/migrations`, alembic config + alembic files + alembic dependency are deleted in the same commit. Verification-in-place is the checksum gate already run in steps 2+3; no runtime feature flag, no dual-stack release window.
+5. Delete the old 3tears package-local `migrations.py` files that the runner now supersedes in the same PR.
+6. If the checksum gate is red, the switchover PR does not merge — fix the translation before flipping, do not ship the runner alongside alembic as a hedge.
 
 ---
 
@@ -100,6 +100,8 @@ Things alembic costs us:
 - **DO NOT** auto-generate migrations from pydantic models or table definitions. That's where alembic's autogenerate pays; it's also where it silently miscomputes destructive migrations. Hand-write migrations with intent.
 - **DO NOT** let a package's migrations depend on the hub's concrete schema names (`platform.agents` etc.). Migrations should operate against the current schema via `search_path`, not hard-coded schema names. That way the same package migrations can run against a test harness or a real platform schema without edits.
 - **DO NOT** skip the checksum verification step. Silent schema drift during migration translation would bite months later.
+- **DO NOT** ship a `USE_NEW_MIGRATION_RUNNER` (or similarly named) runtime feature flag. Per `14-eng-ai-bot/CLAUDE.md` "NO BACKWARDS-COMPATIBILITY SHIMS": the switchover is gated by pre-merge checksum verification, then flipped atomically — no release runs with both systems. Runtime flags for dual-stack migration tooling reliably ossify and produce the exact "two sources of truth" bug this task exists to kill.
+- **DO NOT** leave alembic artifacts in the repo "as a reference." The repo is the source of truth; keeping alembic files lets them rot and occasionally re-attract hand edits. Delete cleanly; git history preserves the translation reference if needed.
 
 ---
 

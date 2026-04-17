@@ -112,6 +112,8 @@ An upsert. From the schema:
 - **DO NOT** put SQL in the entity class. The collection owns SQL; entities are value objects.
 - **DO NOT** silently skip columns that aren't in the data dict on `_save_to_postgres`. An upsert with a missing column is usually a bug; fail loudly with a clear error message.
 - **DO NOT** auto-generate column lists from entity classes by introspection. Explicit schema declaration is the readable contract; introspection makes refactors invisible to reviewers.
+- **DO NOT** keep the hand-rolled `_save_to_postgres` / `_fetch_from_postgres` / `_delete_from_postgres` methods alongside the schema-backed base as a "fallback." Per `14-eng-ai-bot/CLAUDE.md` "NO BACKWARDS-COMPATIBILITY SHIMS": when a collection converts to `SchemaBackedCollection`, the hand-rolled methods are deleted in the same PR. A dual-path collection is exactly the bug surface this task is eliminating.
+- **DO NOT** stage the conversion with optional-override wrappers ("if the subclass overrides `_save_to_postgres` use that, else use the generic"). The pattern the shard establishes is: collection declares schema, schema is the source of truth, overrides are not the extension point. Domain methods are the extension point.
 
 ---
 

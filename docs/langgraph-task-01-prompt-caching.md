@@ -158,6 +158,7 @@ Not applicable this shard but useful context:
 - **DO NOT** hard-code provider strings in `nodes.py` (`if "anthropic" in type(model).__name__:`) — use `ChatModelCapabilities`. Hard-coding couples the shared library to specific LangChain adapter names.
 - **DO NOT** silently swallow `usage_metadata=None` — surface it as an observability warning (once, per-model, not per-turn).
 - **DO NOT** skip the SDK fork sync — if `14-eng-ai-bot-agents/runtime/graph.py` still calls its own copy of the node, the shared caching is dead code in production. The cross-repo follow-up is NOT optional; acceptance of this shard includes filing the SDK-side task with a pointer.
+- **DO NOT** ship any back-compat shim, alias, or feature-flag toggle as part of this work. Per `14-eng-ai-bot/CLAUDE.md` "NO BACKWARDS-COMPATIBILITY SHIMS": if a helper signature changes (e.g. `agent_node` gains a kwarg), every caller updates in the same PR. The capabilities interface is added once and used from day one.
 
 ---
 
