@@ -965,3 +965,78 @@ class TestRegisterToolDeregisterTool:
         removed = await server.deregister_tool("x")
         assert removed is True
         assert server.tools_count == 0
+
+
+class TestToolServerInjectedNatsClient:
+    """``nats_client`` ctor parameter supports shared-connection callers
+    (agent bootstrap) without competing with the owner's lifecycle.
+    """
+
+    def test_constructor_without_either_raises(self) -> None:
+        """omitting both ``nats_url`` and ``nats_client`` is a config error."""
+        with pytest.raises(ValueError, match="nats_url or nats_client"):
+            ToolServer()
+
+    def test_constructor_with_injected_client_records_non_ownership(
+        self,
+    ) -> None:
+        """supplying ``nats_client`` flips the ownership flag."""
+        nc = AsyncMock()
+        server = ToolServer(nats_client=nc)
+        assert server._nc is nc
+        assert server._owns_nats_connection is False
+
+    def test_constructor_with_url_records_ownership(self) -> None:
+        """supplying only ``nats_url`` means the server owns the connection."""
+        server = ToolServer(nats_url="nats://localhost:4222")
+        assert server._nc is None
+        assert server._owns_nats_connection is True
+
+    @pytest.mark.asyncio
+    async def test_serve_skips_connect_when_client_injected(self) -> None:
+        """``serve()`` reuses the injected client rather than opening a new one."""
+        nc = AsyncMock()
+        server = ToolServer(nats_client=nc, heartbeat_interval=3600.0)
+        with patch(
+            "threetears.agent.tools.server.nats_connect",
+            new=AsyncMock(),
+        ) as connect_mock:
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0)
+            try:
+                await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+            finally:
+                await server.shutdown()
+                await asyncio.wait_for(serve_task, timeout=1.0)
+        connect_mock.assert_not_awaited()
+        assert server._nc is nc
+
+    @pytest.mark.asyncio
+    async def test_shutdown_does_not_close_injected_client(self) -> None:
+        """caller-owned connection stays open after ``shutdown()``."""
+        nc = AsyncMock()
+        server = ToolServer(nats_client=nc, heartbeat_interval=3600.0)
+        serve_task = asyncio.create_task(server.serve())
+        await asyncio.sleep(0)
+        await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+        await server.shutdown()
+        await asyncio.wait_for(serve_task, timeout=1.0)
+        nc.drain.assert_not_awaited()
+        nc.close.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_closes_self_owned_client(self) -> None:
+        """server-owned connection is drained + closed on ``shutdown()``."""
+        nc = AsyncMock()
+        server = ToolServer(nats_url="nats://localhost:4222", heartbeat_interval=3600.0)
+        with patch(
+            "threetears.agent.tools.server.nats_connect",
+            new=AsyncMock(return_value=nc),
+        ):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0)
+            await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+            await server.shutdown()
+            await asyncio.wait_for(serve_task, timeout=1.0)
+        nc.drain.assert_awaited_once()
+        nc.close.assert_awaited_once()

@@ -332,16 +332,28 @@ class ToolServer:
 
     def __init__(
         self,
-        nats_url: str,
+        nats_url: str = "",
         namespace: str = "aibots",
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
         context_factory: ("Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None") = None,
+        nats_client: NatsClient | None = None,
     ) -> None:
         """initialize tool server.
 
-        :param nats_url: NATS server connection URL
+        the NATS connection can be supplied two ways. callers that own
+        a connection lifecycle (bootstrap, orchestrator) pass
+        ``nats_client`` and leave ``nats_url`` at its default; the
+        server attaches to that client in :meth:`serve` and will NOT
+        disconnect it in :meth:`shutdown` (lifecycle belongs to the
+        caller). standalone callers pass ``nats_url``; the server
+        opens its own connection in :meth:`serve` and closes it in
+        :meth:`shutdown`. exactly one of the two must be supplied
+        with a non-empty value.
+
+        :param nats_url: NATS server connection URL; leave empty when
+            supplying ``nats_client``
         :ptype nats_url: str
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
@@ -362,7 +374,21 @@ class ToolServer:
             omitted, tools that require a context crash with a
             :class:`RuntimeError` at first use, same as today
         :ptype context_factory: Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None
+        :param nats_client: pre-connected NATS client supplied by a
+            caller that owns its lifecycle (typically the agent
+            bootstrap sharing one connection across strategy,
+            handler, and heartbeat). when set, ``nats_url`` is
+            ignored and the server will not disconnect the client on
+            shutdown
+        :ptype nats_client: NatsClient | None
+        :raises ValueError: when neither ``nats_url`` nor
+            ``nats_client`` carries a usable value
         """
+        if not nats_url and nats_client is None:
+            raise ValueError(
+                "ToolServer requires either nats_url or nats_client; neither "
+                "was supplied"
+            )
         self._nats_url = nats_url
         self._namespace = namespace
         self._pod_id = pod_id or str(uuid7())
@@ -370,7 +396,8 @@ class ToolServer:
         self._bootstrap_token = bootstrap_token
         self._context_factory = context_factory
         self._tools: dict[str, TearsTool] = {}
-        self._nc: NatsClient | None = None
+        self._nc: NatsClient | None = nats_client
+        self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -513,27 +540,41 @@ class ToolServer:
 
     @traced()
     async def serve(self) -> None:
-        """connect to NATS and begin serving registered tools.
+        """begin serving registered tools on NATS.
 
-        connects to NATS, subscribes to call and probe subjects
-        first so both are live before the registry can attempt
-        a reachability probe, publishes the registration manifest,
-        starts the heartbeat loop, then waits for shutdown signal.
-        ordering matters: subscribing before publishing eliminates
-        the race where the registry issues a probe to a subject
-        the pod has not yet bound.
+        when the server was constructed with an injected
+        ``nats_client`` the connection is already open and the server
+        attaches to it. when the server was constructed with a
+        ``nats_url`` it opens its own connection here. either way the
+        server subscribes to call and probe subjects first so both
+        are live before the registry can attempt a reachability
+        probe, publishes the registration manifest, starts the
+        heartbeat loop, then waits for the shutdown signal. ordering
+        matters: subscribing before publishing eliminates the race
+        where the registry issues a probe to a subject the pod has
+        not yet bound.
         """
-        self._nc = await nats_connect(self._nats_url)
+        if self._nc is None:
+            self._nc = await nats_connect(self._nats_url)
+            log.info(
+                "connected to NATS",
+                extra={
+                    "extra_data": {
+                        "nats_url": self._nats_url,
+                        "pod_id": self._pod_id,
+                    }
+                },
+            )
+        else:
+            log.info(
+                "using injected NATS connection",
+                extra={
+                    "extra_data": {
+                        "pod_id": self._pod_id,
+                    }
+                },
+            )
         self._running = True
-        log.info(
-            "connected to NATS",
-            extra={
-                "extra_data": {
-                    "nats_url": self._nats_url,
-                    "pod_id": self._pod_id,
-                }
-            },
-        )
 
         call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
         await self._nc.subscribe(call_subject, cb=self._handle_call)
@@ -935,8 +976,14 @@ class ToolServer:
     async def shutdown(self) -> None:
         """gracefully shut down tool server.
 
-        stops heartbeat loop, drains NATS subscriptions, and closes
-        NATS connection.
+        stops the heartbeat loop and drains NATS subscriptions the
+        server owns. the NATS connection itself is closed ONLY when
+        the server opened it (i.e. was constructed with ``nats_url``).
+        when the connection was injected via ``nats_client`` the
+        caller owns the lifecycle and shutdown leaves the connection
+        open so other subscribers (graph handler, heartbeat loop on
+        the bootstrap side) continue to work until the caller closes
+        the connection itself.
         """
         log.info(
             "shutting down tool server",
@@ -952,7 +999,7 @@ class ToolServer:
                 pass
             self._heartbeat_task = None
 
-        if self._nc is not None:
+        if self._nc is not None and self._owns_nats_connection:
             await self._nc.drain()
             await self._nc.close()
 
