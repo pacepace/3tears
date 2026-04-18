@@ -13,20 +13,24 @@ from uuid import UUID, uuid7
 
 from nats.aio.client import Client as NatsClient
 from nats.aio.msg import Msg as NatsMsg
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
     enter_call_scope,
 )
+from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
     get_ready_timeout as _get_ready_timeout,
 )
-from threetears.observe import get_logger, traced
+from threetears.agent.tools.config import (
+    get_serve_ready_timeout,
+)
+from threetears.observe import clear_context, get_logger, traced
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
@@ -95,16 +99,27 @@ class RegistrationManifest(BaseModel):
     bootstrap_token: str | None = None
 
 
+_LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
+    {"conversation_id", "user_id", "customer_id", "agent_id", "correlation_id"}
+)
+
+
 class CallRequest(BaseModel):
     """incoming tool call request from NATS.
 
-    optional ``conversation_id`` and ``user_id`` fields carry per-call
-    identity metadata so :mod:`threetears.agent.tools.call_scope` can
-    hand a :class:`ToolContextManager` to tools that need it
-    (workspace tools, pin-aware builtins). the fields are optional
-    because pure stateless tools (math, web search) do not require
-    conversation scope and the tool server degrades gracefully when
-    they are omitted.
+    per-call identity dimensions (conversation_id, user_id, customer_id,
+    agent_id, correlation_id) ride as a single nested
+    :class:`CallContext` under ``context``. this replaces the previous
+    shape where each dimension was a flat field; see
+    :mod:`threetears.agent.tools.context_envelope`. ``correlation_id``
+    lives exclusively on :attr:`CallContext.correlation_id`; the
+    matching :class:`CallResponse` also carries a nested
+    :class:`CallContext` (no top-level ``correlation_id`` string), so
+    there is one shape for identity in both directions.
+
+    the ``context`` field is optional because pure stateless tools
+    (math, web search) do not require identity scope and the tool
+    server degrades gracefully when it is omitted.
 
     :param tool_name: namespaced name of tool to invoke
     :ptype tool_name: str
@@ -112,26 +127,64 @@ class CallRequest(BaseModel):
     :ptype tool_version: str
     :param arguments: tool input parameters
     :ptype arguments: dict[str, Any]
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
-    :param conversation_id: conversation identifier for per-call context
-        resolution; string form of a UUID
-    :ptype conversation_id: str | None
-    :param user_id: invoking user identifier for per-call context
-        resolution; string form of a UUID
-    :ptype user_id: str | None
+    :param context: unified identity + trace envelope for this call;
+        ``None`` for stateless tool invocations. includes the
+        ``correlation_id`` used for response routing and log correlation
+    :ptype context: CallContext | None
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     tool_version: str
     arguments: dict[str, Any]
-    correlation_id: str
-    conversation_id: str | None = None
-    user_id: str | None = None
+    context: CallContext | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_flat_identity_fields(cls, data: Any) -> Any:
+        """reject removed flat identity fields with a migration pointer.
+
+        when a caller still emits ``conversation_id`` / ``user_id`` /
+        ``customer_id`` / ``agent_id`` / ``correlation_id`` as top-level
+        fields on the wire, pydantic's generic ``extra='forbid'`` error
+        is unhelpful for diagnosing the rename. this validator
+        intercepts the common legacy shapes and raises a message that
+        names the offending field and points at :class:`CallContext` so
+        the fix site is obvious. any other unknown field falls through
+        to the standard ``extra='forbid'`` error.
+
+        :param data: raw input dict (mode='before' runs pre-coercion)
+        :ptype data: Any
+        :return: unchanged input when no legacy fields are present
+        :rtype: Any
+        :raises ValueError: when any legacy flat identity field is
+            present on the wire
+        """
+        if isinstance(data, dict):
+            offending = sorted(_LEGACY_FLAT_IDENTITY_FIELDS & data.keys())
+            if offending:
+                fields_list = ", ".join(offending)
+                raise ValueError(
+                    f"legacy flat identity field(s) {fields_list} rejected on "
+                    f"CallRequest; migrated to CallContext, see "
+                    f"threetears.agent.tools.context_envelope.CallContext"
+                )
+        return data
 
 
 class CallResponse(BaseModel):
     """outgoing tool call response to NATS.
+
+    responses carry the same :class:`CallContext` envelope as the
+    inbound :class:`CallRequest`. the responder echoes
+    ``request.context`` verbatim (or a minimally-populated
+    :class:`CallContext` with just the correlation_id when that's all
+    the responder knows) so downstream log consumers can correlate the
+    reply to the inbound request. ``None`` when the inbound request
+    carried no context (fully stateless call). identity never splits
+    between "flat echo field" and "nested envelope" -- one shape in
+    both directions.
 
     :param success: whether tool execution succeeded
     :ptype success: bool
@@ -141,15 +194,17 @@ class CallResponse(BaseModel):
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param context: unified identity + trace envelope echoed from the
+        inbound :class:`CallRequest`; ``None`` when the inbound request
+        carried no context
+    :ptype context: CallContext | None
     """
 
     success: bool
     content: str
     metadata: dict[str, Any] | None = None
     error: str | None = None
-    correlation_id: str = ""
+    context: CallContext | None = None
 
 
 class HeartbeatMessage(BaseModel):
@@ -313,18 +368,22 @@ class ToolServer:
         """
         return self._pod_id
 
-    async def wait_ready(self, timeout: float = 30.0) -> None:
+    async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
 
         callers that spawn serve() in a background task should await this
         before sending tool calls to avoid the race where the first call
-        arrives before the subscription is live.
+        arrives before the subscription is live. when ``timeout`` is
+        ``None`` the value is sourced from
+        ``THREETEARS_TOOLSERVER_SERVE_READY_TIMEOUT`` (platform default
+        applied when the variable is unset or malformed).
 
-        :param timeout: maximum seconds to wait
-        :ptype timeout: float
+        :param timeout: maximum seconds to wait; ``None`` reads from config
+        :ptype timeout: float | None
         :raises asyncio.TimeoutError: if serve() does not become ready in time
         """
-        await asyncio.wait_for(self._ready_event.wait(), timeout=timeout)
+        resolved = get_serve_ready_timeout() if timeout is None else timeout
+        await asyncio.wait_for(self._ready_event.wait(), timeout=resolved)
 
     def register(self, tool: TearsTool) -> None:
         """register tool for serving via NATS.
@@ -563,7 +622,13 @@ class ToolServer:
         """handle incoming tool call request.
 
         parses call request, dispatches to matching tool, and sends
-        response back via NATS reply.
+        response back via NATS reply. the inbound :class:`CallContext`
+        is echoed verbatim on the :class:`CallResponse` so the response
+        carries identity in the same shape as the request. binds the
+        canonical logging context tags (``cid``/``conv``/``user``/
+        ``agent``/``customer``) from the :class:`CallContext` for the
+        duration of the dispatch so every log line in this handler and
+        its callees renders with those tags.
 
         :param msg: incoming NATS message containing call request
         :ptype msg: NatsMsg
@@ -579,73 +644,88 @@ class ToolServer:
             await msg.respond(error_response.model_dump_json().encode("utf-8"))
             return
 
-        tool_key = f"{request.tool_name}@{request.tool_version}"
-        tool = self._tools.get(tool_key)
-
-        if tool is None:
-            error_response = CallResponse(
-                success=False,
-                content="",
-                error=f"unknown tool: {tool_key}",
-                correlation_id=request.correlation_id,
-            )
-            await msg.respond(error_response.model_dump_json().encode("utf-8"))
-            log.warning(
-                "unknown tool requested",
-                extra={
-                    "extra_data": {
-                        "tool_key": tool_key,
-                        "correlation_id": request.correlation_id,
-                    }
-                },
-            )
-            return
-
+        bind_log_context(request.context)
         try:
-            scope = await self._build_call_scope(request)
-            async with enter_call_scope(scope):
-                tool_result = await tool.run(**request.arguments)
-            response = CallResponse(
-                success=tool_result.success,
-                content=tool_result.content,
-                metadata=tool_result.metadata,
-                error=tool_result.error,
-                correlation_id=request.correlation_id,
-            )
-        except Exception as exc:
-            log.error(
-                "tool execution failed",
-                extra={
-                    "extra_data": {
-                        "tool_key": tool_key,
-                        "correlation_id": request.correlation_id,
-                        "error": str(exc),
-                    }
-                },
-            )
-            response = CallResponse(
-                success=False,
-                content="",
-                error=f"tool execution failed: {exc}",
-                correlation_id=request.correlation_id,
+            # log-border stringification of the correlation id lifted
+            # off the inbound context; the response itself echoes the
+            # whole context (one shape in both directions), this
+            # variable exists only to tag log records that the
+            # set_context binding does not already cover.
+            correlation_id_log = (
+                str(request.context.correlation_id)
+                if request.context is not None and request.context.correlation_id is not None
+                else ""
             )
 
-        await msg.respond(response.model_dump_json().encode("utf-8"))
+            tool_key = f"{request.tool_name}@{request.tool_version}"
+            tool = self._tools.get(tool_key)
+
+            if tool is None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=f"unknown tool: {tool_key}",
+                    context=request.context,
+                )
+                await msg.respond(error_response.model_dump_json().encode("utf-8"))
+                log.warning(
+                    "unknown tool requested",
+                    extra={
+                        "extra_data": {
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                return
+
+            try:
+                scope = await self._build_call_scope(request)
+                async with enter_call_scope(scope):
+                    tool_result = await tool.run(**request.arguments)
+                response = CallResponse(
+                    success=tool_result.success,
+                    content=tool_result.content,
+                    metadata=tool_result.metadata,
+                    error=tool_result.error,
+                    context=request.context,
+                )
+            except Exception as exc:
+                log.error(
+                    "tool execution failed",
+                    extra={
+                        "extra_data": {
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                            "error": str(exc),
+                        }
+                    },
+                )
+                response = CallResponse(
+                    success=False,
+                    content="",
+                    error=f"tool execution failed: {exc}",
+                    context=request.context,
+                )
+
+            await msg.respond(response.model_dump_json().encode("utf-8"))
+        finally:
+            clear_context()
 
     async def _build_call_scope(
         self,
         request: CallRequest,
     ) -> ToolCallScope:
-        """construct per-call scope from envelope identifiers.
+        """construct per-call scope from envelope :class:`CallContext`.
 
-        converts the string identifiers on the wire back to UUIDs at
-        the border, resolves a :class:`ToolContextManager` by calling
-        the server's ``context_factory`` when both ``conversation_id``
-        and ``user_id`` are present, and hands the resulting scope to
-        :func:`enter_call_scope`. callers that do not need the context
-        (stateless tools) can safely omit the identifiers: the scope
-        simply carries ``context_manager=None`` and any tool that
-        requires it raises at first use.
+        reads identity dimensions off ``request.context`` (which arrives
+        as UUIDs already coerced by pydantic at the wire boundary) and
+        resolves a :class:`ToolContextManager` by calling the server's
+        ``context_factory`` when both ``conversation_id`` and
+        ``user_id`` are present. callers that do not need the context
+        (stateless tools) can safely omit ``context`` entirely: the
+        resulting scope carries ``context_manager=None`` and any tool
+        that requires it raises at first use.
 
         factory exceptions propagate to :meth:`_handle_call`'s except
         block so the call is surfaced as a failed tool result rather
@@ -656,36 +736,30 @@ class ToolServer:
         :return: populated :class:`ToolCallScope`
         :rtype: ToolCallScope
         """
-        conversation_id: UUID | None = None
-        user_id: UUID | None = None
-        correlation_id: UUID | None = None
-        if request.conversation_id:
-            conversation_id = UUID(request.conversation_id)
-        if request.user_id:
-            user_id = UUID(request.user_id)
-        if request.correlation_id:
-            try:
-                correlation_id = UUID(request.correlation_id)
-            except ValueError:
-                correlation_id = None
+        context = request.context if request.context is not None else CallContext()
         context_manager: ToolContextManager | None = None
-        log.info(
-            "build_call_scope diag: factory=%s conv=%s user=%s corr=%s",
-            self._context_factory is not None,
-            conversation_id,
-            user_id,
-            correlation_id,
+        log.debug(
+            "building call scope",
+            extra={
+                "extra_data": {
+                    "factory_present": self._context_factory is not None,
+                    "conv_present": context.conversation_id is not None,
+                    "user_present": context.user_id is not None,
+                }
+            },
         )
-        if self._context_factory is not None and conversation_id is not None and user_id is not None:
+        if (
+            self._context_factory is not None
+            and context.conversation_id is not None
+            and context.user_id is not None
+        ):
             context_manager = await self._context_factory(
-                conversation_id,
-                user_id,
+                context.conversation_id,
+                context.user_id,
             )
         return ToolCallScope(
+            context=context,
             context_manager=context_manager,
-            conversation_id=conversation_id,
-            user_id=user_id,
-            correlation_id=correlation_id,
         )
 
     async def _heartbeat_loop(self) -> None:

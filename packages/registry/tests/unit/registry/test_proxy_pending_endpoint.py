@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest
@@ -23,10 +25,14 @@ from threetears.registry.proxy import CallProxy, ProxyCallRequest
 # -- helpers --
 
 
+_DEFAULT_CORRELATION_ID = UUID("01948a00-3333-7000-8000-00000000beef")
+_DEFAULT_AGENT_ID = UUID("01948a00-3333-7000-8000-000000a9e999")
+
+
 def _make_call_request(
     tool_name: str = "threetears.calculator",
     tool_version: str = "1.0.0",
-    correlation_id: str = "corr-pending-001",
+    correlation_id: UUID | None = None,
 ) -> ProxyCallRequest:
     """create proxy call request for testing.
 
@@ -34,17 +40,23 @@ def _make_call_request(
     :ptype tool_name: str
     :param tool_version: semver version string
     :ptype tool_version: str
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped on
+        the carried :class:`CallContext`; defaults to stable UUID
+    :ptype correlation_id: UUID | None
     :return: test proxy call request
     :rtype: ProxyCallRequest
     """
+    effective_correlation_id = (
+        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    )
     result = ProxyCallRequest(
-        agent_id="agent-test",
         tool_name=tool_name,
         tool_version=tool_version,
         arguments={"expression": "1+1"},
-        correlation_id=correlation_id,
+        context=CallContext(
+            correlation_id=effective_correlation_id,
+            agent_id=_DEFAULT_AGENT_ID,
+        ),
     )
     return result
 
@@ -145,6 +157,8 @@ class TestCallProxyRefusesPendingEndpoints:
     @pytest.mark.asyncio
     async def test_tool_not_ready_preserves_correlation_id(self) -> None:
         """TOOL_NOT_READY response carries the original correlation_id."""
+        correlation_id = UUID("01948a00-4444-7000-8000-0000000010ad")
+
         catalog = ToolCatalog()
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
@@ -153,13 +167,14 @@ class TestCallProxyRefusesPendingEndpoints:
         nc = AsyncMock()
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-preserve-xyz")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
         await asyncio.sleep(0)
 
         response_data = json.loads(nc.publish.call_args[0][1])
-        assert response_data["correlation_id"] == "corr-preserve-xyz"
+        # ProxyCallResponse echoes correlation_id on context, not top-level
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
     async def test_mixed_pending_and_available_routes_to_available(self) -> None:
@@ -178,15 +193,25 @@ class TestCallProxyRefusesPendingEndpoints:
         )
         await catalog.register(entry)
 
+        correlation_id = UUID("01948a00-5555-7000-8000-00000000fa11")
+        # responder echoes correlation_id inside the CallContext
+        # envelope since context-task-01 removed the top-level flat
+        # field from ProxyCallResponse.
+        reply_body = (
+            b'{"success": true, "content": "ok", "context": '
+            b'{"correlation_id": "'
+            + str(correlation_id).encode("ascii")
+            + b'"}}'
+        )
         reply = MagicMock()
-        reply.data = b'{"success": true, "content": "ok", "correlation_id": "corr-mixed"}'
+        reply.data = reply_body
 
         proxy = CallProxy(catalog, namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=reply)
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-mixed")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
         await asyncio.sleep(0)

@@ -6,8 +6,10 @@ import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
@@ -66,36 +68,56 @@ def _make_nats_msg(
     return msg
 
 
+# static UUID used as the default correlation id in test fixtures.
+# correlation_id lives on CallContext.correlation_id (UUID) since
+# context-task-01 removed the top-level flat string field from
+# ProxyCallRequest / CallRequest.
+_DEFAULT_CORRELATION_ID = UUID("01948a00-0000-7000-8000-0000000abc12")
+
+
+_DEFAULT_AGENT_ID = UUID("01948a00-aaaa-7000-8000-000000a9e777")
+
+
 def _make_call_request(
-    agent_id: str = "agent-001",
+    agent_id: UUID | None = None,
     tool_name: str = "threetears.calculator",
     tool_version: str = "1.0.0",
     arguments: dict[str, Any] | None = None,
-    correlation_id: str = "corr-abc-123",
+    correlation_id: UUID | None = None,
 ) -> ProxyCallRequest:
     """create proxy call request for testing.
 
-    :param agent_id: agent identifier
-    :ptype agent_id: str
+    :param agent_id: agent identifier stamped on the carried
+        :class:`CallContext`; defaults to a stable UUID
+    :ptype agent_id: UUID | None
     :param tool_name: namespaced tool name
     :ptype tool_name: str
     :param tool_version: semver version string
     :ptype tool_version: str
     :param arguments: tool input parameters
     :ptype arguments: dict[str, Any] | None
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped on
+        the carried :class:`CallContext`; defaults to a stable UUID
+    :ptype correlation_id: UUID | None
     :return: test proxy call request
     :rtype: ProxyCallRequest
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
+    effective_correlation_id = (
+        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    )
+    effective_agent_id = (
+        agent_id if agent_id is not None else _DEFAULT_AGENT_ID
+    )
     result = ProxyCallRequest(
-        agent_id=agent_id,
         tool_name=tool_name,
         tool_version=tool_version,
         arguments=arguments,
-        correlation_id=correlation_id,
+        context=CallContext(
+            correlation_id=effective_correlation_id,
+            agent_id=effective_agent_id,
+        ),
     )
     return result
 
@@ -105,7 +127,7 @@ def _make_tool_response(
     content: str = "result: 4",
     metadata: dict[str, Any] | None = None,
     error: str | None = None,
-    correlation_id: str = "corr-abc-123",
+    correlation_id: UUID | None = None,
 ) -> MagicMock:
     """create mock NATS reply from tool pod.
 
@@ -117,17 +139,21 @@ def _make_tool_response(
     :ptype metadata: dict[str, Any] | None
     :param error: error message if execution failed
     :ptype error: str | None
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped on
+        the echoed :class:`CallContext`; defaults to a stable UUID
+    :ptype correlation_id: UUID | None
     :return: mock NATS reply message
     :rtype: MagicMock
     """
+    effective_correlation_id = (
+        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    )
     response = ProxyCallResponse(
         success=success,
         content=content,
         metadata=metadata,
         error=error,
-        correlation_id=correlation_id,
+        context=CallContext(correlation_id=effective_correlation_id),
     )
     reply = MagicMock()
     reply.data = response.model_dump_json().encode("utf-8")
@@ -215,7 +241,15 @@ class TestCallProxySuccess:
 
     @pytest.mark.asyncio
     async def test_correlation_id_preserved(self) -> None:
-        """proxy preserves correlation_id through entire proxy chain."""
+        """proxy preserves correlation_id through entire proxy chain.
+
+        correlation_id rides on ``context.correlation_id`` (UUID); the
+        proxy forwards the context verbatim onto the inner
+        :class:`CallRequest` and stringifies it onto the
+        :class:`ProxyCallResponse` echoed to the caller.
+        """
+        correlation_id = UUID("01948a00-1111-7000-8000-00000000cafe")
+
         catalog = ToolCatalog()
         entry = _make_entry(pod_id="pod-001")
         await catalog.register(entry)
@@ -223,20 +257,25 @@ class TestCallProxySuccess:
         proxy = CallProxy(catalog, namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(
-            return_value=_make_tool_response(correlation_id="corr-xyz-789"),
+            return_value=_make_tool_response(correlation_id=correlation_id),
         )
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-xyz-789")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
         await asyncio.sleep(0)
 
         forwarded_payload = json.loads(nc.request.call_args[0][1])
-        assert forwarded_payload["correlation_id"] == "corr-xyz-789"
+        # CallRequest no longer has a top-level correlation_id; it
+        # rides on context.correlation_id instead
+        assert "correlation_id" not in forwarded_payload
+        assert forwarded_payload["context"]["correlation_id"] == str(correlation_id)
 
         response_data = json.loads(nc.publish.call_args[0][1])
-        assert response_data["correlation_id"] == "corr-xyz-789"
+        # ProxyCallResponse also moved correlation_id onto context
+        assert "correlation_id" not in response_data
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
 
 # -- unavailable tool tests --
@@ -342,6 +381,8 @@ class TestCallProxyTimeout:
     @pytest.mark.asyncio
     async def test_timeout_preserves_correlation_id(self) -> None:
         """proxy preserves correlation_id in timeout error response."""
+        correlation_id = UUID("01948a00-2222-7000-8000-000000012345")
+
         catalog = ToolCatalog()
         entry = _make_entry(pod_id="pod-slow")
         await catalog.register(entry)
@@ -351,13 +392,13 @@ class TestCallProxyTimeout:
         nc.request = AsyncMock(side_effect=TimeoutError("timeout"))
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-timeout-001")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await proxy._handle_call(msg)
         await asyncio.sleep(0)
 
         response_data = json.loads(nc.publish.call_args[0][1])
-        assert response_data["correlation_id"] == "corr-timeout-001"
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
     async def test_default_timeout_is_120_not_30(self) -> None:

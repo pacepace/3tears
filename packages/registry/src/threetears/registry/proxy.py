@@ -11,9 +11,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 
-from threetears.observe import get_logger
+from threetears.agent.tools.context_envelope import CallContext, bind_log_context
+from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
@@ -26,43 +27,87 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
+    {"conversation_id", "user_id", "customer_id", "correlation_id", "agent_id"}
+)
+
+
 class ProxyCallRequest(BaseModel):
     """incoming tool call request from agent.
 
-    optional ``conversation_id`` and ``user_id`` are passed through to
-    the target tool pod so conversation-aware tools (workspace_*,
-    pin-backed builtins) can resolve per-call context. the fields are
-    optional because stateless tools do not need identity scope.
+    all per-call identity dimensions (conversation_id, user_id,
+    customer_id, correlation_id, agent_id) ride as a single nested
+    :class:`CallContext` under ``context`` and are forwarded to the
+    target tool pod untouched. :class:`CallContext.agent_id` is the
+    single source of truth for the originating agent identity -- the
+    proxy reads it for authorization + routing decisions after
+    deserialization, which happens at the same moment the context
+    becomes available, so a separate top-level ``agent_id`` field was a
+    duplicate representation and has been removed.
 
-    :param agent_id: unique identifier of requesting agent
-    :ptype agent_id: str
     :param tool_name: namespaced name of tool to invoke
     :ptype tool_name: str
     :param tool_version: version of tool to invoke
     :ptype tool_version: str
     :param arguments: tool input parameters
     :ptype arguments: dict[str, Any]
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
-    :param conversation_id: conversation identifier for per-call context
-        resolution; string form of a UUID
-    :ptype conversation_id: str | None
-    :param user_id: invoking user identifier for per-call context
-        resolution; string form of a UUID
-    :ptype user_id: str | None
+    :param context: unified identity + trace envelope forwarded
+        verbatim to the tool pod. must be present and carry
+        ``agent_id`` for the proxy to route the call; stateless
+        utility calls still populate :class:`CallContext` even if only
+        with ``agent_id`` + ``correlation_id``
+    :ptype context: CallContext | None
     """
 
-    agent_id: str
+    model_config = ConfigDict(extra="forbid")
+
     tool_name: str
     tool_version: str
     arguments: dict[str, Any]
-    correlation_id: str
-    conversation_id: str | None = None
-    user_id: str | None = None
+    context: CallContext | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_flat_identity_fields(cls, data: Any) -> Any:
+        """reject removed flat identity fields with a migration pointer.
+
+        all legacy flat identity fields -- ``conversation_id``,
+        ``user_id``, ``customer_id``, ``correlation_id``, and
+        ``agent_id`` -- have moved onto :class:`CallContext`. callers
+        sending any of them as top-level wire fields hit this rejector
+        with a message naming the offender so the migration point is
+        obvious.
+
+        :param data: raw input dict (mode='before' runs pre-coercion)
+        :ptype data: Any
+        :return: unchanged input when no legacy fields are present
+        :rtype: Any
+        :raises ValueError: when any legacy flat identity field is
+            present on the wire
+        """
+        if isinstance(data, dict):
+            offending = sorted(_LEGACY_FLAT_IDENTITY_FIELDS & data.keys())
+            if offending:
+                fields_list = ", ".join(offending)
+                raise ValueError(
+                    f"legacy flat identity field(s) {fields_list} rejected on "
+                    f"ProxyCallRequest; migrated to CallContext, see "
+                    f"threetears.agent.tools.context_envelope.CallContext"
+                )
+        return data
 
 
 class ProxyCallResponse(BaseModel):
     """outgoing tool call response to agent.
+
+    the response echoes the inbound :class:`CallContext` verbatim so
+    identity has one shape on both sides of the proxy hop. there is no
+    top-level ``correlation_id`` string; log-border stringification
+    reads ``str(response.context.correlation_id)`` when needed. the
+    field is ``None`` only when the inbound request carried no context
+    at all (which is also rejected upstream because routing requires
+    ``context.agent_id``; ``None`` survives only in error responses
+    built from a malformed inbound request).
 
     :param success: whether tool execution succeeded
     :ptype success: bool
@@ -74,8 +119,11 @@ class ProxyCallResponse(BaseModel):
     :ptype error: str | None
     :param error_code: machine-readable error code
     :ptype error_code: str | None
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param context: unified identity + trace envelope echoed from the
+        inbound :class:`ProxyCallRequest`; ``None`` only on
+        malformed-request error responses where no context could be
+        parsed
+    :ptype context: CallContext | None
     """
 
     success: bool
@@ -83,7 +131,7 @@ class ProxyCallResponse(BaseModel):
     metadata: dict[str, Any] | None = None
     error: str | None = None
     error_code: str | None = None
-    correlation_id: str = ""
+    context: CallContext | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +232,16 @@ class CallProxy:
 
         validates tool exists, selects endpoint via routing strategy,
         tracks in-flight count, forwards call to tool pod, and
-        returns result transparently.
+        returns result transparently. :attr:`CallContext.agent_id` is
+        the single source of truth for routing / authorization; a
+        missing context or missing ``context.agent_id`` surfaces as a
+        ``MALFORMED_REQUEST`` response with a pointer to the rename.
+        binds the canonical logging context tags (``cid``/``conv``/
+        ``user``/``agent``/``customer``) from the inbound
+        :class:`CallContext` for the duration of the dispatch so every
+        log line in this handler and its callees renders with those
+        tags; cleared in ``finally`` to avoid bleeding identifiers
+        across concurrently-handled calls on the same asyncio task.
 
         :param msg: incoming NATS message containing call request
         :ptype msg: Any
@@ -208,9 +265,69 @@ class CallProxy:
                 )
             return
 
+        bind_log_context(request.context)
+        try:
+            await self._dispatch_call(request, msg)
+        finally:
+            clear_context()
+
+    async def _dispatch_call(
+        self,
+        request: "ProxyCallRequest",
+        msg: Any,
+    ) -> None:
+        """body of :meth:`_process_call` after the logging-context bind.
+
+        kept separate so the ``try``/``finally`` wrapping the
+        :func:`bind_log_context` / :func:`clear_context` pair stays
+        shallow; the operational flow (auth, catalog lookup, routing,
+        forward) lives here untouched.
+
+        :param request: parsed + identity-bound call request
+        :ptype request: ProxyCallRequest
+        :param msg: incoming NATS message (for reply subject)
+        :ptype msg: Any
+        :return: nothing; response bytes are published to ``msg.reply``
+            by each branch below
+        :rtype: None
+        """
+        assert self._nc is not None
+        if request.context is None or request.context.agent_id is None:
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=(
+                    "ProxyCallRequest received without context.agent_id; "
+                    "cannot route"
+                ),
+                error_code="MALFORMED_REQUEST",
+                context=request.context,
+            )
+            if msg.reply:
+                await self._nc.publish(
+                    msg.reply,
+                    response.model_dump_json().encode("utf-8"),
+                )
+            log.warning(
+                "proxy call missing agent_id in context",
+                extra={
+                    "extra_data": {
+                        "tool_name": request.tool_name,
+                        "correlation_id": _correlation_id_str(request),
+                    }
+                },
+            )
+            return
+
+        # log-border stringification of identity dimensions; the
+        # ProxyCallResponse echoes the whole context so these string
+        # forms are for log records only.
+        correlation_id_log = _correlation_id_str(request)
+        agent_id_log = str(request.context.agent_id)
+
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
-                request.agent_id,
+                agent_id_log,
                 request.tool_name,
             )
             if not authorized:
@@ -219,7 +336,7 @@ class CallProxy:
                     content="",
                     error=f"agent not authorized for tool {request.tool_name}",
                     error_code="TOOL_NOT_AUTHORIZED",
-                    correlation_id=request.correlation_id,
+                    context=request.context,
                 )
                 if msg.reply:
                     await self._nc.publish(
@@ -230,9 +347,9 @@ class CallProxy:
                     "agent tool call denied",
                     extra={
                         "extra_data": {
-                            "agent_id": request.agent_id,
+                            "agent_id": agent_id_log,
                             "tool_name": request.tool_name,
-                            "correlation_id": request.correlation_id,
+                            "correlation_id": correlation_id_log,
                         }
                     },
                 )
@@ -247,7 +364,7 @@ class CallProxy:
                 content="",
                 error=f"tool {full_name} is not available",
                 error_code="TOOL_UNAVAILABLE",
-                correlation_id=request.correlation_id,
+                context=request.context,
             )
             if msg.reply:
                 await self._nc.publish(
@@ -259,8 +376,8 @@ class CallProxy:
                 extra={
                     "extra_data": {
                         "full_name": full_name,
-                        "agent_id": request.agent_id,
-                        "correlation_id": request.correlation_id,
+                        "agent_id": agent_id_log,
+                        "correlation_id": correlation_id_log,
                     }
                 },
             )
@@ -280,7 +397,7 @@ class CallProxy:
                     content="",
                     error=(f"tool {full_name} endpoints have not yet confirmed reachability"),
                     error_code="TOOL_NOT_READY",
-                    correlation_id=request.correlation_id,
+                    context=request.context,
                 )
                 if msg.reply:
                     await self._nc.publish(
@@ -293,8 +410,8 @@ class CallProxy:
                         "extra_data": {
                             "full_name": full_name,
                             "endpoint_count": len(entry.endpoints),
-                            "agent_id": request.agent_id,
-                            "correlation_id": request.correlation_id,
+                            "agent_id": agent_id_log,
+                            "correlation_id": correlation_id_log,
                         }
                     },
                 )
@@ -304,7 +421,7 @@ class CallProxy:
                 content="",
                 error=f"tool {full_name} has no available endpoints",
                 error_code="TOOL_UNAVAILABLE",
-                correlation_id=request.correlation_id,
+                context=request.context,
             )
             if msg.reply:
                 await self._nc.publish(
@@ -317,8 +434,8 @@ class CallProxy:
                     "extra_data": {
                         "full_name": full_name,
                         "endpoint_count": len(entry.endpoints),
-                        "agent_id": request.agent_id,
-                        "correlation_id": request.correlation_id,
+                        "agent_id": agent_id_log,
+                        "correlation_id": correlation_id_log,
                     }
                 },
             )
@@ -384,6 +501,7 @@ class CallProxy:
         internal_subject = f"{self._namespace}.tools.internal.{pod_id}"
         internal_payload = _build_internal_payload(request)
         effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
+        correlation_id_log = _correlation_id_str(request)
 
         try:
             reply = await self._nc.request(
@@ -399,7 +517,7 @@ class CallProxy:
                     "extra_data": {
                         "pod_id": pod_id,
                         "tool_name": request.tool_name,
-                        "correlation_id": request.correlation_id,
+                        "correlation_id": correlation_id_log,
                         "timeout": effective_timeout,
                     }
                 },
@@ -409,16 +527,40 @@ class CallProxy:
                 content="",
                 error=f"tool call timed out after {effective_timeout}s",
                 error_code="TOOL_TIMEOUT",
-                correlation_id=request.correlation_id,
+                context=request.context,
             )
         return response
+
+
+def _correlation_id_str(request: ProxyCallRequest) -> str:
+    """stringify the correlation id riding on ``request.context``.
+
+    the wire-level correlation id lives on
+    :attr:`CallContext.correlation_id`. log records carry it as a
+    string for human consumption; :class:`ProxyCallResponse` itself
+    echoes the whole :class:`CallContext` so the response shape stays
+    identical to the request. this helper centralizes the log-border
+    conversion: returns ``str(request.context.correlation_id)`` when
+    present, else the empty string.
+
+    :param request: parsed proxy call request
+    :ptype request: ProxyCallRequest
+    :return: stringified correlation id or ``""`` when absent
+    :rtype: str
+    """
+    result = ""
+    if request.context is not None and request.context.correlation_id is not None:
+        result = str(request.context.correlation_id)
+    return result
 
 
 def _build_internal_payload(request: ProxyCallRequest) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
-    constructs CallRequest-compatible payload using tool_name,
-    tool_version, arguments, and correlation_id from proxy request.
+    constructs :class:`CallRequest` from the proxy request, copying
+    ``context`` through verbatim so identity dimensions (including
+    ``correlation_id`` which now lives exclusively on
+    :class:`CallContext`) survive the hop from registry to tool pod.
 
     :param request: original proxy call request
     :ptype request: ProxyCallRequest
@@ -431,9 +573,7 @@ def _build_internal_payload(request: ProxyCallRequest) -> bytes:
         tool_name=request.tool_name,
         tool_version=request.tool_version,
         arguments=request.arguments,
-        correlation_id=request.correlation_id,
-        conversation_id=request.conversation_id,
-        user_id=request.user_id,
+        context=request.context,
     )
     result = internal_request.model_dump_json().encode("utf-8")
     return result

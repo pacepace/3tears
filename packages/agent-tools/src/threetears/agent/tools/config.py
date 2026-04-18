@@ -18,6 +18,7 @@ log = get_logger(__name__)
 
 _PLATFORM_DEFAULT_READY_TIMEOUT = 10.0
 _PLATFORM_DEFAULT_READY_POLL_INTERVAL = 0.05
+_PLATFORM_DEFAULT_SERVE_READY_TIMEOUT = 30.0
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -63,4 +64,16 @@ def get_ready_poll_interval() -> float:
     return _env_float(
         "THREETEARS_TOOLSERVER_READY_POLL_INTERVAL",
         _PLATFORM_DEFAULT_READY_POLL_INTERVAL,
+    )
+
+
+def get_serve_ready_timeout() -> float:
+    """return ToolServer.wait_ready() default timeout in seconds.
+
+    :return: timeout from THREETEARS_TOOLSERVER_SERVE_READY_TIMEOUT or platform default
+    :rtype: float
+    """
+    return _env_float(
+        "THREETEARS_TOOLSERVER_SERVE_READY_TIMEOUT",
+        _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT,
     )

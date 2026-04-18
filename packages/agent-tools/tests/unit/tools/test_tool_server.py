@@ -301,18 +301,24 @@ class TestToolServerHandleCall:
 
     @pytest.mark.asyncio
     async def test_handle_call_routes_to_correct_tool(self) -> None:
-        """_handle_call dispatches to tool matching name@version."""
+        """_handle_call dispatches to tool matching name@version.
+
+        correlation_id rides on ``context.correlation_id`` (UUID) per
+        context-task-01; the server echoes the whole
+        :class:`CallContext` back on :class:`CallResponse.context` so
+        the response shape matches the request.
+        """
         server = ToolServer(nats_url="nats://localhost:9999")
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
-        correlation_id = str(uuid4())
+        correlation_id = uuid4()
         msg = _make_nats_msg(
             {
                 "tool_name": "test.stub",
                 "tool_version": "1.0",
                 "arguments": {"key": "value"},
-                "correlation_id": correlation_id,
+                "context": {"correlation_id": str(correlation_id)},
             }
         )
 
@@ -321,7 +327,8 @@ class TestToolServerHandleCall:
         msg.respond.assert_called_once()
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is True
-        assert response_data["correlation_id"] == correlation_id
+        assert "correlation_id" not in response_data
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
         content = json.loads(response_data["content"])
         assert content == {"key": "value"}
 
@@ -337,7 +344,7 @@ class TestToolServerHandleCall:
                 "tool_name": "test.stub",
                 "tool_version": "1.0",
                 "arguments": {},
-                "correlation_id": "corr-1",
+                "context": {"correlation_id": str(uuid4())},
             }
         )
 
@@ -352,12 +359,13 @@ class TestToolServerHandleCall:
         """_handle_call returns error response for unregistered tool."""
         server = ToolServer(nats_url="nats://localhost:9999")
 
+        correlation_id = uuid4()
         msg = _make_nats_msg(
             {
                 "tool_name": "nonexistent.tool",
                 "tool_version": "1.0",
                 "arguments": {},
-                "correlation_id": "corr-2",
+                "context": {"correlation_id": str(correlation_id)},
             }
         )
 
@@ -366,7 +374,7 @@ class TestToolServerHandleCall:
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is False
         assert "nonexistent.tool@1.0" in response_data["error"]
-        assert response_data["correlation_id"] == "corr-2"
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_execution_failure(self) -> None:
@@ -375,12 +383,13 @@ class TestToolServerHandleCall:
         tool = FailingTool()
         server.register(tool)
 
+        correlation_id = uuid4()
         msg = _make_nats_msg(
             {
                 "tool_name": "test.failing",
                 "tool_version": "1.0",
                 "arguments": {},
-                "correlation_id": "corr-3",
+                "context": {"correlation_id": str(correlation_id)},
             }
         )
 
@@ -389,7 +398,7 @@ class TestToolServerHandleCall:
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is False
         assert "intentional failure" in response_data["error"]
-        assert response_data["correlation_id"] == "corr-3"
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_malformed_request(self) -> None:
@@ -503,34 +512,53 @@ class TestWireFormatModels:
     """tests for Pydantic wire format models."""
 
     def test_call_request_serialization(self) -> None:
-        """CallRequest serializes to JSON with all required fields."""
+        """CallRequest serializes to JSON with required fields.
+
+        correlation_id is no longer a flat field on :class:`CallRequest`;
+        it rides on :class:`CallContext.correlation_id` since
+        context-task-01.
+        """
+        from threetears.agent.tools.context_envelope import CallContext
+
+        correlation_id = uuid4()
         req = CallRequest(
             tool_name="test.stub",
             tool_version="1.0",
             arguments={"key": "value"},
-            correlation_id="corr-123",
+            context=CallContext(correlation_id=correlation_id),
         )
         data = json.loads(req.model_dump_json())
         assert data["tool_name"] == "test.stub"
         assert data["tool_version"] == "1.0"
         assert data["arguments"] == {"key": "value"}
-        assert data["correlation_id"] == "corr-123"
+        assert "correlation_id" not in data
+        assert data["context"]["correlation_id"] == str(correlation_id)
 
     def test_call_response_serialization(self) -> None:
-        """CallResponse serializes to JSON with all fields."""
+        """CallResponse serializes to JSON with all fields.
+
+        correlation_id is no longer a flat field on :class:`CallResponse`;
+        it rides on :class:`CallContext.correlation_id` since
+        context-task-01 unified request + response identity on a single
+        :class:`CallContext` shape.
+        """
+        from threetears.agent.tools.context_envelope import CallContext
+
+        correlation_id = uuid4()
         resp = CallResponse(
             success=True,
             content="result text",
             metadata=None,
             error=None,
-            correlation_id="corr-456",
+            context=CallContext(correlation_id=correlation_id),
         )
         data = json.loads(resp.model_dump_json())
         assert data["success"] is True
         assert data["content"] == "result text"
         assert data["metadata"] is None
         assert data["error"] is None
-        assert data["correlation_id"] == "corr-456"
+        assert "correlation_id" not in data
+        assert data["context"]["correlation_id"] == str(correlation_id)
 
     def test_registration_manifest_serialization(self) -> None:
         """RegistrationManifest serializes with pod_id and tools list."""

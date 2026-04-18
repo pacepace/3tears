@@ -6,8 +6,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.tools.server import HeartbeatMessage, RegistrationManifest, ToolManifestEntry
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
@@ -67,36 +69,52 @@ def _make_nats_msg(
     return msg
 
 
+_DEFAULT_CORRELATION_ID = UUID("01948a00-6666-7000-8000-0000abcdef01")
+
+
+_DEFAULT_AGENT_ID = UUID("01948a00-bbbb-7000-8000-000000a9e888")
+
+
 def _make_call_request(
-    agent_id: str = "agent-001",
+    agent_id: UUID | None = None,
     tool_name: str = "threetears.calculator",
     tool_version: str = "1.0.0",
     arguments: dict[str, Any] | None = None,
-    correlation_id: str = "corr-abc-123",
+    correlation_id: UUID | None = None,
 ) -> ProxyCallRequest:
     """create proxy call request for testing.
 
-    :param agent_id: agent identifier
-    :ptype agent_id: str
+    :param agent_id: agent identifier stamped on the carried
+        :class:`CallContext`; defaults to a stable UUID
+    :ptype agent_id: UUID | None
     :param tool_name: namespaced tool name
     :ptype tool_name: str
     :param tool_version: semver version string
     :ptype tool_version: str
     :param arguments: tool input parameters
     :ptype arguments: dict[str, Any] | None
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped
+        onto the carried :class:`CallContext`; defaults to a stable UUID
+    :ptype correlation_id: UUID | None
     :return: test proxy call request
     :rtype: ProxyCallRequest
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
+    effective_correlation_id = (
+        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    )
+    effective_agent_id = (
+        agent_id if agent_id is not None else _DEFAULT_AGENT_ID
+    )
     result = ProxyCallRequest(
-        agent_id=agent_id,
         tool_name=tool_name,
         tool_version=tool_version,
         arguments=arguments,
-        correlation_id=correlation_id,
+        context=CallContext(
+            correlation_id=effective_correlation_id,
+            agent_id=effective_agent_id,
+        ),
     )
     return result
 
@@ -104,7 +122,7 @@ def _make_call_request(
 def _make_tool_response(
     success: bool = True,
     content: str = "result: 4",
-    correlation_id: str = "corr-abc-123",
+    correlation_id: UUID | None = None,
 ) -> MagicMock:
     """create mock NATS reply from tool pod.
 
@@ -112,15 +130,19 @@ def _make_tool_response(
     :ptype success: bool
     :param content: result content string
     :ptype content: str
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped on
+        the echoed :class:`CallContext`; defaults to a stable UUID
+    :ptype correlation_id: UUID | None
     :return: mock NATS reply message
     :rtype: MagicMock
     """
+    effective_correlation_id = (
+        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    )
     response = ProxyCallResponse(
         success=success,
         content=content,
-        correlation_id=correlation_id,
+        context=CallContext(correlation_id=effective_correlation_id),
     )
     reply = MagicMock()
     reply.data = response.model_dump_json().encode("utf-8")
