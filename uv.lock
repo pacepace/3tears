@@ -5,6 +5,7 @@ requires-python = ">=3.14"
 [manifest]
 members = [
     "3tears",
+    "3tears-agent-acl",
     "3tears-agent-memory",
     "3tears-agent-tools",
     "3tears-agent-workspace",
@@ -72,6 +73,17 @@ requires-dist = [
     { name = "sqlalchemy" },
 ]
 provides-extras = ["tracing", "duckdb"]
+
+[[package]]
+name = "3tears-agent-acl"
+version = "0.1.0"
+source = { editable = "packages/agent-acl" }
+dependencies = [
+    { name = "3tears" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "3tears", editable = "packages/core" }]
 
 [[package]]
 name = "3tears-agent-memory"
