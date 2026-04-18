@@ -7,6 +7,12 @@ from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
 
+__all__ = [
+    "Workspace",
+    "WorkspaceFile",
+    "WorkspaceFileVersion",
+]
+
 
 def _as_uuid(value: object) -> UUID:
     """
@@ -41,7 +47,7 @@ def _as_uuid_or_none(value: object) -> UUID | None:
 class Workspace(BaseEntity):
     """cache-proxy entity for workspaces table."""
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def agent_id(self) -> UUID:
@@ -238,7 +244,7 @@ class Workspace(BaseEntity):
 class WorkspaceFile(BaseEntity):
     """cache-proxy entity for workspace_files head-state table."""
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def workspace_id(self) -> UUID:
@@ -369,7 +375,7 @@ class WorkspaceFile(BaseEntity):
 class WorkspaceFileVersion(BaseEntity):
     """cache-proxy entity for workspace_file_versions append-only journal table."""
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def workspace_id(self) -> UUID:

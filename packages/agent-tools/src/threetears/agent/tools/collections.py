@@ -22,6 +22,12 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 
 from threetears.agent.tools.entities import ContextItemEntity
 
+__all__ = [
+    "ContextItemCollection",
+    "context_items_table",
+    "migrate_context_items_schema",
+]
+
 log = get_logger(__name__)
 
 
@@ -35,7 +41,7 @@ def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
     here. ``None``/missing values pass through unchanged so the
     absent-metadata case still resolves to ``{}`` at the call site.
 
-    :param row: dict-shaped row from ``self._l3_pool.fetch(row)``
+    :param row: dict-shaped row from ``self.l3_pool.fetch(row)``
     :ptype row: dict[str, Any]
     :return: same dict with ``metadata`` coerced to ``dict`` when it
         arrived as a JSON string
@@ -45,7 +51,7 @@ def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(meta, str) and meta:
         try:
             row["metadata"] = json.loads(meta)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             # malformed jsonb on the wire: leave as-is so callers
             # surface the raw payload in their error path instead of
             # swallowing the corruption silently.
@@ -102,7 +108,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
     and LRU eviction for tool results.
     """
 
-    _primary_key_column: str = "context_id"
+    primary_key_column: str = "context_id"
 
     @property
     def table_name(self) -> str:
@@ -125,7 +131,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
     # -- Standard BaseCollection abstract methods --
 
     async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        row = await self._l3_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             "SELECT * FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
@@ -146,7 +152,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             metadata_val = json.dumps(metadata_val)
 
         if original_timestamp is None:
-            result = await self._l3_pool.execute(
+            result = await self.l3_pool.execute(
                 """
                 INSERT INTO context_items (
                     context_id, conversation_id, context_type, key,
@@ -174,7 +180,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
                 data["date_updated"],
             )
         else:
-            result = await self._l3_pool.execute(
+            result = await self.l3_pool.execute(
                 """
                 UPDATE context_items SET
                     short_desc = $2, long_desc = $3, content = $4, metadata = $5::jsonb,
@@ -193,7 +199,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         return int(result.split()[-1])
 
     async def _delete_from_postgres(self, entity_id: Any) -> None:
-        await self._l3_pool.execute(
+        await self.l3_pool.execute(
             "DELETE FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
@@ -209,7 +215,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
     async def find_by_conversation(self, conversation_id: str | UUID) -> list[ContextItemEntity]:
         """Load all context items for a conversation from L3, populate L1."""
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
-        rows = await self._l3_pool.fetch(
+        rows = await self.l3_pool.fetch(
             """
             SELECT * FROM context_items
             WHERE conversation_id = $1
@@ -221,8 +227,8 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         for row in rows:
             data = _decode_metadata_in_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity._original_date_updated = data.get("date_updated")
-            self._write_to_cache_sync(data)
+            entity.original_date_updated = data.get("date_updated")
+            self.write_to_cache_sync(data)
             entities.append(entity)
         return entities
 
@@ -242,7 +248,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         if isinstance(metadata_val, dict):
             metadata_val = json.dumps(metadata_val)
 
-        row = await self._l3_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             """
             INSERT INTO context_items (
                 context_id, conversation_id, context_type, key,
@@ -276,7 +282,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         # Update L1 cache
         cache_data = dict(data)
         cache_data["context_id"] = returned_id
-        self._write_to_cache_sync(cache_data)
+        self.write_to_cache_sync(cache_data)
         await self._save_to_l2(returned_id, cache_data)
         await self._publish_invalidation(returned_id)
 
@@ -292,14 +298,14 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
         # Update L1 immediately
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(cid), self._primary_key_column)
+            row = self._l1.select_by_id(self.table_name, str(cid), self.primary_key_column)
             if row is not None:
                 row["date_accessed"] = now
-                self._l1.upsert(self.table_name, row, self._primary_key_column)
+                self._l1.upsert(self.table_name, row, self.primary_key_column)
 
         # Propagate to L3 (fire-and-forget via background)
         try:
-            await self._l3_pool.execute(
+            await self.l3_pool.execute(
                 "UPDATE context_items SET date_accessed = $2 WHERE context_id = $1",
                 cid,
                 now,
@@ -313,7 +319,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
     async def count_results(self, conversation_id: str | UUID) -> int:
         """Count tool_result items for a conversation."""
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
-        row = await self._l3_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             """
             SELECT COUNT(*) AS cnt FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
@@ -335,7 +341,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             return 0
 
         to_evict = count - result_limit
-        evict_rows = await self._l3_pool.fetch(
+        evict_rows = await self.l3_pool.fetch(
             """
             SELECT context_id FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
@@ -351,7 +357,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             eid = row["context_id"]
             await self._delete_from_postgres(eid)
             if self._l1 is not None:
-                self._l1.delete_by_id(self.table_name, str(eid), self._primary_key_column)
+                self._l1.delete_by_id(self.table_name, str(eid), self.primary_key_column)
             await self._delete_from_l2(eid)
             await self._publish_invalidation(eid)
             evicted += 1

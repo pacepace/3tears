@@ -20,6 +20,11 @@ from threetears.agent.tools.server import HeartbeatMessage
 from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
 
+__all__ = [
+    "HeartbeatMonitor",
+    "PodStatus",
+]
+
 if TYPE_CHECKING:
     from threetears.core.cache.sqlite import SQLiteBackend
 
@@ -96,7 +101,7 @@ class HeartbeatMonitor:
         self._check_interval = check_interval if check_interval is not None else get_heartbeat_check_interval()
         self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
         self._l1 = l1_backend
-        if self._l1 is not None and not self._l1._initialized:
+        if self._l1 is not None and not self._l1.is_initialized():
             self._l1.initialize(_HEALTH_L1_METADATA)
         self._pods: dict[str, PodStatus] = {}
         self._nc: Any | None = None

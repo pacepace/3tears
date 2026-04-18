@@ -38,6 +38,13 @@ from threetears.agent.tools.protocols import (
     VisionProvider,
 )
 
+__all__ = [
+    "AnalyzeMediaTool",
+    "AnalyzerConfig",
+    "OnAnalysisCallback",
+    "create_analyze_media_tool",
+]
+
 _log = get_logger(__name__)
 
 _DEFAULT_RESPONSE_SUFFIX = "Respond using markdown formatting."

@@ -16,6 +16,10 @@ from threetears.observe import get_logger
 
 from threetears.agent.memory.entities import MemoryEntity
 
+__all__ = [
+    "MemoriesCollection",
+]
+
 log = get_logger(__name__)
 
 # Field type mapping for JSON serialization/deserialization
@@ -70,7 +74,7 @@ def _resolve_base_type(type_hint: Any) -> type | None:
 class MemoriesCollection(BaseCollection[MemoryEntity]):
     """Collection for memory entities with three-tier caching."""
 
-    _primary_key_column: str = "memory_id"
+    primary_key_column: str = "memory_id"
 
     def __init__(
         self,
@@ -202,7 +206,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity._original_date_updated = data.get("date_updated")
+            entity.original_date_updated = data.get("date_updated")
             entity_id = data["memory_id"]
             # Promote to L2
             await self._save_to_l2(entity_id, data)
@@ -255,7 +259,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity._original_date_updated = data.get("date_updated")
+            entity.original_date_updated = data.get("date_updated")
             entity_id = data["memory_id"]
             await self._save_to_l2(entity_id, data)
             entities.append(entity)

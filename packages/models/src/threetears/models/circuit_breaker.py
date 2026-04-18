@@ -8,6 +8,13 @@ from enum import StrEnum
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "CircuitBreaker",
+    "CircuitBreakerRegistry",
+    "CircuitOpenError",
+    "CircuitState",
+]
+
 logger = get_logger(__name__)
 
 

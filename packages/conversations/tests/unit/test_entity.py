@@ -87,10 +87,10 @@ def mock_collection() -> tuple[MagicMock, dict[str, dict[str, object]]]:
         """
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
 
     return coll, cache
 
@@ -288,7 +288,7 @@ class TestConversationSetterWithCollection:
         entity.status = "closed"
 
         assert entity.status == "closed"
-        coll._set_field_sync.assert_called_with(
+        coll.set_field_sync.assert_called_with(
             data["id"], "status", "closed"
         )
 

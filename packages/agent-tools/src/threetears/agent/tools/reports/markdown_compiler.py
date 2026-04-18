@@ -21,6 +21,11 @@ from threetears.agent.tools.reports.severity import (
     sort_by_severity,
 )
 
+__all__ = [
+    "MarkdownCompiler",
+    "ReportMetadata",
+]
+
 
 @dataclass
 class ReportMetadata:

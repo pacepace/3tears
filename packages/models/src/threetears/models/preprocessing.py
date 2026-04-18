@@ -7,6 +7,12 @@ import base64
 from threetears.models.capabilities import ModelCapabilities
 from threetears.models.messages import ChatMessage, MessageRole
 
+__all__ = [
+    "enforce_alternating_roles",
+    "format_vision_content",
+    "preprocess_messages",
+]
+
 
 def enforce_alternating_roles(
     messages: list[ChatMessage],

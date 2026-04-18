@@ -19,6 +19,10 @@ from typing import Any
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "SQLiteBackend",
+]
+
 try:
     from uuid_utils import UUID as _UuidUtilsUUID
 

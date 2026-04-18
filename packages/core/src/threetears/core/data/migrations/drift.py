@@ -36,6 +36,14 @@ from typing import Any
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "DriftReport",
+    "ExpectedTable",
+    "diff_expected_live",
+    "parse_ddl_to_expected",
+    "snapshot_live_schema",
+]
+
 log = get_logger(__name__)
 
 

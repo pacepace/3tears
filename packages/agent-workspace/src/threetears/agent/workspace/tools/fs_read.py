@@ -35,6 +35,10 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
 )
 
+__all__ = [
+    "FsReadTool",
+]
+
 log = get_logger(__name__)
 
 

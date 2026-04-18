@@ -73,7 +73,7 @@ def collection(
 ) -> ContextItemCollection:
     nats = make_nats_mock()
     coll = ContextItemCollection(registry, config, nats_client=nats)
-    coll._l3_pool = pool
+    coll.l3_pool = pool
     return coll
 
 

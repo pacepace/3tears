@@ -25,6 +25,11 @@ from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.registration import RegistrationHandler
 
+__all__ = [
+    "RegistryServer",
+    "nats_connect",
+]
+
 _logger = get_logger(__name__)
 
 

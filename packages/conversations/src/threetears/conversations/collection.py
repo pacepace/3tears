@@ -24,6 +24,10 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
+__all__ = [
+    "ConversationsCollection",
+]
+
 log = get_logger(__name__)
 
 
@@ -122,7 +126,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
     :ptype write_buffer: WriteBuffer | None
     """
 
-    _primary_key_column: str = "id"
+    primary_key_column: str = "id"
 
     def __init__(
         self,
@@ -332,7 +336,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity._original_date_updated = data.get("date_updated")
+            entity.original_date_updated = data.get("date_updated")
             entity_id = data["id"]
             await self._save_to_l2(entity_id, data)
             entities.append(entity)

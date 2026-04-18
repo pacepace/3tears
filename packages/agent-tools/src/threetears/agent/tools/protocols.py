@@ -11,6 +11,16 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
+__all__ = [
+    "GeneratedImage",
+    "ImageGenerationBackend",
+    "MediaInfo",
+    "MediaStorage",
+    "TextProvider",
+    "TranscriptionProvider",
+    "VisionProvider",
+]
+
 
 @dataclass
 class GeneratedImage:

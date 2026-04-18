@@ -19,6 +19,12 @@ from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
+__all__ = [
+    "CallProxy",
+    "ProxyCallRequest",
+    "ProxyCallResponse",
+]
+
 log = get_logger(__name__)
 
 

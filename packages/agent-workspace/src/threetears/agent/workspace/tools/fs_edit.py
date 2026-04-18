@@ -42,6 +42,10 @@ from threetears.agent.workspace.tools.helpers import (
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
 
+__all__ = [
+    "FsEditTool",
+]
+
 log = get_logger(__name__)
 
 

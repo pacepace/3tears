@@ -27,6 +27,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from threetears.observe import clear_context, set_context
 
+__all__ = [
+    "CallContext",
+    "bind_log_context",
+]
+
 
 class CallContext(BaseModel):
     """unified identity + trace envelope for a single tool dispatch.

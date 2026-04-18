@@ -38,6 +38,10 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
 )
 
+__all__ = [
+    "FsListTool",
+]
+
 log = get_logger(__name__)
 
 

@@ -15,6 +15,14 @@ from pydantic import BaseModel
 from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
 
+__all__ = [
+    "DiscoverRequest",
+    "DiscoverResponse",
+    "DiscoverResultEntry",
+    "DiscoverToolEntry",
+    "DiscoveryHandler",
+]
+
 _logger = get_logger(__name__)
 
 

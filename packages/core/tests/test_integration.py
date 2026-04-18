@@ -125,7 +125,7 @@ def _make_metadata() -> MetaData:
 
 
 class StubEntity(BaseEntity):
-    _primary_key_field = "id"
+    primary_key_field = "id"
 
 
 class StubCollection(BaseCollection[StubEntity]):
@@ -363,7 +363,7 @@ class TestThreeTierIntegration:
         # Load entity (L3 -> L1 promotion)
         entity = await coll.get("item-3")
         assert entity is not None
-        assert entity._original_date_updated == ts_v1
+        assert entity.original_date_updated == ts_v1
 
         # Simulate another process updating L3 behind our back
         pg_store["item-3"]["date_updated"] = ts_v2

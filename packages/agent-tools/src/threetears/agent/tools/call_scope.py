@@ -52,6 +52,14 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from threetears.agent.tools.context_envelope import CallContext
 
+__all__ = [
+    "ToolCallScope",
+    "current_scope",
+    "enter_call_scope",
+    "get_current_context",
+    "tool_context_provider",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 

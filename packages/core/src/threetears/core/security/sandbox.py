@@ -12,7 +12,7 @@ generalizes the "check before act" pattern into a reusable ABC:
 future subclasses (``WorkspaceSandbox``, ``NetworkSandbox``,
 ``SubprocessSandbox``, ``QuerySandbox``) extend the same contract, each
 defining their own action vocabulary and deny-reason messages via
-:meth:`Sandbox._deny_reason`.
+:meth:`Sandbox.deny_reason`.
 
 design notes:
 
@@ -30,6 +30,13 @@ from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Literal
+
+__all__ = [
+    "PathSandbox",
+    "Sandbox",
+    "SandboxDecision",
+    "SandboxDenied",
+]
 
 
 class SandboxDecision(StrEnum):
@@ -81,7 +88,7 @@ class Sandbox(ABC):
     subclasses implement :meth:`check` returning a :class:`SandboxDecision`.
     :meth:`enforce` is concrete and calls :meth:`check`, raising
     :class:`SandboxDenied` on DENY. subclasses may override
-    :meth:`_deny_reason` to provide richer error messages without
+    :meth:`deny_reason` to provide richer error messages without
     overriding :meth:`check` or :meth:`enforce`.
     """
 
@@ -112,9 +119,9 @@ class Sandbox(ABC):
         :raises SandboxDenied: if policy denies requested action on target
         """
         if self.check(action, target) is SandboxDecision.DENY:
-            raise SandboxDenied(action, target, self._deny_reason(action, target))
+            raise SandboxDenied(action, target, self.deny_reason(action, target))
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return human-readable reason why policy denies this call.
 
         default implementation returns generic ``"policy denied"``.
@@ -266,7 +273,7 @@ class PathSandbox(Sandbox):
             raise SandboxDenied("access", str(path), "path escapes root") from exc
         return candidate
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return actionable reason by re-running :meth:`check_relative_key`.
 
         computed on demand rather than cached on a per-call mutable attr
@@ -292,7 +299,7 @@ class PathSandbox(Sandbox):
         """joint implementation of decision + reason for a relative key.
 
         single source of truth behind :meth:`check_relative_key` and
-        :meth:`_deny_reason`; returns ``(decision, reason)`` so callers
+        :meth:`deny_reason`; returns ``(decision, reason)`` so callers
         that only need the decision discard the reason.
 
         :param key: relative key to validate and match

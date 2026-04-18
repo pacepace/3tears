@@ -38,10 +38,10 @@ def mock_collection():
     def get_row(entity_id: object) -> dict[str, object] | None:
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
 
     return coll, cache
 
@@ -106,7 +106,7 @@ class TestMemoryEntityAgentId:
         entity.agent_id = new_agent
 
         assert entity.agent_id == new_agent
-        coll._set_field_sync.assert_called_with(
+        coll.set_field_sync.assert_called_with(
             data["memory_id"],
             "agent_id",
             new_agent,
@@ -163,7 +163,7 @@ class TestMemoryEntityCustomerId:
         entity.customer_id = new_customer
 
         assert entity.customer_id == new_customer
-        coll._set_field_sync.assert_called_with(
+        coll.set_field_sync.assert_called_with(
             data["memory_id"],
             "customer_id",
             new_customer,

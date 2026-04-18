@@ -17,6 +17,10 @@ from threetears.observe import get_logger
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.factory import register_tool_builder
 
+__all__ = [
+    "WorkspaceCurrentTool",
+]
+
 log = get_logger(__name__)
 
 

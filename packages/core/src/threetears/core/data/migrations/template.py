@@ -65,6 +65,11 @@ rules the template enforces by convention:
 
 from __future__ import annotations
 
+__all__ = [
+    "MIGRATION_FILE_TEMPLATE",
+    "render_migration_template",
+]
+
 
 MIGRATION_FILE_TEMPLATE = '''"""
 {short_description}.

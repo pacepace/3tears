@@ -21,6 +21,11 @@ from uuid import UUID
 
 from threetears.agent.tools.base_tool import TearsTool
 
+__all__ = [
+    "build_workspace_tools",
+    "register_tool_builder",
+]
+
 _TOOL_BUILDERS: list[Callable[..., TearsTool]] = []
 
 

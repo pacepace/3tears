@@ -26,6 +26,17 @@ from pydantic import BaseModel, Field
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger, traced
 
+__all__ = [
+    "DocumentResult",
+    "DocumentSection",
+    "OcrConfig",
+    "ParseDocumentInput",
+    "ParseDocumentTool",
+    "create_parse_document_tool",
+    "detect_mime_from_filename",
+    "parse_document",
+]
+
 log = get_logger(__name__)
 
 

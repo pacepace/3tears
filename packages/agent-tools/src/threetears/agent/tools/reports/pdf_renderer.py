@@ -13,6 +13,11 @@ import tempfile
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "PandocNotFoundError",
+    "PdfRenderer",
+]
+
 log = get_logger(__name__)
 
 _LATEX_SPECIAL_RE = re.compile(r"([\\{}$&#%_^~])")

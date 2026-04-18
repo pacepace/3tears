@@ -13,6 +13,10 @@ import signal
 from threetears.agent.tools.server import ToolServer
 from threetears.observe import get_logger
 
+__all__ = [
+    "main",
+]
+
 _logger = get_logger(__name__)
 
 

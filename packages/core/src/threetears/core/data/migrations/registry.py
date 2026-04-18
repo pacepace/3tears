@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING
 from threetears.core.data.migrations.errors import DuplicateVersionError
 from threetears.core.data.migrations.scope import MigrationScope
 
+__all__ = [
+    "MigrationFunc",
+    "PackageMigrations",
+]
+
 if TYPE_CHECKING:
     from threetears.core.data.store import DataStore
 

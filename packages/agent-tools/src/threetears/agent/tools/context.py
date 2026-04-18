@@ -9,6 +9,10 @@ from uuid import UUID, uuid7
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.tools.collections import ContextItemCollection
 
+__all__ = [
+    "ToolContextManager",
+]
+
 
 class ToolContextManager:
     """Manages conversation context: variables, tool results, media slots, and workflows.
@@ -216,7 +220,7 @@ class ToolContextManager:
                     str(i["context_id"])
                     for i in self._items
                     if i["context_type"] == "tool_result"
-                    and not self._collection._exists_in_cache_sync(i["context_id"])
+                    and not self._collection.exists_in_cache_sync(i["context_id"])
                 }
                 if evicted_ids:
                     self._items = [i for i in self._items if str(i["context_id"]) not in evicted_ids]

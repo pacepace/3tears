@@ -43,6 +43,10 @@ from threetears.agent.workspace.validators import (
     dispatch_validators,
 )
 
+__all__ = [
+    "WorkspaceResetTool",
+]
+
 log = get_logger(__name__)
 
 

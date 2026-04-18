@@ -124,7 +124,7 @@ class TestDefaultNamespace:
             namespace_prefix="ns",
             agent_id="abc-def",
         )
-        assert proxy._default_namespace == "agent.abc-def"
+        assert proxy.default_namespace == "agent.abc-def"
 
     def test_custom_namespace_override(self) -> None:
         proxy = NatsProxyL3Backend(
@@ -133,7 +133,7 @@ class TestDefaultNamespace:
             agent_id="abc-def",
             default_namespace="custom.namespace",
         )
-        assert proxy._default_namespace == "custom.namespace"
+        assert proxy.default_namespace == "custom.namespace"
 
 
 # ------------------------------------------------------------------

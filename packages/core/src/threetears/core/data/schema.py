@@ -8,6 +8,13 @@ from pydantic import BaseModel, Field, field_validator
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "ColumnDef",
+    "ForeignKeyDef",
+    "IndexDef",
+    "TableDef",
+]
+
 log = get_logger(__name__)
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")

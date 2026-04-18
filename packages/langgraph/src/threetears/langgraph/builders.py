@@ -24,6 +24,11 @@ import logging
 
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
 
+__all__ = [
+    "build_chat_agent",
+    "build_tool_agent",
+]
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 

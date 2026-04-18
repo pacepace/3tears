@@ -5,6 +5,10 @@ from __future__ import annotations
 import importlib
 from types import ModuleType
 
+__all__ = [
+    "ProviderRegistry",
+]
+
 _BUILTIN_PROVIDERS: dict[str, str] = {
     "anthropic": "threetears.models.providers.anthropic",
     "openai": "threetears.models.providers.openai",

@@ -18,7 +18,8 @@ hard-codes schema names; that stays the caller's responsibility.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Mapping
 
 from threetears.core.data.migrations.errors import (
     MigrationError,
@@ -29,6 +30,10 @@ from threetears.core.data.migrations.preview import PreviewStore
 from threetears.core.data.migrations.registry import MigrationFunc, PackageMigrations
 from threetears.core.data.migrations.scope import MigrationScope
 from threetears.observe import get_logger, traced
+
+__all__ = [
+    "MigrationRunner",
+]
 
 if TYPE_CHECKING:
     from threetears.core.data.store import DataStore
@@ -84,6 +89,36 @@ class MigrationRunner:
         initialize an empty runner with no registered packages.
         """
         self._packages: dict[str, PackageMigrations] = {}
+
+    @property
+    def packages(self) -> Mapping[str, PackageMigrations]:
+        """return an immutable view of registered migration packages.
+
+        the hub CLI walks this mapping to render ``migrations status``,
+        ``migrations history``, and ``migrations current`` for every
+        registered package without reaching into the runner's private
+        storage. the returned object is a :class:`types.MappingProxyType`
+        wrapper over the internal dict: it supports ``in``, ``len``,
+        iteration, and ``.keys()``/``.values()``/``.items()`` /
+        ``.get()`` with the same semantics as the underlying dict, but
+        mutation attempts (``packages["x"] = y``, ``packages.pop(...)``,
+        ``packages.clear()``) raise :class:`TypeError`. this protects
+        the runner's registration invariants (one :class:`
+        PackageMigrations` per name; topological ordering relies on
+        consistent membership) from accidental caller-side edits while
+        still giving read-only consumers a direct, zero-copy view. the
+        view is live: later :meth:`register` calls are visible to
+        existing references, so callers holding a ``packages`` handle
+        across a registration do not need to re-fetch. call
+        :meth:`register` to add a package; there is no public remove
+        operation by design (migration registrations are append-only
+        within a process lifetime).
+
+        :return: read-only mapping from package name to its
+            :class:`PackageMigrations`
+        :rtype: Mapping[str, PackageMigrations]
+        """
+        return MappingProxyType(self._packages)
 
     def register(self, package: PackageMigrations) -> None:
         """

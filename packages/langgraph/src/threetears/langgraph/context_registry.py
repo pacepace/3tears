@@ -24,6 +24,11 @@ import logging
 from typing import Any
 from uuid import UUID
 
+__all__ = [
+    "ContextManagerRegistry",
+    "current_conversation_id",
+]
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 

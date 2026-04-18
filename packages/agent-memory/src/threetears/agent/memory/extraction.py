@@ -21,6 +21,11 @@ from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.observe import get_logger, traced
 
+__all__ = [
+    "ChatModelFactory",
+    "MemoryExtractor",
+]
+
 log = get_logger(__name__)
 
 _VALID_MEMORY_TYPES = {t.value for t in MemoryType}

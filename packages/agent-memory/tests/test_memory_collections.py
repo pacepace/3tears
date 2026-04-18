@@ -393,7 +393,7 @@ class TestMemoriesCollectionTableName:
         coll = MemoriesCollection(registry, config_always, postgres_pool=pg)
         assert coll.entity_class is MemoryEntity
 
-    def test_primary_key_column(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
+    def testprimary_key_column(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         pg = _make_pg_mock()
         coll = MemoriesCollection(registry, config_always, postgres_pool=pg)
-        assert coll._primary_key_column == "memory_id"
+        assert coll.primary_key_column == "memory_id"

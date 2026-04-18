@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import Any, Protocol, get_args, get_origin, runtime_checkable
 from uuid import UUID
 
+__all__ = [
+    "FormatHandler",
+    "UnknownFormatError",
+    "deserialize_from_json",
+    "handler_for",
+    "register_handler",
+    "serialize_to_json",
+]
+
 
 def _json_serializer(obj: object) -> str | int | float | bool | None:
     """Serialize non-JSON-native types for ``json.dumps``.

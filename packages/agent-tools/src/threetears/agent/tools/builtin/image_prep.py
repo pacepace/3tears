@@ -21,6 +21,11 @@ from typing import Any
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.observe import get_logger
 
+__all__ = [
+    "ImagePrepTool",
+    "prepare_image_for_vision",
+]
+
 _log = get_logger(__name__)
 
 # Vision model dimension limit — Anthropic caps at 8192, but 4096 keeps

@@ -34,7 +34,7 @@ def _make_metadata() -> MetaData:
 
 
 class StubEntity(BaseEntity):
-    _primary_key_field = "id"
+    primary_key_field = "id"
 
 
 class StubCollection(BaseCollection[StubEntity]):
@@ -275,7 +275,7 @@ class TestSaveEntity:
         )
         entity = await coll.get("e1")
         assert entity is not None
-        entity._original_date_updated = ts_old
+        entity.original_date_updated = ts_old
 
         entity.name = "Alice Updated"
 
@@ -370,7 +370,7 @@ class TestFieldAccessors:
         coll = StubCollection(registry, config_always)
         coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
 
-        result = coll._get_field_sync("e1", "name")
+        result = coll.get_field_sync("e1", "name")
 
         assert result == "Alice"
 
@@ -381,7 +381,7 @@ class TestFieldAccessors:
 
         coll = StubCollection(registry, config_always)
 
-        result = coll._get_field_sync("nonexistent", "name")
+        result = coll.get_field_sync("nonexistent", "name")
 
         assert result is MISSING
 
@@ -389,7 +389,7 @@ class TestFieldAccessors:
         coll = StubCollection(registry, config_always)
         coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
 
-        result = coll._set_field_sync("e1", "name", "Bob")
+        result = coll.set_field_sync("e1", "name", "Bob")
 
         assert result is True
         row = coll._l1.select_by_id("test_entities", "e1")
@@ -400,7 +400,7 @@ class TestFieldAccessors:
     ) -> None:
         coll = StubCollection(registry, config_always)
 
-        result = coll._set_field_sync("nonexistent", "name", "Bob")
+        result = coll.set_field_sync("nonexistent", "name", "Bob")
 
         assert result is False
 
@@ -408,7 +408,7 @@ class TestFieldAccessors:
         coll = StubCollection(registry, config_always)
         coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
 
-        row = coll._get_row_sync("e1")
+        row = coll.get_row_sync("e1")
 
         assert row is not None
         assert row["name"] == "Alice"
@@ -417,14 +417,14 @@ class TestFieldAccessors:
     def test_get_row_sync_missing(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
 
-        row = coll._get_row_sync("nonexistent")
+        row = coll.get_row_sync("nonexistent")
 
         assert row is None
 
     def test_write_to_cache_sync(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
 
-        result = coll._write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
+        result = coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         assert result is True
         row = coll._l1.select_by_id("test_entities", "e1")
@@ -434,11 +434,11 @@ class TestFieldAccessors:
     def test_exists_in_cache_sync(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
 
-        assert coll._exists_in_cache_sync("e1") is False
+        assert coll.exists_in_cache_sync("e1") is False
 
         coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
 
-        assert coll._exists_in_cache_sync("e1") is True
+        assert coll.exists_in_cache_sync("e1") is True
 
 
 class TestNoL1Backend:
@@ -468,11 +468,11 @@ class TestNoL1Backend:
 
         coll = StubCollection(no_l1_registry, config_always)
 
-        assert coll._get_field_sync("e1", "name") is MISSING
-        assert coll._set_field_sync("e1", "name", "x") is False
-        assert coll._get_row_sync("e1") is None
-        assert coll._write_to_cache_sync({"id": "e1"}) is False
-        assert coll._exists_in_cache_sync("e1") is False
+        assert coll.get_field_sync("e1", "name") is MISSING
+        assert coll.set_field_sync("e1", "name", "x") is False
+        assert coll.get_row_sync("e1") is None
+        assert coll.write_to_cache_sync({"id": "e1"}) is False
+        assert coll.exists_in_cache_sync("e1") is False
 
 
 class TestSubscriptGetterPullThrough:
@@ -769,7 +769,7 @@ class TestMultiPodSimulation:
         time.sleep(0.1)  # Let propagation complete
 
         # Pod B's L1 is stale (still "Alice")
-        stale_name = pod_b._get_field_sync("e1", "name")
+        stale_name = pod_b.get_field_sync("e1", "name")
         assert stale_name == "Alice"
 
         # But L2 has the update (shared NATS KV)
@@ -854,3 +854,53 @@ class TestInvalidateCache:
 
         assert coll._l1.select_by_id("test_entities", "e1") is None
         assert "test_entities.e1" not in nats._store
+
+
+class TestL3PoolAccessor:
+    """verify the public ``l3_pool`` attribute exposes the pool the
+    registry handed the collection at construction time.
+
+    the hub's ad-hoc-SQL extension seam depends on this identity
+    relation: if it drifts (say, by copying or wrapping), hub code that
+    relies on ``self.l3_pool.fetch(...)`` sees a different pool than
+    the one the collection uses internally, which silently breaks
+    transactions and connection-lifetime assumptions.
+    """
+
+    def test_l3_pool_returns_registry_pool_by_default(
+        self, config_always: DefaultCoreConfig
+    ) -> None:
+        """collection.l3_pool is the same object the registry holds."""
+        sentinel_pool = object()
+        reg = CollectionRegistry()
+        reg.configure(l3_pool=sentinel_pool)
+        coll = StubCollection(reg, config_always)
+        assert coll.l3_pool is sentinel_pool
+
+    def test_l3_pool_respects_per_collection_override(
+        self, config_always: DefaultCoreConfig
+    ) -> None:
+        """per-collection pool override wins over the registry default."""
+        default_pool = object()
+        override_pool = object()
+        reg = CollectionRegistry()
+        reg.configure(l3_pool=default_pool)
+        # override must be registered BEFORE BaseCollection.__init__ reads it;
+        # the collection's auto-register call happens last so we pre-stage
+        # the override on the registry by hand.
+        reg._overrides["test_entities"] = {"l3_pool": override_pool}
+        coll = StubCollection(reg, config_always)
+        assert coll.l3_pool is override_pool
+
+    def test_l3_pool_none_when_registry_has_no_pool(
+        self, config_always: DefaultCoreConfig
+    ) -> None:
+        """collection.l3_pool is None when the registry has no pool.
+
+        callers MUST guard with ``if self.l3_pool is not None`` — this
+        test pins that contract so the absent-pool case does not
+        silently regress to a misleading truthy value.
+        """
+        reg = CollectionRegistry()
+        coll = StubCollection(reg, config_always)
+        assert coll.l3_pool is None

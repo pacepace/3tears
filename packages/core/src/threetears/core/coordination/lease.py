@@ -37,6 +37,14 @@ from nats.js.errors import (
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
 
+__all__ = [
+    "KVLease",
+    "LeaseHandle",
+    "LeaseLost",
+    "LeaseTimeout",
+    "LeaseUnavailable",
+]
+
 log = get_logger(__name__)
 
 
@@ -183,7 +191,7 @@ class LeaseHandle:
         :rtype: None
         :raises LeaseLost: if ownership has changed or CAS failed
         """
-        await self._lease._refresh(self, ttl_seconds=ttl_seconds)
+        await self._lease.refresh_handle(self, ttl_seconds=ttl_seconds)
 
     async def release(self) -> None:
         """delete KV entry if still owned; no-op on repeat calls.
@@ -196,7 +204,7 @@ class LeaseHandle:
         :return: None
         :rtype: None
         """
-        await self._lease._release(self)
+        await self._lease.release_handle(self)
 
     async def __aenter__(self) -> LeaseHandle:
         """async-context-manager entry; returns self unchanged.
@@ -454,8 +462,13 @@ class KVLease:
         )
         return result
 
-    async def _refresh(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
+    async def refresh_handle(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
         """implementation of :meth:`LeaseHandle.refresh`.
+
+        public because :class:`LeaseHandle` lives in a sibling class and
+        forwards its :meth:`refresh` here. the refresh pipeline (fetch
+        entry, verify holder, CAS-update) is owned by the lease object
+        that holds the KV bucket; the handle is just the revision token.
 
         :param handle: handle requesting refresh
         :ptype handle: LeaseHandle
@@ -486,8 +499,12 @@ class KVLease:
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
 
-    async def _release(self, handle: LeaseHandle) -> None:
+    async def release_handle(self, handle: LeaseHandle) -> None:
         """implementation of :meth:`LeaseHandle.release`; idempotent.
+
+        public for the same reason as :meth:`refresh_handle` -- the
+        handle forwards its :meth:`release` to the lease object so the
+        lease can verify ownership before deleting the KV entry.
 
         :param handle: handle requesting release
         :ptype handle: LeaseHandle

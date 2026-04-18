@@ -11,6 +11,13 @@ from threetears.observe import get_logger, traced
 
 from threetears.agent.tools.types import ChatModelFactory
 
+__all__ = [
+    "DEFAULT_ROUTING_PROMPT",
+    "ToolRouter",
+    "ToolRoutingDecision",
+    "is_recall_intent",
+]
+
 log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------

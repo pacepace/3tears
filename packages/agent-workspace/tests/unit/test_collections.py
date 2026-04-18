@@ -498,7 +498,7 @@ class TestCollectionShapes:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspaces"
         assert coll.entity_class is Workspace
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
     def test_workspace_file_collection_identity(
         self,
@@ -512,7 +512,7 @@ class TestCollectionShapes:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_files"
         assert coll.entity_class is WorkspaceFile
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
     def test_workspace_file_version_collection_identity(
         self,
@@ -526,7 +526,7 @@ class TestCollectionShapes:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_file_versions"
         assert coll.entity_class is WorkspaceFileVersion
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
 
 class TestInvalidationSubjectConstant:

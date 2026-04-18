@@ -8,6 +8,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "OpenAIImageProvider",
+]
+
 
 class OpenAIImageProvider:
     """image generation provider for OpenAI DALL-E API via httpx.

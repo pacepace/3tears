@@ -8,6 +8,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "A1111ImageProvider",
+]
+
 
 class A1111ImageProvider:
     """image generation provider for Automatic1111 Stable Diffusion WebUI API.

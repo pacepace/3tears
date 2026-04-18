@@ -9,6 +9,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "ComfyUIImageProvider",
+]
+
 
 # minimal default txt2img workflow for ComfyUI
 # KSampler -> VAEDecode -> SaveImage pipeline

@@ -23,6 +23,13 @@ from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
+__all__ = [
+    "ProbeRequest",
+    "ProbeResponse",
+    "RegistrationHandler",
+    "RegistrationResponse",
+]
+
 log = get_logger(__name__)
 
 

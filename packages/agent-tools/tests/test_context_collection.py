@@ -50,7 +50,7 @@ def pool() -> FakePool:
 def collection(registry: CollectionRegistry, config: DefaultCoreConfig, pool: FakePool) -> ContextItemCollection:
     nats = make_nats_mock()
     coll = ContextItemCollection(registry, config, nats_client=nats)
-    coll._l3_pool = pool
+    coll.l3_pool = pool
     return coll
 
 
@@ -138,7 +138,7 @@ class TestTouch:
         item = _make_item(date_accessed=old_time)
         pool._rows[str(item["context_id"])] = item
         # Populate L1
-        collection._write_to_cache_sync(item)
+        collection.write_to_cache_sync(item)
 
         await collection.touch(str(item["context_id"]))
 
@@ -157,7 +157,7 @@ class TestEvictLru:
         for i in range(5):
             item = _make_item(key=f"tool{i}", date_accessed=now + timedelta(seconds=i))
             pool._rows[str(item["context_id"])] = item
-            collection._write_to_cache_sync(item)
+            collection.write_to_cache_sync(item)
             items.append(item)
 
         evicted = await collection.evict_lru(CONV_ID, result_limit=3)

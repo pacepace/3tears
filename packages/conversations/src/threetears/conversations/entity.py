@@ -17,6 +17,10 @@ from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
 
+__all__ = [
+    "Conversation",
+]
+
 
 def _as_uuid(value: object) -> UUID:
     """
@@ -50,11 +54,11 @@ class Conversation(BaseEntity):
     properties to associate their own per-conversation rows with the
     conversation's identity and scope.
 
-    :ivar _primary_key_field: primary key column name on the table
-    :ptype _primary_key_field: str
+    :ivar primary_key_field: primary key column name on the table
+    :ptype primary_key_field: str
     """
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def agent_id(self) -> UUID:

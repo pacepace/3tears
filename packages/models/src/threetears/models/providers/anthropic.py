@@ -14,6 +14,10 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "AnthropicChatProvider",
+]
+
 # backward-compatible aliases for existing imports of private names
 _messages_to_lc = messages_to_lc
 _ai_message_to_result = ai_message_to_result

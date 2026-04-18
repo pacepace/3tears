@@ -18,6 +18,12 @@ from threetears.observe import get_logger
 
 from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
 
+__all__ = [
+    "WorkspaceCollection",
+    "WorkspaceFileCollection",
+    "WorkspaceFileVersionCollection",
+]
+
 log = get_logger(__name__)
 
 
@@ -161,7 +167,7 @@ def _deserialize_row(data: bytes, field_types: dict[str, Any]) -> dict[str, Any]
 class WorkspaceCollection(BaseCollection[Workspace]):
     """collection for Workspace entities with three-tier caching."""
 
-    _primary_key_column: str = "id"
+    primary_key_column: str = "id"
 
     def __init__(
         self,
@@ -459,7 +465,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
 class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
     """collection for WorkspaceFile head-state entities with three-tier caching."""
 
-    _primary_key_column: str = "id"
+    primary_key_column: str = "id"
 
     def __init__(
         self,
@@ -664,7 +670,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
     test and retention cleanup only; production callers do not rewrite history.
     """
 
-    _primary_key_column: str = "id"
+    primary_key_column: str = "id"
 
     def __init__(
         self,

@@ -1,6 +1,6 @@
 """unit tests for threetears.agent.workspace.sandbox.WorkspaceSandbox.
 
-covers ``from_config`` construction semantics and ``_deny_reason`` messaging
+covers ``from_config`` construction semantics and ``deny_reason`` messaging
 against the inherited core ``PathSandbox`` contract.
 """
 
@@ -87,7 +87,7 @@ class TestFromConfigGlobs:
 
 
 class TestDenyReasonMessaging:
-    """_deny_reason returns workspace-specific, actionable messages."""
+    """deny_reason returns workspace-specific, actionable messages."""
 
     def test_unknown_action_message_names_action_and_expected_actions(self) -> None:
         """unknown action deny message names the offending action verb."""

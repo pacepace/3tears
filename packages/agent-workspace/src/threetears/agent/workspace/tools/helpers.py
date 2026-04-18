@@ -31,6 +31,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid7
 
+__all__ = [
+    "NoWorkspacePinned",
+    "Sha256Mismatch",
+    "WorkspaceNotFound",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 

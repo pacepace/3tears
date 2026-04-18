@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from threetears.core.entities.base import BaseEntity
 
+__all__ = [
+    "ContextItemEntity",
+]
+
 
 class ContextItemEntity(BaseEntity):
     """Entity representing a conversation context item.
@@ -12,4 +16,4 @@ class ContextItemEntity(BaseEntity):
     All field access is via BaseEntity's ``__getattr__`` proxy.
     """
 
-    _primary_key_field: str = "context_id"
+    primary_key_field: str = "context_id"

@@ -242,7 +242,7 @@ class TestScenarioB_MidSequenceRollback:
             """issue DDL Postgres will reject to force a mid-apply failure."""
             await store.execute("CREATE TABLE broken_table (THIS_IS_NOT_VALID_SQL)")
 
-        conversations_pkg = runner._packages["conversations"]
+        conversations_pkg = runner.packages["conversations"]
         conversations_pkg._versions[99] = broken_migration
 
         conn = await asyncpg.connect(url)

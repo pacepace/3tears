@@ -13,6 +13,12 @@ from typing import Any
 from threetears.agent.tools._coercion import normalize_kwargs
 from threetears.observe import get_logger
 
+__all__ = [
+    "MCPToolDefinition",
+    "TearsTool",
+    "ToolResult",
+]
+
 _log = get_logger(__name__)
 
 

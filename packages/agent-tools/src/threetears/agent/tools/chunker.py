@@ -15,6 +15,16 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
+__all__ = [
+    "ChunkResult",
+    "ChunkStrategy",
+    "chunk_by_headers",
+    "chunk_by_lines",
+    "chunk_by_sections",
+    "chunk_content",
+    "register_chunk_strategy",
+]
+
 _MIN_CHUNK_CONTENT = 500
 _LINES_PER_CHUNK = 20
 

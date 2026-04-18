@@ -8,6 +8,11 @@ from langchain_core.tools import BaseTool
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "ToolFactory",
+    "ToolRegistry",
+]
+
 ToolFactory = Callable[[dict[str, Any], str], BaseTool]
 
 log = get_logger(__name__)

@@ -37,10 +37,10 @@ def mock_collection():
     def get_row(entity_id: object) -> dict[str, object] | None:
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
     coll.save_entity = AsyncMock()
     coll.reload_entity = AsyncMock()
 
@@ -96,8 +96,8 @@ class TestMemoryEntityWithoutCollection:
 
         assert result == data
 
-    def test_primary_key_field(self) -> None:
-        assert MemoryEntity._primary_key_field == "memory_id"
+    def testprimary_key_field(self) -> None:
+        assert MemoryEntity.primary_key_field == "memory_id"
 
 
 class TestMemoryEntityWithCollection:
@@ -108,7 +108,7 @@ class TestMemoryEntityWithCollection:
 
         entity = MemoryEntity(data, is_new=True, collection=coll)
 
-        coll._write_to_cache_sync.assert_called_once_with(data)
+        coll.write_to_cache_sync.assert_called_once_with(data)
         assert mid in cache
         assert entity.content == "User prefers dark mode"
 
@@ -120,7 +120,7 @@ class TestMemoryEntityWithCollection:
 
         entity.content = "Updated content"
         assert entity.content == "Updated content"
-        coll._set_field_sync.assert_called_with(data["memory_id"], "content", "Updated content")
+        coll.set_field_sync.assert_called_with(data["memory_id"], "content", "Updated content")
 
     def test_property_setters(self, mock_collection: tuple) -> None:
         coll, _ = mock_collection

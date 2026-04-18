@@ -5,6 +5,10 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+__all__ = [
+    "ModelCache",
+]
+
 
 class ModelCache:
     """thread-safe cache for model provider instances.

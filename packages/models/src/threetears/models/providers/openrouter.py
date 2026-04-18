@@ -14,6 +14,10 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "OpenRouterChatProvider",
+]
+
 
 class OpenRouterChatProvider:
     """chat provider adapter for OpenRouter models via langchain-openrouter.

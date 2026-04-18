@@ -40,6 +40,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "WorkspaceAuditEnvelope",
+    "publish_workspace_event",
+]
+
 log = get_logger(__name__)
 
 

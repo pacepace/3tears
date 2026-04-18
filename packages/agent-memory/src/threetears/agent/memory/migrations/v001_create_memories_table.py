@@ -13,6 +13,10 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
+__all__ = [
+    "create_memories_table",
+]
+
 log = get_logger(__name__)
 
 

@@ -18,6 +18,10 @@ from threetears.agent.workspace import pin
 from threetears.agent.workspace.collections import WorkspaceCollection
 from threetears.agent.workspace.factory import register_tool_builder
 
+__all__ = [
+    "WorkspaceUseTool",
+]
+
 log = get_logger(__name__)
 
 

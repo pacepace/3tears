@@ -9,6 +9,12 @@ import httpx
 
 from threetears.observe import get_logger, traced
 
+__all__ = [
+    "McpClient",
+    "McpTool",
+    "McpToolResult",
+]
+
 log = get_logger(__name__)
 
 

@@ -1,0 +1,24 @@
+# underscore-access exemptions file.
+#
+# every entry is an exact (file, line, symbol) triple. each entry
+# requires a preceding '# rationale: <specific reason>' line. "internal
+# access needed" is not a rationale.
+#
+# format:
+#   # rationale: why this access has no public alternative
+#   path/relative/to/repo-root.py:42:_private_symbol
+#
+# maintained in lockstep with ruff's per-file-ignores for SLF001 in
+# pyproject.toml. every exemption here must have a matching ruff ignore
+# so the two systems agree.
+
+# rationale: sys._getframe is the documented Python stdlib API for walking call stacks to resolve the calling class name from logger output; the public sys.settrace/traceback alternatives do not expose the same fast frame access and would change semantics
+packages/observe/src/threetears/observe/logging.py:212:_getframe
+# rationale: OpenTelemetry SDK >=1.39 guards trace.set_tracer_provider with the internal _TRACER_PROVIDER_SET_ONCE sentinel; resetting ._done is required for test isolation and repeat-init, and OTel exposes no public reset. type-ignored at the call site. upstream issue: open-telemetry/opentelemetry-python#3978
+packages/observe/src/threetears/observe/setup.py:162:_TRACER_PROVIDER_SET_ONCE
+# rationale: same as _TRACER_PROVIDER_SET_ONCE above -- ._done is the only way to reset the once-flag to re-initialize the tracer provider
+packages/observe/src/threetears/observe/setup.py:162:_done
+# rationale: OTel reset path in shutdown_telemetry mirrors init_telemetry's once-flag reset; same upstream limitation
+packages/observe/src/threetears/observe/setup.py:273:_TRACER_PROVIDER_SET_ONCE
+# rationale: paired with _TRACER_PROVIDER_SET_ONCE on line 273 -- the flag and its ._done reset travel together
+packages/observe/src/threetears/observe/setup.py:273:_done

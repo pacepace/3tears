@@ -17,6 +17,13 @@ from typing import Any, Protocol, runtime_checkable
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.observe import get_logger
 
+__all__ = [
+    "ConnectionRegistry",
+    "StreamingChannelRouter",
+    "WebSocketHandler",
+    "WebSocketProtocol",
+]
+
 log = get_logger(__name__)
 
 _DEFAULT_HEARTBEAT_INTERVAL = 30

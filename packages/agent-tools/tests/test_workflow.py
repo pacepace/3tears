@@ -41,7 +41,7 @@ def collection(registry: CollectionRegistry) -> ContextItemCollection:
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     nats = make_nats_mock()
     coll = ContextItemCollection(registry, config, nats_client=nats)
-    coll._l3_pool = FakePool()
+    coll.l3_pool = FakePool()
     return coll
 
 

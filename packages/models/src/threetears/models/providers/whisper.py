@@ -8,6 +8,10 @@ import httpx
 
 from threetears.models.results import TranscriptionResult, TranscriptionSegment
 
+__all__ = [
+    "WhisperTranscriptionProvider",
+]
+
 
 # MIME type to file extension mapping for multipart upload filename
 _MIME_TO_EXT: dict[str, str] = {

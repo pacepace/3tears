@@ -12,6 +12,10 @@ from __future__ import annotations
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
+__all__ = [
+    "add_date_deleted_column",
+]
+
 log = get_logger(__name__)
 
 

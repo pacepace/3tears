@@ -16,6 +16,10 @@ from threetears.observe import get_logger
 
 from threetears.core.data.schema import TableDef
 
+__all__ = [
+    "create_dynamic_collection",
+]
+
 log = get_logger(__name__)
 
 _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
@@ -212,12 +216,12 @@ def create_dynamic_collection(
     class DynamicEntity(BaseEntity):
         """dynamically generated entity for table."""
 
-        _primary_key_field: str = pk_column
+        primary_key_field: str = pk_column
 
     class DynamicCollection(BaseCollection[DynamicEntity]):
         """dynamically generated collection for table."""
 
-        _primary_key_column: str = pk_column
+        primary_key_column: str = pk_column
 
         @property
         def table_name(self) -> str:
@@ -237,7 +241,7 @@ def create_dynamic_collection(
             :return: entity data as dict, or None if not found
             :rtype: dict[str, Any] | None
             """
-            pool = self._l3_pool
+            pool = self.l3_pool
             if pool is None:
                 return None
             rows = await pool.fetch(fetch_sql, entity_id)
@@ -257,7 +261,7 @@ def create_dynamic_collection(
             :return: number of rows affected
             :rtype: int
             """
-            pool = self._l3_pool
+            pool = self.l3_pool
             if pool is None:
                 return 0
             values = [data.get(col, None) for col in column_names]
@@ -271,7 +275,7 @@ def create_dynamic_collection(
             :param entity_id: primary key value
             :ptype entity_id: Any
             """
-            pool = self._l3_pool
+            pool = self.l3_pool
             if pool is None:
                 return
             await pool.execute(delete_sql, entity_id)

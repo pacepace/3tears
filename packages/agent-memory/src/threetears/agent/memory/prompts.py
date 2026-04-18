@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+__all__ = [
+    "DEFAULT_EXTRACTION_PROMPT",
+    "DEFAULT_RESOLUTION_PROMPT",
+    "DEFAULT_WORTHINESS_PROMPT",
+    "ExtractionPrompts",
+]
+
 DEFAULT_EXTRACTION_PROMPT = """Extract durable facts from this conversation turn. This includes facts about the user, but also facts about the system, infrastructure decisions, established norms, and the working relationship.
 
 Return a JSON array. Each item has:

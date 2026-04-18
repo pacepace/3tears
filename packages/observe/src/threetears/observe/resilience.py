@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 
 from threetears.observe import get_logger
 
+__all__ = ["retry_with_backoff"]
+
 _logger = get_logger(__name__)
 
 

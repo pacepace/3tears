@@ -9,6 +9,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "ModelsLabImageProvider",
+]
+
 
 class ModelsLabImageProvider:
     """image generation provider for ModelsLab API via httpx.

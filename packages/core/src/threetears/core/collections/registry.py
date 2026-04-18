@@ -7,6 +7,11 @@ from typing import Any
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "CollectionRegistry",
+    "INVALIDATION_SUBJECT",
+]
+
 log = get_logger(__name__)
 
 INVALIDATION_SUBJECT = "threetears.cache.invalidate"
@@ -112,7 +117,7 @@ class CollectionRegistry:
 
                 l1 = self.get_l1_backend(table)
                 if l1 is not None:
-                    l1.delete_by_id(table, str(entity_id), collection._primary_key_column)
+                    l1.delete_by_id(table, str(entity_id), collection.primary_key_column)
             except Exception as exc:
                 log.warning(
                     "Error processing invalidation signal",

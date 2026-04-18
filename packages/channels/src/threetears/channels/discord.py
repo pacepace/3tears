@@ -23,6 +23,10 @@ from threetears.channels.protocol import (
     ChannelRouter,
 )
 
+__all__ = [
+    "DiscordAdapter",
+]
+
 
 class DiscordAdapter:
     """channel adapter bridging discord to platform via discord.py gateway.

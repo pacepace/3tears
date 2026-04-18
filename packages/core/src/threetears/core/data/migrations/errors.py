@@ -9,6 +9,13 @@ an individual migration body.
 
 from __future__ import annotations
 
+__all__ = [
+    "DuplicateVersionError",
+    "MigrationError",
+    "MigrationFailedError",
+    "MissingDependencyError",
+]
+
 
 class MigrationError(Exception):
     """

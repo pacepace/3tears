@@ -7,6 +7,11 @@ log, or include raw tracebacks in output.
 
 from __future__ import annotations
 
+__all__ = [
+    "friendly_api_error",
+    "identify_provider",
+]
+
 try:
     from anthropic import (
         APIConnectionError,

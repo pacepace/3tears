@@ -8,6 +8,10 @@ from pydantic import BaseModel
 
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
+__all__ = [
+    "ModelCapabilities",
+]
+
 
 class ModelCapabilities(BaseModel):
     """capabilities and metadata for registered AI model.

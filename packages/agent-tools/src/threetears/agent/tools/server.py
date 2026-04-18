@@ -32,6 +32,26 @@ from threetears.agent.tools.config import (
 )
 from threetears.observe import clear_context, get_logger, traced
 
+__all__ = [
+    "CallRequest",
+    "CallResponse",
+    "DiscoveryProbeRequest",
+    "DiscoveryProbeResponse",
+    "DiscoveryProbeResultEntry",
+    "DiscoveryProbeToolEntry",
+    "HeartbeatMessage",
+    "ProbeAck",
+    "RegistrationManifest",
+    "ToolManifestEntry",
+    "ToolServer",
+    "nats_connect",
+]
+
+# sentinel tuple used by ``tool_names`` so callers always get an
+# immutable shape back (prevents accidental mutation of the internal
+# dict through the public accessor).
+_EMPTY_TOOL_NAMES: tuple[str, ...] = ()
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 
@@ -368,6 +388,64 @@ class ToolServer:
         """
         return self._pod_id
 
+    @property
+    def tools_count(self) -> int:
+        """return number of tools currently registered on this server.
+
+        used by hub observability code (datasource tool pod, delegation
+        manager) that logs ``tools_count=N`` on startup and by readiness
+        checks that decide whether to start ``serve()`` at all. reading
+        this property is O(1) and takes no locks; it is safe to call at
+        any point in the server's lifecycle, including before
+        ``serve()`` has connected and after ``shutdown()`` has
+        completed.
+
+        :return: number of registered tools
+        :rtype: int
+        """
+        return len(self._tools)
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        """return an immutable snapshot of registered tool keys.
+
+        keys are the internal ``name@version`` form the server uses for
+        dispatch. returns a tuple (not the internal dict) so callers
+        cannot mutate the server's state through the accessor: the
+        snapshot reflects the registration set at call time and does
+        not update when subsequent :meth:`register_tool` /
+        :meth:`deregister_tool` calls change the underlying dict.
+        iteration order follows registration order (dict insertion
+        order) but callers MUST NOT rely on it for correctness.
+
+        :return: tuple of ``name@version`` strings
+        :rtype: tuple[str, ...]
+        """
+        if not self._tools:
+            return _EMPTY_TOOL_NAMES
+        return tuple(self._tools.keys())
+
+    @property
+    def is_connected(self) -> bool:
+        """return whether this server has an active NATS connection.
+
+        ``True`` between the moment :meth:`serve` completes
+        ``nats_connect`` and the moment :meth:`shutdown` calls
+        ``close()``; ``False`` otherwise. callers that need to gate
+        publish work on the server's connectivity state should use this
+        property rather than reaching into ``_nc``. this is the only
+        public view on the NATS client — the client itself is NOT
+        exposed because tool callers have no legitimate need to
+        ``subscribe``/``request``/``publish`` on the server's
+        connection (those flows happen via NATS proxies or their own
+        clients).
+
+        :return: true iff ``serve()`` has connected and ``shutdown()``
+            has not yet closed the client
+        :rtype: bool
+        """
+        return self._nc is not None
+
     async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
 
@@ -471,7 +549,7 @@ class ToolServer:
             extra={"extra_data": {"subject": probe_subject}},
         )
 
-        await self._publish_registration()
+        await self.publish_registration()
 
         self._ready_event.set()
 
@@ -574,18 +652,72 @@ class ToolServer:
         return ready
 
     @traced()
-    async def _publish_registration(self) -> None:
+    async def register_tool(self, tool: TearsTool) -> None:
+        """register a tool and publish the updated manifest if connected.
+
+        atomic public helper for dynamic tool-pod lifecycle (hub
+        delegation manager, datasource tool pod). equivalent to calling
+        :meth:`register` followed by :meth:`publish_registration` while
+        holding the server's invariant that the manifest on the wire
+        stays in sync with the in-memory registry. safe to call before
+        :meth:`serve` has connected NATS: in that case the tool is
+        still registered and the publish step is skipped (no-op) so
+        the initial registration manifest published by :meth:`serve`
+        will include it. safe to call multiple times with the same
+        tool; duplicate ``name@version`` keys overwrite.
+
+        :param tool: TearsTool instance to register
+        :ptype tool: TearsTool
+        """
+        self.register(tool)
+        if self._nc is not None:
+            await self.publish_registration()
+
+    @traced()
+    async def deregister_tool(self, tool_name: str) -> bool:
+        """remove all versions of a tool and publish the updated manifest.
+
+        atomic public helper for dynamic tool-pod lifecycle (hub
+        delegation manager deregistering an agent, datasource tool pod
+        deregistering a data source). matches on ``mcp_name`` prefix
+        of the internal ``name@version`` key, removes every matching
+        entry, then publishes the reduced manifest if connected.
+        returns ``True`` when at least one entry was removed so callers
+        can distinguish a no-op deregister from a real one without
+        silently swallowing an invariant break (e.g. "I thought that
+        tool was registered but the key was missing"). safe to call
+        before :meth:`serve` has connected NATS: the removal still
+        happens and the publish step is skipped.
+
+        :param tool_name: namespaced ``mcp_name`` (without the
+            ``@version`` suffix) identifying the family of tool
+            registrations to remove
+        :ptype tool_name: str
+        :return: true when one or more registrations were removed
+        :rtype: bool
+        """
+        removed = self.unregister(tool_name)
+        if removed and self._nc is not None:
+            await self.publish_registration()
+        return removed
+
+    @traced()
+    async def publish_registration(self) -> None:
         """publish registration manifest to NATS.
 
         sends manifest containing all registered tool definitions
         to registration subject for discovery by registry. requires
         ``serve()`` to have established the NATS connection first.
+        use :meth:`register_tool` / :meth:`deregister_tool` for the
+        common "mutate+publish" dynamic flows; call this directly only
+        when you need to re-publish the current manifest without
+        changing it (e.g. on registry recovery).
 
         :raises RuntimeError: if called before ``serve`` connects NATS
         """
         nc = self._nc
         if nc is None:
-            raise RuntimeError("_publish_registration called before NATS connected")
+            raise RuntimeError("publish_registration called before NATS connected")
         tools_list: list[ToolManifestEntry] = []
         for tool in self._tools.values():
             schema = tool.mcp_schema()
@@ -791,7 +923,7 @@ class ToolServer:
                     extra={"extra_data": {"error": str(exc)}},
                 )
             try:
-                await self._publish_registration()
+                await self.publish_registration()
             except Exception as exc:
                 log.warning(
                     "periodic re-registration failed",

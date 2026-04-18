@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+__all__ = [
+    "LeastConnectionsStrategy",
+    "RoutingStrategy",
+]
+
 if TYPE_CHECKING:
     from threetears.registry.catalog import ToolEndpoint
 

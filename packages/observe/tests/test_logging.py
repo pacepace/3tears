@@ -283,9 +283,9 @@ class TestConfigureLogging:
         original_tt_level = tt_root.level
         try:
             # Remove any existing threetears handlers
-            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
+            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "threetears_owned", False)]
             configure_logging(level="DEBUG", color=False)
-            tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+            tt_handlers = [h for h in py_root.handlers if getattr(h, "threetears_owned", False)]
             assert len(tt_handlers) == 1
             assert isinstance(tt_handlers[0].formatter, ContextFormatter)
             assert tt_root.level == logging.DEBUG
@@ -299,11 +299,11 @@ class TestConfigureLogging:
         original_py_handlers = py_root.handlers[:]
         original_tt_level = tt_root.level
         try:
-            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
+            py_root.handlers = [h for h in py_root.handlers if not getattr(h, "threetears_owned", False)]
             configure_logging(level="INFO", color=False)
-            tt_handler_count = len([h for h in py_root.handlers if getattr(h, "_threetears", False)])
+            tt_handler_count = len([h for h in py_root.handlers if getattr(h, "threetears_owned", False)])
             configure_logging(level="DEBUG", color=False)
-            new_tt_handler_count = len([h for h in py_root.handlers if getattr(h, "_threetears", False)])
+            new_tt_handler_count = len([h for h in py_root.handlers if getattr(h, "threetears_owned", False)])
             assert new_tt_handler_count == tt_handler_count  # no new handler
         finally:
             py_root.handlers = original_py_handlers

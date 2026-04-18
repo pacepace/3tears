@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+__all__ = [
+    "MemoryConfig",
+    "MemoryType",
+]
+
 
 class MemoryType(str, Enum):
     """Extracted memory category."""

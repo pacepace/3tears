@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING
 
 from threetears.models.enums import ModelTier
 
+__all__ = [
+    "LlmPurpose",
+    "UsageRecord",
+    "UsageTracker",
+]
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Tracer
 

@@ -21,6 +21,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+__all__ = [
+    "PinnedWorkspace",
+    "clear_pin",
+    "get_pin",
+    "set_pin",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 

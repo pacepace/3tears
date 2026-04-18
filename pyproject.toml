@@ -37,6 +37,20 @@ dev-dependencies = [
 line-length = 120
 target-version = "py314"
 
+[tool.ruff.lint]
+select = ["SLF"]
+
+[tool.ruff.lint.per-file-ignores]
+# OpenTelemetry SDK >=1.39 guards set_tracer_provider behind an internal
+# once-flag with no public reset; resetting _TRACER_PROVIDER_SET_ONCE._done
+# is the only way to re-init the provider (required for tests and re-init
+# flows). paired entry lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/setup.py" = ["SLF001"]
+# sys._getframe is the stdlib's documented API for call-site frame access;
+# the public sys.settrace alternative has different semantics. paired entry
+# lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
+
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 asyncio_mode = "auto"

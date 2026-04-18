@@ -32,6 +32,10 @@ from threetears.agent.workspace.collections import (
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 
+__all__ = [
+    "WorkspaceDeleteTool",
+]
+
 log = get_logger(__name__)
 
 

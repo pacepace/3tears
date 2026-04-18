@@ -6,6 +6,10 @@ from typing import Any
 
 from threetears.models.results import EmbeddingResult
 
+__all__ = [
+    "VoyageAIEmbeddingProvider",
+]
+
 # default embedding dimensions for voyage-3 / voyage-3-lite
 _DEFAULT_EMBEDDING_DIMENSIONS = 1024
 

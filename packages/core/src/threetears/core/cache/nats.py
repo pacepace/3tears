@@ -17,6 +17,11 @@ from nats.js.kv import KeyValue
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "BucketConfig",
+    "NatsClient",
+]
+
 log = get_logger(__name__)
 
 

@@ -7,6 +7,10 @@ from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
 
+__all__ = [
+    "MemoryEntity",
+]
+
 
 def _as_uuid(value: object) -> UUID:
     """Coerce a value to UUID, handling strings from cache/data layers."""
@@ -18,7 +22,7 @@ def _as_uuid(value: object) -> UUID:
 class MemoryEntity(BaseEntity):
     """Cache proxy entity for the ``memories`` table."""
 
-    _primary_key_field: str = "memory_id"
+    primary_key_field: str = "memory_id"
 
     @property
     def memory_id(self) -> UUID:

@@ -6,6 +6,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "HuggingFaceImageProvider",
+]
+
 
 class HuggingFaceImageProvider:
     """image generation provider for HuggingFace Inference API via httpx.

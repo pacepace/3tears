@@ -9,6 +9,10 @@ from uuid import UUID
 
 from sqlalchemy import Column, MetaData, String, Table, Text
 
+__all__ = [
+    "MemoryLedger",
+]
+
 if TYPE_CHECKING:
     from threetears.core.cache.sqlite import SQLiteBackend
 
@@ -40,7 +44,7 @@ class MemoryLedger:
         :ptype l1_backend: SQLiteBackend | None
         """
         self._l1 = l1_backend
-        if self._l1 is not None and not self._l1._initialized:
+        if self._l1 is not None and not self._l1.is_initialized():
             self._l1.initialize(_MEMORY_REFS_METADATA)
         self._refs: dict[str, dict[str, Any]] = {}
 

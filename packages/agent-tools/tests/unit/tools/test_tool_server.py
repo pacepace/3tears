@@ -816,3 +816,152 @@ class TestToolServerProbe:
 
         ready = await server.wait_until_ready(timeout=0.05)
         assert ready is False
+
+
+# -- public-surface promotions for hub cross-class collaboration --
+
+
+class TestToolsCountProperty:
+    """``tools_count`` exposes ``len(self._tools)`` as a public read."""
+
+    def test_tools_count_zero_on_fresh_server(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        assert server.tools_count == 0
+
+    def test_tools_count_reflects_registrations(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="a", version="1.0"))
+        server.register(StubTool(name="b", version="1.0"))
+        assert server.tools_count == 2
+
+    def test_tools_count_decreases_on_unregister(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="a", version="1.0"))
+        server.register(StubTool(name="b", version="1.0"))
+        server.unregister("a")
+        assert server.tools_count == 1
+
+
+class TestToolNamesProperty:
+    """``tool_names`` returns an immutable snapshot of registration keys."""
+
+    def test_tool_names_empty_on_fresh_server(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        assert server.tool_names == ()
+
+    def test_tool_names_contains_registered_keys(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="a", version="1.0"))
+        server.register(StubTool(name="b", version="2.0"))
+        names = server.tool_names
+        assert set(names) == {"a@1.0", "b@2.0"}
+
+    def test_tool_names_returns_tuple_not_dict_keys(self) -> None:
+        """snapshot is a tuple so callers cannot mutate server state."""
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="a", version="1.0"))
+        names = server.tool_names
+        assert isinstance(names, tuple)
+        # tuples have no ``add``/``pop``; this assertion pins the contract
+        # against a regression that returned ``self._tools.keys()``.
+        assert not hasattr(names, "pop")
+
+    def test_tool_names_snapshot_is_stable_across_mutations(self) -> None:
+        """snapshot reflects state at call time; later mutations do not echo."""
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="a", version="1.0"))
+        snapshot = server.tool_names
+        server.register(StubTool(name="b", version="1.0"))
+        assert snapshot == ("a@1.0",)
+
+
+class TestIsConnectedProperty:
+    """``is_connected`` reflects whether NATS client is live."""
+
+    def test_is_connected_false_before_serve(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        assert server.is_connected is False
+
+    def test_is_connected_true_when_nc_set(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server._nc = MagicMock()
+        assert server.is_connected is True
+
+
+class TestPublishRegistrationPublicMethod:
+    """``publish_registration`` is the public name for the manifest publish."""
+
+    @pytest.mark.asyncio
+    async def test_publish_registration_raises_when_not_connected(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        with pytest.raises(RuntimeError, match="publish_registration"):
+            await server.publish_registration()
+
+    @pytest.mark.asyncio
+    async def test_publish_registration_publishes_on_configured_subject(self) -> None:
+        server = ToolServer(
+            nats_url="nats://localhost:4222",
+            namespace="testns",
+            pod_id="pod-7",
+        )
+        server.register(StubTool(name="alpha", version="1.0"))
+        nc = AsyncMock()
+        server._nc = nc
+        await server.publish_registration()
+        nc.publish.assert_awaited_once()
+        subject, payload = nc.publish.await_args.args
+        assert subject == "testns.tools.register"
+        parsed = json.loads(payload)
+        assert parsed["pod_id"] == "pod-7"
+        assert parsed["tools"][0]["name"] == "alpha"
+
+
+class TestRegisterToolDeregisterTool:
+    """``register_tool`` / ``deregister_tool`` are the dynamic-lifecycle
+    public methods: mutate the registration set AND publish the updated
+    manifest when NATS is connected.
+    """
+
+    @pytest.mark.asyncio
+    async def test_register_tool_adds_and_publishes(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        nc = AsyncMock()
+        server._nc = nc
+        await server.register_tool(StubTool(name="x", version="1.0"))
+        assert server.tools_count == 1
+        nc.publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_register_tool_skips_publish_when_not_connected(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        # no _nc: pre-serve() registration path
+        await server.register_tool(StubTool(name="x", version="1.0"))
+        assert server.tools_count == 1  # tool still registered
+
+    @pytest.mark.asyncio
+    async def test_deregister_tool_removes_and_publishes(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="x", version="1.0"))
+        nc = AsyncMock()
+        server._nc = nc
+        removed = await server.deregister_tool("x")
+        assert removed is True
+        assert server.tools_count == 0
+        nc.publish.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_deregister_tool_returns_false_when_missing(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        nc = AsyncMock()
+        server._nc = nc
+        removed = await server.deregister_tool("never-registered")
+        assert removed is False
+        nc.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deregister_tool_no_publish_when_not_connected(self) -> None:
+        server = ToolServer(nats_url="nats://localhost:4222")
+        server.register(StubTool(name="x", version="1.0"))
+        removed = await server.deregister_tool("x")
+        assert removed is True
+        assert server.tools_count == 0

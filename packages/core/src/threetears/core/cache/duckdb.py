@@ -16,6 +16,10 @@ from typing import Any
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "DuckDBBackend",
+]
+
 try:
     import duckdb
 

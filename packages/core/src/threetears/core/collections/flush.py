@@ -11,6 +11,13 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "FlushStrategy",
+    "PendingWrite",
+    "WriteBuffer",
+    "flush_pending",
+]
+
 if TYPE_CHECKING:
     from threetears.core.cache.sqlite import SQLiteBackend
     from threetears.core.collections.registry import CollectionRegistry
@@ -64,7 +71,7 @@ class WriteBuffer:
         self._buf: dict[tuple[str, Any], PendingWrite] = {}
         self._lock = asyncio.Lock()
         self._l1 = l1_backend
-        if self._l1 is not None and not self._l1._initialized:
+        if self._l1 is not None and not self._l1.is_initialized():
             self._l1.initialize(_WRITE_BUFFER_METADATA)
 
     async def add(self, table_name: str, entity_id: Any, data: dict[str, Any], retries: int = 0) -> None:

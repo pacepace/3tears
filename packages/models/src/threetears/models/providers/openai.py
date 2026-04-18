@@ -14,6 +14,11 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult, EmbeddingResult
 
+__all__ = [
+    "OpenAIChatProvider",
+    "OpenAIEmbeddingProvider",
+]
+
 # default embedding dimensions for ada-002 compatibility
 _DEFAULT_EMBEDDING_DIMENSIONS = 1536
 

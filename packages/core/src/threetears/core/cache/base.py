@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+__all__ = [
+    "L1Backend",
+    "MISSING",
+]
+
 MISSING = object()
 """Sentinel for cache miss. Distinct from None (which is a valid cached value)."""
 

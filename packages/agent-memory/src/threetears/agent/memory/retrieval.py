@@ -15,6 +15,11 @@ from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.types import MemoryConfig
 from threetears.observe import traced
 
+__all__ = [
+    "MemoryRetriever",
+    "RetrievalResult",
+]
+
 
 def _recency_decay(created: datetime, half_life_hours: float) -> float:
     """Exponential recency decay (1.0 = just created, ~0.37 at half-life)."""

@@ -34,6 +34,10 @@ from threetears.langgraph.protocols import (
     CheckpointL2Cache,
 )
 
+__all__ = [
+    "ProxyCheckpointSaver",
+]
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 

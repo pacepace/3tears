@@ -23,6 +23,16 @@ from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
 
+__all__ = [
+    "AddMemoryInput",
+    "LedgerCallback",
+    "MemorySearchInput",
+    "RecallMemoryInput",
+    "load_add_memory_tool",
+    "load_memory_search_tool",
+    "load_recall_memory_tool",
+]
+
 log = get_logger(__name__)
 
 # -- Defaults -----------------------------------------------------------------

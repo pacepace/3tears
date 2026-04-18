@@ -14,6 +14,10 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import TableDef
 from threetears.core.data.sql_builder import build_create_index_sql, build_create_table_sql
 
+__all__ = [
+    "DataStore",
+]
+
 if TYPE_CHECKING:
     from threetears.core.data.migrations import MigrationRunner
 

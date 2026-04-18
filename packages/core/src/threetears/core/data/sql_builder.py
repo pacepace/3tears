@@ -8,6 +8,11 @@ from threetears.core.data.schema import IndexDef, TableDef
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "build_create_index_sql",
+    "build_create_table_sql",
+]
+
 log = get_logger(__name__)
 
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")

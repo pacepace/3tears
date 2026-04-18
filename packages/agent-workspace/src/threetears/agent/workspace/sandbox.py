@@ -3,7 +3,7 @@
 translates a :class:`WorkspaceConfig` (declared in ``agent.yaml``) into a
 concrete :class:`PathSandbox` with named filesystem roots (``templates``
 and ``bind``) and glob allow-lists for ``read`` / ``write``. overrides
-:meth:`PathSandbox._deny_reason` to produce workspace-specific,
+:meth:`PathSandbox.deny_reason` to produce workspace-specific,
 actionable error messages that reference the agent's configured globs —
 this lets an LLM tool caller self-correct (e.g. "write glob list does
 not include ``*.json``, let me pick a yaml path").
@@ -21,11 +21,15 @@ from typing import Literal
 from threetears.agent.workspace.config import WorkspaceConfig
 from threetears.core.security import PathSandbox
 
+__all__ = [
+    "WorkspaceSandbox",
+]
+
 
 class WorkspaceSandbox(PathSandbox):
     """workspace-aware :class:`PathSandbox` built from :class:`WorkspaceConfig`.
 
-    subclass only overrides :meth:`_deny_reason` for workspace-specific
+    subclass only overrides :meth:`deny_reason` for workspace-specific
     messaging; all validation and glob-matching logic is inherited from
     core :class:`PathSandbox`. action vocabulary is fixed at
     ``{"read", "write"}`` per parent contract.
@@ -61,7 +65,7 @@ class WorkspaceSandbox(PathSandbox):
             allow_write=config.allow.write,
         )
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return workspace-specific, actionable deny reason for LLM feedback.
 
         routes through the parent :meth:`PathSandbox._classify_relative_key`

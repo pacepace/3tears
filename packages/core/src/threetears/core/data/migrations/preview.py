@@ -34,6 +34,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+__all__ = [
+    "CapturedStatement",
+    "PreviewStore",
+]
+
 # SQL fragments below match the literals MigrationRunner issues. they
 # are kept here (rather than imported from runner.py) to keep the
 # preview wrapper independent of internal changes; the test

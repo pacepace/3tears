@@ -22,6 +22,13 @@ from threetears.agent.tools.chunker import ChunkResult, chunk_content
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
+__all__ = [
+    "EntityFormatter",
+    "EntitySearcher",
+    "create_context_enrichment_node",
+    "create_context_save_node",
+]
+
 logger = get_logger(__name__)
 
 

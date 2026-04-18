@@ -25,6 +25,10 @@ from threetears.channels.protocol import (
     ChannelRouter,
 )
 
+__all__ = [
+    "SlackAdapter",
+]
+
 
 class SlackAdapter:
     """channel adapter bridging slack to platform via socket mode.

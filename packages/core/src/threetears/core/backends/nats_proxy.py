@@ -16,6 +16,8 @@ from uuid import UUID, uuid7
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.observe import get_logger
 
+__all__ = ["NatsProxyL3Backend"]
+
 _logger = get_logger(__name__)
 
 
@@ -165,6 +167,17 @@ class NatsProxyL3Backend:
     drop-in replacement for direct asyncpg pool. collections use
     this without knowing queries are proxied through Hub.
 
+    :ivar ns: NATS subject namespace prefix; collaborator proxies
+        (``_ProxyConnection``, ``_ProxyTransaction``) read this to
+        compose tx subject names
+    :ivar agent_id: agent UUID string used for ACL validation on the
+        broker side; collaborator proxies include it in every tx
+        envelope
+    :ivar default_namespace: default logical namespace applied to
+        queries that did not supply one
+    :ivar timeout_ms: query-side timeout threaded into outgoing
+        envelopes and used to compute the NATS-level response timeout
+
     :param nats_client: connected NATS client
     :ptype nats_client: Any
     :param namespace_prefix: NATS subject namespace prefix
@@ -200,16 +213,16 @@ class NatsProxyL3Backend:
         :ptype timeout_ms: int | None
         """
         self._nc = nats_client
-        self._ns = namespace_prefix
-        self._agent_id = agent_id
-        self._default_namespace = default_namespace or f"agent.{agent_id}"
+        self.ns = namespace_prefix
+        self.agent_id = agent_id
+        self.default_namespace = default_namespace or f"agent.{agent_id}"
         if timeout_ms is not None:
-            self._timeout_ms = timeout_ms
+            self.timeout_ms = timeout_ms
         else:
             import os
 
             raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
-            self._timeout_ms = int(raw) if raw is not None else 5000
+            self.timeout_ms = int(raw) if raw is not None else 5000
 
     async def fetch(
         self,
@@ -309,10 +322,10 @@ class NatsProxyL3Backend:
         :rtype: list[Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        ns = namespace or self._default_namespace
+        ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._agent_id,
+            "agent_id": self.agent_id,
             "namespace": ns,
             "queries": [
                 {
@@ -324,8 +337,8 @@ class NatsProxyL3Backend:
             ],
             "transaction": transaction,
         }
-        subject = f"{self._ns}.l3.batch"
-        response = await self._nats_request(subject, payload)
+        subject = f"{self.ns}.l3.batch"
+        response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
             raise DataLayerUnavailableError(
@@ -357,18 +370,18 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        ns = namespace or self._default_namespace
+        ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._agent_id,
+            "agent_id": self.agent_id,
             "namespace": ns,
             "operation": operation,
             "query": query,
             "params": [_serialize_param(p) for p in params],
-            "timeout_ms": self._timeout_ms,
+            "timeout_ms": self.timeout_ms,
         }
-        subject = f"{self._ns}.l3.query"
-        response = await self._nats_request(subject, payload)
+        subject = f"{self.ns}.l3.query"
+        response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
             raise DataLayerUnavailableError(
@@ -378,23 +391,30 @@ class NatsProxyL3Backend:
 
         return response
 
-    async def _nats_request(
+    async def nats_request(
         self,
         subject: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """send NATS request and parse JSON response.
+        """send raw NATS request and parse JSON response.
 
-        :param subject: NATS subject
+        public entry point for the backend's collaborator proxy objects
+        (:class:`_ProxyConnection`, :class:`_ProxyTransaction`) so they
+        do not have to reach for the underlying ``_nc`` client. owns
+        envelope serialization, timeout computation, and error wrapping.
+
+        :param subject: NATS subject on which to publish the request
         :ptype subject: str
-        :param payload: request payload dict
+        :param payload: request payload dict, will be JSON-encoded with
+            ``default=str`` so UUID, datetime, Decimal values serialize
         :ptype payload: dict[str, Any]
-        :return: parsed response dict
+        :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
-        :raises DataLayerUnavailableError: if NATS request fails
+        :raises DataLayerUnavailableError: if NATS request times out,
+            the broker returns malformed JSON, or the client is closed
         """
         payload_bytes = json.dumps(payload, default=str).encode("utf-8")
-        nats_timeout = (self._timeout_ms / 1000) + 2
+        nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
             reply = await self._nc.request(subject, payload_bytes, timeout=nats_timeout)
@@ -508,7 +528,7 @@ class _ProxyAcquireCM:
         del exc_type, exc_val, exc_tb
         if self._connection is not None and self._connection.tx_id is not None:
             try:
-                await self._connection._abort_tx()
+                await self._connection.abort_tx()
             except Exception as abort_exc:
                 _logger.warning(
                     "proxy connection close: dangling tx rollback failed: %s",
@@ -590,13 +610,13 @@ class _ProxyConnection:
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.execute"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.execute"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.execute failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -633,13 +653,13 @@ class _ProxyConnection:
             return outside_row
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.fetchrow"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.fetchrow"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.fetchrow failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -676,13 +696,13 @@ class _ProxyConnection:
             return outside_rows
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.fetch"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.fetch"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.fetch failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -691,14 +711,16 @@ class _ProxyConnection:
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 
-    async def _abort_tx(self) -> None:
+    async def abort_tx(self) -> None:
         """send ``tx.rollback`` and clear the local tx_id.
 
         invoked by :class:`_ProxyTransaction.__aexit__` on an exception
         path and by :class:`_ProxyAcquireCM.__aexit__` as a safety net
         when a caller forgets to end the transaction. idempotent on
         double-call so the two exit hooks can both fire without
-        hitting the broker twice.
+        hitting the broker twice. name is public because the safety-net
+        exit hook lives in a sibling class and must call this method
+        without crossing the private-boundary contract.
 
         :return: None
         :rtype: None
@@ -708,12 +730,12 @@ class _ProxyConnection:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(tx_id),
         }
-        subject = f"{self._backend._ns}.l3.tx.rollback"
+        subject = f"{self._backend.ns}.l3.tx.rollback"
         try:
-            await self._backend._nats_request(subject, payload)
+            await self._backend.nats_request(subject, payload)
         finally:
             # clear the tx_id even on network failure so subsequent
             # ops on this connection route through the outside-tx
@@ -768,12 +790,12 @@ class _ProxyTransaction:
             )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
-            "namespace": self._backend._default_namespace,
-            "statement_timeout_ms": self._backend._timeout_ms,
+            "agent_id": self._backend.agent_id,
+            "namespace": self._backend.default_namespace,
+            "statement_timeout_ms": self._backend.timeout_ms,
         }
-        subject = f"{self._backend._ns}.l3.tx.begin"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.begin"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.begin failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -813,13 +835,13 @@ class _ProxyTransaction:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(tx_id),
         }
         action = "rollback" if exc_type is not None else "commit"
-        subject = f"{self._backend._ns}.l3.tx.{action}"
+        subject = f"{self._backend.ns}.l3.tx.{action}"
         try:
-            response = await self._backend._nats_request(subject, payload)
+            response = await self._backend.nats_request(subject, payload)
             if not response.get("success", False):
                 # swallow the failure on the rollback path (we already
                 # have an exception in flight) but surface it on the

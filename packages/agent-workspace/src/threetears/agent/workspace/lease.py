@@ -22,6 +22,10 @@ from uuid import UUID
 
 from threetears.core.coordination import KVLease, LeaseHandle
 
+__all__ = [
+    "WorkspaceFileLease",
+]
+
 
 class WorkspaceFileLease:
     """per-workspace-file distributed lock built on core :class:`KVLease`.

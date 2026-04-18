@@ -83,6 +83,12 @@ from threetears.agent.workspace import audit
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
 
+__all__ = [
+    "bind",
+    "materialize",
+    "recover",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.workspace.collections import (
         WorkspaceCollection,
