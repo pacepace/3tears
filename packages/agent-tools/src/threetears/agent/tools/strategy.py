@@ -14,7 +14,7 @@ other runtime handles, and the strategy decides whether to start a
 ToolServer, which tools to register on it, and when the tool surface
 is ready for traffic.
 
-three lifecycle methods:
+four lifecycle methods:
 
 - :meth:`ToolProvisioningStrategy.provision` wires up tools. called
   exactly once during the ``TOOL_STRATEGY_PROVISIONED`` bootstrap
@@ -24,6 +24,13 @@ three lifecycle methods:
   are discoverable through the Registry. in-process strategies that
   register synchronously return immediately; strategies that expect
   external pods poll the Registry for the tool manifest.
+- :meth:`ToolProvisioningStrategy.reload_workspace_tools` swaps the
+  workspace tool bundle while the agent keeps running. called when
+  a developer edits ``workspace.yaml``; strategies that host
+  workspace tools atomically deregister the old bundle and register
+  the new one through the ToolServer's public helpers. strategies
+  that do not host workspace tools (prod-external with no workspace
+  block) return immediately.
 - :meth:`ToolProvisioningStrategy.teardown` is called during shutdown
   in reverse-phase order. strategies that own a ToolServer stop and
   disconnect it here.
@@ -163,6 +170,40 @@ class ToolProvisioningStrategy(Protocol):
             expected tools appearing in the Registry; the message
             names the missing tools so the operator knows which
             external pod to investigate
+        """
+        ...
+
+    async def reload_workspace_tools(
+        self,
+        workspace_runtime: Any,
+        workspace_config: Any,
+    ) -> None:
+        """swap the workspace tool bundle without stopping the agent.
+
+        called when a developer edits ``workspace.yaml`` (or the
+        operator applies a hot workspace-config change). strategies
+        that host workspace tools deregister the old bundle and
+        register the new one through the :class:`ToolServer`
+        public ``deregister_tool`` / ``register_tool`` helpers,
+        which each publish an updated manifest atomically.
+        strategies that do not host workspace tools return
+        immediately.
+
+        :param workspace_runtime: live workspace runtime handle
+            (context factory, L3 proxy, collection factories) for
+            the new bundle. caller is responsible for the runtime
+            lifecycle
+        :ptype workspace_runtime: Any
+        :param workspace_config: new workspace configuration
+            declaring the tool allow-list + bind roots for the
+            reloaded bundle
+        :ptype workspace_config: Any
+        :return: nothing
+        :rtype: None
+        :raises RuntimeError: when a strategy that supports
+            workspace tools is not in a state that permits reload
+            (e.g. :meth:`provision` has not run, or teardown has
+            already stopped the ToolServer)
         """
         ...
 

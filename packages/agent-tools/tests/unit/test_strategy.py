@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from typing import Any
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -18,7 +19,7 @@ class _FakeStrategy:
     """fake strategy that records provisioning + teardown calls.
 
     used to prove the Protocol is runtime_checkable and that an
-    arbitrary object satisfying the three-method shape passes
+    arbitrary object satisfying the four-method shape passes
     ``isinstance`` against it.
     """
 
@@ -26,6 +27,7 @@ class _FakeStrategy:
         """initialize recording buffers."""
         self.provisioned: list[BootstrapContext] = []
         self.ready_calls: list[float] = []
+        self.reload_calls: list[tuple[Any, Any]] = []
         self.teardown_count = 0
 
     async def provision(self, bootstrap_context: BootstrapContext) -> None:
@@ -47,6 +49,22 @@ class _FakeStrategy:
         :rtype: None
         """
         self.ready_calls.append(timeout)
+
+    async def reload_workspace_tools(
+        self,
+        workspace_runtime: Any,
+        workspace_config: Any,
+    ) -> None:
+        """record the reload call.
+
+        :param workspace_runtime: runtime for the reloaded bundle
+        :ptype workspace_runtime: Any
+        :param workspace_config: config for the reloaded bundle
+        :ptype workspace_config: Any
+        :return: nothing
+        :rtype: None
+        """
+        self.reload_calls.append((workspace_runtime, workspace_config))
 
     async def teardown(self) -> None:
         """record the teardown invocation.
