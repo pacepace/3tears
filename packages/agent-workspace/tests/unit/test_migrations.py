@@ -113,23 +113,23 @@ def _joined_executed_sql(store: _FakeDataStore) -> str:
 class TestRegisterWorkspaceMigrations:
     """tests for the register factory and apply flow."""
 
-    async def test_register_returns_package_with_versions_one_and_two(self) -> None:
-        """register populates the PackageMigrations with versions 1 and 2."""
+    async def test_register_returns_package_with_versions_one_two_three(self) -> None:
+        """register populates the PackageMigrations with versions 1, 2, and 3."""
         runner = MigrationRunner()
         pkg = register(runner)
         assert pkg.name == PACKAGE_NAME
         assert pkg.scope == MigrationScope.AGENT
-        assert set(pkg.versions.keys()) == {1, 2}
+        assert set(pkg.versions.keys()) == {1, 2, 3}
 
-    async def test_apply_runs_both_versions_then_idempotent(self) -> None:
-        """apply records v1 and v2 in _schema_migrations and runs no second time."""
+    async def test_apply_runs_all_versions_then_idempotent(self) -> None:
+        """apply records v1, v2, v3 in _schema_migrations and runs no second time."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 2
+        assert first_count == 3
         assert store._migrations_table_created is True
-        assert [row["version"] for row in store._migrations_rows] == [1, 2]
+        assert [row["version"] for row in store._migrations_rows] == [1, 2, 3]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 

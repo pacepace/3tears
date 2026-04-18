@@ -22,6 +22,9 @@ from threetears.agent.workspace.migrations.v001_create_workspace_tables import (
 from threetears.agent.workspace.migrations.v002_add_date_deleted_column import (
     add_date_deleted_column,
 )
+from threetears.agent.workspace.migrations.v003_workspace_namespace_backfill import (
+    workspace_namespace_backfill,
+)
 
 PACKAGE_NAME = "agent_workspace"
 
@@ -46,6 +49,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     )
     pkg.version(1)(create_workspace_tables)
     pkg.version(2)(add_date_deleted_column)
+    pkg.version(3)(workspace_namespace_backfill)
     runner.register(pkg)
     return pkg
 
@@ -55,4 +59,5 @@ __all__ = [
     "add_date_deleted_column",
     "create_workspace_tables",
     "register",
+    "workspace_namespace_backfill",
 ]
