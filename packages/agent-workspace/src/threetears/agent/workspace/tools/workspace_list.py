@@ -1,19 +1,39 @@
-"""``threetears.workspace.list`` -- enumerate workspaces for an agent."""
+"""``threetears.workspace.list`` -- enumerate workspaces via discovery subject.
+
+workspace-task-19 Phase 5 replaces the per-agent-schema SELECT that
+shipped in Phase 0 with a NATS request to the broker's
+``{ns}.workspace.discover`` subject. discovery returns every
+workspace-type namespace the caller can see in their customer --
+workspaces the calling agent owns plus workspaces granted to that
+agent within the customer -- so cross-agent sharing surfaces naturally
+in the list UI without any special-case branching here.
+
+the tool no longer needs the :class:`WorkspaceCollection` at all: the
+broker runs the SELECT against ``platform.namespaces`` and returns
+summaries sufficient for the LLM-facing list shape. when discovery is
+unavailable (NATS not wired, broker down), the tool surfaces the
+failure as errors-as-data per the TearsTool contract rather than
+raising.
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid7
 
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
     ToolResult,
 )
+from threetears.agent.tools.call_scope import current_scope
 from threetears.observe import get_logger
 
-from threetears.agent.workspace.collections import WorkspaceCollection
+from threetears.agent.workspace.discovery_client import (
+    DiscoveryClientError,
+    WorkspaceDiscoveryClient,
+)
 from threetears.agent.workspace.factory import register_tool_builder
 
 __all__ = [
@@ -31,53 +51,85 @@ _INPUT_SCHEMA: dict[str, Any] = {
 
 
 class WorkspaceListTool(TearsTool):
-    """list workspaces owned by the bound agent.
+    """list workspaces the caller can see via broker discovery.
 
-    returns a JSON-encoded array of ``{name, description, date_updated}``
-    entries newest-update first. names are the LLM-facing handle for
-    every other workspace tool; UUIDs never leave the implementation.
+    returns a JSON-encoded array of
+    ``{name, owner_agent_id, customer_id}`` entries, newest-update
+    first. the ``name`` is the canonical namespace name
+    (``workspace.<uuid>``) so subsequent tool calls can either quote the
+    raw form or extract the uuid suffix and pass it as the workspace
+    argument; tools accept either via :func:`_resolve_workspace`.
     """
 
     def __init__(
         self,
-        workspace_collection: WorkspaceCollection,
+        discovery_client: WorkspaceDiscoveryClient,
         agent_id: UUID,
     ) -> None:
         """
-        binds tool to a workspace collection scoped to one agent.
+        binds tool to a discovery client and the owning agent.
 
-        :param workspace_collection: collection providing find_by_agent
-        :ptype workspace_collection: WorkspaceCollection
-        :param agent_id: identifier of agent whose workspaces to list
+        :param discovery_client: NATS client for ``workspace.discover``
+        :ptype discovery_client: WorkspaceDiscoveryClient
+        :param agent_id: identifier of agent issuing discovery
         :ptype agent_id: UUID
         """
-        self._workspaces = workspace_collection
+        self._discovery = discovery_client
         self._agent_id = agent_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
-        returns workspaces for the bound agent as JSON-encoded array.
+        issue ``workspace.discover`` and return visible workspaces as JSON.
 
-        empty agent yields ``"[]"``; storage failures surface as errors-
-        as-data via :class:`ToolResult` rather than raising.
+        reads the caller's customer_id + user_id from the current
+        :class:`ToolCallScope` so the broker can filter the discovery
+        set to the caller's customer and honor user-scoped grants.
+        missing scope (or missing customer on the scope) is treated as
+        an unroutable call and surfaces as errors-as-data.
 
         :param kwargs: ignored, schema declares no inputs
         :ptype kwargs: Any
-        :return: tool result with JSON content or error message
+        :return: tool result with JSON array or error message
         :rtype: ToolResult
         """
         result: ToolResult
+        scope = current_scope()
+        customer_id: UUID | None = None if scope is None else scope.context.customer_id
+        user_id: UUID | None = None if scope is None else scope.context.user_id
+        correlation_id: UUID = (
+            scope.context.correlation_id
+            if scope is not None and scope.context.correlation_id is not None
+            else uuid7()
+        )
         try:
-            entities = await self._workspaces.find_by_agent(self._agent_id)
-            payload = [
-                {
-                    "name": entity.name,
-                    "description": entity.description or "",
-                    "date_updated": entity.date_updated.isoformat(),
-                }
-                for entity in entities
-            ]
-            result = ToolResult(success=True, content=json.dumps(payload))
+            if customer_id is None:
+                result = ToolResult(
+                    success=False,
+                    content="",
+                    error="workspace.list requires a customer_id on the call scope",
+                )
+            else:
+                items = await self._discovery.discover(
+                    correlation_id=correlation_id,
+                    agent_id=self._agent_id,
+                    customer_id=customer_id,
+                    user_id=user_id,
+                )
+                payload = [
+                    {
+                        "name": item.name,
+                        "owner_agent_id": str(item.owner_agent_id),
+                        "customer_id": str(item.customer_id),
+                    }
+                    for item in items
+                ]
+                result = ToolResult(success=True, content=json.dumps(payload))
+        except DiscoveryClientError as exc:
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"list failed: {exc}",
+            )
         except Exception as exc:
             log.exception("workspace_list failed: %s", exc)
             result = ToolResult(
@@ -99,7 +151,7 @@ class WorkspaceListTool(TearsTool):
         return MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description="list workspaces for the agent",
+            description="list workspaces the caller can see (owned + granted)",
             input_schema=_INPUT_SCHEMA,
         )
 
@@ -126,17 +178,22 @@ def _build(**kwargs: Any) -> WorkspaceListTool:
     """
     constructs a :class:`WorkspaceListTool` from the factory dep bundle.
 
-    consumes only ``workspace_collection`` and ``agent_id`` and ignores
-    the rest. registered with :mod:`threetears.agent.workspace.factory`
-    on import so :func:`build_workspace_tools` emits this tool.
+    consumes ``nats_client``, ``namespace``, and ``agent_id`` to build
+    a :class:`WorkspaceDiscoveryClient`; ignores the rest. registered
+    with :mod:`threetears.agent.workspace.factory` on import so
+    :func:`build_workspace_tools` emits this tool.
 
     :param kwargs: full factory dependency bundle
     :ptype kwargs: Any
     :return: constructed tool
     :rtype: WorkspaceListTool
     """
+    client = WorkspaceDiscoveryClient(
+        nats_client=kwargs.get("nats_client"),
+        namespace=kwargs.get("namespace") or "",
+    )
     return WorkspaceListTool(
-        workspace_collection=kwargs["workspace_collection"],
+        discovery_client=client,
         agent_id=kwargs["agent_id"],
     )
 

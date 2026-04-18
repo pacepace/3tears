@@ -66,6 +66,8 @@ def build_workspace_tools(
     config: Any = None,
     db_pool: Any = None,
     validators: Any = None,
+    acl_cache: Any = None,
+    customer_id: UUID | None = None,
 ) -> list[TearsTool]:
     """
     instantiates every registered workspace tool with shared dependencies.
@@ -110,6 +112,17 @@ def build_workspace_tools(
         boundary because each builder defensively coerces via
         :func:`_resolve_validators`
     :ptype validators: Any
+    :param acl_cache: shared ACL cache (``AclCacheLike``) consumed by
+        the ``authorize_workspace_access`` helper; every write/read
+        tool injects it so cross-agent + user-scoped grants are
+        enforced before any database IO. ``None`` lets tools run
+        without authorization (tests, bootstrap); production wiring
+        MUST supply a concrete cache
+    :ptype acl_cache: Any
+    :param customer_id: owning-customer UUID for the agent this tool
+        bundle serves; stamped onto newly-created workspaces so the
+        paired ``platform.namespaces`` row carries the right customer
+    :ptype customer_id: UUID | None
     :return: list of constructed TearsTool instances
     :rtype: list[TearsTool]
     """
@@ -132,5 +145,7 @@ def build_workspace_tools(
         "config": config,
         "db_pool": db_pool,
         "validators": validators,
+        "acl_cache": acl_cache,
+        "customer_id": customer_id,
     }
     return [builder(**deps) for builder in _TOOL_BUILDERS]

@@ -35,6 +35,7 @@ __all__ = [
     "NoWorkspacePinned",
     "Sha256Mismatch",
     "WorkspaceNotFound",
+    "enrich_workspace_identity",
 ]
 
 if TYPE_CHECKING:
@@ -135,6 +136,48 @@ class Sha256Mismatch(RuntimeError):
         self.expected = expected
         self.current = current
         super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
+
+
+_SELECT_NAMESPACE_CUSTOMER_SQL = (
+    "SELECT customer_id FROM platform.namespaces WHERE id = $1"
+)
+
+
+async def enrich_workspace_identity(
+    workspace: Workspace,
+    db_pool: Any,
+) -> Workspace:
+    """stamp ``workspace.customer_id`` from platform.namespaces in-place.
+
+    workspace-task-19 (WS-ACL-03) keeps the customer dimension on
+    :class:`platform.namespaces` rather than duplicating it onto every
+    agent-schema ``workspaces`` row. resolving the customer requires a
+    single platform-level fetch; this helper performs that lookup and
+    stamps the result onto the in-memory entity via the
+    :attr:`Workspace.customer_id` setter so the authorize helper can
+    read it back on the next statement.
+
+    the query uses ``namespace=`` so it lands on the platform pool
+    regardless of the caller's default agent schema: the L3 proxy
+    recognizes ``namespace="platform"`` (or any platform-typed
+    namespace) and binds ``search_path`` accordingly. pools that lack
+    ``namespace=`` support (tests, direct asyncpg) fall back to the
+    fully-qualified ``platform.namespaces`` table reference.
+
+    :param workspace: workspace entity to enrich
+    :ptype workspace: Workspace
+    :param db_pool: asyncpg pool (or pool-like) that can reach the
+        platform schema; the v014 migration places namespaces on
+        every agent's reachable path
+    :ptype db_pool: Any
+    :return: the same ``workspace`` instance (returned for chaining)
+    :rtype: Workspace
+    """
+    row = await db_pool.fetchrow(_SELECT_NAMESPACE_CUSTOMER_SQL, workspace.id)
+    if row is not None:
+        raw = row["customer_id"] if isinstance(row, dict) else row["customer_id"]
+        workspace.customer_id = UUID(str(raw)) if raw is not None else None
+    return workspace
 
 
 async def _resolve_workspace(
