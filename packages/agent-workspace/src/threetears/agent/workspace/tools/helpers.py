@@ -35,9 +35,140 @@ __all__ = [
     "NoWorkspacePinned",
     "Sha256Mismatch",
     "WorkspaceNotFound",
+    "WorkspaceAuditIdentity",
     "authorize_workspace",
     "enrich_workspace_identity",
+    "workspace_audit_identity",
 ]
+
+
+class WorkspaceAuditIdentity:
+    """resolved identity fields needed to publish a workspace audit event.
+
+    WS-ACL-10 expanded :class:`WorkspaceAuditEnvelope` from "actor + agent"
+    to a full five-UUID identity tuple
+    (``actor_user_id``, ``calling_agent_id``, ``owner_agent_id``,
+    ``customer_id``, ``namespace_id``). this plain value class carries
+    those five fields so every tool's audit-publish block can pull them
+    from one place without a six-argument local dict.
+
+    construction goes through :func:`workspace_audit_identity`, which
+    reads the current :class:`ToolCallScope` and the resolved
+    :class:`Workspace`; passing the value around keeps the publish call
+    sites terse and uniform.
+
+    :ivar actor_user_id: invoking user identifier (from
+        ``scope.context.user_id``)
+    :ivar calling_agent_id: agent whose process ran the tool (from
+        ``scope.context.agent_id``)
+    :ivar owner_agent_id: workspace owner agent (from
+        ``workspace.owner_agent_id``)
+    :ivar customer_id: owning customer (from ``scope.context.customer_id``)
+    :ivar namespace_id: workspace id (shared PK with namespace)
+    """
+
+    __slots__ = (
+        "actor_user_id",
+        "calling_agent_id",
+        "owner_agent_id",
+        "customer_id",
+        "namespace_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        actor_user_id: UUID,
+        calling_agent_id: UUID,
+        owner_agent_id: UUID,
+        customer_id: UUID,
+        namespace_id: UUID,
+    ) -> None:
+        """
+        bind the five audit-identity UUIDs as attributes.
+
+        :param actor_user_id: invoking user's UUID
+        :ptype actor_user_id: UUID
+        :param calling_agent_id: calling agent's UUID
+        :ptype calling_agent_id: UUID
+        :param owner_agent_id: owning agent's UUID
+        :ptype owner_agent_id: UUID
+        :param customer_id: owning customer's UUID
+        :ptype customer_id: UUID
+        :param namespace_id: workspace/namespace UUID
+        :ptype namespace_id: UUID
+        :return: None
+        :rtype: None
+        """
+        self.actor_user_id = actor_user_id
+        self.calling_agent_id = calling_agent_id
+        self.owner_agent_id = owner_agent_id
+        self.customer_id = customer_id
+        self.namespace_id = namespace_id
+
+
+def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
+    """build a :class:`WorkspaceAuditIdentity` from the current scope + workspace.
+
+    WS-ACL-10: every workspace-mutating tool's audit publish carries the
+    full five-UUID identity tuple. this helper pulls scope + workspace
+    into the value object the :func:`audit.publish_workspace_event`
+    caller forwards. every required dimension is mandatory; missing any
+    field raises so the call site cannot silently publish a partial
+    envelope under ``extra='forbid'``.
+
+    :param workspace: resolved workspace entity (must have
+        :attr:`owner_agent_id` populated and :attr:`customer_id` stamped
+        via :func:`enrich_workspace_identity`)
+    :ptype workspace: Workspace
+    :return: audit-identity value for forwarding to publish helpers
+    :rtype: WorkspaceAuditIdentity
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed,
+        or when ``workspace.customer_id`` is None (the scope did not
+        enrich), or when ``scope.context`` lacks user_id / agent_id /
+        customer_id
+    """
+    from threetears.agent.tools.call_scope import current_scope
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "workspace_audit_identity called outside a ToolCallScope; "
+            "every tool dispatch must run under enter_call_scope so the "
+            "invoking user / calling agent / customer identities are "
+            "available to the audit envelope."
+        )
+    ctx = scope.context
+    if ctx.user_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.user_id is None; "
+            "the tool dispatch envelope omitted the invoking user."
+        )
+    if ctx.agent_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.agent_id is None; "
+            "the tool dispatch envelope omitted the calling agent."
+        )
+    if ctx.customer_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.customer_id is "
+            "None; the tool dispatch envelope omitted the owning "
+            "customer (WS-ACL-08 threading required)."
+        )
+    ws_customer = workspace.customer_id
+    if ws_customer is None:
+        raise RuntimeError(
+            "workspace_audit_identity: workspace.customer_id is None; "
+            "call enrich_workspace_identity before publishing the "
+            "audit envelope."
+        )
+    return WorkspaceAuditIdentity(
+        actor_user_id=ctx.user_id,
+        calling_agent_id=ctx.agent_id,
+        owner_agent_id=workspace.owner_agent_id,
+        customer_id=ws_customer,
+        namespace_id=workspace.id,
+    )
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager

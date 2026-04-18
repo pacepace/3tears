@@ -66,6 +66,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
     authorize_workspace,
+    workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
 
@@ -239,12 +240,17 @@ class WorkspaceRollbackTool(TearsTool):
             # defense-in-depth audit publish: one event per rollback call
             try:
                 if self._namespace is not None:
+                    identity = workspace_audit_identity(workspace)
                     await audit.publish_workspace_event(
                         nats_client=self._nats_client,
                         namespace=self._namespace,
                         event_type="workspace.rollback_to",
-                        actor_id=self._agent_id,
+                        actor_user_id=identity.actor_user_id,
                         agent_id=self._agent_id,
+                        calling_agent_id=identity.calling_agent_id,
+                        owner_agent_id=identity.owner_agent_id,
+                        customer_id=identity.customer_id,
+                        namespace_id=identity.namespace_id,
                         resource_type="workspace",
                         resource_id=str(workspace.id),
                         action="rollback_to",

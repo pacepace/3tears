@@ -47,6 +47,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
     authorize_workspace,
+    workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
 
@@ -242,12 +243,17 @@ class DocMergeTool(TearsTool):
                             # defense-in-depth audit publish
                             try:
                                 if self._namespace is not None:
+                                    identity = workspace_audit_identity(workspace)
                                     await audit.publish_workspace_event(
                                         nats_client=self._nats_client,
                                         namespace=self._namespace,
                                         event_type="workspace.doc_merge",
-                                        actor_id=self._agent_id,
+                                        actor_user_id=identity.actor_user_id,
                                         agent_id=self._agent_id,
+                                        calling_agent_id=identity.calling_agent_id,
+                                        owner_agent_id=identity.owner_agent_id,
+                                        customer_id=identity.customer_id,
+                                        namespace_id=identity.namespace_id,
                                         resource_type="workspace_file",
                                         resource_id=(f"{workspace.id}/{relative_path}"),
                                         action="merge",

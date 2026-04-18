@@ -249,14 +249,51 @@ class WorkspaceCreateTool(TearsTool):
                 # defense-in-depth: publish_workspace_event swallows its own
                 # publish failures, but wrap again so any unforeseen error
                 # from the helper itself cannot taint a successful return.
+                #
+                # workspace_create is the one tool that publishes before a
+                # Workspace entity exists to hand to workspace_audit_identity
+                # (we're still INSIDE the creation flow). we read the call
+                # scope directly for actor/calling/customer, and source
+                # owner_agent_id + namespace_id from the values we just
+                # inserted. any missing dimension is a wiring bug, raised
+                # by the guard below and surfaced by the outer swallow.
                 try:
                     if self._namespace is not None:
+                        from threetears.agent.tools.call_scope import (
+                            current_scope as _current_scope,
+                        )
+
+                        _scope = _current_scope()
+                        if _scope is None:
+                            raise RuntimeError(
+                                "workspace_create audit: no ToolCallScope "
+                                "installed; every tool dispatch must run "
+                                "under enter_call_scope."
+                            )
+                        _ctx = _scope.context
+                        if _ctx.user_id is None or _ctx.agent_id is None:
+                            raise RuntimeError(
+                                "workspace_create audit: scope missing "
+                                "user_id or agent_id; cannot publish the "
+                                "five-UUID envelope."
+                            )
+                        _audit_customer = _ctx.customer_id or self._customer_id
+                        if _audit_customer is None:
+                            raise RuntimeError(
+                                "workspace_create audit: no customer_id in "
+                                "scope or constructor; workspace was created "
+                                "without an owning customer."
+                            )
                         await audit.publish_workspace_event(
                             nats_client=self._nats_client,
                             namespace=self._namespace,
                             event_type="workspace.create",
-                            actor_id=self._agent_id,
+                            actor_user_id=_ctx.user_id,
                             agent_id=self._agent_id,
+                            calling_agent_id=_ctx.agent_id,
+                            owner_agent_id=self._agent_id,
+                            customer_id=_audit_customer,
+                            namespace_id=workspace_id,
                             resource_type="workspace",
                             resource_id=str(workspace_id),
                             action="create",

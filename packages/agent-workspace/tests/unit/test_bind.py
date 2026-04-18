@@ -51,6 +51,8 @@ class _FakeWorkspace:
     name: str
     current_version: int = 0
     date_deleted: datetime | None = None
+    # WS-ACL-10: capture-back audit publishes require owner_agent_id
+    owner_agent_id: UUID = field(default_factory=uuid4)
 
 
 @dataclass
@@ -589,28 +591,45 @@ async def test_bind_emits_one_audit_event_per_changed_file(
     """capture-back: one ``workspace.bind`` audit event per changed file."""
     import json
 
+    from threetears.agent.tools.call_scope import (
+        ToolCallScope,
+        enter_call_scope,
+    )
+    from threetears.agent.tools.context_envelope import CallContext
+
     initial = b"v1"
     harness = _build_harness(
         tmp_path,
         initial_files=[_FakeFile("a.txt", initial, _sha(initial), 1)],
     )
     nats = _FakeNats()
-    async with bind(
-        workspace_id=harness["workspace_id"],
-        sandbox=harness["sandbox"],
-        lease=harness["lease"],
-        workspace_collection=harness["workspace_coll"],
-        workspace_file_collection=harness["file_coll"],
-        workspace_file_version_collection=harness["version_coll"],
-        db_pool=harness["pool"],
-        actor_id=harness["actor_id"],
-        correlation_id=harness["correlation_id"],
-        root_name="bind",
-        nats_client=nats,
-        namespace="ns",
-    ) as disk_root:
-        (disk_root / "a.txt").write_bytes(b"v2")
-        (disk_root / "b.txt").write_bytes(b"new file")
+    # WS-ACL-10 audit publish reads identity from the current scope.
+    scope = ToolCallScope(
+        context=CallContext(
+            agent_id=harness["actor_id"],
+            customer_id=uuid7(),
+            user_id=uuid7(),
+            conversation_id=uuid7(),
+            correlation_id=harness["correlation_id"],
+        ),
+    )
+    async with enter_call_scope(scope):
+        async with bind(
+            workspace_id=harness["workspace_id"],
+            sandbox=harness["sandbox"],
+            lease=harness["lease"],
+            workspace_collection=harness["workspace_coll"],
+            workspace_file_collection=harness["file_coll"],
+            workspace_file_version_collection=harness["version_coll"],
+            db_pool=harness["pool"],
+            actor_id=harness["actor_id"],
+            correlation_id=harness["correlation_id"],
+            root_name="bind",
+            nats_client=nats,
+            namespace="ns",
+        ) as disk_root:
+            (disk_root / "a.txt").write_bytes(b"v2")
+            (disk_root / "b.txt").write_bytes(b"new file")
 
     # two changes (update + create) -> two audit events
     assert len(nats.published) == 2
@@ -622,6 +641,12 @@ async def test_bind_emits_one_audit_event_per_changed_file(
         assert env["action"] == "bind"
         assert env["resource_type"] == "workspace_file"
         assert env["details"]["root_name"] == "bind"
+        # WS-ACL-10: full identity tuple on the envelope
+        assert UUID(env["actor_user_id"])
+        assert UUID(env["calling_agent_id"])
+        assert UUID(env["owner_agent_id"])
+        assert UUID(env["customer_id"])
+        assert UUID(env["namespace_id"])
     kinds = {env["details"]["change_kind"] for env in envelopes}
     assert kinds == {"update", "create"}
 

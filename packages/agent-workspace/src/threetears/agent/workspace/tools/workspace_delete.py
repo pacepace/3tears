@@ -35,7 +35,10 @@ from threetears.agent.workspace.collections import (
 )
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
-from threetears.agent.workspace.tools.helpers import authorize_workspace
+from threetears.agent.workspace.tools.helpers import (
+    authorize_workspace,
+    workspace_audit_identity,
+)
 
 __all__ = [
     "WorkspaceDeleteTool",
@@ -161,12 +164,17 @@ class WorkspaceDeleteTool(TearsTool):
                 # defense-in-depth: isolate audit from success path
                 try:
                     if self._namespace is not None:
+                        identity = workspace_audit_identity(workspace)
                         await audit.publish_workspace_event(
                             nats_client=self._nats_client,
                             namespace=self._namespace,
                             event_type="workspace.delete",
-                            actor_id=self._agent_id,
+                            actor_user_id=identity.actor_user_id,
                             agent_id=self._agent_id,
+                            calling_agent_id=identity.calling_agent_id,
+                            owner_agent_id=identity.owner_agent_id,
+                            customer_id=identity.customer_id,
+                            namespace_id=identity.namespace_id,
                             resource_type="workspace",
                             resource_id=str(workspace.id),
                             action="delete",

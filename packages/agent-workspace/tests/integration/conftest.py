@@ -119,6 +119,15 @@ class _StoredWorkspace:
     date_created: datetime
     date_updated: datetime
     date_deleted: datetime | None
+    # WS-ACL-10 audit identity: customer_id mirrors the stamped value
+    # from platform.namespaces for integration tests that need the
+    # audit envelope's five-UUID tuple.
+    customer_id: UUID | None = None
+
+    @property
+    def owner_agent_id(self) -> UUID:
+        """return owning agent UUID (alias of :attr:`agent_id`)."""
+        return self.agent_id
 
 
 class _FakeStore:
@@ -809,6 +818,7 @@ def _seed_workspace(
         date_created=now,
         date_updated=now,
         date_deleted=None,
+        customer_id=uuid7(),  # WS-ACL-10: audit publish requires a customer_id
     )
     return ws_id
 

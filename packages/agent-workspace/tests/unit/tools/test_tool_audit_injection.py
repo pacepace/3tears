@@ -56,6 +56,12 @@ class _FakeWorkspaceEntity:
     template_name: str | None = None
     date_deleted: Any = None
     current_version: int = 0
+    # WS-ACL-10 audit envelope inputs: workspace_audit_identity reads
+    # these directly off the workspace to fill owner_agent_id and
+    # customer_id on the envelope. fixture defaults to fresh UUIDs so
+    # tests do not depend on the specific identity values.
+    owner_agent_id: UUID = field(default_factory=uuid4)
+    customer_id: UUID | None = field(default_factory=uuid4)
 
 
 class _FakeWorkspaceCollection:
@@ -242,8 +248,14 @@ async def test_fs_write_publishes_audit_on_success(
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.fs_write"
     assert envelope["actor_type"] == "agent"
-    assert envelope["actor_id"] == str(agent_id)
+    # WS-ACL-10: actor_user_id + calling_agent_id + owner_agent_id +
+    # customer_id + namespace_id ride on every envelope.
+    assert UUID(envelope["actor_user_id"])
     assert envelope["agent_id"] == str(agent_id)
+    assert UUID(envelope["calling_agent_id"])
+    assert envelope["owner_agent_id"] == str(ws.owner_agent_id)
+    assert UUID(envelope["customer_id"])
+    assert envelope["namespace_id"] == str(ws.id)
     assert envelope["resource_type"] == "workspace_file"
     assert envelope["resource_id"] == f"{ws.id}/a.md"
     assert envelope["action"] == "write"

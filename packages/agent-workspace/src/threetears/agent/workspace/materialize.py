@@ -1204,15 +1204,47 @@ async def _capture_back(
         # defense-in-depth: publish one audit event per changed file.
         # outside the transaction; audit is best-effort and must not
         # undo committed capture-back on transient NATS failure.
+        #
+        # WS-ACL-10: envelope carries the five-UUID identity tuple.
+        # the scope is the authoritative source for actor_user_id /
+        # calling_agent_id / customer_id; bind() is called inside a
+        # dispatch so scope is set. owner_agent_id + namespace_id come
+        # from the workspace entity. when scope is unavailable (e.g.
+        # unit tests invoking _capture_back directly), the helper
+        # RuntimeError propagates into the outer swallow.
         try:
-            if namespace is not None and nats_client is not None:
+            if namespace is not None and nats_client is not None and changed:
+                from threetears.agent.tools.call_scope import (
+                    current_scope as _current_scope,
+                )
+
+                _scope = _current_scope()
+                if _scope is None:
+                    raise RuntimeError(
+                        "workspace.bind audit: no ToolCallScope installed; "
+                        "bind must run under enter_call_scope."
+                    )
+                _ctx = _scope.context
+                if (
+                    _ctx.user_id is None
+                    or _ctx.agent_id is None
+                    or _ctx.customer_id is None
+                ):
+                    raise RuntimeError(
+                        "workspace.bind audit: scope missing identity "
+                        "dimension; cannot publish five-UUID envelope."
+                    )
                 for rel in changed:
                     await audit.publish_workspace_event(
                         nats_client=nats_client,
                         namespace=namespace,
                         event_type="workspace.bind",
-                        actor_id=actor_id,
+                        actor_user_id=_ctx.user_id,
                         agent_id=actor_id,
+                        calling_agent_id=_ctx.agent_id,
+                        owner_agent_id=workspace.owner_agent_id,
+                        customer_id=_ctx.customer_id,
+                        namespace_id=workspace.id,
                         resource_type="workspace_file",
                         resource_id=f"{workspace.id}/{rel}",
                         action="bind",

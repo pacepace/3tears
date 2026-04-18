@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -140,8 +141,14 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
     envelope = json.loads(payload.decode("utf-8"))
     assert envelope["event_type"] == "workspace.doc_set"
     assert envelope["actor_type"] == "agent"
-    assert envelope["actor_id"] == str(fx.agent_id)
+    # WS-ACL-10: actor_user_id replaces legacy actor_id; calling +
+    # owner + customer + namespace carry full identity.
+    assert UUID(envelope["actor_user_id"])  # present + parseable
     assert envelope["agent_id"] == str(fx.agent_id)
+    assert envelope["calling_agent_id"]
+    assert envelope["owner_agent_id"] == str(fx.agent_id)
+    assert envelope["customer_id"]
+    assert UUID(envelope["namespace_id"])
     assert envelope["resource_type"] == "workspace_file"
     assert envelope["action"] == "set"
 
