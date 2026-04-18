@@ -29,6 +29,10 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace.authorize import (
+    AclCacheLike,
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -37,7 +41,10 @@ from threetears.agent.workspace.collections import (
 from threetears.agent.workspace.config import ValidatorEntry
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
-from threetears.agent.workspace.tools.helpers import _resolve_validators
+from threetears.agent.workspace.tools.helpers import (
+    _resolve_validators,
+    authorize_workspace,
+)
 from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
     dispatch_validators,
@@ -107,6 +114,7 @@ class WorkspaceResetTool(TearsTool):
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
+        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, context, and pool.
@@ -146,6 +154,7 @@ class WorkspaceResetTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -184,6 +193,12 @@ class WorkspaceResetTool(TearsTool):
                     ),
                 )
             else:
+                await authorize_workspace(
+                    workspace,
+                    "write",
+                    db_pool=self._db_pool,
+                    acl_cache=self._acl_cache,
+                )
                 template_files = await self._read_template_files(
                     workspace.template_name,
                 )
@@ -229,6 +244,8 @@ class WorkspaceResetTool(TearsTool):
                     ),
                 )
         except _ResetError as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except WorkspaceValidationError as exc:
             result = ToolResult(
@@ -569,6 +586,7 @@ def _build(**kwargs: Any) -> WorkspaceResetTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        acl_cache=kwargs.get("acl_cache"),
     )
 
 

@@ -30,6 +30,10 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDecision, SandboxDenied
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    AclCacheLike,
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -41,6 +45,7 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _resolve_workspace,
+    authorize_workspace,
 )
 
 __all__ = [
@@ -96,6 +101,8 @@ class WorkspaceHistoryTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        db_pool: Any = None,
+        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, context, and owning agent.
@@ -122,6 +129,8 @@ class WorkspaceHistoryTool(TearsTool):
         self._sandbox = sandbox
         self._context_provider = context_provider
         self._agent_id = agent_id
+        self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -152,6 +161,12 @@ class WorkspaceHistoryTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
+            await authorize_workspace(
+                workspace,
+                "read",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
             rows: list[Any]
             if relative_path is not None and relative_path != "":
                 self._sandbox.enforce("read", relative_path)
@@ -170,6 +185,8 @@ class WorkspaceHistoryTool(TearsTool):
                 metadata={"count": len(entries)},
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -283,6 +300,8 @@ def _build(**kwargs: Any) -> WorkspaceHistoryTool:
         sandbox=kwargs["sandbox"],
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
+        db_pool=kwargs.get("db_pool"),
+        acl_cache=kwargs.get("acl_cache"),
     )
 
 

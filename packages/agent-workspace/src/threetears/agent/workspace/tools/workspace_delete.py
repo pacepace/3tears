@@ -24,6 +24,10 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace.authorize import (
+    AclCacheLike,
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -31,6 +35,7 @@ from threetears.agent.workspace.collections import (
 )
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
+from threetears.agent.workspace.tools.helpers import authorize_workspace
 
 __all__ = [
     "WorkspaceDeleteTool",
@@ -74,6 +79,7 @@ class WorkspaceDeleteTool(TearsTool):
         db_pool: Any,
         nats_client: Any = None,
         namespace: str | None = None,
+        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to workspace collection, conversation context, and pool.
@@ -107,6 +113,7 @@ class WorkspaceDeleteTool(TearsTool):
         self._db_pool = db_pool
         self._nats_client = nats_client
         self._namespace = namespace
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -135,6 +142,12 @@ class WorkspaceDeleteTool(TearsTool):
                     error=f"workspace {name!r} not found",
                 )
             else:
+                await authorize_workspace(
+                    workspace,
+                    "write",
+                    db_pool=self._db_pool,
+                    acl_cache=self._acl_cache,
+                )
                 now = datetime.now(UTC)
                 async with self._db_pool.acquire() as conn:
                     async with conn.transaction():
@@ -171,6 +184,8 @@ class WorkspaceDeleteTool(TearsTool):
                     success=True,
                     content=f"deleted workspace {name!r}",
                 )
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("workspace_delete failed: %s", exc)
             result = ToolResult(
@@ -238,6 +253,7 @@ def _build(**kwargs: Any) -> WorkspaceDeleteTool:
         db_pool=kwargs["db_pool"],
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
+        acl_cache=kwargs.get("acl_cache"),
     )
 
 

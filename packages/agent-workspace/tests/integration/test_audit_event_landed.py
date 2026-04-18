@@ -78,6 +78,7 @@ class _InProcessAuditConsumer:
 
 async def test_doc_set_publishes_audit_envelope_to_consumer(
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """doc_set fires one envelope with canonical shape onto the bus.
 
@@ -121,6 +122,7 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
         db_pool=fx.pool,
         nats_client=fx.nats,
         namespace=namespace,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await doc_set.execute(

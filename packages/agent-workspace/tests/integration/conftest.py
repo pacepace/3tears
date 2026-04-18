@@ -55,12 +55,19 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import pytest
 
 from _fake_kv import FakeNatsClient as _FakeNatsKVClient  # type: ignore[import-not-found]
+
+from threetears.agent.tools.call_scope import (
+    ToolCallScope,
+    enter_call_scope,
+)
+from threetears.agent.tools.context_envelope import CallContext
 
 
 # ---------------------------------------------------------------------------
@@ -913,3 +920,154 @@ def workspace_with_audience_fixture(
         version_collection=fake_version_collection,
         fixture_path=fixture_dir,
     )
+
+
+# ---------------------------------------------------------------------------
+# scope + acl_cache fixtures (post WS-ACL-05 hard-fail)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def integration_tool_scope_context() -> CallContext:
+    """test-scoped CallContext with non-None identity dims for integration tests.
+
+    integration tests that exercise tool dispatch outside an explicit
+    :func:`enter_call_scope` block rely on the :func:`integration_tool_call_scope`
+    autouse fixture below; this builder lets a test override identity by
+    overriding this fixture.
+
+    :return: call context with all identity fields populated
+    :rtype: CallContext
+    """
+    return CallContext(
+        agent_id=uuid7(),
+        customer_id=uuid7(),
+        user_id=uuid7(),
+        conversation_id=uuid7(),
+        correlation_id=uuid7(),
+    )
+
+
+@pytest.fixture(autouse=True)
+async def integration_tool_call_scope(
+    integration_tool_scope_context: CallContext,
+) -> AsyncIterator[ToolCallScope]:
+    """install a default :class:`ToolCallScope` for every integration test.
+
+    autouse so tests that drive tool dispatch directly do not have to
+    opt in. tests that need bespoke identity (e.g. cross-customer
+    matrix) wrap their own :func:`enter_call_scope` blocks; nested
+    scopes shadow the autouse one for the duration of the inner block.
+
+    :param integration_tool_scope_context: identity envelope for the scope
+    :ptype integration_tool_scope_context: CallContext
+    :return: async iterator yielding the installed scope
+    :rtype: AsyncIterator[ToolCallScope]
+    """
+    scope = ToolCallScope(context=integration_tool_scope_context)
+    async with enter_call_scope(scope):
+        yield scope
+
+
+@pytest.fixture
+def permissive_acl_cache() -> MagicMock:
+    """AclCache-shaped mock returning ``"write"`` on every access check.
+
+    integration tests that don't explicitly exercise the RBAC grant
+    decision pass this cache to tool constructors so the post-WS-ACL-05
+    hard-fail in :func:`authorize_workspace` doesn't reject the
+    construction. tests that DO exercise the cache (cross-customer,
+    grant matrix) build their own cache with the desired behavior.
+
+    :return: mock with an :class:`AsyncMock` ``check_access`` returning
+        ``"write"``
+    :rtype: MagicMock
+    """
+    cache = MagicMock()
+    cache.check_access = AsyncMock(return_value="write")
+    return cache
+
+
+def _is_real_authorize_test(request: pytest.FixtureRequest) -> bool:
+    """return True when the requesting test wants the real authorize path.
+
+    the cross-agent integration test exercises the real ACL grant
+    decision end-to-end against a live PostgreSQL container, so the
+    autouse stubs in this conftest must not patch it out for that
+    file.
+
+    :param request: pytest fixture request from the autouse fixture
+    :ptype request: pytest.FixtureRequest
+    :return: True when this test runs against the real authorize path
+    :rtype: bool
+    """
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    return "test_cross_agent_workspace" in nodeid
+
+
+@pytest.fixture(autouse=True)
+def integration_stub_authorize_workspace_access(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock | None:
+    """no-op stub for :func:`authorize_workspace_access` in integration tests.
+
+    integration tests use lightweight workspace entities that do not
+    expose the full :class:`WorkspaceLike` protocol surface
+    (``namespace_name`` / ``owner_agent_id`` / ``created_by_user_id``).
+    the workspace-shape-dependent grant decision is exercised end-to-end
+    in ``tests/integration/test_cross_agent_workspace.py``; here we mock
+    the inner call so other integration tests focus on tool behavior.
+    the outer :func:`authorize_workspace` helper still enforces both
+    preconditions (scope installed, ``acl_cache`` injected).
+
+    skipped for ``test_cross_agent_workspace`` so its real-PostgreSQL
+    authorize matrix runs unaltered.
+
+    :param request: pytest fixture request used to opt out per file
+    :ptype request: pytest.FixtureRequest
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the installed mock, or ``None`` when the stub is skipped
+    :rtype: AsyncMock | None
+    """
+    if _is_real_authorize_test(request):
+        return None
+    from threetears.agent.workspace import authorize as _authorize_module
+
+    stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(_authorize_module, "authorize_workspace_access", stub)
+    return stub
+
+
+@pytest.fixture(autouse=True)
+def integration_stub_enrich_workspace_identity(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock | None:
+    """no-op stub for :func:`enrich_workspace_identity` in integration tests.
+
+    the production helper does a ``SELECT customer_id FROM
+    platform.namespaces`` lookup; the integration fake pool does not
+    serve that statement and the fake workspace entities do not expose
+    a ``customer_id`` setter, so the real enrichment cannot run. patch
+    it out for these tests; identity enrichment + cross-customer denial
+    are exercised in ``tests/integration/test_cross_agent_workspace.py``.
+
+    :param request: pytest fixture request used to opt out per file
+    :ptype request: pytest.FixtureRequest
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the installed mock, or ``None`` when the stub is skipped
+    :rtype: AsyncMock | None
+    """
+    if _is_real_authorize_test(request):
+        return None
+    from threetears.agent.workspace.tools import helpers as _helpers_module
+
+    async def _passthrough(workspace, db_pool):  # type: ignore[no-untyped-def]
+        return workspace
+
+    stub = AsyncMock(side_effect=_passthrough)
+    monkeypatch.setattr(_helpers_module, "enrich_workspace_identity", stub)
+    return stub

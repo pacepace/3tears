@@ -28,6 +28,10 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    AclCacheLike,
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -39,6 +43,7 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _next_journal_version,
     _resolve_workspace,
+    authorize_workspace,
 )
 
 __all__ = [
@@ -92,6 +97,7 @@ class WorkspaceCheckpointTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to collections, context, owning agent, and pool.
@@ -120,6 +126,7 @@ class WorkspaceCheckpointTool(TearsTool):
         self._context_provider = context_provider
         self._agent_id = agent_id
         self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -152,6 +159,12 @@ class WorkspaceCheckpointTool(TearsTool):
                 self._context_provider(),
                 self._workspaces,
                 self._agent_id,
+            )
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
             )
             head_files = await self._files.find_by_workspace(workspace.id)
             now = datetime.now(UTC)
@@ -192,6 +205,8 @@ class WorkspaceCheckpointTool(TearsTool):
                 metadata={"n_files": len(head_files), "label": label},
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("workspace_checkpoint failed: %s", exc)
@@ -259,6 +274,7 @@ def _build(**kwargs: Any) -> WorkspaceCheckpointTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
+        acl_cache=kwargs.get("acl_cache"),
     )
 
 

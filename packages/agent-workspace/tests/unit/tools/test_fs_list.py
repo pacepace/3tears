@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -80,6 +82,7 @@ class _FakeContext:
 def _build_tool(
     *,
     files: list[_FakeFileEntity],
+    acl_cache: Any,
     deny_reads: list[str] | None = None,
 ) -> FsListTool:
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -89,6 +92,7 @@ def _build_tool(
         sandbox=_FilteringSandbox(deny_reads=deny_reads),  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
+        acl_cache=acl_cache,
     )
 
 
@@ -98,14 +102,17 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_fs_list_no_glob_returns_all_files() -> None:
+async def test_fs_list_no_glob_returns_all_files(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """without glob, every allowed file shows up."""
     tool = _build_tool(
         files=[
             _FakeFileEntity(relative_path="a.md"),
             _FakeFileEntity(relative_path="b.yaml"),
             _FakeFileEntity(relative_path="src/main.py"),
-        ]
+        ],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(workspace="ws")
     assert result.success is True, result.error
@@ -116,7 +123,9 @@ async def test_fs_list_no_glob_returns_all_files() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_list_glob_filters_recursively_with_double_star() -> None:
+async def test_fs_list_glob_filters_recursively_with_double_star(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """``**/*.yaml`` matches single- and multi-segment paths."""
     tool = _build_tool(
         files=[
@@ -124,7 +133,8 @@ async def test_fs_list_glob_filters_recursively_with_double_star() -> None:
             _FakeFileEntity(relative_path="docs/a.yaml"),
             _FakeFileEntity(relative_path="docs/nested/b.yaml"),
             _FakeFileEntity(relative_path="readme.md"),
-        ]
+        ],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(glob="**/*.yaml", workspace="ws")
     assert result.success is True, result.error
@@ -133,7 +143,9 @@ async def test_fs_list_glob_filters_recursively_with_double_star() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_list_sandbox_read_filters_out_denied() -> None:
+async def test_fs_list_sandbox_read_filters_out_denied(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """files denied by sandbox read are silently dropped (not errors)."""
     tool = _build_tool(
         files=[
@@ -141,6 +153,7 @@ async def test_fs_list_sandbox_read_filters_out_denied() -> None:
             _FakeFileEntity(relative_path="secret.env"),
         ],
         deny_reads=["secret.env"],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(workspace="ws")
     assert result.success is True, result.error
@@ -149,7 +162,9 @@ async def test_fs_list_sandbox_read_filters_out_denied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_list_entries_carry_sha_version_and_iso_date() -> None:
+async def test_fs_list_entries_carry_sha_version_and_iso_date(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """each entry carries relative_path, sha256, version, date_updated (iso)."""
     file_entity = _FakeFileEntity(
         relative_path="x",
@@ -157,7 +172,7 @@ async def test_fs_list_entries_carry_sha_version_and_iso_date() -> None:
         version=3,
         date_updated=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
     )
-    tool = _build_tool(files=[file_entity])
+    tool = _build_tool(files=[file_entity], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ws")
     entries = json.loads(result.content)
     assert entries[0] == {
@@ -174,8 +189,10 @@ async def test_fs_list_entries_carry_sha_version_and_iso_date() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_list_unknown_workspace_returns_clean_error() -> None:
-    tool = _build_tool(files=[])
+async def test_fs_list_unknown_workspace_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool = _build_tool(files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ghost")
     assert result.success is False
     assert result.error is not None
@@ -187,13 +204,17 @@ async def test_fs_list_unknown_workspace_returns_clean_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fs_list_mcp_name_is_exact_string() -> None:
-    tool = _build_tool(files=[])
+def test_fs_list_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool = _build_tool(files=[], acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.fs_list"
 
 
-def test_fs_list_mcp_schema_no_required_fields() -> None:
-    tool = _build_tool(files=[])
+def test_fs_list_mcp_schema_no_required_fields(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool = _build_tool(files=[], acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == []

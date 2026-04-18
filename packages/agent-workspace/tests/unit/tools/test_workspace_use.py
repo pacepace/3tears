@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -78,7 +79,10 @@ def patch_set_pin(monkeypatch: pytest.MonkeyPatch) -> _RecordingPin:
 
 
 @pytest.mark.asyncio
-async def test_execute_happy_path_pins_workspace(patch_set_pin: _RecordingPin) -> None:
+async def test_execute_happy_path_pins_workspace(
+    patch_set_pin: _RecordingPin,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """found workspace pins via pin.set_pin with correct args; returns success."""
     agent_id = uuid4()
     workspace_id = uuid4()
@@ -89,6 +93,7 @@ async def test_execute_happy_path_pins_workspace(patch_set_pin: _RecordingPin) -
         workspace_collection=coll,
         agent_id=agent_id,
         context_provider=lambda: fake_ctx,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="main")
@@ -165,6 +170,7 @@ async def test_execute_traps_collection_errors_as_data(
 @pytest.mark.asyncio
 async def test_execute_traps_set_pin_errors_as_data(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """failures inside pin.set_pin surface as errors-as-data, not raise."""
 
@@ -177,6 +183,7 @@ async def test_execute_traps_set_pin_errors_as_data(
         workspace_collection=coll,
         agent_id=uuid4(),
         context_provider=lambda: _FakeContext(),
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="m")

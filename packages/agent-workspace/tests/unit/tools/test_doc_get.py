@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -98,6 +100,7 @@ class _FakeContext:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     workspace_entities: list[_FakeWorkspaceEntity] | None = None,
     files: list[_FakeFileEntity] | None = None,
     deny_reads: list[str] | None = None,
@@ -113,6 +116,7 @@ def _build_tool(
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
+        acl_cache=acl_cache,
     )
     return tool, file_coll, sandbox, agent_id
 
@@ -127,7 +131,9 @@ def _audience_yaml_bytes() -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_doc_get_whole_document_returns_dumped_yaml_with_structure() -> None:
+async def test_doc_get_whole_document_returns_dumped_yaml_with_structure(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no jsonpath -> whole document dumped; structural markers survive."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     yaml_bytes = _audience_yaml_bytes()
@@ -137,7 +143,9 @@ async def test_doc_get_whole_document_returns_dumped_yaml_with_structure() -> No
         sha256="a" * 64,
         version=3,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(relative_path="audience_settings.yaml", workspace="ws")
 
@@ -160,7 +168,9 @@ async def test_doc_get_whole_document_returns_dumped_yaml_with_structure() -> No
 
 
 @pytest.mark.asyncio
-async def test_doc_get_jsonpath_scalar_returns_serialized_scalar() -> None:
+async def test_doc_get_jsonpath_scalar_returns_serialized_scalar(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """jsonpath to a scalar returns the JSON-serialized scalar."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     yaml_bytes = _audience_yaml_bytes()
@@ -170,7 +180,9 @@ async def test_doc_get_jsonpath_scalar_returns_serialized_scalar() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -184,7 +196,9 @@ async def test_doc_get_jsonpath_scalar_returns_serialized_scalar() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_get_jsonpath_not_found_returns_clean_error() -> None:
+async def test_doc_get_jsonpath_not_found_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """jsonpath with no matches yields a clean error naming the expression."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -193,7 +207,9 @@ async def test_doc_get_jsonpath_not_found_returns_clean_error() -> None:
         sha256="c" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -213,7 +229,9 @@ async def test_doc_get_jsonpath_not_found_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_get_unknown_format_returns_clean_error() -> None:
+async def test_doc_get_unknown_format_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """file whose suffix has no registered handler -> clean error with suffix."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -222,7 +240,9 @@ async def test_doc_get_unknown_format_returns_clean_error() -> None:
         sha256="d" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(relative_path="notes.txt", workspace="ws")
 
@@ -238,7 +258,9 @@ async def test_doc_get_unknown_format_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_get_binary_file_with_known_suffix_returns_clean_error() -> None:
+async def test_doc_get_binary_file_with_known_suffix_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """YAML-suffixed file with non-UTF-8 content reports binary cleanly."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     # .yaml suffix so handler dispatch succeeds; bytes are not valid UTF-8
@@ -248,7 +270,9 @@ async def test_doc_get_binary_file_with_known_suffix_returns_clean_error() -> No
         sha256="e" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(relative_path="rogue.yaml", workspace="ws")
 
@@ -263,7 +287,9 @@ async def test_doc_get_binary_file_with_known_suffix_returns_clean_error() -> No
 
 
 @pytest.mark.asyncio
-async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch() -> None:
+async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied -> clean error; no fetch attempted (gate-then-act)."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -276,6 +302,7 @@ async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch() -> None:
         workspace_entities=[ws],
         files=[file_entity],
         deny_reads=["secret.yaml"],
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(relative_path="secret.yaml", workspace="ws")
@@ -294,10 +321,14 @@ async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_get_missing_file_returns_clean_error() -> None:
+async def test_doc_get_missing_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """head row absent -> clean error naming file and workspace."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(relative_path="missing.yaml", workspace="ws")
 
@@ -312,13 +343,17 @@ async def test_doc_get_missing_file_returns_clean_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_doc_get_mcp_name_is_exact_string() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_get_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.doc_get"
 
 
-def test_doc_get_mcp_schema_requires_relative_path() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_get_mcp_schema_requires_relative_path(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == ["relative_path"]

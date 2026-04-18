@@ -85,6 +85,22 @@ INSERT INTO workspaces (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
 """
 
+# paired namespace insert run in the same transaction as the new
+# workspace insert so WS-ACL-03 holds: every workspace row has a
+# matching platform.namespaces row with the same id, populated
+# customer_id + owner_agent_id + schema_name so the broker's L3
+# routing + the AclCache grant check both work from the first write.
+# ``ON CONFLICT (id) DO NOTHING`` keeps the write idempotent against
+# the v003 backfill migration which may have already materialized the
+# namespace row for pre-migration workspaces.
+_INSERT_NAMESPACE_FOR_WORKSPACE_SQL = """
+INSERT INTO platform.namespaces (
+    id, name, namespace_type, owner_agent_id, schema_name,
+    customer_id, metadata, date_created, date_updated
+) VALUES ($1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
+ON CONFLICT (id) DO NOTHING
+"""
+
 _INSERT_WORKSPACE_FILE_SQL = """
 INSERT INTO workspace_files (
     id, workspace_id, relative_path, content, sha256, version, date_updated
@@ -121,6 +137,7 @@ class WorkspaceCreateTool(TearsTool):
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
+        customer_id: UUID | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, conversation context, and pool.
@@ -163,6 +180,7 @@ class WorkspaceCreateTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._customer_id = customer_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -408,6 +426,26 @@ class WorkspaceCreateTool(TearsTool):
             for relative, content, _sha in files:
                 dispatch_validators(self._validators, relative, content)
 
+        # customer_id source for the paired namespace row: prefer the
+        # live ToolCallScope (set by the runtime for real calls) over
+        # the constructor kwarg (supplied for tests and bootstrap).
+        # when neither is present we fall back to None -- the namespace
+        # row ends up with a NULL customer_id, which the authorize
+        # helper treats as unroutable, and downstream tool calls will
+        # deny until the migration backfill lands the right value.
+        # the paired insert uses ON CONFLICT DO NOTHING so a v003
+        # backfill already-present row is left alone.
+        from threetears.agent.tools.call_scope import current_scope
+
+        scope = current_scope()
+        customer_id: UUID | None = (
+            scope.context.customer_id
+            if scope is not None and scope.context.customer_id is not None
+            else self._customer_id
+        )
+        schema_name = f"agent_{self._agent_id.hex}"
+        namespace_name = f"workspace.{workspace_id}"
+
         async with self._db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -422,6 +460,17 @@ class WorkspaceCreateTool(TearsTool):
                     now,
                     now,
                 )
+                if customer_id is not None:
+                    await conn.execute(
+                        _INSERT_NAMESPACE_FOR_WORKSPACE_SQL,
+                        workspace_id,
+                        namespace_name,
+                        self._agent_id,
+                        schema_name,
+                        customer_id,
+                        now,
+                        now,
+                    )
                 for relative, content, sha in files:
                     file_id = uuid7()
                     version_id = uuid7()
@@ -559,6 +608,7 @@ def _build(**kwargs: Any) -> WorkspaceCreateTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        customer_id=kwargs.get("customer_id"),
     )
 
 

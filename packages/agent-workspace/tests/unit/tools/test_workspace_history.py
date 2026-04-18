@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -135,6 +136,7 @@ def _build_tool(
     *,
     workspace_entities: list[_FakeWorkspaceEntity],
     version_rows: list[_FakeVersionRow],
+    acl_cache: Any,
     deny_reads: list[str] | None = None,
 ) -> tuple[WorkspaceHistoryTool, _FakeVersionCollection, _RecordingSandbox]:
     workspaces = _FakeWorkspaceCollection(workspace_entities)
@@ -147,6 +149,7 @@ def _build_tool(
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
+        acl_cache=acl_cache,
     )
     return tool, versions, sandbox
 
@@ -157,7 +160,9 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_history_workspace_wide_returns_newest_first_without_content() -> None:
+async def test_history_workspace_wide_returns_newest_first_without_content(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no relative_path: all journal rows newest-first, no content blob in output."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     rows = [
@@ -180,7 +185,9 @@ async def test_history_workspace_wide_returns_newest_first_without_content() -> 
             offset_seconds=20,
         ),
     ]
-    tool, versions, _ = _build_tool(workspace_entities=[ws], version_rows=rows)
+    tool, versions, _ = _build_tool(
+        workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -198,7 +205,9 @@ async def test_history_workspace_wide_returns_newest_first_without_content() -> 
 
 
 @pytest.mark.asyncio
-async def test_history_per_path_calls_enforce_and_narrow_query() -> None:
+async def test_history_per_path_calls_enforce_and_narrow_query(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """relative_path triggers sandbox.enforce('read', path) and path-scoped query."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     rows = [
@@ -206,7 +215,9 @@ async def test_history_per_path_calls_enforce_and_narrow_query() -> None:
         _row(relative_path="b.md", version=1, offset_seconds=5),
         _row(relative_path="a.txt", version=2, offset_seconds=10),
     ]
-    tool, versions, sandbox = _build_tool(workspace_entities=[ws], version_rows=rows)
+    tool, versions, sandbox = _build_tool(
+        workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(relative_path="a.txt", workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -218,7 +229,9 @@ async def test_history_per_path_calls_enforce_and_narrow_query() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_filters_sandbox_denied_rows_when_no_path() -> None:
+async def test_history_filters_sandbox_denied_rows_when_no_path(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """workspace-wide history drops rows whose path fails sandbox read."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     rows = [
@@ -230,6 +243,7 @@ async def test_history_filters_sandbox_denied_rows_when_no_path() -> None:
         workspace_entities=[ws],
         version_rows=rows,
         deny_reads=["secret.env"],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(workspace="ws")
     assert result.success is True
@@ -238,13 +252,16 @@ async def test_history_filters_sandbox_denied_rows_when_no_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_sandbox_denied_relative_path_returns_clean_error() -> None:
+async def test_history_sandbox_denied_relative_path_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """per-path history with a denied read path surfaces a clean error."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     tool, _versions, _sandbox = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="secret.env", version=1)],
         deny_reads=["secret.env"],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="secret.env", workspace="ws")
     assert result.success is False
@@ -253,12 +270,15 @@ async def test_history_sandbox_denied_relative_path_returns_clean_error() -> Non
 
 
 @pytest.mark.asyncio
-async def test_history_limit_is_capped_at_max() -> None:
+async def test_history_limit_is_capped_at_max(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """out-of-range limit is clamped to max (500)."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     tool, versions, _ = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="a", version=1)],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(workspace="ws", limit=10_000)
     assert result.success is True
@@ -266,12 +286,15 @@ async def test_history_limit_is_capped_at_max() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_limit_is_clamped_to_at_least_one() -> None:
+async def test_history_limit_is_clamped_to_at_least_one(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """zero/negative limit is clamped to the floor of 1."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     tool, versions, _ = _build_tool(
         workspace_entities=[ws],
         version_rows=[_row(relative_path="a", version=1)],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(workspace="ws", limit=0)
     assert result.success is True
@@ -279,9 +302,13 @@ async def test_history_limit_is_clamped_to_at_least_one() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_unknown_workspace_returns_clean_error() -> None:
+async def test_history_unknown_workspace_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unknown workspace name yields clean error."""
-    tool, _versions, _ = _build_tool(workspace_entities=[], version_rows=[])
+    tool, _versions, _ = _build_tool(
+        workspace_entities=[], version_rows=[], acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(workspace="ghost")
     assert result.success is False
     assert result.error is not None
@@ -293,18 +320,24 @@ async def test_history_unknown_workspace_returns_clean_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_history_mcp_name_is_exact_string() -> None:
+def test_history_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         version_rows=[],
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.history"
 
 
-def test_history_mcp_schema_shape() -> None:
+def test_history_mcp_schema_shape(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         version_rows=[],
+        acl_cache=permissive_acl_cache,
     )
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)

@@ -24,6 +24,10 @@ from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import audit
+from threetears.agent.workspace.authorize import (
+    AclCacheLike,
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -39,6 +43,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     _resolve_workspace,
     _write_file_atomic,
+    authorize_workspace,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
 
@@ -104,6 +109,7 @@ class FsEditTool(TearsTool):
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
+        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, context, agent, and pool.
@@ -140,6 +146,7 @@ class FsEditTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -167,6 +174,12 @@ class FsEditTool(TearsTool):
                 self._context_provider(),
                 self._workspaces,
                 self._agent_id,
+            )
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
             )
             self._sandbox.enforce("write", relative_path)
             if find_str == "":
@@ -274,6 +287,8 @@ class FsEditTool(TearsTool):
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
             result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
@@ -346,6 +361,7 @@ def _build(**kwargs: Any) -> FsEditTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        acl_cache=kwargs.get("acl_cache"),
     )
 
 

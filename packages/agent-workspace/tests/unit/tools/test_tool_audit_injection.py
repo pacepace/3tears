@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -215,7 +216,9 @@ def _subject(nats: _FakeNats) -> str:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_publishes_audit_on_success() -> None:
+async def test_fs_write_publishes_audit_on_success(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """fs_write success path emits one workspace.fs_write audit event."""
     agent_id = uuid4()
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -231,6 +234,7 @@ async def test_fs_write_publishes_audit_on_success() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
@@ -250,7 +254,9 @@ async def test_fs_write_publishes_audit_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_success_preserved_when_publish_raises() -> None:
+async def test_fs_write_success_preserved_when_publish_raises(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """raising NATS publish does not break the tool's success return."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
@@ -265,6 +271,7 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
@@ -276,7 +283,9 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
+async def test_fs_edit_publishes_audit_with_occurrence_count(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """fs_edit audit details include occurrences, bytes, and sha pair."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1)
@@ -295,6 +304,7 @@ async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", find="foo", replace="qux", workspace="ws")
     assert result.success is True, result.error
@@ -313,7 +323,9 @@ async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
+async def test_doc_set_publishes_audit_with_jsonpath_and_value(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """doc_set audit details carry jsonpath + value + sha pair."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(
@@ -337,6 +349,7 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(
         relative_path="config.yaml",
@@ -360,7 +373,9 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_publishes_audit_with_partial_keys() -> None:
+async def test_doc_merge_publishes_audit_with_partial_keys(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """doc_merge audit details list merged top-level keys."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(
@@ -384,6 +399,7 @@ async def test_doc_merge_publishes_audit_with_partial_keys() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(
         relative_path="config.yaml",
@@ -444,7 +460,10 @@ async def test_workspace_create_publishes_audit(
 
 
 @pytest.mark.asyncio
-async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
+async def test_workspace_reset_publishes_audit(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """reset emits workspace.reset with template_name and files_changed."""
     template_dir = tmp_path / "starter"
     template_dir.mkdir()
@@ -463,6 +482,7 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="seed")
     assert result.success is True, result.error
@@ -484,6 +504,7 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_workspace_delete_publishes_audit(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """soft-delete emits workspace.delete audit."""
     ws_id = uuid4()
@@ -510,6 +531,7 @@ async def test_workspace_delete_publishes_audit(
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="bye")
     assert result.success is True, result.error
@@ -527,7 +549,9 @@ async def test_workspace_delete_publishes_audit(
 
 
 @pytest.mark.asyncio
-async def test_workspace_rollback_publishes_single_audit_event() -> None:
+async def test_workspace_rollback_publishes_single_audit_event(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """rollback_to emits exactly one audit event with files_changed count."""
     ws_id = uuid4()
     ws = _FakeWorkspaceEntity(id=ws_id, name="ws", current_version=5)
@@ -556,6 +580,7 @@ async def test_workspace_rollback_publishes_single_audit_event() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(ref="head", workspace="ws")
     assert result.success is True, result.error

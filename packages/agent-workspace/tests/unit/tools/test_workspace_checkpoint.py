@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -148,6 +149,7 @@ def _build_tool(
     *,
     workspace_entities: list[_FakeWorkspaceEntity],
     files: list[_FakeFileEntity],
+    acl_cache: Any,
     agent_id: UUID | None = None,
 ) -> tuple[WorkspaceCheckpointTool, _FakePool, UUID]:
     workspaces = _FakeWorkspaceCollection(workspace_entities)
@@ -161,6 +163,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=aid,
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, aid
 
@@ -171,7 +174,9 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_inserts_one_journal_row_per_current_file() -> None:
+async def test_checkpoint_inserts_one_journal_row_per_current_file(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """N head files -> N journal rows with action='checkpoint' and label."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     files = [
@@ -188,7 +193,9 @@ async def test_checkpoint_inserts_one_journal_row_per_current_file() -> None:
             version=1,
         ),
     ]
-    tool, pool, aid = _build_tool(workspace_entities=[ws], files=files)
+    tool, pool, aid = _build_tool(
+        workspace_entities=[ws], files=files, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(label="v1.0", workspace="ws")
     assert result.success is True, result.error
     assert "2 files" in result.content
@@ -217,10 +224,14 @@ async def test_checkpoint_inserts_one_journal_row_per_current_file() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_empty_workspace_reports_zero_files() -> None:
+async def test_checkpoint_empty_workspace_reports_zero_files(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no head files -> zero journal rows, success=True with zero-count text."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, pool, _ = _build_tool(
+        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(label="empty", workspace="ws")
     assert result.success is True, result.error
     assert "0 files" in result.content
@@ -236,10 +247,14 @@ async def test_checkpoint_empty_workspace_reports_zero_files() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_rejects_empty_label() -> None:
+async def test_checkpoint_rejects_empty_label(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """empty label returns clean error; no pool activity."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, pool, _ = _build_tool(
+        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(label="", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -248,9 +263,13 @@ async def test_checkpoint_rejects_empty_label() -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_unknown_workspace_returns_clean_error() -> None:
+async def test_checkpoint_unknown_workspace_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unknown workspace name -> clean error."""
-    tool, _pool, _ = _build_tool(workspace_entities=[], files=[])
+    tool, _pool, _ = _build_tool(
+        workspace_entities=[], files=[], acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(label="v1", workspace="ghost")
     assert result.success is False
     assert result.error is not None
@@ -273,18 +292,24 @@ def test_checkpoint_constructor_has_no_sandbox_parameter() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_checkpoint_mcp_name_is_exact_string() -> None:
+def test_checkpoint_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         files=[],
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.checkpoint"
 
 
-def test_checkpoint_mcp_schema_shape() -> None:
+def test_checkpoint_mcp_schema_shape(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         files=[],
+        acl_cache=permissive_acl_cache,
     )
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)

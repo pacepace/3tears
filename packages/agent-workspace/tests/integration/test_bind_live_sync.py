@@ -58,6 +58,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 async def test_bind_live_watcher_imports_external_write(
     tmp_path: Path,
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """mid-bind external write lands in L3 via the live watcher helper.
 
@@ -135,6 +136,7 @@ async def test_bind_live_watcher_imports_external_write(
             sandbox=sandbox,
             context_provider=lambda: fx.context,
             agent_id=fx.agent_id,
+            acl_cache=permissive_acl_cache,
         )
         # pin the workspace so fs_read resolves it without an explicit arg.
         from threetears.agent.workspace import pin as pin_module

@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -154,6 +155,7 @@ class _FakePool:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     files: list[_FakeFileEntity] | None = None,
     head_row: dict[str, Any] | None = None,
     deny_writes: list[str] | None = None,
@@ -172,6 +174,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox
 
@@ -182,7 +185,9 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_happy_replaces_all_occurrences_and_writes() -> None:
+async def test_fs_edit_happy_replaces_all_occurrences_and_writes(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """find replaces ALL occurrences; three writes land under one transaction."""
     text = "foo bar foo baz foo"
     existing = _FakeFileEntity(
@@ -192,7 +197,9 @@ async def test_fs_edit_happy_replaces_all_occurrences_and_writes() -> None:
         version=1,
     )
     head = {"content": text.encode("utf-8"), "sha256": "a" * 64, "version": 1}
-    tool, pool, sandbox = _build_tool(files=[existing], head_row=head)
+    tool, pool, sandbox = _build_tool(
+        files=[existing], head_row=head, acl_cache=permissive_acl_cache
+    )
     pool.conn.journal_max_version = 1
 
     result = await tool.execute(
@@ -226,8 +233,10 @@ async def test_fs_edit_happy_replaces_all_occurrences_and_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_missing_file_returns_clean_error() -> None:
-    tool, pool, _ = _build_tool(files=[])
+async def test_fs_edit_missing_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, pool, _ = _build_tool(files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="missing.md", find="x", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -238,9 +247,11 @@ async def test_fs_edit_missing_file_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_find_empty_returns_clean_error() -> None:
+async def test_fs_edit_find_empty_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     existing = _FakeFileEntity(relative_path="a.md", content=b"x", sha256="a" * 64, version=1)
-    tool, pool, _ = _build_tool(files=[existing])
+    tool, pool, _ = _build_tool(files=[existing], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.md", find="", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -249,14 +260,16 @@ async def test_fs_edit_find_empty_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_find_missing_from_content_returns_clean_error() -> None:
+async def test_fs_edit_find_missing_from_content_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     existing = _FakeFileEntity(
         relative_path="a.md",
         content=b"hello world",
         sha256="a" * 64,
         version=1,
     )
-    tool, pool, _ = _build_tool(files=[existing])
+    tool, pool, _ = _build_tool(files=[existing], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.md", find="missing", replace="x", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -265,7 +278,9 @@ async def test_fs_edit_find_missing_from_content_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_binary_file_returns_clean_error() -> None:
+async def test_fs_edit_binary_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """non-UTF-8 content is refused with explicit binary error."""
     existing = _FakeFileEntity(
         relative_path="logo.png",
@@ -273,7 +288,7 @@ async def test_fs_edit_binary_file_returns_clean_error() -> None:
         sha256="a" * 64,
         version=1,
     )
-    tool, pool, _ = _build_tool(files=[existing])
+    tool, pool, _ = _build_tool(files=[existing], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="logo.png", find="x", replace="y", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -282,7 +297,9 @@ async def test_fs_edit_binary_file_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_stale_sha256_returns_mismatch_error() -> None:
+async def test_fs_edit_stale_sha256_returns_mismatch_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """stale expected_sha256 on a good find -> clean mismatch error."""
     text = "hello"
     existing = _FakeFileEntity(
@@ -292,7 +309,9 @@ async def test_fs_edit_stale_sha256_returns_mismatch_error() -> None:
         version=1,
     )
     head = {"content": text.encode("utf-8"), "sha256": "c" * 64, "version": 1}
-    tool, pool, _ = _build_tool(files=[existing], head_row=head)
+    tool, pool, _ = _build_tool(
+        files=[existing], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="a.md",
@@ -310,7 +329,9 @@ async def test_fs_edit_stale_sha256_returns_mismatch_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_sandbox_denied_never_reads_or_writes() -> None:
+async def test_fs_edit_sandbox_denied_never_reads_or_writes(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied on write -> gate-then-act; no collection or pool touches."""
     existing = _FakeFileEntity(
         relative_path="secret.env",
@@ -318,7 +339,9 @@ async def test_fs_edit_sandbox_denied_never_reads_or_writes() -> None:
         sha256="a" * 64,
         version=1,
     )
-    tool, pool, sandbox = _build_tool(files=[existing], deny_writes=["secret.env"])
+    tool, pool, sandbox = _build_tool(
+        files=[existing], deny_writes=["secret.env"], acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(
         relative_path="secret.env",
         find="TOKEN=",
@@ -338,13 +361,17 @@ async def test_fs_edit_sandbox_denied_never_reads_or_writes() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fs_edit_mcp_name_is_exact_string() -> None:
-    tool, _, _ = _build_tool()
+def test_fs_edit_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.fs_edit"
 
 
-def test_fs_edit_mcp_schema_declares_required_fields() -> None:
-    tool, _, _ = _build_tool()
+def test_fs_edit_mcp_schema_declares_required_fields(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == [

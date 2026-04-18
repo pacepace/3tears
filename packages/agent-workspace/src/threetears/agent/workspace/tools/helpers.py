@@ -35,6 +35,7 @@ __all__ = [
     "NoWorkspacePinned",
     "Sha256Mismatch",
     "WorkspaceNotFound",
+    "authorize_workspace",
     "enrich_workspace_identity",
 ]
 
@@ -141,6 +142,75 @@ class Sha256Mismatch(RuntimeError):
 _SELECT_NAMESPACE_CUSTOMER_SQL = (
     "SELECT customer_id FROM platform.namespaces WHERE id = $1"
 )
+
+
+async def authorize_workspace(
+    workspace: Workspace,
+    operation: Literal["read", "write"],
+    *,
+    db_pool: Any,
+    acl_cache: Any,
+) -> None:
+    """convenience wrapper: enrich identity then authorize via shared cache.
+
+    every workspace tool's ``execute`` calls this once per dispatch,
+    immediately after :func:`_resolve_workspace`. both ``acl_cache``
+    and an installed :class:`ToolCallScope` are REQUIRED -- there is
+    no "skip authorization" path (WS-ACL-05 is a hard requirement).
+    tests must inject a mock cache and wrap the dispatch in
+    :func:`enter_call_scope`; production wiring always supplies
+    both. ``db_pool`` may be None to skip the identity-enrichment
+    fetch -- the cache then sees a ``customer_id`` of ``None`` and
+    rejects the call as unroutable, which is the desired behavior
+    for tools called from harnesses that pre-stamped the entity.
+
+    :param workspace: resolved workspace entity
+    :ptype workspace: Workspace
+    :param operation: ``"read"`` or ``"write"``; passed verbatim to
+        :func:`authorize_workspace_access`
+    :ptype operation: Literal["read", "write"]
+    :param db_pool: asyncpg-like pool for the platform.namespaces
+        lookup; may be ``None`` to skip enrichment
+    :ptype db_pool: Any
+    :param acl_cache: shared :class:`AclCache`-shaped object.
+        REQUIRED; ``None`` is rejected with a clear error naming
+        the call site that failed to wire it
+    :ptype acl_cache: Any
+    :return: None
+    :rtype: None
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed
+        (the tool was dispatched outside a call-scope context) or
+        ``acl_cache`` was not supplied by the factory
+    :raises WorkspaceAccessDenied: on any denial path
+    """
+    # local imports keep this module cheap when tools only need
+    # _resolve_workspace or _write_file_atomic.
+    from threetears.agent.tools.call_scope import current_scope
+
+    from threetears.agent.workspace.authorize import authorize_workspace_access
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "authorize_workspace called outside a ToolCallScope; every tool "
+            "dispatch must enter_call_scope before executing. tests should "
+            "wrap the tool invocation in enter_call_scope(ToolCallScope(...))."
+        )
+    if acl_cache is None:
+        raise RuntimeError(
+            "authorize_workspace called with acl_cache=None; the tool factory "
+            "must supply a live AclCache and tests must inject a cache mock "
+            "(e.g. MagicMock(spec=AclCacheLike))."
+        )
+    if db_pool is not None:
+        await enrich_workspace_identity(workspace, db_pool)
+    await authorize_workspace_access(
+        scope,
+        workspace,
+        operation,
+        acl_cache=acl_cache,
+    )
+    return None
 
 
 async def enrich_workspace_identity(

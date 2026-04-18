@@ -49,6 +49,7 @@ if str(_THIS_DIR) not in sys.path:
 
 async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_untouched(
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """
     validator rejects content; tool returns ``success=False``; no DB write.
@@ -94,6 +95,7 @@ async def test_fs_write_on_rejected_content_returns_failure_and_leaves_store_unt
         agent_id=fx.agent_id,
         db_pool=fx.pool,
         validators=config.validators,
+        acl_cache=permissive_acl_cache,
     )
 
     # load the fixture content (which contains audience_units:).

@@ -13,6 +13,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import pytest
@@ -328,7 +329,10 @@ class _FakeContext:
 
 
 @pytest.mark.asyncio
-async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
+async def test_refresh_happy_path_imports_disk_files(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """files on disk not in L3 are imported as create at version 1.
 
     :param tmp_path: scratch root from pytest
@@ -360,6 +364,7 @@ async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")
@@ -379,6 +384,7 @@ async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_refresh_no_bind_root_returns_clean_error(
     tmp_path: Path,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """sandbox missing ``bind`` root yields ``success=False`` with useful message.
 
@@ -405,6 +411,7 @@ async def test_refresh_no_bind_root_returns_clean_error(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")
@@ -414,7 +421,10 @@ async def test_refresh_no_bind_root_returns_clean_error(
 
 
 @pytest.mark.asyncio
-async def test_refresh_idempotent_on_unchanged_files(tmp_path: Path) -> None:
+async def test_refresh_idempotent_on_unchanged_files(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """repeated refresh on unchanged files performs no writes.
 
     :param tmp_path: scratch root from pytest
@@ -451,6 +461,7 @@ async def test_refresh_idempotent_on_unchanged_files(tmp_path: Path) -> None:
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")

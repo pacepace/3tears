@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -171,6 +172,7 @@ class _FakePool:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     workspace_entities: list[_FakeWorkspaceEntity] | None = None,
     files: list[_FakeFileEntity] | None = None,
     head_row: dict[str, Any] | None = None,
@@ -194,6 +196,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox, agent_id
 
@@ -208,7 +211,9 @@ def _audience_yaml_bytes() -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_adds_new_top_level_key_preserves_structure() -> None:
+async def test_doc_merge_adds_new_top_level_key_preserves_structure(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """merge a new top-level key into audience YAML; existing keys intact."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -220,7 +225,9 @@ async def test_doc_merge_adds_new_top_level_key_preserves_structure() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -242,7 +249,9 @@ async def test_doc_merge_adds_new_top_level_key_preserves_structure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_replaces_list_wholesale_per_handler_contract() -> None:
+async def test_doc_merge_replaces_list_wholesale_per_handler_contract(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """list-valued merge replaces wholesale per YamlHandler semantics.
 
     YamlHandler's merge substitutes lists (and scalars) wholesale rather
@@ -258,7 +267,9 @@ async def test_doc_merge_replaces_list_wholesale_per_handler_contract() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -277,7 +288,9 @@ async def test_doc_merge_replaces_list_wholesale_per_handler_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_deep_merges_nested_mappings() -> None:
+async def test_doc_merge_deep_merges_nested_mappings(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """mapping-in-mapping merges recursively rather than replacing."""
     initial_yaml = ("settings:\n    existing: keep-me\n    nested:\n        a: 1\n").encode("utf-8")
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -289,7 +302,9 @@ async def test_doc_merge_deep_merges_nested_mappings() -> None:
         version=1,
     )
     head = {"content": initial_yaml, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="settings.yaml",
@@ -312,7 +327,9 @@ async def test_doc_merge_deep_merges_nested_mappings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_partial_not_a_dict_returns_clean_error() -> None:
+async def test_doc_merge_partial_not_a_dict_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """non-dict partial rejected at the tool boundary with clean error."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -323,7 +340,9 @@ async def test_doc_merge_partial_not_a_dict_returns_clean_error() -> None:
         sha256=sha_initial,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     # tool called directly with a scalar; schema validator is upstream of
     # .execute in normal flows but direct call must still reject cleanly.
@@ -347,7 +366,9 @@ async def test_doc_merge_partial_not_a_dict_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_sandbox_denied_returns_clean_error_no_writes() -> None:
+async def test_doc_merge_sandbox_denied_returns_clean_error_no_writes(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied -> clean error; no DB reads or writes happened."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -360,6 +381,7 @@ async def test_doc_merge_sandbox_denied_returns_clean_error_no_writes() -> None:
         workspace_entities=[ws],
         files=[file_entity],
         deny_writes=["secret.yaml"],
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(
@@ -382,7 +404,9 @@ async def test_doc_merge_sandbox_denied_returns_clean_error_no_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_stale_expected_sha_returns_mismatch_error() -> None:
+async def test_doc_merge_stale_expected_sha_returns_mismatch_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """expected_sha256 != current sha -> clean error naming current sha."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -394,7 +418,9 @@ async def test_doc_merge_stale_expected_sha_returns_mismatch_error() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_current, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -417,7 +443,9 @@ async def test_doc_merge_stale_expected_sha_returns_mismatch_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_unknown_format_returns_clean_error() -> None:
+async def test_doc_merge_unknown_format_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """file with unregistered suffix -> clean error; no DB activity."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -426,7 +454,9 @@ async def test_doc_merge_unknown_format_returns_clean_error() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="notes.txt",
@@ -448,10 +478,14 @@ async def test_doc_merge_unknown_format_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_missing_file_returns_clean_error() -> None:
+async def test_doc_merge_missing_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no head row -> clean error naming file and workspace, no writes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -472,7 +506,9 @@ async def test_doc_merge_missing_file_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_writes_inside_single_transaction() -> None:
+async def test_doc_merge_writes_inside_single_transaction(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """every execute + fetchrow happens inside one transaction."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -484,7 +520,9 @@ async def test_doc_merge_writes_inside_single_transaction() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     await tool.execute(
         relative_path="audience_settings.yaml",
@@ -504,13 +542,17 @@ async def test_doc_merge_writes_inside_single_transaction() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_doc_merge_mcp_name_is_exact_string() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_merge_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.doc_merge"
 
 
-def test_doc_merge_mcp_schema_requires_path_and_partial() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_merge_mcp_schema_requires_path_and_partial(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == ["relative_path", "partial"]
