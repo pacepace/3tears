@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-agent-memory",
+    "3tears-conversations",
     "langchain-core",
     "httpx",
 ]
@@ -52,3 +53,4 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-agent-memory = { workspace = true }
+3tears-conversations = { workspace = true }

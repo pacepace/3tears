@@ -1,24 +1,15 @@
-"""workspace schema migrations.
+"""
+agent-workspace v001: create workspaces, workspace_files, workspace_file_versions.
 
-migrations run against a DataStore bound to a per-agent YugabyteDB schema
-via search_path. tables are therefore created unqualified; the schema is
-supplied by the L3 layer at execution time.
-
-the shard's sketch used a schema= kwarg on the version decorator -- the
-real MigrationRunner.version(n) takes only an int. the migration body
-receives the DataStore and executes SQL via store.execute().
-
-typical use::
-
-    from threetears.agent.workspace.migrations import register_workspace_migrations
-
-    runner = register_workspace_migrations(store)
-    await runner.apply()
+migrations run against a DataStore bound to a per-agent YugabyteDB
+schema via search_path. statements are therefore unqualified and
+idempotent via ``CREATE TABLE IF NOT EXISTS`` so replay on recovery is
+safe. this is the migration translated from the workspace-task-05
+baseline shipped in the former package-local runner.
 """
 
 from __future__ import annotations
 
-from threetears.core.data.migrations import MigrationRunner
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -79,16 +70,14 @@ _CREATE_WORKSPACE_FILE_VERSIONS_HISTORY_IDX_SQL = (
     "ON workspace_file_versions (workspace_id, date_created)"
 )
 
-_ADD_DATE_DELETED_COLUMN_SQL = "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
-
 
 async def create_workspace_tables(store: DataStore) -> None:
     """
-    creates workspace, workspace_file, and workspace_file_version tables.
+    create workspaces, workspace_files, workspace_file_versions tables.
 
-    migration runs in per-agent schema bound via search_path by the L3 layer;
-    statements are therefore unqualified. idempotent via IF NOT EXISTS so
-    replay during recovery does not fail.
+    migration runs in per-agent schema bound via search_path by the L3
+    layer; statements are unqualified and idempotent via IF NOT EXISTS
+    so replay during recovery does not fail.
 
     :param store: DataStore bound to per-agent schema
     :ptype store: DataStore
@@ -99,38 +88,3 @@ async def create_workspace_tables(store: DataStore) -> None:
     await store.execute(_CREATE_WORKSPACE_FILES_WORKSPACE_IDX_SQL)
     await store.execute(_CREATE_WORKSPACE_FILE_VERSIONS_SQL)
     await store.execute(_CREATE_WORKSPACE_FILE_VERSIONS_HISTORY_IDX_SQL)
-
-
-async def add_date_deleted_column(store: DataStore) -> None:
-    """
-    adds nullable date_deleted column to workspaces for soft-delete support.
-
-    idempotent via IF NOT EXISTS so replay during recovery does not fail
-    even when the column already exists from a fresh-install path that
-    chose to bake it into the v1 CREATE TABLE.
-
-    :param store: DataStore bound to per-agent schema
-    :ptype store: DataStore
-    """
-    log.info("adding date_deleted column to workspaces")
-    await store.execute(_ADD_DATE_DELETED_COLUMN_SQL)
-
-
-def register_workspace_migrations(store: DataStore) -> MigrationRunner:
-    """
-    builds MigrationRunner bound to store and registers workspace migrations.
-
-    caller invokes runner.apply() to execute pending migrations. this module
-    owns version assignment for the agent-workspace package; version 1 is
-    the initial schema described in workspace-task-05; version 2 adds the
-    date_deleted column to workspaces for soft-delete (workspace-task-10).
-
-    :param store: DataStore bound to per-agent schema
-    :ptype store: DataStore
-    :return: configured MigrationRunner ready for apply()
-    :rtype: MigrationRunner
-    """
-    runner = MigrationRunner(store)
-    runner.version(1)(create_workspace_tables)
-    runner.version(2)(add_date_deleted_column)
-    return runner

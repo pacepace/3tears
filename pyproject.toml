@@ -27,6 +27,10 @@ dev-dependencies = [
     "slack-sdk>=3.41",
     "aiohttp>=3.9",
     "discord.py>=2.7",
+    # testcontainers used by the migration runner integration tests to
+    # exercise real Postgres (rollback semantics cannot be verified
+    # against the in-memory FakeDataStore).
+    "testcontainers[postgres]>=4.0",
 ]
 
 [tool.ruff]
@@ -36,6 +40,9 @@ target-version = "py314"
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that require docker-backed services; run with -m integration",
+]
 
 [tool.mypy]
 strict = true
@@ -48,6 +55,7 @@ mypy_path = [
     "packages/agent-tools/src",
     "packages/agent-workspace/src",
     "packages/channels/src",
+    "packages/conversations/src",
     "packages/models/src",
     "packages/observe/src",
     "packages/langgraph/src",
@@ -61,6 +69,7 @@ files = [
     "packages/agent-tools/src",
     "packages/agent-workspace/src",
     "packages/channels/src",
+    "packages/conversations/src",
     "packages/models/src",
     "packages/observe/src",
     "packages/langgraph/src",

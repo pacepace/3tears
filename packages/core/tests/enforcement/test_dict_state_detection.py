@@ -59,10 +59,16 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "registry of collection instances, IS the infrastructure",
     ),
     (
-        "core/data/migrations.py",
+        "core/data/migrations/runner.py",
         "MigrationRunner",
-        "_migrations",
-        "static config, migration functions registered once at startup",
+        "_packages",
+        "static config, PackageMigrations registered once at startup",
+    ),
+    (
+        "core/data/migrations/registry.py",
+        "PackageMigrations",
+        "_versions",
+        "static config, migration callables registered once at startup",
     ),
     # -- core: L1/L2 cache backends (non-serializable connection state) --
     (

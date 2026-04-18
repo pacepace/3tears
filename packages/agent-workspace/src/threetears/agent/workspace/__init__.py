@@ -21,7 +21,10 @@ from threetears.agent.workspace.factory import build_workspace_tools
 from threetears.agent.workspace.handlers import YamlHandler
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.agent.workspace.materialize import bind, materialize, recover
-from threetears.agent.workspace.migrations import create_workspace_tables, register_workspace_migrations
+from threetears.agent.workspace.migrations import (
+    create_workspace_tables,
+    register as register_workspace_migrations,
+)
 from threetears.agent.workspace.pin import PinnedWorkspace, clear_pin, get_pin, set_pin
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.validators import WorkspaceValidationError
