@@ -25,6 +25,11 @@ from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 class _FakeWorkspaceEntity:
     """minimal stand-in for :class:`Workspace` for reset-target lookups."""
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
     id: UUID
     name: str
     template_name: str | None
@@ -111,7 +116,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         self.transaction_calls += 1
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)

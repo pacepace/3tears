@@ -51,6 +51,11 @@ def _sha256(data: bytes) -> str:
 class _FakeWorkspace:
     """minimal stand-in exposing only the ``id`` attribute ``_capture_back`` reads."""
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
     id: UUID
 
 
@@ -89,7 +94,7 @@ class _FakeConnection:
     transaction_open: bool = False
     journal_max_by_path: dict[tuple[UUID, str], int] = field(default_factory=dict)
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx

@@ -27,6 +27,11 @@ class _FakeWorkspaceEntity:
     name: str
     date_deleted: Any = None
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
@@ -86,7 +91,7 @@ class _FakeConnection:
     script: dict[tuple[str, Any], dict[str, Any] | None] = field(default_factory=dict)
     fetchrows: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         # selector: last positional matches the ref shape
         # for head: args = (ws_id, path)

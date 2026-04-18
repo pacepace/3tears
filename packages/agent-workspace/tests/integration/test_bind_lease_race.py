@@ -50,6 +50,11 @@ class _FakeWorkspace:
     current_version: int = 0
     date_deleted: datetime | None = None
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 @dataclass
 class _FakeFile:
@@ -109,7 +114,7 @@ class _FakeConnection:
     executions: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         return _FakeTransaction(parent=self)
 
     async def execute(self, query: str, *args: Any) -> str:

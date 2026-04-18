@@ -208,6 +208,7 @@ class WorkspaceResetTool(TearsTool):
                 )
                 n_changed = await self._apply_reset(
                     workspace_id=workspace.id,
+                    namespace_name=workspace.namespace_name,
                     current_version=workspace.current_version,
                     template_files=template_files,
                     current_files=[(f.relative_path, f.content, f.sha256) for f in current_files],
@@ -314,6 +315,7 @@ class WorkspaceResetTool(TearsTool):
         self,
         *,
         workspace_id: UUID,
+        namespace_name: str,
         current_version: int,
         template_files: list[tuple[str, bytes, str]],
         current_files: list[tuple[str, bytes, str]],
@@ -324,6 +326,11 @@ class WorkspaceResetTool(TearsTool):
 
         :param workspace_id: identifier of workspace being reset
         :ptype workspace_id: UUID
+        :param namespace_name: canonical workspace namespace name
+            (``workspace.<uuid>``); threaded onto the tx via
+            ``conn.transaction(namespace=...)`` so every statement
+            lands in the owner agent's schema on grantee resets
+        :ptype namespace_name: str
         :param current_version: workspace's current head version pointer
         :ptype current_version: int
         :param template_files: triples loaded from the template directory
@@ -352,8 +359,10 @@ class WorkspaceResetTool(TearsTool):
                 content, _sha = template_by_path[relative]
                 dispatch_validators(self._validators, relative, content)
 
+        # WS-ACL-06: bind the tx to the workspace's namespace so reset
+        # writes land in the OWNER agent's schema on grantee resets.
         async with self._db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=namespace_name):
                 for relative in sorted(revert_paths):
                     content, sha = template_by_path[relative]
                     await self._upsert_file(conn, workspace_id, relative, content, sha, new_version, now)

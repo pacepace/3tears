@@ -63,6 +63,11 @@ class _FakeWorkspaceEntity:
     owner_agent_id: UUID = field(default_factory=uuid4)
     customer_id: UUID | None = field(default_factory=uuid4)
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
@@ -154,16 +159,16 @@ class _FakeConnection:
     head_row: dict[str, Any] | None = None
     journal_max_version: int = 0
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx
 
-    async def execute(self, query: str, *args: Any) -> str:
+    async def execute(self, query: str, *args: Any, namespace: Any = None) -> str:
         self.executions.append((query, args, self.transaction_open))
         return "INSERT 0 1"
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         """dispatch by SQL shape: journal-max SELECT returns a row with
         ``max_version``; head SELECT (and any fallback) returns ``head_row``.
         """

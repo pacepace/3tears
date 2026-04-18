@@ -590,8 +590,16 @@ async def _write_file_atomic(
     new_sha256 = hashlib.sha256(content).hexdigest()
     now = datetime.now(UTC)
 
+    # WS-ACL-06: bind the tx session to the workspace's namespace so
+    # the broker resolves ``SET search_path`` to the OWNER agent's
+    # schema on every statement below. owner and grantee paths run
+    # the same SQL against the same physical storage; only the ACL
+    # check at authorize time differentiates them. pools lacking the
+    # ``namespace=`` kwarg (test fakes, direct asyncpg) ignore the
+    # keyword because they bind search_path elsewhere; the production
+    # NatsProxyL3Backend honors it.
     async with db_pool.acquire() as conn:
-        async with conn.transaction():
+        async with conn.transaction(namespace=workspace.namespace_name):
             head = await conn.fetchrow(_SELECT_HEAD_SQL, workspace.id, relative_path)
             current_sha: str | None = None if head is None else head["sha256"]
             if expected_sha256 is not None and current_sha != expected_sha256:
@@ -667,6 +675,8 @@ async def _resolve_ref(
     workspace_id: UUID,
     relative_path: str,
     ref: str | int,
+    *,
+    namespace_name: str | None = None,
 ) -> dict[str, Any] | None:
     """resolve a history-tool ``ref`` against the journal for a single path.
 
@@ -690,6 +700,14 @@ async def _resolve_ref(
     ``_write_file_atomic`` call awkward when the row comes from a
     checkpoint that never touched the head cache).
 
+    WS-ACL-06: ``namespace_name`` routes the outside-tx lookups to the
+    owner agent's schema. when the connection is already pinned to a
+    tx (``conn.tx_id`` set), per-statement ``namespace=`` is rejected
+    by the proxy; the helper detects that case and omits the kwarg so
+    the tx session's already-bound namespace applies. outside a tx the
+    kwarg rides on every fetchrow so grantee rollback / diff queries
+    land in the owner's schema.
+
     :param conn: live asyncpg-like connection already enrolled in the
         caller's transaction (or a raw acquired connection for read-only
         callers)
@@ -701,24 +719,55 @@ async def _resolve_ref(
     :param ref: ``"head"``, integer version, digit-only string, or
         checkpoint label
     :ptype ref: str | int
+    :param namespace_name: canonical workspace namespace
+        (``workspace.<uuid>``) passed as ``namespace=`` to the
+        outside-tx fetchrow calls so grantee reads route correctly
+    :ptype namespace_name: str | None
     :return: journal row as dict, or None when no row matches
     :rtype: dict[str, Any] | None
     """
+    # inside-tx callers must not pass namespace= on per-statement calls
+    # (the proxy rejects it). detect the pinned state by reading
+    # ``tx_id``; connections without that attribute (raw asyncpg) are
+    # always outside-tx so the kwarg flows through.
+    inside_tx = getattr(conn, "tx_id", None) is not None
+    kwargs: dict[str, Any] = (
+        {} if inside_tx or namespace_name is None
+        else {"namespace": namespace_name}
+    )
     result: dict[str, Any] | None
     row: Any
     if isinstance(ref, int):
-        row = await conn.fetchrow(_SELECT_VERSION_BY_NUMBER_SQL, workspace_id, relative_path, ref)
+        row = await conn.fetchrow(
+            _SELECT_VERSION_BY_NUMBER_SQL,
+            workspace_id,
+            relative_path,
+            ref,
+            **kwargs,
+        )
     elif ref == "head":
-        row = await conn.fetchrow(_SELECT_LATEST_VERSION_ROW_SQL, workspace_id, relative_path)
+        row = await conn.fetchrow(
+            _SELECT_LATEST_VERSION_ROW_SQL,
+            workspace_id,
+            relative_path,
+            **kwargs,
+        )
     elif ref.isdigit():
         row = await conn.fetchrow(
             _SELECT_VERSION_BY_NUMBER_SQL,
             workspace_id,
             relative_path,
             int(ref),
+            **kwargs,
         )
     else:
-        row = await conn.fetchrow(_SELECT_CHECKPOINT_ROW_SQL, workspace_id, relative_path, ref)
+        row = await conn.fetchrow(
+            _SELECT_CHECKPOINT_ROW_SQL,
+            workspace_id,
+            relative_path,
+            ref,
+            **kwargs,
+        )
     if row is None:
         result = None
     else:

@@ -28,6 +28,11 @@ class _FakeWorkspaceEntity:
     name: str
     date_deleted: Any = None
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
@@ -93,7 +98,7 @@ class _FakeConnection:
     # monotonically increasing value inside a single test invocation.
     _journal_max_by_path: dict[str, int] = field(default_factory=dict)
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx

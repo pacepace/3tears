@@ -129,6 +129,11 @@ class _StoredWorkspace:
         """return owning agent UUID (alias of :attr:`agent_id`)."""
         return self.agent_id
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeStore:
     """
@@ -378,7 +383,7 @@ class _FakeConnection:
     store: _FakeStore
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         return _FakeTransaction(parent=self)
 
     async def execute(self, query: str, *args: Any) -> str:

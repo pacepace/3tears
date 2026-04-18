@@ -520,16 +520,47 @@ class _SchemaBoundPool:
     schema, and references to ``platform.namespaces`` resolve.
     """
 
-    def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
-        """capture the pool + schema.
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        schema: str,
+        namespaces: dict[str, str] | None = None,
+    ) -> None:
+        """capture the pool + schema + namespace -> schema mapping.
 
         :param pool: underlying asyncpg pool
         :ptype pool: asyncpg.Pool
-        :param schema: owner agent schema name
+        :param schema: owner agent schema name bound by default on
+            each acquire (used for non-tx reads)
         :ptype schema: str
+        :param namespaces: optional mapping of workspace namespace
+            name -> schema name used to resolve
+            ``conn.transaction(namespace=...)`` to the right target
+            schema. absent mappings fall back to ``schema``.
+        :ptype namespaces: dict[str, str] | None
         """
         self._pool = pool
         self._schema = schema
+        self._namespaces = namespaces or {}
+
+    @property
+    def raw_pool(self) -> asyncpg.Pool:
+        """expose the underlying asyncpg pool for the tx acquire helper.
+
+        :return: underlying pool
+        :rtype: asyncpg.Pool
+        """
+        return self._pool
+
+    def resolve_namespace_schema(self, namespace: str) -> str:
+        """look up the target schema for a workspace namespace.
+
+        :param namespace: canonical namespace name
+        :ptype namespace: str
+        :return: schema name to bind into search_path
+        :rtype: str
+        """
+        return self._namespaces.get(namespace, self._schema)
 
     async def fetchrow(
         self,
@@ -606,20 +637,119 @@ class _SchemaBoundPool:
     def acquire(self) -> Any:
         """delegate to pool; caller sets search_path inside.
 
+        WS-ACL-06: the returned acquire CM yields a
+        :class:`_NamespaceTxWrapper` rather than the raw asyncpg
+        connection so the tools' ``conn.transaction(namespace=...)``
+        call dispatches to the schema-rebinding CM.
+
         :return: acquire context manager
         :rtype: Any
         """
-        return _SchemaBoundAcquire(self._pool, self._schema)
+        return _SchemaBoundAcquire(self, self._schema)
+
+
+class _NamespaceTxWrapper:
+    """wraps an asyncpg connection to honor ``.transaction(namespace=...)``.
+
+    the production :class:`_ProxyConnection` rebinds search_path to
+    the namespace's schema at tx.begin time. this test runs against
+    real asyncpg (no proxy), so we rebind search_path here at
+    ``transaction()`` entry when the caller supplies a workspace
+    namespace. absent a namespace the connection's already-bound
+    search_path (set at acquire time) is preserved.
+    """
+
+    def __init__(self, conn: asyncpg.Connection, pool: Any) -> None:
+        """capture the underlying connection.
+
+        :param conn: asyncpg connection
+        :ptype conn: asyncpg.Connection
+        :param pool: owning schema-bound pool (for namespace -> schema lookup)
+        :ptype pool: Any
+        """
+        self._conn = conn
+        self._pool = pool
+
+    def transaction(self, namespace: str | None = None) -> Any:
+        """return a transaction CM, optionally rebinding search_path.
+
+        :param namespace: workspace namespace name or None
+        :ptype namespace: str | None
+        :return: asyncpg transaction context manager
+        :rtype: Any
+        """
+        if namespace is not None:
+            target_schema = self._pool.resolve_namespace_schema(namespace)
+            # set search_path synchronously before tx.start; must be
+            # wrapped in a thin async CM because SET must await.
+            return _NamespaceTxCM(self._conn, target_schema)
+        return self._conn.transaction()
+
+    def __getattr__(self, name: str) -> Any:
+        """delegate everything else to the underlying connection.
+
+        :param name: attribute name
+        :ptype name: str
+        :return: delegated attribute
+        :rtype: Any
+        """
+        return getattr(self._conn, name)
+
+
+class _NamespaceTxCM:
+    """rebinds search_path on enter, then opens a real asyncpg tx."""
+
+    def __init__(self, conn: asyncpg.Connection, schema: str) -> None:
+        """capture conn + target schema.
+
+        :param conn: connection
+        :ptype conn: asyncpg.Connection
+        :param schema: target schema to bind
+        :ptype schema: str
+        """
+        self._conn = conn
+        self._schema = schema
+        self._tx: Any = None
+
+    async def __aenter__(self) -> Any:
+        """rebind search_path then start the tx.
+
+        :return: transaction object
+        :rtype: Any
+        """
+        await self._conn.execute(
+            f'SET search_path TO "{self._schema}", platform',
+        )
+        self._tx = self._conn.transaction()
+        return await self._tx.__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
+    ) -> None:
+        """commit / rollback via the underlying asyncpg transaction.
+
+        :param exc_type: exception type or None
+        :ptype exc_type: Any
+        :param exc_val: value or None
+        :ptype exc_val: Any
+        :param exc_tb: traceback or None
+        :ptype exc_tb: Any
+        """
+        if self._tx is not None:
+            await self._tx.__aexit__(exc_type, exc_val, exc_tb)
 
 
 class _SchemaBoundAcquire:
     """async CM binding search_path on a freshly-acquired connection."""
 
-    def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
+    def __init__(self, pool: Any, schema: str) -> None:
         """capture pool + schema.
 
-        :param pool: pool
-        :ptype pool: asyncpg.Pool
+        :param pool: pool (:class:`_SchemaBoundPool`)
+        :ptype pool: Any
         :param schema: schema
         :ptype schema: str
         """
@@ -628,18 +758,18 @@ class _SchemaBoundAcquire:
         self._conn: asyncpg.Connection | None = None
         self._cm: Any = None
 
-    async def __aenter__(self) -> asyncpg.Connection:
+    async def __aenter__(self) -> _NamespaceTxWrapper:
         """acquire + SET search_path.
 
-        :return: connection
-        :rtype: asyncpg.Connection
+        :return: connection wrapped to honor ``transaction(namespace=...)``
+        :rtype: _NamespaceTxWrapper
         """
-        self._cm = self._pool.acquire()
+        self._cm = self._pool.raw_pool.acquire()
         self._conn = await self._cm.__aenter__()
         await self._conn.execute(
             f'SET search_path TO "{self._schema}", platform',
         )
-        return self._conn
+        return _NamespaceTxWrapper(self._conn, self._pool)
 
     async def __aexit__(
         self,
@@ -971,7 +1101,15 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         # --- build tools ---
         acl_cache = _SqlBackedAclCache(pool)
         owner_schema = _schema_name(agent_a)
-        schema_pool = _SchemaBoundPool(pool, owner_schema)
+        # WS-ACL-06: expose the workspace namespace -> owner schema
+        # mapping so grantee-side _write_file_atomic calls that pass
+        # ``namespace=workspace.namespace_name`` on the transaction
+        # route to the OWNER's schema via _NamespaceTxWrapper.
+        schema_pool = _SchemaBoundPool(
+            pool,
+            owner_schema,
+            namespaces={f"workspace.{workspace_id}": owner_schema},
+        )
         # the workspace collection is bound to the OWNER's schema;
         # for cross-agent calls the grantee resolves the workspace by
         # a name+owner-id pair (the production discovery flow returns

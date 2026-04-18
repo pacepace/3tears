@@ -70,6 +70,12 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_versions",
         "static config, migration callables registered once at startup",
     ),
+    (
+        "core/data/migrations/registry.py",
+        "PackageMigrations",
+        "_downgrades",
+        "static config, downgrade callables registered once at startup",
+    ),
     # -- core: L1/L2 cache backends (non-serializable connection state) --
     (
         "core/cache/nats.py",

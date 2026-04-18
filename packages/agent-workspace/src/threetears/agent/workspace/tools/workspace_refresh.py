@@ -264,8 +264,11 @@ class WorkspaceRefreshTool(TearsTool):
             action_create: Literal["create"] = "create"
             action_update: Literal["update"] = "update"
             max_version = 0
+            # WS-ACL-06: bind the tx to the workspace's namespace so
+            # refresh writes land in the OWNER agent's schema on
+            # grantee refreshes of shared workspaces.
             async with self._db_pool.acquire() as conn:
-                async with conn.transaction():
+                async with conn.transaction(namespace=workspace.namespace_name):
                     for rel, content, sha in creates:
                         new_version = await _next_journal_version(
                             conn,

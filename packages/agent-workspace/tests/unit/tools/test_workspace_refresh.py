@@ -45,6 +45,11 @@ class _FakeWorkspaceEntity:
     name: str
     date_deleted: Any = None
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeWorkspaceCollection:
     """fake workspace collection serving _resolve_workspace."""
@@ -225,7 +230,7 @@ class _FakeConnection:
     transaction_open: bool = False
     journal_max_by_path: dict[str, int] = field(default_factory=dict)
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         """create a transaction wrapper.
 
         :return: transaction context manager

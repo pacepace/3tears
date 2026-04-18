@@ -152,8 +152,15 @@ class WorkspaceDeleteTool(TearsTool):
                     acl_cache=self._acl_cache,
                 )
                 now = datetime.now(UTC)
+                # WS-ACL-06: bind the tx to the workspace's namespace
+                # so grantee-agent deletes of shared workspaces would
+                # land in the owner's schema. today owner-only callers
+                # are the production path (delete is owner-capability),
+                # but routing through the namespace keeps the code
+                # uniform and lets cross-agent tooling evolve without
+                # a branch.
                 async with self._db_pool.acquire() as conn:
-                    async with conn.transaction():
+                    async with conn.transaction(namespace=workspace.namespace_name):
                         await conn.execute(_SOFT_DELETE_WORKSPACE_SQL, now, workspace.id)
 
                 ctx = self._context_provider()

@@ -81,7 +81,7 @@ class _FakeConnection:
     def __init__(self) -> None:
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         return _FakeTransaction()
 
     async def execute(self, query: str, *args: Any) -> str:

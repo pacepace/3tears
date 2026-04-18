@@ -134,7 +134,7 @@ class _FakeConnection:
     transaction_open: bool = False
     raise_on: type[BaseException] | None = None
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         self.transaction_calls += 1
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)

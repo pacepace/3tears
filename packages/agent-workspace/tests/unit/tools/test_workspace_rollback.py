@@ -31,6 +31,11 @@ class _FakeWorkspaceEntity:
     name: str
     date_deleted: Any = None
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
 
 class _FakeWorkspaceCollection:
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
@@ -114,7 +119,7 @@ class _FakePool:
     def acquire(self) -> _FakeAcquireCM:
         return _FakeAcquireCM(conn=self)
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         relative_path = args[1]
         if len(args) == 2:

@@ -166,9 +166,23 @@ class WorkspaceDiffTool(TearsTool):
                 acl_cache=self._acl_cache,
             )
             self._sandbox.enforce("read", relative_path)
+            # WS-ACL-06: thread namespace= so outside-tx reads resolve
+            # against the owner agent's schema on grantee diffs.
             async with self._db_pool.acquire() as conn:
-                from_row = await _resolve_ref(conn, workspace.id, relative_path, from_ref)
-                to_row = await _resolve_ref(conn, workspace.id, relative_path, to_ref)
+                from_row = await _resolve_ref(
+                    conn,
+                    workspace.id,
+                    relative_path,
+                    from_ref,
+                    namespace_name=workspace.namespace_name,
+                )
+                to_row = await _resolve_ref(
+                    conn,
+                    workspace.id,
+                    relative_path,
+                    to_ref,
+                    namespace_name=workspace.namespace_name,
+                )
             if from_row is None:
                 result = ToolResult(
                     success=False,

@@ -483,6 +483,13 @@ class WorkspaceCreateTool(TearsTool):
         schema_name = f"agent_{self._agent_id.hex}"
         namespace_name = f"workspace.{workspace_id}"
 
+        # workspace_create is owner-only by construction: it owns the
+        # physical rows it is about to materialize and inserts the
+        # platform.namespaces row in the same tx. it does NOT pass a
+        # namespace= on .transaction() because the namespace row is
+        # the target of the insert, not a precondition of it; the tx
+        # binds to the caller's default agent schema (WS-ACL-06 skips
+        # pre-resolve tools per the task brief).
         async with self._db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(

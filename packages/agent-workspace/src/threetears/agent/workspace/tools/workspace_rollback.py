@@ -219,7 +219,16 @@ class WorkspaceRollbackTool(TearsTool):
             # phase 3: per-file resolve + atomic write.
             async with self._db_pool.acquire() as conn:
                 for path in rollback_set:
-                    target = await _resolve_ref(conn, workspace.id, path, ref)
+                    # WS-ACL-06: thread namespace= so outside-tx reads
+                    # resolve against the owner agent's schema when
+                    # the calling agent is a grantee.
+                    target = await _resolve_ref(
+                        conn,
+                        workspace.id,
+                        path,
+                        ref,
+                        namespace_name=workspace.namespace_name,
+                    )
                     if target is None:
                         continue
                     await _write_file_atomic(

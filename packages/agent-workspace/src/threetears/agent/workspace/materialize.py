@@ -402,7 +402,7 @@ async def _seed_l3_import_all(
     action_create: Literal["create"] = "create"
     max_version = 0
     async with db_pool.acquire() as conn:
-        async with conn.transaction():
+        async with conn.transaction(namespace=workspace.namespace_name):
             for rel, (content, sha) in disk.items():
                 new_version = await _next_journal_version(
                     conn,
@@ -508,7 +508,7 @@ async def _seed_l3_disk_wins(
         action_delete: Literal["delete"] = "delete"
         max_version = 0
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     new_version = await _next_journal_version(
                         conn,
@@ -758,7 +758,7 @@ async def _handle_watch_batch(
     if coalesced:
         now = datetime.now(UTC)
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 max_version = 0
                 for rel, change in coalesced.items():
                     if change is Change.deleted:
@@ -1090,7 +1090,7 @@ async def _capture_back(
         action_update: Literal["update"] = "update"
         action_delete: Literal["delete"] = "delete"
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     # derive version from journal so re-creating a path
                     # that was previously bind-deleted does not collide
@@ -1558,7 +1558,7 @@ async def recover(
         action_create: Literal["create"] = "create"
         action_update: Literal["update"] = "update"
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     # derive version from journal, not the head cache,
                     # so re-created paths never collide with deleted

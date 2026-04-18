@@ -169,8 +169,11 @@ class WorkspaceCheckpointTool(TearsTool):
             head_files = await self._files.find_by_workspace(workspace.id)
             now = datetime.now(UTC)
             correlation_id = uuid7()
+            # WS-ACL-06: bind the tx to the workspace's namespace so
+            # every statement lands in the OWNER agent's schema even
+            # when the calling agent is a grantee.
             async with self._db_pool.acquire() as conn:
-                async with conn.transaction():
+                async with conn.transaction(namespace=workspace.namespace_name):
                     for file_entity in head_files:
                         # checkpoint is a labelled *tag* row, not a
                         # new head; it must carry a fresh monotonic
