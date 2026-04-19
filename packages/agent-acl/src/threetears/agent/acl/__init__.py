@@ -31,12 +31,11 @@ publishes a NATS message itself.
 
 __version__ = "0.1.0"
 
-from threetears.agent.acl.audit import (
+from threetears.agent.acl.audit_vocabulary import (
     RBAC_AUDIT_ACTIONS,
     RBAC_AUDIT_EVENT_TYPES,
     RBAC_AUDIT_RESOURCE_TYPES,
     RbacAuditAction,
-    RbacAuditEnvelope,
     RbacAuditResourceType,
     RbacEventType,
 )
@@ -92,7 +91,6 @@ __all__ = [
     "RBAC_AUDIT_EVENT_TYPES",
     "RBAC_AUDIT_RESOURCE_TYPES",
     "RbacAuditAction",
-    "RbacAuditEnvelope",
     "RbacAuditResourceType",
     "RbacEventType",
     "Role",
