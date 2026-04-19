@@ -31,6 +31,15 @@ publishes a NATS message itself.
 
 __version__ = "0.1.0"
 
+from threetears.agent.acl.audit import (
+    RBAC_AUDIT_ACTIONS,
+    RBAC_AUDIT_EVENT_TYPES,
+    RBAC_AUDIT_RESOURCE_TYPES,
+    RbacAuditAction,
+    RbacAuditEnvelope,
+    RbacAuditResourceType,
+    RbacEventType,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -79,6 +88,13 @@ __all__ = [
     "MemberType",
     "MembershipLoader",
     "Namespace",
+    "RBAC_AUDIT_ACTIONS",
+    "RBAC_AUDIT_EVENT_TYPES",
+    "RBAC_AUDIT_RESOURCE_TYPES",
+    "RbacAuditAction",
+    "RbacAuditEnvelope",
+    "RbacAuditResourceType",
+    "RbacEventType",
     "Role",
     "RoleAssignment",
     "ScopeType",
