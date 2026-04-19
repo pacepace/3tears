@@ -54,11 +54,14 @@ class _StubAuditEventCollection:
 
 
 class _InProcessAuditConsumer:
-    """in-process stand-in for the Hub-side ``WorkspaceAuditConsumer``.
+    """in-process stand-in for the Hub-side ``UnifiedAuditConsumer``.
 
-    decodes each incoming NATS envelope and forwards it to the injected
-    :class:`_StubAuditEventCollection`. no timer, retries, or DLQ here;
-    the real consumer adds those.
+    audit-task-01 Phase 3 retired the per-domain
+    ``WorkspaceAuditConsumer``; the unified consumer now subscribes on
+    ``{ns}.audit.>`` and handles workspace envelopes alongside every
+    other domain. this stub decodes each incoming NATS envelope and
+    forwards it to the injected :class:`_StubAuditEventCollection`. no
+    timer, retries, or DLQ here; the real consumer adds those.
     """
 
     def __init__(self, collection: _StubAuditEventCollection) -> None:
