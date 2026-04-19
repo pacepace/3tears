@@ -1,29 +1,32 @@
 """integration test for WS-ACL-05 cross-agent workspace access.
 
-spins up a real PostgreSQL via testcontainers, materializes the
-``platform.namespaces`` + ``platform.namespace_grants`` + agent-schema
-``workspaces`` + ``workspace_files`` + ``workspace_file_versions``
-tables with the minimal shape the workspace tools need, seeds one
-customer with two agents (A owns the workspace, B gets a grant), and
-exercises the workspace tool stack end-to-end:
+rbac-task-01 Phase 3 rewired the authorize helper to delegate to the
+unified evaluator in :mod:`threetears.agent.acl`. this test spins up
+a real PostgreSQL via testcontainers, materializes the rbac tables
+(``platform.namespaces`` + ``groups`` + ``group_members`` +
+``roles`` + ``role_assignments``) + the agent-schema workspace
+tables, seeds one customer with two agents (A owns the workspace, B
+gets a ``WorkspaceEditor`` assignment via a singleton agent-group),
+and exercises the workspace tool stack end-to-end:
 
-- agent B's ``fs_read`` on a file in A's workspace succeeds (read grant)
-- agent B's ``fs_write`` succeeds (write grant)
+- agent B's ``fs_read`` on a file in A's workspace succeeds
+- agent B's ``fs_write`` succeeds (``WorkspaceEditor`` grants write)
 - a third agent C under a different customer is categorically denied
-  on any operation
-- a user U2 within A's customer but without a grant is denied on
-  every tool (same-customer no-grant deny)
+  on any operation (cross-customer short-circuit)
+- a user U2 within A's customer but without a group membership is
+  denied on every tool (same-customer no-grant deny)
 
 the ``AclCache`` contract the tool layer depends on is exercised via
 a minimal in-process implementation of :class:`AclCacheLike` that
-resolves grants directly against the platform.namespace_grants table;
-this matches the production cache's contract without the full cache
-infrastructure from the aibots repo (the cache itself is covered by
-its own unit suite, this test is the end-to-end wiring check).
+exposes ``membership_loader`` + ``grant_loader`` protocol methods
+resolving directly against the rbac tables; this matches the
+production cache's contract without the three-layer TTL cache from
+:class:`threetears.agent.acl.AclCache` (the cache itself is covered
+by its own unit suite, this test is the end-to-end wiring check).
 
 journal envelope assertion: the brief calls for the phase-5 sweep to
-assert `actor_user_id=B's user`, `calling_agent_id=B`,
-`owner_agent_id=A` surface on the journal row envelopes. since the
+assert ``actor_user_id=B's user``, ``calling_agent_id=B``,
+``owner_agent_id=A`` surface on the journal row envelopes. since the
 journal rows today carry only ``actor_id`` + ``correlation_id``, the
 additional identity fields ride on the audit envelope which phase-6
 (audit-task-01) will wire into the hub consumer. here we assert the
@@ -43,13 +46,29 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from threetears.agent.acl import (
+    Group as AclGroup,
+    GroupMembership,
+    MemberType,
+    Namespace as AclNamespace,
+    Role,
+    RoleAssignment,
+    ScopeType,
+)
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
-
 from threetears.agent.workspace.authorize import (
     AclCacheLike,
     WorkspaceAccessDenied,
 )
+
+
+# rbac-task-01 v016 seeds ``WorkspaceEditor`` with this deterministic UUID
+# (via uuid5 over NAMESPACE_DNS + "threetears.roles.WorkspaceEditor"). the
+# integration test seeds the same role row so the evaluator sees its
+# ``{"workspace": ["read", "write"]}`` permissions when resolving
+# assignments from this test's singleton groups.
+_WORKSPACE_EDITOR_ROLE_ID = UUID("f3684adb-bc37-5e79-90b9-af9c814bb29e")
 
 pytestmark = pytest.mark.integration
 
@@ -101,8 +120,12 @@ def _schema_name(agent_id: UUID) -> str:
 
 
 async def _build_platform_schema(conn: asyncpg.Connection) -> None:
-    """
-    create the minimum platform.namespaces + namespace_grants shape.
+    """create the unified rbac tables + seed ``WorkspaceEditor``.
+
+    rbac-task-01 Phase 3 replaced ``namespace_grants`` with ``groups``
+    / ``group_members`` / ``roles`` / ``role_assignments``. the
+    minimal DDL here mirrors the v016 migration without the invariant
+    checks so the test seeds directly into the new shape.
 
     :param conn: asyncpg connection
     :ptype conn: asyncpg.Connection
@@ -125,16 +148,69 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     )
     await conn.execute(
         """
-        CREATE TABLE platform.namespace_grants (
-            id                UUID PRIMARY KEY,
-            namespace_id      UUID NOT NULL REFERENCES platform.namespaces(id),
-            agent_id          UUID NOT NULL,
-            user_id           UUID,
-            access_level      TEXT NOT NULL,
-            date_created      TIMESTAMPTZ NOT NULL,
-            UNIQUE NULLS NOT DISTINCT (namespace_id, agent_id, user_id)
+        CREATE TABLE platform.groups (
+            id UUID PRIMARY KEY,
+            customer_id UUID,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            date_created TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            date_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+    )
+    await conn.execute(
+        """
+        CREATE TABLE platform.group_members (
+            id UUID PRIMARY KEY,
+            group_id UUID NOT NULL REFERENCES platform.groups(id) ON DELETE CASCADE,
+            member_type VARCHAR(10) NOT NULL
+                CHECK (member_type IN ('user', 'agent')),
+            member_id UUID NOT NULL,
+            customer_id UUID,
+            date_added TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+    )
+    await conn.execute(
+        """
+        CREATE TABLE platform.roles (
+            id UUID PRIMARY KEY,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            description TEXT,
+            permissions JSONB NOT NULL,
+            is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+            date_created TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            date_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+    )
+    await conn.execute(
+        """
+        CREATE TABLE platform.role_assignments (
+            id UUID PRIMARY KEY,
+            role_id UUID NOT NULL REFERENCES platform.roles(id),
+            group_id UUID NOT NULL REFERENCES platform.groups(id) ON DELETE CASCADE,
+            scope_type VARCHAR(16) NOT NULL
+                CHECK (scope_type IN ('namespace', 'type_customer', 'all')),
+            scope_namespace_id UUID REFERENCES platform.namespaces(id) ON DELETE CASCADE,
+            scope_namespace_type VARCHAR(255),
+            scope_customer_id UUID,
+            granted_by UUID,
+            date_granted TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+    )
+    # seed the WorkspaceEditor role with the production-matching id +
+    # permissions so the evaluator resolves correctly.
+    await conn.execute(
+        """
+        INSERT INTO platform.roles (id, name, description, permissions, is_builtin)
+        VALUES ($1, 'WorkspaceEditor',
+                'Read and write on workspaces and workspace files.',
+                '{"workspace": ["read", "write"], "workspace_file": ["read", "write"]}'::jsonb,
+                TRUE)
+        """,
+        _WORKSPACE_EDITOR_ROLE_ID,
     )
 
 
@@ -206,87 +282,236 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _SqlBackedAclCache:
-    """in-test implementation of :class:`AclCacheLike` backed by SQL.
+class _SqlMembershipLoader:
+    """SQL-backed :class:`MembershipLoader` for the integration test.
 
-    production wiring uses :class:`aibots.hub.broker.acl.AclCache`
-    with L1 / L2 / L3 warm-paths; this test hits the platform table
-    directly so the authorize contract surfaces correctly without the
-    cache infrastructure.
+    queries ``platform.group_members`` and wraps rows as shared
+    :class:`GroupMembership` dataclasses the evaluator consumes.
+
+    :param pool: asyncpg pool bound to the test database
+    :ptype pool: asyncpg.Pool
     """
 
     def __init__(self, pool: asyncpg.Pool) -> None:
-        """capture the pool.
-
-        :param pool: asyncpg Pool bound to the test database
-        :ptype pool: asyncpg.Pool
-        """
         self._pool = pool
 
-    async def check_access(
-        self,
-        agent_id: UUID,
-        namespace_name: str,
-        operation: str,
-        user_id: UUID | None = None,
-    ) -> None:
-        """resolve user-scoped first, fall back to agent-wide; raise on deny.
+    async def load_for_user(
+        self, user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """return every membership row naming ``user_id`` as a user member.
 
-        mirrors the cache's resolution rule: look for a row matching
-        the (namespace, agent, user) triple; if none, fall back to
-        ``user_id IS NULL``; if still none, raise. access level
-        ``read`` satisfies ``select``; ``write`` satisfies both
-        ``select`` and ``upsert``.
-
-        :param agent_id: caller agent UUID
-        :ptype agent_id: UUID
-        :param namespace_name: canonical namespace key
-        :ptype namespace_name: str
-        :param operation: cache-level verb (``select`` | ``upsert``)
-        :ptype operation: str
-        :param user_id: caller user UUID or None for agent-wide lookup
-        :ptype user_id: UUID | None
-        :return: None on allow
-        :rtype: None
-        :raises RuntimeError: on deny
+        :param user_id: user UUID
+        :ptype user_id: UUID
+        :return: tuple of memberships (possibly empty)
+        :rtype: tuple[GroupMembership, ...]
         """
         async with self._pool.acquire() as conn:
-            # resolve namespace_id
-            row = await conn.fetchrow(
-                "SELECT id FROM platform.namespaces WHERE name = $1",
-                namespace_name,
-            )
-            if row is None:
-                raise RuntimeError(f"namespace not found: {namespace_name}")
-            namespace_id = row["id"]
-
-            # user-scoped grant wins
-            grant_row = await conn.fetchrow(
+            rows = await conn.fetch(
                 """
-                SELECT access_level FROM platform.namespace_grants
-                 WHERE namespace_id = $1 AND agent_id = $2 AND user_id = $3
+                SELECT group_id, member_type, member_id, customer_id
+                  FROM platform.group_members
+                 WHERE member_type = 'user' AND member_id = $1
                 """,
-                namespace_id,
-                agent_id,
                 user_id,
             )
-            if grant_row is None:
-                grant_row = await conn.fetchrow(
-                    """
-                    SELECT access_level FROM platform.namespace_grants
-                     WHERE namespace_id = $1 AND agent_id = $2
-                       AND user_id IS NULL
-                    """,
-                    namespace_id,
-                    agent_id,
-                )
-            if grant_row is None:
-                raise RuntimeError("no matching grant")
-            access_level = grant_row["access_level"]
-            if operation == "upsert" and access_level != "write":
-                raise RuntimeError(
-                    f"grant access_level={access_level!r} is not write",
-                )
+        return tuple(
+            GroupMembership(
+                group_id=row["group_id"],
+                member_type=MemberType(row["member_type"]),
+                member_id=row["member_id"],
+                customer_id=row["customer_id"],
+            )
+            for row in rows
+        )
+
+    async def load_for_agent(
+        self, agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """return every membership row naming ``agent_id`` as an agent member.
+
+        :param agent_id: agent UUID
+        :ptype agent_id: UUID
+        :return: tuple of memberships (possibly empty)
+        :rtype: tuple[GroupMembership, ...]
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT group_id, member_type, member_id, customer_id
+                  FROM platform.group_members
+                 WHERE member_type = 'agent' AND member_id = $1
+                """,
+                agent_id,
+            )
+        return tuple(
+            GroupMembership(
+                group_id=row["group_id"],
+                member_type=MemberType(row["member_type"]),
+                member_id=row["member_id"],
+                customer_id=row["customer_id"],
+            )
+            for row in rows
+        )
+
+
+class _SqlGrantLoader:
+    """SQL-backed :class:`GrantLoader` for the integration test.
+
+    queries ``platform.role_assignments``, ``platform.roles``, and
+    ``platform.groups`` and wraps rows as shared dataclasses the
+    evaluator consumes. mirrors the production
+    :class:`aibots.hub.broker.acl.HubGrantLoader` without the TTL
+    cache.
+
+    :param pool: asyncpg pool bound to the test database
+    :ptype pool: asyncpg.Pool
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: AclNamespace,
+    ) -> tuple[RoleAssignment, ...]:
+        """return assignments held by ``group_ids`` that could cover ``namespace``.
+
+        :param group_ids: groups to inspect
+        :ptype group_ids: tuple[UUID, ...]
+        :param namespace: namespace under evaluation
+        :ptype namespace: AclNamespace
+        :return: tuple of assignments
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        if not group_ids:
+            return ()
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, role_id, group_id, scope_type,
+                       scope_namespace_id, scope_namespace_type, scope_customer_id
+                  FROM platform.role_assignments
+                 WHERE group_id = ANY($1::uuid[])
+                   AND (
+                          (scope_type = 'namespace'
+                            AND scope_namespace_id = $2)
+                       OR (scope_type = 'type_customer'
+                            AND scope_namespace_type = $3
+                            AND scope_customer_id = $4)
+                       OR  scope_type = 'all'
+                       )
+                """,
+                list(group_ids),
+                namespace.id,
+                namespace.namespace_type,
+                namespace.customer_id,
+            )
+        return tuple(
+            RoleAssignment(
+                id=row["id"],
+                role_id=row["role_id"],
+                group_id=row["group_id"],
+                scope_type=ScopeType(row["scope_type"]),
+                scope_namespace_id=row["scope_namespace_id"],
+                scope_namespace_type=row["scope_namespace_type"],
+                scope_customer_id=row["scope_customer_id"],
+            )
+            for row in rows
+        )
+
+    async def load_roles(
+        self, role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        """resolve role ids into :class:`Role` rows with coerced permissions.
+
+        :param role_ids: role UUIDs to resolve
+        :ptype role_ids: tuple[UUID, ...]
+        :return: mapping role_id -> Role for ids that exist
+        :rtype: dict[UUID, Role]
+        """
+        if not role_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, permissions, is_builtin
+                  FROM platform.roles
+                 WHERE id = ANY($1::uuid[])
+                """,
+                list(role_ids),
+            )
+        result: dict[UUID, Role] = {}
+        for row in rows:
+            raw = row["permissions"]
+            parsed: dict[str, Any] = {}
+            if isinstance(raw, dict):
+                parsed = raw
+            elif isinstance(raw, str) and raw:
+                loaded = json.loads(raw)
+                if isinstance(loaded, dict):
+                    parsed = loaded
+            permissions: dict[str, frozenset[str]] = {}
+            for resource_type, actions in parsed.items():
+                if isinstance(actions, list):
+                    permissions[resource_type] = frozenset(
+                        str(a) for a in actions
+                    )
+            result[row["id"]] = Role(
+                id=row["id"],
+                name=row["name"],
+                permissions=permissions,
+                is_built_in=bool(row["is_builtin"]),
+            )
+        return result
+
+    async def load_groups(
+        self, group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        """resolve group ids into :class:`AclGroup` rows.
+
+        :param group_ids: group UUIDs to resolve
+        :ptype group_ids: tuple[UUID, ...]
+        :return: mapping group_id -> :class:`AclGroup`
+        :rtype: dict[UUID, object]
+        """
+        if not group_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, customer_id
+                  FROM platform.groups
+                 WHERE id = ANY($1::uuid[])
+                """,
+                list(group_ids),
+            )
+        result: dict[UUID, object] = {}
+        for row in rows:
+            result[row["id"]] = AclGroup(
+                id=row["id"], name=row["name"], customer_id=row["customer_id"],
+            )
+        return result
+
+
+class _SqlBackedAclCache:
+    """in-test implementation of :class:`AclCacheLike` backed by SQL.
+
+    rbac-task-01 Phase 3: the ``AclCacheLike`` protocol now exposes
+    ``membership_loader`` + ``grant_loader`` instead of a
+    ``check_access`` method. production wiring uses
+    :class:`aibots.hub.broker.acl.AclCache` with a three-layer TTL
+    cache; this test hits the platform tables directly so the
+    authorize contract surfaces correctly without the cache
+    infrastructure.
+
+    :param pool: asyncpg pool bound to the test database
+    :ptype pool: asyncpg.Pool
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self.membership_loader = _SqlMembershipLoader(pool)
+        self.grant_loader = _SqlGrantLoader(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -831,41 +1056,71 @@ async def _seed_namespace_row(
     )
 
 
-async def _seed_grant(
+async def _grant_via_singleton_group(
     conn: asyncpg.Connection,
     *,
     namespace_id: UUID,
-    agent_id: UUID,
-    user_id: UUID | None,
-    access_level: str,
-) -> None:
-    """insert a row into platform.namespace_grants.
+    principal_type: str,
+    principal_id: UUID,
+    customer_id: UUID,
+    role_id: UUID = _WORKSPACE_EDITOR_ROLE_ID,
+) -> tuple[UUID, UUID]:
+    """seed a singleton group + member + namespace-scope role assignment.
+
+    mirrors v016 backfill semantics: one singleton group per
+    principal (``agent:<uuid>`` or ``user:<uuid>``), one member row,
+    one ``role_assignments`` row scoped to a specific namespace.
 
     :param conn: connection
     :ptype conn: asyncpg.Connection
-    :param namespace_id: namespace UUID
+    :param namespace_id: namespace UUID to scope the assignment to
     :ptype namespace_id: UUID
-    :param agent_id: agent UUID
-    :ptype agent_id: UUID
-    :param user_id: optional user UUID (None = agent-wide)
-    :ptype user_id: UUID | None
-    :param access_level: ``read`` or ``write``
-    :ptype access_level: str
+    :param principal_type: ``"user"`` or ``"agent"``
+    :ptype principal_type: str
+    :param principal_id: principal UUID to add as the group's member
+    :ptype principal_id: UUID
+    :param customer_id: customer UUID stamped on the group + member
+    :ptype customer_id: UUID
+    :param role_id: role UUID the assignment binds; defaults to the
+        seeded ``WorkspaceEditor``
+    :ptype role_id: UUID
+    :return: tuple of ``(group_id, assignment_id)``
+    :rtype: tuple[UUID, UUID]
     """
+    group_id = uuid4()
+    member_id = uuid4()
+    assignment_id = uuid4()
+    group_name = f"{principal_type}:{principal_id}"
     now = datetime.now(UTC)
     await conn.execute(
         """
-        INSERT INTO platform.namespace_grants (
-            id, namespace_id, agent_id, user_id, access_level, date_created
+        INSERT INTO platform.groups (
+            id, customer_id, name, description, date_created, date_updated
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
-        uuid4(),
-        namespace_id,
-        agent_id,
-        user_id,
-        access_level,
-        now,
+        group_id, customer_id, group_name,
+        f"test singleton group for {group_name}", now, now,
     )
+    await conn.execute(
+        """
+        INSERT INTO platform.group_members (
+            id, group_id, member_type, member_id, customer_id, date_added
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        member_id, group_id, principal_type, principal_id, customer_id, now,
+    )
+    await conn.execute(
+        """
+        INSERT INTO platform.role_assignments (
+            id, role_id, group_id, scope_type,
+            scope_namespace_id, scope_namespace_type, scope_customer_id,
+            granted_by, date_granted
+        )
+        VALUES ($1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5)
+        """,
+        assignment_id, role_id, group_id, namespace_id, now,
+    )
+    return group_id, assignment_id
 
 
 async def _seed_workspace(
@@ -1089,13 +1344,28 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
                 owner_agent_id=agent_a,
                 customer_id=customer_id,
             )
-            # grant B write access agent-wide
-            await _seed_grant(
+            # rbac-task-01 Phase 3: the unified evaluator intersects the
+            # user and agent sides. to model the old "agent-wide write
+            # grant lets B's user call through", both agent B and user B
+            # need group memberships that lead to an assignment on the
+            # namespace. we seed two singleton groups (agent:<B> +
+            # user:<B>), each with its own WorkspaceEditor assignment on
+            # the workspace namespace. this matches the production shape
+            # where a grant visible to user_b via agent_b requires user_b
+            # to be in a group with an assignment covering the namespace.
+            await _grant_via_singleton_group(
                 conn,
                 namespace_id=workspace_id,
-                agent_id=agent_b,
-                user_id=None,
-                access_level="write",
+                principal_type="agent",
+                principal_id=agent_b,
+                customer_id=customer_id,
+            )
+            await _grant_via_singleton_group(
+                conn,
+                namespace_id=workspace_id,
+                principal_type="user",
+                principal_id=user_b,
+                customer_id=customer_id,
             )
 
         # --- build tools ---

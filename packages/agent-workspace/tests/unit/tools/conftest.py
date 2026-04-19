@@ -97,19 +97,30 @@ async def tool_call_scope(
 
 @pytest.fixture
 def permissive_acl_cache() -> MagicMock:
-    """AclCache-shaped mock returning ``"write"`` on every access check.
+    """AclCacheLike-shaped mock that permits every access.
+
+    rbac-task-01 Phase 3: the :class:`AclCacheLike` protocol surfaces
+    ``membership_loader`` + ``grant_loader`` instead of the retired
+    ``check_access`` method. the helper in
+    :mod:`threetears.agent.workspace.authorize` reads both attributes
+    when building its :class:`EvaluationContext`. since the tests in
+    this directory stub :func:`authorize_workspace_access` via the
+    autouse fixture, the loaders are never actually consulted — but we
+    still populate them with :class:`AsyncMock` attributes so the
+    ``AclCacheLike`` protocol surface stays correct and a future test
+    that unstubs the helper will not break on missing attrs.
 
     tools constructed with this cache pass through the WS-ACL-05
     authorize gate unconditionally. used by the bulk of the tool tests
     that exercise functionality unrelated to RBAC. authorization-matrix
     tests build their own cache mocks to assert deny paths.
 
-    :return: mock with an :class:`AsyncMock` ``check_access`` returning
-        ``"write"``
+    :return: mock exposing ``membership_loader`` + ``grant_loader`` attrs
     :rtype: MagicMock
     """
     cache = MagicMock()
-    cache.check_access = AsyncMock(return_value="write")
+    cache.membership_loader = AsyncMock()
+    cache.grant_loader = AsyncMock()
     return cache
 
 

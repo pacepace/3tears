@@ -1,30 +1,41 @@
 """unit tests for :func:`authorize_workspace_access`.
 
-exercises every branch of the Phase-3 access-control helper:
+rbac-task-01 Phase 3 rewired the helper to delegate to the unified
+evaluator in :mod:`threetears.agent.acl`. the new contract:
 
-- missing ``customer_id`` on the scope -> raise
-- cross-customer access -> raise, cache never consulted
-- owner path (same agent + same user) -> allow, cache never consulted
-- same-customer granted -> allow, cache confirms the grant
-- same-customer no-grant -> raise, cache surfaces deny
-- user-scoped grant takes precedence over agent-wide grant (delegated
-  to cache.check_access, which this test verifies by inspecting the
-  kwargs the helper passed through)
+- ``scope.context.customer_id is None`` -> raise immediately.
+- ``workspace.customer_id != scope.customer_id`` -> raise, no evaluator
+  trip (cross-customer short-circuits).
+- otherwise build an :class:`EvaluationContext` and call
+  :func:`evaluate_decision` with the loaders the caller's
+  ``AclCacheLike`` protocol exposes.
+- evaluator returning ``False`` surfaces as :class:`WorkspaceAccessDenied`.
+- unknown operation strings raise before any evaluator trip.
 
-the AclCache is represented by an :class:`~unittest.mock.AsyncMock` so
-no live DB or NATS is required.
+the owner short-circuit is no longer implemented in the helper; the
+evaluator's ``_resolve_side`` handles owner-match inside the agent
+side. the helper therefore always goes through the evaluator unless
+a guard clause fires.
+
+the ``AclCacheLike`` protocol shape changed: it now exposes
+``membership_loader`` + ``grant_loader`` instead of a ``check_access``
+method. tests build mock caches with both attributes and patch
+:func:`evaluate_decision` at the authorize module's import site to
+drive allow/deny outcomes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4 as uuid7
 
 import pytest
 
 from threetears.agent.tools.call_scope import ToolCallScope
 from threetears.agent.tools.context_envelope import CallContext
+from threetears.agent.workspace import authorize as _authorize_module
 from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
     authorize_workspace_access,
@@ -62,7 +73,7 @@ def _make_workspace(
     :ptype owner_agent_id: UUID
     :param created_by_user_id: creating-user UUID
     :ptype created_by_user_id: UUID
-    :param namespace_name: namespace name for cache keying
+    :param namespace_name: namespace name for logging
     :ptype namespace_name: str
     :return: fake workspace record
     :rtype: _FakeWorkspace
@@ -101,18 +112,56 @@ def _make_scope(
     return ToolCallScope(context=ctx)
 
 
-def _make_cache() -> AsyncMock:
-    """build an :class:`AsyncMock` shaped like :class:`AclCache`.
+def _make_cache() -> MagicMock:
+    """build an :class:`AclCacheLike`-shaped mock.
 
-    default behavior: ``check_access`` returns ``None`` (allow). tests
-    override ``side_effect`` on the mock to simulate denies.
+    the new protocol surfaces ``membership_loader`` + ``grant_loader``
+    attributes. concrete loader methods are never exercised here
+    because the tests patch :func:`evaluate_decision` directly at the
+    authorize module's import site; attaching :class:`MagicMock` to
+    each attribute is enough to satisfy the attribute access inside
+    the helper (``acl_cache.membership_loader`` /
+    ``acl_cache.grant_loader``).
 
-    :return: AsyncMock wired with a ``check_access`` method
+    :return: mock exposing the protocol's attributes
+    :rtype: MagicMock
+    """
+    cache = MagicMock()
+    cache.membership_loader = MagicMock()
+    cache.grant_loader = MagicMock()
+    return cache
+
+
+def _patch_evaluate_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    returning: bool | None = None,
+    raising: BaseException | None = None,
+) -> AsyncMock:
+    """patch :func:`evaluate_decision` at the authorize import site.
+
+    tests control the evaluator's outcome by substituting an
+    :class:`AsyncMock`; the helper calls the import from within the
+    authorize module, so the patch target is
+    ``threetears.agent.workspace.authorize.evaluate_decision``.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :param returning: value the stub returns when called (None -> no
+        return_value set; ``raising`` takes precedence)
+    :ptype returning: bool | None
+    :param raising: exception the stub raises when called
+    :ptype raising: BaseException | None
+    :return: the installed mock so the test can assert on its calls
     :rtype: AsyncMock
     """
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(return_value=None)
-    return cache
+    stub = AsyncMock()
+    if raising is not None:
+        stub.side_effect = raising
+    elif returning is not None:
+        stub.return_value = returning
+    monkeypatch.setattr(_authorize_module, "evaluate_decision", stub)
+    return stub
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +173,10 @@ class TestMissingCustomerId:
     """guard: ``scope.context.customer_id is None`` -> raise."""
 
     @pytest.mark.asyncio
-    async def test_missing_customer_raises(self) -> None:
-        """scope without customer_id is rejected before any cache call."""
+    async def test_missing_customer_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """scope without customer_id is rejected before any evaluator trip."""
         workspace = _make_workspace(
             customer_id=uuid7(),
             owner_agent_id=uuid7(),
@@ -133,18 +184,21 @@ class TestMissingCustomerId:
         )
         scope = _make_scope(agent_id=uuid7(), user_id=uuid7(), customer_id=None)
         cache = _make_cache()
+        stub = _patch_evaluate_decision(monkeypatch, returning=True)
         with pytest.raises(WorkspaceAccessDenied, match="missing customer_id"):
             await authorize_workspace_access(
                 scope, workspace, "read", acl_cache=cache,
             )
-        cache.check_access.assert_not_called()
+        stub.assert_not_awaited()
 
 
 class TestCrossCustomerDenied:
     """guard: ``workspace.customer_id != scope.customer_id`` -> raise."""
 
     @pytest.mark.asyncio
-    async def test_cross_customer_raises(self) -> None:
+    async def test_cross_customer_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """workspace owned by customer A is not accessible to caller from B."""
         customer_a = uuid7()
         customer_b = uuid7()
@@ -157,105 +211,27 @@ class TestCrossCustomerDenied:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_b,
         )
         cache = _make_cache()
+        stub = _patch_evaluate_decision(monkeypatch, returning=True)
         with pytest.raises(WorkspaceAccessDenied, match="cross-customer"):
             await authorize_workspace_access(
                 scope, workspace, "read", acl_cache=cache,
             )
-        cache.check_access.assert_not_called()
+        stub.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# owner short-circuit
+# evaluator delegation
 # ---------------------------------------------------------------------------
 
 
-class TestOwnerAllow:
-    """owner path (same agent + same user) allows without cache lookup."""
+class TestEvaluatorDelegation:
+    """same-customer call routes to the unified evaluator."""
 
     @pytest.mark.asyncio
-    async def test_owner_same_customer_agent_user_allows(self) -> None:
-        """owning agent + creating user bypasses the grant check."""
-        customer_id = uuid7()
-        agent_id = uuid7()
-        user_id = uuid7()
-        workspace = _make_workspace(
-            customer_id=customer_id,
-            owner_agent_id=agent_id,
-            created_by_user_id=user_id,
-        )
-        scope = _make_scope(
-            agent_id=agent_id, user_id=user_id, customer_id=customer_id,
-        )
-        cache = _make_cache()
-        # should not raise
-        await authorize_workspace_access(
-            scope, workspace, "write", acl_cache=cache,
-        )
-        cache.check_access.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_owner_agent_different_user_falls_to_cache(self) -> None:
-        """same agent but different user does not short-circuit."""
-        customer_id = uuid7()
-        agent_id = uuid7()
-        creator_user_id = uuid7()
-        asking_user_id = uuid7()
-        workspace = _make_workspace(
-            customer_id=customer_id,
-            owner_agent_id=agent_id,
-            created_by_user_id=creator_user_id,
-        )
-        scope = _make_scope(
-            agent_id=agent_id,
-            user_id=asking_user_id,
-            customer_id=customer_id,
-        )
-        cache = _make_cache()  # allow
-        await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
-        )
-        cache.check_access.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# same-customer grant delegation
-# ---------------------------------------------------------------------------
-
-
-class TestSameCustomerGrantedAllow:
-    """same-customer non-owner call succeeds when cache allows."""
-
-    @pytest.mark.asyncio
-    async def test_granted_read_succeeds(self) -> None:
-        """cache returning None lets the helper return None."""
-        customer_id = uuid7()
-        workspace = _make_workspace(
-            customer_id=customer_id,
-            owner_agent_id=uuid7(),
-            created_by_user_id=uuid7(),
-        )
-        caller_agent = uuid7()
-        caller_user = uuid7()
-        scope = _make_scope(
-            agent_id=caller_agent,
-            user_id=caller_user,
-            customer_id=customer_id,
-        )
-        cache = _make_cache()
-        await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
-        )
-        # verify the helper forwarded the scope identity to the cache
-        cache.check_access.assert_awaited_once_with(
-            agent_id=caller_agent,
-            namespace_name=workspace.namespace_name,
-            operation="select",
-            user_id=caller_user,
-        )
-
-    @pytest.mark.asyncio
-    async def test_granted_write_maps_to_upsert(self) -> None:
-        """operation='write' forwards as 'upsert' at the cache boundary."""
+    async def test_allow_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """evaluator returning True lets the helper return None."""
         customer_id = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
@@ -266,19 +242,18 @@ class TestSameCustomerGrantedAllow:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
+        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+
         await authorize_workspace_access(
-            scope, workspace, "write", acl_cache=cache,
+            scope, workspace, "read", acl_cache=cache,
         )
-        call_kwargs = cache.check_access.await_args.kwargs
-        assert call_kwargs["operation"] == "upsert"
-
-
-class TestSameCustomerNoGrantDeny:
-    """same-customer non-owner with no grant is denied."""
+        stub.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_cache_deny_surfaces_as_workspace_access_denied(self) -> None:
-        """a cache-raised deny becomes a WorkspaceAccessDenied."""
+    async def test_deny_raises_workspace_access_denied(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """evaluator returning False surfaces as :class:`WorkspaceAccessDenied`."""
         customer_id = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
@@ -289,63 +264,89 @@ class TestSameCustomerNoGrantDeny:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        cache.check_access.side_effect = RuntimeError("agent has no access")
-        with pytest.raises(WorkspaceAccessDenied, match="grant check failed"):
+        _patch_evaluate_decision(monkeypatch, returning=False)
+
+        with pytest.raises(WorkspaceAccessDenied, match="evaluator denied"):
             await authorize_workspace_access(
                 scope, workspace, "read", acl_cache=cache,
             )
 
+    @pytest.mark.asyncio
+    async def test_helper_builds_context_from_scope_and_workspace(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """helper forwards scope identity + workspace ns into the evaluator."""
+        customer_id = uuid7()
+        caller_agent = uuid7()
+        caller_user = uuid7()
+        owner_agent = uuid7()
+        workspace = _make_workspace(
+            customer_id=customer_id,
+            owner_agent_id=owner_agent,
+            created_by_user_id=uuid7(),
+        )
+        scope = _make_scope(
+            agent_id=caller_agent, user_id=caller_user,
+            customer_id=customer_id,
+        )
+        cache = _make_cache()
+        captured: dict[str, Any] = {}
 
-# ---------------------------------------------------------------------------
-# user-scoped grant preferred
-# ---------------------------------------------------------------------------
+        async def fake_eval(ctx: Any, **kwargs: Any) -> bool:
+            captured["namespace_id"] = ctx.namespace.id
+            captured["namespace_customer_id"] = ctx.namespace.customer_id
+            captured["namespace_type"] = ctx.namespace.namespace_type
+            captured["namespace_owner_agent_id"] = ctx.namespace.owner_agent_id
+            captured["action"] = ctx.action
+            captured["user_id"] = ctx.user_id
+            captured["agent_id"] = ctx.agent_id
+            captured["membership_loader"] = kwargs["membership_loader"]
+            captured["grant_loader"] = kwargs["grant_loader"]
+            return True
 
+        monkeypatch.setattr(_authorize_module, "evaluate_decision", fake_eval)
 
-class TestUserScopedGrantPreference:
-    """helper forwards user_id, letting cache resolve user-scoped first."""
+        await authorize_workspace_access(
+            scope, workspace, "read", acl_cache=cache,
+        )
+
+        assert captured["namespace_id"] == workspace.id
+        assert captured["namespace_customer_id"] == customer_id
+        assert captured["namespace_type"] == "workspace"
+        assert captured["namespace_owner_agent_id"] == owner_agent
+        assert captured["action"] == "read"
+        assert captured["user_id"] == caller_user
+        assert captured["agent_id"] == caller_agent
+        assert captured["membership_loader"] is cache.membership_loader
+        assert captured["grant_loader"] is cache.grant_loader
 
     @pytest.mark.asyncio
-    async def test_helper_forwards_user_id_to_cache(self) -> None:
-        """the cache receives the scope's user_id verbatim."""
+    async def test_write_forwards_write_action_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``operation='write'`` lands on the evaluator context as ``'write'``."""
         customer_id = uuid7()
-        caller_user = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
             owner_agent_id=uuid7(),
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(),
-            user_id=caller_user,
-            customer_id=customer_id,
+            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
-        )
-        kwargs = cache.check_access.await_args.kwargs
-        assert kwargs["user_id"] == caller_user
+        captured_action: dict[str, str] = {}
 
-    @pytest.mark.asyncio
-    async def test_owner_path_does_not_consult_cache_at_all(self) -> None:
-        """owner short-circuit means user-scoped preference is moot."""
-        customer_id = uuid7()
-        agent_id = uuid7()
-        user_id = uuid7()
-        workspace = _make_workspace(
-            customer_id=customer_id,
-            owner_agent_id=agent_id,
-            created_by_user_id=user_id,
-        )
-        scope = _make_scope(
-            agent_id=agent_id, user_id=user_id, customer_id=customer_id,
-        )
-        cache = _make_cache()
-        cache.check_access.side_effect = RuntimeError("must not be called")
-        # succeeds despite cache set to raise -> owner short-circuit hit
+        async def fake_eval(ctx: Any, **kwargs: Any) -> bool:
+            captured_action["action"] = ctx.action
+            return True
+
+        monkeypatch.setattr(_authorize_module, "evaluate_decision", fake_eval)
+
         await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
+            scope, workspace, "write", acl_cache=cache,
         )
+        assert captured_action["action"] == "write"
 
 
 # ---------------------------------------------------------------------------
@@ -357,8 +358,10 @@ class TestUnknownOperation:
     """unknown operation strings raise :class:`WorkspaceAccessDenied`."""
 
     @pytest.mark.asyncio
-    async def test_unknown_operation_raises(self) -> None:
-        """operation outside the documented set is a programming error surfaced as deny."""
+    async def test_unknown_operation_raises(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """operation outside the documented set raises before any evaluator trip."""
         customer_id = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
@@ -369,8 +372,12 @@ class TestUnknownOperation:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        with pytest.raises(WorkspaceAccessDenied, match="unknown workspace operation"):
+        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+        with pytest.raises(
+            WorkspaceAccessDenied, match="unknown workspace operation",
+        ):
             await authorize_workspace_access(
                 scope, workspace, "delete",  # type: ignore[arg-type]
                 acl_cache=cache,
             )
+        stub.assert_not_awaited()
