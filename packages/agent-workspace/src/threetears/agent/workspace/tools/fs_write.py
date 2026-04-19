@@ -12,9 +12,11 @@ write-enforcement gates the call before any mutation.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid7
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -24,7 +26,6 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
 from threetears.agent.workspace.authorize import (
     AclCacheLike,
     WorkspaceAccessDenied,
@@ -205,31 +206,42 @@ class FsWriteTool(TearsTool):
                 workspace_collection=self._workspaces,
                 validators=self._validators,
             )
-            # defense-in-depth audit publish
+            # defense-in-depth audit publish: additive per-tool event.
+            # the ToolServer baseline ``tool.call`` event is emitted by
+            # :class:`threetears.agent.tools.ToolServer._handle_call`;
+            # this event carries the workspace-specific detail that the
+            # baseline cannot (resource namespace id, sha/bytes/version).
             try:
                 if self._namespace is not None:
                     identity = workspace_audit_identity(workspace)
-                    await audit.publish_workspace_event(
-                        nats_client=self._nats_client,
-                        namespace=self._namespace,
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
                         event_type="workspace.fs_write",
                         actor_user_id=identity.actor_user_id,
-                        agent_id=self._agent_id,
                         calling_agent_id=identity.calling_agent_id,
                         owner_agent_id=identity.owner_agent_id,
                         customer_id=identity.customer_id,
-                        namespace_id=identity.namespace_id,
-                        resource_type="workspace_file",
-                        resource_id=f"{workspace.id}/{relative_path}",
+                        resource_namespace_id=identity.namespace_id,
+                        resource_namespace_type="workspace_file",
                         action="write",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": (
+                                f"{workspace.id}/{relative_path}"
+                            ),
                             "bytes_before": len(old_bytes),
                             "bytes_after": len(content_bytes),
                             "sha256_before": old_sha,
                             "sha256_after": new_sha256,
                             "version": new_version,
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=self._nats_client,
+                        namespace=self._namespace,
                     )
             # NOSILENT: audit failure must never taint a successful write
             except Exception as audit_exc:

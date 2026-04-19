@@ -510,10 +510,10 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
 
     the core fake covers the JetStream + KV surface :class:`KVLease`
     depends on; this subclass adds :meth:`publish` so audit envelopes
-    emitted by :func:`audit.publish_workspace_event` are captured for
-    assertion. subscriptions are handled in-process: :meth:`subscribe`
-    registers a coroutine that :meth:`publish` awaits for any matching
-    subject prefix.
+    emitted by :func:`threetears.agent.audit.publish_audit` are
+    captured for assertion. subscriptions are handled in-process:
+    :meth:`subscribe` registers a coroutine that :meth:`publish`
+    awaits for any matching subject prefix.
     """
 
     def __init__(self) -> None:

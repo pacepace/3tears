@@ -45,12 +45,15 @@ __all__ = [
 class WorkspaceAuditIdentity:
     """resolved identity fields needed to publish a workspace audit event.
 
-    WS-ACL-10 expanded :class:`WorkspaceAuditEnvelope` from "actor + agent"
-    to a full five-UUID identity tuple
-    (``actor_user_id``, ``calling_agent_id``, ``owner_agent_id``,
-    ``customer_id``, ``namespace_id``). this plain value class carries
-    those five fields so every tool's audit-publish block can pull them
-    from one place without a six-argument local dict.
+    audit-task-01 Phase 3: fields map onto
+    :class:`threetears.agent.audit.AuditEvent` as follows:
+    ``actor_user_id`` -> ``actor_user_id``, ``calling_agent_id`` ->
+    ``calling_agent_id``, ``owner_agent_id`` -> ``owner_agent_id``,
+    ``customer_id`` -> ``customer_id``, ``namespace_id`` ->
+    ``resource_namespace_id``. this plain value class carries the five
+    UUIDs every tool's additive audit-publish block pulls from one
+    place; the per-tool ``resource_namespace_type`` + domain-specific
+    details are stamped at the call site.
 
     construction goes through :func:`workspace_audit_identity`, which
     reads the current :class:`ToolCallScope` and the resolved
@@ -64,7 +67,10 @@ class WorkspaceAuditIdentity:
     :ivar owner_agent_id: workspace owner agent (from
         ``workspace.owner_agent_id``)
     :ivar customer_id: owning customer (from ``scope.context.customer_id``)
-    :ivar namespace_id: workspace id (shared PK with namespace)
+    :ivar namespace_id: workspace id (shared PK with the
+        ``platform.namespaces`` row); maps onto the
+        :attr:`AuditEvent.resource_namespace_id` column at publish
+        time
     """
 
     __slots__ = (
@@ -112,10 +118,10 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
 
     WS-ACL-10: every workspace-mutating tool's audit publish carries the
     full five-UUID identity tuple. this helper pulls scope + workspace
-    into the value object the :func:`audit.publish_workspace_event`
-    caller forwards. every required dimension is mandatory; missing any
-    field raises so the call site cannot silently publish a partial
-    envelope under ``extra='forbid'``.
+    into the value object the :func:`publish_audit` caller forwards as
+    :class:`AuditEvent` fields. every required dimension is mandatory;
+    missing any field raises so the call site cannot silently publish
+    a partial envelope under ``extra='forbid'``.
 
     :param workspace: resolved workspace entity (must have
         :attr:`owner_agent_id` populated and :attr:`customer_id` stamped

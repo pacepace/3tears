@@ -17,7 +17,7 @@ out of scope for shard-18. The pragmatic compromise in this directory:
 | `test_multi_pod_bind_race.py` | fake (CAS-equivalent in-memory KV) | fake (asyncpg-shaped) | WS-18-06 wrapper assertion |
 | `test_yaml_round_trip_preserved.py` | fake (publish-recording) | fake (asyncpg-shaped with in-memory tables) | real `DocSetTool` + real ruamel.yaml round trip |
 | `test_bind_builder_e2e.py` | fake (publish-recording) | fake (asyncpg-shaped with in-memory tables) | real `bind` + real `atomic_write` + real `_capture_back` |
-| `test_audit_event_landed.py` | fake (publish-recording + in-process subscription dispatch) | fake (asyncpg-shaped) | real `publish_workspace_event`; stub consumer feeds a stub `AuditEventCollection` |
+| `test_audit_event_landed.py` | fake (publish-recording + in-process subscription dispatch) | fake (asyncpg-shaped) | real `threetears.agent.audit.publish_audit`; stub consumer feeds a stub `AuditEventCollection` |
 | `test_validator_rejection.py` | n/a | fake (asyncpg-shaped) | real `dispatch_validators` + real `FsWriteTool` |
 
 The fake NATS KV comes from `packages/core/tests/unit/coordination/_fake_kv.py`
@@ -43,12 +43,13 @@ drift from production SQL fails loudly rather than silently no-opping.
    backend exercises full transaction semantics, FK constraints, and
    schema-search-path routing. That full round-trip belongs in the
    aibots integration suite where testcontainers infra already exists.
-3. **Hub-side `WorkspaceAuditConsumer` writing to `platform_audit.audit_events`** —
+3. **Hub-side `UnifiedAuditConsumer` writing to `platform_audit.audit_events`** —
    IMPLEMENTED. The end-to-end audit pipeline (real testcontainers NATS
-   + Postgres, real `publish_workspace_event`, real
-   `WorkspaceAuditConsumer`, real `AuditEventCollection`, real
-   migration 012 partial unique index) now has coverage in the aibots
-   repo at `tests/integration/test_workspace_audit_e2e.py`. That file
+   + Postgres, real `threetears.agent.audit.publish_audit`, real
+   `UnifiedAuditConsumer`, real `AuditEventCollection`, real
+   migrations 012 partial unique index + 017 uniform columns) has
+   coverage in the aibots repo at
+   `tests/integration/test_workspace_audit_e2e.py`. That file
    proves: (a) a `workspace.doc_set` envelope lands as one row in
    `platform_audit.audit_events`; (b) duplicate envelopes with the
    same `(correlation_id, event_type)` collapse to one row while a

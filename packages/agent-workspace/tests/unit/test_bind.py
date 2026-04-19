@@ -637,21 +637,26 @@ async def test_bind_emits_one_audit_event_per_changed_file(
             (disk_root / "b.txt").write_bytes(b"new file")
 
     # two changes (update + create) -> two audit events
+    # audit-task-01 Phase 3 renamed ``workspace.bind`` ->
+    # ``workspace.materialize`` on the unified envelope; the subject
+    # derives verbatim from the event_type via the unified
+    # :func:`publish_audit` helper.
     assert len(nats.published) == 2
     subjects = {s for s, _p in nats.published}
-    assert subjects == {"ns.audit.workspace.bind"}
+    assert subjects == {"ns.audit.workspace.materialize"}
     envelopes = [json.loads(p.decode("utf-8")) for _s, p in nats.published]
     for env in envelopes:
-        assert env["event_type"] == "workspace.bind"
-        assert env["action"] == "bind"
-        assert env["resource_type"] == "workspace_file"
+        assert env["event_type"] == "workspace.materialize"
+        assert env["action"] == "materialize"
+        assert env["resource_namespace_type"] == "workspace_file"
+        assert env["outcome"] == "success"
         assert env["details"]["root_name"] == "bind"
         # WS-ACL-10: full identity tuple on the envelope
         assert UUID(env["actor_user_id"])
         assert UUID(env["calling_agent_id"])
         assert UUID(env["owner_agent_id"])
         assert UUID(env["customer_id"])
-        assert UUID(env["namespace_id"])
+        assert UUID(env["resource_namespace_id"])
     kinds = {env["details"]["change_kind"] for env in envelopes}
     assert kinds == {"update", "create"}
 

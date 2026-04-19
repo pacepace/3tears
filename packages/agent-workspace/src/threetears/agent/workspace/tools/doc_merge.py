@@ -13,9 +13,11 @@ matching the enforce-then-act ordering enforced by shard 18's AST test.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -26,7 +28,6 @@ from threetears.core.security import SandboxDenied
 from threetears.core.serialization import UnknownFormatError, handler_for
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
 from threetears.agent.workspace.authorize import (
     AclCacheLike,
     WorkspaceAccessDenied,
@@ -240,24 +241,29 @@ class DocMergeTool(TearsTool):
                                 workspace_collection=self._workspaces,
                                 validators=self._validators,
                             )
-                            # defense-in-depth audit publish
+                            # defense-in-depth audit publish: additive
+                            # per-tool event on top of the baseline
+                            # ``tool.call`` emitted by ToolServer.
                             try:
                                 if self._namespace is not None:
                                     identity = workspace_audit_identity(workspace)
-                                    await audit.publish_workspace_event(
-                                        nats_client=self._nats_client,
-                                        namespace=self._namespace,
+                                    event = AuditEvent(
+                                        id=uuid7(),
+                                        timestamp=datetime.now(UTC),
                                         event_type="workspace.doc_merge",
                                         actor_user_id=identity.actor_user_id,
-                                        agent_id=self._agent_id,
                                         calling_agent_id=identity.calling_agent_id,
                                         owner_agent_id=identity.owner_agent_id,
                                         customer_id=identity.customer_id,
-                                        namespace_id=identity.namespace_id,
-                                        resource_type="workspace_file",
-                                        resource_id=(f"{workspace.id}/{relative_path}"),
+                                        resource_namespace_id=identity.namespace_id,
+                                        resource_namespace_type="workspace_file",
                                         action="merge",
+                                        outcome="success",
+                                        correlation_id=correlation_id,
                                         details={
+                                            "workspace_resource_id": (
+                                                f"{workspace.id}/{relative_path}"
+                                            ),
                                             "partial_keys": list(partial.keys()),
                                             "bytes_before": old_size,
                                             "bytes_after": len(new_bytes),
@@ -265,7 +271,11 @@ class DocMergeTool(TearsTool):
                                             "sha256_after": new_sha256,
                                             "version": new_version,
                                         },
-                                        correlation_id=correlation_id,
+                                    )
+                                    await publish_audit(
+                                        event,
+                                        nats_client=self._nats_client,
+                                        namespace=self._namespace,
                                     )
                             # NOSILENT: audit failure never taints doc_merge
                             except Exception as audit_exc:

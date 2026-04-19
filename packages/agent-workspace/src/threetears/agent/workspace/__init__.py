@@ -3,7 +3,6 @@
 __version__ = "0.1.0"
 
 from threetears.agent.workspace import handlers as handlers  # noqa: F401
-from threetears.agent.workspace.audit import WorkspaceAuditEnvelope
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
@@ -43,7 +42,6 @@ __all__ = [
     "WorkspaceFileLease",
     "WorkspaceFileVersion",
     "WorkspaceFileVersionCollection",
-    "WorkspaceAuditEnvelope",
     "WorkspaceSandbox",
     "WorkspaceValidationError",
     "YamlHandler",

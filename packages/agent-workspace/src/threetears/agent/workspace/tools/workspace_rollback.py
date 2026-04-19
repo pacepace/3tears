@@ -33,9 +33,11 @@ design commitments:
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -45,7 +47,6 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
 from threetears.agent.workspace.authorize import (
     AclCacheLike,
     WorkspaceAccessDenied,
@@ -246,28 +247,35 @@ class WorkspaceRollbackTool(TearsTool):
                         validators=self._validators,
                     )
                     n_changed += 1
-            # defense-in-depth audit publish: one event per rollback call
+            # defense-in-depth audit publish: one additive event per
+            # rollback call, on top of the baseline ``tool.call``
+            # emitted by ToolServer.
             try:
                 if self._namespace is not None:
                     identity = workspace_audit_identity(workspace)
-                    await audit.publish_workspace_event(
-                        nats_client=self._nats_client,
-                        namespace=self._namespace,
-                        event_type="workspace.rollback_to",
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
+                        event_type="workspace.rollback",
                         actor_user_id=identity.actor_user_id,
-                        agent_id=self._agent_id,
                         calling_agent_id=identity.calling_agent_id,
                         owner_agent_id=identity.owner_agent_id,
                         customer_id=identity.customer_id,
-                        namespace_id=identity.namespace_id,
-                        resource_type="workspace",
-                        resource_id=str(workspace.id),
-                        action="rollback_to",
+                        resource_namespace_id=identity.namespace_id,
+                        resource_namespace_type="workspace",
+                        action="rollback",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": str(workspace.id),
                             "ref": str(ref),
                             "files_changed": n_changed,
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=self._nats_client,
+                        namespace=self._namespace,
                     )
             # NOSILENT: audit failure never taints rollback
             except Exception as audit_exc:

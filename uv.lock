@@ -130,6 +130,7 @@ version = "0.5.0"
 source = { editable = "packages/agent-tools" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
     { name = "3tears-conversations" },
     { name = "httpx" },
@@ -182,6 +183,7 @@ xlsx = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-agent-audit", editable = "packages/agent-audit" },
     { name = "3tears-agent-memory", editable = "packages/agent-memory" },
     { name = "3tears-conversations", editable = "packages/conversations" },
     { name = "httpx" },
@@ -217,6 +219,7 @@ source = { editable = "packages/agent-workspace" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
+    { name = "3tears-agent-audit" },
     { name = "3tears-agent-tools" },
     { name = "jsonpath-ng" },
     { name = "pydantic" },
@@ -228,6 +231,7 @@ dependencies = [
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent-acl" },
+    { name = "3tears-agent-audit", editable = "packages/agent-audit" },
     { name = "3tears-agent-tools", editable = "packages/agent-tools" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
     { name = "pydantic", specifier = ">=2.0" },

@@ -66,6 +66,7 @@ explicit_package_bases = true
 mypy_path = [
     "packages/core/src",
     "packages/agent-acl/src",
+    "packages/agent-audit/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
     "packages/agent-workspace/src",
@@ -81,6 +82,7 @@ mypy_path = [
 files = [
     "packages/core/src",
     "packages/agent-acl/src",
+    "packages/agent-audit/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
     "packages/agent-workspace/src",

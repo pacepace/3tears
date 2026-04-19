@@ -1,13 +1,22 @@
-"""tests confirming every write-class workspace tool publishes an audit
-envelope on its success path and tolerates audit-publish failure.
+"""tests confirming every write-class workspace tool publishes an additive
+audit event on its success path and tolerates audit-publish failure.
+
+audit-task-01 Phase 3: workspace tools now publish unified
+:class:`threetears.agent.audit.AuditEvent` envelopes via
+:func:`threetears.agent.audit.publish_audit`. the subject for the
+unified helper is ``{namespace}.audit.{event_type}`` verbatim, so e.g.
+``workspace.doc_set`` rides on ``{namespace}.audit.workspace.doc_set``.
+each tool emission is **additive** on top of the baseline
+``tool.call`` envelope that :class:`ToolServer._handle_call` emits;
+the baseline is exercised in the agent-tools test suite.
 
 the mainline tests for each tool live in their own ``test_*.py`` module
 and run with ``namespace=None`` so the audit block is a deliberate no-op
 there (keeping those tests focused on SQL / sandbox behavior). this
 module supplies ``namespace="ns"`` + a recording NATS fake to prove the
-injection fires with the correct subject, event_type, resource_type,
-action, and details shape, and that a raising NATS client does NOT
-break the tool's success return.
+injection fires with the correct subject, event_type,
+``resource_namespace_type``, action, and details shape, and that a
+raising NATS client does NOT break the tool's success return.
 """
 
 from __future__ import annotations
@@ -249,21 +258,20 @@ async def test_fs_write_publishes_audit_on_success(
     )
     result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.write"
+    assert _subject(nats) == "ns.audit.workspace.fs_write"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.fs_write"
-    assert envelope["actor_type"] == "agent"
     # WS-ACL-10: actor_user_id + calling_agent_id + owner_agent_id +
-    # customer_id + namespace_id ride on every envelope.
+    # customer_id + resource_namespace_id ride on every envelope.
     assert UUID(envelope["actor_user_id"])
-    assert envelope["agent_id"] == str(agent_id)
     assert UUID(envelope["calling_agent_id"])
     assert envelope["owner_agent_id"] == str(ws.owner_agent_id)
     assert UUID(envelope["customer_id"])
-    assert envelope["namespace_id"] == str(ws.id)
-    assert envelope["resource_type"] == "workspace_file"
-    assert envelope["resource_id"] == f"{ws.id}/a.md"
+    assert envelope["resource_namespace_id"] == str(ws.id)
+    assert envelope["resource_namespace_type"] == "workspace_file"
     assert envelope["action"] == "write"
+    assert envelope["outcome"] == "success"
+    assert envelope["details"]["workspace_resource_id"] == f"{ws.id}/a.md"
     assert envelope["details"]["bytes_after"] == 5
     assert envelope["details"]["sha256_before"] is None
     assert envelope["details"]["sha256_after"] is not None
@@ -325,10 +333,11 @@ async def test_fs_edit_publishes_audit_with_occurrence_count(
     )
     result = await tool.execute(relative_path="a.md", find="foo", replace="qux", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.edit"
+    assert _subject(nats) == "ns.audit.workspace.fs_edit"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.fs_edit"
     assert envelope["action"] == "edit"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["occurrences"] == 2
     assert envelope["details"]["bytes_before"] == 11
     assert envelope["details"]["sha256_before"] == "b" * 64
@@ -375,10 +384,11 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value(
         workspace="ws",
     )
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.set"
+    assert _subject(nats) == "ns.audit.workspace.doc_set"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.doc_set"
     assert envelope["action"] == "set"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["jsonpath"] == "$.k"
     assert envelope["details"]["value"] == 42
     assert envelope["details"]["sha256_before"] == "e" * 64
@@ -424,9 +434,10 @@ async def test_doc_merge_publishes_audit_with_partial_keys(
         workspace="ws",
     )
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.merge"
+    assert _subject(nats) == "ns.audit.workspace.doc_merge"
     envelope = _only_envelope(nats)
     assert envelope["action"] == "merge"
+    assert envelope["outcome"] == "success"
     assert sorted(envelope["details"]["partial_keys"]) == ["c", "d"]
 
 
@@ -464,8 +475,9 @@ async def test_workspace_create_publishes_audit(
     assert _subject(nats) == "ns.audit.workspace.create"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.create"
-    assert envelope["resource_type"] == "workspace"
+    assert envelope["resource_namespace_type"] == "workspace"
     assert envelope["action"] == "create"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["name"] == "new_ws"
     assert envelope["details"]["files_changed"] == 0
     assert envelope["details"]["template_name"] is None
@@ -507,8 +519,9 @@ async def test_workspace_reset_publishes_audit(
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.reset"
     assert envelope["action"] == "reset"
-    assert envelope["resource_type"] == "workspace"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["resource_namespace_type"] == "workspace"
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["template_name"] == "starter"
     assert envelope["details"]["files_changed"] == 1
 
@@ -556,12 +569,13 @@ async def test_workspace_delete_publishes_audit(
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.delete"
     assert envelope["action"] == "delete"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["name"] == "bye"
 
 
 # ---------------------------------------------------------------------------
-# workspace.rollback_to
+# workspace.rollback
 # ---------------------------------------------------------------------------
 
 
@@ -569,7 +583,7 @@ async def test_workspace_delete_publishes_audit(
 async def test_workspace_rollback_publishes_single_audit_event(
     permissive_acl_cache: MagicMock,
 ) -> None:
-    """rollback_to emits exactly one audit event with files_changed count."""
+    """rollback emits exactly one audit event with files_changed count."""
     ws_id = uuid4()
     ws = _FakeWorkspaceEntity(id=ws_id, name="ws", current_version=5)
     nats = _FakeNats()
@@ -601,11 +615,12 @@ async def test_workspace_rollback_publishes_single_audit_event(
     )
     result = await tool.execute(ref="head", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.rollback_to"
+    assert _subject(nats) == "ns.audit.workspace.rollback"
     envelope = _only_envelope(nats)
-    assert envelope["event_type"] == "workspace.rollback_to"
-    assert envelope["action"] == "rollback_to"
-    assert envelope["resource_type"] == "workspace"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["event_type"] == "workspace.rollback"
+    assert envelope["action"] == "rollback"
+    assert envelope["resource_namespace_type"] == "workspace"
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["ref"] == "head"
     assert envelope["details"]["files_changed"] == 0

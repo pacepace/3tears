@@ -220,11 +220,12 @@ class WorkspaceDiscoveryClient:
         body = reply.data
         # success path first; fall through to error parsing on failure
         parse_error: Exception | None = None
+        response: WorkspaceDiscoveryResponse | None
         try:
             response = WorkspaceDiscoveryResponse.model_validate_json(body)
         except Exception as exc:
             parse_error = exc
-            response = None  # type: ignore[assignment]
+            response = None
         result: list[WorkspaceDiscoverySummary]
         if response is not None and response.success:
             result = response.items

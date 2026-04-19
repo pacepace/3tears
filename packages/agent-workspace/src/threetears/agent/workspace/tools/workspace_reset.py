@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -28,7 +29,7 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
     AclCacheLike,
     WorkspaceAccessDenied,
@@ -214,29 +215,36 @@ class WorkspaceResetTool(TearsTool):
                     current_files=[(f.relative_path, f.content, f.sha256) for f in current_files],
                     correlation_id=correlation_id,
                 )
-                # defense-in-depth: swallow audit-side exceptions so a
-                # hiccup there cannot corrupt the successful reset return.
+                # defense-in-depth: additive per-tool event on top of
+                # the baseline ``tool.call`` emitted by ToolServer.
+                # swallow audit-side exceptions so a hiccup there cannot
+                # corrupt the successful reset return.
                 try:
                     if self._namespace is not None:
                         identity = workspace_audit_identity(workspace)
-                        await audit.publish_workspace_event(
-                            nats_client=self._nats_client,
-                            namespace=self._namespace,
+                        event = AuditEvent(
+                            id=uuid7(),
+                            timestamp=datetime.now(UTC),
                             event_type="workspace.reset",
                             actor_user_id=identity.actor_user_id,
-                            agent_id=self._agent_id,
                             calling_agent_id=identity.calling_agent_id,
                             owner_agent_id=identity.owner_agent_id,
                             customer_id=identity.customer_id,
-                            namespace_id=identity.namespace_id,
-                            resource_type="workspace",
-                            resource_id=str(workspace.id),
+                            resource_namespace_id=identity.namespace_id,
+                            resource_namespace_type="workspace",
                             action="reset",
+                            outcome="success",
+                            correlation_id=correlation_id,
                             details={
+                                "workspace_resource_id": str(workspace.id),
                                 "template_name": workspace.template_name,
                                 "files_changed": n_changed,
                             },
-                            correlation_id=correlation_id,
+                        )
+                        await publish_audit(
+                            event,
+                            nats_client=self._nats_client,
+                            namespace=self._namespace,
                         )
                 # NOSILENT: audit failure must never taint a successful reset
                 except Exception as audit_exc:

@@ -76,10 +76,10 @@ from uuid import UUID, uuid7
 
 from watchfiles import Change, awatch
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
 
@@ -1201,17 +1201,20 @@ async def _capture_back(
                     now,
                     workspace.id,
                 )
-        # defense-in-depth: publish one audit event per changed file.
+        # defense-in-depth: publish one additive audit event per
+        # changed file on top of the baseline ``tool.call`` emitted
+        # by ToolServer when the caller is inside a tool dispatch.
         # outside the transaction; audit is best-effort and must not
         # undo committed capture-back on transient NATS failure.
         #
-        # WS-ACL-10: envelope carries the five-UUID identity tuple.
-        # the scope is the authoritative source for actor_user_id /
+        # WS-ACL-10: the envelope carries the identity tuple. the
+        # scope is the authoritative source for actor_user_id /
         # calling_agent_id / customer_id; bind() is called inside a
-        # dispatch so scope is set. owner_agent_id + namespace_id come
-        # from the workspace entity. when scope is unavailable (e.g.
-        # unit tests invoking _capture_back directly), the helper
-        # RuntimeError propagates into the outer swallow.
+        # dispatch so scope is set. owner_agent_id + resource
+        # namespace id come from the workspace entity. when scope is
+        # unavailable (e.g. unit tests invoking _capture_back
+        # directly), the helper RuntimeError propagates into the
+        # outer swallow.
         try:
             if namespace is not None and nats_client is not None and changed:
                 from threetears.agent.tools.call_scope import (
@@ -1221,8 +1224,8 @@ async def _capture_back(
                 _scope = _current_scope()
                 if _scope is None:
                     raise RuntimeError(
-                        "workspace.bind audit: no ToolCallScope installed; "
-                        "bind must run under enter_call_scope."
+                        "workspace.materialize audit: no ToolCallScope "
+                        "installed; bind must run under enter_call_scope."
                     )
                 _ctx = _scope.context
                 if (
@@ -1231,37 +1234,42 @@ async def _capture_back(
                     or _ctx.customer_id is None
                 ):
                     raise RuntimeError(
-                        "workspace.bind audit: scope missing identity "
-                        "dimension; cannot publish five-UUID envelope."
+                        "workspace.materialize audit: scope missing "
+                        "identity dimension; cannot publish envelope."
                     )
                 for rel in changed:
-                    await audit.publish_workspace_event(
-                        nats_client=nats_client,
-                        namespace=namespace,
-                        event_type="workspace.bind",
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
+                        event_type="workspace.materialize",
                         actor_user_id=_ctx.user_id,
-                        agent_id=actor_id,
                         calling_agent_id=_ctx.agent_id,
                         owner_agent_id=workspace.owner_agent_id,
                         customer_id=_ctx.customer_id,
-                        namespace_id=workspace.id,
-                        resource_type="workspace_file",
-                        resource_id=f"{workspace.id}/{rel}",
-                        action="bind",
+                        resource_namespace_id=workspace.id,
+                        resource_namespace_type="workspace_file",
+                        action="materialize",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": f"{workspace.id}/{rel}",
                             "root_name": root_name,
                             "change_kind": change_kinds.get(rel, "update"),
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=nats_client,
+                        namespace=namespace,
                     )
         # NOSILENT: audit failure must never taint the successful
         # capture-back commit above. log at exception-level so SRE
         # still sees programmer-error regressions (AttributeError,
-        # NameError) — only NATS-publish failure is already swallowed
-        # inside publish_workspace_event at WARN.
+        # NameError) — only NATS-publish failure is already
+        # swallowed inside publish_audit at WARN.
         except Exception as audit_exc:
             log.exception(
-                "workspace.bind audit publish swallow caught: %s",
+                "workspace.materialize audit publish swallow caught: %s",
                 audit_exc,
             )
     return changed

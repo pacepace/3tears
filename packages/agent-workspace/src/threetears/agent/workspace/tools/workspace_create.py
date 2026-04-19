@@ -23,6 +23,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -31,7 +32,7 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace import pin
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -246,17 +247,17 @@ class WorkspaceCreateTool(TearsTool):
                     error=f"create succeeded but pin failed: {pin_exc}",
                 )
             else:
-                # defense-in-depth: publish_workspace_event swallows its own
-                # publish failures, but wrap again so any unforeseen error
-                # from the helper itself cannot taint a successful return.
+                # defense-in-depth: additive per-tool event on top of
+                # the baseline ``tool.call`` emitted by ToolServer.
                 #
                 # workspace_create is the one tool that publishes before a
                 # Workspace entity exists to hand to workspace_audit_identity
                 # (we're still INSIDE the creation flow). we read the call
                 # scope directly for actor/calling/customer, and source
-                # owner_agent_id + namespace_id from the values we just
-                # inserted. any missing dimension is a wiring bug, raised
-                # by the guard below and surfaced by the outer swallow.
+                # owner_agent_id + resource_namespace_id from the values we
+                # just inserted. any missing dimension is a wiring bug,
+                # raised by the guard below and surfaced by the outer
+                # swallow.
                 try:
                     if self._namespace is not None:
                         from threetears.agent.tools.call_scope import (
@@ -275,7 +276,7 @@ class WorkspaceCreateTool(TearsTool):
                             raise RuntimeError(
                                 "workspace_create audit: scope missing "
                                 "user_id or agent_id; cannot publish the "
-                                "five-UUID envelope."
+                                "identity tuple."
                             )
                         _audit_customer = _ctx.customer_id or self._customer_id
                         if _audit_customer is None:
@@ -284,25 +285,30 @@ class WorkspaceCreateTool(TearsTool):
                                 "scope or constructor; workspace was created "
                                 "without an owning customer."
                             )
-                        await audit.publish_workspace_event(
-                            nats_client=self._nats_client,
-                            namespace=self._namespace,
+                        event = AuditEvent(
+                            id=uuid7(),
+                            timestamp=datetime.now(UTC),
                             event_type="workspace.create",
                             actor_user_id=_ctx.user_id,
-                            agent_id=self._agent_id,
                             calling_agent_id=_ctx.agent_id,
                             owner_agent_id=self._agent_id,
                             customer_id=_audit_customer,
-                            namespace_id=workspace_id,
-                            resource_type="workspace",
-                            resource_id=str(workspace_id),
+                            resource_namespace_id=workspace_id,
+                            resource_namespace_type="workspace",
                             action="create",
+                            outcome="success",
+                            correlation_id=correlation_id,
                             details={
+                                "workspace_resource_id": str(workspace_id),
                                 "name": name,
                                 "template_name": effective_template,
                                 "files_changed": files_count,
                             },
-                            correlation_id=correlation_id,
+                        )
+                        await publish_audit(
+                            event,
+                            nats_client=self._nats_client,
+                            namespace=self._namespace,
                         )
                 # NOSILENT: audit failure must never taint a successful create
                 except Exception as audit_exc:

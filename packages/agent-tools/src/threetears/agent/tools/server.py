@@ -7,6 +7,7 @@ handles graceful shutdown. each tool pod runs one ToolServer.
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from uuid import UUID, uuid7
@@ -15,6 +16,7 @@ from nats.aio.client import Client as NatsClient
 from nats.aio.msg import Msg as NatsMsg
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
@@ -339,6 +341,7 @@ class ToolServer:
         bootstrap_token: str | None = None,
         context_factory: ("Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None") = None,
         nats_client: NatsClient | None = None,
+        agent_id: UUID | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -381,6 +384,13 @@ class ToolServer:
             ignored and the server will not disconnect the client on
             shutdown
         :ptype nats_client: NatsClient | None
+        :param agent_id: owning-agent UUID for this pod. stamped on
+            the ``owner_agent_id`` axis of every baseline ``tool.call``
+            audit envelope emitted from :meth:`_handle_call`. ``None``
+            in bootstrap / test scenarios suppresses audit emission
+            for that pod (alongside ``namespace``); production wiring
+            always supplies it.
+        :ptype agent_id: UUID | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -395,6 +405,7 @@ class ToolServer:
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         self._context_factory = context_factory
+        self._agent_id = agent_id
         self._tools: dict[str, TearsTool] = {}
         self._nc: NatsClient | None = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -803,9 +814,30 @@ class ToolServer:
         duration of the dispatch so every log line in this handler and
         its callees renders with those tags.
 
+        audit-task-01 (AUD-03): every dispatch -- including malformed
+        requests, unknown-tool rejections, and raising tools -- emits a
+        baseline ``tool.call`` :class:`AuditEvent` via
+        :func:`publish_audit` on ``{namespace}.audit.tool.call``. the
+        baseline event carries the CallContext identity axes, the
+        tool name / version / duration, and the dispatch ``outcome``
+        (``success`` / ``failure`` / ``error``). per-tool domain events
+        (``workspace.fs_write`` etc.) are additive: tools still publish
+        their own rich events to their dotted event_type; the baseline
+        gives admin queries a uniform ``tool.call`` row for every
+        dispatch regardless of whether the tool bothered to emit its
+        own detail event.
+
         :param msg: incoming NATS message containing call request
         :ptype msg: NatsMsg
         """
+        start_monotonic = time.monotonic()
+        request: CallRequest | None = None
+        tool_key: str = ""
+        tool_name: str = ""
+        tool_version: str = ""
+        outcome: str = "success"
+        failure_reason: str | None = None
+
         try:
             request = CallRequest.model_validate_json(msg.data)
         except Exception as exc:
@@ -815,6 +847,15 @@ class ToolServer:
                 error=f"malformed call request: {exc}",
             )
             await msg.respond(error_response.model_dump_json().encode("utf-8"))
+            duration_ms = (time.monotonic() - start_monotonic) * 1000.0
+            await self._publish_baseline_audit(
+                request=None,
+                tool_name="",
+                tool_version="",
+                outcome="failure",
+                duration_ms=duration_ms,
+                failure_reason=f"malformed call request: {exc}",
+            )
             return
 
         bind_log_context(request.context)
@@ -830,7 +871,9 @@ class ToolServer:
                 else ""
             )
 
-            tool_key = f"{request.tool_name}@{request.tool_version}"
+            tool_name = request.tool_name
+            tool_version = request.tool_version
+            tool_key = f"{tool_name}@{tool_version}"
             tool = self._tools.get(tool_key)
 
             if tool is None:
@@ -850,6 +893,8 @@ class ToolServer:
                         }
                     },
                 )
+                outcome = "failure"
+                failure_reason = f"unknown tool: {tool_key}"
                 return
 
             try:
@@ -863,6 +908,9 @@ class ToolServer:
                     error=tool_result.error,
                     context=request.context,
                 )
+                if not tool_result.success:
+                    outcome = "failure"
+                    failure_reason = tool_result.error
             except Exception as exc:
                 log.error(
                     "tool execution failed",
@@ -880,10 +928,120 @@ class ToolServer:
                     error=f"tool execution failed: {exc}",
                     context=request.context,
                 )
+                outcome = "error"
+                failure_reason = f"tool execution failed: {exc}"
 
             await msg.respond(response.model_dump_json().encode("utf-8"))
         finally:
+            duration_ms = (time.monotonic() - start_monotonic) * 1000.0
+            await self._publish_baseline_audit(
+                request=request,
+                tool_name=tool_name,
+                tool_version=tool_version,
+                outcome=outcome,
+                duration_ms=duration_ms,
+                failure_reason=failure_reason,
+            )
             clear_context()
+
+    async def _publish_baseline_audit(
+        self,
+        *,
+        request: CallRequest | None,
+        tool_name: str,
+        tool_version: str,
+        outcome: str,
+        duration_ms: float,
+        failure_reason: str | None,
+    ) -> None:
+        """publish the baseline ``tool.call`` audit event; fire-and-forget.
+
+        emission is gated on ``self._namespace`` and ``self._nc`` both
+        being set (production wiring); bootstrap / test scenarios that
+        omit either leave the pipeline a no-op. identity axes come
+        from ``request.context`` when a :class:`CallContext` was
+        parsed; malformed-request and no-context paths emit with
+        ``None`` identity. resource axes stay ``None`` at the baseline
+        layer -- the tool server does not know which namespace the
+        tool will touch; tools that want a resource-tagged event emit
+        their own additive event during dispatch.
+
+        :param request: parsed call request, or ``None`` when the wire
+            payload failed to decode
+        :ptype request: CallRequest | None
+        :param tool_name: requested tool name (empty string on
+            malformed / unparsable request)
+        :ptype tool_name: str
+        :param tool_version: requested tool version (empty string on
+            malformed / unparsable request)
+        :ptype tool_version: str
+        :param outcome: one of ``success`` / ``failure`` / ``error``
+        :ptype outcome: str
+        :param duration_ms: wall-clock elapsed milliseconds between
+            handler entry and the audit publish
+        :ptype duration_ms: float
+        :param failure_reason: human-readable reason string when
+            ``outcome != "success"``; ``None`` otherwise
+        :ptype failure_reason: str | None
+        :return: nothing
+        :rtype: None
+        """
+        if self._namespace is None or self._nc is None:
+            # bootstrap / test scenario: nothing to publish on.
+            return
+        context = request.context if request is not None else None
+        details: dict[str, Any] = {
+            "tool_name": tool_name,
+            "tool_version": tool_version,
+            "duration_ms": duration_ms,
+        }
+        if failure_reason is not None:
+            details["failure_reason"] = failure_reason
+        correlation_id: UUID
+        if context is not None and context.correlation_id is not None:
+            correlation_id = context.correlation_id
+        else:
+            # malformed request / no-context dispatch: mint a fresh
+            # correlation id so the ``(correlation_id, event_type)``
+            # unique index still distinguishes concurrent baseline
+            # rows for otherwise-identical tool names.
+            correlation_id = uuid7()
+        event = AuditEvent(
+            id=uuid7(),
+            timestamp=datetime.now(UTC),
+            event_type="tool.call",
+            actor_user_id=context.user_id if context is not None else None,
+            calling_agent_id=context.agent_id if context is not None else None,
+            owner_agent_id=self._agent_id,
+            customer_id=context.customer_id if context is not None else None,
+            resource_namespace_id=None,
+            resource_namespace_type=None,
+            action="call",
+            outcome=outcome,
+            correlation_id=correlation_id,
+            details=details,
+        )
+        try:
+            await publish_audit(
+                event,
+                nats_client=self._nc,
+                namespace=self._namespace,
+            )
+        # NOSILENT: audit publish is fire-and-forget; publish_audit
+        # already swallows inside, but the belt-and-braces guard here
+        # protects against any programmer-error regression (TypeError,
+        # AttributeError) that could otherwise taint a successful
+        # tool return.
+        except Exception as exc:
+            log.warning(
+                "tool server baseline audit publish failed",
+                extra={
+                    "extra_data": {
+                        "tool_key": f"{tool_name}@{tool_version}",
+                        "error": str(exc),
+                    },
+                },
+            )
 
     async def _build_call_scope(
         self,
