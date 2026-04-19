@@ -1,15 +1,19 @@
 """tests for ``threetears.workspace.list`` -- WorkspaceListTool.
 
 workspace-task-19 Phase 5 rewrote the list tool to issue a NATS
-request to the broker's ``{ns}.workspace.discover`` subject instead
-of scanning the caller's agent schema. these tests exercise the
-rewritten tool against a fake discovery client.
+request instead of scanning the caller's agent schema. namespace-
+task-01 Phase 1 generalized that subject from
+``{ns}.workspace.discover`` to ``{ns}.namespace.discover`` with a
+``namespace_type`` filter; the tool now passes
+``namespace_type="workspace"`` explicitly on every call. these tests
+exercise the tool against a fake namespace-discovery client that
+records the filter it was asked for.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -21,17 +25,22 @@ from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.workspace.discovery_client import (
     DiscoveryClientError,
-    WorkspaceDiscoverySummary,
+    NamespaceDiscoverySummary,
 )
 from threetears.agent.workspace.tools.workspace_list import WorkspaceListTool
 
 
 @dataclass
 class _FakeDiscoveryClient:
-    """stand-in for :class:`WorkspaceDiscoveryClient` returning fixed items."""
+    """stand-in for :class:`NamespaceDiscoveryClient` returning fixed items.
 
-    items: list[WorkspaceDiscoverySummary]
+    records the ``namespace_type`` filter the tool passed so the tests
+    can assert the tool is asking for ``"workspace"`` specifically.
+    """
+
+    items: list[NamespaceDiscoverySummary]
     raise_exc: Exception | None = None
+    last_filter: str | None = field(default=None, init=False)
 
     async def discover(
         self,
@@ -40,9 +49,11 @@ class _FakeDiscoveryClient:
         agent_id: UUID,
         customer_id: UUID,
         user_id: UUID | None,
-    ) -> list[WorkspaceDiscoverySummary]:
+        namespace_type: str | None = None,
+    ) -> list[NamespaceDiscoverySummary]:
         if self.raise_exc is not None:
             raise self.raise_exc
+        self.last_filter = namespace_type
         return list(self.items)
 
 
@@ -63,15 +74,17 @@ async def test_execute_returns_discovered_summaries() -> None:
     customer_id = uuid4()
     other_agent = uuid4()
     items = [
-        WorkspaceDiscoverySummary(
+        NamespaceDiscoverySummary(
             id=uuid4(),
             name="workspace.alpha",
+            namespace_type="workspace",
             owner_agent_id=agent_id,
             customer_id=customer_id,
         ),
-        WorkspaceDiscoverySummary(
+        NamespaceDiscoverySummary(
             id=uuid4(),
             name="workspace.beta",
+            namespace_type="workspace",
             owner_agent_id=other_agent,
             customer_id=customer_id,
         ),
@@ -87,6 +100,8 @@ async def test_execute_returns_discovered_summaries() -> None:
     assert len(payload) == 2
     assert payload[0]["name"] == "workspace.alpha"
     assert payload[1]["owner_agent_id"] == str(other_agent)
+    # tool must ask the broker for workspace-type rows specifically
+    assert client.last_filter == "workspace"
 
 
 @pytest.mark.asyncio
@@ -100,6 +115,7 @@ async def test_execute_returns_empty_array_for_empty_discovery() -> None:
 
     assert result.success is True
     assert result.content == "[]"
+    assert client.last_filter == "workspace"
 
 
 @pytest.mark.asyncio

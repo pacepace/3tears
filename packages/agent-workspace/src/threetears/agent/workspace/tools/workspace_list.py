@@ -1,19 +1,20 @@
-"""``threetears.workspace.list`` -- enumerate workspaces via discovery subject.
+"""``threetears.workspace.list`` -- enumerate workspaces via namespace discovery.
 
-workspace-task-19 Phase 5 replaces the per-agent-schema SELECT that
-shipped in Phase 0 with a NATS request to the broker's
-``{ns}.workspace.discover`` subject. discovery returns every
-workspace-type namespace the caller can see in their customer --
-workspaces the calling agent owns plus workspaces granted to that
+workspace-task-19 Phase 5 replaced the per-agent-schema SELECT with a
+NATS request to the broker's workspace-discovery subject; namespace-
+task-01 Phase 1 generalized that subject to
+``{ns}.namespace.discover`` with a ``namespace_type`` filter on the
+request. this tool now asks for ``namespace_type="workspace"``
+explicitly.
+
+discovery returns every namespace the caller can see in their customer
+-- workspaces the calling agent owns plus workspaces granted to that
 agent within the customer -- so cross-agent sharing surfaces naturally
 in the list UI without any special-case branching here.
 
-the tool no longer needs the :class:`WorkspaceCollection` at all: the
-broker runs the SELECT against ``platform.namespaces`` and returns
-summaries sufficient for the LLM-facing list shape. when discovery is
-unavailable (NATS not wired, broker down), the tool surfaces the
-failure as errors-as-data per the TearsTool contract rather than
-raising.
+when discovery is unavailable (NATS not wired, broker down), the tool
+surfaces the failure as errors-as-data per the TearsTool contract
+rather than raising.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from threetears.observe import get_logger
 
 from threetears.agent.workspace.discovery_client import (
     DiscoveryClientError,
-    WorkspaceDiscoveryClient,
+    NamespaceDiscoveryClient,
 )
 from threetears.agent.workspace.factory import register_tool_builder
 
@@ -51,7 +52,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
 
 
 class WorkspaceListTool(TearsTool):
-    """list workspaces the caller can see via broker discovery.
+    """list workspaces the caller can see via broker namespace discovery.
 
     returns a JSON-encoded array of
     ``{name, owner_agent_id, customer_id}`` entries, newest-update
@@ -63,14 +64,14 @@ class WorkspaceListTool(TearsTool):
 
     def __init__(
         self,
-        discovery_client: WorkspaceDiscoveryClient,
+        discovery_client: NamespaceDiscoveryClient,
         agent_id: UUID,
     ) -> None:
         """
         binds tool to a discovery client and the owning agent.
 
-        :param discovery_client: NATS client for ``workspace.discover``
-        :ptype discovery_client: WorkspaceDiscoveryClient
+        :param discovery_client: NATS client for ``namespace.discover``
+        :ptype discovery_client: NamespaceDiscoveryClient
         :param agent_id: identifier of agent issuing discovery
         :ptype agent_id: UUID
         """
@@ -79,7 +80,7 @@ class WorkspaceListTool(TearsTool):
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
-        issue ``workspace.discover`` and return visible workspaces as JSON.
+        issue ``namespace.discover`` for ``workspace`` type and return JSON.
 
         reads the caller's customer_id + user_id from the current
         :class:`ToolCallScope` so the broker can filter the discovery
@@ -114,6 +115,7 @@ class WorkspaceListTool(TearsTool):
                     agent_id=self._agent_id,
                     customer_id=customer_id,
                     user_id=user_id,
+                    namespace_type="workspace",
                 )
                 payload = [
                     {
@@ -179,7 +181,7 @@ def _build(**kwargs: Any) -> WorkspaceListTool:
     constructs a :class:`WorkspaceListTool` from the factory dep bundle.
 
     consumes ``nats_client``, ``namespace``, and ``agent_id`` to build
-    a :class:`WorkspaceDiscoveryClient`; ignores the rest. registered
+    a :class:`NamespaceDiscoveryClient`; ignores the rest. registered
     with :mod:`threetears.agent.workspace.factory` on import so
     :func:`build_workspace_tools` emits this tool.
 
@@ -188,7 +190,7 @@ def _build(**kwargs: Any) -> WorkspaceListTool:
     :return: constructed tool
     :rtype: WorkspaceListTool
     """
-    client = WorkspaceDiscoveryClient(
+    client = NamespaceDiscoveryClient(
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace") or "",
     )

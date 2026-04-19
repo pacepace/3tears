@@ -1,19 +1,23 @@
 """tests for ``threetears.workspace.current`` -- WorkspaceCurrentTool.
 
 workspace-task-19 Phase 5 rewrote this tool to verify pin visibility
-via the ``workspace.discover`` subject. tests here exercise:
+via the discovery subject; namespace-task-01 Phase 1 renamed that
+subject from ``{ns}.workspace.discover`` to
+``{ns}.namespace.discover`` and added a ``namespace_type`` filter
+the tool now passes as ``"workspace"``. tests here exercise:
 
 - pinned + caller owns the workspace -> discovery returns the row -> success
 - pinned + caller has no grant -> discovery returns empty -> WorkspaceAccessDenied path
 - unset pin -> null-pin message
 - discovery / context failures -> errors-as-data
 - mcp metadata surfaces
+- every discovery call carries ``namespace_type="workspace"``
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -25,7 +29,7 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace.discovery_client import (
     DiscoveryClientError,
-    WorkspaceDiscoverySummary,
+    NamespaceDiscoverySummary,
 )
 from threetears.agent.workspace.pin import PinnedWorkspace
 
@@ -39,10 +43,14 @@ class _FakeContext:
 
 @dataclass
 class _FakeDiscoveryClient:
-    """stand-in for :class:`WorkspaceDiscoveryClient` returning fixed items."""
+    """stand-in for :class:`NamespaceDiscoveryClient` returning fixed items.
 
-    items: list[WorkspaceDiscoverySummary]
+    records the ``namespace_type`` filter for assertion.
+    """
+
+    items: list[NamespaceDiscoverySummary]
     raise_exc: Exception | None = None
+    last_filter: str | None = field(default=None, init=False)
 
     async def discover(
         self,
@@ -51,17 +59,20 @@ class _FakeDiscoveryClient:
         agent_id: UUID,
         customer_id: UUID,
         user_id: UUID | None,
-    ) -> list[WorkspaceDiscoverySummary]:
+        namespace_type: str | None = None,
+    ) -> list[NamespaceDiscoverySummary]:
         if self.raise_exc is not None:
             raise self.raise_exc
+        self.last_filter = namespace_type
         return list(self.items)
 
 
-def _make_summary(workspace_id: UUID, owner_agent: UUID, customer: UUID) -> WorkspaceDiscoverySummary:
+def _make_summary(workspace_id: UUID, owner_agent: UUID, customer: UUID) -> NamespaceDiscoverySummary:
     """build a discovery summary for the given workspace id."""
-    return WorkspaceDiscoverySummary(
+    return NamespaceDiscoverySummary(
         id=workspace_id,
         name=f"workspace.{workspace_id}",
+        namespace_type="workspace",
         owner_agent_id=owner_agent,
         customer_id=customer,
     )
@@ -116,6 +127,8 @@ async def test_execute_returns_pin_snapshot_when_visible(
     payload = json.loads(result.content)
     assert payload["workspace_id"] == str(workspace_id)
     assert payload["workspace_name"] == "main"
+    # tool must scope the discovery to workspace-type rows
+    assert client.last_filter == "workspace"
 
 
 @pytest.mark.asyncio

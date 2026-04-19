@@ -1,13 +1,17 @@
 """``threetears.workspace.current`` -- report the conversation's pinned workspace.
 
-workspace-task-19 Phase 5 extends the pin-snapshot path with discovery
-so a conversation pinned to a workspace owned by a different agent
-(same customer, grant in place) resolves cleanly. when the pin's
+workspace-task-19 Phase 5 added discovery-backed pin-visibility checks so
+a conversation pinned to a workspace owned by a different agent (same
+customer, grant in place) resolves cleanly. when the pin's
 workspace_id is NOT in the caller's agent-owned set, the tool issues a
-``workspace.discover`` request to verify the caller can see it under a
-grant; if the grant is absent, the tool raises
-:class:`~threetears.agent.workspace.authorize.WorkspaceAccessDenied`
+namespace-discovery request (filtered to ``workspace`` type) to verify
+the caller can see it under a grant; if the grant is absent, the tool
+raises :class:`~threetears.agent.workspace.authorize.WorkspaceAccessDenied`
 so the conversation surfaces a clear recovery message.
+
+namespace-task-01 Phase 1 swapped the workspace-specific discovery
+subject for the generalized ``{ns}.namespace.discover``; this tool now
+passes ``namespace_type="workspace"`` explicitly.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
 from threetears.agent.workspace.discovery_client import (
     DiscoveryClientError,
-    WorkspaceDiscoveryClient,
+    NamespaceDiscoveryClient,
 )
 from threetears.agent.workspace.factory import register_tool_builder
 
@@ -61,7 +65,7 @@ class WorkspaceCurrentTool(TearsTool):
     def __init__(
         self,
         context_provider: Callable[[], ToolContextManager],
-        discovery_client: WorkspaceDiscoveryClient,
+        discovery_client: NamespaceDiscoveryClient,
         agent_id: UUID,
     ) -> None:
         """
@@ -70,8 +74,8 @@ class WorkspaceCurrentTool(TearsTool):
         :param context_provider: zero-arg callable returning the current
             conversation's ToolContextManager
         :ptype context_provider: Callable[[], ToolContextManager]
-        :param discovery_client: NATS client for ``workspace.discover``
-        :ptype discovery_client: WorkspaceDiscoveryClient
+        :param discovery_client: NATS client for ``namespace.discover``
+        :ptype discovery_client: NamespaceDiscoveryClient
         :param agent_id: identifier of calling agent
         :ptype agent_id: UUID
         """
@@ -160,6 +164,7 @@ class WorkspaceCurrentTool(TearsTool):
             agent_id=self._agent_id,
             customer_id=customer_id,
             user_id=user_id,
+            namespace_type="workspace",
         )
         visible = any(item.id == workspace_id for item in items)
         if not visible:
@@ -208,7 +213,7 @@ def _build(**kwargs: Any) -> WorkspaceCurrentTool:
     constructs a :class:`WorkspaceCurrentTool` from the factory dep bundle.
 
     consumes ``context_provider``, ``nats_client``, ``namespace``, and
-    ``agent_id`` to build a :class:`WorkspaceDiscoveryClient`. ignores
+    ``agent_id`` to build a :class:`NamespaceDiscoveryClient`. ignores
     the rest. registered with :mod:`threetears.agent.workspace.factory`
     on import so :func:`build_workspace_tools` emits this tool.
 
@@ -217,7 +222,7 @@ def _build(**kwargs: Any) -> WorkspaceCurrentTool:
     :return: constructed tool
     :rtype: WorkspaceCurrentTool
     """
-    client = WorkspaceDiscoveryClient(
+    client = NamespaceDiscoveryClient(
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace") or "",
     )
