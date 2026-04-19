@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 members = [
     "3tears",
     "3tears-agent-acl",
+    "3tears-agent-audit",
     "3tears-agent-memory",
     "3tears-agent-tools",
     "3tears-agent-workspace",
@@ -78,6 +79,21 @@ provides-extras = ["tracing", "duckdb"]
 name = "3tears-agent-acl"
 version = "0.1.0"
 source = { editable = "packages/agent-acl" }
+dependencies = [
+    { name = "3tears" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears", editable = "packages/core" },
+    { name = "pydantic", specifier = ">=2.0" },
+]
+
+[[package]]
+name = "3tears-agent-audit"
+version = "0.1.0"
+source = { editable = "packages/agent-audit" }
 dependencies = [
     { name = "3tears" },
     { name = "pydantic" },

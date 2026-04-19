@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-agent-audit"
+version = "0.1.0"
+description = "unified audit envelope + fire-and-forget publish helper for the 3tears platform"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: System :: Logging",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.agent.audit"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests requiring docker or real infra",
+]
