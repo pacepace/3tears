@@ -316,9 +316,16 @@ def _run_server() -> None:
 
     reads FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS environment variable
     to determine authorization mode. when set to "true", all tool calls
-    are permitted (development mode). otherwise, default-deny is enforced.
-    host applications should pass a custom AgentToolAuthorizer for
-    production use.
+    are permitted (development mode). otherwise the registry starts
+    with :class:`~threetears.registry.auth.DenyAllAuthorizer` as a
+    hard-deny placeholder — production deployments wire the real
+    :class:`~threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer`
+    programmatically (see the hub's registry startup in
+    :mod:`aibots.hub.app`) because it requires loaders that depend on
+    the hub's DB pool. running this module directly without
+    ``ALLOW_ALL_TOOLS`` will refuse every dispatch — intentional so
+    a mis-wired deployment surfaces as a hard failure rather than
+    silent allow-all.
     """
     from threetears.observe import configure_logging
 
@@ -341,12 +348,14 @@ def _run_server() -> None:
             extra={"extra_data": {"mode": "allow_all"}},
         )
     else:
-        from threetears.registry.auth import KvAgentToolAuthorizer
+        from threetears.registry.auth import DenyAllAuthorizer
 
-        authorizer = KvAgentToolAuthorizer()
-        _logger.info(
-            "registry running with KV-based tool authorization",
-            extra={"extra_data": {"mode": "kv_authorizer"}},
+        authorizer = DenyAllAuthorizer()
+        _logger.warning(
+            "registry standalone entry-point: no RbacEvaluatorAuthorizer wired, "
+            "running in deny-all mode. production deployments construct the "
+            "authorizer programmatically with hub-side loaders.",
+            extra={"extra_data": {"mode": "deny_all_placeholder"}},
         )
 
     server = RegistryServer(authorizer=authorizer)

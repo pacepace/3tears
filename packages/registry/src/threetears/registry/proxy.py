@@ -327,13 +327,23 @@ class CallProxy:
 
         # log-border stringification of identity dimensions; the
         # ProxyCallResponse echoes the whole context so these string
-        # forms are for log records only.
+        # forms are for log records only. user_id rides on the same
+        # CallContext envelope (context-task-01) and is plumbed to
+        # the authorizer so rbac-evaluator implementations can
+        # resolve user-side grants; ``None`` when the dispatch
+        # carries no user identity (authorizer will deny).
         correlation_id_log = _correlation_id_str(request)
         agent_id_log = str(request.context.agent_id)
+        user_id_log: str | None = (
+            str(request.context.user_id)
+            if request.context.user_id is not None
+            else None
+        )
 
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
                 agent_id_log,
+                user_id_log,
                 request.tool_name,
             )
             if not authorized:
@@ -354,6 +364,7 @@ class CallProxy:
                     extra={
                         "extra_data": {
                             "agent_id": agent_id_log,
+                            "user_id": user_id_log,
                             "tool_name": request.tool_name,
                             "correlation_id": correlation_id_log,
                         }

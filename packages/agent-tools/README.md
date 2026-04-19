@@ -8,6 +8,10 @@ Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
 `ToolServer._handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id` — the `(correlation_id, event_type)` partial unique index on `platform_audit.audit_events` keeps them distinct. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.
 
+## Tool-as-namespace emission (namespace-task-01 Phase 2)
+
+`ToolServer.register_tool` writes a `platform.namespaces` row of type `tool` for every registered tool (name shape `tool:<mcp_name>:<version>`); `deregister_tool` drops every row for the named tool family (`LIKE 'tool:<mcp_name>:%'`) in one statement. The ToolServer constructor accepts `customer_id: UUID | None` and `l3_backend: NamespaceEmitter | None` alongside the existing `agent_id` — platform-built-in tool pods pass `None` for both, landing rows with NULL owner columns (same shape as `shared`-type workspaces). Emission is gated on `l3_backend` being wired (tests / standalone dev leave it unset and the emit step is a no-op); when wired, emission failures raise unchanged so misconfigured deployments surface immediately rather than silently dropping namespaces. The resulting namespace id is what `threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer` resolves against on every tool dispatch.
+
 ## Installation
 
 ```bash
