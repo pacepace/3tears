@@ -110,3 +110,25 @@ Requires PostgreSQL with the `pgvector` extension. The package's own migration r
 - **v007** — `memory_chunks` (document-style chunks with heading / page metadata + embedding + FTS).
 
 Every FTS column is trigger-maintained from `content` + `summary` (weighted A/B) — callers do not have to populate `search_vector` manually. Integration tests under `tests/integration/` exercise the full chain + every public API surface against `pgvector/pgvector:pg16` via testcontainers.
+
+## RBAC Enforcement (namespace-task-01 Phase 3)
+
+Memory reads, writes, and extractions flow through the unified rbac evaluator in `threetears.agent.acl`. Every (agent, customer) pair is a `memory`-type namespace in `platform.namespaces`; each access resolves the namespace and evaluates one of three canonical actions against the caller's `(user_id, agent_id)` pair:
+
+- `memory.read` — retrieval / search / recall. Guarded on `MemoryRetriever.retrieve*`, `MemoriesCollection.find_by_user`, `MemoriesCollection.find_by_scope`, the `memory_search` + `recall_memory` LangChain tools.
+- `memory.write` — user-initiated writes. Guarded on `MemoriesCollection.save_memory` and the `add_memory` LangChain tool.
+- `memory.extract` — agent-internal extraction path. Guarded on `MemoryExtractor.extract`; the owner short-circuit keeps the common case (agent emitting memories on its own namespace) grant-free.
+
+Owner short-circuit: the evaluator allows any action when the calling agent owns the memory namespace. Agent-internal retrieval and extraction therefore work without explicit grants; user-initiated reads and writes require evaluator assignments.
+
+Auto-assignment on first user-write: `add_memory` ensures a `MemoryOwner` assignment for the calling user on their first write (idempotent-by-state — the ensurer only fires when the user has zero memory rows in the target schema). Subsequent writes authorize against the materialized grant; admin-revoked grants stay revoked (the ensurer does not resurrect them).
+
+Wiring shape: every consumer of the memory surface accepts an optional `MemoryAuthorizerDependencies` bundle exposing:
+
+- `membership_loader` + `grant_loader` — the evaluator's loaders (`threetears.agent.acl.MembershipLoader` / `GrantLoader`);
+- `namespace_resolver` — async `(agent_id, customer_id) -> MemoryNamespaceRow | None` (create-if-absent is the resolver's responsibility; typically NATS-request-to-hub in production, in-memory fixture in tests);
+- `assignment_ensurer` — async `(user_id, memory_namespace_row) -> None` for the auto-assignment path.
+
+When the bundle is `None` (tests that predate phase 3, back-office tooling), enforcement is skipped and the legacy trust-the-caller column filter continues to govern row visibility. Production wiring always supplies the bundle. See `threetears.agent.memory.authorize` for the full public surface.
+
+Hub migrations v020 (role seeds) and v021 (cross-agent-schema backfill) land the platform-side rbac rows required for evaluator resolution; the three platform roles (`MemoryOwner` / `MemoryReader` / `MemoryWriter`) carry the canonical action vocabulary.

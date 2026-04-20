@@ -111,6 +111,8 @@ version = "0.5.0"
 source = { editable = "packages/agent-memory" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-agent-acl" },
+    { name = "3tears-agent-tools" },
     { name = "3tears-conversations" },
     { name = "langchain-core" },
     { name = "pgvector" },
@@ -119,6 +121,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-agent-acl", editable = "packages/agent-acl" },
+    { name = "3tears-agent-tools", editable = "packages/agent-tools" },
     { name = "3tears-conversations", editable = "packages/conversations" },
     { name = "langchain-core" },
     { name = "pgvector" },

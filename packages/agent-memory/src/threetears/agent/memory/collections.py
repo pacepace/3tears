@@ -14,6 +14,12 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
+from threetears.agent.memory.authorize import (
+    ACTION_MEMORY_READ,
+    ACTION_MEMORY_WRITE,
+    MemoryAuthorizerDependencies,
+    authorize_memory_access,
+)
 from threetears.agent.memory.entities import MemoryEntity
 
 __all__ = [
@@ -131,8 +137,29 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         postgres_pool: Any,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
+        authorizer: MemoryAuthorizerDependencies | None = None,
     ) -> None:
+        """initialize memory collection with optional rbac authorizer.
+
+        :param registry: shared collection registry
+        :ptype registry: CollectionRegistry
+        :param config: core configuration governing flush behaviour
+        :ptype config: CoreConfig
+        :param postgres_pool: asyncpg-shape pool pinned to agent schema
+        :ptype postgres_pool: Any
+        :param nats_client: L2 NATS KV client for cache promotion
+        :ptype nats_client: Any
+        :param write_buffer: optional shared write buffer
+        :ptype write_buffer: WriteBuffer | None
+        :param authorizer: rbac authorizer dependency bundle;
+            ``None`` suppresses enforcement on this instance (tests,
+            back-office tooling). production wiring always supplies
+            one; every ``caller_user_id``-bearing read / write then
+            goes through :func:`authorize_memory_access`
+        :ptype authorizer: MemoryAuthorizerDependencies | None
+        """
         self._postgres_pool = postgres_pool
+        self._authorizer = authorizer
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -230,16 +257,61 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
                 result[key] = value
         return result
 
-    async def find_by_user(self, user_id: UUID, include_deleted: bool = False) -> list[MemoryEntity]:
-        """Fetch all memories for user from L3, promote to caches.
+    async def find_by_user(
+        self,
+        user_id: UUID,
+        include_deleted: bool = False,
+        *,
+        agent_id: UUID | None = None,
+        customer_id: UUID | None = None,
+        caller_user_id: UUID | None = None,
+        caller_agent_id: UUID | None = None,
+    ) -> list[MemoryEntity]:
+        """fetch memories for user from L3, with optional rbac enforcement.
 
-        :param user_id: user whose memories to fetch
+        when ``caller_user_id`` is provided (and the collection was
+        constructed with an ``authorizer``) the rbac evaluator
+        decides ``memory.read`` on the ``(agent_id, customer_id)``
+        memory namespace before the SQL runs. the owner short-
+        circuit fires when ``caller_agent_id == agent_id``; a
+        mismatched pair surfaces :class:`MemoryAccessDenied` from
+        :func:`authorize_memory_access`. the row-level
+        ``user_id = $1`` filter is kept as a belt-and-suspenders cut
+        against grants that resolve to broad type_customer scope but
+        should still respect the per-row owner column.
+
+        :param user_id: user whose memories to fetch (row filter)
         :ptype user_id: UUID
         :param include_deleted: whether to include soft-deleted memories
         :ptype include_deleted: bool
+        :param agent_id: owning agent UUID (memory namespace owner);
+            required when ``caller_user_id`` is set
+        :ptype agent_id: UUID | None
+        :param customer_id: owning customer UUID; required when
+            ``caller_user_id`` is set
+        :ptype customer_id: UUID | None
+        :param caller_user_id: invoking user UUID for evaluator
+        :ptype caller_user_id: UUID | None
+        :param caller_agent_id: invoking agent UUID for evaluator
+        :ptype caller_agent_id: UUID | None
         :return: list of memory entities belonging to user
         :rtype: list[MemoryEntity]
+        :raises MemoryAccessDenied: when rbac enforcement denies
         """
+        if caller_user_id is not None and self._authorizer is not None:
+            if agent_id is None or customer_id is None:
+                raise ValueError(
+                    "find_by_user with caller_user_id requires agent_id + customer_id",
+                )
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=caller_user_id,
+                caller_agent_id=caller_agent_id,
+                deps=self._authorizer,
+            )
+
         if include_deleted:
             rows = await self._postgres_pool.fetch(
                 "SELECT * FROM memories WHERE user_id = $1 ORDER BY date_created DESC",
@@ -267,20 +339,51 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         customer_id: UUID | None = None,
         user_id: UUID | None = None,
         include_deleted: bool = False,
+        *,
+        caller_user_id: UUID | None = None,
+        caller_agent_id: UUID | None = None,
     ) -> list[MemoryEntity]:
-        """Fetch memories scoped by agent, optionally narrowed by customer and user.
+        """fetch memories scoped by agent, with optional rbac enforcement.
+
+        when ``caller_user_id`` is provided (and the collection was
+        constructed with an ``authorizer``) the rbac evaluator
+        decides ``memory.read`` on the ``(agent_id, customer_id)``
+        memory namespace before the SQL runs. ``customer_id`` is
+        required for evaluator invocation — single-argument
+        ``find_by_scope(agent_id)`` continues working without
+        enforcement for internal callers that haven't threaded the
+        caller dimensions.
 
         :param agent_id: agent ID scope (required)
         :ptype agent_id: UUID
-        :param customer_id: optional customer ID to further narrow scope
+        :param customer_id: optional customer ID to further narrow
+            scope; required when ``caller_user_id`` is set
         :ptype customer_id: UUID | None
         :param user_id: optional user ID to further narrow scope
         :ptype user_id: UUID | None
         :param include_deleted: whether to include soft-deleted memories
         :ptype include_deleted: bool
+        :param caller_user_id: invoking user UUID for evaluator
+        :ptype caller_user_id: UUID | None
+        :param caller_agent_id: invoking agent UUID for evaluator
+        :ptype caller_agent_id: UUID | None
         :return: list of memory entities matching scope
         :rtype: list[MemoryEntity]
+        :raises MemoryAccessDenied: when rbac enforcement denies
         """
+        if caller_user_id is not None and self._authorizer is not None:
+            if customer_id is None:
+                raise ValueError(
+                    "find_by_scope with caller_user_id requires customer_id",
+                )
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=caller_user_id,
+                caller_agent_id=caller_agent_id,
+                deps=self._authorizer,
+            )
         conditions = ["agent_id = $1"]
         params: list[object] = [agent_id]
         param_idx = 2
@@ -312,6 +415,81 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
+
+    async def save_memory(
+        self,
+        entity: MemoryEntity,
+        *,
+        agent_id: UUID,
+        customer_id: UUID,
+        caller_user_id: UUID | None,
+        caller_agent_id: UUID | None,
+    ) -> None:
+        """persist a memory after evaluating ``memory.write`` for the caller.
+
+        user-initiated writes land here. the evaluator decides
+        ``memory.write`` for the caller against the ``(agent_id,
+        customer_id)`` memory namespace; owner short-circuit
+        applies when ``caller_agent_id == agent_id`` (agent-
+        internal writes). on a successful user write (evaluator
+        passed AND caller_user_id is set AND the agent-owner
+        short-circuit did NOT fire), the per-user ``MemoryOwner``
+        assignment is ensured via
+        :meth:`MemoryAuthorizerDependencies.assignment_ensurer` so
+        subsequent reads from the same user hit a cached grant.
+
+        the agent-internal extractor path bypasses this method and
+        calls :meth:`save_entity` directly because it runs under
+        the agent-owner short-circuit; the explicit call site gives
+        operators a clean audit distinction between agent-emitted
+        and user-explicit memory rows.
+
+        :param entity: memory entity to persist
+        :ptype entity: MemoryEntity
+        :param agent_id: owning agent UUID
+        :ptype agent_id: UUID
+        :param customer_id: owning customer UUID
+        :ptype customer_id: UUID
+        :param caller_user_id: invoking user UUID (``None`` for
+            agent-internal writes — owner short-circuit path)
+        :ptype caller_user_id: UUID | None
+        :param caller_agent_id: invoking agent UUID
+        :ptype caller_agent_id: UUID | None
+        :return: nothing
+        :rtype: None
+        :raises MemoryAccessDenied: on evaluator deny
+        """
+        if self._authorizer is not None:
+            ns_row = await authorize_memory_access(
+                action=ACTION_MEMORY_WRITE,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=caller_user_id,
+                caller_agent_id=caller_agent_id,
+                deps=self._authorizer,
+            )
+        else:
+            ns_row = None
+
+        await self.save_entity(entity)
+
+        # auto-assignment on first user-write: bind the user's
+        # per-user memory-owner group to the MemoryOwner role scoped
+        # to this memory namespace. idempotent on replay — ensurer
+        # is insert-if-absent. skip when the caller is the owning
+        # agent (no user identity to bind the group to) or when
+        # rbac is not wired (tests / back-office).
+        is_owner_shortcut = (
+            caller_agent_id is not None and caller_agent_id == agent_id
+        )
+        if (
+            self._authorizer is not None
+            and ns_row is not None
+            and caller_user_id is not None
+            and not is_owner_shortcut
+        ):
+            await self._authorizer.assignment_ensurer(caller_user_id, ns_row)
+        return None
 
     async def soft_delete(self, entity: MemoryEntity) -> None:
         """Soft-delete a memory by setting is_deleted and date_deleted."""

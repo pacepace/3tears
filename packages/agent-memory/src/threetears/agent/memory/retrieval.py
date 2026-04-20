@@ -10,6 +10,11 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.memory.authorize import (
+    ACTION_MEMORY_READ,
+    MemoryAuthorizerDependencies,
+    authorize_memory_access,
+)
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.types import MemoryConfig
@@ -270,9 +275,28 @@ class MemoryRetriever:
     Not a LangGraph node -- a plain callable class.
     """
 
-    def __init__(self, config: MemoryConfig, embedding_provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        config: MemoryConfig,
+        embedding_provider: EmbeddingProvider,
+        authorizer: MemoryAuthorizerDependencies | None = None,
+    ) -> None:
+        """initialize the retriever.
+
+        :param config: memory retrieval configuration
+        :ptype config: MemoryConfig
+        :param embedding_provider: embedding provider for query vectors
+        :ptype embedding_provider: EmbeddingProvider
+        :param authorizer: rbac authorizer dependency bundle; when
+            present, every retrieval call carrying ``caller_user_id``
+            evaluates ``memory.read`` on the per-(agent, customer)
+            memory namespace before any SQL runs. ``None`` keeps
+            legacy behaviour for tests and back-office tooling
+        :ptype authorizer: MemoryAuthorizerDependencies | None
+        """
         self._config = config
         self._embedding = embedding_provider
+        self._authorizer = authorizer
 
     @traced(record_args=False)
     async def retrieve(
@@ -284,12 +308,14 @@ class MemoryRetriever:
         *,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        caller_user_id: UUID | None = None,
+        caller_agent_id: UUID | None = None,
     ) -> str | None:
-        """Full retrieval pipeline. Returns formatted context string or None.
+        """full retrieval pipeline; returns formatted context or ``None``.
 
         :param pool: database connection pool
         :ptype pool: Any
-        :param user_id: user whose memories to search
+        :param user_id: user whose memories to search (row filter)
         :ptype user_id: UUID
         :param user_text: query text for similarity search
         :ptype user_text: str
@@ -297,10 +323,16 @@ class MemoryRetriever:
         :ptype ledger: MemoryLedger | None
         :param agent_id: optional agent ID scope for filtering results
         :ptype agent_id: UUID | None
-        :param customer_id: optional customer ID scope for filtering results
+        :param customer_id: optional customer ID scope for filtering
         :ptype customer_id: UUID | None
+        :param caller_user_id: invoking user UUID for rbac evaluator
+        :ptype caller_user_id: UUID | None
+        :param caller_agent_id: invoking agent UUID; owner short-
+            circuit applies when equal to ``agent_id``
+        :ptype caller_agent_id: UUID | None
         :return: formatted context string or None if no results
         :rtype: str | None
+        :raises MemoryAccessDenied: when rbac enforcement denies
         """
         result = await self.retrieve_with_candidates(
             pool,
@@ -309,6 +341,8 @@ class MemoryRetriever:
             ledger,
             agent_id=agent_id,
             customer_id=customer_id,
+            caller_user_id=caller_user_id,
+            caller_agent_id=caller_agent_id,
         )
         return result.context
 
@@ -322,6 +356,8 @@ class MemoryRetriever:
         *,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        caller_user_id: UUID | None = None,
+        caller_agent_id: UUID | None = None,
     ) -> RetrievalResult:
         """Full retrieval pipeline returning structured results.
 
@@ -346,6 +382,25 @@ class MemoryRetriever:
         empty = RetrievalResult()
         if not user_text.strip():
             return empty
+
+        # rbac enforcement on reads: evaluate memory.read before
+        # doing any expensive embedding / vector work. owner short-
+        # circuit fires when the calling agent owns the memory
+        # namespace.
+        if (
+            caller_user_id is not None
+            and self._authorizer is not None
+            and agent_id is not None
+            and customer_id is not None
+        ):
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=caller_user_id,
+                caller_agent_id=caller_agent_id,
+                deps=self._authorizer,
+            )
 
         embedding, embed_tokens = await self._embedding.embed_text(user_text)
         if embedding is None:

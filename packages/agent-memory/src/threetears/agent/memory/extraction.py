@@ -16,6 +16,11 @@ from uuid import UUID
 from langchain_core.messages import HumanMessage, SystemMessage
 from uuid_utils import uuid7
 
+from threetears.agent.memory.authorize import (
+    ACTION_MEMORY_EXTRACT,
+    MemoryAuthorizerDependencies,
+    authorize_memory_access,
+)
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
@@ -55,7 +60,39 @@ class MemoryExtractor:
         prompts: ExtractionPrompts | None = None,
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
+        authorizer: MemoryAuthorizerDependencies | None = None,
     ) -> None:
+        """initialize the extractor.
+
+        :param config: memory extraction configuration
+        :ptype config: MemoryConfig
+        :param embedding_provider: embedding provider for candidate vectors
+        :ptype embedding_provider: EmbeddingProvider
+        :param chat_model_factory: factory producing chat models for
+            worthiness / extraction / resolution stages
+        :ptype chat_model_factory: ChatModelFactory
+        :param nats_client: NATS KV client for per-conversation rate limits
+        :ptype nats_client: Any
+        :param prompts: extraction prompt bundle (defaults to
+            :class:`ExtractionPrompts`)
+        :ptype prompts: ExtractionPrompts | None
+        :param rate_limit_bucket: KV bucket hosting the per-conversation
+            rate-limit keys
+        :ptype rate_limit_bucket: str
+        :param summary_callback: optional coroutine invoked with
+            ``(memory_id, content)`` after each ADD / UPDATE
+        :ptype summary_callback: Callable[[str, str], Awaitable[None]] | None
+        :param authorizer: rbac authorizer dependency bundle; when
+            present, every extraction call carrying
+            ``caller_agent_id`` evaluates ``memory.extract`` on the
+            memory namespace before any candidates land in L3. the
+            owner short-circuit covers the common case (agent
+            emitting memories on its own namespace); distinct
+            ``memory.extract`` action lets operators audit
+            LLM-emitted extractions separately from user-explicit
+            writes
+        :ptype authorizer: MemoryAuthorizerDependencies | None
+        """
         self._config = config
         self._embedding_provider = embedding_provider
         self._chat_model_factory = chat_model_factory
@@ -63,6 +100,7 @@ class MemoryExtractor:
         self._prompts = prompts or ExtractionPrompts()
         self._rate_limit_bucket = rate_limit_bucket
         self._summary_callback = summary_callback
+        self._authorizer = authorizer
 
     @traced(record_args=False)
     async def extract(
@@ -103,6 +141,28 @@ class MemoryExtractor:
         :raises: never (fire-and-forget safe, logs errors internally)
         """
         try:
+            # rbac gate: evaluate memory.extract on the per-
+            # (agent, customer) memory namespace. the owner short-
+            # circuit fires for the common case (agent extracting
+            # into its own namespace); an operator who explicitly
+            # grants a different identity the `memory.extract`
+            # action can ship agent-emitted extractions to a
+            # different owner. when rbac is not wired (tests /
+            # back-office) the check is skipped.
+            if (
+                self._authorizer is not None
+                and agent_id is not None
+                and customer_id is not None
+            ):
+                await authorize_memory_access(
+                    action=ACTION_MEMORY_EXTRACT,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    caller_user_id=user_id,
+                    caller_agent_id=agent_id,
+                    deps=self._authorizer,
+                )
+
             # Layer 1: Heuristic gates
             passed, reason = self._check_heuristic_gates(
                 user_message,
