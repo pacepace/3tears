@@ -121,12 +121,6 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_entries",
         "synced from NATS KV on load, not a local-only cache",
     ),
-    (
-        "registry/auth.py",
-        "KvAgentToolAuthorizer",
-        "_cache",
-        "TTL cache with explicit eviction, ephemeral pod-local state to avoid repeated KV reads",
-    ),
     # -- langgraph: context manager registry --
     (
         "langgraph/context_registry.py",
