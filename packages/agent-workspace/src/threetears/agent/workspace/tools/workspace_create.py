@@ -23,6 +23,15 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+# namespace-task-01 phase 2 / three-tier-task-01 phase F: the paired
+# ``platform.namespaces`` write that every workspace-create flow must
+# land travels through :meth:`NamespaceCollection.save_entity` rather
+# than raw SQL. :class:`WorkspaceCreateTool` holds a reference to the
+# Collection supplied at construction and builds one
+# :class:`NamespaceEntity` per create call. the Collection rides the
+# agent's main NATS-proxy pool (Phase F rebind), so the broker admits
+# the write under the caller's own ``agent.<hex>`` namespace.
+
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
@@ -86,22 +95,6 @@ INSERT INTO workspaces (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
 """
 
-# paired namespace insert run in the same transaction as the new
-# workspace insert so WS-ACL-03 holds: every workspace row has a
-# matching platform.namespaces row with the same id, populated
-# customer_id + owner_agent_id + schema_name so the broker's L3
-# routing + the AclCache grant check both work from the first write.
-# ``ON CONFLICT (id) DO NOTHING`` keeps the write idempotent against
-# the v003 backfill migration which may have already materialized the
-# namespace row for pre-migration workspaces.
-_INSERT_NAMESPACE_FOR_WORKSPACE_SQL = """
-INSERT INTO platform.namespaces (
-    id, name, namespace_type, owner_agent_id, schema_name,
-    customer_id, metadata, date_created, date_updated
-) VALUES ($1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
-ON CONFLICT (id) DO NOTHING
-"""
-
 _INSERT_WORKSPACE_FILE_SQL = """
 INSERT INTO workspace_files (
     id, workspace_id, relative_path, content, sha256, version, date_updated
@@ -135,6 +128,8 @@ class WorkspaceCreateTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        *,
+        namespace_collection: Any,
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
@@ -160,6 +155,15 @@ class WorkspaceCreateTool(TearsTool):
         :ptype agent_id: UUID
         :param db_pool: asyncpg pool (or pool-like) supplying acquire+transaction
         :ptype db_pool: Any
+        :param namespace_collection: three-tier
+            :class:`NamespaceCollection` (typed ``Any`` at this
+            boundary because the concrete class lives in
+            :mod:`aibots.hub.broker.namespaces`). the paired
+            ``platform.namespaces`` row for the new workspace is
+            persisted through :meth:`NamespaceCollection.save_entity`
+            — no raw SQL, no back-compat shim. REQUIRED; the tool
+            will not degrade silently when it is omitted
+        :ptype namespace_collection: Any
         :param nats_client: NATS client for audit publish; None in tests /
             bootstrap to skip the audit step
         :ptype nats_client: Any
@@ -178,6 +182,7 @@ class WorkspaceCreateTool(TearsTool):
         self._context_provider = context_provider
         self._agent_id = agent_id
         self._db_pool = db_pool
+        self._namespace_collection = namespace_collection
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
@@ -476,8 +481,6 @@ class WorkspaceCreateTool(TearsTool):
         # row ends up with a NULL customer_id, which the authorize
         # helper treats as unroutable, and downstream tool calls will
         # deny until the migration backfill lands the right value.
-        # the paired insert uses ON CONFLICT DO NOTHING so a v003
-        # backfill already-present row is left alone.
         from threetears.agent.tools.call_scope import current_scope
 
         scope = current_scope()
@@ -490,12 +493,16 @@ class WorkspaceCreateTool(TearsTool):
         namespace_name = f"workspace.{workspace_id}"
 
         # workspace_create is owner-only by construction: it owns the
-        # physical rows it is about to materialize and inserts the
-        # platform.namespaces row in the same tx. it does NOT pass a
-        # namespace= on .transaction() because the namespace row is
-        # the target of the insert, not a precondition of it; the tx
-        # binds to the caller's default agent schema (WS-ACL-06 skips
-        # pre-resolve tools per the task brief).
+        # physical rows it is about to materialize. the workspace row
+        # + file rows land under one ``conn.transaction()`` on the
+        # dedicated ``db_pool``; the paired ``platform.namespaces``
+        # row rides the agent's main NATS-proxy pool via
+        # :meth:`NamespaceCollection.save_entity` (three-tier-task-01
+        # phase F). the two writes cannot share one transaction
+        # because the Collection proxies through a different broker
+        # path, but the idempotent ``ON CONFLICT (id) DO UPDATE``
+        # semantics on the namespace id (equal to ``workspace_id``)
+        # let any retry converge on the same row.
         async with self._db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -510,17 +517,6 @@ class WorkspaceCreateTool(TearsTool):
                     now,
                     now,
                 )
-                if customer_id is not None:
-                    await conn.execute(
-                        _INSERT_NAMESPACE_FOR_WORKSPACE_SQL,
-                        workspace_id,
-                        namespace_name,
-                        self._agent_id,
-                        schema_name,
-                        customer_id,
-                        now,
-                        now,
-                    )
                 for relative, content, sha in files:
                     file_id = uuid7()
                     version_id = uuid7()
@@ -548,6 +544,29 @@ class WorkspaceCreateTool(TearsTool):
                         correlation_id,
                         now,
                     )
+
+        # workspace + files committed. emit the paired namespace row
+        # through the three-tier Collection. customer_id being None
+        # means the authorize helper will deny downstream tool calls
+        # until a backfill lands; we still emit the row so the name
+        # is reserved.
+        if customer_id is not None:
+            entity = self._namespace_collection.entity_class(
+                {
+                    "id": workspace_id,
+                    "name": namespace_name,
+                    "namespace_type": "workspace",
+                    "owner_agent_id": self._agent_id,
+                    "customer_id": customer_id,
+                    "schema_name": schema_name,
+                    "metadata": {},
+                    "date_created": now,
+                    "date_updated": now,
+                },
+                is_new=True,
+                collection=self._namespace_collection,
+            )
+            await self._namespace_collection.save_entity(entity)
         return workspace_id
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -655,6 +674,7 @@ def _build(**kwargs: Any) -> WorkspaceCreateTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
+        namespace_collection=kwargs["namespace_collection"],
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),

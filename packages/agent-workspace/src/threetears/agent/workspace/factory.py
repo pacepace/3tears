@@ -55,6 +55,7 @@ def register_tool_builder(builder: Callable[..., TearsTool]) -> None:
 def build_workspace_tools(
     *,
     acl_cache: AclCache,
+    namespace_collection: Any,
     workspace_collection: Any = None,
     workspace_file_collection: Any = None,
     workspace_file_version_collection: Any = None,
@@ -119,6 +120,16 @@ def build_workspace_tools(
         grants are enforced before any database IO. REQUIRED on every
         production and test call path
     :ptype acl_cache: AclCache
+    :param namespace_collection: three-tier
+        :class:`NamespaceCollection` (typed ``Any`` at this boundary
+        because the concrete class lives in :mod:`aibots.hub.broker.namespaces`,
+        which sits outside the agent-workspace package's dep graph).
+        :class:`WorkspaceCreateTool` emits the paired
+        ``platform.namespaces`` row through
+        :meth:`NamespaceCollection.save_entity` on every create.
+        REQUIRED — the workspace lifecycle cannot materialize a
+        workspace without its namespace counterpart
+    :ptype namespace_collection: Any
     :param customer_id: owning-customer UUID for the agent this tool
         bundle serves; stamped onto newly-created workspaces so the
         paired ``platform.namespaces`` row carries the right customer
@@ -146,6 +157,7 @@ def build_workspace_tools(
         "db_pool": db_pool,
         "validators": validators,
         "acl_cache": acl_cache,
+        "namespace_collection": namespace_collection,
         "customer_id": customer_id,
     }
     return [builder(**deps) for builder in _TOOL_BUILDERS]

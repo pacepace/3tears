@@ -55,20 +55,6 @@ ON CONFLICT (id) DO UPDATE SET
     date_deleted = EXCLUDED.date_deleted
 """
 
-# paired namespace insert run in the same transaction as a new workspace
-# insert. ``ON CONFLICT (id) DO NOTHING`` makes the write idempotent:
-# v003 backfill may have landed the namespace row ahead of this path
-# (e.g. for workspaces created pre-migration) and we do NOT want to
-# clobber its metadata. name is ``workspace.<workspace_id>`` so the
-# namespace key matches the discovery subject + v003 convention.
-_INSERT_NAMESPACE_FOR_WORKSPACE_SQL = """
-INSERT INTO platform.namespaces (
-    id, name, namespace_type, owner_agent_id, schema_name,
-    customer_id, metadata, date_created, date_updated
-) VALUES ($1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
-ON CONFLICT (id) DO NOTHING
-"""
-
 _WORKSPACE_FILE_FIELD_TYPES: dict[str, Any] = {
     "id": UUID,
     "workspace_id": UUID,
@@ -268,136 +254,26 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         original_timestamp: datetime | None = None,
     ) -> int:
         """
-        upsert workspace row; on new insert, pair with platform.namespaces row.
+        upsert workspace row through the collection's postgres pool.
 
-        workspace-task-19 (WS-ACL-03): every workspace is also a
-        platform-level namespace via shared primary key. on INSERT this
-        method writes TWO rows under one transaction:
+        three-tier-task-01 phase F: the paired
+        ``platform.namespaces`` write that lived here previously has
+        moved to :class:`WorkspaceCreateTool._insert_all`, which
+        persists the namespace via
+        :meth:`NamespaceCollection.save_entity` after the workspace
+        transaction commits. keeping the namespace write off this
+        path means every save_entity call on the Collection is a
+        single write; the tool is the sole orchestrator of the paired
+        namespace materialization.
 
-        - agent-schema ``workspaces`` row (today's flow)
-        - ``platform.namespaces`` row with ``namespace_type='workspace'``,
-          ``owner_agent_id=workspace.agent_id``,
-          ``schema_name=<agent schema>`` (the owner's physical home),
-          ``customer_id`` sourced from the ``customer_id`` entry on
-          ``data`` (populated by the create tool's ``_insert_all``).
-        - ``name`` on the namespaces row is ``workspace.<workspace_id>``
-          -- matches the v003 backfill + broker discovery convention so
-          every namespace key agrees across the platform.
-
-        on UPDATE only the agent-schema row is touched. the namespace
-        row's ``date_updated`` is NOT kept in sync by this path: the
-        namespaces metadata is immutable after create (workspace rename
-        affects only the human-facing ``workspaces.name``; the namespace
-        key stays ``workspace.<id>`` so grant entries remain valid). a
-        future design decision may introduce explicit propagation
-        through an admin endpoint; this path does not shadow it.
-
-        DELETE is intentionally left as-is (see :meth:`_delete_from_postgres`):
-        we soft-delete the workspace row and leave the namespace row in
-        place so history / audit queries continue to resolve the
-        customer + owner. hard-delete semantics for the namespace row
-        will follow the owner-deletion flow in a later phase.
-
-        when the pool does not support a ``namespace=`` kwarg (tests,
-        direct asyncpg), the platform-schema fully-qualified table name
-        (``platform.namespaces``) is used instead.
-
-        :param data: row dict keyed by column name; may carry
-            ``customer_id`` for the paired namespace insert on create
+        :param data: workspace row dict keyed by column name
         :ptype data: dict[str, Any]
         :param original_timestamp: optional prior date_updated for OCC
         :ptype original_timestamp: datetime | None
-        :return: affected row count on the agent-schema upsert
+        :return: affected row count on the workspaces upsert
         :rtype: int
         """
-        is_insert = original_timestamp is None
-        # acquire() is an async context manager on real asyncpg pools;
-        # mocks built around ``execute`` alone lack a properly-configured
-        # ``acquire`` so we detect by calling it and checking for
-        # ``__aenter__`` on the result rather than just ``hasattr``.
-        acquire = getattr(self._postgres_pool, "acquire", None)
-        use_transaction = False
-        conn_cm: Any = None
-        if callable(acquire):
-            try:
-                conn_cm = acquire()
-                if hasattr(conn_cm, "__aenter__"):
-                    use_transaction = True
-            except Exception:
-                use_transaction = False
-        if use_transaction:
-            async with conn_cm as conn:
-                affected = await self._upsert_with_conn(conn, data, is_insert)
-        else:
-            affected = await self._upsert_direct(data, is_insert)
-        return affected
-
-    async def _upsert_with_conn(
-        self,
-        conn: Any,
-        data: dict[str, Any],
-        is_insert: bool,
-    ) -> int:
-        """
-        run the paired upsert inside a single transaction on ``conn``.
-
-        :param conn: asyncpg connection with acquire+transaction support
-        :ptype conn: Any
-        :param data: row dict for both writes
-        :ptype data: dict[str, Any]
-        :param is_insert: True on new workspace insert (pairs namespace row)
-        :ptype is_insert: bool
-        :return: affected row count on the agent-schema upsert
-        :rtype: int
-        """
-        async with conn.transaction():
-            result = await conn.execute(
-                _UPSERT_WORKSPACE_SQL,
-                data["id"],
-                data["agent_id"],
-                data["name"],
-                data.get("description"),
-                data.get("template_name"),
-                data["created_by"],
-                data["current_version"],
-                data["date_created"],
-                data["date_updated"],
-                data.get("date_deleted"),
-            )
-            if is_insert and data.get("customer_id") is not None:
-                await conn.execute(
-                    _INSERT_NAMESPACE_FOR_WORKSPACE_SQL,
-                    data["id"],
-                    f"workspace.{data['id']}",
-                    data["agent_id"],
-                    data.get("schema_name"),
-                    data["customer_id"],
-                    data["date_created"],
-                    data["date_updated"],
-                )
-        affected: int = int(result.split()[-1])
-        return affected
-
-    async def _upsert_direct(
-        self,
-        data: dict[str, Any],
-        is_insert: bool,
-    ) -> int:
-        """
-        run the paired upsert against a pool without ``acquire()`` support.
-
-        test mocks and non-transactional pools drop through this path;
-        both writes run back-to-back. failure of the second write leaves
-        the first committed -- the production path uses
-        :meth:`_upsert_with_conn` to keep them atomic.
-
-        :param data: row dict for both writes
-        :ptype data: dict[str, Any]
-        :param is_insert: True on new workspace insert (pairs namespace row)
-        :ptype is_insert: bool
-        :return: affected row count on the agent-schema upsert
-        :rtype: int
-        """
+        _ = original_timestamp
         result = await self._postgres_pool.execute(
             _UPSERT_WORKSPACE_SQL,
             data["id"],
@@ -411,17 +287,6 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             data["date_updated"],
             data.get("date_deleted"),
         )
-        if is_insert and data.get("customer_id") is not None:
-            await self._postgres_pool.execute(
-                _INSERT_NAMESPACE_FOR_WORKSPACE_SQL,
-                data["id"],
-                f"workspace.{data['id']}",
-                data["agent_id"],
-                data.get("schema_name"),
-                data["customer_id"],
-                data["date_created"],
-                data["date_updated"],
-            )
         affected: int = int(result.split()[-1])
         return affected
 

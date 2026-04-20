@@ -1,16 +1,13 @@
-"""unit tests for WorkspaceCollection._save_to_postgres paired namespace write.
+"""unit tests for :meth:`WorkspaceCollection._save_to_postgres`.
 
-workspace-task-19 Phase 5 (WS-ACL-03): new workspace inserts must
-pair the agent-schema ``workspaces`` row with a matching
-``platform.namespaces`` row under one transaction. these tests drive
-the collection against a mock pool so we can assert both SQL
-statements are issued without a live DB.
-
-the default pool mock in :mod:`test_collections` lacks a usable
-``acquire()`` so it exercises the fall-back direct-upsert path. a
-richer mock here exposes an async context manager returning a
-transaction-capable connection so we can verify the two-statement
-transactional branch as well.
+three-tier-task-01 phase F retired the paired
+``platform.namespaces`` insert that used to ride this method: the
+workspace create tool now emits the namespace row through
+:meth:`NamespaceCollection.save_entity` after the workspace tx
+commits. this test file asserts the collection's own ``_save_to_postgres``
+is a single-statement write against the ``workspaces`` table — no
+``platform.namespaces`` insert, no transaction wrap for a second
+write.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -31,7 +28,11 @@ from threetears.agent.workspace.collections import WorkspaceCollection
 
 
 def _workspaces_metadata() -> MetaData:
-    """build SQLite metadata describing workspaces table."""
+    """build SQLite metadata describing workspaces table.
+
+    :return: populated SQLAlchemy metadata
+    :rtype: MetaData
+    """
     metadata = MetaData()
     Table(
         "workspaces",
@@ -52,7 +53,11 @@ def _workspaces_metadata() -> MetaData:
 
 @pytest.fixture()
 def workspaces_l1() -> SQLiteBackend:
-    """build SQLite L1 backend with workspaces schema."""
+    """build SQLite L1 backend with workspaces schema.
+
+    :yield: initialized SQLite backend
+    :rtype: SQLiteBackend
+    """
     backend = SQLiteBackend(db_name=f"test_ws_ns_{uuid4().hex[:8]}")
     backend.initialize(_workspaces_metadata())
     yield backend
@@ -61,72 +66,49 @@ def workspaces_l1() -> SQLiteBackend:
 
 @pytest.fixture()
 def config_always() -> DefaultCoreConfig:
-    """return core config that flushes writes to L3 immediately."""
+    """return core config that flushes writes to L3 immediately.
+
+    :return: configured core config
+    :rtype: DefaultCoreConfig
+    """
     return DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
 
 
-class _FakeTransaction:
-    """async context manager yielding nothing, just like a real tx."""
+@pytest.mark.asyncio
+async def test_save_issues_single_workspaces_upsert(
+    workspaces_l1: SQLiteBackend,
+    config_always: DefaultCoreConfig,
+) -> None:
+    """_save_to_postgres issues exactly one statement against workspaces.
 
-    async def __aenter__(self) -> None:
-        return None
+    phase F moved the paired ``platform.namespaces`` write to the
+    create tool, so the collection's own upsert is a single
+    single-target write. this test drives the method directly and
+    asserts nothing else lands.
 
-    async def __aexit__(self, *exc: Any) -> None:
-        return None
+    :param workspaces_l1: pod-local SQLite L1 backend fixture
+    :ptype workspaces_l1: SQLiteBackend
+    :param config_always: flush-every-write config fixture
+    :ptype config_always: DefaultCoreConfig
+    :return: nothing
+    :rtype: None
+    """
+    pool = AsyncMock()
+    pool.execute = AsyncMock(return_value="INSERT 0 1")
 
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=workspaces_l1)
+    collection = WorkspaceCollection(
+        registry=registry,
+        config=config_always,
+        postgres_pool=pool,
+    )
 
-class _FakeConnection:
-    """records SQL statements executed inside the transaction."""
-
-    def __init__(self) -> None:
-        self.statements: list[tuple[str, tuple[Any, ...]]] = []
-
-    def transaction(self, namespace: Any = None) -> _FakeTransaction:
-        return _FakeTransaction()
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.statements.append((query, args))
-        return "INSERT 0 1"
-
-
-class _FakePoolCM:
-    """async context manager returning a :class:`_FakeConnection`."""
-
-    def __init__(self, conn: _FakeConnection) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConnection:
-        return self._conn
-
-    async def __aexit__(self, *exc: Any) -> None:
-        return None
-
-
-class _FakePool:
-    """mock pool exposing a real async acquire() and bare execute()."""
-
-    def __init__(self) -> None:
-        self.conn = _FakeConnection()
-        self.direct_statements: list[tuple[str, tuple[Any, ...]]] = []
-
-    def acquire(self) -> _FakePoolCM:
-        return _FakePoolCM(self.conn)
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.direct_statements.append((query, args))
-        return "INSERT 0 1"
-
-    async def fetchrow(self, query: str, *args: Any) -> None:
-        return None
-
-
-def _make_row(*, customer_id: UUID | None = None) -> dict[str, Any]:
-    """build a workspace row dict carrying the customer_id hint."""
-    now = datetime.now(UTC)
-    return {
+    now = datetime.now(UTC).replace(tzinfo=None)
+    data: dict[str, Any] = {
         "id": uuid4(),
         "agent_id": uuid4(),
-        "name": "test",
+        "name": "ws-under-test",
         "description": None,
         "template_name": None,
         "created_by": uuid4(),
@@ -134,108 +116,16 @@ def _make_row(*, customer_id: UUID | None = None) -> dict[str, Any]:
         "date_created": now,
         "date_updated": now,
         "date_deleted": None,
-        "customer_id": customer_id,
-        "schema_name": f"agent_{uuid4().hex}",
+        # customer_id + schema_name intentionally present to prove
+        # they do NOT drive a second write on this path any more
+        "customer_id": uuid4(),
+        "schema_name": "agent_test",
     }
 
+    affected = await collection._save_to_postgres(data, original_timestamp=None)
 
-@pytest.mark.asyncio
-async def test_save_on_insert_writes_both_rows_under_transaction(
-    workspaces_l1: SQLiteBackend,
-    config_always: DefaultCoreConfig,
-) -> None:
-    """a new workspace insert emits both the workspace + namespace SQL."""
-    customer_id = uuid4()
-    pool = _FakePool()
-    registry = CollectionRegistry()
-    registry.configure(l1_backend=workspaces_l1)
-    coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
-
-    row = _make_row(customer_id=customer_id)
-    await coll._save_to_postgres(row)
-
-    statements = pool.conn.statements
-    assert len(statements) == 2, f"expected 2 statements, got {statements}"
-    ws_sql, ws_args = statements[0]
-    ns_sql, ns_args = statements[1]
-    assert "INSERT INTO workspaces" in ws_sql
-    assert "INSERT INTO platform.namespaces" in ns_sql
-    assert "'workspace'" in ns_sql  # namespace_type literal
-    # namespace row shares the workspace's id as the primary key
-    assert ns_args[0] == row["id"]
-    # namespace name follows ``workspace.<id>`` convention
-    assert ns_args[1] == f"workspace.{row['id']}"
-    # owner_agent_id matches the workspace's agent_id
-    assert ns_args[2] == row["agent_id"]
-    # customer_id flows through
-    assert ns_args[4] == customer_id
-
-
-@pytest.mark.asyncio
-async def test_save_on_update_does_not_touch_namespace_row(
-    workspaces_l1: SQLiteBackend,
-    config_always: DefaultCoreConfig,
-) -> None:
-    """an UPDATE path (original_timestamp set) only writes the workspace row."""
-    pool = _FakePool()
-    registry = CollectionRegistry()
-    registry.configure(l1_backend=workspaces_l1)
-    coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
-
-    row = _make_row(customer_id=uuid4())
-    now = datetime.now(UTC)
-    await coll._save_to_postgres(row, original_timestamp=now)
-
-    statements = pool.conn.statements
-    assert len(statements) == 1
-    assert "INSERT INTO workspaces" in statements[0][0]
-
-
-@pytest.mark.asyncio
-async def test_save_insert_without_customer_skips_namespace_row(
-    workspaces_l1: SQLiteBackend,
-    config_always: DefaultCoreConfig,
-) -> None:
-    """insert without customer_id only writes workspaces (partial upgrade path)."""
-    pool = _FakePool()
-    registry = CollectionRegistry()
-    registry.configure(l1_backend=workspaces_l1)
-    coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
-
-    row = _make_row(customer_id=None)
-    await coll._save_to_postgres(row)
-
-    statements = pool.conn.statements
-    assert len(statements) == 1
-    assert "INSERT INTO workspaces" in statements[0][0]
-
-
-@pytest.mark.asyncio
-async def test_save_without_acquire_falls_back_to_direct_execute(
-    workspaces_l1: SQLiteBackend,
-    config_always: DefaultCoreConfig,
-) -> None:
-    """pools without acquire() still emit both statements back-to-back."""
-
-    class _DirectPool:
-        def __init__(self) -> None:
-            self.statements: list[tuple[str, tuple[Any, ...]]] = []
-
-        async def execute(self, query: str, *args: Any) -> str:
-            self.statements.append((query, args))
-            return "INSERT 0 1"
-
-        async def fetchrow(self, query: str, *args: Any) -> None:
-            return None
-
-    pool = _DirectPool()
-    registry = CollectionRegistry()
-    registry.configure(l1_backend=workspaces_l1)
-    coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
-
-    row = _make_row(customer_id=uuid4())
-    await coll._save_to_postgres(row)
-
-    assert len(pool.statements) == 2
-    assert "INSERT INTO workspaces" in pool.statements[0][0]
-    assert "INSERT INTO platform.namespaces" in pool.statements[1][0]
+    assert affected == 1
+    pool.execute.assert_awaited_once()
+    sql_text = pool.execute.await_args.args[0]
+    assert "INSERT INTO workspaces" in sql_text
+    assert "platform.namespaces" not in sql_text

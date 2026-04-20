@@ -115,6 +115,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
         namespace="ns",
         nats_client=nats,
         agent_id=owner_agent_id,
+        namespace_collection=None,
     )
     server.register(_StubTool())
 
@@ -162,7 +163,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
 async def test_baseline_audit_subject_uses_namespace() -> None:
     """the published subject is ``{namespace}.audit.tool.call``."""
     nats = _FakeNats()
-    server = ToolServer(namespace="proj", nats_client=nats)
+    server = ToolServer(namespace="proj", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
     msg = _make_msg(
         {
@@ -187,7 +188,7 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
 async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
     """tool returning success=False surfaces as outcome=failure."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(
         _StubTool(result=ToolResult(success=False, content="", error="nope")),
     )
@@ -213,7 +214,7 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
 async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
     """tool raising an exception surfaces as outcome=error."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool(raise_exc=RuntimeError("boom")))
     msg = _make_msg(
         {
@@ -237,7 +238,7 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
 async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
     """unknown tool key emits ``tool.call`` with outcome=failure."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     # no tool registered
     msg = _make_msg(
         {
@@ -263,7 +264,7 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
 async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
     """malformed JSON emits a baseline envelope with minimal fields."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
 
     msg = _make_msg(b"<<not valid json>>")
 
@@ -290,7 +291,9 @@ async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
 async def test_baseline_audit_skipped_when_no_nats_client() -> None:
     """server constructed with ``nats_url`` and no client skips emission."""
     # nats_url set but no connected client (serve not called) -> _nc is None
-    server = ToolServer(nats_url="nats://localhost:1234", namespace="ns")
+    server = ToolServer(
+        nats_url="nats://localhost:1234", namespace="ns", namespace_collection=None,
+    )
     server.register(_StubTool())
 
     msg = _make_msg(
@@ -317,7 +320,7 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
 async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
     """a raising NATS publish is swallowed; response still carries success."""
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
     msg = _make_msg(
         {
@@ -344,7 +347,7 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
 async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
     """when CallContext carries a correlation_id, the envelope reuses it."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
     correlation_id = uuid4()
     msg = _make_msg(
@@ -366,7 +369,7 @@ async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
 async def test_baseline_audit_correlation_id_synthesized_when_context_missing() -> None:
     """no-context dispatch still emits with a freshly minted correlation id."""
     nats = _FakeNats()
-    server = ToolServer(namespace="ns", nats_client=nats)
+    server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
     msg = _make_msg(
         {

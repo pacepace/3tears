@@ -1,18 +1,24 @@
 """tests for tool namespace emission on register / deregister.
 
-namespace-task-01 phase 2 (tool-as-namespace): every registered tool
-materializes a ``platform.namespaces`` row of type ``tool`` so the
-unified rbac evaluator can resolve per-call authorization at the
-Registry proxy. these tests cover:
+namespace-task-01 phase 2 (tool-as-namespace) requires every
+registered tool to materialize a ``platform.namespaces`` row of type
+``tool`` so the unified rbac evaluator can resolve per-call
+authorization at the Registry proxy. three-tier-task-01 phase F
+routes that emission through :meth:`NamespaceCollection.save_entity`
+on the agent-side three-tier stack (retiring the bespoke
+``NamespaceEmitter`` Protocol + raw SQL). these tests cover:
 
 - agent-owned tool emits a tool namespace with
   ``owner_agent_id=self._agent_id, customer_id=self._customer_id``
 - platform built-in tool emits a tool namespace with both owner
   columns NULL
-- missing ``l3_backend`` suppresses emission (test / standalone scenario)
-- a raising backend on register surfaces the exception, not a silent drop
-- deregister deletes the paired rows
-- a raising backend on delete surfaces the exception
+- missing ``namespace_collection`` suppresses emission (standalone
+  devx / test scenario)
+- a raising Collection on register surfaces the exception, not a
+  silent drop
+- deregister deletes the paired row through
+  :meth:`NamespaceCollection.delete`
+- a raising Collection on delete surfaces the exception
 """
 
 from __future__ import annotations
@@ -29,7 +35,11 @@ from threetears.agent.tools.base_tool import (
     TearsTool,
     ToolResult,
 )
-from threetears.agent.tools.server import ToolServer, _tool_namespace_name
+from threetears.agent.tools.server import (
+    ToolServer,
+    _tool_namespace_id,
+    _tool_namespace_name,
+)
 
 
 class _StubTool(TearsTool):
@@ -86,11 +96,62 @@ class _StubTool(TearsTool):
         return self._version
 
 
+class _FakeNamespaceEntity:
+    """mimics :class:`NamespaceEntity` for unit-test isolation.
+
+    holds the data dict the Collection passes on construction so the
+    test can inspect every field the ToolServer stamped on the entity
+    without pulling the real :class:`aibots.hub.broker.namespaces`
+    module into the agent-tools test graph.
+    """
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        *,
+        is_new: bool,
+        collection: Any,
+    ) -> None:
+        """capture the entity payload for later assertions.
+
+        :param data: field dict mint by the ToolServer
+        :ptype data: dict[str, Any]
+        :param is_new: ``True`` on insert path (unused here; kept to
+            match the real :class:`BaseEntity` signature)
+        :ptype is_new: bool
+        :param collection: owning Collection reference (unused;
+            mirrors the real signature)
+        :ptype collection: Any
+        """
+        self.data = data
+        self.is_new = is_new
+        self.collection = collection
+
+
+class _FakeNamespaceCollection:
+    """captures ``save_entity`` / ``delete`` calls for test assertions.
+
+    exposes :attr:`entity_class` so the production
+    ``namespace_collection.entity_class(...)`` construction path in
+    :meth:`ToolServer._emit_tool_namespace` resolves to
+    :class:`_FakeNamespaceEntity`. ``save_entity`` / ``delete``
+    respect the standard :class:`AsyncMock` semantics so callers can
+    drive side effects for failure-path tests.
+    """
+
+    entity_class = _FakeNamespaceEntity
+
+    def __init__(self) -> None:
+        """wire async mocks for the two call surfaces under test."""
+        self.save_entity = AsyncMock()
+        self.delete = AsyncMock()
+
+
 def _build_server(
     *,
     agent_id: Any = None,
     customer_id: Any = None,
-    l3_backend: Any = None,
+    namespace_collection: Any = None,
 ) -> ToolServer:
     """build a ToolServer wired for namespace emission tests.
 
@@ -98,8 +159,9 @@ def _build_server(
     :ptype agent_id: Any
     :param customer_id: owning customer identity
     :ptype customer_id: Any
-    :param l3_backend: namespace emitter
-    :ptype l3_backend: Any
+    :param namespace_collection: three-tier-task-01 phase F
+        :class:`NamespaceCollection` stand-in
+    :ptype namespace_collection: Any
     :return: fresh ToolServer
     :rtype: ToolServer
     """
@@ -110,7 +172,7 @@ def _build_server(
         namespace="aibots",
         agent_id=agent_id,
         customer_id=customer_id,
-        l3_backend=l3_backend,
+        namespace_collection=namespace_collection,
     )
 
 
@@ -124,68 +186,75 @@ class TestRegisterToolNamespaceEmission:
         """agent-spun pod stamps both owner_agent_id and customer_id."""
         agent_id = uuid7()
         customer_id = uuid7()
-        l3 = MagicMock()
-        l3.execute = AsyncMock()
+        ns = _FakeNamespaceCollection()
         server = _build_server(
             agent_id=agent_id,
             customer_id=customer_id,
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         tool = _StubTool(name="aibots.calc", version="1.2.0")
 
         await server.register_tool(tool)
 
-        l3.execute.assert_awaited_once()
-        args, kwargs = l3.execute.call_args
-        # first arg is the SQL text; positional bindings follow
-        assert "INSERT INTO platform.namespaces" in args[0]
-        # bindings: namespace_id, name, owner_agent_id, customer_id, date_created, date_updated
-        _namespace_id, name, owner_agent_id, binding_customer_id, *_rest = args[1:]
-        assert name == _tool_namespace_name("aibots.calc", "1.2.0")
-        assert owner_agent_id == agent_id
-        assert binding_customer_id == customer_id
-        assert kwargs.get("namespace") == "platform"
+        ns.save_entity.assert_awaited_once()
+        (entity,), _ = ns.save_entity.call_args
+        assert isinstance(entity, _FakeNamespaceEntity)
+        assert entity.is_new is True
+        assert entity.data["name"] == _tool_namespace_name("aibots.calc", "1.2.0")
+        assert entity.data["namespace_type"] == "tool"
+        assert entity.data["owner_agent_id"] == agent_id
+        assert entity.data["customer_id"] == customer_id
+        assert entity.data["schema_name"] is None
+        assert entity.data["metadata"] == {}
+        assert entity.data["id"] == _tool_namespace_id(
+            "aibots.calc", "1.2.0", agent_id,
+        )
 
     @pytest.mark.asyncio
     async def test_platform_built_in_tool_emits_namespace_with_null_owner(
         self,
     ) -> None:
         """platform pod (no agent_id + no customer_id) emits NULL owners."""
-        l3 = MagicMock()
-        l3.execute = AsyncMock()
+        ns = _FakeNamespaceCollection()
         server = _build_server(
             agent_id=None,
             customer_id=None,
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         tool = _StubTool(name="platform.time.now", version="1.0.0")
 
         await server.register_tool(tool)
 
-        args, _kwargs = l3.execute.call_args
-        _namespace_id, name, owner_agent_id, customer_id, *_rest = args[1:]
-        assert name == _tool_namespace_name("platform.time.now", "1.0.0")
-        assert owner_agent_id is None
-        assert customer_id is None
+        (entity,), _ = ns.save_entity.call_args
+        assert entity.data["name"] == _tool_namespace_name(
+            "platform.time.now", "1.0.0",
+        )
+        assert entity.data["owner_agent_id"] is None
+        assert entity.data["customer_id"] is None
+        assert entity.data["id"] == _tool_namespace_id(
+            "platform.time.now", "1.0.0", None,
+        )
 
     @pytest.mark.asyncio
-    async def test_missing_l3_backend_suppresses_emission(self) -> None:
-        """no l3_backend means no emission (test / standalone scenarios)."""
-        server = _build_server(agent_id=uuid7(), customer_id=uuid7(), l3_backend=None)
+    async def test_missing_namespace_collection_suppresses_emission(self) -> None:
+        """no namespace_collection means no emission (devx / standalone)."""
+        server = _build_server(
+            agent_id=uuid7(), customer_id=uuid7(), namespace_collection=None,
+        )
         tool = _StubTool()
-        # no assertion on l3; register should simply succeed without wiring
+        # no assertion on a Collection; register should simply succeed
         await server.register_tool(tool)
         assert tool.mcp_name() in [k.split("@")[0] for k in server.tool_names]
 
     @pytest.mark.asyncio
     async def test_emit_failure_propagates(self) -> None:
-        """a raising backend surfaces the exception to the caller."""
-        l3 = MagicMock()
-        l3.execute = AsyncMock(side_effect=RuntimeError("broker down"))
+        """a raising Collection surfaces the exception to the caller."""
+        ns = _FakeNamespaceCollection()
+        ns.save_entity.side_effect = RuntimeError("broker down")
         server = _build_server(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         tool = _StubTool()
 
@@ -198,55 +267,53 @@ class TestDeregisterToolNamespaceEmission:
 
     @pytest.mark.asyncio
     async def test_deregister_deletes_paired_namespace_row(self) -> None:
-        """successful deregister issues the delete statement."""
-        l3 = MagicMock()
-        l3.execute = AsyncMock()
+        """successful deregister issues the Collection delete call."""
+        agent_id = uuid7()
+        ns = _FakeNamespaceCollection()
         server = _build_server(
-            agent_id=uuid7(),
+            agent_id=agent_id,
             customer_id=uuid7(),
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         tool = _StubTool(name="aibots.calc", version="1.2.0")
         await server.register_tool(tool)
 
-        l3.execute.reset_mock()
+        ns.delete.reset_mock()
         removed = await server.deregister_tool("aibots.calc")
 
         assert removed is True
-        l3.execute.assert_awaited_once()
-        args, kwargs = l3.execute.call_args
-        assert "DELETE FROM platform.namespaces" in args[0]
-        assert args[1] == "tool:aibots.calc:%"
-        assert kwargs.get("namespace") == "platform"
+        ns.delete.assert_awaited_once()
+        (namespace_id,), _ = ns.delete.call_args
+        assert namespace_id == _tool_namespace_id(
+            "aibots.calc", "1.2.0", agent_id,
+        )
 
     @pytest.mark.asyncio
     async def test_deregister_noop_does_not_emit_delete(self) -> None:
         """deregistering an unknown name skips the namespace delete."""
-        l3 = MagicMock()
-        l3.execute = AsyncMock()
+        ns = _FakeNamespaceCollection()
         server = _build_server(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         removed = await server.deregister_tool("never-registered")
         assert removed is False
-        l3.execute.assert_not_called()
+        ns.delete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_failure_propagates(self) -> None:
-        """a raising backend on delete surfaces the exception."""
-        l3 = MagicMock()
-        l3.execute = AsyncMock(return_value=None)
+        """a raising Collection on delete surfaces the exception."""
+        ns = _FakeNamespaceCollection()
         server = _build_server(
             agent_id=uuid7(),
             customer_id=uuid7(),
-            l3_backend=l3,
+            namespace_collection=ns,
         )
         tool = _StubTool(name="aibots.calc", version="1.2.0")
         await server.register_tool(tool)
 
-        l3.execute.side_effect = RuntimeError("delete failed")
+        ns.delete.side_effect = RuntimeError("delete failed")
         with pytest.raises(RuntimeError, match="delete failed"):
             await server.deregister_tool("aibots.calc")
 
@@ -264,3 +331,27 @@ class TestToolNamespaceNameHelper:
             _tool_namespace_name("platform.x", "2.0.0-rc.1")
             == "tool:platform.x:2.0.0-rc.1"
         )
+
+
+class TestToolNamespaceIdHelper:
+    """cover :func:`_tool_namespace_id` deterministic key derivation."""
+
+    def test_same_triple_produces_same_id(self) -> None:
+        """deterministic derivation makes replay idempotent via ON CONFLICT."""
+        agent_id = uuid7()
+        a = _tool_namespace_id("aibots.calc", "1.2.0", agent_id)
+        b = _tool_namespace_id("aibots.calc", "1.2.0", agent_id)
+        assert a == b
+
+    def test_different_versions_produce_different_ids(self) -> None:
+        """version pinning is preserved through the deterministic key."""
+        agent_id = uuid7()
+        a = _tool_namespace_id("aibots.calc", "1.2.0", agent_id)
+        b = _tool_namespace_id("aibots.calc", "1.3.0", agent_id)
+        assert a != b
+
+    def test_platform_pod_uses_sentinel_owner(self) -> None:
+        """None agent collapses onto a ``platform`` sentinel key."""
+        a = _tool_namespace_id("platform.x", "1.0.0", None)
+        b = _tool_namespace_id("platform.x", "1.0.0", None)
+        assert a == b

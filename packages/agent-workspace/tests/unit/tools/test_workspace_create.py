@@ -201,6 +201,43 @@ class _FakeContext:
     """sentinel context returned by the context_provider closure."""
 
 
+class _FakeNamespaceEntity:
+    """mimic :class:`NamespaceEntity` for create-path assertions."""
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        *,
+        is_new: bool,
+        collection: Any,
+    ) -> None:
+        """capture the data dict for test assertions.
+
+        :param data: entity field dict produced by the tool
+        :ptype data: dict[str, Any]
+        :param is_new: ``True`` for insert path; forwarded to save_entity
+        :ptype is_new: bool
+        :param collection: owning Collection reference (unused here)
+        :ptype collection: Any
+        """
+        self.data = data
+        self.is_new = is_new
+        self.collection = collection
+
+
+class _FakeNamespaceCollection:
+    """records save_entity calls from :class:`WorkspaceCreateTool`."""
+
+    entity_class = _FakeNamespaceEntity
+
+    def __init__(self) -> None:
+        self.saved: list[_FakeNamespaceEntity] = []
+
+    async def save_entity(self, entity: _FakeNamespaceEntity) -> None:
+        """record the entity persisted by the tool."""
+        self.saved.append(entity)
+
+
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -223,6 +260,8 @@ def _build_tool(
     context_provider: Any = None,
     agent_id: UUID | None = None,
     db_pool: Any = None,
+    namespace_collection: Any = None,
+    customer_id: UUID | None = None,
 ) -> WorkspaceCreateTool:
     """assemble a tool with sensible default fakes for every dep."""
     return WorkspaceCreateTool(
@@ -233,6 +272,8 @@ def _build_tool(
         context_provider=context_provider or (lambda: _FakeContext()),
         agent_id=agent_id or uuid4(),
         db_pool=db_pool or _FakePool(),
+        namespace_collection=namespace_collection or _FakeNamespaceCollection(),
+        customer_id=customer_id,
     )
 
 

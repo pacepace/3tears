@@ -459,6 +459,29 @@ async def test_workspace_create_publishes_audit(
     nats = _FakeNats()
     pool = _FakePool()
     agent_id = uuid4()
+    class _FakeNamespaceEntity:
+        """mimic :class:`NamespaceEntity` for the create-path audit test."""
+
+        def __init__(
+            self,
+            data: dict[str, Any],
+            *,
+            is_new: bool,
+            collection: Any,
+        ) -> None:
+            self.data = data
+            self.is_new = is_new
+            self.collection = collection
+
+    class _FakeNamespaceCollection:
+        """no-op namespace Collection stand-in for audit injection tests."""
+
+        entity_class = _FakeNamespaceEntity
+
+        async def save_entity(self, entity: Any) -> None:
+            """accept and discard the entity; this test asserts on audit only."""
+            del entity
+
     tool = WorkspaceCreateTool(
         workspace_collection=_FakeWorkspaceCollection([]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
@@ -467,6 +490,7 @@ async def test_workspace_create_publishes_audit(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        namespace_collection=_FakeNamespaceCollection(),
         nats_client=nats,
         namespace="ns",
     )

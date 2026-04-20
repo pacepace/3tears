@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
-from uuid import UUID, uuid7
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
 from nats.aio.client import Client as NatsClient
 from nats.aio.msg import Msg as NatsMsg
@@ -42,80 +42,12 @@ __all__ = [
     "DiscoveryProbeResultEntry",
     "DiscoveryProbeToolEntry",
     "HeartbeatMessage",
-    "NamespaceEmitter",
     "ProbeAck",
     "RegistrationManifest",
     "ToolManifestEntry",
     "ToolServer",
     "nats_connect",
 ]
-
-
-# ---------------------------------------------------------------------------
-# namespace emitter protocol
-# ---------------------------------------------------------------------------
-
-
-class NamespaceEmitter(Protocol):
-    """pool-shaped protocol for writing ``platform.namespaces`` rows.
-
-    namespace-task-01 phase 2 (tool-as-namespace) requires every
-    registered tool to materialize a ``platform.namespaces`` row of
-    type ``tool`` so the unified rbac evaluator can resolve per-call
-    authorization against a first-class namespace id. the ToolServer
-    emits those rows on :meth:`ToolServer.register_tool` and tears
-    them down on :meth:`ToolServer.deregister_tool`.
-
-    concrete implementations land in
-    :class:`threetears.core.backends.nats_proxy.NatsProxyL3Backend`
-    (production agent pods) and direct ``asyncpg.Pool`` (in-process
-    hub tests). either exposes an ``execute`` coroutine matching this
-    protocol's signature.
-    """
-
-    async def execute(
-        self,
-        query: str,
-        *params: Any,
-        namespace: str | None = None,
-    ) -> Any:
-        """execute a parameterized SQL statement.
-
-        :param query: parameterized SQL statement text
-        :ptype query: str
-        :param params: positional parameter values bound to placeholders
-        :ptype params: Any
-        :param namespace: optional search_path target; ``"platform"``
-            routes the statement to the platform schema when the
-            backend supports the kwarg (NatsProxyL3Backend honours it;
-            direct asyncpg.Pool ignores the kwarg and relies on the
-            fully-qualified ``platform.namespaces`` reference baked
-            into :data:`_INSERT_TOOL_NAMESPACE_SQL`)
-        :ptype namespace: str | None
-        :return: backend-defined execute result (asyncpg returns a
-            status tag string; the ToolServer does not inspect it)
-        :rtype: Any
-        """
-        ...
-
-
-_INSERT_TOOL_NAMESPACE_SQL = """
-INSERT INTO platform.namespaces (
-    id, name, namespace_type, owner_agent_id, schema_name,
-    customer_id, metadata, date_created, date_updated
-) VALUES ($1, $2, 'tool', $3, NULL, $4, '{}'::jsonb, $5, $6)
-ON CONFLICT (name) DO UPDATE SET
-    owner_agent_id = EXCLUDED.owner_agent_id,
-    customer_id = EXCLUDED.customer_id,
-    date_updated = EXCLUDED.date_updated
-"""
-
-
-_DELETE_TOOL_NAMESPACE_SQL = """
-DELETE FROM platform.namespaces
-WHERE namespace_type = 'tool'
-  AND name LIKE $1
-"""
 
 
 def _tool_namespace_name(mcp_name: str, version: str) -> str:
@@ -139,6 +71,39 @@ def _tool_namespace_name(mcp_name: str, version: str) -> str:
     :rtype: str
     """
     return f"tool:{mcp_name}:{version}"
+
+
+def _tool_namespace_id(
+    mcp_name: str,
+    version: str,
+    agent_id: UUID | None,
+) -> UUID:
+    """derive deterministic :func:`uuid5` id for a tool namespace row.
+
+    keying on the ``(mcp_name, version, agent_id_hex)`` triple makes
+    concurrent register_tool racers on the same pod converge on the
+    same ``platform.namespaces.id`` so
+    :meth:`NamespaceCollection.save_entity` can resolve the replay
+    through ``ON CONFLICT (id) DO UPDATE``. platform-built-in pods
+    have ``agent_id=None`` and key on the literal string ``platform``
+    so every platform pod's emission for the same tool/version
+    collides on one row.
+
+    :param mcp_name: tool mcp name (e.g. ``aibots.admin.backup``)
+    :ptype mcp_name: str
+    :param version: tool version (e.g. ``1.0.0``)
+    :ptype version: str
+    :param agent_id: owning-agent UUID or ``None`` for platform tools
+    :ptype agent_id: UUID | None
+    :return: deterministic uuid5 id for the namespace row
+    :rtype: UUID
+    """
+    owner_key = agent_id.hex if agent_id is not None else "platform"
+    return uuid5(
+        NAMESPACE_DNS,
+        f"threetears.namespaces.tool.{mcp_name}.{version}.{owner_key}",
+    )
+
 
 # sentinel tuple used by ``tool_names`` so callers always get an
 # immutable shape back (prevents accidental mutation of the internal
@@ -425,6 +390,8 @@ class ToolServer:
 
     def __init__(
         self,
+        *,
+        namespace_collection: Any,
         nats_url: str = "",
         namespace: str = "aibots",
         pod_id: str | None = None,
@@ -434,7 +401,6 @@ class ToolServer:
         nats_client: NatsClient | None = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
-        l3_backend: NamespaceEmitter | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -490,18 +456,25 @@ class ToolServer:
             tool namespace row emitted by :meth:`register_tool`.
             paired with ``agent_id``: agent-spun pods carry both,
             platform-spun pods carry neither and emit with
-            ``customer_id=NULL``. tests / standalone scenarios that
-            omit ``l3_backend`` bypass emission entirely regardless
-            of this value.
+            ``customer_id=NULL``.
         :ptype customer_id: UUID | None
-        :param l3_backend: optional emitter for tool namespace rows.
-            production wiring passes the agent pod's
-            :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
-            so :meth:`register_tool` / :meth:`deregister_tool` write
-            directly into ``platform.namespaces`` via the hub's L3
-            broker. tests / standalone scenarios leave this ``None``
-            to suppress namespace emission.
-        :ptype l3_backend: NamespaceEmitter | None
+        :param namespace_collection: three-tier
+            :class:`NamespaceCollection` from the agent-side stack.
+            :meth:`register_tool` calls
+            :meth:`NamespaceCollection.save_entity` with a
+            :class:`NamespaceEntity` of type ``tool`` so the unified
+            rbac evaluator can resolve per-call authorization against
+            a first-class namespace id; :meth:`deregister_tool` calls
+            :meth:`NamespaceCollection.delete`. typed ``Any`` at this
+            boundary because :mod:`threetears.agent.tools` sits below
+            :mod:`aibots.hub.broker.namespaces` in the import graph;
+            the concrete Collection is wired by the bootstrap caller.
+            ``None`` suppresses emission entirely — reserved for
+            in-process tests and standalone dev that never touch
+            ``platform.namespaces``; production callers MUST supply a
+            Collection or namespace materialization silently falls
+            behind and rbac resolution fails open.
+        :ptype namespace_collection: Any
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -518,7 +491,7 @@ class ToolServer:
         self._context_factory = context_factory
         self._agent_id = agent_id
         self._customer_id = customer_id
-        self._l3_backend = l3_backend
+        self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: NatsClient | None = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -831,13 +804,14 @@ class ToolServer:
         will include it. safe to call multiple times with the same
         tool; duplicate ``name@version`` keys overwrite.
 
-        namespace-task-01 phase 2: after the in-memory registration
-        and manifest publish, :meth:`_emit_tool_namespace` writes a
-        ``platform.namespaces`` row of type ``tool`` so the rbac
-        evaluator has a first-class namespace id to evaluate against.
-        emission is suppressed when ``l3_backend`` is not wired
-        (tests, standalone dev). emission failures raise rather than
-        silently drop so callers see the wiring gap immediately.
+        namespace-task-01 phase 2 / three-tier-task-01 phase F: after
+        the in-memory registration and manifest publish,
+        :meth:`_emit_tool_namespace` persists a
+        :class:`NamespaceEntity` of type ``tool`` through
+        :meth:`NamespaceCollection.save_entity` so the rbac evaluator
+        has a first-class namespace id to evaluate against. emission
+        failures raise rather than silently drop so callers see the
+        wiring gap immediately.
 
         :param tool: TearsTool instance to register
         :ptype tool: TearsTool
@@ -867,10 +841,12 @@ class ToolServer:
         before :meth:`serve` has connected NATS: the removal still
         happens and the publish step is skipped.
 
-        namespace-task-01 phase 2: on successful removal, the paired
-        ``platform.namespaces`` row for the tool is deleted so no
-        stale namespace stays in play after the tool leaves. emission
-        failures raise so callers see the wiring gap.
+        namespace-task-01 phase 2 / three-tier-task-01 phase F: on
+        successful removal, every paired tool ``platform.namespaces``
+        row for that family is deleted via
+        :meth:`NamespaceCollection.delete` so no stale namespace
+        stays in play after the tool leaves. deletion failures raise
+        so callers see the wiring gap.
 
         :param tool_name: namespaced ``mcp_name`` (without the
             ``@version`` suffix) identifying the family of tool
@@ -880,15 +856,18 @@ class ToolServer:
         :rtype: bool
         :raises Exception: when namespace row deletion fails
         """
+        removed_keys = [
+            key for key in self._tools if key.startswith(f"{tool_name}@")
+        ]
         removed = self.unregister(tool_name)
         if removed and self._nc is not None:
             await self.publish_registration()
         if removed:
-            await self._delete_tool_namespace(tool_name)
+            await self._delete_tool_namespace(tool_name, removed_keys)
         return removed
 
     async def _emit_tool_namespace(self, tool: TearsTool) -> None:
-        """upsert the ``platform.namespaces`` row for a newly registered tool.
+        """upsert ``platform.namespaces`` row for a registered tool.
 
         every registered tool materializes as a ``tool``-type namespace
         so the unified rbac evaluator has a first-class id to evaluate
@@ -903,29 +882,45 @@ class ToolServer:
         tools carry both, scoping the grant surface to the owning
         customer.
 
+        writes through
+        :meth:`NamespaceCollection.save_entity` (three-tier-task-01
+        phase F): the Collection rides the agent's main NATS-proxy
+        pool so the broker admits the write under the caller's own
+        ``agent.<hex>`` namespace, and the paired uuid5 id keyed on
+        ``(mcp_name, version, agent_id_hex)`` lets concurrent
+        registrations converge via ``ON CONFLICT (id) DO UPDATE``.
+
         :param tool: registered :class:`TearsTool`
         :ptype tool: TearsTool
         :return: nothing
         :rtype: None
-        :raises Exception: when the backend rejects the upsert;
+        :raises Exception: when the Collection rejects the upsert;
             raised unchanged so callers see the wiring gap
         """
-        if self._l3_backend is None:
+        if self._namespace_collection is None:
             return
         schema = tool.mcp_schema()
         name = _tool_namespace_name(schema.name, schema.version)
         now = datetime.now(UTC)
-        namespace_id = uuid7()
-        await self._l3_backend.execute(
-            _INSERT_TOOL_NAMESPACE_SQL,
-            namespace_id,
-            name,
-            self._agent_id,
-            self._customer_id,
-            now,
-            now,
-            namespace="platform",
+        namespace_id = _tool_namespace_id(
+            schema.name, schema.version, self._agent_id,
         )
+        entity = self._namespace_collection.entity_class(
+            {
+                "id": namespace_id,
+                "name": name,
+                "namespace_type": "tool",
+                "owner_agent_id": self._agent_id,
+                "customer_id": self._customer_id,
+                "schema_name": None,
+                "metadata": {},
+                "date_created": now,
+                "date_updated": now,
+            },
+            is_new=True,
+            collection=self._namespace_collection,
+        )
+        await self._namespace_collection.save_entity(entity)
         log.info(
             "emitted tool namespace",
             extra={
@@ -933,6 +928,7 @@ class ToolServer:
                     "tool_name": schema.name,
                     "tool_version": schema.version,
                     "namespace_name": name,
+                    "namespace_id": str(namespace_id),
                     "owner_agent_id": (
                         str(self._agent_id) if self._agent_id is not None else None
                     ),
@@ -945,32 +941,50 @@ class ToolServer:
             },
         )
 
-    async def _delete_tool_namespace(self, mcp_name: str) -> None:
-        """delete ``platform.namespaces`` rows for a deregistered tool family.
+    async def _delete_tool_namespace(
+        self,
+        mcp_name: str,
+        removed_keys: list[str],
+    ) -> None:
+        """delete ``platform.namespaces`` rows for deregistered tool versions.
 
-        matches every version of the named tool via the LIKE pattern
-        ``tool:<mcp_name>:%`` so a multi-version deregister retires
-        every row in one statement. emission is suppressed when
-        ``l3_backend`` is not wired.
+        three-tier-task-01 phase F: translates the family-level
+        deregister into a sequence of
+        :meth:`NamespaceCollection.delete` calls, one per
+        ``name@version`` key removed from the in-memory registry. the
+        deterministic :func:`uuid5` derivation makes resolution a pure
+        client-side computation keyed on
+        ``(mcp_name, version, agent_id_hex)`` so no broker lookup is
+        needed before the delete.
 
         :param mcp_name: tool mcp name (without version suffix)
         :ptype mcp_name: str
+        :param removed_keys: ``name@version`` keys that were present
+            in the in-memory registry before :meth:`unregister` ran;
+            each produces one delete against the Collection
+        :ptype removed_keys: list[str]
         :return: nothing
         :rtype: None
-        :raises Exception: when the backend rejects the delete
+        :raises Exception: when the Collection rejects the delete
         """
-        if self._l3_backend is None:
+        if self._namespace_collection is None:
             return
-        pattern = f"tool:{mcp_name}:%"
-        await self._l3_backend.execute(
-            _DELETE_TOOL_NAMESPACE_SQL,
-            pattern,
-            namespace="platform",
-        )
-        log.info(
-            "deleted tool namespace rows",
-            extra={"extra_data": {"mcp_name": mcp_name, "pattern": pattern}},
-        )
+        for key in removed_keys:
+            _, _, version = key.partition("@")
+            namespace_id = _tool_namespace_id(
+                mcp_name, version, self._agent_id,
+            )
+            await self._namespace_collection.delete(namespace_id)
+            log.info(
+                "deleted tool namespace",
+                extra={
+                    "extra_data": {
+                        "mcp_name": mcp_name,
+                        "tool_version": version,
+                        "namespace_id": str(namespace_id),
+                    }
+                },
+            )
 
     @traced()
     async def publish_registration(self) -> None:

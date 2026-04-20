@@ -117,6 +117,7 @@ def _stub_dependencies() -> dict[str, Any]:
             grant_loader=_NoopGrantLoader(),
             ttl_seconds=60,
         ),
+        "namespace_collection": MagicMock(),
         "workspace_collection": MagicMock(),
         "workspace_file_collection": MagicMock(),
         "workspace_file_version_collection": MagicMock(),

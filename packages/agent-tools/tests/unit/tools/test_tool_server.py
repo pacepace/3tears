@@ -150,7 +150,7 @@ class TestToolServerRegister:
 
     def test_register_adds_tool(self) -> None:
         """register stores tool keyed by name@version."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
         assert "test.stub@1.0" in server._tools
@@ -158,7 +158,7 @@ class TestToolServerRegister:
 
     def test_register_multiple_tools(self) -> None:
         """register stores multiple distinct tools."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         tool_a = StubTool(name="test.alpha", version="1.0")
         tool_b = StubTool(name="test.beta", version="2.0")
         server.register(tool_a)
@@ -169,7 +169,7 @@ class TestToolServerRegister:
 
     def test_register_same_key_overwrites(self) -> None:
         """registering tool with same name@version overwrites previous."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         tool_a = StubTool(name="test.stub", version="1.0")
         tool_b = StubTool(name="test.stub", version="1.0")
         server.register(tool_a)
@@ -186,7 +186,11 @@ class TestToolServerServe:
     @pytest.mark.asyncio
     async def test_serve_connects_to_nats(self) -> None:
         """serve connects to NATS server at configured URL."""
-        server = ToolServer(nats_url="nats://localhost:9999", pod_id="test-pod-1")
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod-1",
+            namespace_collection=None,
+        )
         tool = StubTool()
         server.register(tool)
 
@@ -219,6 +223,7 @@ class TestToolServerServe:
             nats_url="nats://localhost:9999",
             namespace="testns",
             pod_id="test-pod-2",
+            namespace_collection=None,
         )
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
@@ -266,6 +271,7 @@ class TestToolServerServe:
             nats_url="nats://localhost:9999",
             namespace="testns",
             pod_id="test-pod-3",
+            namespace_collection=None,
         )
         tool = StubTool()
         server.register(tool)
@@ -308,7 +314,7 @@ class TestToolServerHandleCall:
         :class:`CallContext` back on :class:`CallResponse.context` so
         the response shape matches the request.
         """
-        server = ToolServer(nats_url="nats://localhost:9999")
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
@@ -335,7 +341,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_tool_result_on_success(self) -> None:
         """_handle_call returns serialized ToolResult with success=True."""
-        server = ToolServer(nats_url="nats://localhost:9999")
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
@@ -357,7 +363,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_unknown_tool(self) -> None:
         """_handle_call returns error response for unregistered tool."""
-        server = ToolServer(nats_url="nats://localhost:9999")
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
         correlation_id = uuid4()
         msg = _make_nats_msg(
@@ -379,7 +385,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_execution_failure(self) -> None:
         """_handle_call returns error response when tool raises exception."""
-        server = ToolServer(nats_url="nats://localhost:9999")
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
         tool = FailingTool()
         server.register(tool)
 
@@ -403,7 +409,7 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_malformed_request(self) -> None:
         """_handle_call returns error response for invalid JSON payload."""
-        server = ToolServer(nats_url="nats://localhost:9999")
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
         msg = MagicMock()
         msg.data = b"not valid json"
@@ -431,6 +437,7 @@ class TestToolServerHeartbeat:
             namespace="testns",
             pod_id="hb-pod",
             heartbeat_interval=0.05,
+            namespace_collection=None,
         )
         tool = StubTool()
         server.register(tool)
@@ -477,6 +484,7 @@ class TestToolServerShutdown:
             nats_url="nats://localhost:9999",
             pod_id="shutdown-pod",
             heartbeat_interval=0.05,
+            namespace_collection=None,
         )
         tool = StubTool()
         server.register(tool)
@@ -604,6 +612,7 @@ class TestToolServerProbe:
             nats_url="nats://localhost:9999",
             namespace="testns",
             pod_id="probe-pod-1",
+            namespace_collection=None,
         )
         tool = StubTool()
         server.register(tool)
@@ -637,6 +646,7 @@ class TestToolServerProbe:
             nats_url="nats://localhost:9999",
             namespace="testns",
             pod_id="order-pod",
+            namespace_collection=None,
         )
         tool = StubTool()
         server.register(tool)
@@ -685,7 +695,11 @@ class TestToolServerProbe:
     @pytest.mark.asyncio
     async def test_handle_probe_responds_with_ack(self) -> None:
         """_handle_probe replies with ProbeAck carrying pod_id and ready=True."""
-        server = ToolServer(nats_url="nats://localhost:9999", pod_id="ack-pod")
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="ack-pod",
+            namespace_collection=None,
+        )
 
         msg = MagicMock()
         msg.data = b'{"pod_id": "ack-pod"}'
@@ -701,7 +715,11 @@ class TestToolServerProbe:
     @pytest.mark.asyncio
     async def test_handle_probe_does_not_mutate_server_state(self) -> None:
         """_handle_probe is a pure responder -- readiness is driven by discovery."""
-        server = ToolServer(nats_url="nats://localhost:9999", pod_id="ready-pod")
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="ready-pod",
+            namespace_collection=None,
+        )
 
         msg = MagicMock()
         msg.data = b'{"pod_id": "ready-pod"}'
@@ -747,7 +765,11 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        server = ToolServer(nats_url="nats://localhost:9999", pod_id="wait-pod")
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="wait-pod",
+            namespace_collection=None,
+        )
         server.register(_FakeTool())
 
         discovery_reply = MagicMock()
@@ -797,7 +819,11 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        server = ToolServer(nats_url="nats://localhost:9999", pod_id="slow-pod")
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="slow-pod",
+            namespace_collection=None,
+        )
         server.register(_FakeTool())
 
         discovery_reply = MagicMock()
@@ -825,17 +851,17 @@ class TestToolsCountProperty:
     """``tools_count`` exposes ``len(self._tools)`` as a public read."""
 
     def test_tools_count_zero_on_fresh_server(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         assert server.tools_count == 0
 
     def test_tools_count_reflects_registrations(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="a", version="1.0"))
         server.register(StubTool(name="b", version="1.0"))
         assert server.tools_count == 2
 
     def test_tools_count_decreases_on_unregister(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="a", version="1.0"))
         server.register(StubTool(name="b", version="1.0"))
         server.unregister("a")
@@ -846,11 +872,11 @@ class TestToolNamesProperty:
     """``tool_names`` returns an immutable snapshot of registration keys."""
 
     def test_tool_names_empty_on_fresh_server(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         assert server.tool_names == ()
 
     def test_tool_names_contains_registered_keys(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="a", version="1.0"))
         server.register(StubTool(name="b", version="2.0"))
         names = server.tool_names
@@ -858,7 +884,7 @@ class TestToolNamesProperty:
 
     def test_tool_names_returns_tuple_not_dict_keys(self) -> None:
         """snapshot is a tuple so callers cannot mutate server state."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="a", version="1.0"))
         names = server.tool_names
         assert isinstance(names, tuple)
@@ -868,7 +894,7 @@ class TestToolNamesProperty:
 
     def test_tool_names_snapshot_is_stable_across_mutations(self) -> None:
         """snapshot reflects state at call time; later mutations do not echo."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="a", version="1.0"))
         snapshot = server.tool_names
         server.register(StubTool(name="b", version="1.0"))
@@ -879,11 +905,11 @@ class TestIsConnectedProperty:
     """``is_connected`` reflects whether NATS client is live."""
 
     def test_is_connected_false_before_serve(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         assert server.is_connected is False
 
     def test_is_connected_true_when_nc_set(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server._nc = MagicMock()
         assert server.is_connected is True
 
@@ -893,7 +919,7 @@ class TestPublishRegistrationPublicMethod:
 
     @pytest.mark.asyncio
     async def test_publish_registration_raises_when_not_connected(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         with pytest.raises(RuntimeError, match="publish_registration"):
             await server.publish_registration()
 
@@ -903,6 +929,7 @@ class TestPublishRegistrationPublicMethod:
             nats_url="nats://localhost:4222",
             namespace="testns",
             pod_id="pod-7",
+            namespace_collection=None,
         )
         server.register(StubTool(name="alpha", version="1.0"))
         nc = AsyncMock()
@@ -924,7 +951,7 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_register_tool_adds_and_publishes(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         nc = AsyncMock()
         server._nc = nc
         await server.register_tool(StubTool(name="x", version="1.0"))
@@ -933,14 +960,14 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_register_tool_skips_publish_when_not_connected(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         # no _nc: pre-serve() registration path
         await server.register_tool(StubTool(name="x", version="1.0"))
         assert server.tools_count == 1  # tool still registered
 
     @pytest.mark.asyncio
     async def test_deregister_tool_removes_and_publishes(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="x", version="1.0"))
         nc = AsyncMock()
         server._nc = nc
@@ -951,7 +978,7 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_deregister_tool_returns_false_when_missing(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         nc = AsyncMock()
         server._nc = nc
         removed = await server.deregister_tool("never-registered")
@@ -960,7 +987,7 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_deregister_tool_no_publish_when_not_connected(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         server.register(StubTool(name="x", version="1.0"))
         removed = await server.deregister_tool("x")
         assert removed is True
@@ -975,20 +1002,20 @@ class TestToolServerInjectedNatsClient:
     def test_constructor_without_either_raises(self) -> None:
         """omitting both ``nats_url`` and ``nats_client`` is a config error."""
         with pytest.raises(ValueError, match="nats_url or nats_client"):
-            ToolServer()
+            ToolServer(namespace_collection=None)
 
     def test_constructor_with_injected_client_records_non_ownership(
         self,
     ) -> None:
         """supplying ``nats_client`` flips the ownership flag."""
         nc = AsyncMock()
-        server = ToolServer(nats_client=nc)
+        server = ToolServer(nats_client=nc, namespace_collection=None)
         assert server._nc is nc
         assert server._owns_nats_connection is False
 
     def test_constructor_with_url_records_ownership(self) -> None:
         """supplying only ``nats_url`` means the server owns the connection."""
-        server = ToolServer(nats_url="nats://localhost:4222")
+        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         assert server._nc is None
         assert server._owns_nats_connection is True
 
@@ -996,7 +1023,11 @@ class TestToolServerInjectedNatsClient:
     async def test_serve_skips_connect_when_client_injected(self) -> None:
         """``serve()`` reuses the injected client rather than opening a new one."""
         nc = AsyncMock()
-        server = ToolServer(nats_client=nc, heartbeat_interval=3600.0)
+        server = ToolServer(
+            nats_client=nc,
+            heartbeat_interval=3600.0,
+            namespace_collection=None,
+        )
         with patch(
             "threetears.agent.tools.server.nats_connect",
             new=AsyncMock(),
@@ -1015,7 +1046,11 @@ class TestToolServerInjectedNatsClient:
     async def test_shutdown_does_not_close_injected_client(self) -> None:
         """caller-owned connection stays open after ``shutdown()``."""
         nc = AsyncMock()
-        server = ToolServer(nats_client=nc, heartbeat_interval=3600.0)
+        server = ToolServer(
+            nats_client=nc,
+            heartbeat_interval=3600.0,
+            namespace_collection=None,
+        )
         serve_task = asyncio.create_task(server.serve())
         await asyncio.sleep(0)
         await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
@@ -1028,7 +1063,11 @@ class TestToolServerInjectedNatsClient:
     async def test_shutdown_closes_self_owned_client(self) -> None:
         """server-owned connection is drained + closed on ``shutdown()``."""
         nc = AsyncMock()
-        server = ToolServer(nats_url="nats://localhost:4222", heartbeat_interval=3600.0)
+        server = ToolServer(
+            nats_url="nats://localhost:4222",
+            heartbeat_interval=3600.0,
+            namespace_collection=None,
+        )
         with patch(
             "threetears.agent.tools.server.nats_connect",
             new=AsyncMock(return_value=nc),

@@ -93,10 +93,40 @@ def _make_acl_cache() -> AclCache:
     )
 
 
+class _FakeNamespaceCollection:
+    """stub that satisfies the ``namespace_collection`` shape at build time.
+
+    :class:`WorkspaceCreateTool` captures the reference at construction
+    and only dereferences ``entity_class`` / ``save_entity`` inside
+    :meth:`execute`. factory tests never drive a create, so the
+    collection attribute exists purely to keep the constructor happy.
+    """
+
+    async def save_entity(self, entity: Any) -> None:
+        """no-op save placeholder for the factory builder path."""
+        del entity
+
+    class entity_class:  # noqa: N801 -- matches BaseCollection attribute
+        """dummy entity class placeholder for construction tests."""
+
+        def __init__(
+            self,
+            data: Any,
+            *,
+            is_new: bool,
+            collection: Any,
+        ) -> None:
+            """capture kwargs for parity with the real entity signature."""
+            self.data = data
+            self.is_new = is_new
+            self.collection = collection
+
+
 def _minimal_deps() -> dict[str, Any]:
     """build the minimum deps bundle every workspace tool requires."""
     return {
         "acl_cache": _make_acl_cache(),
+        "namespace_collection": _FakeNamespaceCollection(),
         "workspace_collection": _FakeCollection(),
         "workspace_file_collection": _FakeCollection(),
         "workspace_file_version_collection": _FakeCollection(),

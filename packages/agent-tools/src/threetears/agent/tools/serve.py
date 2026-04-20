@@ -205,7 +205,17 @@ def main() -> None:
     nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
     namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
 
-    server = ToolServer(nats_url=nats_url, namespace=namespace)
+    # the built-in tool entrypoint is a platform-only pod that serves
+    # calculator / dictionary / current-date / etc. from a standalone
+    # process; it does not participate in the agent-side three-tier
+    # stack so namespace emission is deliberately suppressed.
+    # :class:`NamespaceCollection` wiring is the agent bootstrap's
+    # responsibility when agent-owned tools spin up.
+    server = ToolServer(
+        nats_url=nats_url,
+        namespace=namespace,
+        namespace_collection=None,
+    )
     _register_builtin_tools(server)
 
     loop = asyncio.new_event_loop()

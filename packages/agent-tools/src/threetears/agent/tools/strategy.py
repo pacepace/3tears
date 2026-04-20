@@ -98,6 +98,21 @@ class BootstrapContext:
         at the strategy-protocol boundary to keep this package free
         of an agent-acl dependency; concrete construction paths pass
         the real :class:`AclCache` instance
+    :ivar namespace_collection: three-tier
+        :class:`NamespaceCollection` constructed during the
+        three-tier stack phase. strategies that own a ToolServer
+        thread this into :class:`ToolServer` so
+        :meth:`register_tool` / :meth:`deregister_tool` materialize
+        ``platform.namespaces`` rows via
+        :meth:`NamespaceCollection.save_entity` /
+        :meth:`NamespaceCollection.delete`. strategies that build
+        workspace tools thread it into
+        :func:`register_workspace_tools` so
+        :class:`WorkspaceCreateTool` can emit the paired workspace
+        namespace row through the same Collection. typed ``Any`` at
+        the strategy-protocol boundary to keep this package free of
+        an aibots hub dependency (the concrete
+        :class:`NamespaceCollection` lives in the aibots package)
     """
 
     nats_client: Any
@@ -108,6 +123,7 @@ class BootstrapContext:
     workspace_runtime: Any = None
     registry_client: Any = None
     acl_cache: Any = None
+    namespace_collection: Any = None
 
 
 @runtime_checkable
