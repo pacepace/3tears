@@ -66,6 +66,56 @@ class CollectionRegistry:
             if l3_pool:
                 self._overrides[table]["l3_pool"] = l3_pool
 
+    def bind_table(
+        self,
+        table_name: str,
+        *,
+        l1_backend: Any = None,
+        l2_client: Any = None,
+        l3_pool: Any = None,
+    ) -> None:
+        """pin per-table backend overrides BEFORE the Collection is constructed.
+
+        :class:`BaseCollection.__init__` reads ``l3_pool`` (and friends)
+        from the registry via :meth:`get_l3_pool` immediately and then
+        auto-registers. :meth:`register`'s ``l3_pool=`` kwarg records
+        an override but fires too late — the Collection has already
+        snapped its pool from the registry default. ``bind_table``
+        records the override under the table name so the subsequent
+        Collection construction reads the intended backend on its
+        first :meth:`get_l3_pool` call.
+
+        used by multi-pool agent-side bootstraps (three-tier-task-01
+        Phase C2: the rbac metadata Collections need a separate
+        :class:`NatsProxyL3Backend` pool bound to ``platform:rbac``
+        because the broker route different namespaces to different
+        schemas). every key left as ``None`` is ignored so callers can
+        layer l1 / l2 / l3 bindings independently.
+
+        :param table_name: target table name (matches
+            :attr:`BaseCollection.table_name` on the Collection that
+            will later be constructed)
+        :ptype table_name: str
+        :param l1_backend: L1 backend override for this table, or
+            ``None`` to leave any existing binding untouched
+        :ptype l1_backend: Any
+        :param l2_client: L2 client override for this table
+        :ptype l2_client: Any
+        :param l3_pool: L3 pool override for this table
+        :ptype l3_pool: Any
+        :return: nothing
+        :rtype: None
+        """
+        if l1_backend is None and l2_client is None and l3_pool is None:
+            return
+        existing = self._overrides.setdefault(table_name, {})
+        if l1_backend is not None:
+            existing["l1_backend"] = l1_backend
+        if l2_client is not None:
+            existing["l2_client"] = l2_client
+        if l3_pool is not None:
+            existing["l3_pool"] = l3_pool
+
     def get_collection(self, table_name: str) -> Any | None:
         """Look up a registered collection by table name."""
         return self._collections.get(table_name)
