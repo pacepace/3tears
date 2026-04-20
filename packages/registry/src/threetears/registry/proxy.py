@@ -157,22 +157,27 @@ class CallProxy:
     def __init__(
         self,
         catalog: ToolCatalog,
+        authorizer: AgentToolAuthorizer,
         namespace: str = "aibots",
         timeout: float | None = None,
-        authorizer: AgentToolAuthorizer | None = None,
         routing_strategy: RoutingStrategy | None = None,
     ) -> None:
         """initialize call proxy.
 
         :param catalog: tool catalog for tool lookup
         :ptype catalog: ToolCatalog
+        :param authorizer: agent tool authorizer for access control;
+            REQUIRED. every tool dispatch is gated through the
+            authorizer — no silent-bypass path. dev/test callers pass
+            :class:`AllowAllAuthorizer` /
+            :class:`DenyAllAuthorizer`; production wires
+            :class:`RbacEvaluatorAuthorizer`
+        :ptype authorizer: AgentToolAuthorizer
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
         :param timeout: default timeout in seconds for forwarded NATS requests.
             sourced from THREETEARS_REGISTRY_CALL_TIMEOUT env var if not provided.
         :ptype timeout: float | None
-        :param authorizer: optional agent tool authorizer for access control
-        :ptype authorizer: AgentToolAuthorizer | None
         :param routing_strategy: endpoint selection strategy (defaults to least-connections)
         :ptype routing_strategy: RoutingStrategy | None
         """

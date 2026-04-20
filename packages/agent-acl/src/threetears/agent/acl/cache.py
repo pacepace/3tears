@@ -43,6 +43,7 @@ from datetime import UTC, datetime, timedelta
 from threading import RLock
 from uuid import UUID
 
+from threetears.agent.acl.loader import GrantLoader, MembershipLoader
 from threetears.agent.acl.types import Trail
 from threetears.observe import get_logger
 
@@ -160,7 +161,14 @@ class GroupTypeCustomerEntry:
 
 
 class AclCache:
-    """three-layer ttl cache for the rbac evaluator.
+    """three-layer ttl cache for the rbac evaluator, bundling loaders.
+
+    the cache carries the two loader handles the evaluator depends on
+    alongside its three in-process layers. production wiring (broker
+    + every agent pod) hands a single :class:`AclCache` instance to
+    every authorization call site: the cache holds the TTL state, the
+    loaders resolve misses, and the evaluator reads both through the
+    public :attr:`membership_loader` + :attr:`grant_loader` attributes.
 
     layers are explicitly separated so invalidation can target one
     layer without disturbing the others. all three layers share one
@@ -173,12 +181,27 @@ class AclCache:
     has one. cross-process invalidation is the caller's job (publish
     invalidation events on whatever bus already exists).
 
+    :param membership_loader: actor -> groups resolver consumed by the
+        evaluator on membership-layer misses
+    :ptype membership_loader: MembershipLoader
+    :param grant_loader: groups -> assignments + roles + groups
+        resolver consumed by the evaluator on assignment-layer misses
+    :ptype grant_loader: GrantLoader
     :param ttl_seconds: how long an entry stays fresh; defaults to
         sixty seconds. lookups past the ttl evict the entry and
         return ``None``.
+    :ptype ttl_seconds: int
     """
 
-    def __init__(self, ttl_seconds: int = 60) -> None:
+    def __init__(
+        self,
+        *,
+        membership_loader: MembershipLoader,
+        grant_loader: GrantLoader,
+        ttl_seconds: int = 60,
+    ) -> None:
+        self.membership_loader = membership_loader
+        self.grant_loader = grant_loader
         self._ttl = timedelta(seconds=ttl_seconds)
         self._membership: dict[ActorMembershipKey, ActorMembershipEntry] = {}
         self._group_namespace: dict[GroupNamespaceKey, GroupNamespaceEntry] = {}

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -30,7 +31,6 @@ from threetears.core.serialization import UnknownFormatError, handler_for
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.authorize import (
-    AclCacheLike,
     WorkspaceAccessDenied,
 )
 from threetears.agent.workspace.collections import (
@@ -95,8 +95,8 @@ class DocGetTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        acl_cache: AclCache,
         db_pool: Any = None,
-        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to workspace + file collections, sandbox, context, agent.
@@ -281,7 +281,7 @@ def _build(**kwargs: Any) -> DocGetTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs.get("db_pool"),
-        acl_cache=kwargs.get("acl_cache"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

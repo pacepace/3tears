@@ -19,7 +19,55 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from threetears.agent.acl import (
+    AclCache,
+    GroupMembership,
+    Namespace,
+    Role,
+    RoleAssignment,
+)
+
+
+class _NoopMembershipLoader:
+    """membership loader stub yielding empty memberships."""
+
+    async def load_for_user(
+        self, user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        del user_id
+        return ()
+
+    async def load_for_agent(
+        self, agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        del agent_id
+        return ()
+
+
+class _NoopGrantLoader:
+    """grant loader stub yielding empty grants."""
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        del group_ids, namespace
+        return ()
+
+    async def load_roles(
+        self, role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        del role_ids
+        return {}
+
+    async def load_groups(
+        self, group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        del group_ids
+        return {}
 
 
 _EXPECTED_WORKSPACE_TOOL_NAMES: frozenset[str] = frozenset(
@@ -64,6 +112,11 @@ def _stub_dependencies() -> dict[str, Any]:
     :rtype: dict[str, Any]
     """
     return {
+        "acl_cache": AclCache(
+            membership_loader=_NoopMembershipLoader(),
+            grant_loader=_NoopGrantLoader(),
+            ttl_seconds=60,
+        ),
         "workspace_collection": MagicMock(),
         "workspace_file_collection": MagicMock(),
         "workspace_file_version_collection": MagicMock(),

@@ -90,6 +90,14 @@ class BootstrapContext:
         polling; strategies that expect tools from external pods use
         this to poll the registry for readiness. None when the
         strategy registers tools in-process
+    :ivar acl_cache: shared :class:`threetears.agent.acl.AclCache`
+        constructed during the three-tier stack phase. strategies
+        that build workspace tools thread this into
+        :func:`build_workspace_tools` so every dispatch authorizes
+        against one bootstrap-owned cache + loader set. typed ``Any``
+        at the strategy-protocol boundary to keep this package free
+        of an agent-acl dependency; concrete construction paths pass
+        the real :class:`AclCache` instance
     """
 
     nats_client: Any
@@ -99,6 +107,7 @@ class BootstrapContext:
     bootstrap_token: str | None = None
     workspace_runtime: Any = None
     registry_client: Any = None
+    acl_cache: Any = None
 
 
 @runtime_checkable

@@ -42,9 +42,8 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from threetears.agent.acl import (
+    AclCache,
     EvaluationContext,
-    GrantLoader,
-    MembershipLoader,
     Namespace as AclNamespace,
     evaluate_decision,
 )
@@ -55,7 +54,6 @@ if TYPE_CHECKING:
     from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
-    "AclCacheLike",
     "WorkspaceAccessDenied",
     "WorkspaceLike",
     "authorize_workspace_access",
@@ -77,34 +75,41 @@ class WorkspaceAccessDenied(Exception):
 class WorkspaceLike(Protocol):
     """structural type for the workspace record the helper inspects.
 
+    attributes are declared as read-only properties so the concrete
+    :class:`~threetears.agent.workspace.entities.Workspace` entity
+    (whose shape uses read-only ``@property`` accessors) satisfies
+    the Protocol. ``customer_id`` is allowed to be ``None`` on the
+    entity until :func:`enrich_workspace_identity` stamps it; the
+    helper re-checks for None on every call, so the Protocol carries
+    the same ``UUID | None`` shape.
+
     :ivar id: workspace UUID (also the matching namespace id)
-    :ivar customer_id: owning customer UUID
+    :ivar customer_id: owning customer UUID or None before enrichment
     :ivar owner_agent_id: UUID of the agent that owns the physical rows
     :ivar created_by_user_id: UUID of the user who created the workspace
     :ivar namespace_name: canonical name of the workspace's namespace
         row; kept on the Protocol for logging / back-compat callers
     """
 
-    id: UUID
-    customer_id: UUID
-    owner_agent_id: UUID
-    created_by_user_id: UUID
-    namespace_name: str
+    @property
+    def id(self) -> UUID:
+        """workspace UUID."""
 
+    @property
+    def customer_id(self) -> UUID | None:
+        """owning customer UUID or None before enrichment."""
 
-class AclCacheLike(Protocol):
-    """structural type for the broker-side acl gateway.
+    @property
+    def owner_agent_id(self) -> UUID:
+        """UUID of the agent that owns the physical rows."""
 
-    rbac-task-01 Phase 3: the helper now speaks the unified evaluator
-    surface directly. the protocol is kept to preserve the argument
-    name on tool factories and because some agent-side callers supply
-    a wrapper that holds the loaders; concrete implementations
-    surface ``membership_loader`` and ``grant_loader`` for the
-    evaluator call.
-    """
+    @property
+    def created_by_user_id(self) -> UUID:
+        """UUID of the user who created the workspace."""
 
-    membership_loader: MembershipLoader
-    grant_loader: GrantLoader
+    @property
+    def namespace_name(self) -> str:
+        """canonical namespace name."""
 
 
 async def authorize_workspace_access(
@@ -112,13 +117,13 @@ async def authorize_workspace_access(
     workspace: WorkspaceLike,
     operation: Literal["read", "write"],
     *,
-    acl_cache: AclCacheLike,
+    acl_cache: AclCache,
 ) -> None:
     """authorize the current tool call's identity against ``workspace``.
 
     builds an :class:`EvaluationContext` from the scope + workspace and
     calls :func:`~threetears.agent.acl.evaluate_decision` with the
-    loaders the caller's acl_cache carries.
+    loaders the caller's :class:`~threetears.agent.acl.AclCache` carries.
 
     :param scope: live :class:`ToolCallScope` pushed by the tool
         server for this dispatch; ``scope.context`` carries
@@ -132,10 +137,10 @@ async def authorize_workspace_access(
     :param operation: intent verb — ``"read"`` for retrieval,
         ``"write"`` for mutation
     :ptype operation: Literal["read", "write"]
-    :param acl_cache: object exposing ``membership_loader`` +
-        ``grant_loader`` (the shared :class:`~threetears.agent.acl.AclCache`
-        gateway or a per-process equivalent)
-    :ptype acl_cache: AclCacheLike
+    :param acl_cache: shared :class:`~threetears.agent.acl.AclCache`
+        wired with membership + grant loaders at bootstrap; required,
+        no silent-bypass path
+    :ptype acl_cache: AclCache
     :return: nothing
     :rtype: None
     :raises WorkspaceAccessDenied: on any denial path

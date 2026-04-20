@@ -15,6 +15,7 @@ from threetears.agent.tools.server import HeartbeatMessage, RegistrationManifest
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, DiscoveryHandler
 from threetears.registry.health import HeartbeatMonitor, PodStatus
+from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
@@ -352,7 +353,7 @@ class TestMultiPodRouting:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=1.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=1.0)
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=TimeoutError("timed out"))
         await proxy.start(nc)
@@ -374,7 +375,7 @@ class TestMultiPodRouting:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=5.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=5.0)
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)

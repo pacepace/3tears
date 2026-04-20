@@ -1,10 +1,10 @@
 """shared fixtures for the workspace-tools unit suite.
 
-every workspace tool now requires both an installed
-:class:`~threetears.agent.tools.call_scope.ToolCallScope` and a non-None
-``acl_cache`` to clear the WS-ACL-05 hard-fail in
-:func:`threetears.agent.workspace.tools.helpers.authorize_workspace`. the
-fixtures here satisfy both pre-conditions for every test in this
+every workspace tool requires both an installed
+:class:`~threetears.agent.tools.call_scope.ToolCallScope` and a live
+:class:`~threetears.agent.acl.AclCache` (required ctor param on every
+tool since three-tier-task-01 Phase E; no silent-bypass path remains).
+the fixtures here satisfy both pre-conditions for every test in this
 directory:
 
 - :func:`tool_scope_context` builds a fully-populated
@@ -15,10 +15,9 @@ directory:
   :class:`ToolCallScope` carrying that context for the duration of each
   test, so the helper's ``current_scope() is None`` guard never fires
   inside this directory.
-- :func:`permissive_acl_cache` returns an :class:`AclCache`-shaped mock
-  whose ``check_access`` always grants ``"write"`` access; tests pass it
-  as ``acl_cache=`` when constructing tools so the helper's
-  ``acl_cache is None`` guard never fires either.
+- :func:`permissive_acl_cache` returns a real :class:`AclCache` wired
+  with in-memory :class:`MembershipLoader` + :class:`GrantLoader`
+  stubs; tests pass it as ``acl_cache=`` when constructing tools.
 - :func:`stub_authorize_workspace_access` is autouse and replaces the
   workspace-shape-dependent authorize entry point with an
   :class:`AsyncMock` for the duration of each test. unit tests under
@@ -28,28 +27,115 @@ directory:
   surface (no ``namespace_name`` / ``owner_agent_id`` /
   ``created_by_user_id`` / ``customer_id``); that surface is exercised
   end-to-end in ``tests/unit/test_workspace_tool_authorization.py``.
-  the helper's two preconditions (scope installed, ``acl_cache``
-  injected) still raise on miss, so tests cannot accidentally drop
-  either wire.
 
 tests that need to assert deny behavior should not use
-``permissive_acl_cache`` -- they construct their own cache mock and pass
-it explicitly.
+``permissive_acl_cache`` -- they construct their own cache wiring and
+pass it explicitly.
 """
 
 from __future__ import annotations
 
 from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid7
 
 import pytest
-from uuid import uuid7
 
+from threetears.agent.acl import (
+    AclCache,
+    GroupMembership,
+    Namespace,
+    Role,
+    RoleAssignment,
+)
 from threetears.agent.tools.call_scope import (
     ToolCallScope,
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext
+
+
+class _EmptyMembershipLoader:
+    """membership loader stub yielding no memberships for any actor."""
+
+    async def load_for_user(
+        self, user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every user id.
+
+        :param user_id: user UUID (ignored)
+        :ptype user_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del user_id
+        return ()
+
+    async def load_for_agent(
+        self, agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every agent id.
+
+        :param agent_id: agent UUID (ignored)
+        :ptype agent_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del agent_id
+        return ()
+
+
+class _EmptyGrantLoader:
+    """grant loader stub yielding no assignments / roles / groups."""
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        """
+        return empty tuple for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :param namespace: namespace (ignored)
+        :ptype namespace: Namespace
+        :return: empty tuple
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        del group_ids
+        del namespace
+        return ()
+
+    async def load_roles(
+        self, role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        """
+        return empty mapping for every role set.
+
+        :param role_ids: role UUIDs (ignored)
+        :ptype role_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, Role]
+        """
+        del role_ids
+        return {}
+
+    async def load_groups(
+        self, group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        """
+        return empty mapping for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, object]
+        """
+        del group_ids
+        return {}
 
 
 @pytest.fixture
@@ -96,32 +182,31 @@ async def tool_call_scope(
 
 
 @pytest.fixture
-def permissive_acl_cache() -> MagicMock:
-    """AclCacheLike-shaped mock that permits every access.
+def permissive_acl_cache() -> AclCache:
+    """real :class:`AclCache` wired with empty loader stubs.
 
-    rbac-task-01 Phase 3: the :class:`AclCacheLike` protocol surfaces
-    ``membership_loader`` + ``grant_loader`` instead of the retired
-    ``check_access`` method. the helper in
-    :mod:`threetears.agent.workspace.authorize` reads both attributes
-    when building its :class:`EvaluationContext`. since the tests in
+    three-tier-task-01 Phase E: every workspace tool takes an
+    :class:`AclCache` as a required constructor param. the tests in
     this directory stub :func:`authorize_workspace_access` via the
-    autouse fixture, the loaders are never actually consulted — but we
-    still populate them with :class:`AsyncMock` attributes so the
-    ``AclCacheLike`` protocol surface stays correct and a future test
-    that unstubs the helper will not break on missing attrs.
+    autouse fixture, so the loaders are never actually consulted —
+    but we wire real loader stubs anyway so the cache + loader surface
+    is structurally honest and a future test that unstubs the helper
+    will not break on protocol drift.
 
-    tools constructed with this cache pass through the WS-ACL-05
-    authorize gate unconditionally. used by the bulk of the tool tests
-    that exercise functionality unrelated to RBAC. authorization-matrix
-    tests build their own cache mocks to assert deny paths.
+    tools constructed with this cache pass through the authorize gate
+    unconditionally (the gate itself is stubbed). used by the bulk of
+    the tool tests that exercise functionality unrelated to RBAC.
+    authorization-matrix tests build their own cache wiring to assert
+    deny paths.
 
-    :return: mock exposing ``membership_loader`` + ``grant_loader`` attrs
-    :rtype: MagicMock
+    :return: live cache instance
+    :rtype: AclCache
     """
-    cache = MagicMock()
-    cache.membership_loader = AsyncMock()
-    cache.grant_loader = AsyncMock()
-    return cache
+    return AclCache(
+        membership_loader=_EmptyMembershipLoader(),
+        grant_loader=_EmptyGrantLoader(),
+        ttl_seconds=60,
+    )
 
 
 @pytest.fixture(autouse=True)

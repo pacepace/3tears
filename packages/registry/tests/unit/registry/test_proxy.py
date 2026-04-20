@@ -12,6 +12,7 @@ import pytest
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
 
@@ -173,7 +174,7 @@ class TestCallProxySuccess:
         entry = _make_entry(pod_id="pod-alpha")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=5.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=5.0)
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
@@ -195,7 +196,7 @@ class TestCallProxySuccess:
         entry = _make_entry(pod_id="pod-001")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
@@ -217,7 +218,7 @@ class TestCallProxySuccess:
         entry = _make_entry(pod_id="pod-001")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         tool_response = _make_tool_response(
             success=True,
             content="calculation complete: 42",
@@ -254,7 +255,7 @@ class TestCallProxySuccess:
         entry = _make_entry(pod_id="pod-001")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(
             return_value=_make_tool_response(correlation_id=correlation_id),
@@ -288,7 +289,7 @@ class TestCallProxyUnavailable:
     async def test_returns_tool_unavailable_for_missing_tool(self) -> None:
         """proxy returns TOOL_UNAVAILABLE for tool not in catalog."""
         catalog = ToolCatalog()
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -313,7 +314,7 @@ class TestCallProxyUnavailable:
         entry = _make_entry(status="unavailable")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -331,7 +332,7 @@ class TestCallProxyUnavailable:
     async def test_unavailable_does_not_forward_to_pod(self) -> None:
         """proxy does not forward request when tool is unavailable."""
         catalog = ToolCatalog()
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -359,7 +360,7 @@ class TestCallProxyTimeout:
         entry = _make_entry(pod_id="pod-slow")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=2.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=2.0)
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=TimeoutError("request timed out"))
         await proxy.start(nc)
@@ -387,7 +388,7 @@ class TestCallProxyTimeout:
         entry = _make_entry(pod_id="pod-slow")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=TimeoutError("timeout"))
         await proxy.start(nc)
@@ -407,7 +408,7 @@ class TestCallProxyTimeout:
         entry = _make_entry(pod_id="pod-001")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         assert proxy._timeout == 120.0, (
             f"CallProxy default is {proxy._timeout}s but must be 120s. "
             f"Hardcoded 30s killed slow tools for an entire day."
@@ -428,7 +429,7 @@ class TestCallProxyTimeout:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=120.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=120.0)
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
@@ -462,7 +463,7 @@ class TestCallProxyTimeout:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=120.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=120.0)
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
@@ -499,7 +500,7 @@ class TestCallProxyTimeout:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(
             return_value=_make_tool_response(
@@ -557,7 +558,7 @@ class TestCallProxyInFlightTracking:
             captured_in_flight.append(endpoint.in_flight)
             return _make_tool_response()
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=capture_request)
         await proxy.start(nc)
@@ -580,7 +581,7 @@ class TestCallProxyInFlightTracking:
         endpoint = entry.endpoints[0]
         assert endpoint.in_flight == 0
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(side_effect=TimeoutError("timeout"))
         await proxy.start(nc)
@@ -616,7 +617,7 @@ class TestCallProxyRouting:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test", timeout=5.0)
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=5.0)
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
@@ -650,8 +651,7 @@ class TestCallProxyRouting:
         strategy = MagicMock()
         strategy.select = MagicMock(return_value=endpoint_second)
 
-        proxy = CallProxy(
-            catalog,
+        proxy = CallProxy(catalog, AllowAllAuthorizer(),
             namespace="test",
             timeout=5.0,
             routing_strategy=strategy,
@@ -681,7 +681,7 @@ class TestCallProxyLifecycle:
     async def test_start_subscribes_with_queue_group(self) -> None:
         """start subscribes to {namespace}.tools.call with queue group."""
         catalog = ToolCatalog()
-        proxy = CallProxy(catalog, namespace="myns")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="myns")
         nc = AsyncMock()
         await proxy.start(nc)
         nc.subscribe.assert_called_once()
@@ -693,7 +693,7 @@ class TestCallProxyLifecycle:
     async def test_stop_unsubscribes(self) -> None:
         """stop unsubscribes from call subject."""
         catalog = ToolCatalog()
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)

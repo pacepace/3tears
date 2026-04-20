@@ -17,6 +17,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -27,7 +28,6 @@ from threetears.core.security import SandboxDecision
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.authorize import (
-    AclCacheLike,
     WorkspaceAccessDenied,
 )
 from threetears.agent.workspace.collections import (
@@ -84,8 +84,8 @@ class FsListTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        acl_cache: AclCache,
         db_pool: Any = None,
-        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, conversation context, and agent.
@@ -253,7 +253,7 @@ def _build(**kwargs: Any) -> FsListTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs.get("db_pool"),
-        acl_cache=kwargs.get("acl_cache"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

@@ -1,14 +1,16 @@
 """unit tests for :func:`authorize_workspace_access`.
 
 rbac-task-01 Phase 3 rewired the helper to delegate to the unified
-evaluator in :mod:`threetears.agent.acl`. the new contract:
+evaluator in :mod:`threetears.agent.acl`. three-tier-task-01 Phase E
+made :class:`AclCache` the required type at every tool / authorize
+call site. the current contract:
 
 - ``scope.context.customer_id is None`` -> raise immediately.
 - ``workspace.customer_id != scope.customer_id`` -> raise, no evaluator
   trip (cross-customer short-circuits).
 - otherwise build an :class:`EvaluationContext` and call
   :func:`evaluate_decision` with the loaders the caller's
-  ``AclCacheLike`` protocol exposes.
+  :class:`AclCache` exposes.
 - evaluator returning ``False`` surfaces as :class:`WorkspaceAccessDenied`.
 - unknown operation strings raise before any evaluator trip.
 
@@ -17,22 +19,27 @@ evaluator's ``_resolve_side`` handles owner-match inside the agent
 side. the helper therefore always goes through the evaluator unless
 a guard clause fires.
 
-the ``AclCacheLike`` protocol shape changed: it now exposes
-``membership_loader`` + ``grant_loader`` instead of a ``check_access``
-method. tests build mock caches with both attributes and patch
-:func:`evaluate_decision` at the authorize module's import site to
-drive allow/deny outcomes.
+tests build a real :class:`AclCache` wired with empty loader stubs
+and patch :func:`evaluate_decision` at the authorize module's import
+site to drive allow/deny outcomes.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4 as uuid7
 
 import pytest
 
+from threetears.agent.acl import (
+    AclCache,
+    GroupMembership,
+    Namespace,
+    Role,
+    RoleAssignment,
+)
 from threetears.agent.tools.call_scope import ToolCallScope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace import authorize as _authorize_module
@@ -40,6 +47,89 @@ from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
     authorize_workspace_access,
 )
+
+
+class _EmptyMembershipLoader:
+    """membership loader stub yielding no memberships for any actor."""
+
+    async def load_for_user(
+        self, user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every user id.
+
+        :param user_id: user UUID (ignored)
+        :ptype user_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del user_id
+        return ()
+
+    async def load_for_agent(
+        self, agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every agent id.
+
+        :param agent_id: agent UUID (ignored)
+        :ptype agent_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del agent_id
+        return ()
+
+
+class _EmptyGrantLoader:
+    """grant loader stub yielding no assignments / roles / groups."""
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        """
+        return empty tuple for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :param namespace: namespace (ignored)
+        :ptype namespace: Namespace
+        :return: empty tuple
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        del group_ids
+        del namespace
+        return ()
+
+    async def load_roles(
+        self, role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        """
+        return empty mapping for every role set.
+
+        :param role_ids: role UUIDs (ignored)
+        :ptype role_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, Role]
+        """
+        del role_ids
+        return {}
+
+    async def load_groups(
+        self, group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        """
+        return empty mapping for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, object]
+        """
+        del group_ids
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -112,24 +202,23 @@ def _make_scope(
     return ToolCallScope(context=ctx)
 
 
-def _make_cache() -> MagicMock:
-    """build an :class:`AclCacheLike`-shaped mock.
+def _make_cache() -> AclCache:
+    """build a real :class:`AclCache` wired with empty loader stubs.
 
-    the new protocol surfaces ``membership_loader`` + ``grant_loader``
-    attributes. concrete loader methods are never exercised here
-    because the tests patch :func:`evaluate_decision` directly at the
-    authorize module's import site; attaching :class:`MagicMock` to
-    each attribute is enough to satisfy the attribute access inside
-    the helper (``acl_cache.membership_loader`` /
-    ``acl_cache.grant_loader``).
+    concrete loader methods are never exercised here because the
+    tests patch :func:`evaluate_decision` directly at the authorize
+    module's import site; the cache still has to be a real
+    :class:`AclCache` because the ctor signature on the helper +
+    tools is the concrete type (no Protocol duck-type).
 
-    :return: mock exposing the protocol's attributes
-    :rtype: MagicMock
+    :return: live cache wired with empty loaders
+    :rtype: AclCache
     """
-    cache = MagicMock()
-    cache.membership_loader = MagicMock()
-    cache.grant_loader = MagicMock()
-    return cache
+    return AclCache(
+        membership_loader=_EmptyMembershipLoader(),
+        grant_loader=_EmptyGrantLoader(),
+        ttl_seconds=60,
+    )
 
 
 def _patch_evaluate_decision(

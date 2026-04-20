@@ -106,13 +106,13 @@ class RegistryServer:
 
     def __init__(
         self,
+        authorizer: AgentToolAuthorizer,
         nats_url: str | None = None,
         namespace: str | None = None,
         heartbeat_check_interval: float | None = None,
         heartbeat_timeout: float | None = None,
         call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
-        authorizer: AgentToolAuthorizer | None = None,
     ) -> None:
         """initialize registry server.
 
@@ -131,8 +131,13 @@ class RegistryServer:
         :ptype call_timeout: float | None
         :param kv_bucket: NATS KV bucket name for catalog persistence
         :ptype kv_bucket: str
-        :param authorizer: tool access authorizer for agent call verification (defaults to None, resolved by _run_server)
-        :ptype authorizer: AgentToolAuthorizer | None
+        :param authorizer: tool access authorizer for agent call
+            verification; REQUIRED. callers wire the production
+            :class:`RbacEvaluatorAuthorizer` (hub path) or one of the
+            deterministic stubs (:class:`AllowAllAuthorizer`,
+            :class:`DenyAllAuthorizer`) for dev/test paths; no
+            silent-bypass default remains
+        :ptype authorizer: AgentToolAuthorizer
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 

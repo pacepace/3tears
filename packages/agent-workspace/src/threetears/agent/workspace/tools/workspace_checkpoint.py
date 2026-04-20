@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -29,7 +30,6 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.authorize import (
-    AclCacheLike,
     WorkspaceAccessDenied,
 )
 from threetears.agent.workspace.collections import (
@@ -97,7 +97,7 @@ class WorkspaceCheckpointTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
-        acl_cache: AclCacheLike | None = None,
+        acl_cache: AclCache,
     ) -> None:
         """
         binds tool to collections, context, owning agent, and pool.
@@ -277,7 +277,7 @@ def _build(**kwargs: Any) -> WorkspaceCheckpointTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
-        acl_cache=kwargs.get("acl_cache"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

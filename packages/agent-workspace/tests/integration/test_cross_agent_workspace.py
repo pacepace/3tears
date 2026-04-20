@@ -17,12 +17,11 @@ and exercises the workspace tool stack end-to-end:
   denied on every tool (same-customer no-grant deny)
 
 the ``AclCache`` contract the tool layer depends on is exercised via
-a minimal in-process implementation of :class:`AclCacheLike` that
-exposes ``membership_loader`` + ``grant_loader`` protocol methods
-resolving directly against the rbac tables; this matches the
-production cache's contract without the three-layer TTL cache from
-:class:`threetears.agent.acl.AclCache` (the cache itself is covered
-by its own unit suite, this test is the end-to-end wiring check).
+the real :class:`threetears.agent.acl.AclCache` wired with SQL-backed
+:class:`MembershipLoader` + :class:`GrantLoader` stubs resolving
+directly against the rbac tables; the cache's three-layer TTL
+behavior is covered by its own unit suite, this test is the
+end-to-end wiring check.
 
 journal envelope assertion: the brief calls for the phase-5 sweep to
 assert ``actor_user_id=B's user``, ``calling_agent_id=B``,
@@ -47,6 +46,7 @@ import asyncpg
 import pytest
 
 from threetears.agent.acl import (
+    AclCache,
     Group as AclGroup,
     GroupMembership,
     MemberType,
@@ -58,7 +58,6 @@ from threetears.agent.acl import (
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.workspace.authorize import (
-    AclCacheLike,
     WorkspaceAccessDenied,
 )
 
@@ -494,24 +493,26 @@ class _SqlGrantLoader:
         return result
 
 
-class _SqlBackedAclCache:
-    """in-test implementation of :class:`AclCacheLike` backed by SQL.
+def _build_sql_backed_acl_cache(pool: asyncpg.Pool) -> AclCache:
+    """build a real :class:`AclCache` backed by direct-SQL loaders.
 
-    rbac-task-01 Phase 3: the ``AclCacheLike`` protocol now exposes
-    ``membership_loader`` + ``grant_loader`` instead of a
-    ``check_access`` method. production wiring uses
-    :class:`aibots.hub.broker.acl.AclCache` with a three-layer TTL
-    cache; this test hits the platform tables directly so the
-    authorize contract surfaces correctly without the cache
-    infrastructure.
+    production wiring uses the same :class:`AclCache` fronted by
+    :class:`HubMembershipLoader` / :class:`HubGrantLoader` over
+    Collections; this integration test hits the rbac platform tables
+    directly via :class:`_SqlMembershipLoader` /
+    :class:`_SqlGrantLoader` so the tool -> authorize -> evaluator
+    surface is exercised without the broker.
 
     :param pool: asyncpg pool bound to the test database
     :ptype pool: asyncpg.Pool
+    :return: cache instance with loaders wired
+    :rtype: AclCache
     """
-
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self.membership_loader = _SqlMembershipLoader(pool)
-        self.grant_loader = _SqlGrantLoader(pool)
+    return AclCache(
+        membership_loader=_SqlMembershipLoader(pool),
+        grant_loader=_SqlGrantLoader(pool),
+        ttl_seconds=60,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1369,7 +1370,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
             )
 
         # --- build tools ---
-        acl_cache = _SqlBackedAclCache(pool)
+        acl_cache = _build_sql_backed_acl_cache(pool)
         owner_schema = _schema_name(agent_a)
         # WS-ACL-06: expose the workspace namespace -> owner schema
         # mapping so grantee-side _write_file_atomic calls that pass
@@ -1545,4 +1546,4 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
 # kept live so imports don't get DCE-d on static checkers.
 _ = json
 _ = WorkspaceAccessDenied
-_ = AclCacheLike
+_ = AclCache

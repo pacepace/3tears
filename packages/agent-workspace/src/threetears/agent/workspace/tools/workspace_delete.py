@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
@@ -26,7 +27,6 @@ from threetears.observe import get_logger
 
 from threetears.agent.workspace import pin
 from threetears.agent.workspace.authorize import (
-    AclCacheLike,
     WorkspaceAccessDenied,
 )
 from threetears.agent.workspace.collections import (
@@ -81,9 +81,9 @@ class WorkspaceDeleteTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
-        acl_cache: AclCacheLike | None = None,
     ) -> None:
         """
         binds tool to workspace collection, conversation context, and pool.
@@ -277,7 +277,7 @@ def _build(**kwargs: Any) -> WorkspaceDeleteTool:
         db_pool=kwargs["db_pool"],
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
-        acl_cache=kwargs.get("acl_cache"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

@@ -19,14 +19,121 @@ from __future__ import annotations
 
 import time
 from threading import Thread
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from threetears.agent.acl import (
     AclCache,
     ActorMembershipKey,
+    GroupMembership,
     GroupNamespaceKey,
     GroupTypeCustomerKey,
+    Namespace,
+    Role,
+    RoleAssignment,
 )
+
+
+class _NoopMembershipLoader:
+    """membership loader stub returning empty tuples.
+
+    cache-layer tests never exercise loader traversal; the cache
+    stores and retrieves entries by direct :meth:`put_*` /
+    :meth:`get_*` calls. the loader handle still has to satisfy the
+    :class:`AclCache` constructor contract, so this stub exists to
+    supply a valid reference without carrying test state.
+    """
+
+    async def load_for_user(self, user_id: UUID) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every user id.
+
+        :param user_id: user UUID (ignored)
+        :ptype user_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del user_id
+        return ()
+
+    async def load_for_agent(self, agent_id: UUID) -> tuple[GroupMembership, ...]:
+        """
+        return empty tuple for every agent id.
+
+        :param agent_id: agent UUID (ignored)
+        :ptype agent_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del agent_id
+        return ()
+
+
+class _NoopGrantLoader:
+    """grant loader stub returning empty assignments / roles / groups.
+
+    same rationale as :class:`_NoopMembershipLoader`: the cache's
+    direct-access tests never traverse the loader path, so the stub
+    satisfies the constructor without side effects.
+    """
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        """
+        return empty tuple for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :param namespace: target namespace (ignored)
+        :ptype namespace: Namespace
+        :return: empty tuple
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        del group_ids
+        del namespace
+        return ()
+
+    async def load_roles(self, role_ids: tuple[UUID, ...]) -> dict[UUID, Role]:
+        """
+        return empty mapping for every role set.
+
+        :param role_ids: role UUIDs (ignored)
+        :ptype role_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, Role]
+        """
+        del role_ids
+        return {}
+
+    async def load_groups(self, group_ids: tuple[UUID, ...]) -> dict[UUID, object]:
+        """
+        return empty mapping for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, object]
+        """
+        del group_ids
+        return {}
+
+
+def _make_cache(ttl_seconds: int = 60) -> AclCache:
+    """
+    construct an :class:`AclCache` wired with noop loaders for unit tests.
+
+    :param ttl_seconds: TTL forwarded to the cache
+    :ptype ttl_seconds: int
+    :return: ready-to-use cache instance
+    :rtype: AclCache
+    """
+    return AclCache(
+        membership_loader=_NoopMembershipLoader(),
+        grant_loader=_NoopGrantLoader(),
+        ttl_seconds=ttl_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +146,7 @@ class TestMembershipLayer:
 
     def test_put_then_get_returns_entry(self) -> None:
         """entry is round-tripped intact."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         user = uuid4()
         groups = (uuid4(), uuid4())
         key = ActorMembershipKey(actor_kind="user", actor_id=user)
@@ -50,13 +157,13 @@ class TestMembershipLayer:
 
     def test_get_unknown_returns_none(self) -> None:
         """miss returns None without raising."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
         assert cache.get_membership(key) is None
 
     def test_invalidate_drops_entry(self) -> None:
         """invalidate clears the cached entry."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
         cache.put_membership(key, ())
         cache.invalidate_membership(key)
@@ -64,7 +171,7 @@ class TestMembershipLayer:
 
     def test_invalidate_for_actor_helper(self) -> None:
         """convenience helper builds the key from actor_kind + actor_id."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         user = uuid4()
         key = ActorMembershipKey(actor_kind="user", actor_id=user)
         cache.put_membership(key, ())
@@ -73,7 +180,7 @@ class TestMembershipLayer:
 
     def test_user_and_agent_keys_are_distinct(self) -> None:
         """``actor_kind`` is part of the key; same id gives two entries."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         actor_id = uuid4()
         user_key = ActorMembershipKey(actor_kind="user", actor_id=actor_id)
         agent_key = ActorMembershipKey(actor_kind="agent", actor_id=actor_id)
@@ -96,7 +203,7 @@ class TestGroupNamespaceLayer:
 
     def test_put_then_get(self) -> None:
         """entry round-trip preserves actions and trails."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         key = GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4())
         cache.put_group_namespace(key, frozenset({"read"}), ())
         entry = cache.get_group_namespace(key)
@@ -105,7 +212,7 @@ class TestGroupNamespaceLayer:
 
     def test_invalidate_namespace_drops_every_group(self) -> None:
         """``invalidate_namespace`` drops every group's entry for the namespace."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         ns = uuid4()
         key_a = GroupNamespaceKey(group_id=uuid4(), namespace_id=ns)
         key_b = GroupNamespaceKey(group_id=uuid4(), namespace_id=ns)
@@ -130,7 +237,7 @@ class TestGroupTypeCustomerLayer:
 
     def test_put_then_get(self) -> None:
         """entry round-trip works."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         key = GroupTypeCustomerKey(
             group_id=uuid4(), namespace_type="workspace", customer_id=uuid4(),
         )
@@ -141,7 +248,7 @@ class TestGroupTypeCustomerLayer:
 
     def test_invalidate_specific_key(self) -> None:
         """targeted invalidate drops one entry without touching others."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         key = GroupTypeCustomerKey(
             group_id=uuid4(), namespace_type="workspace", customer_id=uuid4(),
         )
@@ -165,7 +272,7 @@ class TestGroupFanOutInvalidation:
 
     def test_drops_per_namespace_entries_for_group(self) -> None:
         """every per-namespace entry naming the group is removed."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         group = uuid4()
         other_group = uuid4()
         ns_a, ns_b = uuid4(), uuid4()
@@ -195,7 +302,7 @@ class TestGroupFanOutInvalidation:
 
     def test_drops_type_customer_entries_for_group(self) -> None:
         """type+customer entries for the group are also dropped."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         group = uuid4()
         customer = uuid4()
         cache.put_group_type_customer(
@@ -215,7 +322,7 @@ class TestGroupFanOutInvalidation:
 
     def test_does_not_touch_membership_layer(self) -> None:
         """``invalidate_group`` is scoped to the assignment layers."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         actor = uuid4()
         group = uuid4()
         m_key = ActorMembershipKey(actor_kind="user", actor_id=actor)
@@ -235,7 +342,7 @@ class TestTtl:
 
     def test_membership_expires(self) -> None:
         """membership entry past ttl is dropped on read."""
-        cache = AclCache(ttl_seconds=0)  # ttl 0s -> always expired
+        cache = _make_cache(ttl_seconds=0)  # ttl 0s -> always expired
         key = ActorMembershipKey(actor_kind="user", actor_id=uuid4())
         cache.put_membership(key, ())
         # tiny sleep so the freshness check sees a non-zero age
@@ -246,7 +353,7 @@ class TestTtl:
 
     def test_per_namespace_expires(self) -> None:
         """per-namespace entry past ttl is dropped on read."""
-        cache = AclCache(ttl_seconds=0)
+        cache = _make_cache(ttl_seconds=0)
         key = GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4())
         cache.put_group_namespace(key, frozenset({"read"}), ())
         time.sleep(0.001)
@@ -255,7 +362,7 @@ class TestTtl:
 
     def test_type_customer_expires(self) -> None:
         """type+customer entry past ttl is dropped on read."""
-        cache = AclCache(ttl_seconds=0)
+        cache = _make_cache(ttl_seconds=0)
         key = GroupTypeCustomerKey(
             group_id=uuid4(), namespace_type="workspace",
             customer_id=uuid4(),
@@ -276,7 +383,7 @@ class TestBulkOperations:
 
     def test_invalidate_all_clears_every_layer(self) -> None:
         """one call drops everything across the three layers."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         cache.put_membership(
             ActorMembershipKey(actor_kind="user", actor_id=uuid4()), (),
         )
@@ -300,7 +407,7 @@ class TestBulkOperations:
 
     def test_size_accessors_per_layer(self) -> None:
         """each layer reports its own size correctly."""
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         for _ in range(3):
             cache.put_membership(
                 ActorMembershipKey(actor_kind="user", actor_id=uuid4()), (),
@@ -339,7 +446,7 @@ class TestConcurrentAccess:
         iterations with two threads inserting and one fan-out
         invalidation should never raise.
         """
-        cache = AclCache(ttl_seconds=60)
+        cache = _make_cache(ttl_seconds=60)
         errors: list[BaseException] = []
 
         def inserter() -> None:

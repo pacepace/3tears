@@ -19,6 +19,7 @@ import pytest
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest
 
 
@@ -121,7 +122,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -142,7 +143,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint(pod_id="pod-not-ready")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock()
         await proxy.start(nc)
@@ -163,7 +164,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -206,7 +207,7 @@ class TestCallProxyRefusesPendingEndpoints:
         reply = MagicMock()
         reply.data = reply_body
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         nc.request = AsyncMock(return_value=reply)
         await proxy.start(nc)
@@ -240,7 +241,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await catalog.register(entry_unavail)
         await catalog.register(entry_pending)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 

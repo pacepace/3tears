@@ -39,11 +39,19 @@ ctx = EvaluationContext(
     action="read",
 )
 
-# hot path
-allowed = await evaluate_decision(ctx, cache=cache)
+# hot path: evaluator takes the loaders off the cache
+allowed = await evaluate_decision(
+    ctx,
+    membership_loader=cache.membership_loader,
+    grant_loader=cache.grant_loader,
+)
 
-# introspection path
-result = await evaluate_with_trail(ctx, cache=cache)
+# introspection path: same shape
+result = await evaluate_with_trail(
+    ctx,
+    membership_loader=cache.membership_loader,
+    grant_loader=cache.grant_loader,
+)
 # result.decision, result.effective_actions, result.user_trails,
 # result.agent_trails, result.limiting_side
 ```

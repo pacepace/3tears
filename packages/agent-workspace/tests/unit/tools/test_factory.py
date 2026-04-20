@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 import threetears.agent.workspace.tools  # noqa: F401  -- registers builders
+from threetears.agent.acl import (
+    AclCache,
+    GroupMembership,
+    Namespace,
+    Role,
+    RoleAssignment,
+)
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.workspace.factory import _TOOL_BUILDERS, build_workspace_tools
 
@@ -37,9 +44,59 @@ class _FakePool:
     """asyncpg pool stub for tools that accept it but never invoke it in build."""
 
 
+class _NoopMembershipLoader:
+    """membership loader stub yielding empty memberships."""
+
+    async def load_for_user(
+        self, user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        del user_id
+        return ()
+
+    async def load_for_agent(
+        self, agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        del agent_id
+        return ()
+
+
+class _NoopGrantLoader:
+    """grant loader stub yielding empty grants."""
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        del group_ids, namespace
+        return ()
+
+    async def load_roles(
+        self, role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        del role_ids
+        return {}
+
+    async def load_groups(
+        self, group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        del group_ids
+        return {}
+
+
+def _make_acl_cache() -> AclCache:
+    """build a real :class:`AclCache` with noop loaders for factory tests."""
+    return AclCache(
+        membership_loader=_NoopMembershipLoader(),
+        grant_loader=_NoopGrantLoader(),
+        ttl_seconds=60,
+    )
+
+
 def _minimal_deps() -> dict[str, Any]:
     """build the minimum deps bundle every workspace tool requires."""
     return {
+        "acl_cache": _make_acl_cache(),
         "workspace_collection": _FakeCollection(),
         "workspace_file_collection": _FakeCollection(),
         "workspace_file_version_collection": _FakeCollection(),
