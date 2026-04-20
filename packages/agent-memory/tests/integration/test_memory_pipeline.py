@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.migrations import register as register_memory
@@ -202,13 +203,17 @@ class TestMemoriesCollectionAgainstLiveSchema:
     """MemoriesCollection save / find paths execute against real pg."""
 
     async def test_save_and_find_by_user(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         insert two memories, find by user, verify both surface.
 
         :param applied_schema: (url, schema) after migrations
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -222,6 +227,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
                 registry=registry,
                 config=config,
                 postgres_pool=pool,
+                authorizer=permissive_memory_authorizer,
                 nats_client=None,
             )
 
@@ -264,7 +270,9 @@ class TestMemoriesCollectionAgainstLiveSchema:
             await pool.close()
 
     async def test_soft_delete_excludes_from_find(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         soft-delete sets ``is_deleted`` + ``date_deleted`` and excludes the
@@ -272,6 +280,8 @@ class TestMemoriesCollectionAgainstLiveSchema:
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -285,6 +295,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
                 registry=registry,
                 config=config,
                 postgres_pool=pool,
+                authorizer=permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -336,13 +347,17 @@ class TestMemoryRetrieverAgainstLiveSchema:
     """MemoryRetriever.retrieve executes real SQL against pg."""
 
     async def test_retrieve_returns_context_with_memories(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         seed memories, retrieve with a query, assert formatted context comes back.
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -370,7 +385,9 @@ class TestMemoryRetrieverAgainstLiveSchema:
             )
 
             config = MemoryConfig()
-            retriever = MemoryRetriever(config, _StubEmbedding())
+            retriever = MemoryRetriever(
+                config, _StubEmbedding(), permissive_memory_authorizer,
+            )
             context = await retriever.retrieve(
                 pool, user_id, "What does user prefer programming?"
             )
@@ -389,7 +406,9 @@ class TestMemoryExtractorAgainstLiveSchema:
     """MemoryExtractor.extract inserts rows against real pg."""
 
     async def test_extract_adds_memory_row(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         happy-path extract: LLM says 1 memory is worthy, extractor embeds
@@ -398,6 +417,8 @@ class TestMemoryExtractorAgainstLiveSchema:
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -412,6 +433,7 @@ class TestMemoryExtractorAgainstLiveSchema:
                 config=MemoryConfig(),
                 embedding_provider=_StubEmbedding(),
                 chat_model_factory=factory,
+                authorizer=permissive_memory_authorizer,
                 nats_client=None,
             )
             user_id = uuid.uuid4()
@@ -423,6 +445,8 @@ class TestMemoryExtractorAgainstLiveSchema:
                 user_message="x" * 50,
                 assistant_response="y" * 200,
                 turn_count=10,
+                agent_id=uuid.uuid4(),
+                customer_id=uuid.uuid4(),
             )
 
             rows = await pool.fetch(
@@ -447,7 +471,9 @@ class TestMemoryToolsAgainstLiveSchema:
     """tool factories produce tools whose SQL executes successfully."""
 
     async def test_add_memory_tool_inserts_row(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         ``add_memory`` tool inserts a new row when no similar memory
@@ -455,6 +481,8 @@ class TestMemoryToolsAgainstLiveSchema:
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -462,8 +490,17 @@ class TestMemoryToolsAgainstLiveSchema:
             user_id = uuid.uuid4()
             conv_id = uuid.uuid4()
             msg_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             tools = await load_add_memory_tool(
-                pool, user_id, conv_id, msg_id, _StubEmbedding()
+                pool,
+                user_id,
+                conv_id,
+                msg_id,
+                _StubEmbedding(),
+                agent_id,
+                customer_id,
+                permissive_memory_authorizer,
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke(
@@ -484,13 +521,17 @@ class TestMemoryToolsAgainstLiveSchema:
             await pool.close()
 
     async def test_memory_search_tool_query_path(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         seed memories via add tool; semantic search finds them.
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
@@ -498,15 +539,29 @@ class TestMemoryToolsAgainstLiveSchema:
             user_id = uuid.uuid4()
             conv_id = uuid.uuid4()
             msg_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             add_tools = await load_add_memory_tool(
-                pool, user_id, conv_id, msg_id, _StubEmbedding()
+                pool,
+                user_id,
+                conv_id,
+                msg_id,
+                _StubEmbedding(),
+                agent_id,
+                customer_id,
+                permissive_memory_authorizer,
             )
             await add_tools[0].ainvoke(
                 {"content": "User loves type hints", "memory_type": "preference"}
             )
 
             search_tools = await load_memory_search_tool(
-                pool, user_id, _StubEmbedding()
+                pool,
+                user_id,
+                _StubEmbedding(),
+                agent_id,
+                customer_id,
+                permissive_memory_authorizer,
             )
             assert len(search_tools) == 1
             result = await search_tools[0].ainvoke(
@@ -518,19 +573,25 @@ class TestMemoryToolsAgainstLiveSchema:
             await pool.close()
 
     async def test_recall_memory_tool_fetches_content(
-        self, applied_schema: tuple[str, str]
+        self,
+        applied_schema: tuple[str, str],
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
         recall_memory fetches content for a known memory_id.
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
+        :param permissive_memory_authorizer: permissive rbac fixture
+        :ptype permissive_memory_authorizer: MemoryAuthorizerDependencies
         """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
             user_id = uuid.uuid4()
             mid = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             await pool.execute(
                 "INSERT INTO memories ("
@@ -550,7 +611,13 @@ class TestMemoryToolsAgainstLiveSchema:
                 now,
             )
 
-            tools = await load_recall_memory_tool(pool, user_id)
+            tools = await load_recall_memory_tool(
+                pool,
+                user_id,
+                agent_id,
+                customer_id,
+                permissive_memory_authorizer,
+            )
             assert len(tools) == 1
             result = await tools[0].ainvoke({"id": str(mid), "type": "memory"})
             assert result == "Seattle resident"

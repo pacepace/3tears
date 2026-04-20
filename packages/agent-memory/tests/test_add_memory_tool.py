@@ -6,12 +6,15 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.tools import AddMemoryInput, load_add_memory_tool
 
 
 _TEST_UID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _TEST_CID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 _TEST_MID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+_TEST_AID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+_TEST_CUID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 
 
 def _make_pool():
@@ -43,17 +46,41 @@ class TestAddMemoryInput:
 class TestLoadAddMemoryTool:
     """add_memory tool behavior."""
 
-    async def test_creates_tool(self):
+    async def test_creates_tool(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
         assert len(tools) == 1
         assert tools[0].name == "add_memory"
 
-    async def test_stores_new_memory(self):
+    async def test_stores_new_memory(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
@@ -62,17 +89,32 @@ class TestLoadAddMemoryTool:
         provider.embed_text.assert_called_once_with("User prefers Rust")
         pool.execute.assert_called_once()
 
-    async def test_invalid_type_returns_error(self):
+    async def test_invalid_type_returns_error(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         result = await tools[0].ainvoke({"content": "something", "memory_type": "bogus"})
 
         assert "Invalid memory_type" in result
         provider.embed_text.assert_not_called()
 
-    async def test_dedup_updates_existing(self):
+    async def test_dedup_updates_existing(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         # Simulate a very similar existing memory
         pool.fetch.return_value = [
@@ -84,7 +126,16 @@ class TestLoadAddMemoryTool:
             }
         ]
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
@@ -95,7 +146,10 @@ class TestLoadAddMemoryTool:
         call_sql = pool.execute.call_args[0][0]
         assert "UPDATE memories" in call_sql
 
-    async def test_no_dedup_below_threshold(self):
+    async def test_no_dedup_below_threshold(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         pool.fetch.return_value = [
             {
@@ -106,7 +160,16 @@ class TestLoadAddMemoryTool:
             }
         ]
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
@@ -114,21 +177,45 @@ class TestLoadAddMemoryTool:
         call_sql = pool.execute.call_args[0][0]
         assert "INSERT INTO memories" in call_sql
 
-    async def test_embedding_failure_returns_error(self):
+    async def test_embedding_failure_returns_error(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         provider = _make_embedding_provider()
         provider.embed_text.side_effect = RuntimeError("embedding service down")
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         result = await tools[0].ainvoke({"content": "something", "memory_type": "fact"})
 
         assert "TOOL ERROR" in result
         assert "embed" in result
 
-    async def test_all_memory_types_accepted(self):
+    async def test_all_memory_types_accepted(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ):
         pool = _make_pool()
         provider = _make_embedding_provider()
-        tools = await load_add_memory_tool(pool, _TEST_UID, _TEST_CID, _TEST_MID, provider)
+        tools = await load_add_memory_tool(
+            pool,
+            _TEST_UID,
+            _TEST_CID,
+            _TEST_MID,
+            provider,
+            _TEST_AID,
+            _TEST_CUID,
+            permissive_memory_authorizer,
+        )
 
         for mt in ["preference", "fact", "decision", "topical_context", "relational_context"]:
             provider.reset_mock()

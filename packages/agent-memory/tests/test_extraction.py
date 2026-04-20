@@ -7,8 +7,13 @@ import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.types import MemoryConfig
+
+
+_TEST_AID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_TEST_CUID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
 
 # -- Stubs/helpers ------------------------------------------------------------
@@ -97,6 +102,7 @@ def _make_pool(
 
 
 def _make_extractor(
+    authorizer: MemoryAuthorizerDependencies,
     config: MemoryConfig | None = None,
     factory: StubChatModelFactory | None = None,
     embedding: StubEmbeddingProvider | None = None,
@@ -107,6 +113,7 @@ def _make_extractor(
         config=config or MemoryConfig(),
         embedding_provider=embedding or StubEmbeddingProvider(),
         chat_model_factory=factory or StubChatModelFactory(),
+        authorizer=authorizer,
         nats_client=nats_client,
         summary_callback=summary_callback,
     )
@@ -116,42 +123,60 @@ def _make_extractor(
 
 
 class TestHeuristicGates:
-    def test_short_user_message_rejected(self) -> None:
-        ext = _make_extractor()
+    def test_short_user_message_rejected(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         passed, reason = ext._check_heuristic_gates("hi", "x" * 200, 10)
         assert not passed
         assert "user_message_too_short" in reason
 
-    def test_short_assistant_response_rejected(self) -> None:
-        ext = _make_extractor()
+    def test_short_assistant_response_rejected(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         passed, reason = ext._check_heuristic_gates("x" * 50, "short", 10)
         assert not passed
         assert "assistant_response_too_short" in reason
 
-    def test_low_turn_count_rejected(self) -> None:
-        ext = _make_extractor()
+    def test_low_turn_count_rejected(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         passed, reason = ext._check_heuristic_gates("x" * 50, "x" * 200, 1)
         assert not passed
         assert "too_few_turns" in reason
 
-    def test_all_thresholds_met(self) -> None:
-        ext = _make_extractor()
+    def test_all_thresholds_met(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         passed, reason = ext._check_heuristic_gates("x" * 50, "x" * 200, 10)
         assert passed
         assert reason == "passed"
 
-    def test_custom_thresholds(self) -> None:
+    def test_custom_thresholds(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         config = MemoryConfig(
             extraction_min_user_message_length=5,
             extraction_min_assistant_response_length=10,
             extraction_min_conversation_turns=1,
         )
-        ext = _make_extractor(config=config)
+        ext = _make_extractor(permissive_memory_authorizer, config=config)
         passed, _ = ext._check_heuristic_gates("hello", "y" * 10, 1)
         assert passed
 
-    def test_whitespace_stripped_for_length_check(self) -> None:
-        ext = _make_extractor()
+    def test_whitespace_stripped_for_length_check(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         # 50 spaces + 5 chars = stripped to 5, below default 20
         passed, reason = ext._check_heuristic_gates("     short", "x" * 200, 10)
         assert not passed
@@ -162,34 +187,46 @@ class TestHeuristicGates:
 
 
 class TestRateLimit:
-    async def test_no_nats_client_passes(self) -> None:
-        ext = _make_extractor(nats_client=None)
+    async def test_no_nats_client_passes(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=None)
         passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
 
-    async def test_nats_create_true_passes(self) -> None:
+    async def test_nats_create_true_passes(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         nats = MagicMock()
         nats.bucket_name = MagicMock(return_value="locks")
         nats.create = AsyncMock(return_value=True)
-        ext = _make_extractor(nats_client=nats)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
 
-    async def test_nats_create_false_rejected(self) -> None:
+    async def test_nats_create_false_rejected(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         nats = MagicMock()
         nats.bucket_name = MagicMock(return_value="locks")
         nats.create = AsyncMock(return_value=False)
-        ext = _make_extractor(nats_client=nats)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
         assert not passed
         assert cooldown == 300
 
-    async def test_nats_error_passes_fail_open(self) -> None:
+    async def test_nats_error_passes_fail_open(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         nats = MagicMock()
         nats.bucket_name = MagicMock(side_effect=RuntimeError("nats down"))
-        ext = _make_extractor(nats_client=nats)
+        ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
         passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
@@ -199,33 +236,45 @@ class TestRateLimit:
 
 
 class TestWorthinessGate:
-    async def test_worthy_true_passes(self) -> None:
+    async def test_worthy_true_passes(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True, "reason": "has facts"}),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         worthy, reason = await ext._check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "has facts"
 
-    async def test_worthy_false_rejected(self) -> None:
+    async def test_worthy_false_rejected(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": False}),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         worthy, _ = await ext._check_worthiness("hello world", "response text")
         assert not worthy
 
-    async def test_invalid_json_passes_fail_open(self) -> None:
+    async def test_invalid_json_passes_fail_open(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(worthiness_content="not json at all")
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         worthy, reason = await ext._check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "parse_error"
 
-    async def test_llm_error_passes_fail_open(self) -> None:
+    async def test_llm_error_passes_fail_open(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(error_on={"worthiness"})
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         worthy, reason = await ext._check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "llm_error"
@@ -235,7 +284,10 @@ class TestWorthinessGate:
 
 
 class TestExtractCandidates:
-    async def test_valid_json_array_parsed(self) -> None:
+    async def test_valid_json_array_parsed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         memories = [
             {"type": "fact", "content": "Lives in Seattle"},
             {"type": "preference", "content": "Prefers Python"},
@@ -243,13 +295,16 @@ class TestExtractCandidates:
         factory = StubChatModelFactory(
             extraction_content=json.dumps(memories),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert len(result) == 2
         assert result[0]["type"] == "fact"
         assert result[1]["content"] == "Prefers Python"
 
-    async def test_invalid_types_filtered(self) -> None:
+    async def test_invalid_types_filtered(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         memories = [
             {"type": "fact", "content": "valid"},
             {"type": "invalid_type", "content": "should be filtered"},
@@ -257,35 +312,47 @@ class TestExtractCandidates:
         factory = StubChatModelFactory(
             extraction_content=json.dumps(memories),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert len(result) == 1
         assert result[0]["type"] == "fact"
 
-    async def test_empty_array_no_candidates(self) -> None:
+    async def test_empty_array_no_candidates(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(extraction_content="[]")
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert result == []
 
-    async def test_non_list_returns_empty(self) -> None:
+    async def test_non_list_returns_empty(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             extraction_content=json.dumps({"type": "fact", "content": "x"}),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert result == []
 
-    async def test_markdown_wrapped_json_parsed(self) -> None:
+    async def test_markdown_wrapped_json_parsed(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         memories = [{"type": "fact", "content": "Lives in Seattle"}]
         wrapped = "```json\n" + json.dumps(memories) + "\n```"
         factory = StubChatModelFactory(extraction_content=wrapped)
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert len(result) == 1
         assert result[0]["content"] == "Lives in Seattle"
 
-    async def test_empty_content_filtered(self) -> None:
+    async def test_empty_content_filtered(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         memories = [
             {"type": "fact", "content": ""},
             {"type": "fact", "content": "   "},
@@ -294,7 +361,7 @@ class TestExtractCandidates:
         factory = StubChatModelFactory(
             extraction_content=json.dumps(memories),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         result = await ext._extract_candidates("msg", "resp")
         assert len(result) == 1
 
@@ -303,8 +370,11 @@ class TestExtractCandidates:
 
 
 class TestResolveActions:
-    async def test_no_similar_memories_fast_path_all_add(self) -> None:
-        ext = _make_extractor()
+    async def test_no_similar_memories_fast_path_all_add(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        ext = _make_extractor(permissive_memory_authorizer)
         candidates = [
             {"type": "fact", "content": "x", "embedding": [1.0], "similar_memories": []},
             {"type": "fact", "content": "y", "embedding": [1.0], "similar_memories": []},
@@ -313,9 +383,12 @@ class TestResolveActions:
         assert len(actions) == 2
         assert all(a["action"] == "ADD" for a in actions)
 
-    async def test_no_similar_memories_no_llm_call(self) -> None:
+    async def test_no_similar_memories_no_llm_call(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(error_on={"resolution"})
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         candidates = [
             {"type": "fact", "content": "x", "embedding": [1.0], "similar_memories": []},
         ]
@@ -324,14 +397,17 @@ class TestResolveActions:
         assert len(actions) == 1
         assert actions[0]["action"] == "ADD"
 
-    async def test_with_similar_memories_llm_called(self) -> None:
+    async def test_with_similar_memories_llm_called(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         resolution = [
             {"index": 0, "action": "UPDATE", "memory_id": "abc-123", "content": "updated", "type": "fact"},
         ]
         factory = StubChatModelFactory(
             resolution_content=json.dumps(resolution),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         candidates = [
             {
                 "type": "fact",
@@ -347,7 +423,10 @@ class TestResolveActions:
         assert actions[0]["action"] == "UPDATE"
         assert actions[0]["memory_id"] == "abc-123"
 
-    async def test_invalid_action_index_skipped(self) -> None:
+    async def test_invalid_action_index_skipped(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         resolution = [
             {"index": 99, "action": "ADD"},  # out of range
             {"index": 0, "action": "ADD"},
@@ -355,7 +434,7 @@ class TestResolveActions:
         factory = StubChatModelFactory(
             resolution_content=json.dumps(resolution),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         candidates = [
             {
                 "type": "fact",
@@ -371,13 +450,16 @@ class TestResolveActions:
         assert len(valid) == 1
         assert valid[0]["index"] == 0
 
-    async def test_missing_candidates_default_to_add(self) -> None:
+    async def test_missing_candidates_default_to_add(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         # LLM only returns action for index 0, but there are 2 candidates
         resolution = [{"index": 0, "action": "NOOP"}]
         factory = StubChatModelFactory(
             resolution_content=json.dumps(resolution),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         candidates = [
             {
                 "type": "fact",
@@ -397,14 +479,17 @@ class TestResolveActions:
         assert action_map[0] == "NOOP"
         assert action_map[1] == "ADD"
 
-    async def test_invalid_update_no_memory_id_becomes_noop(self) -> None:
+    async def test_invalid_update_no_memory_id_becomes_noop(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         resolution = [
             {"index": 0, "action": "UPDATE", "content": "updated but no memory_id"},
         ]
         factory = StubChatModelFactory(
             resolution_content=json.dumps(resolution),
         )
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         candidates = [
             {
                 "type": "fact",
@@ -421,7 +506,10 @@ class TestResolveActions:
 
 
 class TestExtractE2E:
-    async def test_happy_path(self) -> None:
+    async def test_happy_path(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         extraction_result = [{"type": "fact", "content": "Lives in Seattle"}]
         worthiness_result = {"worthy": True, "reason": "biographical"}
         factory = StubChatModelFactory(
@@ -429,7 +517,7 @@ class TestExtractE2E:
             extraction_content=json.dumps(extraction_result),
         )
         pool = _make_pool()
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
 
         await ext.extract(
             pool=pool,
@@ -439,14 +527,19 @@ class TestExtractE2E:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         # Should have executed INSERT
         pool.execute.assert_called()
 
-    async def test_heuristic_gate_fails_no_llm_calls(self) -> None:
+    async def test_heuristic_gate_fails_no_llm_calls(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(error_on={"worthiness", "extraction", "resolution"})
         pool = _make_pool()
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
 
         # Short message should be rejected at heuristic gate
         await ext.extract(
@@ -457,12 +550,17 @@ class TestExtractE2E:
             user_message="hi",
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         # No DB calls should have been made
         pool.execute.assert_not_called()
         pool.fetch.assert_not_called()
 
-    async def test_fire_and_forget_no_raise(self) -> None:
+    async def test_fire_and_forget_no_raise(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         """extract() must never raise, even if internals blow up."""
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True}),
@@ -472,7 +570,7 @@ class TestExtractE2E:
         # Make pool.execute blow up
         pool.execute = AsyncMock(side_effect=RuntimeError("db down"))
 
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
         # Should not raise
         await ext.extract(
             pool=pool,
@@ -482,15 +580,20 @@ class TestExtractE2E:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
 
-    async def test_worthiness_rejected_no_extraction(self) -> None:
+    async def test_worthiness_rejected_no_extraction(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": False}),
             extraction_content=json.dumps([{"type": "fact", "content": "x"}]),
         )
         pool = _make_pool()
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
 
         await ext.extract(
             pool=pool,
@@ -500,16 +603,21 @@ class TestExtractE2E:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         pool.execute.assert_not_called()
 
-    async def test_no_candidates_extracted(self) -> None:
+    async def test_no_candidates_extracted(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True}),
             extraction_content="[]",
         )
         pool = _make_pool()
-        ext = _make_extractor(factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
 
         await ext.extract(
             pool=pool,
@@ -519,17 +627,22 @@ class TestExtractE2E:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         pool.execute.assert_not_called()
 
-    async def test_embedding_failure_skips_candidate(self) -> None:
+    async def test_embedding_failure_skips_candidate(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True}),
             extraction_content=json.dumps([{"type": "fact", "content": "x"}]),
         )
         pool = _make_pool()
         embedding = StubEmbeddingProvider(fail=True)
-        ext = _make_extractor(factory=factory, embedding=embedding)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory, embedding=embedding)
 
         await ext.extract(
             pool=pool,
@@ -539,6 +652,8 @@ class TestExtractE2E:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         # No actions executed since embedding failed
         pool.execute.assert_not_called()
@@ -548,7 +663,10 @@ class TestExtractE2E:
 
 
 class TestSummaryCallback:
-    async def test_callback_called_after_add(self) -> None:
+    async def test_callback_called_after_add(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         extraction_result = [{"type": "fact", "content": "Lives in Seattle"}]
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True}),
@@ -556,7 +674,7 @@ class TestSummaryCallback:
         )
         pool = _make_pool()
         callback = AsyncMock()
-        ext = _make_extractor(factory=factory, summary_callback=callback)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=callback)
 
         await ext.extract(
             pool=pool,
@@ -566,12 +684,17 @@ class TestSummaryCallback:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         callback.assert_called_once()
         args = callback.call_args[0]
         assert args[1] == "Lives in Seattle"
 
-    async def test_callback_called_after_update(self) -> None:
+    async def test_callback_called_after_update(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         extraction_result = [{"type": "fact", "content": "Lives in Seattle"}]
         resolution_result = [
             {"index": 0, "action": "UPDATE", "memory_id": "mem-1", "content": "Lives in Portland", "type": "fact"},
@@ -584,7 +707,7 @@ class TestSummaryCallback:
         )
         pool = _make_pool(fetch_rows=similar)
         callback = AsyncMock()
-        ext = _make_extractor(factory=factory, summary_callback=callback)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=callback)
 
         await ext.extract(
             pool=pool,
@@ -594,20 +717,25 @@ class TestSummaryCallback:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )
         callback.assert_called_once()
         args = callback.call_args[0]
         assert args[0] == "mem-1"
         assert args[1] == "Lives in Portland"
 
-    async def test_no_callback_no_error(self) -> None:
+    async def test_no_callback_no_error(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         extraction_result = [{"type": "fact", "content": "Lives in Seattle"}]
         factory = StubChatModelFactory(
             worthiness_content=json.dumps({"worthy": True}),
             extraction_content=json.dumps(extraction_result),
         )
         pool = _make_pool()
-        ext = _make_extractor(factory=factory, summary_callback=None)
+        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=None)
 
         # Should not raise
         await ext.extract(
@@ -618,4 +746,6 @@ class TestSummaryCallback:
             user_message="x" * 50,
             assistant_response="y" * 200,
             turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
         )

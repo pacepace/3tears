@@ -56,13 +56,13 @@ class MemoryExtractor:
         config: MemoryConfig,
         embedding_provider: EmbeddingProvider,
         chat_model_factory: ChatModelFactory,
+        authorizer: MemoryAuthorizerDependencies,
         nats_client: Any = None,
         prompts: ExtractionPrompts | None = None,
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
-        authorizer: MemoryAuthorizerDependencies | None = None,
     ) -> None:
-        """initialize the extractor.
+        """initialize the extractor with a required rbac authorizer.
 
         :param config: memory extraction configuration
         :ptype config: MemoryConfig
@@ -71,6 +71,16 @@ class MemoryExtractor:
         :param chat_model_factory: factory producing chat models for
             worthiness / extraction / resolution stages
         :ptype chat_model_factory: ChatModelFactory
+        :param authorizer: rbac authorizer dependency bundle; required.
+            every extraction call evaluates ``memory.extract`` on the
+            memory namespace before any candidates land in L3. the
+            owner short-circuit covers the common case (agent
+            emitting memories on its own namespace); distinct
+            ``memory.extract`` action lets operators audit
+            LLM-emitted extractions separately from user-explicit
+            writes. tests inject a permissive fixture from
+            ``conftest.py``
+        :ptype authorizer: MemoryAuthorizerDependencies
         :param nats_client: NATS KV client for per-conversation rate limits
         :ptype nats_client: Any
         :param prompts: extraction prompt bundle (defaults to
@@ -82,16 +92,6 @@ class MemoryExtractor:
         :param summary_callback: optional coroutine invoked with
             ``(memory_id, content)`` after each ADD / UPDATE
         :ptype summary_callback: Callable[[str, str], Awaitable[None]] | None
-        :param authorizer: rbac authorizer dependency bundle; when
-            present, every extraction call carrying
-            ``caller_agent_id`` evaluates ``memory.extract`` on the
-            memory namespace before any candidates land in L3. the
-            owner short-circuit covers the common case (agent
-            emitting memories on its own namespace); distinct
-            ``memory.extract`` action lets operators audit
-            LLM-emitted extractions separately from user-explicit
-            writes
-        :ptype authorizer: MemoryAuthorizerDependencies | None
         """
         self._config = config
         self._embedding_provider = embedding_provider
@@ -113,8 +113,8 @@ class MemoryExtractor:
         assistant_response: str,
         turn_count: int,
         *,
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
+        agent_id: UUID,
+        customer_id: UUID,
     ) -> None:
         """Extract memories from conversation turn. Fire-and-forget safe.
 
@@ -132,10 +132,10 @@ class MemoryExtractor:
         :ptype assistant_response: str
         :param turn_count: number of turns in conversation so far
         :ptype turn_count: int
-        :param agent_id: agent ID to tag extracted memories with
-        :ptype agent_id: UUID | None
-        :param customer_id: customer ID to tag extracted memories with
-        :ptype customer_id: UUID | None
+        :param agent_id: agent UUID owning memory namespace (required)
+        :ptype agent_id: UUID
+        :param customer_id: customer UUID owning memory namespace (required)
+        :ptype customer_id: UUID
         :return: nothing
         :rtype: None
         :raises: never (fire-and-forget safe, logs errors internally)
@@ -147,21 +147,15 @@ class MemoryExtractor:
             # into its own namespace); an operator who explicitly
             # grants a different identity the `memory.extract`
             # action can ship agent-emitted extractions to a
-            # different owner. when rbac is not wired (tests /
-            # back-office) the check is skipped.
-            if (
-                self._authorizer is not None
-                and agent_id is not None
-                and customer_id is not None
-            ):
-                await authorize_memory_access(
-                    action=ACTION_MEMORY_EXTRACT,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    caller_user_id=user_id,
-                    caller_agent_id=agent_id,
-                    deps=self._authorizer,
-                )
+            # different owner.
+            await authorize_memory_access(
+                action=ACTION_MEMORY_EXTRACT,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=agent_id,
+                deps=self._authorizer,
+            )
 
             # Layer 1: Heuristic gates
             passed, reason = self._check_heuristic_gates(
@@ -518,8 +512,8 @@ class MemoryExtractor:
         conversation_id: UUID,
         message_id_source: UUID,
         *,
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
+        agent_id: UUID,
+        customer_id: UUID,
     ) -> None:
         """Execute ADD/UPDATE/DELETE/NOOP actions against database.
 
@@ -535,10 +529,10 @@ class MemoryExtractor:
         :ptype conversation_id: UUID
         :param message_id_source: source message ID
         :ptype message_id_source: UUID
-        :param agent_id: agent ID to tag new memories with
-        :ptype agent_id: UUID | None
-        :param customer_id: customer ID to tag new memories with
-        :ptype customer_id: UUID | None
+        :param agent_id: agent UUID to tag new memories with
+        :ptype agent_id: UUID
+        :param customer_id: customer UUID to tag new memories with
+        :ptype customer_id: UUID
         :return: nothing
         :rtype: None
         """

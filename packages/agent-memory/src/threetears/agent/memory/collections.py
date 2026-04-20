@@ -135,11 +135,11 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         registry: CollectionRegistry,
         config: CoreConfig,
         postgres_pool: Any,
+        authorizer: MemoryAuthorizerDependencies,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
-        authorizer: MemoryAuthorizerDependencies | None = None,
     ) -> None:
-        """initialize memory collection with optional rbac authorizer.
+        """initialize memory collection with required rbac authorizer.
 
         :param registry: shared collection registry
         :ptype registry: CollectionRegistry
@@ -147,16 +147,17 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :ptype config: CoreConfig
         :param postgres_pool: asyncpg-shape pool pinned to agent schema
         :ptype postgres_pool: Any
+        :param authorizer: rbac authorizer dependency bundle; required.
+            every ``caller_user_id``-bearing read / write goes through
+            :func:`authorize_memory_access` against this bundle. tests
+            inject a permissive fixture from ``conftest.py``; production
+            wiring builds the real bundle from hub-side loaders +
+            namespace resolver + first-write assignment ensurer
+        :ptype authorizer: MemoryAuthorizerDependencies
         :param nats_client: L2 NATS KV client for cache promotion
         :ptype nats_client: Any
         :param write_buffer: optional shared write buffer
         :ptype write_buffer: WriteBuffer | None
-        :param authorizer: rbac authorizer dependency bundle;
-            ``None`` suppresses enforcement on this instance (tests,
-            back-office tooling). production wiring always supplies
-            one; every ``caller_user_id``-bearing read / write then
-            goes through :func:`authorize_memory_access`
-        :ptype authorizer: MemoryAuthorizerDependencies | None
         """
         self._postgres_pool = postgres_pool
         self._authorizer = authorizer
@@ -267,18 +268,22 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
     ) -> list[MemoryEntity]:
-        """fetch memories for user from L3, with optional rbac enforcement.
+        """fetch memories for user from L3, enforcing rbac on user reads.
 
-        when ``caller_user_id`` is provided (and the collection was
-        constructed with an ``authorizer``) the rbac evaluator
-        decides ``memory.read`` on the ``(agent_id, customer_id)``
-        memory namespace before the SQL runs. the owner short-
-        circuit fires when ``caller_agent_id == agent_id``; a
-        mismatched pair surfaces :class:`MemoryAccessDenied` from
+        when ``caller_user_id`` is provided the rbac evaluator decides
+        ``memory.read`` on the ``(agent_id, customer_id)`` memory
+        namespace before the SQL runs. the owner short-circuit fires
+        when ``caller_agent_id == agent_id``; a mismatched pair
+        surfaces :class:`MemoryAccessDenied` from
         :func:`authorize_memory_access`. the row-level
         ``user_id = $1`` filter is kept as a belt-and-suspenders cut
         against grants that resolve to broad type_customer scope but
         should still respect the per-row owner column.
+
+        passing ``caller_user_id`` without ``agent_id`` + ``customer_id``
+        is a programming error — the evaluator cannot resolve the
+        memory namespace without both. internal agent-only callers
+        that want row-filter-only access pass ``caller_user_id=None``.
 
         :param user_id: user whose memories to fetch (row filter)
         :ptype user_id: UUID
@@ -297,8 +302,10 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :return: list of memory entities belonging to user
         :rtype: list[MemoryEntity]
         :raises MemoryAccessDenied: when rbac enforcement denies
+        :raises ValueError: when ``caller_user_id`` is set without
+            both ``agent_id`` and ``customer_id``
         """
-        if caller_user_id is not None and self._authorizer is not None:
+        if caller_user_id is not None:
             if agent_id is None or customer_id is None:
                 raise ValueError(
                     "find_by_user with caller_user_id requires agent_id + customer_id",
@@ -343,16 +350,14 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
     ) -> list[MemoryEntity]:
-        """fetch memories scoped by agent, with optional rbac enforcement.
+        """fetch memories scoped by agent, enforcing rbac on user reads.
 
-        when ``caller_user_id`` is provided (and the collection was
-        constructed with an ``authorizer``) the rbac evaluator
+        when ``caller_user_id`` is provided the rbac evaluator
         decides ``memory.read`` on the ``(agent_id, customer_id)``
         memory namespace before the SQL runs. ``customer_id`` is
         required for evaluator invocation — single-argument
-        ``find_by_scope(agent_id)`` continues working without
-        enforcement for internal callers that haven't threaded the
-        caller dimensions.
+        ``find_by_scope(agent_id)`` is an agent-internal row-scan
+        path (no user dimension) and runs without evaluation.
 
         :param agent_id: agent ID scope (required)
         :ptype agent_id: UUID
@@ -370,8 +375,10 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :return: list of memory entities matching scope
         :rtype: list[MemoryEntity]
         :raises MemoryAccessDenied: when rbac enforcement denies
+        :raises ValueError: when ``caller_user_id`` is set without
+            ``customer_id``
         """
-        if caller_user_id is not None and self._authorizer is not None:
+        if caller_user_id is not None:
             if customer_id is None:
                 raise ValueError(
                     "find_by_scope with caller_user_id requires customer_id",
@@ -444,6 +451,11 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         operators a clean audit distinction between agent-emitted
         and user-explicit memory rows.
 
+        rbac enforcement is unconditional: the collection is
+        constructed with a required :class:`MemoryAuthorizerDependencies`
+        bundle, and every call evaluates :func:`authorize_memory_access`
+        before the write.
+
         :param entity: memory entity to persist
         :ptype entity: MemoryEntity
         :param agent_id: owning agent UUID
@@ -459,17 +471,14 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :rtype: None
         :raises MemoryAccessDenied: on evaluator deny
         """
-        if self._authorizer is not None:
-            ns_row = await authorize_memory_access(
-                action=ACTION_MEMORY_WRITE,
-                agent_id=agent_id,
-                customer_id=customer_id,
-                caller_user_id=caller_user_id,
-                caller_agent_id=caller_agent_id,
-                deps=self._authorizer,
-            )
-        else:
-            ns_row = None
+        ns_row = await authorize_memory_access(
+            action=ACTION_MEMORY_WRITE,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            caller_user_id=caller_user_id,
+            caller_agent_id=caller_agent_id,
+            deps=self._authorizer,
+        )
 
         await self.save_entity(entity)
 
@@ -477,17 +486,11 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         # per-user memory-owner group to the MemoryOwner role scoped
         # to this memory namespace. idempotent on replay — ensurer
         # is insert-if-absent. skip when the caller is the owning
-        # agent (no user identity to bind the group to) or when
-        # rbac is not wired (tests / back-office).
+        # agent (no user identity to bind the group to).
         is_owner_shortcut = (
             caller_agent_id is not None and caller_agent_id == agent_id
         )
-        if (
-            self._authorizer is not None
-            and ns_row is not None
-            and caller_user_id is not None
-            and not is_owner_shortcut
-        ):
+        if caller_user_id is not None and not is_owner_shortcut:
             await self._authorizer.assignment_ensurer(caller_user_id, ns_row)
         return None
 

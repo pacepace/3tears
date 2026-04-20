@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.retrieval import (
     MemoryRetriever,
     _build_fts_query,
@@ -347,10 +348,13 @@ def _make_mock_pool(
 
 
 class TestMemoryRetrieverE2E:
-    async def test_returns_formatted_string(self) -> None:
+    async def test_returns_formatted_string(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         config = MemoryConfig()
         provider = StubEmbeddingProvider([1.0, 0.0, 0.0])
-        retriever = MemoryRetriever(config, provider)
+        retriever = MemoryRetriever(config, provider, permissive_memory_authorizer)
 
         mem_id = uuid.uuid7()
         pool = _make_mock_pool(
@@ -372,16 +376,22 @@ class TestMemoryRetrieverE2E:
         assert "User likes Python" in result
         assert "Things you remember" in result
 
-    async def test_empty_text_returns_none(self) -> None:
+    async def test_empty_text_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         config = MemoryConfig()
         provider = StubEmbeddingProvider()
-        retriever = MemoryRetriever(config, provider)
+        retriever = MemoryRetriever(config, provider, permissive_memory_authorizer)
         pool = AsyncMock()
 
         result = await retriever.retrieve(pool, uuid.uuid7(), "  ")
         assert result is None
 
-    async def test_embedding_failure_returns_none(self) -> None:
+    async def test_embedding_failure_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         config = MemoryConfig()
 
         class FailingProvider:
@@ -392,16 +402,21 @@ class TestMemoryRetrieverE2E:
             def dimensions(self) -> int:
                 return 3
 
-        retriever = MemoryRetriever(config, FailingProvider())
+        retriever = MemoryRetriever(
+            config, FailingProvider(), permissive_memory_authorizer,
+        )
         pool = AsyncMock()
 
         result = await retriever.retrieve(pool, uuid.uuid7(), "hello world")
         assert result is None
 
-    async def test_no_results_returns_none(self) -> None:
+    async def test_no_results_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         config = MemoryConfig()
         provider = StubEmbeddingProvider()
-        retriever = MemoryRetriever(config, provider)
+        retriever = MemoryRetriever(config, provider, permissive_memory_authorizer)
         pool = _make_mock_pool()
 
         result = await retriever.retrieve(pool, uuid.uuid7(), "hello world")

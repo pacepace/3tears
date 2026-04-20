@@ -297,35 +297,39 @@ async def load_memory_search_tool(
     pool: Any,
     user_id: UUID,
     embedding_provider: EmbeddingProvider,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: MemoryAuthorizerDependencies,
     *,
     similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
     max_results: int = _MAX_RESULTS,
     ledger_callback: LedgerCallback | None = None,
-    agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
-    authorizer: MemoryAuthorizerDependencies | None = None,
 ) -> list[BaseTool]:
     """create a memory_search tool bound to the given user and pool.
 
-    when ``authorizer`` is supplied, every invocation resolves
-    the per-(agent, customer) memory namespace and evaluates
-    ``memory.read`` for the effective caller. the effective
-    caller identity is read from the active
-    :class:`~threetears.agent.tools.call_scope.ToolCallScope` at
-    call time when available; the closure's ``user_id`` is the
-    fallback (kept for tests that pre-date phase 3).
+    every invocation resolves the per-(agent, customer) memory
+    namespace and evaluates ``memory.read`` for the closure-bound
+    user against the required ``authorizer`` bundle. the closure
+    binds identity at factory time — these LangChain tools are
+    built fresh per conversation by the agent bootstrap.
 
     returns a single-element list (matching LangChain's
-    bind_tools convention), or an empty list if preconditions
-    aren't met.
+    bind_tools convention).
 
     :param pool: asyncpg connection pool
     :ptype pool: Any
     :param user_id: user whose memories to search (row filter
-        fallback when no scope is active)
+        + evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param embedding_provider: embedding provider for query vectors
     :ptype embedding_provider: EmbeddingProvider
+    :param agent_id: owning agent UUID (memory namespace owner)
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :param authorizer: rbac authorizer dependency bundle enabling
+        per-call ``memory.read`` enforcement; required
+    :ptype authorizer: MemoryAuthorizerDependencies
     :param similarity_threshold: similarity cutoff for results
     :ptype similarity_threshold: float
     :param max_results: cap on returned results per source
@@ -333,16 +337,6 @@ async def load_memory_search_tool(
     :param ledger_callback: optional coroutine invoked per surfaced
         item with ``(item_id, item_type, description)``
     :ptype ledger_callback: LedgerCallback | None
-    :param agent_id: owning agent UUID; required when
-        ``authorizer`` is supplied (scopes the memory namespace)
-    :ptype agent_id: UUID | None
-    :param customer_id: owning customer UUID; required when
-        ``authorizer`` is supplied
-    :ptype customer_id: UUID | None
-    :param authorizer: rbac authorizer dependency bundle enabling
-        per-call ``memory.read`` enforcement; ``None`` preserves
-        legacy column-filter-only behaviour
-    :ptype authorizer: MemoryAuthorizerDependencies | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -359,18 +353,17 @@ async def load_memory_search_tool(
         # (agent_id, customer_id) namespace for the closure-bound
         # user. the owner short-circuit fires for agent-internal
         # reads (caller_agent_id == owner_agent_id == agent_id).
-        if authorizer is not None and agent_id is not None and customer_id is not None:
-            try:
-                await authorize_memory_access(
-                    action=ACTION_MEMORY_READ,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    caller_user_id=user_id,
-                    caller_agent_id=agent_id,
-                    deps=authorizer,
-                )
-            except MemoryAccessDenied as exc:
-                return _tool_error("memory_search", "authorize", str(exc))
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=agent_id,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("memory_search", "authorize", str(exc))
 
         # -- Batch ID lookup path --
         if ids:
@@ -659,30 +652,29 @@ async def load_memory_search_tool(
 async def load_recall_memory_tool(
     pool: Any,
     user_id: UUID,
-    *,
-    agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
-    authorizer: MemoryAuthorizerDependencies | None = None,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: MemoryAuthorizerDependencies,
 ) -> list[BaseTool]:
     """create a recall_memory tool for full-content retrieval by ID.
 
-    when ``authorizer`` is supplied, every invocation runs
-    ``memory.read`` through the evaluator before the SQL fetch.
-    identity is resolved as in :func:`load_memory_search_tool`.
+    every invocation runs ``memory.read`` through the evaluator
+    before the SQL fetch against the required ``authorizer`` bundle.
+    identity is closure-bound at factory time.
 
-    returns a single-element list, or empty list if preconditions
-    aren't met.
+    returns a single-element list.
 
     :param pool: asyncpg connection pool
     :ptype pool: Any
-    :param user_id: user whose memories to recall (row filter fallback)
+    :param user_id: user whose memories to recall (row filter
+        + evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param agent_id: owning agent UUID for rbac namespace lookup
-    :ptype agent_id: UUID | None
+    :ptype agent_id: UUID
     :param customer_id: owning customer UUID for rbac namespace lookup
-    :ptype customer_id: UUID | None
-    :param authorizer: rbac authorizer dependency bundle
-    :ptype authorizer: MemoryAuthorizerDependencies | None
+    :ptype customer_id: UUID
+    :param authorizer: rbac authorizer dependency bundle; required
+    :ptype authorizer: MemoryAuthorizerDependencies
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -690,18 +682,17 @@ async def load_recall_memory_tool(
     @tool("recall_memory", args_schema=RecallMemoryInput)
     async def recall_memory(id: str, type: str) -> str:
         """retrieve full content of a memory, media description, or chunk."""
-        if authorizer is not None and agent_id is not None and customer_id is not None:
-            try:
-                await authorize_memory_access(
-                    action=ACTION_MEMORY_READ,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    caller_user_id=user_id,
-                    caller_agent_id=agent_id,
-                    deps=authorizer,
-                )
-            except MemoryAccessDenied as exc:
-                return _tool_error("recall_memory", "authorize", str(exc))
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=agent_id,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("recall_memory", "authorize", str(exc))
 
         try:
             item_uuid = UUID(id)
@@ -788,11 +779,11 @@ async def load_add_memory_tool(
     conversation_id: UUID,
     message_id: UUID,
     embedding_provider: EmbeddingProvider,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: MemoryAuthorizerDependencies,
     *,
     similarity_dedup_threshold: float = 0.90,
-    agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
-    authorizer: MemoryAuthorizerDependencies | None = None,
 ) -> list[BaseTool]:
     """create an add_memory tool for explicit memory storage.
 
@@ -800,9 +791,9 @@ async def load_add_memory_tool(
     remember something. the memory is embedded and stored
     immediately, with dedup against existing similar memories.
 
-    when ``authorizer`` is supplied, every invocation runs
-    ``memory.write`` through the evaluator before the SQL
-    insert / update. on a successful write authored by a user
+    every invocation runs ``memory.write`` through the evaluator
+    before the SQL insert / update against the required
+    ``authorizer`` bundle. on a successful write authored by a user
     (not the agent-owner short-circuit path), the per-user
     ``MemoryOwner`` assignment is ensured via
     :attr:`MemoryAuthorizerDependencies.assignment_ensurer` so
@@ -813,7 +804,8 @@ async def load_add_memory_tool(
 
     :param pool: asyncpg connection pool
     :ptype pool: Any
-    :param user_id: owning user's UUID (row filter fallback)
+    :param user_id: owning user's UUID (row filter
+        + evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param conversation_id: current conversation UUID
     :ptype conversation_id: UUID
@@ -821,18 +813,16 @@ async def load_add_memory_tool(
     :ptype message_id: UUID
     :param embedding_provider: provider for embedding vectors
     :ptype embedding_provider: EmbeddingProvider
+    :param agent_id: owning agent UUID (memory namespace owner)
+    :ptype agent_id: UUID
+    :param customer_id: owning customer UUID
+    :ptype customer_id: UUID
+    :param authorizer: rbac authorizer dependency bundle; required
+    :ptype authorizer: MemoryAuthorizerDependencies
     :param similarity_dedup_threshold: if an existing memory
         exceeds this similarity score, the existing memory is
         updated instead of creating a duplicate. default 0.90
     :ptype similarity_dedup_threshold: float
-    :param agent_id: owning agent UUID; required when
-        ``authorizer`` is supplied
-    :ptype agent_id: UUID | None
-    :param customer_id: owning customer UUID; required when
-        ``authorizer`` is supplied
-    :ptype customer_id: UUID | None
-    :param authorizer: rbac authorizer dependency bundle
-    :ptype authorizer: MemoryAuthorizerDependencies | None
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -860,40 +850,37 @@ async def load_add_memory_tool(
         # deleted if the admin explicitly removed it — the ensurer
         # only inserts when absent AND the user has no existing
         # memory rows); authorize denies; caller gets clean error.
-        ns_row = None
-        if authorizer is not None and agent_id is not None and customer_id is not None:
-            # resolve namespace first so the ensurer can bind to it.
-            ns_row = await authorizer.namespace_resolver(agent_id, customer_id)
-            if ns_row is None:
-                return _tool_error(
-                    "add_memory",
-                    "authorize",
-                    f"memory namespace for agent={agent_id} "
-                    f"customer={customer_id} could not be resolved",
-                )
-            try:
-                await _ensure_first_write_owner_assignment(
-                    pool=pool,
-                    authorizer=authorizer,
-                    ns_row=ns_row,
-                    user_id=user_id,
-                )
-            except Exception as exc:
-                log.warning(
-                    "add_memory: first-write assignment ensure failed",
-                    extra={"extra_data": {"error": str(exc)}},
-                )
-            try:
-                await authorize_memory_access(
-                    action=ACTION_MEMORY_WRITE,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    caller_user_id=user_id,
-                    caller_agent_id=None,
-                    deps=authorizer,
-                )
-            except MemoryAccessDenied as exc:
-                return _tool_error("add_memory", "authorize", str(exc))
+        ns_row = await authorizer.namespace_resolver(agent_id, customer_id)
+        if ns_row is None:
+            return _tool_error(
+                "add_memory",
+                "authorize",
+                f"memory namespace for agent={agent_id} "
+                f"customer={customer_id} could not be resolved",
+            )
+        try:
+            await _ensure_first_write_owner_assignment(
+                pool=pool,
+                authorizer=authorizer,
+                ns_row=ns_row,
+                user_id=user_id,
+            )
+        except Exception as exc:
+            log.warning(
+                "add_memory: first-write assignment ensure failed",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_WRITE,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=None,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("add_memory", "authorize", str(exc))
 
         # Validate type
         mt = memory_type.lower().strip()

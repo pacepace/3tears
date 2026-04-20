@@ -123,12 +123,18 @@ Owner short-circuit: the evaluator allows any action when the calling agent owns
 
 Auto-assignment on first user-write: `add_memory` ensures a `MemoryOwner` assignment for the calling user on their first write (idempotent-by-state — the ensurer only fires when the user has zero memory rows in the target schema). Subsequent writes authorize against the materialized grant; admin-revoked grants stay revoked (the ensurer does not resurrect them).
 
-Wiring shape: every consumer of the memory surface accepts an optional `MemoryAuthorizerDependencies` bundle exposing:
+Wiring shape: every consumer of the memory surface REQUIRES a `MemoryAuthorizerDependencies` bundle exposing:
 
 - `membership_loader` + `grant_loader` — the evaluator's loaders (`threetears.agent.acl.MembershipLoader` / `GrantLoader`);
 - `namespace_resolver` — async `(agent_id, customer_id) -> MemoryNamespaceRow | None` (create-if-absent is the resolver's responsibility; typically NATS-request-to-hub in production, in-memory fixture in tests);
 - `assignment_ensurer` — async `(user_id, memory_namespace_row) -> None` for the auto-assignment path.
 
-When the bundle is `None` (tests that predate phase 3, back-office tooling), enforcement is skipped and the legacy trust-the-caller column filter continues to govern row visibility. Production wiring always supplies the bundle. See `threetears.agent.memory.authorize` for the full public surface.
+There is no bypass. Every `MemoriesCollection`, `MemoryRetriever`, `MemoryExtractor`, and LangChain tool factory (`load_memory_search_tool`, `load_add_memory_tool`, `load_recall_memory_tool`) takes the bundle as a required constructor/factory argument; every code path that touches a memory row runs `authorize_memory_access` first. Callers that omit the bundle fail at the type checker and the Python signature boundary.
+
+- Production wiring builds the bundle from hub-side loaders + a namespace resolver (NATS request-reply against the hub broker) + the first-write assignment ensurer; the canonical example lives in `MemoryIntegration` in the `aibots-agents` runtime.
+- Test wiring injects a permissive fixture `permissive_memory_authorizer` (see `tests/conftest.py`) that allows every evaluate and no-ops the ensurer. Fixture usage is explicit in every test file that constructs a memory surface.
+- Back-office / admin tooling that genuinely needs to read or write memories without an identity must construct its own bundle (typically reusing the hub-side loaders directly and a no-op ensurer) — there is no global escape hatch.
+
+See `threetears.agent.memory.authorize` for the full public surface.
 
 Hub migrations v020 (role seeds) and v021 (cross-agent-schema backfill) land the platform-side rbac rows required for evaluator resolution; the three platform roles (`MemoryOwner` / `MemoryReader` / `MemoryWriter`) carry the canonical action vocabulary.

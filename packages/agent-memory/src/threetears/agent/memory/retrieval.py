@@ -279,20 +279,21 @@ class MemoryRetriever:
         self,
         config: MemoryConfig,
         embedding_provider: EmbeddingProvider,
-        authorizer: MemoryAuthorizerDependencies | None = None,
+        authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        """initialize the retriever.
+        """initialize the retriever with a required rbac authorizer.
 
         :param config: memory retrieval configuration
         :ptype config: MemoryConfig
         :param embedding_provider: embedding provider for query vectors
         :ptype embedding_provider: EmbeddingProvider
-        :param authorizer: rbac authorizer dependency bundle; when
-            present, every retrieval call carrying ``caller_user_id``
-            evaluates ``memory.read`` on the per-(agent, customer)
-            memory namespace before any SQL runs. ``None`` keeps
-            legacy behaviour for tests and back-office tooling
-        :ptype authorizer: MemoryAuthorizerDependencies | None
+        :param authorizer: rbac authorizer dependency bundle; required.
+            every retrieval call carrying ``caller_user_id`` evaluates
+            ``memory.read`` on the per-(agent, customer) memory
+            namespace before any SQL runs. tests inject a permissive
+            fixture from ``conftest.py``; production wiring builds
+            the real bundle from hub-side loaders + namespace resolver
+        :ptype authorizer: MemoryAuthorizerDependencies
         """
         self._config = config
         self._embedding = embedding_provider
@@ -386,13 +387,14 @@ class MemoryRetriever:
         # rbac enforcement on reads: evaluate memory.read before
         # doing any expensive embedding / vector work. owner short-
         # circuit fires when the calling agent owns the memory
-        # namespace.
-        if (
-            caller_user_id is not None
-            and self._authorizer is not None
-            and agent_id is not None
-            and customer_id is not None
-        ):
+        # namespace. passing ``caller_user_id`` without
+        # ``agent_id`` + ``customer_id`` is a programming error —
+        # the evaluator cannot resolve the namespace without both.
+        if caller_user_id is not None:
+            if agent_id is None or customer_id is None:
+                raise ValueError(
+                    "retrieve with caller_user_id requires agent_id + customer_id",
+                )
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
                 agent_id=agent_id,
