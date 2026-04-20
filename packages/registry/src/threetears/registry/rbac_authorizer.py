@@ -8,26 +8,38 @@ registration); a per-call authorization decision resolves to
 "evaluator.evaluate(user_id, agent_id, namespace_id, action=tool.call)"
 via the same machinery workspaces + datasources use.
 
+three-tier-task-01 phase D retired the bespoke resolver callable
+alias and the parallel tool-namespace-row value object. the
+authorizer now takes a ``NamespaceCollection`` handle directly and
+calls :meth:`NamespaceCollection.get_by_name`; the returned entity
+surfaces the four fields the evaluator reads through normal
+attribute access. the Collection parameter is typed ``Any`` because
+the concrete class lives in :mod:`aibots.hub.broker.namespaces` and
+this package sits a layer below aibots in the dependency graph; the
+three-tier-task-01 shard documents the import path as the callers'
+responsibility rather than a registry-side layering edit.
+
 wiring shape:
 
 - one :class:`RbacEvaluatorAuthorizer` instance per registry pod
 - constructed with a :class:`MembershipLoader`, a
-  :class:`GrantLoader`, and a :class:`NamespaceByNameResolver` callable
+  :class:`GrantLoader`, and a ``NamespaceCollection``
 - call path: :class:`~threetears.registry.proxy.CallProxy` invokes
   :meth:`is_authorized` on every tool dispatch; the authorizer
-  resolves the tool's namespace id via the resolver, then asks the
-  evaluator for a boolean decision
+  resolves the tool's namespace via the Collection's
+  ``get_by_name`` method, then asks the evaluator for a boolean
+  decision
 
 defense in depth: when ``user_id`` is ``None`` the authorizer
 returns ``False`` (a tool dispatch without an identified user is
 refused even when the agent is privileged). when the namespace
-resolver returns ``None`` (tool not yet materialized; registration
+lookup returns ``None`` (tool not yet materialized; registration
 race) the authorizer also returns ``False``.
 """
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import (
@@ -40,9 +52,7 @@ from threetears.agent.acl import (
 from threetears.observe import get_logger
 
 __all__ = [
-    "NamespaceByNameResolver",
     "RbacEvaluatorAuthorizer",
-    "ToolNamespaceRow",
 ]
 
 
@@ -52,59 +62,13 @@ log = get_logger(__name__)
 TOOL_CALL_ACTION = "tool.call"
 
 
-class ToolNamespaceRow:
-    """resolved ``platform.namespaces`` row fields for a single tool.
-
-    the Registry authorizer only needs the subset of
-    ``platform.namespaces`` that the evaluator reads:
-
-    - ``id`` to key per-namespace grant entries
-    - ``namespace_type`` set to ``"tool"`` (structural invariant)
-    - ``owner_agent_id`` + ``customer_id`` for the evaluator's owner
-      short-circuit and cross-customer guard
-
-    :ivar id: namespace UUID
-    :ivar namespace_type: always ``"tool"`` for rows surfaced here
-    :ivar owner_agent_id: owning agent (``None`` for platform tools)
-    :ivar customer_id: owning customer (``None`` for platform tools)
-    """
-
-    __slots__ = ("id", "namespace_type", "owner_agent_id", "customer_id")
-
-    def __init__(
-        self,
-        *,
-        id: UUID,
-        namespace_type: str,
-        owner_agent_id: UUID | None,
-        customer_id: UUID | None,
-    ) -> None:
-        """initialize a resolved tool namespace row.
-
-        :param id: namespace UUID
-        :ptype id: UUID
-        :param namespace_type: namespace type (always ``"tool"``)
-        :ptype namespace_type: str
-        :param owner_agent_id: owning agent UUID or ``None``
-        :ptype owner_agent_id: UUID | None
-        :param customer_id: owning customer UUID or ``None``
-        :ptype customer_id: UUID | None
-        """
-        self.id = id
-        self.namespace_type = namespace_type
-        self.owner_agent_id = owner_agent_id
-        self.customer_id = customer_id
-
-
-NamespaceByNameResolver = Callable[[str], Awaitable[ToolNamespaceRow | None]]
-
-
 class RbacEvaluatorAuthorizer:
     """authorize tool dispatch via the unified rbac evaluator.
 
     implements the :class:`~threetears.registry.auth.AgentToolAuthorizer`
-    protocol. on each call, resolves the tool's ``platform.namespaces``
-    row (caches the lookup), then asks
+    protocol. on each call, looks up the tool's ``platform.namespaces``
+    row via :meth:`NamespaceCollection.get_by_name` (Collection hits
+    its L1 cache on hot paths), then asks
     :func:`~threetears.agent.acl.evaluate_decision` for a boolean on
     ``(user_id, agent_id, namespace, action="tool.call")``.
 
@@ -116,39 +80,50 @@ class RbacEvaluatorAuthorizer:
     this matches the shared-workspace pattern (no implicit grants on
     shared-type rows).
 
+    :param acl_cache: shared :class:`threetears.agent.acl.AclCache`
+        instance. carried on the authorizer so future per-namespace
+        decision caching can slot in without widening the constructor;
+        not read by :meth:`is_authorized` today (the evaluator hits
+        loaders directly each call)
+    :ptype acl_cache: Any
     :param membership_loader: actor -> memberships resolver
     :ptype membership_loader: MembershipLoader
     :param grant_loader: groups -> assignments + roles resolver
     :ptype grant_loader: GrantLoader
-    :param namespace_resolver: async callable ``name -> ToolNamespaceRow | None``
-        resolving a tool namespace by its canonical name
-        (``tool:<mcp_name>:<version>``) to the row the evaluator
-        reads. caller supplies whichever implementation matches the
-        Registry's wiring (NATS-proxied L3 query, direct asyncpg pool,
-        in-memory test fixture)
-    :ptype namespace_resolver: NamespaceByNameResolver
+    :param namespace_collection: three-tier ``NamespaceCollection``
+        whose ``get_by_name(name)`` method resolves tool namespaces
+        by canonical name (``tool:<mcp_name>:<version>``). typed
+        ``Any`` because the concrete Collection class lives in
+        :mod:`aibots.hub.broker.namespaces`, a layer above this
+        package in the dependency graph; the caller's wiring code
+        passes the real Collection instance
+    :ptype namespace_collection: Any
     """
 
     def __init__(
         self,
         *,
+        acl_cache: Any,
         membership_loader: MembershipLoader,
         grant_loader: GrantLoader,
-        namespace_resolver: NamespaceByNameResolver,
+        namespace_collection: Any,
     ) -> None:
-        """wire the authorizer to its loaders + namespace resolver.
+        """wire the authorizer to its loaders + namespace collection.
 
+        :param acl_cache: shared :class:`threetears.agent.acl.AclCache`
+        :ptype acl_cache: Any
         :param membership_loader: actor -> memberships resolver
         :ptype membership_loader: MembershipLoader
         :param grant_loader: groups -> assignments + roles resolver
         :ptype grant_loader: GrantLoader
-        :param namespace_resolver: async callable resolving tool
-            namespace by name to a :class:`ToolNamespaceRow`
-        :ptype namespace_resolver: NamespaceByNameResolver
+        :param namespace_collection: three-tier ``NamespaceCollection``
+            whose :meth:`get_by_name` surfaces the tool namespace row
+        :ptype namespace_collection: Any
         """
+        self._acl_cache = acl_cache
         self._membership_loader = membership_loader
         self._grant_loader = grant_loader
-        self._namespace_resolver = namespace_resolver
+        self._namespace_collection = namespace_collection
 
     async def is_authorized(
         self,
@@ -174,7 +149,8 @@ class RbacEvaluatorAuthorizer:
         :ptype user_id: str | None
         :param tool_name: fully qualified tool name (the
             ``mcp_name`` from the proxy request); resolved against
-            the tool namespace registry via the configured resolver
+            the tool namespace Collection via
+            :meth:`NamespaceCollection.get_by_name`
         :ptype tool_name: str
         :return: True iff the evaluator grants the ``tool.call``
             action on the resolved tool namespace
@@ -222,8 +198,8 @@ class RbacEvaluatorAuthorizer:
             )
             return result
 
-        ns_row = await self._namespace_resolver(tool_name)
-        if ns_row is None:
+        ns_entity = await self._namespace_collection.get_by_name(tool_name)
+        if ns_entity is None:
             log.info(
                 "rbac authorizer: no tool namespace row, denying",
                 extra={
@@ -237,10 +213,10 @@ class RbacEvaluatorAuthorizer:
             return result
 
         evaluator_namespace = AclNamespace(
-            id=ns_row.id,
-            customer_id=ns_row.customer_id,
-            namespace_type=ns_row.namespace_type,
-            owner_agent_id=ns_row.owner_agent_id,
+            id=ns_entity.id,
+            customer_id=ns_entity.customer_id,
+            namespace_type=ns_entity.namespace_type,
+            owner_agent_id=ns_entity.owner_agent_id,
         )
         ctx = EvaluationContext(
             namespace=evaluator_namespace,

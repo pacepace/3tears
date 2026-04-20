@@ -22,9 +22,11 @@ from pydantic import BaseModel, Field, model_validator
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_READ,
     ACTION_MEMORY_WRITE,
+    MEMORY_NAMESPACE_TYPE,
     MemoryAccessDenied,
     MemoryAuthorizerDependencies,
     authorize_memory_access,
+    ensure_memory_owner_assignment,
 )
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.types import MemoryType
@@ -140,29 +142,37 @@ async def _ensure_first_write_owner_assignment(
     *,
     pool: Any,
     authorizer: MemoryAuthorizerDependencies,
-    ns_row: Any,
+    ns_entity: Any,
     user_id: UUID,
 ) -> None:
     """ensure MemoryOwner assignment exists on first write by this user.
 
     checks if the user has any existing memory rows for this
     (agent, customer) pair. if yes → this is not a first write,
-    skip the ensurer (grant either exists from earlier, or was
+    skip the ensure (grant either exists from earlier, or was
     explicitly revoked and must stay revoked). if no → first
-    write, invoke the ensurer which is idempotent on the group
-    row and the assignment row.
+    write, call :func:`ensure_memory_owner_assignment` which is
+    idempotent on the group row, the membership row, and the
+    assignment row via deterministic :func:`uuid5` ids + Collection
+    ON CONFLICT semantics.
 
-    the existence check + ensurer call is NOT transactional; a
+    three-tier-task-01 phase D replaced the bespoke owner-ensurer
+    callable with the direct Collection calls inside
+    :func:`ensure_memory_owner_assignment`; this helper stays as the
+    first-write gate so the ensure only fires for users who haven't
+    yet written into the namespace.
+
+    the existence check + ensure call is NOT transactional; a
     concurrent second-first-write will have both callers invoke
-    the ensurer, but the ensurer's per-row insert-if-absent
-    semantics make the double-call harmless.
+    the ensure path, but the underlying Collection methods' per-row
+    insert-if-absent semantics make the double-call harmless.
 
     :param pool: asyncpg pool for the existence query
     :ptype pool: Any
     :param authorizer: rbac authorizer dependency bundle
     :ptype authorizer: MemoryAuthorizerDependencies
-    :param ns_row: resolved memory namespace row
-    :ptype ns_row: Any
+    :param ns_entity: resolved memory namespace entity
+    :ptype ns_entity: Any
     :param user_id: user UUID asking to write their first memory
     :ptype user_id: UUID
     :return: nothing
@@ -174,7 +184,11 @@ async def _ensure_first_write_owner_assignment(
     )
     if existing:
         return None
-    await authorizer.assignment_ensurer(user_id, ns_row)
+    await ensure_memory_owner_assignment(
+        user_id=user_id,
+        namespace=ns_entity,
+        deps=authorizer,
+    )
     return None
 
 
@@ -796,8 +810,8 @@ async def load_add_memory_tool(
     ``authorizer`` bundle. on a successful write authored by a user
     (not the agent-owner short-circuit path), the per-user
     ``MemoryOwner`` assignment is ensured via
-    :attr:`MemoryAuthorizerDependencies.assignment_ensurer` so
-    subsequent reads from the same user hit a cached grant.
+    :func:`ensure_memory_owner_assignment` so subsequent reads from
+    the same user hit a cached grant.
 
     returns a single-element list (matching LangChain's
     bind_tools convention).
@@ -850,8 +864,20 @@ async def load_add_memory_tool(
         # deleted if the admin explicitly removed it — the ensurer
         # only inserts when absent AND the user has no existing
         # memory rows); authorize denies; caller gets clean error.
-        ns_row = await authorizer.namespace_resolver(agent_id, customer_id)
-        if ns_row is None:
+        try:
+            ns_entity = await authorizer.namespace_collection.get_by_owner_and_customer(
+                namespace_type=MEMORY_NAMESPACE_TYPE,
+                owner_agent_id=agent_id,
+                customer_id=customer_id,
+            )
+        except Exception as exc:
+            return _tool_error(
+                "add_memory",
+                "authorize",
+                f"memory namespace lookup for agent={agent_id} "
+                f"customer={customer_id} failed: {exc}",
+            )
+        if ns_entity is None:
             return _tool_error(
                 "add_memory",
                 "authorize",
@@ -862,7 +888,7 @@ async def load_add_memory_tool(
             await _ensure_first_write_owner_assignment(
                 pool=pool,
                 authorizer=authorizer,
-                ns_row=ns_row,
+                ns_entity=ns_entity,
                 user_id=user_id,
             )
         except Exception as exc:

@@ -19,10 +19,10 @@ Tool dispatch authorization lives behind the `AgentToolAuthorizer` protocol. Imp
 Production deployments wire `RbacEvaluatorAuthorizer` (in `threetears.registry.rbac_authorizer`) which delegates to the unified rbac evaluator from `threetears.agent.acl`:
 
 - `ToolServer.register_tool` emits a `platform.namespaces` row of type `tool` on registration (name shape `tool:<mcp_name>:<version>`).
-- The authorizer resolves the tool namespace via an injected `NamespaceByNameResolver` (caller-supplied — production wiring uses the hub's L3 pool; tests use in-memory fixtures).
+- The authorizer resolves the tool namespace via an injected `NamespaceCollection` (caller-supplied — production wiring passes the three-tier `NamespaceCollection` bound to the hub's L3 pool or the agent-side `NatsProxyL3Backend` pool; tests use in-memory fixtures).
 - `evaluate_decision` resolves the two-sided grant chain: user side (groups the invoking user is in) intersected with agent side (groups the calling agent is in, short-circuited by namespace ownership). The decision is cached in `threetears.agent.acl.AclCache` with TTL + fine-grained invalidation.
 
-Defense in depth: when `user_id=None` (tool dispatch without user identity) the authorizer denies unconditionally. When the namespace resolver returns `None` (tool registered but namespace row not yet visible) it denies — this catches registration races rather than defaulting to allow.
+Defense in depth: when `user_id=None` (tool dispatch without user identity) the authorizer denies unconditionally. When the namespace Collection's `get_by_name` returns `None` (tool registered but namespace row not yet visible) it denies — this catches registration races rather than defaulting to allow.
 
 Platform-built-in tools land with `owner_agent_id=NULL, customer_id=NULL` — there is no implicit "anyone can call" behaviour for them. Grants are managed via explicit assignments on the platform-seeded `ToolCaller` role (same pattern as shared-type workspaces).
 

@@ -1,8 +1,13 @@
 """unit tests for :class:`RbacEvaluatorAuthorizer`.
 
 namespace-task-01 phase 2 replaced :class:`KvAgentToolAuthorizer`
-with :class:`RbacEvaluatorAuthorizer`. these tests cover the four
-interesting branches:
+with :class:`RbacEvaluatorAuthorizer`. three-tier-task-01 phase D
+retired the bespoke resolver callable alias and the parallel
+tool-namespace-row value object; the authorizer now takes a
+``NamespaceCollection`` handle directly. these tests drive the
+authorizer with an in-memory Collection stand-in that duck-types
+:meth:`get_by_name`, keeping the unit focused on the
+evaluator-interaction branches:
 
 - allow path: user + agent in a group that holds a role granting
   ``tool.call`` on the tool namespace
@@ -12,8 +17,8 @@ interesting branches:
   ownership short-circuit)
 - user_id absent: dispatch without user identity denied (defense in
   depth)
-- unresolvable tool name: resolver returns ``None`` (tool registered
-  race) -> denied
+- unresolvable tool name: Collection returns ``None`` (tool
+  registered race) -> denied
 """
 
 from __future__ import annotations
@@ -32,10 +37,64 @@ from threetears.agent.acl import (
     RoleAssignment,
     ScopeType,
 )
-from threetears.registry.rbac_authorizer import (
-    RbacEvaluatorAuthorizer,
-    ToolNamespaceRow,
-)
+from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
+
+
+class _StubToolNamespace:
+    """duck-typed namespace entity exposing the four fields the evaluator reads."""
+
+    __slots__ = ("id", "namespace_type", "owner_agent_id", "customer_id")
+
+    def __init__(
+        self,
+        *,
+        id: UUID,
+        namespace_type: str,
+        owner_agent_id: UUID | None,
+        customer_id: UUID | None,
+    ) -> None:
+        """initialize a stub namespace entity.
+
+        :param id: namespace UUID
+        :ptype id: UUID
+        :param namespace_type: namespace type discriminator
+        :ptype namespace_type: str
+        :param owner_agent_id: owning agent UUID or ``None``
+        :ptype owner_agent_id: UUID | None
+        :param customer_id: owning customer UUID or ``None``
+        :ptype customer_id: UUID | None
+        """
+        self.id = id
+        self.namespace_type = namespace_type
+        self.owner_agent_id = owner_agent_id
+        self.customer_id = customer_id
+
+
+class _FakeNamespaceCollection:
+    """duck-typed ``NamespaceCollection`` with a preconfigured ``get_by_name``.
+
+    the authorizer only reads :meth:`get_by_name`, so the fake
+    intentionally omits the rest of the Collection surface.
+    """
+
+    def __init__(self, entity: _StubToolNamespace | None) -> None:
+        """store the entity returned for every ``get_by_name`` call.
+
+        :param entity: preconfigured stub entity or ``None``
+        :ptype entity: _StubToolNamespace | None
+        """
+        self._entity = entity
+
+    async def get_by_name(self, name: str) -> _StubToolNamespace | None:
+        """return the preconfigured stub (may be ``None``).
+
+        :param name: tool namespace name (unused)
+        :ptype name: str
+        :return: preconfigured stub or ``None``
+        :rtype: _StubToolNamespace | None
+        """
+        _ = name
+        return self._entity
 
 
 class _FakeMembershipLoader:
@@ -153,30 +212,6 @@ class _FakeGrantLoader:
         }
 
 
-def _mk_resolver(
-    row: ToolNamespaceRow | None,
-) -> Any:
-    """build a one-shot namespace resolver returning ``row``.
-
-    :param row: resolved namespace row or ``None``
-    :ptype row: ToolNamespaceRow | None
-    :return: async callable usable as :class:`NamespaceByNameResolver`
-    :rtype: Any
-    """
-
-    async def _resolver(_name: str) -> ToolNamespaceRow | None:
-        """return the preconfigured row (or ``None``).
-
-        :param _name: tool namespace name (ignored)
-        :ptype _name: str
-        :return: stored row
-        :rtype: ToolNamespaceRow | None
-        """
-        return row
-
-    return _resolver
-
-
 class TestRbacEvaluatorAuthorizer:
     """cover allow / deny / platform / no-user / resolver-miss."""
 
@@ -224,6 +259,7 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(
                 users={user_id: (user_membership,)},
                 agents={agent_id: (agent_membership,)},
@@ -233,8 +269,8 @@ class TestRbacEvaluatorAuthorizer:
                 roles={role_id: role},
                 groups={group_id: group},
             ),
-            namespace_resolver=_mk_resolver(
-                ToolNamespaceRow(
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
                     id=namespace_id,
                     namespace_type="tool",
                     owner_agent_id=None,
@@ -257,10 +293,11 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(),
             grant_loader=_FakeGrantLoader(),
-            namespace_resolver=_mk_resolver(
-                ToolNamespaceRow(
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
                     id=namespace_id,
                     namespace_type="tool",
                     owner_agent_id=None,
@@ -282,10 +319,11 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(),
             grant_loader=_FakeGrantLoader(),
-            namespace_resolver=_mk_resolver(
-                ToolNamespaceRow(
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
                     id=namespace_id,
                     namespace_type="tool",
                     owner_agent_id=None,
@@ -300,15 +338,16 @@ class TestRbacEvaluatorAuthorizer:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_deny_when_namespace_resolver_returns_none(self) -> None:
+    async def test_deny_when_namespace_lookup_returns_none(self) -> None:
         """missing tool namespace row (registration race) -> denied."""
         agent_id = uuid4()
         user_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(),
             grant_loader=_FakeGrantLoader(),
-            namespace_resolver=_mk_resolver(None),
+            namespace_collection=_FakeNamespaceCollection(None),
         )
 
         result = await authorizer.is_authorized(
@@ -324,10 +363,11 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(),
             grant_loader=_FakeGrantLoader(),
-            namespace_resolver=_mk_resolver(
-                ToolNamespaceRow(
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
                     id=namespace_id,
                     namespace_type="tool",
                     owner_agent_id=None,
@@ -350,10 +390,11 @@ class TestRbacEvaluatorAuthorizer:
         customer_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=None,
             membership_loader=_FakeMembershipLoader(),
             grant_loader=_FakeGrantLoader(),
-            namespace_resolver=_mk_resolver(
-                ToolNamespaceRow(
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
                     id=namespace_id,
                     namespace_type="tool",
                     owner_agent_id=None,

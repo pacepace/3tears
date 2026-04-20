@@ -19,6 +19,7 @@ from threetears.agent.memory.authorize import (
     ACTION_MEMORY_WRITE,
     MemoryAuthorizerDependencies,
     authorize_memory_access,
+    ensure_memory_owner_assignment,
 )
 from threetears.agent.memory.entities import MemoryEntity
 
@@ -442,8 +443,8 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         passed AND caller_user_id is set AND the agent-owner
         short-circuit did NOT fire), the per-user ``MemoryOwner``
         assignment is ensured via
-        :meth:`MemoryAuthorizerDependencies.assignment_ensurer` so
-        subsequent reads from the same user hit a cached grant.
+        :func:`ensure_memory_owner_assignment` so subsequent reads
+        from the same user hit a cached grant.
 
         the agent-internal extractor path bypasses this method and
         calls :meth:`save_entity` directly because it runs under
@@ -471,7 +472,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :rtype: None
         :raises MemoryAccessDenied: on evaluator deny
         """
-        ns_row = await authorize_memory_access(
+        ns_entity = await authorize_memory_access(
             action=ACTION_MEMORY_WRITE,
             agent_id=agent_id,
             customer_id=customer_id,
@@ -484,14 +485,20 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
 
         # auto-assignment on first user-write: bind the user's
         # per-user memory-owner group to the MemoryOwner role scoped
-        # to this memory namespace. idempotent on replay — ensurer
-        # is insert-if-absent. skip when the caller is the owning
+        # to this memory namespace. idempotent on replay —
+        # :func:`ensure_memory_owner_assignment` drives every row
+        # through deterministic :func:`uuid5` ids + Collection
+        # ON CONFLICT semantics. skip when the caller is the owning
         # agent (no user identity to bind the group to).
         is_owner_shortcut = (
             caller_agent_id is not None and caller_agent_id == agent_id
         )
         if caller_user_id is not None and not is_owner_shortcut:
-            await self._authorizer.assignment_ensurer(caller_user_id, ns_row)
+            await ensure_memory_owner_assignment(
+                user_id=caller_user_id,
+                namespace=ns_entity,
+                deps=self._authorizer,
+            )
         return None
 
     async def soft_delete(self, entity: MemoryEntity) -> None:
