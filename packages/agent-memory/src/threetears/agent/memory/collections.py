@@ -41,6 +41,54 @@ _FIELD_TYPES: dict[str, Any] = {
 }
 
 
+def _encode_embedding(value: object) -> str | None:
+    """Encode an embedding value for the pgvector ``vector`` column.
+
+    asyncpg has no native pgvector codec; values must be passed as
+    the literal textual representation ``[v1, v2, ...]``. Lists
+    produced by entity setters or extraction code get JSON-encoded
+    here at the WRITE boundary. Already-encoded strings pass through.
+    ``None`` passes through too so callers that omit embeddings stay
+    working.
+
+    :param value: list of floats, string, or None
+    :ptype value: object
+    :return: bracketed textual vector, passthrough string, or None
+    :rtype: str | None
+    """
+    if value is None:
+        result: str | None = None
+    elif isinstance(value, str):
+        result = value
+    elif isinstance(value, list):
+        result = json.dumps(value)
+    else:
+        result = str(value)
+    return result
+
+
+def _to_naive_utc(value: datetime | None) -> datetime | None:
+    """Convert a timezone-aware datetime to naive UTC for TIMESTAMP columns.
+
+    YugabyteDB TIMESTAMP columns (see memory migrations v001/v004) are
+    timezone-naive. Per CLAUDE.md "Datetime Handling", aware datetimes
+    must be converted at the WRITE boundary. Naive inputs are returned
+    as-is; ``None`` passes through.
+
+    :param value: aware or naive datetime, or None
+    :ptype value: datetime | None
+    :return: naive UTC datetime or None
+    :rtype: datetime | None
+    """
+    if value is None:
+        result: datetime | None = None
+    elif value.tzinfo is None:
+        result = value
+    else:
+        result = value.astimezone(UTC).replace(tzinfo=None)
+    return result
+
+
 def _json_serializer(obj: object) -> str | int | float | bool | None:
     """Serialize non-JSON-native types for json.dumps."""
     if isinstance(obj, UUID):
@@ -112,7 +160,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
                     conversation_id, message_id_source,
                     type_memory, content, embedding, is_deleted,
                     media_id, date_created, date_deleted, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, $11, $12, $13, $14)
                 ON CONFLICT (memory_id) DO UPDATE SET
                     content = EXCLUDED.content,
                     embedding = EXCLUDED.embedding,
@@ -128,19 +176,19 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
                 data["message_id_source"],
                 data["type_memory"],
                 data["content"],
-                data["embedding"],
+                _encode_embedding(data["embedding"]),
                 data["is_deleted"],
                 data.get("media_id"),
-                data["date_created"],
-                data.get("date_deleted"),
-                data.get("date_updated"),
+                _to_naive_utc(data["date_created"]),
+                _to_naive_utc(data.get("date_deleted")),
+                _to_naive_utc(data.get("date_updated")),
             )
         else:
             result = await self._postgres_pool.execute(
                 """
                 UPDATE memories SET
                     content = $2,
-                    embedding = $3,
+                    embedding = $3::vector,
                     is_deleted = $4,
                     date_deleted = $5,
                     date_updated = $6
@@ -148,11 +196,11 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
                 """,
                 data["memory_id"],
                 data["content"],
-                data["embedding"],
+                _encode_embedding(data["embedding"]),
                 data["is_deleted"],
-                data.get("date_deleted"),
-                data.get("date_updated"),
-                original_timestamp,
+                _to_naive_utc(data.get("date_deleted")),
+                _to_naive_utc(data.get("date_updated")),
+                _to_naive_utc(original_timestamp),
             )
         return int(result.split()[-1])
 

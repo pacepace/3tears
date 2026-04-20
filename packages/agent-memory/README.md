@@ -99,4 +99,14 @@ config = MemoryConfig(
 
 ## Database Schema
 
-Requires PostgreSQL with pgvector. Memories are stored with embeddings for semantic search, tsvector columns for full-text search, and timestamps for recency decay. See the 3tears documentation for the full schema.
+Requires PostgreSQL with the `pgvector` extension. The package's own migration runner (`threetears.agent.memory.migrations.register`) produces the full schema per agent schema. Registered versions:
+
+- **v001** — `memories` (PK `memory_id`, pgvector `embedding`, scoping ids, content, summary, lifecycle timestamps).
+- **v002** — `conversation_memory_refs` (ledger of per-conversation surfaced items).
+- **v003** — column reconciliation: renames PK and discriminator to match the package code (`id`→`memory_id`, `memory_type`→`type_memory`), drops columns the code does not read (`embedding_model`, `importance`, `metadata`, `date_accessed`), loosens `agent_id`/`customer_id` to NULL.
+- **v004** — lifecycle + conversation-link columns on `memories` (`conversation_id`, `message_id_source`, `is_deleted`, `media_id`, `date_deleted`, `summary`) with indexes.
+- **v005** — FTS: `search_vector TSVECTOR` + GIN index + maintenance trigger on `memories`.
+- **v006** — `media` (parent) + `media_content` (chunked extracted text with embedding + FTS).
+- **v007** — `memory_chunks` (document-style chunks with heading / page metadata + embedding + FTS).
+
+Every FTS column is trigger-maintained from `content` + `summary` (weighted A/B) — callers do not have to populate `search_vector` manually. Integration tests under `tests/integration/` exercise the full chain + every public API surface against `pgvector/pgvector:pg16` via testcontainers.

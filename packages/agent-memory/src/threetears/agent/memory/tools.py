@@ -701,7 +701,9 @@ async def load_add_memory_tool(
                     existing_id = row["memory_id"]
                     from datetime import UTC, datetime
 
-                    now = datetime.now(UTC)
+                    # YugabyteDB TIMESTAMP columns are timezone-naive; convert at
+                    # the WRITE boundary per CLAUDE.md "Datetime Handling".
+                    now = datetime.now(UTC).replace(tzinfo=None)
                     await pool.execute(
                         """
                         UPDATE memories
@@ -739,7 +741,9 @@ async def load_add_memory_tool(
             from datetime import UTC, datetime
             from uuid import uuid4
 
-            now = datetime.now(UTC)
+            # YugabyteDB TIMESTAMP columns are timezone-naive; convert at the
+            # WRITE boundary per CLAUDE.md "Datetime Handling".
+            now = datetime.now(UTC).replace(tzinfo=None)
             memory_id = uuid4()
             await pool.execute(
                 """
