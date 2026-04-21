@@ -39,6 +39,7 @@ __all__ = [
     "WorkspaceNotFound",
     "WorkspaceAuditIdentity",
     "authorize_workspace",
+    "authorize_workspace_file",
     "enrich_workspace_identity",
     "workspace_audit_identity",
 ]
@@ -340,6 +341,78 @@ async def authorize_workspace(
         scope,
         workspace,
         operation,
+        acl_cache=acl_cache,
+    )
+    return None
+
+
+async def authorize_workspace_file(
+    workspace: Workspace,
+    relative_path: str,
+    direction: Literal["read", "write"],
+    *,
+    db_pool: Any,
+    acl_cache: AclCache,
+) -> None:
+    """per-file rbac gate replacing the retired ``sandbox.enforce`` call.
+
+    namespace-task-01 phase 7 wrapper: the workspace file-access
+    enforcement path is now (1) :meth:`WorkspaceSandbox.validate_syntax`
+    for syntactic sanity, (2) this helper for the path-glob rbac
+    decision. see
+    :func:`threetears.agent.workspace.authorize.authorize_workspace_file_access`
+    for the underlying evaluator wiring; this helper performs the
+    identity-enrichment round-trip and installs the call-scope guard
+    so each tool's execute path reads as a one-liner.
+
+    tests must wrap the dispatch in
+    :func:`threetears.agent.tools.call_scope.enter_call_scope`;
+    production wiring always supplies both ``acl_cache`` and the
+    call-scope. ``db_pool`` may be ``None`` when the caller has
+    pre-stamped ``workspace.customer_id`` (harness tests).
+
+    :param workspace: resolved workspace entity
+    :ptype workspace: Workspace
+    :param relative_path: workspace-relative path being authorized
+    :ptype relative_path: str
+    :param direction: ``"read"`` for a read call, ``"write"`` for a
+        mutation (must map to the corresponding
+        ``read_file_matching:`` / ``write_file_matching:`` action
+        prefix in the evaluator)
+    :ptype direction: Literal["read", "write"]
+    :param db_pool: asyncpg-like pool for the platform.namespaces
+        lookup; may be ``None`` to skip enrichment
+    :ptype db_pool: Any
+    :param acl_cache: shared :class:`AclCache` wired with membership +
+        grant loaders; REQUIRED
+    :ptype acl_cache: AclCache
+    :return: None
+    :rtype: None
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed
+    :raises WorkspaceAccessDenied: on any denial path (missing
+        customer, cross-customer, no matching glob)
+    """
+    from threetears.agent.tools.call_scope import current_scope
+
+    from threetears.agent.workspace.authorize import (
+        authorize_workspace_file_access,
+    )
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "authorize_workspace_file called outside a ToolCallScope; every "
+            "tool dispatch must enter_call_scope before executing. tests "
+            "should wrap the tool invocation in "
+            "enter_call_scope(ToolCallScope(...)).",
+        )
+    if db_pool is not None:
+        await enrich_workspace_identity(workspace, db_pool)
+    await authorize_workspace_file_access(
+        scope,
+        workspace,
+        relative_path,
+        direction,
         acl_cache=acl_cache,
     )
     return None

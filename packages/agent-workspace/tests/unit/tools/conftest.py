@@ -244,6 +244,39 @@ def stub_authorize_workspace_access(
 
 
 @pytest.fixture(autouse=True)
+def stub_authorize_workspace_file_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock:
+    """replace :func:`authorize_workspace_file_access` with an :class:`AsyncMock`.
+
+    namespace-task-01 phase 7 adds a per-file rbac gate on every
+    read / write enforcement site. the unit tests here wire fake
+    workspace entities that skip the full :class:`WorkspaceLike`
+    surface; the workspace-shape path-glob decision is exercised end
+    to end in ``tests/integration/`` against real rbac data. here we
+    mock the helper so tool unit tests focus on tool behavior.
+
+    the outer :func:`authorize_workspace_file` wrapper still enforces
+    both preconditions (scope installed, ``acl_cache`` injected) --
+    only the underlying evaluator + glob match is short-circuited.
+
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the installed mock so individual tests can assert on calls
+    :rtype: AsyncMock
+    """
+    from threetears.agent.workspace import authorize as _authorize_module
+
+    stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        _authorize_module,
+        "authorize_workspace_file_access",
+        stub,
+    )
+    return stub
+
+
+@pytest.fixture(autouse=True)
 def stub_enrich_workspace_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncMock:

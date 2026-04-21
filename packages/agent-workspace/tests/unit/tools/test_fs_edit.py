@@ -80,12 +80,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -220,7 +220,7 @@ async def test_fs_edit_happy_replaces_all_occurrences_and_writes(
     assert "workspace_file_versions" in journal_sql
     assert journal_args[4] == b"QUX bar QUX baz QUX"
     # sandbox write enforced BEFORE any transaction started
-    assert sandbox.enforce_calls == [("write", "a.md")]
+    assert sandbox.syntax_calls == ["a.md"]
     # three executes, all in tx
     assert len(pool.conn.executions) == 3
     for _s, _a, in_tx in pool.conn.executions:
@@ -356,7 +356,7 @@ async def test_fs_edit_sandbox_denied_never_reads_or_writes(
     assert result.success is False
     assert result.error is not None
     assert "secret.env" in result.error
-    assert sandbox.enforce_calls == [("write", "secret.env")]
+    assert sandbox.syntax_calls == ["secret.env"]
     assert pool.conn.fetchrows == []
     assert pool.conn.executions == []
 

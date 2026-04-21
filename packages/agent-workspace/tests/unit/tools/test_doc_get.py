@@ -81,12 +81,12 @@ class _FakeFileCollection:
 class _RecordingSandbox:
     def __init__(self, deny_reads: list[str] | None = None) -> None:
         self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_reads:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -310,7 +310,7 @@ async def test_doc_get_sandbox_denied_returns_clean_error_no_fetch(
     assert result.success is False
     assert result.error is not None
     assert "secret.yaml" in result.error
-    assert sandbox.enforce_calls == [("read", "secret.yaml")]
+    assert sandbox.syntax_calls == ["secret.yaml"]
     # no file lookup happened -- sandbox blocked first
     assert files.find_calls == []
 

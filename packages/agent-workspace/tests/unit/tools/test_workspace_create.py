@@ -73,7 +73,7 @@ class _FakeVersionCollection:
 
 
 class _RecordingSandbox:
-    """captures resolve_fs_path and enforce calls.
+    """captures resolve_fs_path and validate_syntax calls.
 
     serves a fixed *resolved* templates root for one template name; the
     test passes the on-disk path the directory walk should target, the
@@ -81,19 +81,22 @@ class _RecordingSandbox:
     directory regardless of the requested template name. this matches
     how :class:`WorkspaceSandbox.resolve_fs_path` resolves a templates
     sub-path under the registered ``templates`` root in production.
+
+    namespace-task-01 phase 7: the glob-driven ``enforce`` surface is
+    retired; the stand-in records syntactic validation calls only.
     """
 
     def __init__(self, templates_root: Path) -> None:
         self._templates_root = templates_root
         self.resolve_calls: list[tuple[str, str]] = []
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         self.resolve_calls.append((path, root_name))
         return self._templates_root
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
 
 
 class _NoTemplateSandbox:
@@ -102,7 +105,7 @@ class _NoTemplateSandbox:
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         raise KeyError(root_name)
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 
@@ -359,11 +362,10 @@ async def test_create_from_template_walks_directory_and_inserts_each_file(
     assert result.success is True, result.error
     assert "created workspace 'seed'" in result.content
 
-    # sandbox observed: one resolve and one enforce per file (3 files)
+    # sandbox observed: one resolve and one validate_syntax per file (3 files)
     assert sandbox.resolve_calls == [("starter", "templates")]
-    enforced_targets = sorted(t for _a, t in sandbox.enforce_calls)
-    assert enforced_targets == sorted(["README.md", "config.yaml", "src/main.py"])
-    assert all(action == "read" for action, _t in sandbox.enforce_calls)
+    syntax_targets = sorted(sandbox.syntax_calls)
+    assert syntax_targets == sorted(["README.md", "config.yaml", "src/main.py"])
 
     # workspace insert: template_name="starter", current_version=1
     workspaces_inserts = [e for e in pool.conn.executions if "INSERT INTO workspaces" in e[0]]

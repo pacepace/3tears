@@ -56,7 +56,8 @@ be calling, but never to the same side via the wrong member type.
 
 from __future__ import annotations
 
-from typing import Iterable
+from pathlib import PurePosixPath
+from typing import Iterable, Literal
 from uuid import UUID
 
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
@@ -75,9 +76,26 @@ from threetears.agent.acl.types import (
 from threetears.observe import get_logger
 
 __all__ = [
+    "READ_FILE_MATCHING_PREFIX",
+    "WRITE_FILE_MATCHING_PREFIX",
     "evaluate_decision",
+    "evaluate_file_access",
     "evaluate_with_trail",
 ]
+
+
+#: action-string prefix declaring "caller may read files whose path
+#: matches the suffix glob." namespace-task-01 phase 7 path-level gate.
+#: the suffix is a :class:`pathlib.PurePosixPath.full_match` glob with
+#: ``**`` recursion support, stored verbatim on the role's ``workspace``
+#: permissions bucket: ``"workspace": ["read_file_matching:**/*.yaml"]``.
+READ_FILE_MATCHING_PREFIX = "read_file_matching:"
+
+
+#: action-string prefix declaring "caller may write files whose path
+#: matches the suffix glob." symmetric to
+#: :data:`READ_FILE_MATCHING_PREFIX`; suffix uses the same glob syntax.
+WRITE_FILE_MATCHING_PREFIX = "write_file_matching:"
 
 log = get_logger(__name__)
 
@@ -190,6 +208,147 @@ async def evaluate_with_trail(
         agent_owner_short_circuited=agent_owner_short_circuited,
     )
     return result
+
+
+async def evaluate_file_access(
+    *,
+    namespace: Namespace,
+    user_id: UUID | None,
+    agent_id: UUID | None,
+    path: str,
+    direction: Literal["read", "write"],
+    membership_loader: MembershipLoader,
+    grant_loader: GrantLoader,
+) -> bool:
+    """resolve "may actor read/write ``path`` in ``namespace``?" (path-glob gate).
+
+    namespace-task-01 phase 7 path-level rbac gate for the workspace
+    sandbox. the workspace-as-namespace model encodes path-level grants
+    via the custom action types
+    :data:`READ_FILE_MATCHING_PREFIX`\\ ``<glob>`` and
+    :data:`WRITE_FILE_MATCHING_PREFIX`\\ ``<glob>``. the standard
+    :func:`evaluate_with_trail` resolves the granted-action set for the
+    caller; this helper inspects that set, filters to the
+    direction-appropriate prefix, and
+    :meth:`pathlib.PurePosixPath.full_match`es each suffix glob against
+    ``path``. allow iff any glob matches.
+
+    resolution details:
+
+    1. :func:`evaluate_with_trail` is called with
+       ``action=READ_FILE_MATCHING_PREFIX`` (or the write equivalent)
+       so the evaluator reduces its contribution walk to the actor's
+       ``workspace``-bucket action set without an exact-action match
+       short-circuit mid-walk. the ``ctx.action`` passed is a prefix
+       stem; the decision bool coming out of the evaluator is ignored
+       because the action set is what we want.
+
+    2. on the agent owner short-circuit the agent side is "every
+       action" — we treat that as "every path" and return True without
+       running the glob match.
+
+    3. the effective action set is computed from whichever sides the
+       caller supplied (user-only, agent-only, or intersection). for
+       each action string starting with the direction prefix, the
+       suffix is tested via :meth:`PurePosixPath.full_match` against
+       ``path``. the first match returns True; exhausting the set
+       returns False.
+
+    :param namespace: workspace-type namespace the file belongs to
+    :ptype namespace: Namespace
+    :param user_id: invoking user UUID, or ``None`` for agent-only
+        evaluation
+    :ptype user_id: UUID | None
+    :param agent_id: invoking agent UUID, or ``None`` for user-only
+        evaluation
+    :ptype agent_id: UUID | None
+    :param path: workspace-relative file path to test
+    :ptype path: str
+    :param direction: ``"read"`` or ``"write"``
+    :ptype direction: Literal["read", "write"]
+    :param membership_loader: actor -> groups resolver
+    :ptype membership_loader: MembershipLoader
+    :param grant_loader: groups -> assignments + roles resolver
+    :ptype grant_loader: GrantLoader
+    :return: True iff the actor's grants include a glob matching ``path``
+    :rtype: bool
+    :raises ValueError: if ``direction`` is not ``"read"``/``"write"``
+        or if neither ``user_id`` nor ``agent_id`` is supplied
+    """
+    if direction not in ("read", "write"):
+        raise ValueError(
+            f"evaluate_file_access direction must be 'read' or 'write', "
+            f"got {direction!r}",
+        )
+    if user_id is None and agent_id is None:
+        raise ValueError(
+            "evaluate_file_access requires at least one of user_id or agent_id",
+        )
+
+    prefix = (
+        READ_FILE_MATCHING_PREFIX
+        if direction == "read"
+        else WRITE_FILE_MATCHING_PREFIX
+    )
+    # ``ctx.action`` is a sentinel stem — the decision bool from
+    # :func:`evaluate_with_trail` is ignored. what matters is the
+    # action-set surfaces: :attr:`EvaluationResult.user_actions`,
+    # :attr:`agent_actions`, and the
+    # :attr:`agent_owner_short_circuited` flag for ownership.
+    ctx = EvaluationContext(
+        namespace=namespace,
+        action=prefix,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    trail_result = await evaluate_with_trail(
+        ctx,
+        membership_loader=membership_loader,
+        grant_loader=grant_loader,
+    )
+
+    # owner short-circuit: the agent owns the namespace -> every action
+    # + every path on the agent side. when only the agent side ran this
+    # is an immediate allow; on the intersection the user side still
+    # caps (the intersection narrows owner-implicit wildcard to the
+    # user's actual action set, so we fall through to the glob walk
+    # over the user-side contribution).
+    has_user = user_id is not None
+    has_agent = agent_id is not None
+    if trail_result.agent_owner_short_circuited and not has_user:
+        return True
+
+    # collect every action string the actor could contribute. when
+    # intersecting, only actions present on the user side matter (the
+    # agent short-circuit means the agent side is open-ended); when
+    # user-only, the single-side ``trails`` carry the contributions
+    # and the flat ``effective_actions`` is correct.
+    action_strings: set[str] = set()
+    if trail_result.user_trails:
+        for trail in trail_result.user_trails:
+            action_strings.update(trail.contributed_actions)
+    if trail_result.trails:
+        for trail in trail_result.trails:
+            action_strings.update(trail.contributed_actions)
+    if trail_result.agent_trails and not has_user:
+        # agent-only non-owner evaluation: the agent-side trails carry
+        # the contributions. (the intersection path caps by user so
+        # agent-side trails are redundant there.)
+        for trail in trail_result.agent_trails:
+            action_strings.update(trail.contributed_actions)
+
+    posix_path = PurePosixPath(path)
+    decision = False
+    for action in action_strings:
+        if not action.startswith(prefix):
+            continue
+        glob = action[len(prefix):]
+        if not glob:
+            continue
+        if posix_path.full_match(glob):
+            decision = True
+            break
+    return decision
 
 
 # ---------------------------------------------------------------------------

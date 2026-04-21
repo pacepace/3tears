@@ -380,14 +380,20 @@ class WorkspaceCreateTool(TearsTool):
         template_name: str,
     ) -> list[tuple[str, bytes, str]]:
         """
-        walk the named template directory and gate every file via sandbox.
+        walk the named template directory and enforce syntactic sanity.
 
-        sandbox enforcement must run on the event loop (the sandbox is a
-        plain Python object and raising from a worker thread is fine, but
-        keeping enforce calls on the main loop keeps the failure path
-        cheap and allows future async-sandbox extension). blocking
-        filesystem walk + read_bytes is dispatched to :func:`asyncio.to_thread`
-        so the event loop stays responsive on large templates.
+        template files are rooted under ``templates_dir`` and were
+        validated at packaging time; the agent creating the workspace
+        is implicitly its owner. namespace-task-01 phase 7 retires the
+        per-path rbac glob check here because no workspace namespace
+        exists yet (the call SITE is ``create``). syntactic validation
+        (absolute-path, parent-ref, control char) still runs via
+        :meth:`WorkspaceSandbox.validate_syntax` so malformed template
+        keys cannot slip into the fresh workspace.
+
+        blocking filesystem walk + read_bytes is dispatched to
+        :func:`asyncio.to_thread` so the event loop stays responsive on
+        large templates.
 
         :param template_name: template directory name under the templates root
         :ptype template_name: str
@@ -395,15 +401,12 @@ class WorkspaceCreateTool(TearsTool):
         :rtype: list[tuple[str, bytes, str]]
         """
         templates_root = self._sandbox.resolve_fs_path(template_name, "templates")
-        # collect (relative, path) pairs in thread, then enforce sandbox
-        # on each relative key on the main loop (sandbox.enforce may raise
-        # and surface cleanly that way).
         candidates = await asyncio.to_thread(
             _collect_template_paths,
             templates_root,
         )
         for relative, _path in candidates:
-            self._sandbox.enforce("read", relative)
+            self._sandbox.validate_syntax(relative)
         triples = await asyncio.to_thread(
             _read_template_bytes,
             candidates,

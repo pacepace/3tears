@@ -48,6 +48,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
     authorize_workspace,
+    authorize_workspace_file,
     workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
@@ -186,7 +187,14 @@ class DocSetTool(TearsTool):
                 db_pool=self._db_pool,
                 acl_cache=self._acl_cache,
             )
-            self._sandbox.enforce("write", relative_path)
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "write",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             try:
                 handler = handler_for(relative_path)
             except UnknownFormatError as exc:

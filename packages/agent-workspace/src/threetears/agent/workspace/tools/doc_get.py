@@ -44,6 +44,7 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _resolve_workspace,
     authorize_workspace,
+    authorize_workspace_file,
 )
 
 __all__ = [
@@ -152,7 +153,14 @@ class DocGetTool(TearsTool):
                 db_pool=self._db_pool,
                 acl_cache=self._acl_cache,
             )
-            self._sandbox.enforce("read", relative_path)
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             try:
                 handler = handler_for(relative_path)
             except UnknownFormatError:

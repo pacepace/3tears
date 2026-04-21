@@ -53,12 +53,12 @@ class _FakeWorkspaceCollection:
 class _RecordingSandbox:
     def __init__(self, deny_reads: list[str] | None = None) -> None:
         self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_reads:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -187,7 +187,7 @@ async def test_diff_two_integer_versions_returns_unified_diff(
     assert "+++ a.txt@3" in result.content
     assert "-second" in result.content
     assert "+changed" in result.content
-    assert sandbox.enforce_calls == [("read", "a.txt")]
+    assert sandbox.syntax_calls == ["a.txt"]
 
 
 @pytest.mark.asyncio
@@ -292,7 +292,7 @@ async def test_diff_sandbox_denied_returns_clean_error(
     )
     assert result.success is False
     assert result.error is not None
-    assert sandbox.enforce_calls == [("read", "private.env")]
+    assert sandbox.syntax_calls == ["private.env"]
     assert pool.conn.fetchrows == []
 
 

@@ -46,6 +46,7 @@ from threetears.agent.acl import (
     EvaluationContext,
     Namespace as AclNamespace,
     evaluate_decision,
+    evaluate_file_access,
 )
 from threetears.agent.tools.call_scope import ToolCallScope
 from threetears.observe import get_logger
@@ -57,6 +58,7 @@ __all__ = [
     "WorkspaceAccessDenied",
     "WorkspaceLike",
     "authorize_workspace_access",
+    "authorize_workspace_file_access",
 ]
 
 log = get_logger(__name__)
@@ -199,6 +201,104 @@ async def authorize_workspace_access(
             reason=str(grant_error),
         )
         raise grant_error
+
+    return None
+
+
+async def authorize_workspace_file_access(
+    scope: ToolCallScope,
+    workspace: WorkspaceLike,
+    relative_path: str,
+    direction: Literal["read", "write"],
+    *,
+    acl_cache: AclCache,
+) -> None:
+    """authorize a per-file read/write against ``workspace`` via rbac globs.
+
+    namespace-task-01 phase 7 replaces the legacy
+    ``WorkspaceSandbox.enforce("read"/"write", path)`` glob-list check
+    with a path-level rbac gate. the caller's grants on the workspace
+    namespace are resolved through the unified evaluator; granted
+    action strings with prefix ``read_file_matching:`` /
+    ``write_file_matching:`` are suffix-matched against ``relative_path``
+    via :meth:`pathlib.PurePosixPath.full_match`. allow iff any glob
+    matches.
+
+    the same customer-wall + missing-customer-on-scope guards that
+    :func:`authorize_workspace_access` applies run here too: a caller
+    from a different customer, or a scope missing its customer, is
+    denied before the rbac lookup to keep the cheap check cheap.
+
+    :param scope: live :class:`ToolCallScope` pushed by the tool
+        server for this dispatch; ``scope.context`` carries
+        ``customer_id`` / ``user_id`` / ``agent_id``
+    :ptype scope: ToolCallScope
+    :param workspace: workspace record being accessed
+    :ptype workspace: WorkspaceLike
+    :param relative_path: workspace-relative path to authorize
+    :ptype relative_path: str
+    :param direction: ``"read"`` for a read call, ``"write"`` for a
+        mutation
+    :ptype direction: Literal["read", "write"]
+    :param acl_cache: shared :class:`AclCache` wired with membership +
+        grant loaders at bootstrap; required, no silent-bypass path
+    :ptype acl_cache: AclCache
+    :return: None
+    :rtype: None
+    :raises WorkspaceAccessDenied: on any denial path (missing
+        customer, cross-customer, no matching glob)
+    """
+    if direction not in ("read", "write"):
+        raise WorkspaceAccessDenied(
+            f"unknown workspace file direction: {direction}",
+        )
+
+    ctx = scope.context
+    if ctx.customer_id is None:
+        raise WorkspaceAccessDenied("missing customer_id on scope")
+
+    if workspace.customer_id != ctx.customer_id:
+        _log_denial(
+            workspace=workspace,
+            operation=f"file.{direction}",
+            ctx=ctx,
+            reason="cross-customer",
+        )
+        raise WorkspaceAccessDenied(
+            "cross-customer access denied: "
+            f"workspace customer={workspace.customer_id}, "
+            f"caller customer={ctx.customer_id}",
+        )
+
+    namespace = AclNamespace(
+        id=workspace.id,
+        customer_id=workspace.customer_id,
+        namespace_type="workspace",
+        owner_agent_id=workspace.owner_agent_id,
+    )
+    decision = await evaluate_file_access(
+        namespace=namespace,
+        user_id=ctx.user_id,
+        agent_id=ctx.agent_id,
+        path=relative_path,
+        direction=direction,
+        membership_loader=acl_cache.membership_loader,
+        grant_loader=acl_cache.grant_loader,
+    )
+    if not decision:
+        _log_denial(
+            workspace=workspace,
+            operation=f"file.{direction}",
+            ctx=ctx,
+            reason=(
+                f"no {direction}_file_matching glob grants {relative_path!r} "
+                f"on namespace {workspace.namespace_name}"
+            ),
+        )
+        raise WorkspaceAccessDenied(
+            f"no {direction}_file_matching glob grants {relative_path!r} "
+            f"on namespace {workspace.namespace_name}",
+        )
 
     return None
 

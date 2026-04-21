@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition
-from threetears.core.security import SandboxDecision
+from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.fs_list import FsListTool
 
@@ -64,15 +64,22 @@ class _FakeFileCollection:
 
 
 class _FilteringSandbox:
-    """allows everything by default; denies reads on a configurable set."""
+    """syntactic validator stand-in; denies on a configurable key set.
+
+    namespace-task-01 phase 7: the glob-driven ``check_relative_key``
+    filter is retired; filtering moves to the per-file rbac gate.
+    this stand-in raises :class:`SandboxDenied` for keys in the deny
+    set (simulating a syntactic rejection) so :class:`FsListTool` can
+    still exercise the "row dropped from result" path via the
+    syntactic side of the dual validation.
+    """
 
     def __init__(self, deny_reads: list[str] | None = None) -> None:
         self._deny_reads = set(deny_reads or [])
 
-    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
-        if mode == "read" and key in self._deny_reads:
-            return SandboxDecision.DENY
-        return SandboxDecision.ALLOW
+    def validate_syntax(self, target: str) -> None:
+        if target in self._deny_reads:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:

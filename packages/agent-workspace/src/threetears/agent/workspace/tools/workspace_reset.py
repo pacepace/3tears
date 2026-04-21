@@ -45,6 +45,7 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     authorize_workspace,
+    authorize_workspace_file,
     workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import (
@@ -203,6 +204,7 @@ class WorkspaceResetTool(TearsTool):
                 )
                 template_files = await self._read_template_files(
                     workspace.template_name,
+                    workspace=workspace,
                 )
                 current_files = await self._files.find_by_workspace(
                     workspace.id,
@@ -297,16 +299,29 @@ class WorkspaceResetTool(TearsTool):
     async def _read_template_files(
         self,
         template_name: str,
+        *,
+        workspace: Any,
     ) -> list[tuple[str, bytes, str]]:
         """
-        walk the named template directory and gate every file via sandbox.
+        walk the named template directory and gate every file via rbac.
 
         blocking filesystem walk + ``read_bytes`` is dispatched via
         :func:`asyncio.to_thread` so the event loop stays responsive on
-        large templates. sandbox enforcement stays on the main loop.
+        large templates. syntactic validation + per-file rbac gating
+        stay on the main loop.
+
+        namespace-task-01 phase 7 replaces the retired
+        ``sandbox.enforce("read", path)`` glob check with
+        :meth:`WorkspaceSandbox.validate_syntax` +
+        :func:`authorize_workspace_file` (direction ``"read"``) so the
+        read-glob decision routes through the unified rbac evaluator
+        scoped to the target workspace's namespace.
 
         :param template_name: template directory name under templates root
         :ptype template_name: str
+        :param workspace: target workspace whose namespace carries the
+            rbac grants for read_file_matching globs
+        :ptype workspace: Any
         :return: list of (relative_path, content_bytes, sha256_hex) triples
         :rtype: list[tuple[str, bytes, str]]
         """
@@ -316,7 +331,14 @@ class WorkspaceResetTool(TearsTool):
             templates_root,
         )
         for relative, _path in candidates:
-            self._sandbox.enforce("read", relative)
+            self._sandbox.validate_syntax(relative)
+            await authorize_workspace_file(
+                workspace,
+                relative,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
         return await asyncio.to_thread(_read_template_bytes, candidates)
 
     async def _apply_reset(

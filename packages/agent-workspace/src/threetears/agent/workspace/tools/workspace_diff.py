@@ -41,6 +41,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_ref,
     _resolve_workspace,
     authorize_workspace,
+    authorize_workspace_file,
 )
 
 __all__ = [
@@ -165,7 +166,14 @@ class WorkspaceDiffTool(TearsTool):
                 db_pool=self._db_pool,
                 acl_cache=self._acl_cache,
             )
-            self._sandbox.enforce("read", relative_path)
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             # WS-ACL-06: thread namespace= so outside-tx reads resolve
             # against the owner agent's schema on grantee diffs.
             async with self._db_pool.acquire() as conn:

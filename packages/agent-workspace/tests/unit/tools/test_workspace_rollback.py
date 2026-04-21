@@ -85,12 +85,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 @dataclass
@@ -214,11 +214,8 @@ async def test_rollback_whole_workspace_reverts_each_file(
     assert "2 files" in result.content
     assert "ref 1" in result.content or "ref 1" in result.content
 
-    # enforce called once per file BEFORE any atomic write
-    assert sandbox.enforce_calls == [
-        ("write", "a.txt"),
-        ("write", "b.md"),
-    ]
+    # validate_syntax called once per file BEFORE any atomic write
+    assert sandbox.syntax_calls == ["a.txt", "b.md"]
     # one atomic write call per file
     assert len(recorded) == 2
     paths_written = {call["relative_path"] for call in recorded}
@@ -253,8 +250,8 @@ async def test_rollback_single_file_narrows_set(
     )
     result = await tool.execute(ref=2, relative_path="b.md", workspace="ws")
     assert result.success is True, result.error
-    # enforce only called for the one path
-    assert sandbox.enforce_calls == [("write", "b.md")]
+    # validate_syntax only called for the one path
+    assert sandbox.syntax_calls == ["b.md"]
     assert len(recorded) == 1
     assert recorded[0]["relative_path"] == "b.md"
     assert recorded[0]["action"] == "revert"
@@ -288,11 +285,8 @@ async def test_rollback_skips_files_absent_at_ref(
     assert result.success is True, result.error
     # n_changed is 1 -- only the path that had a target row
     assert "1 files" in result.content
-    # but BOTH paths were enforced (sandbox-enforce precedes resolve)
-    assert sandbox.enforce_calls == [
-        ("write", "a.txt"),
-        ("write", "new.md"),
-    ]
+    # but BOTH paths were validated (syntactic sweep precedes resolve)
+    assert sandbox.syntax_calls == ["a.txt", "new.md"]
     # only one atomic write actually issued
     assert len(recorded) == 1
     assert recorded[0]["relative_path"] == "a.txt"
@@ -341,8 +335,8 @@ async def test_rollback_sandbox_denied_aborts_before_any_write(
     assert recorded == []
     # no ref-resolve queries were issued (sandbox-pass sweep happens first)
     assert pool.fetchrows == []
-    # sandbox.enforce was called at least for the denied path
-    assert ("write", "secret.env") in sandbox.enforce_calls
+    # validate_syntax was called at least for the denied path
+    assert "secret.env" in sandbox.syntax_calls
 
 
 @pytest.mark.asyncio

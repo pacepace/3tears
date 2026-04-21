@@ -60,7 +60,7 @@ class _FakeSandbox:
     def resolve_fs_path(self, path: str, root_name: str) -> Any:
         raise KeyError(root_name)
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 

@@ -49,7 +49,10 @@ from threetears.agent.acl.cache import (
     GroupTypeCustomerKey,
 )
 from threetears.agent.acl.evaluator import (
+    READ_FILE_MATCHING_PREFIX,
+    WRITE_FILE_MATCHING_PREFIX,
     evaluate_decision,
+    evaluate_file_access,
     evaluate_with_trail,
 )
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
@@ -87,6 +90,7 @@ __all__ = [
     "MemberType",
     "MembershipLoader",
     "Namespace",
+    "READ_FILE_MATCHING_PREFIX",
     "RBAC_AUDIT_ACTIONS",
     "RBAC_AUDIT_EVENT_TYPES",
     "RBAC_AUDIT_RESOURCE_TYPES",
@@ -98,6 +102,8 @@ __all__ = [
     "ScopeType",
     "Trail",
     "WILDCARD_RESOURCE_TYPE",
+    "WRITE_FILE_MATCHING_PREFIX",
     "evaluate_decision",
+    "evaluate_file_access",
     "evaluate_with_trail",
 ]

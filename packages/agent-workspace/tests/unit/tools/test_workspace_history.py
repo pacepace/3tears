@@ -91,24 +91,27 @@ class _FakeVersionCollection:
 
 
 class _RecordingSandbox:
-    """enforce raises for deny_paths; check_relative_key denies same list."""
+    """validate_syntax raises for syntactically-denied paths.
+
+    namespace-task-01 phase 7: the glob-driven enforce / check_relative_key
+    surface is retired. the rbac per-file gate is stubbed via the
+    ``stub_authorize_workspace_file_access`` autouse fixture in
+    ``conftest.py``. tests that want to simulate per-path denial
+    override that fixture locally; this sandbox stand-in only fields
+    syntactic rejections.
+    """
 
     def __init__(
         self,
         deny_reads: list[str] | None = None,
     ) -> None:
         self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
-
-    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
-        if mode == "read" and key in self._deny_reads:
-            return SandboxDecision.DENY
-        return SandboxDecision.ALLOW
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_reads:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -228,7 +231,7 @@ async def test_history_per_path_calls_enforce_and_narrow_query(
     payload = json.loads(result.content)
     assert {entry["relative_path"] for entry in payload} == {"a.txt"}
     assert len(payload) == 2
-    assert sandbox.enforce_calls == [("read", "a.txt")]
+    assert sandbox.syntax_calls == ["a.txt"]
     assert versions.by_path_calls == [(ws.id, "a.txt", 50)]
     assert versions.by_workspace_calls == []
 

@@ -239,32 +239,23 @@ class _FakeVersionCollection:
 
 
 class _PermissiveSandbox:
-    """no-op sandbox: every enforce / check allows."""
+    """no-op sandbox: ``validate_syntax`` always passes.
 
-    def enforce(self, action: str, target: str) -> None:
+    namespace-task-01 phase 7 retired the glob-driven
+    ``enforce`` / ``check_relative_key`` surface from workspace tools;
+    the stand-in now only fields :meth:`validate_syntax`, which the
+    new tool implementations call before the rbac per-file gate.
+    """
+
+    def validate_syntax(self, target: str) -> None:
         """never raises.
 
-        :param action: sandbox action verb
-        :ptype action: str
-        :param target: candidate target
+        :param target: candidate relative path
         :ptype target: str
+        :return: None
+        :rtype: None
         """
-        del action, target
-
-    def check_relative_key(self, key: str, mode: str) -> Any:
-        """always ALLOW.
-
-        :param key: candidate path
-        :ptype key: str
-        :param mode: access mode
-        :ptype mode: str
-        :return: SandboxDecision.ALLOW
-        :rtype: Any
-        """
-        from threetears.core.security import SandboxDecision
-
-        del key, mode
-        return SandboxDecision.ALLOW
+        del target
 
 
 # ---------------------------------------------------------------------------

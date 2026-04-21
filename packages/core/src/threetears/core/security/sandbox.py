@@ -232,6 +232,47 @@ class PathSandbox(Sandbox):
         """
         return self._classify_relative_key(key, mode)[0]
 
+    def validate_syntax(self, key: str) -> None:
+        """enforce steps 1-5 of :meth:`check_relative_key` (no glob check).
+
+        surfaces the syntactic half of the validation sequence
+        (non-empty, length cap, no control chars, not absolute, no
+        parent-ref) as a standalone check — callers that route policy
+        through rbac (namespace-task-01 phase 7) still need the
+        path-traversal safety rules enforced. the glob matching step 6
+        is intentionally skipped; callers pair this method with their
+        own rbac gate.
+
+        :param key: relative key to validate
+        :ptype key: str
+        :return: None
+        :rtype: None
+        :raises SandboxDenied: if any syntactic rule fires. action is
+            reported as ``"access"`` since this check is direction-
+            agnostic (same rules apply for read and write); ``target``
+            is the offending key; ``reason`` is the short classifier
+            string.
+        """
+        if not key:
+            raise SandboxDenied("access", key, "key is empty")
+        if len(key) > self._MAX_KEY_LEN:
+            raise SandboxDenied(
+                "access",
+                key,
+                f"key length {len(key)} exceeds max {self._MAX_KEY_LEN}",
+            )
+        if self._contains_control_char(key):
+            raise SandboxDenied(
+                "access", key, "key contains NUL or control character",
+            )
+        if Path(key).is_absolute():
+            raise SandboxDenied("access", key, "absolute path not allowed")
+        if ".." in Path(key).parts:
+            raise SandboxDenied(
+                "access", key, "parent-ref (..) not allowed in key",
+            )
+        return None
+
     def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         """resolve ``path`` under named root; reject escape via ``..`` or symlink.
 

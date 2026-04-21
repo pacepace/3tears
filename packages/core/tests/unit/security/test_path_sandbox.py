@@ -299,3 +299,54 @@ class TestResolveFsPath:
         )
         result = sb.resolve_fs_path("link", "root")
         assert result == target.resolve()
+
+
+class TestValidateSyntax:
+    """``validate_syntax`` enforces steps 1-5 without glob matching."""
+
+    def test_empty_key_raises(self, tmp_path: Path) -> None:
+        """empty key -> SandboxDenied with ``key is empty`` reason."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("")
+        assert "empty" in info.value.reason
+
+    def test_oversize_key_raises(self, tmp_path: Path) -> None:
+        """key longer than ``_MAX_KEY_LEN`` -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        oversize = "a" * (PathSandbox._MAX_KEY_LEN + 1)
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax(oversize)
+        assert "length" in info.value.reason
+
+    def test_control_char_raises(self, tmp_path: Path) -> None:
+        """key containing NUL byte -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied):
+            sb.validate_syntax("bad\x00key")
+
+    def test_absolute_path_raises(self, tmp_path: Path) -> None:
+        """absolute path -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("/etc/passwd")
+        assert "absolute" in info.value.reason
+
+    def test_parent_ref_raises(self, tmp_path: Path) -> None:
+        """parent-ref (..) segment in key -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("../etc/passwd")
+        assert "parent" in info.value.reason
+
+    def test_valid_relative_passes_even_with_empty_globs(
+        self, tmp_path: Path,
+    ) -> None:
+        """syntactically valid key passes regardless of glob allow-lists.
+
+        the rbac path-level gate takes over glob matching in
+        namespace-task-01 phase 7; the sandbox's syntactic check runs
+        whether or not any glob is configured.
+        """
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        sb.validate_syntax("docs/readme.md")

@@ -80,12 +80,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -210,7 +210,7 @@ async def test_fs_write_create_new_file_at_version_one(
     )
     assert result.success is True, result.error
     # enforce happened and was a write
-    assert sandbox.enforce_calls == [("write", "notes/hello.md")]
+    assert sandbox.syntax_calls == ["notes/hello.md"]
     # three executes in tx; two fetchrows (head + journal-max) in tx
     assert len(pool.conn.executions) == 3
     for _sql, _args, in_tx in pool.conn.executions:
@@ -334,7 +334,7 @@ async def test_fs_write_sandbox_denied_returns_clean_error_no_writes(
     assert result.error is not None
     assert "secret.env" in result.error
     # enforce invoked once for write
-    assert sandbox.enforce_calls == [("write", "secret.env")]
+    assert sandbox.syntax_calls == ["secret.env"]
     # no fetchrow, no execute -- gate-then-act held
     assert pool.conn.fetchrows == []
     assert pool.conn.executions == []

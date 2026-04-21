@@ -8,11 +8,12 @@ integer, or checkpoint label).
 design commitments:
 
 - **sandbox-first fail-wholesale.** every file in the rollback set is
-  passed through ``sandbox.enforce("write", path)`` BEFORE any call to
-  ``_write_file_atomic``. if any file is denied, no writes occur --
-  rollback is cleanly aborted via a ToolResult error. this pattern is
-  load-bearing for the shard-18 AST test that asserts enforce-before-
-  write ordering.
+  passed through :meth:`WorkspaceSandbox.validate_syntax` +
+  :func:`authorize_workspace_file` (direction ``"write"``) BEFORE any
+  call to ``_write_file_atomic``. if any file fails either gate, no
+  writes occur -- rollback is cleanly aborted via a ToolResult error.
+  this pattern is load-bearing for the shard-18 AST test that asserts
+  the full validation sweep runs before any mutation.
 - **per-file transaction.** each file's rollback is delegated to
   :func:`_write_file_atomic`, which opens its own connection +
   transaction. the shard explicitly allows this: fail-wholesale is
@@ -67,6 +68,7 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
     authorize_workspace,
+    authorize_workspace_file,
     workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
@@ -105,7 +107,8 @@ class WorkspaceRollbackTool(TearsTool):
     """revert workspace files to a prior ref via revert-action journal rows.
 
     rollback is a write-class operation: every file in the rollback set
-    must pass ``sandbox.enforce("write", path)`` BEFORE any mutation
+    must pass :meth:`WorkspaceSandbox.validate_syntax` +
+    :func:`authorize_workspace_file` (direction ``"write"``) BEFORE any mutation
     happens. the two-phase pattern (enforce all, then write all) keeps
     a single denied path from leaving the workspace in a half-rolled-
     back state.
@@ -216,7 +219,14 @@ class WorkspaceRollbackTool(TearsTool):
             # phase 2: enforce write on every path BEFORE any mutation.
             # shard-18 AST test relies on this ordering.
             for path in rollback_set:
-                self._sandbox.enforce("write", path)
+                self._sandbox.validate_syntax(path)
+                await authorize_workspace_file(
+                    workspace,
+                    path,
+                    "write",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
             # phase 3: per-file resolve + atomic write.
             async with self._db_pool.acquire() as conn:
                 for path in rollback_set:

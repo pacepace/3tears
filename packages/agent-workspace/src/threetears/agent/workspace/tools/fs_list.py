@@ -24,7 +24,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.core.security import SandboxDecision
+from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.authorize import (
@@ -41,6 +41,7 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _resolve_workspace,
     authorize_workspace,
+    authorize_workspace_file,
 )
 
 __all__ = [
@@ -140,7 +141,7 @@ class FsListTool(TearsTool):
                 acl_cache=self._acl_cache,
             )
             rows = await self._files.find_by_workspace(workspace.id)
-            filtered = self._filter(rows, glob_pattern)
+            filtered = await self._filter(rows, glob_pattern, workspace)
             entries = [
                 {
                     "relative_path": f.relative_path,
@@ -168,20 +169,30 @@ class FsListTool(TearsTool):
             )
         return result
 
-    def _filter(self, rows: list[Any], glob_pattern: str | None) -> list[Any]:
+    async def _filter(
+        self,
+        rows: list[Any],
+        glob_pattern: str | None,
+        workspace: Any,
+    ) -> list[Any]:
         """
-        apply optional glob and sandbox read check to head-state rows.
+        apply optional glob and rbac read check to head-state rows.
 
-        sandbox filtering uses :meth:`check_relative_key` rather than
-        :meth:`enforce` so a denied entry silently drops from the list
-        instead of raising (the agent expectation is that ``list`` shows
-        what it is allowed to see, not that ``list`` errors on first
-        inaccessible entry).
+        namespace-task-01 phase 7 replaces the retired
+        ``sandbox.check_relative_key(...) is ALLOW`` filter with a
+        per-row rbac path-level gate via
+        :func:`authorize_workspace_file` (direction ``"read"``). denied
+        rows drop silently from the list rather than raising (the agent
+        expectation is that ``list`` shows what it is allowed to see,
+        not that ``list`` errors on first inaccessible entry).
 
         :param rows: head-state file entities from the collection
         :ptype rows: list[Any]
         :param glob_pattern: optional posix glob applied via full_match
         :ptype glob_pattern: str | None
+        :param workspace: target workspace whose namespace carries the
+            rbac grants for read_file_matching globs
+        :ptype workspace: Any
         :return: filtered file list
         :rtype: list[Any]
         """
@@ -190,8 +201,16 @@ class FsListTool(TearsTool):
             posix_path = PurePosixPath(row.relative_path)
             if glob_pattern is not None and not posix_path.full_match(glob_pattern):
                 continue
-            decision = self._sandbox.check_relative_key(row.relative_path, "read")
-            if decision is SandboxDecision.DENY:
+            try:
+                self._sandbox.validate_syntax(row.relative_path)
+                await authorize_workspace_file(
+                    workspace,
+                    row.relative_path,
+                    "read",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
+            except (SandboxDenied, WorkspaceAccessDenied):
                 continue
             result.append(row)
         return result

@@ -72,21 +72,24 @@ class _FakeFileCollection:
 
 
 class _RecordingSandbox:
-    """records enforce calls; DENY when target matches a denylist."""
+    """records validate_syntax calls; raises on syntactically-invalid targets.
+
+    namespace-task-01 phase 7: the glob-driven enforce / check_relative_key
+    surface is retired from workspace tools. tests still need a stand-in
+    for the sandbox so they can assert the tool called validate_syntax
+    before reaching the rbac gate. denylist entries simulate the syntactic
+    rejection surface (empty, absolute, ``..``, control chars); the
+    path-level authorization decision lives in the injected acl_cache.
+    """
 
     def __init__(self, deny_reads: list[str] | None = None) -> None:
-        self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self._deny_syntax = set(deny_reads or [])
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
-
-    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
-        if mode == "read" and key in self._deny_reads:
-            return SandboxDecision.DENY
-        return SandboxDecision.ALLOW
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_syntax:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -151,7 +154,7 @@ async def test_fs_read_happy_returns_content_sha_version(
         "version": 2,
         "is_binary": False,
     }
-    assert sandbox.enforce_calls == [("read", "docs/readme.md")]
+    assert sandbox.syntax_calls == ["docs/readme.md"]
     assert files.find_calls == [(ws.id, "docs/readme.md")]
 
 
@@ -225,7 +228,7 @@ async def test_fs_read_sandbox_denied_returns_clean_error(
     assert result.error is not None
     assert "secret.env" in result.error
     # enforce was called BEFORE any file lookup (gate-then-act)
-    assert sandbox.enforce_calls == [("read", "secret.env")]
+    assert sandbox.syntax_calls == ["secret.env"]
     assert files.find_calls == []
 
 

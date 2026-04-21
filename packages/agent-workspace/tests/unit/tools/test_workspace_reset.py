@@ -75,21 +75,21 @@ class _RecordingSandbox:
     def __init__(self, templates_root: Path) -> None:
         self._templates_root = templates_root
         self.resolve_calls: list[tuple[str, str]] = []
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         self.resolve_calls.append((path, root_name))
         return self._templates_root
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
 
 
 class _NoTemplateSandbox:
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         raise KeyError(root_name)
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 

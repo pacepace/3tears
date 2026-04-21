@@ -28,7 +28,7 @@ from threetears.agent.tools.base_tool import (
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.core.security import SandboxDecision, SandboxDenied
+from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
 from threetears.agent.workspace.authorize import (
@@ -46,6 +46,7 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _resolve_workspace,
     authorize_workspace,
+    authorize_workspace_file,
 )
 
 __all__ = [
@@ -169,15 +170,40 @@ class WorkspaceHistoryTool(TearsTool):
             )
             rows: list[Any]
             if relative_path is not None and relative_path != "":
-                self._sandbox.enforce("read", relative_path)
+                self._sandbox.validate_syntax(relative_path)
+                await authorize_workspace_file(
+                    workspace,
+                    relative_path,
+                    "read",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
                 rows = await self._versions.find_by_workspace_and_path(workspace.id, relative_path, limit)
             else:
                 fetched = await self._versions.find_by_workspace(workspace.id, limit)
-                rows = [
-                    row
-                    for row in fetched
-                    if self._sandbox.check_relative_key(row.relative_path, "read") is SandboxDecision.ALLOW
-                ]
+                rows = []
+                for row in fetched:
+                    # filter rows whose relative_path either fails syntactic
+                    # validation or lacks a read-file glob matching the caller's
+                    # rbac grants. namespace-task-01 phase 7 replaces the
+                    # legacy ``sandbox.check_relative_key(...) is ALLOW``
+                    # filter with the unified rbac gate; denied rows are
+                    # silently dropped (matches the legacy filter's
+                    # fail-quietly semantics, which this surface has always
+                    # preserved because a partial result is better than
+                    # failing the whole history call on one weird row).
+                    try:
+                        self._sandbox.validate_syntax(row.relative_path)
+                        await authorize_workspace_file(
+                            workspace,
+                            row.relative_path,
+                            "read",
+                            db_pool=None,
+                            acl_cache=self._acl_cache,
+                        )
+                    except (SandboxDenied, WorkspaceAccessDenied):
+                        continue
+                    rows.append(row)
             entries = [self._serialize_row(row) for row in rows]
             result = ToolResult(
                 success=True,

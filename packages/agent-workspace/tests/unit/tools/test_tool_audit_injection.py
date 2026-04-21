@@ -135,7 +135,7 @@ class _RecordingSandbox:
             raise KeyError(root_name)
         return self._templates_root
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 
