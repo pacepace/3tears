@@ -12,13 +12,44 @@ import pytest
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.tools.server import HeartbeatMessage, RegistrationManifest, ToolManifestEntry
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, DiscoveryHandler
-from threetears.registry.health import HeartbeatMonitor, PodStatus
+from threetears.registry.health import HeartbeatSubscriber
+from threetears.registry.heartbeat_collection import HeartbeatCollection
+from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 from threetears.registry.registration import RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
+
+
+def _build_heartbeat_subscriber(
+    catalog: ToolCatalog,
+    timeout: float = 30.0,
+) -> tuple[HeartbeatSubscriber, HeartbeatCollection]:
+    """construct a HeartbeatSubscriber + HeartbeatCollection pair for a test.
+
+    :param catalog: tool catalog to be driven by the subscriber
+    :ptype catalog: ToolCatalog
+    :param timeout: liveness timeout for the sweep
+    :ptype timeout: float
+    :return: subscriber + collection pair wired against a fresh L1
+    :rtype: tuple[HeartbeatSubscriber, HeartbeatCollection]
+    """
+    l1 = create_registry_l1_backend()
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1)
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    collection = HeartbeatCollection(registry, config)
+    subscriber = HeartbeatSubscriber(
+        catalog,
+        collection,
+        namespace="test",
+        timeout=timeout,
+    )
+    return subscriber, collection
 
 
 # -- helpers --
@@ -407,30 +438,39 @@ class TestMultiPodFailover:
         )
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _build_heartbeat_subscriber(catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
         recent_time = datetime.now(UTC) - timedelta(seconds=5)
 
-        monitor._pods["pod-A"] = PodStatus(
-            pod_id="pod-A",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-A",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
         )
-        monitor._pods["pod-B"] = PodStatus(
-            pod_id="pod-B",
-            date_last_heartbeat=recent_time,
-            tools=["threetears.calculator@1.0.0"],
+        healthy_entity = collection.create(
+            {
+                "pod_id": "pod-B",
+                "date_last_heartbeat": recent_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
         )
+        await collection.save_entity(stale_entity)
+        await collection.save_entity(healthy_entity)
+        subscriber._known_pod_ids.update({"pod-A", "pod-B"})
 
-        await monitor._run_health_check()
+        await subscriber._run_health_check()
 
-        assert "pod-A" not in monitor.pods
-        assert "pod-B" in monitor.pods
+        assert "pod-A" not in subscriber.known_pod_ids
+        assert "pod-B" in subscriber.known_pod_ids
 
         surviving_entry = catalog.get("threetears.calculator@1.0.0")
         assert surviving_entry is not None
@@ -454,28 +494,26 @@ class TestMultiPodFailover:
         )
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _build_heartbeat_subscriber(catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
-        monitor._pods["pod-A"] = PodStatus(
-            pod_id="pod-A",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
-        )
-        monitor._pods["pod-B"] = PodStatus(
-            pod_id="pod-B",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
-        )
+        for pod_id in ("pod-A", "pod-B"):
+            entity = collection.create(
+                {
+                    "pod_id": pod_id,
+                    "date_last_heartbeat": stale_time,
+                    "tools": ["threetears.calculator@1.0.0"],
+                    "tools_count": 1,
+                    "status": "healthy",
+                    "consecutive_misses": 0,
+                }
+            )
+            await collection.save_entity(entity)
+            subscriber._known_pod_ids.add(pod_id)
 
-        await monitor._run_health_check()
+        await subscriber._run_health_check()
 
-        assert "pod-A" not in monitor.pods
-        assert "pod-B" not in monitor.pods
+        assert subscriber.known_pod_ids == set()
         assert catalog.get("threetears.calculator@1.0.0") is None
 
 

@@ -141,12 +141,6 @@ KNOWN_VIOLATIONS: list[tuple[str, str, str, str]] = [
         "_buf",
         "pending write buffer in raw dict, migrate to SQLiteBackend L1",
     ),
-    (
-        "registry/health.py",
-        "HeartbeatMonitor",
-        "_pods",
-        "pod health state tracking, migrate to SQLiteBackend L1",
-    ),
 ]
 
 _ALLOWLIST_SET: set[tuple[str, str, str]] = {(path, cls, attr) for path, cls, attr, _ in ALLOWLIST}

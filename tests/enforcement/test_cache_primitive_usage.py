@@ -97,12 +97,13 @@ _SKIP_DIRS = frozenset({
 # root). every other site is a violation. each entry carries a short
 # inline rationale documenting why the site is sanctioned.
 _ALLOWED_SQLITE_CONSTRUCTION_SITES: frozenset[str] = frozenset({
-    # 3tears library has no sanctioned src/ construction sites; the
-    # SQLiteBackend class itself lives here but ``class`` definitions
-    # are not ``Call`` nodes, so this allowlist applies only to
-    # ``SQLiteBackend(...)`` invocations. tests and test fixtures are
+    # namespace-task-01 phase 8.5l-3: the registry process gained its
+    # first L1 tier for :class:`HeartbeatCollection`. the sanctioned
+    # construction site is the per-process factory. every other site
+    # is a bespoke wrapper in disguise. tests and test fixtures are
     # permitted to construct backends directly; they cover the
     # Collection-behavior tests that need a clean SQLite tier.
+    "packages/registry/src/threetears/registry/l1_cache.py",
 })
 
 
@@ -146,6 +147,12 @@ _COLLECTION_TABLE_ALLOWLIST: dict[str, str] = {
     "workspaces": "WorkspaceCollection",
     "workspace_files": "WorkspaceFileCollection",
     "workspace_file_versions": "WorkspaceFileVersionCollection",
+    # pod_heartbeats: L1+L2 registry-process-local table adopted under
+    # namespace-task-01 phase 8.5l-3. no migration creates this table
+    # (the walker only reports missing Collections for migration-defined
+    # tables), but listing it here excludes it from the pool-access
+    # allowlist path should a future caller reach for raw SQL.
+    "pod_heartbeats": "HeartbeatCollection",
 }
 
 

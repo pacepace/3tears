@@ -13,7 +13,15 @@ from threetears.registry.auth import (
 )
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoveryHandler
-from threetears.registry.health import HeartbeatMonitor, PodStatus
+from threetears.registry.entities import HeartbeatEntity
+from threetears.registry.health import HeartbeatSubscriber
+from threetears.registry.heartbeat_collection import HeartbeatCollection
+from threetears.registry.l1_cache import (
+    REGISTRY_L1_METADATA,
+    REGISTRY_L1_TABLE_NAMES,
+    create_registry_l1_backend,
+    pod_heartbeats_table,
+)
 from threetears.registry.proxy import CallProxy
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
 from threetears.registry.registration import RegistrationHandler, RegistrationResponse
@@ -27,9 +35,12 @@ __all__ = [
     "CatalogEntry",
     "DenyAllAuthorizer",
     "DiscoveryHandler",
-    "HeartbeatMonitor",
+    "HeartbeatCollection",
+    "HeartbeatEntity",
+    "HeartbeatSubscriber",
     "LeastConnectionsStrategy",
-    "PodStatus",
+    "REGISTRY_L1_METADATA",
+    "REGISTRY_L1_TABLE_NAMES",
     "RbacEvaluatorAuthorizer",
     "RegistrationHandler",
     "RegistrationResponse",
@@ -39,4 +50,6 @@ __all__ = [
     "ToolEndpoint",
     "ToolPodAuth",
     "ToolPodAuthenticator",
+    "create_registry_l1_backend",
+    "pod_heartbeats_table",
 ]

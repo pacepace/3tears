@@ -16,11 +16,15 @@ import signal
 
 from nats.aio.client import Client as NatsClient
 
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.observe import get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
-from threetears.registry.health import HeartbeatMonitor
+from threetears.registry.health import HeartbeatSubscriber
+from threetears.registry.heartbeat_collection import HeartbeatCollection
+from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.registration import RegistrationHandler
@@ -158,8 +162,10 @@ class RegistryServer:
         self._authorizer = authorizer
         self._nc: NatsClient | None = None
         self._catalog = ToolCatalog()
+        self._collection_registry: CollectionRegistry | None = None
+        self._heartbeat_collection: HeartbeatCollection | None = None
         self._registration_handler: RegistrationHandler | None = None
-        self._heartbeat_monitor: HeartbeatMonitor | None = None
+        self._heartbeat_subscriber: HeartbeatSubscriber | None = None
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
         self._shutdown_event = asyncio.Event()
@@ -246,16 +252,36 @@ class RegistryServer:
             "registry.registration_handler.start",
         )
 
-        heartbeat_monitor = HeartbeatMonitor(
+        # wire the heartbeat collection + subscriber. L1 is a
+        # per-process SQLite tier; L2 is the shared NATS connection
+        # that also carries the cross-pod invalidation subject.
+        l1_backend = create_registry_l1_backend()
+        collection_registry = CollectionRegistry()
+        collection_registry.configure(l1_backend=l1_backend, l2_client=nc)
+        core_config = DefaultCoreConfig(
+            collection_flush="ALWAYS",
+            collection_flush_tables="",
+        )
+        heartbeat_collection = HeartbeatCollection(
+            collection_registry,
+            core_config,
+            nats_client=nc,
+        )
+        self._collection_registry = collection_registry
+        self._heartbeat_collection = heartbeat_collection
+        await collection_registry.start_invalidation_listener(nc)
+
+        heartbeat_subscriber = HeartbeatSubscriber(
             self._catalog,
+            heartbeat_collection,
             namespace=self._namespace,
             check_interval=self._heartbeat_check_interval,
             timeout=self._heartbeat_timeout,
         )
-        self._heartbeat_monitor = heartbeat_monitor
+        self._heartbeat_subscriber = heartbeat_subscriber
         await retry_with_backoff(
-            lambda: heartbeat_monitor.start(nc),
-            "registry.heartbeat_monitor.start",
+            lambda: heartbeat_subscriber.start(nc),
+            "registry.heartbeat_subscriber.start",
         )
 
         discovery_handler = DiscoveryHandler(
@@ -303,8 +329,8 @@ class RegistryServer:
             await self._call_proxy.stop()
         if self._discovery_handler is not None:
             await self._discovery_handler.stop()
-        if self._heartbeat_monitor is not None:
-            await self._heartbeat_monitor.stop()
+        if self._heartbeat_subscriber is not None:
+            await self._heartbeat_subscriber.stop()
         if self._registration_handler is not None:
             await self._registration_handler.stop()
 

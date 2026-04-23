@@ -1,167 +1,144 @@
-"""heartbeat monitor for tool pod liveness tracking.
+"""heartbeat subscriber orchestration for tool pod liveness tracking.
 
-subscribes to heartbeat subjects, tracks per-pod status, and
-periodically removes endpoints for pods that exceed timeout
-threshold. only removes individual endpoints, not entire tool
-entries, so surviving pods continue serving.
+subscribes to heartbeat subjects, drives per-pod liveness state
+through :class:`~threetears.registry.heartbeat_collection.HeartbeatCollection`,
+and periodically removes catalog endpoints for pods that exceed the
+liveness timeout. endpoint removal is fine-grained (only the stale
+pod's endpoints), so tools served by surviving pods continue serving.
+
+namespace-task-01 phase 8.5l-3 split the former :class:`HeartbeatMonitor`
+into two focused classes:
+
+- :class:`HeartbeatCollection`
+  (:mod:`threetears.registry.heartbeat_collection`) owns persistent
+  per-pod state (L1 + L2 NATS KV). the Collection is the data surface
+  for any caller that needs to read a pod's status (hub admin
+  dashboards, other registry processes after an L1 restart).
+- :class:`HeartbeatSubscriber` (this module) owns orchestration:
+  NATS subscription on ``{ns}.tools.heartbeat.>``, the periodic
+  health-check sweep, and tool-catalog invalidation when a pod
+  exceeds the liveness timeout. it consumes the Collection through
+  constructor injection and never reaches into L1 / L2 directly.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
-
-from sqlalchemy import Column, MetaData, String, Table, Text
+from typing import Any
 
 from threetears.agent.tools.server import HeartbeatMessage
 from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.entities import HeartbeatEntity
+from threetears.registry.heartbeat_collection import HeartbeatCollection
 
-__all__ = [
-    "HeartbeatMonitor",
-    "PodStatus",
-]
+__all__ = ["HeartbeatSubscriber"]
 
-if TYPE_CHECKING:
-    from threetears.core.cache.sqlite import SQLiteBackend
-
-_HEALTH_L1_METADATA = MetaData()
-
-_pod_health_table = Table(
-    "pod_health",
-    _HEALTH_L1_METADATA,
-    Column("key", String, primary_key=True),
-    Column("value", Text, nullable=True),
-    Column("date_updated", String, nullable=True),
-)
-
-_logger = get_logger(__name__)
+log = get_logger(__name__)
 
 
-@dataclass
-class PodStatus:
-    """tracked status for single tool pod.
-
-    :param pod_id: unique identifier for tool pod
-    :ptype pod_id: str
-    :param date_last_heartbeat: timestamp of last received heartbeat
-    :ptype date_last_heartbeat: datetime
-    :param tools: list of full_name values served by this pod
-    :ptype tools: list[str]
-    :param consecutive_misses: number of consecutive missed health checks
-    :ptype consecutive_misses: int
-    """
-
-    pod_id: str
-    date_last_heartbeat: datetime = field(default_factory=lambda: datetime.now(UTC))
-    tools: list[str] = field(default_factory=list)
-    consecutive_misses: int = 0
+_STATUS_HEALTHY = "healthy"
+_STATUS_UNRESPONSIVE = "unresponsive"
 
 
-class HeartbeatMonitor:
-    """monitors tool pod health via heartbeat messages.
+class HeartbeatSubscriber:
+    """orchestrate heartbeat subscription, health-check loop, catalog eviction.
 
-    subscribes to heartbeat wildcard subject, tracks per-pod
-    liveness, marks pod endpoints available on heartbeat, and
-    periodically removes endpoints for pods that exceed
-    configured timeout. only removes individual endpoints so
-    tools with surviving pods remain available.
+    subscribes to the registry's heartbeat wildcard subject, tracks
+    the set of pods this registry has ever observed, and runs a
+    periodic sweep that asks the :class:`HeartbeatCollection` for each
+    known pod's current state. pods whose ``date_last_heartbeat`` is
+    outside the configured liveness timeout have their endpoints
+    dropped from the :class:`ToolCatalog` and are marked
+    ``"unresponsive"`` in the Collection before being purged.
+
+    the subscriber holds no persistent state itself. ``_known_pod_ids``
+    is an in-memory set mirroring the Collection's primary keys for
+    the lifetime of this process; after a restart the set repopulates
+    from incoming heartbeats (and, incidentally, from L2 pull-through
+    the first time the Collection resolves a known pod). on clean
+    shutdown the subscriber unsubscribes from NATS and cancels the
+    health-check task; the Collection's rows stay in L1/L2 so a
+    restarting registry can pick up the catalog view without waiting
+    for the next heartbeat.
     """
 
     def __init__(
         self,
         catalog: ToolCatalog,
+        collection: HeartbeatCollection,
         namespace: str = "aibots",
         check_interval: float | None = None,
         timeout: float | None = None,
-        l1_backend: SQLiteBackend | None = None,
     ) -> None:
-        """initialize heartbeat monitor.
+        """initialize heartbeat subscriber.
 
-        :param catalog: tool catalog for marking endpoints available/unavailable
+        :param catalog: tool catalog for marking endpoints
+            available / deregistering stale pods
         :ptype catalog: ToolCatalog
+        :param collection: persistent heartbeat state surface; every
+            pod save / read flows through this Collection
+        :ptype collection: HeartbeatCollection
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
-        :param check_interval: seconds between health check sweeps.
-            sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL env var if not provided.
+        :param check_interval: seconds between health-check sweeps;
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL
+            env var when ``None``
         :ptype check_interval: float | None
-        :param timeout: seconds after which pod is considered dead.
-            sourced from THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var if not provided.
+        :param timeout: seconds after which a pod is considered
+            unresponsive; sourced from
+            THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var when
+            ``None``
         :ptype timeout: float | None
-        :param l1_backend: optional SQLiteBackend for persistent pod health state
-        :ptype l1_backend: SQLiteBackend | None
         """
-        from threetears.registry.config import get_heartbeat_check_interval, get_heartbeat_timeout
+        from threetears.registry.config import (
+            get_heartbeat_check_interval,
+            get_heartbeat_timeout,
+        )
 
         self._catalog = catalog
+        self._collection = collection
         self._namespace = namespace
-        self._check_interval = check_interval if check_interval is not None else get_heartbeat_check_interval()
+        self._check_interval = (
+            check_interval
+            if check_interval is not None
+            else get_heartbeat_check_interval()
+        )
         self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
-        self._l1 = l1_backend
-        if self._l1 is not None and not self._l1.is_initialized():
-            self._l1.initialize(_HEALTH_L1_METADATA)
-        self._pods: dict[str, PodStatus] = {}
         self._nc: Any | None = None
         self._sub: Any | None = None
         self._check_task: asyncio.Task[None] | None = None
         self._running = False
+        self._known_pod_ids: set[str] = set()
 
     @property
-    def pods(self) -> dict[str, PodStatus]:
-        """return tracked pod statuses.
+    def known_pod_ids(self) -> set[str]:
+        """return pod ids currently tracked by the subscriber.
 
-        :return: dictionary of pod_id to PodStatus
-        :rtype: dict[str, PodStatus]
+        :return: a copy of the in-memory known-pods set
+        :rtype: set[str]
         """
-        return self._pods
-
-    def _persist_pod_to_l1(self, pod_id: str, status: PodStatus) -> None:
-        """persist pod status to L1 SQLiteBackend if available.
-
-        :param pod_id: unique pod identifier
-        :ptype pod_id: str
-        :param status: pod status to persist
-        :ptype status: PodStatus
-        """
-        if self._l1 is None:
-            return
-        serialized = json.dumps(
-            {
-                "pod_id": status.pod_id,
-                "date_last_heartbeat": status.date_last_heartbeat.isoformat(),
-                "tools": status.tools,
-                "consecutive_misses": status.consecutive_misses,
-            }
-        )
-        self._l1.upsert(
-            "pod_health",
-            {
-                "key": pod_id,
-                "value": serialized,
-                "date_updated": datetime.now(UTC).isoformat(),
-            },
-            primary_key="key",
-        )
+        return set(self._known_pod_ids)
 
     async def start(self, nc: Any) -> None:
         """start heartbeat monitoring.
 
-        subscribes to heartbeat wildcard subject and starts
-        periodic health check loop.
+        subscribes to the heartbeat wildcard subject and spawns the
+        periodic health-check loop.
 
         :param nc: connected NATS client
         :ptype nc: Any
+        :return: nothing
+        :rtype: None
         """
         self._nc = nc
         self._running = True
         subject = f"{self._namespace}.tools.heartbeat.>"
         self._sub = await nc.subscribe(subject, cb=self._handle_heartbeat)
         self._check_task = asyncio.create_task(self._health_check_loop())
-        _logger.info(
-            "heartbeat monitor started",
+        log.info(
+            "heartbeat subscriber started",
             extra={
                 "extra_data": {
                     "subject": subject,
@@ -174,8 +151,13 @@ class HeartbeatMonitor:
     async def stop(self) -> None:
         """stop heartbeat monitoring.
 
-        unsubscribes from heartbeat subject and cancels health
-        check loop.
+        unsubscribes from the heartbeat subject and cancels the
+        health-check loop. persistent pod state in the Collection is
+        untouched; a peer registry process continues to track the
+        pods via the L2 tier.
+
+        :return: nothing
+        :rtype: None
         """
         self._running = False
         if self._check_task is not None:
@@ -188,89 +170,139 @@ class HeartbeatMonitor:
         if self._sub is not None:
             await self._sub.unsubscribe()
             self._sub = None
-        _logger.info("heartbeat monitor stopped")
+        log.info("heartbeat subscriber stopped")
 
     async def _handle_heartbeat(self, msg: Any) -> None:
-        """handle incoming heartbeat message from tool pod.
+        """handle incoming heartbeat message from a tool pod.
 
-        updates pod status with current timestamp, resets
-        consecutive miss counter, and marks all endpoints for
-        this pod as available in catalog.
+        updates the pod's state in the Collection (creating it if
+        this is the pod's first heartbeat), marks every endpoint for
+        this pod available in the catalog, and records the pod id
+        in the in-memory known-pods set so the health-check loop
+        will examine it on the next sweep.
+
+        malformed payloads are logged and dropped; no persistent
+        state is mutated.
 
         :param msg: incoming NATS message containing heartbeat
         :ptype msg: Any
+        :return: nothing
+        :rtype: None
         """
         try:
             heartbeat = HeartbeatMessage.model_validate_json(msg.data)
         except Exception as exc:
-            _logger.warning(
+            log.warning(
                 "malformed heartbeat message",
                 extra={"extra_data": {"error": str(exc)}},
             )
             return
 
         now = datetime.now(UTC)
-        pod_status = self._pods.get(heartbeat.pod_id)
-
-        if pod_status is None:
-            pod_status = PodStatus(
-                pod_id=heartbeat.pod_id,
-                date_last_heartbeat=now,
+        pod_id = heartbeat.pod_id
+        marked_tools = self._catalog.mark_pod_endpoints_available(pod_id)
+        existing = await self._collection.get(pod_id)
+        entity: HeartbeatEntity
+        if existing is None:
+            entity = self._collection.create(
+                {
+                    "pod_id": pod_id,
+                    "date_last_heartbeat": now,
+                    "tools": marked_tools,
+                    "tools_count": heartbeat.tools_count,
+                    "status": _STATUS_HEALTHY,
+                    "consecutive_misses": 0,
+                }
             )
-            self._pods[heartbeat.pod_id] = pod_status
         else:
-            pod_status.date_last_heartbeat = now
-            pod_status.consecutive_misses = 0
-
-        marked = self._catalog.mark_pod_endpoints_available(heartbeat.pod_id)
-        pod_status.tools = marked
-        self._persist_pod_to_l1(heartbeat.pod_id, pod_status)
+            entity = existing
+            entity.date_last_heartbeat = now
+            entity.tools = marked_tools
+            entity.tools_count = heartbeat.tools_count
+            entity.status = _STATUS_HEALTHY
+            entity.consecutive_misses = 0
+        await self._collection.save_entity(entity)
+        self._known_pod_ids.add(pod_id)
 
     async def _health_check_loop(self) -> None:
-        """periodically check pod health and deregister timed-out pods.
+        """run the periodic health-check sweep until :meth:`stop`.
 
-        runs at configured interval, deregistering endpoints for
-        pods that exceed timeout.
+        sleeps for ``check_interval`` seconds between sweeps and
+        surfaces any sweep exception to the logger without stopping
+        the loop; a single mis-timed sweep must not brick liveness
+        tracking.
+
+        :return: nothing
+        :rtype: None
         """
         while self._running:
             await asyncio.sleep(self._check_interval)
-            await self._run_health_check()
+            if not self._running:
+                break
+            try:
+                await self._run_health_check()
+            except Exception as exc:
+                log.warning(
+                    "health check sweep failed",
+                    extra={"extra_data": {"error": str(exc)}},
+                )
 
     async def _run_health_check(self) -> None:
-        """execute single health check sweep across all tracked pods.
+        """execute one health-check sweep across known pods.
 
-        removes endpoints for pods whose last heartbeat exceeds
-        timeout threshold. only removes individual endpoints so
-        tools with surviving pods remain available.
+        asks the Collection for each known pod and compares its
+        ``date_last_heartbeat`` against the configured liveness
+        timeout. pods that exceed the timeout are marked
+        ``"unresponsive"`` in the Collection, their endpoints are
+        dropped from the :class:`ToolCatalog`, and they are purged
+        from the Collection + the in-memory known-pods set so the
+        next sweep does not re-examine them. the Collection delete
+        publishes an L2 invalidation so peer registry processes
+        evict their own L1 copy.
+
+        :return: nothing
+        :rtype: None
         """
+        if not self._known_pod_ids:
+            return
         now = datetime.now(UTC)
         to_remove: list[str] = []
-        for pod_id, pod_status in self._pods.items():
-            elapsed = (now - pod_status.date_last_heartbeat).total_seconds()
-            if elapsed > self._timeout:
-                pod_status.consecutive_misses += 1
-                _logger.warning(
-                    "pod heartbeat timeout",
-                    extra={
-                        "extra_data": {
-                            "pod_id": pod_id,
-                            "elapsed_seconds": elapsed,
-                            "consecutive_misses": pod_status.consecutive_misses,
-                        }
-                    },
-                )
-                removed = await self._catalog.deregister_pod(pod_id)
-                _logger.info(
-                    "deregistered timed-out pod endpoints",
-                    extra={
-                        "extra_data": {
-                            "pod_id": pod_id,
-                            "removed_tools": removed,
-                        }
-                    },
-                )
+        for pod_id in list(self._known_pod_ids):
+            entity = await self._collection.get(pod_id)
+            if entity is None:
+                # peer registry already evicted; drop from our set
                 to_remove.append(pod_id)
+                continue
+            last = entity.date_last_heartbeat
+            if isinstance(last, datetime) and last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+            elapsed = (now - last).total_seconds()
+            if elapsed <= self._timeout:
+                continue
+            entity.consecutive_misses = int(entity.consecutive_misses) + 1
+            entity.status = _STATUS_UNRESPONSIVE
+            await self._collection.save_entity(entity)
+            log.warning(
+                "pod heartbeat timeout",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "elapsed_seconds": elapsed,
+                        "consecutive_misses": entity.consecutive_misses,
+                    }
+                },
+            )
+            removed = await self._catalog.deregister_pod(pod_id)
+            log.info(
+                "deregistered timed-out pod endpoints",
+                extra={
+                    "extra_data": {
+                        "pod_id": pod_id,
+                        "removed_tools": removed,
+                    }
+                },
+            )
+            to_remove.append(pod_id)
         for pod_id in to_remove:
-            self._pods.pop(pod_id, None)
-            if self._l1 is not None:
-                self._l1.delete_by_id("pod_health", pod_id, primary_key="key")
+            self._known_pod_ids.discard(pod_id)
+            await self._collection.delete(pod_id)
