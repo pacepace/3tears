@@ -200,13 +200,17 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
         """,
     )
     # seed the WorkspaceEditor role with the production-matching id +
-    # permissions so the evaluator resolves correctly.
+    # permissions so the evaluator resolves correctly. namespace-task-01
+    # phase 7 added the path-glob-bearing ``read_file_matching:<glob>``
+    # / ``write_file_matching:<glob>`` action types on the ``workspace``
+    # bucket; per-file gates require those alongside the workspace-level
+    # ``read`` / ``write``.
     await conn.execute(
         """
         INSERT INTO platform.roles (id, name, description, permissions, is_builtin)
         VALUES ($1, 'WorkspaceEditor',
                 'Read and write on workspaces and workspace files.',
-                '{"workspace": ["read", "write"], "workspace_file": ["read", "write"]}'::jsonb,
+                '{"workspace": ["read", "write", "read_file_matching:**/*", "write_file_matching:**/*"], "workspace_file": ["read", "write"]}'::jsonb,
                 TRUE)
         """,
         _WORKSPACE_EDITOR_ROLE_ID,
@@ -1397,16 +1401,13 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         file_coll = _SqlWorkspaceFileCollection(pool, owner_schema)
 
         # permissive sandbox + null context (no pin needed, we pass
-        # workspace= kwarg explicitly).
+        # workspace= kwarg explicitly). namespace-task-01 phase 7
+        # replaced the legacy ``enforce`` / ``check_relative_key``
+        # surface with ``validate_syntax``; the noop still accepts
+        # every path.
         class _NoopSandbox:
-            def enforce(self, action: str, target: str) -> None:
-                del action, target
-
-            def check_relative_key(self, key: str, mode: str) -> Any:
-                from threetears.core.security import SandboxDecision
-
-                del key, mode
-                return SandboxDecision.ALLOW
+            def validate_syntax(self, key: str) -> None:
+                del key
 
         class _NullContext:
             pass

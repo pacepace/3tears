@@ -799,9 +799,20 @@ def _seed_workspace(
     store: _FakeStore,
     agent_id: UUID,
     name: str,
+    *,
+    customer_id: UUID | None = None,
 ) -> UUID:
     """
     insert a live workspace row into the store; return its id.
+
+    namespace-task-01 phase 7 plumbed the path-level rbac gate into
+    every write-class tool; the gate hard-denies cross-customer
+    access, so fixtures that drive those tools must stamp the
+    workspace with the SAME ``customer_id`` the calling
+    :class:`ToolCallScope` carries. callers pass the scope's
+    customer_id explicitly; ``None`` falls back to an independent
+    ``uuid7()`` for fixtures that deliberately test cross-customer
+    denial.
 
     :param store: shared in-memory store
     :ptype store: _FakeStore
@@ -809,11 +820,15 @@ def _seed_workspace(
     :ptype agent_id: UUID
     :param name: workspace name
     :ptype name: str
+    :param customer_id: customer the workspace belongs to; aligns
+        with the scope's ``customer_id`` for same-customer fixtures
+    :ptype customer_id: UUID | None
     :return: new workspace id
     :rtype: UUID
     """
     ws_id = uuid7()
     now = datetime.now(UTC)
+    ws_customer_id = customer_id if customer_id is not None else uuid7()
     store.workspaces[ws_id] = _StoredWorkspace(
         id=ws_id,
         agent_id=agent_id,
@@ -825,7 +840,7 @@ def _seed_workspace(
         date_created=now,
         date_updated=now,
         date_deleted=None,
-        customer_id=uuid7(),  # WS-ACL-10: audit publish requires a customer_id
+        customer_id=ws_customer_id,
     )
     return ws_id
 
@@ -890,6 +905,7 @@ def workspace_with_audience_fixture(
     fake_file_collection: _StoreBackedFileCollection,
     fake_version_collection: _StoreBackedVersionCollection,
     fake_tool_context: _FakeToolContextManager,
+    integration_tool_scope_context: CallContext,
 ) -> WorkspaceFixture:
     """
     seed a workspace with the three audience_test YAML fixtures.
@@ -897,6 +913,9 @@ def workspace_with_audience_fixture(
     inserts each fixture file as a version-1 head row and a matching
     create-action journal row so subsequent writes observe them as
     existing files (and fs_write goes down the ``update`` branch).
+    the workspace's ``customer_id`` aligns with the autouse
+    :class:`ToolCallScope`'s ``customer_id`` so the phase-7
+    cross-customer write gate permits same-customer writes.
 
     :return: fixture bag
     :rtype: WorkspaceFixture
@@ -905,7 +924,12 @@ def workspace_with_audience_fixture(
 
     agent_id = uuid4()
     workspace_name = "audience_test"
-    workspace_id = _seed_workspace(fake_store, agent_id, workspace_name)
+    workspace_id = _seed_workspace(
+        fake_store,
+        agent_id,
+        workspace_name,
+        customer_id=integration_tool_scope_context.customer_id,
+    )
 
     fixture_dir = Path(__file__).resolve().parent / "fixtures" / "audience_test"
     assert fixture_dir.is_dir(), f"fixture directory missing: {fixture_dir}"
@@ -1038,6 +1062,15 @@ def integration_stub_authorize_workspace_access(
     the outer :func:`authorize_workspace` helper still enforces both
     preconditions (scope installed, ``acl_cache`` injected).
 
+    namespace-task-01 phase 7 added a sibling
+    :func:`authorize_workspace_file_access` that runs the path-glob
+    RBAC gate on every write-class tool; it hits
+    ``evaluate_file_access`` which in turn reaches for
+    ``acl_cache.membership_loader.load_for_user`` — not available on
+    the lightweight permissive mock. stub the same way so integration
+    tests focus on tool behavior; the real path is exercised in
+    ``tests/integration/test_cross_agent_workspace.py``.
+
     skipped for ``test_cross_agent_workspace`` so its real-PostgreSQL
     authorize matrix runs unaltered.
 
@@ -1054,6 +1087,10 @@ def integration_stub_authorize_workspace_access(
 
     stub = AsyncMock(return_value=None)
     monkeypatch.setattr(_authorize_module, "authorize_workspace_access", stub)
+    file_stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        _authorize_module, "authorize_workspace_file_access", file_stub,
+    )
     return stub
 
 
