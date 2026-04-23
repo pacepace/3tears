@@ -139,6 +139,23 @@ _CACHE_METHOD_NAMES: frozenset[str] = frozenset({
 })
 
 
+# public method names on :class:`~threetears.core.cache.sqlite.SQLiteBackend`
+# that read/write row state. a class that stores a SQLiteBackend AND
+# calls one of these methods on it from any method body is using
+# SQLiteBackend's data api directly — regardless of what public verbs
+# it exposes. this is the fingerprint of a bespoke wrapper dressed in
+# domain-specific method names (``revoke`` / ``record_failure`` /
+# ``dispatch`` / ``consume_token``) that the generic-verb walker in
+# :data:`_CACHE_METHOD_NAMES` misses. namespace-task-01 phase 8.5f
+# added this domain-verb detection path.
+_SQLITE_DATA_API_METHODS: frozenset[str] = frozenset({
+    "upsert",
+    "select_by_id",
+    "delete_by_id",
+    "execute_query",
+})
+
+
 # ------------------------------------------------------------------------
 # public dataclasses
 # ------------------------------------------------------------------------
@@ -528,6 +545,146 @@ def _init_stores_param_on_self(
     return result
 
 
+def _class_sqlite_attr_names(cls: ast.ClassDef) -> frozenset[str]:
+    """return every ``self.<attr>`` name on ``cls`` that holds a SQLiteBackend.
+
+    three sources contribute to the set:
+
+    - annotated class-body attributes (``self._l1: SQLiteBackend``)
+    - init-body annotated assignments + inline constructions
+      (``self._l1: SQLiteBackend = ...`` / ``self._l1 = SQLiteBackend(...)``)
+    - constructor-injection: ``__init__`` parameter typed
+      ``SQLiteBackend`` that is stored on a ``self.<attr>`` target
+
+    the resulting set is consumed by
+    :func:`_class_calls_sqlite_data_api` to check whether the class
+    reaches into the backend's row-level api from inside any method
+    body. the combination (store a SQLiteBackend + call its data api
+    + not a ``BaseCollection``) is the fingerprint of a domain-verb
+    wrapper.
+
+    :param cls: class definition node
+    :ptype cls: ast.ClassDef
+    :return: frozen set of attribute names on ``self`` that hold a
+        SQLiteBackend; empty when the class stores no backend
+    :rtype: frozenset[str]
+    """
+    names: set[str] = set()
+
+    for item in cls.body:
+        if isinstance(item, ast.AnnAssign):
+            if _annotation_names_sqlite_backend(item.annotation):
+                target = item.target
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+
+    for item in cls.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if item.name != "__init__":
+            continue
+        sqlite_params: set[str] = set()
+        args = item.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            if _annotation_names_sqlite_backend(arg.annotation):
+                sqlite_params.add(arg.arg)
+        for sub in ast.walk(item):
+            if isinstance(sub, ast.AnnAssign):
+                if _annotation_names_sqlite_backend(sub.annotation):
+                    target = sub.target
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                    ):
+                        names.add(target.attr)
+            if isinstance(sub, ast.Assign):
+                rhs: ast.AST | None = sub.value
+                rhs_is_sqlite_call = False
+                if isinstance(rhs, ast.Call):
+                    func = rhs.func
+                    if isinstance(func, ast.Name) and func.id == "SQLiteBackend":
+                        rhs_is_sqlite_call = True
+                    if isinstance(func, ast.Attribute) and func.attr == "SQLiteBackend":
+                        rhs_is_sqlite_call = True
+                rhs_is_sqlite_param = (
+                    isinstance(rhs, ast.Name) and rhs.id in sqlite_params
+                )
+                if not (rhs_is_sqlite_call or rhs_is_sqlite_param):
+                    continue
+                for tgt in sub.targets:
+                    if (
+                        isinstance(tgt, ast.Attribute)
+                        and isinstance(tgt.value, ast.Name)
+                        and tgt.value.id == "self"
+                    ):
+                        names.add(tgt.attr)
+    return frozenset(names)
+
+
+def _class_calls_sqlite_data_api(
+    cls: ast.ClassDef, sqlite_attrs: frozenset[str],
+) -> list[str]:
+    """return every SQLiteBackend data-api method called on a stored backend.
+
+    walks every method body and returns the
+    :data:`_SQLITE_DATA_API_METHODS` entries that the class calls on a
+    ``self.<attr>`` receiver where ``<attr>`` is a known SQLiteBackend
+    field. the walker also accepts assignments that rebind the
+    backend onto a local (``l1 = self._l1; l1.upsert(...)``) so
+    wrappers cannot escape detection by introducing a local alias.
+
+    :param cls: class definition node
+    :ptype cls: ast.ClassDef
+    :param sqlite_attrs: names of ``self`` attributes holding a
+        SQLiteBackend (from :func:`_class_sqlite_attr_names`)
+    :ptype sqlite_attrs: frozenset[str]
+    :return: sorted list of distinct data-api method names called
+    :rtype: list[str]
+    """
+    if not sqlite_attrs:
+        return []
+    hits: set[str] = set()
+    for item in cls.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        local_binds: set[str] = set(sqlite_attrs)
+        for sub in ast.walk(item):
+            if isinstance(sub, ast.Assign):
+                rhs = sub.value
+                if (
+                    isinstance(rhs, ast.Attribute)
+                    and isinstance(rhs.value, ast.Name)
+                    and rhs.value.id == "self"
+                    and rhs.attr in sqlite_attrs
+                ):
+                    for tgt in sub.targets:
+                        if isinstance(tgt, ast.Name):
+                            local_binds.add(tgt.id)
+        for sub in ast.walk(item):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr not in _SQLITE_DATA_API_METHODS:
+                continue
+            receiver = func.value
+            receiver_is_self_attr = (
+                isinstance(receiver, ast.Attribute)
+                and isinstance(receiver.value, ast.Name)
+                and receiver.value.id == "self"
+                and receiver.attr in sqlite_attrs
+            )
+            receiver_is_local_bind = (
+                isinstance(receiver, ast.Name)
+                and receiver.id in local_binds
+            )
+            if receiver_is_self_attr or receiver_is_local_bind:
+                hits.add(func.attr)
+    return sorted(hits)
+
+
 def _class_has_sqlite_field(cls: ast.ClassDef) -> bool:
     """true iff the class body annotates or assigns an SQLiteBackend field.
 
@@ -656,19 +813,33 @@ def find_wrapper_classes(
                 if not _class_has_sqlite_field(node):
                     continue
                 methods = _class_has_cache_methods(node)
-                if not methods:
+                # domain-verb detection (namespace-task-01 phase 8.5f).
+                sqlite_attrs = _class_sqlite_attr_names(node)
+                data_api_calls = _class_calls_sqlite_data_api(
+                    node, sqlite_attrs,
+                )
+                if not methods and not data_api_calls:
                     continue
+                if methods:
+                    reason = (
+                        f"class '{node.name}' wraps SQLiteBackend and exposes "
+                        f"cache api {sorted(methods)!r} without extending "
+                        "BaseCollection; convert to a Collection subclass"
+                    )
+                else:
+                    reason = (
+                        f"class '{node.name}' wraps SQLiteBackend and calls "
+                        f"its data api {data_api_calls!r} from method bodies "
+                        "without extending BaseCollection (domain-verb "
+                        "wrapper); convert to a Collection subclass"
+                    )
                 violations.append(
                     CacheViolation(
                         test_name="wrapper_class",
                         file=source,
                         line=node.lineno,
                         symbol=node.name,
-                        reason=(
-                            f"class '{node.name}' wraps SQLiteBackend and exposes "
-                            f"cache api {sorted(methods)!r} without extending "
-                            "BaseCollection; convert to a Collection subclass"
-                        ),
+                        reason=reason,
                     )
                 )
     return violations
