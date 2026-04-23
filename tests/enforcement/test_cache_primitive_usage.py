@@ -401,14 +401,151 @@ def find_sqlite_constructions(
 # ------------------------------------------------------------------------
 
 
+def _annotation_names_sqlite_backend(ann: ast.AST | None) -> bool:
+    """true iff the annotation textually names ``SQLiteBackend``.
+
+    matches:
+
+    - ``SQLiteBackend`` — bare name
+    - ``some.module.SQLiteBackend`` — attribute ending in the name
+    - ``SQLiteBackend | None`` / ``Optional[SQLiteBackend]`` —
+      union / subscript shapes; the walker recurses into
+      :class:`ast.BinOp`, :class:`ast.Subscript`, and
+      :class:`ast.Tuple` so every optional / parameterised variant
+      surfaces.
+
+    :param ann: annotation AST node, or ``None``
+    :ptype ann: ast.AST | None
+    :return: whether the annotation textually names ``SQLiteBackend``
+    :rtype: bool
+    """
+    result = False
+    if ann is None:
+        pass
+    elif isinstance(ann, ast.Name) and ann.id == "SQLiteBackend":
+        result = True
+    elif isinstance(ann, ast.Attribute) and ann.attr == "SQLiteBackend":
+        result = True
+    elif isinstance(ann, ast.BinOp):
+        result = (
+            _annotation_names_sqlite_backend(ann.left)
+            or _annotation_names_sqlite_backend(ann.right)
+        )
+    elif isinstance(ann, ast.Subscript):
+        inner = ann.slice
+        result = (
+            _annotation_names_sqlite_backend(ann.value)
+            or _annotation_names_sqlite_backend(inner)
+        )
+    elif isinstance(ann, ast.Tuple):
+        result = any(
+            _annotation_names_sqlite_backend(elt) for elt in ann.elts
+        )
+    return result
+
+
+def _init_param_names_of_sqlite_type(cls: ast.ClassDef) -> frozenset[str]:
+    """return every ``__init__`` parameter whose annotation is SQLiteBackend.
+
+    captures the constructor-injected shape bespoke wrappers use
+    (``def __init__(self, l1_backend: SQLiteBackend | None = None)``)
+    which the earlier walker missed — it only matched a field that
+    was either annotated on the class body with ``SQLiteBackend`` or
+    that was the RHS of a ``= SQLiteBackend(...)`` call. the
+    constructor-injection shape stores the already-constructed
+    backend on ``self.<attr>`` without ever constructing a fresh one
+    inside the class, so the old rules never fire.
+
+    :param cls: class definition
+    :ptype cls: ast.ClassDef
+    :return: set of parameter names typed as ``SQLiteBackend``
+    :rtype: frozenset[str]
+    """
+    names: set[str] = set()
+    for item in cls.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if item.name != "__init__":
+            continue
+        args = item.args
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+            if _annotation_names_sqlite_backend(arg.annotation):
+                names.add(arg.arg)
+    return frozenset(names)
+
+
+def _init_stores_param_on_self(
+    cls: ast.ClassDef, param_names: frozenset[str],
+) -> bool:
+    """true iff ``__init__`` assigns one of ``param_names`` to ``self.<x>``.
+
+    matches ``self._l1 = l1_backend`` / ``self.store = backend`` /
+    ``self.l1: SQLiteBackend = l1_backend`` patterns where the RHS
+    is a plain :class:`ast.Name` whose id is in ``param_names``.
+
+    :param cls: class definition
+    :ptype cls: ast.ClassDef
+    :param param_names: constructor parameter names whose type is
+        ``SQLiteBackend``
+    :ptype param_names: frozenset[str]
+    :return: whether the constructor stores one of those parameters
+        onto a ``self`` attribute
+    :rtype: bool
+    """
+    result = False
+    if not param_names:
+        return result
+    for item in cls.body:
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if item.name != "__init__":
+            continue
+        for sub in ast.walk(item):
+            targets: list[ast.AST] = []
+            rhs: ast.AST | None = None
+            if isinstance(sub, ast.Assign):
+                targets = list(sub.targets)
+                rhs = sub.value
+            elif isinstance(sub, ast.AnnAssign):
+                targets = [sub.target]
+                rhs = sub.value
+            if rhs is None:
+                continue
+            if not (isinstance(rhs, ast.Name) and rhs.id in param_names):
+                continue
+            for tgt in targets:
+                if (
+                    isinstance(tgt, ast.Attribute)
+                    and isinstance(tgt.value, ast.Name)
+                    and tgt.value.id == "self"
+                ):
+                    result = True
+                    break
+            if result:
+                break
+        if result:
+            break
+    return result
+
+
 def _class_has_sqlite_field(cls: ast.ClassDef) -> bool:
     """true iff the class body annotates or assigns an SQLiteBackend field.
 
-    matches two shapes:
+    matches three shapes:
+
     - annotated attribute (``self._l1: SQLiteBackend``)
-    - init assignment (``self._l1 = SQLiteBackend(...)`` or
-      ``self.l1 = some_backend``) where the RHS is a ``SQLiteBackend``
-      constructor or the attribute name hints cache storage.
+    - init assignment with inline construction
+      (``self._l1 = SQLiteBackend(...)``)
+    - constructor-injection pattern: ``__init__`` takes a parameter
+      annotated ``SQLiteBackend`` (possibly ``SQLiteBackend | None``)
+      and stores it on ``self`` (``def __init__(self, l1_backend:
+      SQLiteBackend | None = None): self._l1 = l1_backend``). this
+      final shape is what bespoke hub wrappers
+      (:class:`UnifiedAccessCache`, :class:`LoginLockout`,
+      :class:`AdminRateLimiter` et al.) use; the earlier walker
+      missed it because no ``SQLiteBackend(...)`` call appeared
+      inside the class body. namespace-task-01 phase 8.5c sharpened
+      the walker to catch it.
 
     :param cls: class definition node
     :ptype cls: ast.ClassDef
@@ -418,12 +555,9 @@ def _class_has_sqlite_field(cls: ast.ClassDef) -> bool:
     # annotated attributes on class body
     for item in cls.body:
         if isinstance(item, ast.AnnAssign):
-            ann = item.annotation
-            if isinstance(ann, ast.Name) and ann.id == "SQLiteBackend":
+            if _annotation_names_sqlite_backend(item.annotation):
                 return True
-            if isinstance(ann, ast.Attribute) and ann.attr == "SQLiteBackend":
-                return True
-    # init-body assignments
+    # init-body annotations + inline constructions
     for item in cls.body:
         if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -431,10 +565,7 @@ def _class_has_sqlite_field(cls: ast.ClassDef) -> bool:
             continue
         for sub in ast.walk(item):
             if isinstance(sub, ast.AnnAssign):
-                ann = sub.annotation
-                if isinstance(ann, ast.Name) and ann.id == "SQLiteBackend":
-                    return True
-                if isinstance(ann, ast.Attribute) and ann.attr == "SQLiteBackend":
+                if _annotation_names_sqlite_backend(sub.annotation):
                     return True
             if isinstance(sub, ast.Assign):
                 value = sub.value
@@ -444,6 +575,11 @@ def _class_has_sqlite_field(cls: ast.ClassDef) -> bool:
                         return True
                     if isinstance(func, ast.Attribute) and func.attr == "SQLiteBackend":
                         return True
+    # constructor-injection shape: parameter typed SQLiteBackend and
+    # stored on self in the body
+    param_names = _init_param_names_of_sqlite_type(cls)
+    if _init_stores_param_on_self(cls, param_names):
+        return True
     return False
 
 
