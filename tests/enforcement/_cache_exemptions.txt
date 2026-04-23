@@ -1,0 +1,22 @@
+# cache-primitive-usage exemption file (namespace-task-01 Phase 8.5a).
+#
+# every entry must be preceded by a '# rationale: <specific reason>' line.
+# the parser rejects entries without a rationale. blanket rationales
+# like "internal access needed" / "tests need this" are NOT accepted —
+# rationales must be specific (what invariant is preserved, why the
+# Collection abstraction does not fit, which upstream API would need to
+# land to retire the exemption).
+#
+# format per entry line:
+#     relative/path.py:LINE:symbol
+#
+# where ``symbol`` is exactly what the walker reported:
+# - ``SQLiteBackend`` for bespoke-construction violations
+# - class name for wrapper-class violations
+# - table name for pool-access or missing-collection violations
+#
+# this file MUST stay empty during the 8.5b/c/d cleanup. every
+# report-mode violation has a fix owner, not an exemption owner.
+# Phase 8.5e flips the mode to strict; if you reach for this file in
+# 8.5e, re-read CLAUDE.md's "NO BACKWARDS-COMPATIBILITY SHIMS" clause
+# and fix the underlying code.
