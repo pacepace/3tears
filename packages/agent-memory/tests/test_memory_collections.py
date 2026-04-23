@@ -1,4 +1,13 @@
-"""Tests for MemoriesCollection three-tier caching."""
+"""Tests for MemoriesCollection three-tier caching.
+
+Registry-bound pool pattern (namespace-task-01 phase 8.5b): the
+``postgres_pool`` constructor parameter is retired — callers bind the
+pool to the registry via :meth:`CollectionRegistry.configure` (default)
+or :meth:`CollectionRegistry.bind_table` (per-table override) BEFORE
+constructing the Collection. :class:`BaseCollection.__init__` reads the
+pool through :meth:`CollectionRegistry.get_l3_pool` at construction and
+caches the reference on ``self.l3_pool``.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +29,11 @@ from threetears.agent.memory.entities import MemoryEntity
 
 
 def _make_metadata() -> MetaData:
+    """build a SQLite-compatible MetaData mirror of the memories table.
+
+    :return: SQLAlchemy metadata
+    :rtype: MetaData
+    """
     metadata = MetaData()
     Table(
         "memories",
@@ -32,7 +46,7 @@ def _make_metadata() -> MetaData:
         Column("message_id_source", String(255)),
         Column("type_memory", String(50)),
         Column("content", Text),
-        Column("embedding", Text),  # stored as JSON text in SQLite
+        Column("embedding", Text),
         Column("media_id", String(255)),
         Column("is_deleted", Boolean),
         Column("date_created", DateTime),
@@ -43,6 +57,11 @@ def _make_metadata() -> MetaData:
 
 
 def _sample_data() -> dict:
+    """build a sample memory row for tests.
+
+    :return: row data
+    :rtype: dict
+    """
     return {
         "memory_id": uuid.uuid7(),
         "agent_id": uuid.uuid7(),
@@ -62,7 +81,13 @@ def _sample_data() -> dict:
 
 
 def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
-    """Create a mock asyncpg pool backed by an in-memory dict."""
+    """Create a mock asyncpg pool backed by an in-memory dict.
+
+    :param store: initial pool contents keyed by memory_id string
+    :ptype store: dict[str, dict] | None
+    :return: asyncpg-shape mock
+    :rtype: AsyncMock
+    """
     if store is None:
         store = {}
     pg = AsyncMock()
@@ -70,6 +95,10 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
     async def _fetchrow(query: str, *args: object) -> dict | None:
         entity_id = args[0] if args else None
         return store.get(str(entity_id))
+
+    async def _fetchval(query: str, *args: object) -> bool:
+        user_id = str(args[0]) if args else None
+        return any(str(row.get("user_id")) == user_id for row in store.values())
 
     async def _execute(query: str, *args: object) -> str:
         if "INSERT" in query:
@@ -97,7 +126,6 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
             existing = store.get(entity_id)
             if existing is None:
                 return "UPDATE 0"
-            # Check optimistic lock
             if len(args) > 6 and args[6] is not None:
                 if existing.get("date_updated") != args[6]:
                     return "UPDATE 0"
@@ -124,6 +152,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         return results
 
     pg.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pg.fetchval = AsyncMock(side_effect=_fetchval)
     pg.execute = AsyncMock(side_effect=_execute)
     pg.fetch = AsyncMock(side_effect=_fetch)
     pg._store = store
@@ -131,6 +160,11 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
 
 
 def _make_nats_mock() -> AsyncMock:
+    """Create a mock NATS KV client backed by an in-memory dict.
+
+    :return: mock KV client
+    :rtype: AsyncMock
+    """
     kv_store: dict[str, bytes] = {}
     nats = AsyncMock()
     nats.bucket_name = MagicMock(return_value="test_collections")
@@ -155,6 +189,7 @@ def _make_nats_mock() -> AsyncMock:
 
 @pytest.fixture()
 def l1_backend() -> SQLiteBackend:
+    """build an initialized SQLiteBackend for one test."""
     b = SQLiteBackend(db_name=f"test_mem_{uuid.uuid7().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
@@ -162,15 +197,40 @@ def l1_backend() -> SQLiteBackend:
 
 
 @pytest.fixture()
-def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
+def pg_pool() -> AsyncMock:
+    """build a mock pool reused across a test's construction cycles."""
+    return _make_pg_mock()
+
+
+@pytest.fixture()
+def registry(
+    l1_backend: SQLiteBackend,
+    pg_pool: AsyncMock,
+) -> CollectionRegistry:
+    """build a registry pre-configured with L1 + a default mock L3 pool.
+
+    binding the pool to the registry BEFORE Collection construction
+    matches the production wiring path (see
+    :mod:`aibots_agents.runtime.three_tier_stack.build_three_tier_stack`).
+    """
     reg = CollectionRegistry()
-    reg.configure(l1_backend=l1_backend)
+    reg.configure(l1_backend=l1_backend, l3_pool=pg_pool)
     return reg
 
 
 @pytest.fixture()
 def config_always() -> DefaultCoreConfig:
+    """build a ``CollectionConfig(flush=ALWAYS)`` for immediate L3 writes."""
     return DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+
+
+def _rebind_pool(registry: CollectionRegistry, pool: AsyncMock) -> None:
+    """helper: override the registry's default L3 pool mid-test.
+
+    used by tests that want a pool pre-seeded with data — we swap the
+    default pool before constructing the Collection.
+    """
+    registry.configure(l3_pool=pool)
 
 
 class TestMemoriesCollectionGet:
@@ -181,17 +241,14 @@ class TestMemoriesCollectionGet:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         nats = _make_nats_mock()
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
             nats_client=nats,
         )
 
         data = _sample_data()
-        # Serialize UUIDs to strings for SQLite L1
         l1_data = {k: str(v) if isinstance(v, uuid.UUID) else v for k, v in data.items()}
         coll._l1.upsert("memories", l1_data, "memory_id")
 
@@ -210,10 +267,10 @@ class TestMemoriesCollectionGet:
         nats = _make_nats_mock()
         data = _sample_data()
         pg = _make_pg_mock({str(data["memory_id"]): data})
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
             nats_client=nats,
         )
@@ -222,7 +279,6 @@ class TestMemoriesCollectionGet:
 
         assert entity is not None
         assert entity.type_memory == "preference"
-        # Promoted to L2
         assert f"memories.{data['memory_id']}" in nats._store
 
     async def test_all_miss_returns_none(
@@ -231,11 +287,9 @@ class TestMemoriesCollectionGet:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -252,11 +306,11 @@ class TestMemoriesCollectionSave:
     ) -> None:
         pg_store: dict[str, dict] = {}
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         nats = _make_nats_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
             nats_client=nats,
         )
@@ -278,10 +332,10 @@ class TestMemoriesCollectionSave:
         data = _sample_data()
         pg_store = {str(data["memory_id"]): dict(data)}
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -304,18 +358,16 @@ class TestMemoriesCollectionDelete:
         data = _sample_data()
         pg_store = {str(data["memory_id"]): dict(data)}
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         nats = _make_nats_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
             nats_client=nats,
         )
 
-        # Load into caches
         await coll.get(data["memory_id"])
-
         result = await coll.delete(data["memory_id"])
 
         assert result is True
@@ -332,10 +384,10 @@ class TestMemoriesCollectionSoftDelete:
         data = _sample_data()
         pg_store = {str(data["memory_id"]): dict(data)}
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -365,10 +417,10 @@ class TestMemoriesCollectionFindByUser:
             str(data2["memory_id"]): data2,
         }
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -395,10 +447,10 @@ class TestMemoriesCollectionFindByUser:
             str(data2["memory_id"]): data2,
         }
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -424,10 +476,10 @@ class TestMemoriesCollectionFindByUser:
             str(data2["memory_id"]): data2,
         }
         pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -443,11 +495,9 @@ class TestMemoriesCollectionSerialization:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -474,11 +524,9 @@ class TestMemoriesCollectionSerialization:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
 
@@ -502,11 +550,9 @@ class TestMemoriesCollectionTableName:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
         assert coll.table_name == "memories"
@@ -517,11 +563,9 @@ class TestMemoriesCollectionTableName:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
         assert coll.entity_class is MemoryEntity
@@ -532,11 +576,45 @@ class TestMemoriesCollectionTableName:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg = _make_pg_mock()
         coll = MemoriesCollection(
             registry,
             config_always,
-            postgres_pool=pg,
             authorizer=permissive_memory_authorizer,
         )
         assert coll.primary_key_column == "memory_id"
+
+
+class TestMemoriesCollectionCountByUser:
+    async def test_count_by_user_present(
+        self,
+        registry: CollectionRegistry,
+        config_always: DefaultCoreConfig,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        data = _sample_data()
+        pg_store = {str(data["memory_id"]): data}
+        pg = _make_pg_mock(pg_store)
+        _rebind_pool(registry, pg)
+        coll = MemoriesCollection(
+            registry,
+            config_always,
+            authorizer=permissive_memory_authorizer,
+        )
+
+        result = await coll.count_by_user(data["user_id"])
+        assert result is True
+
+    async def test_count_by_user_absent(
+        self,
+        registry: CollectionRegistry,
+        config_always: DefaultCoreConfig,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        coll = MemoriesCollection(
+            registry,
+            config_always,
+            authorizer=permissive_memory_authorizer,
+        )
+
+        result = await coll.count_by_user(uuid.uuid7())
+        assert result is False

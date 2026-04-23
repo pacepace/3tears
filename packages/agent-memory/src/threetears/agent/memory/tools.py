@@ -1,11 +1,16 @@
 """Memory tools -- LangChain tools for searching and recalling memories.
 
-Provides ``load_memory_search_tool`` and ``load_recall_memory_tool`` as
-reusable factories. Callers supply a connection pool, user_id, and an
-optional ``EmbeddingProvider`` for semantic search.
+Provides ``load_memory_search_tool``, ``load_recall_memory_tool``, and
+``load_add_memory_tool`` as reusable factories. Callers supply the four
+memory-package Collections (:class:`MemoriesCollection`,
+:class:`MediaCollection`, :class:`MediaContentCollection`,
+:class:`MemoryChunkCollection`) plus user_id, agent_id, customer_id, and
+an authorizer. Every SQL site that used to live raw on a pool is now a
+method call on one of the Collections; tool factories hold no pool
+reference.
 
 Optional ``ledger_callback`` lets the host application track which items
-the LLM has seen (e.g., MetaLLM's ToolContextManager).
+the LLM has seen.
 """
 
 from __future__ import annotations
@@ -13,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
@@ -28,7 +34,14 @@ from threetears.agent.memory.authorize import (
     authorize_memory_access,
     ensure_memory_owner_assignment,
 )
+from threetears.agent.memory.collections import (
+    MediaCollection,
+    MediaContentCollection,
+    MemoriesCollection,
+    MemoryChunkCollection,
+)
 from threetears.agent.memory.embedding import EmbeddingProvider
+from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
 
@@ -43,35 +56,13 @@ __all__ = [
 ]
 
 
-"""memory tools bind per-call identity through closure.
-
-unlike workspace / MCP tools that ride remote dispatch envelopes,
-the memory LangChain tools are built fresh for each conversation
-by the agent bootstrap's MemoryIntegration. the ``user_id``,
-``conversation_id``, ``agent_id`` and ``customer_id`` are known
-at factory-call time and baked into the closure — every
-invocation of the returned tool runs against that bound identity.
-
-authorization therefore runs against the closure-bound
-``(agent_id, customer_id, user_id)`` rather than reading from a
-remote call scope. the agent identity in ``caller_agent_id`` is
-the same agent that owns the memory namespace, so the evaluator's
-owner short-circuit fires for agent-internal use and the user
-side constrains to the closure-bound user.
-"""
-
 log = get_logger(__name__)
-
-# -- Defaults -----------------------------------------------------------------
 
 _MAX_RESULTS = 10
 _DEFAULT_SIMILARITY_THRESHOLD = 0.2
 
 # Type alias for the optional ledger callback
-LedgerCallback = Callable[[str, str, str], Awaitable[None]]  # (item_id, item_type, description)
-
-
-# -- Input schemas ------------------------------------------------------------
+LedgerCallback = Callable[[str, str, str], Awaitable[None]]
 
 
 class MemorySearchInput(BaseModel):
@@ -99,6 +90,11 @@ class MemorySearchInput(BaseModel):
 
     @model_validator(mode="after")
     def _require_query_or_ids(self) -> "MemorySearchInput":
+        """raise ValidationError unless at least one of ``query`` / ``ids`` is set.
+
+        :return: self
+        :rtype: MemorySearchInput
+        """
         if not self.query and not self.ids:
             raise ValueError("At least one of 'query' or 'ids' must be provided.")
         return self
@@ -111,16 +107,29 @@ class RecallMemoryInput(BaseModel):
     type: str = Field(description="Type of item: 'memory', 'media', or 'chunk'")
 
 
-# -- Helpers ------------------------------------------------------------------
-
-
 def _tool_error(tool_name: str, action: str, error: str) -> str:
-    """Format a structured error string for tool results."""
+    """Format a structured error string for tool results.
+
+    :param tool_name: tool name emitting the error
+    :ptype tool_name: str
+    :param action: action that failed
+    :ptype action: str
+    :param error: error description
+    :ptype error: str
+    :return: formatted error string
+    :rtype: str
+    """
     return f"[TOOL ERROR] {tool_name}: {action} failed — {error}"
 
 
 def _fmt_dt(dt: Any) -> str:
-    """Format a datetime or None into a short timestamp string."""
+    """Format a datetime or None into a short timestamp string.
+
+    :param dt: datetime or None
+    :ptype dt: Any
+    :return: formatted string or empty
+    :rtype: str
+    """
     if dt is None:
         return ""
     if hasattr(dt, "strftime"):
@@ -129,7 +138,13 @@ def _fmt_dt(dt: Any) -> str:
 
 
 def _extract_title(metadata_json: Any) -> str | None:
-    """Extract title from metadata_json (may be a string or dict)."""
+    """Extract title from metadata_json (may be a string or dict).
+
+    :param metadata_json: JSONB payload (string or dict)
+    :ptype metadata_json: Any
+    :return: title or ``None``
+    :rtype: str | None
+    """
     meta = metadata_json
     if isinstance(meta, str):
         meta = json.loads(meta)
@@ -140,35 +155,23 @@ def _extract_title(metadata_json: Any) -> str | None:
 
 async def _ensure_first_write_owner_assignment(
     *,
-    pool: Any,
+    memories_collection: MemoriesCollection,
     authorizer: MemoryAuthorizerDependencies,
     ns_entity: Any,
     user_id: UUID,
 ) -> None:
     """ensure MemoryOwner assignment exists on first write by this user.
 
-    checks if the user has any existing memory rows for this
-    (agent, customer) pair. if yes → this is not a first write,
-    skip the ensure (grant either exists from earlier, or was
-    explicitly revoked and must stay revoked). if no → first
-    write, call :func:`ensure_memory_owner_assignment` which is
-    idempotent on the group row, the membership row, and the
-    assignment row via deterministic :func:`uuid5` ids + Collection
-    ON CONFLICT semantics.
+    delegates the existence probe to
+    :meth:`MemoriesCollection.count_by_user` so the SQL site lives on
+    the Collection. semantics match the previous raw-pool helper: if
+    the user has ANY existing memory rows, skip the ensure (grant
+    exists from earlier or was explicitly revoked). otherwise call
+    :func:`ensure_memory_owner_assignment`, which is idempotent on the
+    group / membership / assignment rows.
 
-    three-tier-task-01 phase D replaced the bespoke owner-ensurer
-    callable with the direct Collection calls inside
-    :func:`ensure_memory_owner_assignment`; this helper stays as the
-    first-write gate so the ensure only fires for users who haven't
-    yet written into the namespace.
-
-    the existence check + ensure call is NOT transactional; a
-    concurrent second-first-write will have both callers invoke
-    the ensure path, but the underlying Collection methods' per-row
-    insert-if-absent semantics make the double-call harmless.
-
-    :param pool: asyncpg pool for the existence query
-    :ptype pool: Any
+    :param memories_collection: three-tier memories collection
+    :ptype memories_collection: MemoriesCollection
     :param authorizer: rbac authorizer dependency bundle
     :ptype authorizer: MemoryAuthorizerDependencies
     :param ns_entity: resolved memory namespace entity
@@ -178,11 +181,8 @@ async def _ensure_first_write_owner_assignment(
     :return: nothing
     :rtype: None
     """
-    existing = await pool.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM memories WHERE user_id = $1)",
-        user_id,
-    )
-    if existing:
+    has_rows = await memories_collection.count_by_user(user_id)
+    if has_rows:
         return None
     await ensure_memory_owner_assignment(
         user_id=user_id,
@@ -192,16 +192,31 @@ async def _ensure_first_write_owner_assignment(
     return None
 
 
-# -- Memory search by IDs (batch lookup) --------------------------------------
-
-
 async def _search_by_ids(
-    pool: Any,
+    memories_collection: MemoriesCollection,
+    media_content_collection: MediaContentCollection,
+    memory_chunk_collection: MemoryChunkCollection,
     user_id: UUID,
     ids: list[str],
     ledger_callback: LedgerCallback | None = None,
 ) -> str:
-    """Batch-lookup memories, media content, and chunks by ID."""
+    """Batch-lookup memories, media content, and chunks by ID via Collections.
+
+    :param memories_collection: three-tier memories collection
+    :ptype memories_collection: MemoriesCollection
+    :param media_content_collection: three-tier media_content collection
+    :ptype media_content_collection: MediaContentCollection
+    :param memory_chunk_collection: three-tier memory_chunks collection
+    :ptype memory_chunk_collection: MemoryChunkCollection
+    :param user_id: owning user UUID
+    :ptype user_id: UUID
+    :param ids: list of raw UUID strings from the model
+    :ptype ids: list[str]
+    :param ledger_callback: optional surfaced-item notification
+    :ptype ledger_callback: LedgerCallback | None
+    :return: formatted tool output
+    :rtype: str
+    """
     valid_uuids: list[UUID] = []
     for raw_id in ids:
         try:
@@ -215,31 +230,9 @@ async def _search_by_ids(
 
     try:
         mem_rows, mc_rows, chunk_rows = await asyncio.gather(
-            pool.fetch(
-                """SELECT memory_id, type_memory, content, date_created
-                   FROM memories
-                   WHERE memory_id = ANY($1::uuid[]) AND user_id = $2 AND is_deleted = false""",
-                valid_uuids,
-                user_id,
-            ),
-            pool.fetch(
-                """SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
-                          med.media_category, med.metadata_json, med.date_created
-                   FROM media_content mc
-                   JOIN media med ON mc.media_id = med.media_id
-                   WHERE mc.content_id = ANY($1::uuid[]) AND mc.user_id = $2""",
-                valid_uuids,
-                user_id,
-            ),
-            pool.fetch(
-                """SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
-                          med.metadata_json
-                   FROM memory_chunks mc
-                   LEFT JOIN media med ON mc.media_id = med.media_id
-                   WHERE mc.chunk_id = ANY($1::uuid[]) AND mc.user_id = $2""",
-                valid_uuids,
-                user_id,
-            ),
+            memories_collection.search_by_ids(valid_uuids, user_id),
+            media_content_collection.search_by_ids(valid_uuids, user_id),
+            memory_chunk_collection.search_by_ids(valid_uuids, user_id),
         )
     except Exception as exc:
         return _tool_error("memory_search", "id_lookup", str(exc))
@@ -289,7 +282,7 @@ async def _search_by_ids(
     if not parts:
         return "No items found for the provided IDs."
 
-    found_ids = set()
+    found_ids: set[str] = set()
     for row in mem_rows:
         found_ids.add(str(row["memory_id"]))
     for row in mc_rows:
@@ -304,36 +297,24 @@ async def _search_by_ids(
     return "\n".join(parts)
 
 
-# -- Memory search tool factory -----------------------------------------------
-
-
 async def load_memory_search_tool(
-    pool: Any,
     user_id: UUID,
     embedding_provider: EmbeddingProvider,
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
+    memories_collection: MemoriesCollection,
+    media_content_collection: MediaContentCollection,
+    memory_chunk_collection: MemoryChunkCollection,
     *,
     similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
     max_results: int = _MAX_RESULTS,
     ledger_callback: LedgerCallback | None = None,
 ) -> list[BaseTool]:
-    """create a memory_search tool bound to the given user and pool.
+    """create a memory_search tool bound to the given user and Collections.
 
-    every invocation resolves the per-(agent, customer) memory
-    namespace and evaluates ``memory.read`` for the closure-bound
-    user against the required ``authorizer`` bundle. the closure
-    binds identity at factory time — these LangChain tools are
-    built fresh per conversation by the agent bootstrap.
-
-    returns a single-element list (matching LangChain's
-    bind_tools convention).
-
-    :param pool: asyncpg connection pool
-    :ptype pool: Any
-    :param user_id: user whose memories to search (row filter
-        + evaluator ``caller_user_id``)
+    :param user_id: user whose memories to search (row filter +
+        evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param embedding_provider: embedding provider for query vectors
     :ptype embedding_provider: EmbeddingProvider
@@ -341,9 +322,14 @@ async def load_memory_search_tool(
     :ptype agent_id: UUID
     :param customer_id: owning customer UUID
     :ptype customer_id: UUID
-    :param authorizer: rbac authorizer dependency bundle enabling
-        per-call ``memory.read`` enforcement; required
+    :param authorizer: rbac authorizer dependency bundle; required
     :ptype authorizer: MemoryAuthorizerDependencies
+    :param memories_collection: three-tier memories collection
+    :ptype memories_collection: MemoriesCollection
+    :param media_content_collection: three-tier media_content collection
+    :ptype media_content_collection: MediaContentCollection
+    :param memory_chunk_collection: three-tier memory_chunks collection
+    :ptype memory_chunk_collection: MemoryChunkCollection
     :param similarity_threshold: similarity cutoff for results
     :ptype similarity_threshold: float
     :param max_results: cap on returned results per source
@@ -363,10 +349,6 @@ async def load_memory_search_tool(
         ids: list[str] | None = None,
     ) -> str:
         """search the user's memories and document knowledge base."""
-        # rbac: evaluate memory.read against the closure-bound
-        # (agent_id, customer_id) namespace for the closure-bound
-        # user. the owner short-circuit fires for agent-internal
-        # reads (caller_agent_id == owner_agent_id == agent_id).
         try:
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
@@ -379,25 +361,24 @@ async def load_memory_search_tool(
         except MemoryAccessDenied as exc:
             return _tool_error("memory_search", "authorize", str(exc))
 
-        # -- Batch ID lookup path --
         if ids:
-            return await _search_by_ids(pool, user_id, ids, ledger_callback)
+            return await _search_by_ids(
+                memories_collection,
+                media_content_collection,
+                memory_chunk_collection,
+                user_id,
+                ids,
+                ledger_callback,
+            )
 
         if not query:
             return "Either 'query' or 'ids' must be provided."
 
-        # -- Semantic search path --
         embedding, _tokens = await embedding_provider.embed_text(query)
         if embedding is None:
             return _tool_error("memory_search", "embed", "Embedding API request failed")
 
-        embedding_str = json.dumps(embedding)
         fts_text = query.strip()[:500] if len(query.strip()) >= 3 else None
-
-        # 1. Search user memories
-        params: list[Any] = [embedding_str, user_id]
-        conditions = ["user_id = $2", "is_deleted = false"]
-        param_idx = 3
 
         if type_filter:
             valid_types = {"preference", "fact", "decision", "topical_context"}
@@ -407,141 +388,76 @@ async def load_memory_search_tool(
                     "filter",
                     f"Invalid type_filter '{type_filter}'. Must be one of: {', '.join(sorted(valid_types))}",
                 )
-            conditions.append(f"type_memory = ${param_idx}")
-            params.append(type_filter)
-            param_idx += 1
-
-        where_clause = " AND ".join(conditions)
-        query_sql = f"""
-            SELECT memory_id, type_memory, content, date_created,
-                   1 - (embedding <=> $1::vector) AS similarity
-            FROM memories
-            WHERE {where_clause}
-            ORDER BY embedding <=> $1::vector
-            LIMIT ${param_idx}
-        """
-        params.append(max_results)
 
         try:
-            rows = await pool.fetch(query_sql, *params)
+            memories = await memories_collection.search_by_semantic(
+                user_id=user_id,
+                embedding=embedding,
+                max_results=max_results,
+                similarity_threshold=sim_threshold,
+                type_filter=type_filter,
+            )
         except Exception as exc:
             return _tool_error("memory_search", "query", str(exc))
 
-        memories = [
-            {
-                "memory_id": str(row["memory_id"]),
-                "type": row["type_memory"],
-                "content": row["content"],
-                "date_created": row["date_created"],
-                "similarity": float(row["similarity"]),
-            }
-            for row in rows
-            if float(row["similarity"]) > sim_threshold
-        ]
         seen_ids = {m["memory_id"] for m in memories}
 
-        # FTS keyword results
         if fts_text:
-            fts_conditions = [
-                "user_id = $2",
-                "is_deleted = false",
-                "search_vector @@ websearch_to_tsquery('english', $1)",
-            ]
-            fts_params: list[Any] = [fts_text, user_id]
-            fts_idx = 3
-            if type_filter:
-                fts_conditions.append(f"type_memory = ${fts_idx}")
-                fts_params.append(type_filter)
-                fts_idx += 1
-            fts_where = " AND ".join(fts_conditions)
             try:
-                fts_rows = await pool.fetch(
-                    f"""
-                    SELECT memory_id, type_memory, content, date_created,
-                           ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                    FROM memories
-                    WHERE {fts_where}
-                    ORDER BY fts_rank DESC
-                    LIMIT {max_results}
-                    """,
-                    *fts_params,
+                fts_rows = await memories_collection.search_by_fts(
+                    user_id=user_id,
+                    fts_text=fts_text,
+                    max_results=max_results,
+                    type_filter=type_filter,
                 )
                 for row in fts_rows:
-                    mid = str(row["memory_id"])
+                    mid = row["memory_id"]
                     if mid not in seen_ids:
                         seen_ids.add(mid)
                         memories.append(
                             {
                                 "memory_id": mid,
-                                "type": row["type_memory"],
+                                "type": row["type"],
                                 "content": row["content"],
                                 "date_created": row["date_created"],
                                 "similarity": None,
                             }
                         )
             except Exception:
-                pass  # FTS search is best-effort
+                pass
 
-        # 2. Search media_content
         media_results: list[dict[str, Any]] = []
         try:
-            mc_rows = await pool.fetch(
-                """
-                SELECT mc.content_id, mc.content, mc.content_type,
-                       mc.media_id, med.media_category, med.metadata_json,
-                       med.date_created,
-                       1 - (mc.embedding <=> $1::vector) AS similarity
-                FROM media_content mc
-                JOIN media med ON mc.media_id = med.media_id
-                WHERE mc.user_id = $2
-                  AND mc.embedding IS NOT NULL
-                ORDER BY mc.embedding <=> $1::vector
-                LIMIT 5
-                """,
-                embedding_str,
-                user_id,
+            mc_rows = await media_content_collection.search_by_semantic(
+                user_id=user_id,
+                embedding=embedding,
+                max_results=5,
+                similarity_threshold=sim_threshold,
             )
             mc_seen: set[str] = set()
             for row in mc_rows:
-                sim = float(row["similarity"])
-                if sim <= sim_threshold:
-                    continue
-                cid = str(row["content_id"])
+                cid = row["content_id"]
                 mc_seen.add(cid)
                 title = _extract_title(row["metadata_json"])
                 media_results.append(
                     {
                         "content_id": cid,
                         "content": row["content"],
-                        "media_id": str(row["media_id"]),
+                        "media_id": row["media_id"],
                         "media_category": row["media_category"],
                         "title": title,
                         "date_created": row["date_created"],
-                        "similarity": sim,
+                        "similarity": row["similarity"],
                     }
                 )
-
-            # FTS for media_content
             if fts_text:
-                fts_mc_rows = await pool.fetch(
-                    """
-                    SELECT mc.content_id, mc.content, mc.content_type,
-                           mc.media_id, med.media_category, med.metadata_json,
-                           med.date_created,
-                           ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
-                    FROM media_content mc
-                    JOIN media med ON mc.media_id = med.media_id
-                    WHERE mc.user_id = $2
-                      AND mc.embedding IS NOT NULL
-                      AND mc.search_vector @@ websearch_to_tsquery('english', $1)
-                    ORDER BY fts_rank DESC
-                    LIMIT 5
-                    """,
-                    fts_text,
-                    user_id,
+                fts_mc_rows = await media_content_collection.search_by_fts(
+                    user_id=user_id,
+                    fts_text=fts_text,
+                    max_results=5,
                 )
                 for row in fts_mc_rows:
-                    cid = str(row["content_id"])
+                    cid = row["content_id"]
                     if cid not in mc_seen:
                         mc_seen.add(cid)
                         title = _extract_title(row["metadata_json"])
@@ -549,7 +465,7 @@ async def load_memory_search_tool(
                             {
                                 "content_id": cid,
                                 "content": row["content"],
-                                "media_id": str(row["media_id"]),
+                                "media_id": row["media_id"],
                                 "media_category": row["media_category"],
                                 "title": title,
                                 "date_created": row["date_created"],
@@ -559,36 +475,24 @@ async def load_memory_search_tool(
         except Exception:
             pass
 
-        # 3. Search memory_chunks
         doc_chunks: list[dict[str, Any]] = []
         try:
-            chunk_rows = await pool.fetch(
-                """
-                SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
-                       med.metadata_json,
-                       1 - (mc.embedding <=> $1::vector) AS similarity
-                FROM memory_chunks mc
-                LEFT JOIN media med ON mc.media_id = med.media_id
-                WHERE mc.user_id = $2
-                ORDER BY mc.embedding <=> $1::vector
-                LIMIT 5
-                """,
-                embedding_str,
-                user_id,
+            chunk_rows = await memory_chunk_collection.search_by_semantic(
+                user_id=user_id,
+                embedding=embedding,
+                max_results=5,
+                similarity_threshold=sim_threshold,
             )
             for row in chunk_rows:
-                sim = float(row["similarity"])
-                if sim <= sim_threshold:
-                    continue
                 title = _extract_title(row["metadata_json"])
                 doc_chunks.append(
                     {
-                        "chunk_id": str(row["chunk_id"]),
+                        "chunk_id": row["chunk_id"],
                         "content": row["content"],
                         "title": title,
                         "heading": row["heading_context"],
                         "page": row["page_number"],
-                        "similarity": sim,
+                        "similarity": row["similarity"],
                     }
                 )
         except Exception:
@@ -597,7 +501,6 @@ async def load_memory_search_tool(
         if not memories and not media_results and not doc_chunks:
             return "No relevant memories or documents found for this query."
 
-        # Format results
         parts: list[str] = []
         if memories:
             parts.append(f"Found {len(memories)} relevant memories:")
@@ -637,7 +540,6 @@ async def load_memory_search_tool(
                 tag = f"[chunk:{c['chunk_id']}]"
                 parts.append(f"- {tag} [from {location}] {c['content']}")
 
-        # Ledger updates
         if ledger_callback:
             for m in memories:
                 await ledger_callback(m["memory_id"], "memory", m["content"])
@@ -660,28 +562,19 @@ async def load_memory_search_tool(
     return [memory_search]
 
 
-# -- Recall memory tool factory ------------------------------------------------
-
-
 async def load_recall_memory_tool(
-    pool: Any,
     user_id: UUID,
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
+    memories_collection: MemoriesCollection,
+    media_content_collection: MediaContentCollection,
+    memory_chunk_collection: MemoryChunkCollection,
 ) -> list[BaseTool]:
     """create a recall_memory tool for full-content retrieval by ID.
 
-    every invocation runs ``memory.read`` through the evaluator
-    before the SQL fetch against the required ``authorizer`` bundle.
-    identity is closure-bound at factory time.
-
-    returns a single-element list.
-
-    :param pool: asyncpg connection pool
-    :ptype pool: Any
-    :param user_id: user whose memories to recall (row filter
-        + evaluator ``caller_user_id``)
+    :param user_id: user whose memories to recall (row filter +
+        evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param agent_id: owning agent UUID for rbac namespace lookup
     :ptype agent_id: UUID
@@ -689,6 +582,12 @@ async def load_recall_memory_tool(
     :ptype customer_id: UUID
     :param authorizer: rbac authorizer dependency bundle; required
     :ptype authorizer: MemoryAuthorizerDependencies
+    :param memories_collection: three-tier memories collection
+    :ptype memories_collection: MemoriesCollection
+    :param media_content_collection: three-tier media_content collection
+    :ptype media_content_collection: MediaContentCollection
+    :param memory_chunk_collection: three-tier memory_chunks collection
+    :ptype memory_chunk_collection: MemoryChunkCollection
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -716,37 +615,30 @@ async def load_recall_memory_tool(
         item_type = type.lower().strip()
 
         if item_type == "memory":
-            row = await pool.fetchrow(
-                "SELECT content FROM memories WHERE memory_id = $1 AND user_id = $2 AND is_deleted = false",
-                item_uuid,
-                user_id,
+            content = await memories_collection.fetch_content_for_recall(
+                memory_id=item_uuid, user_id=user_id,
             )
-            if not row:
+            if content is None:
                 return "Memory not found or access denied."
-            return row["content"]  # type: ignore[no-any-return]
+            return content
 
         elif item_type == "media":
-            row = await pool.fetchrow(
-                "SELECT content FROM media_content WHERE content_id = $1 AND user_id = $2",
-                item_uuid,
-                user_id,
+            content = await media_content_collection.fetch_content_for_recall(
+                content_id=item_uuid, user_id=user_id,
             )
-            if not row:
+            if content is None:
                 return "Media content not found or access denied."
-            content = row["content"]
             if len(content) > 12000:
                 content = content[:12000] + "\n\n[Content truncated — full text is longer]"
-            return content  # type: ignore[no-any-return]
+            return content
 
         elif item_type == "chunk":
-            row = await pool.fetchrow(
-                "SELECT content FROM memory_chunks WHERE chunk_id = $1 AND user_id = $2",
-                item_uuid,
-                user_id,
+            content = await memory_chunk_collection.fetch_content_for_recall(
+                chunk_id=item_uuid, user_id=user_id,
             )
-            if not row:
+            if content is None:
                 return "Document chunk not found or access denied."
-            return row["content"]  # type: ignore[no-any-return]
+            return content
 
         else:
             return f"Unknown type '{type}'. Use 'memory', 'media', or 'chunk'."
@@ -761,9 +653,8 @@ async def load_recall_memory_tool(
     return [recall_memory]
 
 
-# -- Add memory tool factory --------------------------------------------------
-
 _VALID_MEMORY_TYPES = frozenset(t.value for t in MemoryType)
+_ = MediaCollection  # imported for public symbol availability; factory users pass it via __init__ wiring
 
 
 class AddMemoryInput(BaseModel):
@@ -788,7 +679,6 @@ class AddMemoryInput(BaseModel):
 
 
 async def load_add_memory_tool(
-    pool: Any,
     user_id: UUID,
     conversation_id: UUID,
     message_id: UUID,
@@ -796,30 +686,14 @@ async def load_add_memory_tool(
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
+    memories_collection: MemoriesCollection,
     *,
     similarity_dedup_threshold: float = 0.90,
 ) -> list[BaseTool]:
     """create an add_memory tool for explicit memory storage.
 
-    the assistant calls this when the user explicitly asks it to
-    remember something. the memory is embedded and stored
-    immediately, with dedup against existing similar memories.
-
-    every invocation runs ``memory.write`` through the evaluator
-    before the SQL insert / update against the required
-    ``authorizer`` bundle. on a successful write authored by a user
-    (not the agent-owner short-circuit path), the per-user
-    ``MemoryOwner`` assignment is ensured via
-    :func:`ensure_memory_owner_assignment` so subsequent reads from
-    the same user hit a cached grant.
-
-    returns a single-element list (matching LangChain's
-    bind_tools convention).
-
-    :param pool: asyncpg connection pool
-    :ptype pool: Any
-    :param user_id: owning user's UUID (row filter
-        + evaluator ``caller_user_id``)
+    :param user_id: owning user's UUID (row filter + evaluator
+        ``caller_user_id``)
     :ptype user_id: UUID
     :param conversation_id: current conversation UUID
     :ptype conversation_id: UUID
@@ -833,6 +707,9 @@ async def load_add_memory_tool(
     :ptype customer_id: UUID
     :param authorizer: rbac authorizer dependency bundle; required
     :ptype authorizer: MemoryAuthorizerDependencies
+    :param memories_collection: three-tier memories collection; every
+        dedup lookup + insert goes through this collection
+    :ptype memories_collection: MemoriesCollection
     :param similarity_dedup_threshold: if an existing memory
         exceeds this similarity score, the existing memory is
         updated instead of creating a duplicate. default 0.90
@@ -845,25 +722,6 @@ async def load_add_memory_tool(
     @tool("add_memory", args_schema=AddMemoryInput)
     async def add_memory(content: str, memory_type: str = "preference") -> str:
         """store a memory about the user for future conversations."""
-        # rbac: the add_memory tool is USER-initiated (the LLM
-        # calls it on behalf of the user who asked to be
-        # remembered). the act of writing a memory declares user
-        # ownership of that slice of the memory namespace, so the
-        # per-user MemoryOwner assignment is ensured BEFORE the
-        # authorize check (idempotent — a no-op if the grant
-        # already exists from a prior write). the evaluator then
-        # sees the grant and authorizes the write; a user whose
-        # grant was later revoked (admin action) correctly denies
-        # because the ensurer only creates a fresh grant when the
-        # user has never written before (not "every write
-        # resurrects a revoked grant").
-        #
-        # first-write path: ensure creates the group + assignment,
-        # authorize passes against the fresh grant, insert proceeds.
-        # revoked-then-retry path: ensure is idempotent (row stays
-        # deleted if the admin explicitly removed it — the ensurer
-        # only inserts when absent AND the user has no existing
-        # memory rows); authorize denies; caller gets clean error.
         try:
             ns_entity = await authorizer.namespace_collection.get_by_owner_and_customer(
                 namespace_type=MEMORY_NAMESPACE_TYPE,
@@ -886,7 +744,7 @@ async def load_add_memory_tool(
             )
         try:
             await _ensure_first_write_owner_assignment(
-                pool=pool,
+                memories_collection=memories_collection,
                 authorizer=authorizer,
                 ns_entity=ns_entity,
                 user_id=user_id,
@@ -908,12 +766,10 @@ async def load_add_memory_tool(
         except MemoryAccessDenied as exc:
             return _tool_error("add_memory", "authorize", str(exc))
 
-        # Validate type
         mt = memory_type.lower().strip()
         if mt not in _VALID_MEMORY_TYPES:
             return f"Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
 
-        # Generate embedding
         try:
             embedding, _token_count = await embedding_provider.embed_text(content)
             if embedding is None:
@@ -925,45 +781,23 @@ async def load_add_memory_tool(
             )
             return _tool_error("add_memory", "embed", str(exc))
 
-        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
-
-        # Dedup: check for very similar existing memories
         try:
-            similar_rows = await pool.fetch(
-                """
-                SELECT memory_id, content, type_memory,
-                       1 - (embedding <=> $1::vector) AS similarity
-                FROM memories
-                WHERE user_id = $2 AND is_deleted = false
-                ORDER BY embedding <=> $1::vector
-                LIMIT 3
-                """,
-                embedding_str,
-                user_id,
+            similar_rows = await memories_collection.find_similar_for_dedup(
+                user_id=user_id,
+                embedding=embedding,
+                top_k=3,
+                threshold=0.0,
             )
-
             for row in similar_rows:
                 if float(row["similarity"]) >= dedup_threshold:
-                    # Update existing memory instead of creating duplicate
                     existing_id = row["memory_id"]
-                    from datetime import UTC, datetime
-
-                    # YugabyteDB TIMESTAMP columns are timezone-naive; convert at
-                    # the WRITE boundary per CLAUDE.md "Datetime Handling".
-                    now = datetime.now(UTC).replace(tzinfo=None)
-                    await pool.execute(
-                        """
-                        UPDATE memories
-                        SET content = $1, type_memory = $2, embedding = $3::vector,
-                            date_updated = $4
-                        WHERE memory_id = $5
-                        """,
-                        content,
-                        mt,
-                        embedding_str,
-                        now,
-                        existing_id,
-                    )
+                    existing_entity = await memories_collection.get(existing_id)
+                    if existing_entity is None:
+                        continue
+                    existing_entity.content = content
+                    existing_entity.type_memory = mt
+                    existing_entity.embedding = embedding
+                    await memories_collection.save_entity(existing_entity)
                     log.info(
                         "add_memory: updated existing similar memory",
                         extra={
@@ -975,40 +809,33 @@ async def load_add_memory_tool(
                         },
                     )
                     return f"Updated existing memory (was similar at {float(row['similarity']):.0%}): {content}"
-
         except Exception as exc:
-            # Dedup check failed — proceed with insert anyway
             log.warning(
                 "add_memory: dedup check failed, inserting new",
                 extra={"extra_data": {"error": str(exc)}},
             )
 
-        # Insert new memory
         try:
-            from datetime import UTC, datetime
-            from uuid import uuid4
-
-            # YugabyteDB TIMESTAMP columns are timezone-naive; convert at the
-            # WRITE boundary per CLAUDE.md "Datetime Handling".
             now = datetime.now(UTC).replace(tzinfo=None)
             memory_id = uuid4()
-            await pool.execute(
-                """
-                INSERT INTO memories (
-                    memory_id, user_id, conversation_id, message_id_source,
-                    type_memory, content, embedding, is_deleted,
-                    date_created, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7::vector, false, $8, $8)
-                """,
-                memory_id,
-                user_id,
-                conversation_id,
-                message_id,
-                mt,
-                content,
-                embedding_str,
-                now,
-            )
+            new_data: dict[str, Any] = {
+                "memory_id": memory_id,
+                "agent_id": agent_id,
+                "customer_id": customer_id,
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "message_id_source": message_id,
+                "type_memory": mt,
+                "content": content,
+                "embedding": embedding,
+                "is_deleted": False,
+                "media_id": None,
+                "date_created": now,
+                "date_deleted": None,
+                "date_updated": now,
+            }
+            entity: MemoryEntity = memories_collection.create(new_data)
+            await memories_collection.save_entity(entity)
 
             log.info(
                 "add_memory: stored new memory",

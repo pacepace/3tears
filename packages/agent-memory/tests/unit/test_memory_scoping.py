@@ -8,8 +8,8 @@ from uuid import UUID
 import pytest
 from uuid import uuid7
 
+from threetears.agent.memory.collections import _build_user_scope_clause
 from threetears.agent.memory.entities import MemoryEntity
-from threetears.agent.memory.retrieval import _build_scope_clause
 from threetears.core.cache import MISSING
 
 
@@ -221,12 +221,12 @@ class TestMemoryEntityScopingCoexistence:
 
 
 class TestBuildScopeClause:
-    """Verify _build_scope_clause generates correct SQL fragments."""
+    """Verify _build_user_scope_clause generates correct SQL fragments."""
 
     def test_user_id_only(self) -> None:
         user_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(user_id)
+        conditions, params, last_idx = _build_user_scope_clause(user_id)
 
         assert conditions == "user_id = $2"
         assert params == [user_id]
@@ -236,7 +236,7 @@ class TestBuildScopeClause:
         user_id = uuid7()
         agent_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
         )
@@ -251,7 +251,7 @@ class TestBuildScopeClause:
         agent_id = uuid7()
         customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
             customer_id=customer_id,
@@ -267,7 +267,7 @@ class TestBuildScopeClause:
         user_id = uuid7()
         agent_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
             table_prefix="mc",
@@ -282,7 +282,7 @@ class TestBuildScopeClause:
         user_id = uuid7()
         agent_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
             start_param=5,
@@ -296,7 +296,7 @@ class TestBuildScopeClause:
         user_id = uuid7()
         customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             customer_id=customer_id,
         )

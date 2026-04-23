@@ -3,6 +3,12 @@
 Three-layer gating (heuristic, rate limit, LLM worthiness), followed by
 LLM-driven extraction, embedding, similar-memory lookup, and LLM resolution
 (ADD/UPDATE/DELETE/NOOP). Fire-and-forget safe: extract() never raises.
+
+All memory-table writes go through :class:`MemoriesCollection` (save
+new via the entity lifecycle; updates / soft-deletes through
+:meth:`MemoriesCollection.save_entity`); similar-memory lookups use
+:meth:`MemoriesCollection.find_similar_for_dedup`. The extractor holds
+no pool reference — Collections carry their pool internally.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from threetears.agent.memory.authorize import (
     MemoryAuthorizerDependencies,
     authorize_memory_access,
 )
+from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
@@ -57,12 +64,13 @@ class MemoryExtractor:
         embedding_provider: EmbeddingProvider,
         chat_model_factory: ChatModelFactory,
         authorizer: MemoryAuthorizerDependencies,
+        memories_collection: MemoriesCollection,
         nats_client: Any = None,
         prompts: ExtractionPrompts | None = None,
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
-        """initialize the extractor with a required rbac authorizer.
+        """initialize the extractor with the memories Collection + rbac authorizer.
 
         :param config: memory extraction configuration
         :ptype config: MemoryConfig
@@ -71,16 +79,12 @@ class MemoryExtractor:
         :param chat_model_factory: factory producing chat models for
             worthiness / extraction / resolution stages
         :ptype chat_model_factory: ChatModelFactory
-        :param authorizer: rbac authorizer dependency bundle; required.
-            every extraction call evaluates ``memory.extract`` on the
-            memory namespace before any candidates land in L3. the
-            owner short-circuit covers the common case (agent
-            emitting memories on its own namespace); distinct
-            ``memory.extract`` action lets operators audit
-            LLM-emitted extractions separately from user-explicit
-            writes. tests inject a permissive fixture from
-            ``conftest.py``
+        :param authorizer: rbac authorizer dependency bundle; required
         :ptype authorizer: MemoryAuthorizerDependencies
+        :param memories_collection: three-tier memories collection;
+            required. all memory writes / similar-memory lookups go
+            through this collection
+        :ptype memories_collection: MemoriesCollection
         :param nats_client: NATS KV client for per-conversation rate limits
         :ptype nats_client: Any
         :param prompts: extraction prompt bundle (defaults to
@@ -101,11 +105,11 @@ class MemoryExtractor:
         self._rate_limit_bucket = rate_limit_bucket
         self._summary_callback = summary_callback
         self._authorizer = authorizer
+        self._memories = memories_collection
 
     @traced(record_args=False)
     async def extract(
         self,
-        pool: Any,
         user_id: UUID,
         conversation_id: UUID,
         message_id_source: UUID,
@@ -118,8 +122,6 @@ class MemoryExtractor:
     ) -> None:
         """Extract memories from conversation turn. Fire-and-forget safe.
 
-        :param pool: database connection pool
-        :ptype pool: Any
         :param user_id: user who sent message
         :ptype user_id: UUID
         :param conversation_id: conversation this turn belongs to
@@ -141,13 +143,6 @@ class MemoryExtractor:
         :raises: never (fire-and-forget safe, logs errors internally)
         """
         try:
-            # rbac gate: evaluate memory.extract on the per-
-            # (agent, customer) memory namespace. the owner short-
-            # circuit fires for the common case (agent extracting
-            # into its own namespace); an operator who explicitly
-            # grants a different identity the `memory.extract`
-            # action can ship agent-emitted extractions to a
-            # different owner.
             await authorize_memory_access(
                 action=ACTION_MEMORY_EXTRACT,
                 agent_id=agent_id,
@@ -157,7 +152,6 @@ class MemoryExtractor:
                 deps=self._authorizer,
             )
 
-            # Layer 1: Heuristic gates
             passed, reason = self._check_heuristic_gates(
                 user_message,
                 assistant_response,
@@ -170,7 +164,6 @@ class MemoryExtractor:
                 )
                 return
 
-            # Layer 2: Rate limit
             rate_passed, cooldown = await self._check_rate_limit(conversation_id)
             if not rate_passed:
                 log.debug(
@@ -179,7 +172,6 @@ class MemoryExtractor:
                 )
                 return
 
-            # Layer 3: Worthiness gate
             worthy, worthiness_reason = await self._check_worthiness(
                 user_message,
                 assistant_response,
@@ -191,7 +183,6 @@ class MemoryExtractor:
                 )
                 return
 
-            # Extract candidates
             candidates_raw = await self._extract_candidates(
                 user_message,
                 assistant_response,
@@ -200,7 +191,6 @@ class MemoryExtractor:
                 log.debug("No memories extracted from conversation turn")
                 return
 
-            # Embed and find similar memories
             candidates: list[dict[str, Any]] = []
             for mem in candidates_raw:
                 embedding, _tokens = await self._embedding_provider.embed_text(
@@ -208,7 +198,7 @@ class MemoryExtractor:
                 )
                 if embedding is None:
                     continue
-                similar = await self._get_similar_memories(pool, embedding, user_id)
+                similar = await self._get_similar_memories(embedding, user_id)
                 candidates.append(
                     {
                         "type": mem["type"],
@@ -221,14 +211,11 @@ class MemoryExtractor:
             if not candidates:
                 return
 
-            # Resolve actions
             actions = await self._resolve_actions(candidates)
 
-            # Execute
             await self._execute_actions(
                 actions,
                 candidates,
-                pool,
                 user_id,
                 conversation_id,
                 message_id_source,
@@ -249,7 +236,17 @@ class MemoryExtractor:
         assistant_response: str,
         turn_count: int,
     ) -> tuple[bool, str]:
-        """Layer 1: Free, instant heuristic pre-filters."""
+        """Layer 1: Free, instant heuristic pre-filters.
+
+        :param user_message: raw user message
+        :ptype user_message: str
+        :param assistant_response: raw assistant response
+        :ptype assistant_response: str
+        :param turn_count: conversation turn count
+        :ptype turn_count: int
+        :return: (passed, reason) pair
+        :rtype: tuple[bool, str]
+        """
         if len(user_message.strip()) < self._config.extraction_min_user_message_length:
             return False, "user_message_too_short"
         if len(assistant_response.strip()) < self._config.extraction_min_assistant_response_length:
@@ -262,7 +259,13 @@ class MemoryExtractor:
         self,
         conversation_id: UUID,
     ) -> tuple[bool, int]:
-        """Layer 2: Rate limiter via NATS KV create()."""
+        """Layer 2: Rate limiter via NATS KV create().
+
+        :param conversation_id: conversation UUID to rate-limit
+        :ptype conversation_id: UUID
+        :return: (passed, cooldown) pair
+        :rtype: tuple[bool, int]
+        """
         if self._nats_client is None:
             return True, 0
         try:
@@ -281,7 +284,15 @@ class MemoryExtractor:
         user_message: str,
         assistant_response: str,
     ) -> tuple[bool, str]:
-        """Layer 3: Cheap LLM call to decide if extraction is worth running."""
+        """Layer 3: Cheap LLM call to decide if extraction is worth running.
+
+        :param user_message: raw user message
+        :ptype user_message: str
+        :param assistant_response: raw assistant response
+        :ptype assistant_response: str
+        :return: (worthy, reason) pair
+        :rtype: tuple[bool, str]
+        """
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="worthiness",
@@ -317,7 +328,15 @@ class MemoryExtractor:
         user_message: str,
         assistant_response: str,
     ) -> list[dict[str, str]]:
-        """Use LLM to extract candidate memories from a conversation turn."""
+        """Use LLM to extract candidate memories from a conversation turn.
+
+        :param user_message: raw user message
+        :ptype user_message: str
+        :param assistant_response: raw assistant response
+        :ptype assistant_response: str
+        :return: list of candidate memory dicts
+        :rtype: list[dict[str, str]]
+        """
         try:
             model = await self._chat_model_factory.create_chat_model(
                 purpose="extraction",
@@ -364,24 +383,23 @@ class MemoryExtractor:
 
     async def _get_similar_memories(
         self,
-        pool: Any,
         embedding: list[float],
         user_id: UUID,
     ) -> list[dict[str, Any]]:
-        """Query pgvector for existing memories similar to a candidate."""
-        embedding_str = json.dumps(embedding)
-        rows = await pool.fetch(
-            """
-            SELECT memory_id, content, type_memory,
-                   1 - (embedding <=> $1::vector) AS similarity
-            FROM memories
-            WHERE user_id = $2 AND is_deleted = false
-            ORDER BY embedding <=> $1::vector
-            LIMIT $3
-            """,
-            embedding_str,
-            user_id,
-            self._config.similar_memory_top_k,
+        """Query existing memories similar to a candidate via the Collection.
+
+        :param embedding: candidate embedding vector
+        :ptype embedding: list[float]
+        :param user_id: owning user UUID (row filter)
+        :ptype user_id: UUID
+        :return: list of similar memory dicts
+        :rtype: list[dict[str, Any]]
+        """
+        rows = await self._memories.find_similar_for_dedup(
+            user_id=user_id,
+            embedding=embedding,
+            top_k=self._config.similar_memory_top_k,
+            threshold=self._config.similar_memory_threshold,
         )
         return [
             {
@@ -391,7 +409,6 @@ class MemoryExtractor:
                 "similarity": float(row["similarity"]),
             }
             for row in rows
-            if float(row["similarity"]) >= self._config.similar_memory_threshold
         ]
 
     @traced()
@@ -403,6 +420,11 @@ class MemoryExtractor:
 
         Fast path: if no candidates have similar memories, return all ADD
         without an LLM call.
+
+        :param candidates: candidate memories with similar-memory context
+        :ptype candidates: list[dict[str, Any]]
+        :return: list of validated action dicts
+        :rtype: list[dict[str, Any]]
         """
         has_any_similar = any(c["similar_memories"] for c in candidates)
         if not has_any_similar:
@@ -465,7 +487,6 @@ class MemoryExtractor:
                         validated["action"] = "NOOP"
                 valid_actions.append(validated)
 
-            # Any candidates not covered default to ADD
             for i in range(len(candidates)):
                 if i not in seen_indices:
                     valid_actions.append({"index": i, "action": "ADD"})
@@ -483,7 +504,13 @@ class MemoryExtractor:
         self,
         candidates: list[dict[str, Any]],
     ) -> str:
-        """Build the candidates section for the resolution prompt."""
+        """Build the candidates section for the resolution prompt.
+
+        :param candidates: candidates with similar-memory context
+        :ptype candidates: list[dict[str, Any]]
+        :return: prompt string
+        :rtype: str
+        """
         sections = []
         for i, c in enumerate(candidates):
             section = f"Candidate {i}:\n  Type: {c['type']}\n  Content: {c['content']}"
@@ -507,7 +534,6 @@ class MemoryExtractor:
         self,
         actions: list[dict[str, Any]],
         candidates: list[dict[str, Any]],
-        pool: Any,
         user_id: UUID,
         conversation_id: UUID,
         message_id_source: UUID,
@@ -515,14 +541,12 @@ class MemoryExtractor:
         agent_id: UUID,
         customer_id: UUID,
     ) -> None:
-        """Execute ADD/UPDATE/DELETE/NOOP actions against database.
+        """Execute ADD/UPDATE/DELETE/NOOP actions via the Collection.
 
         :param actions: resolved action list from _resolve_actions
         :ptype actions: list[dict[str, Any]]
         :param candidates: candidate memories with embeddings
         :ptype candidates: list[dict[str, Any]]
-        :param pool: database connection pool
-        :ptype pool: Any
         :param user_id: user who owns these memories
         :ptype user_id: UUID
         :param conversation_id: conversation this extraction belongs to
@@ -536,8 +560,6 @@ class MemoryExtractor:
         :return: nothing
         :rtype: None
         """
-        # YugabyteDB TIMESTAMP columns are timezone-naive; convert at the
-        # WRITE boundary per CLAUDE.md "Datetime Handling" section.
         now = datetime.now(UTC).replace(tzinfo=None)
 
         for act in actions:
@@ -548,27 +570,24 @@ class MemoryExtractor:
             try:
                 if action == "ADD":
                     memory_id = uuid7()
-                    embedding_str = json.dumps(candidate["embedding"])
-                    await pool.execute(
-                        """
-                        INSERT INTO memories (
-                            memory_id, agent_id, customer_id,
-                            user_id, conversation_id, message_id_source,
-                            type_memory, content, embedding, is_deleted,
-                            date_created, date_updated
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, false, $10, $10)
-                        """,
-                        memory_id,
-                        agent_id,
-                        customer_id,
-                        user_id,
-                        conversation_id,
-                        message_id_source,
-                        candidate["type"],
-                        candidate["content"],
-                        embedding_str,
-                        now,
-                    )
+                    new_data: dict[str, Any] = {
+                        "memory_id": memory_id,
+                        "agent_id": agent_id,
+                        "customer_id": customer_id,
+                        "user_id": user_id,
+                        "conversation_id": conversation_id,
+                        "message_id_source": message_id_source,
+                        "type_memory": candidate["type"],
+                        "content": candidate["content"],
+                        "embedding": candidate["embedding"],
+                        "is_deleted": False,
+                        "media_id": None,
+                        "date_created": now,
+                        "date_deleted": None,
+                        "date_updated": now,
+                    }
+                    entity = self._memories.create(new_data)
+                    await self._memories.save_entity(entity)
                     if self._summary_callback:
                         await self._summary_callback(
                             str(memory_id),
@@ -582,22 +601,14 @@ class MemoryExtractor:
                         updated_content,
                     )
                     if new_embedding is not None:
-                        embedding_str = json.dumps(new_embedding)
-                        await pool.execute(
-                            """
-                            UPDATE memories
-                            SET content = $1, type_memory = $2,
-                                embedding = $3::vector, date_updated = $4
-                            WHERE memory_id = $5::uuid AND user_id = $6
-                              AND is_deleted = false
-                            """,
-                            updated_content,
-                            updated_type,
-                            embedding_str,
-                            now,
-                            act["memory_id"],
-                            user_id,
-                        )
+                        memory_uuid = UUID(act["memory_id"])
+                        entity = await self._memories.get(memory_uuid)
+                        if entity is None or entity.user_id != user_id or entity.is_deleted:
+                            continue
+                        entity.content = updated_content
+                        entity.type_memory = updated_type
+                        entity.embedding = new_embedding
+                        await self._memories.save_entity(entity)
                         if self._summary_callback:
                             await self._summary_callback(
                                 act["memory_id"],
@@ -605,19 +616,11 @@ class MemoryExtractor:
                             )
 
                 elif action == "DELETE":
-                    await pool.execute(
-                        """
-                        UPDATE memories
-                        SET is_deleted = true, date_deleted = $1
-                        WHERE memory_id = $2::uuid AND user_id = $3
-                          AND is_deleted = false
-                        """,
-                        now,
-                        act["memory_id"],
-                        user_id,
-                    )
-
-                # NOOP: nothing to do
+                    memory_uuid = UUID(act["memory_id"])
+                    entity = await self._memories.get(memory_uuid)
+                    if entity is None or entity.user_id != user_id or entity.is_deleted:
+                        continue
+                    await self._memories.soft_delete(entity)
 
             except Exception as exc:
                 log.warning(
@@ -629,13 +632,25 @@ class MemoryExtractor:
 
     @staticmethod
     def _get_response_content(response: Any) -> str:
-        """Extract string content from an LLM response."""
+        """Extract string content from an LLM response.
+
+        :param response: raw LLM response object
+        :ptype response: Any
+        :return: stripped content string
+        :rtype: str
+        """
         raw = response.content if hasattr(response, "content") else str(response)
         return (raw if isinstance(raw, str) else str(raw)).strip()
 
     @staticmethod
     def _strip_code_block(content: str) -> str:
-        """Strip markdown code block wrappers if present."""
+        """Strip markdown code block wrappers if present.
+
+        :param content: raw content possibly wrapped in markdown fence
+        :ptype content: str
+        :return: inner content with fence stripped
+        :rtype: str
+        """
         if content.startswith("```"):
             lines = content.split("\n")
             if len(lines) > 2:

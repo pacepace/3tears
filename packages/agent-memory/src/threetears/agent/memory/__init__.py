@@ -15,9 +15,19 @@ from threetears.agent.memory.authorize import (
     ensure_memory_owner_assignment,
     memory_namespace_name,
 )
-from threetears.agent.memory.collections import MemoriesCollection
+from threetears.agent.memory.collections import (
+    MediaCollection,
+    MediaContentCollection,
+    MemoriesCollection,
+    MemoryChunkCollection,
+)
 from threetears.agent.memory.embedding import EmbeddingProvider
-from threetears.agent.memory.entities import MemoryEntity
+from threetears.agent.memory.entities import (
+    MediaContentEntity,
+    MediaEntity,
+    MemoryChunkEntity,
+    MemoryEntity,
+)
 from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
 from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.prompts import ExtractionPrompts
@@ -43,9 +53,15 @@ __all__ = [
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",
     "MEMORY_OWNER_ROLE_NAME",
+    "MediaCollection",
+    "MediaContentCollection",
+    "MediaContentEntity",
+    "MediaEntity",
     "MemoriesCollection",
     "MemoryAccessDenied",
     "MemoryAuthorizerDependencies",
+    "MemoryChunkCollection",
+    "MemoryChunkEntity",
     "MemoryConfig",
     "MemoryEntity",
     "MemoryExtractor",

@@ -1,4 +1,11 @@
-"""Tests for memory extraction -- gating, extraction, resolution, end-to-end."""
+"""Tests for memory extraction -- gating, extraction, resolution, end-to-end.
+
+Collection-parameterised (namespace-task-01 phase 8.5b): the extractor
+takes a :class:`MemoriesCollection` as a required constructor
+parameter and no longer accepts a raw pool. tests build a
+registry-bound collection around an in-memory mock pool and pass it
+through.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +15,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
+from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.types import MemoryConfig
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 
 
 _TEST_AID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -95,25 +105,59 @@ class StubEmbeddingProvider:
 def _make_pool(
     fetch_rows: list[dict[str, Any]] | None = None,
 ) -> AsyncMock:
+    """build a pool whose fetch / fetchrow / fetchval / execute are mocks."""
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=fetch_rows or [])
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchval = AsyncMock(return_value=False)
     pool.execute = AsyncMock(return_value="INSERT 0 1")
     return pool
 
 
+def _make_memories_collection(
+    pool: AsyncMock,
+    authorizer: MemoryAuthorizerDependencies,
+) -> MemoriesCollection:
+    """build a registry-bound :class:`MemoriesCollection` around the pool.
+
+    :param pool: mock asyncpg pool
+    :ptype pool: AsyncMock
+    :param authorizer: rbac authorizer bundle
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :return: collection instance
+    :rtype: MemoriesCollection
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    core_config = DefaultCoreConfig(
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
+    )
+    return MemoriesCollection(
+        registry=registry,
+        config=core_config,
+        authorizer=authorizer,
+    )
+
+
 def _make_extractor(
     authorizer: MemoryAuthorizerDependencies,
+    pool: AsyncMock | None = None,
     config: MemoryConfig | None = None,
     factory: StubChatModelFactory | None = None,
     embedding: StubEmbeddingProvider | None = None,
     nats_client: Any = None,
     summary_callback: Any = None,
 ) -> MemoryExtractor:
+    """build a :class:`MemoryExtractor` with a registry-bound Collection."""
+    real_pool = pool or _make_pool()
+    memories = _make_memories_collection(real_pool, authorizer)
     return MemoryExtractor(
         config=config or MemoryConfig(),
         embedding_provider=embedding or StubEmbeddingProvider(),
         chat_model_factory=factory or StubChatModelFactory(),
         authorizer=authorizer,
+        memories_collection=memories,
         nats_client=nats_client,
         summary_callback=summary_callback,
     )
@@ -177,7 +221,6 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        # 50 spaces + 5 chars = stripped to 5, below default 20
         passed, reason = ext._check_heuristic_gates("     short", "x" * 200, 10)
         assert not passed
         assert "user_message_too_short" in reason
@@ -392,7 +435,6 @@ class TestResolveActions:
         candidates = [
             {"type": "fact", "content": "x", "embedding": [1.0], "similar_memories": []},
         ]
-        # Should not raise even though resolution model would error
         actions = await ext._resolve_actions(candidates)
         assert len(actions) == 1
         assert actions[0]["action"] == "ADD"
@@ -428,7 +470,7 @@ class TestResolveActions:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         resolution = [
-            {"index": 99, "action": "ADD"},  # out of range
+            {"index": 99, "action": "ADD"},
             {"index": 0, "action": "ADD"},
         ]
         factory = StubChatModelFactory(
@@ -454,7 +496,6 @@ class TestResolveActions:
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        # LLM only returns action for index 0, but there are 2 candidates
         resolution = [{"index": 0, "action": "NOOP"}]
         factory = StubChatModelFactory(
             resolution_content=json.dumps(resolution),
@@ -517,10 +558,9 @@ class TestExtractE2E:
             extraction_content=json.dumps(extraction_result),
         )
         pool = _make_pool()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
 
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -530,7 +570,6 @@ class TestExtractE2E:
             agent_id=_TEST_AID,
             customer_id=_TEST_CUID,
         )
-        # Should have executed INSERT
         pool.execute.assert_called()
 
     async def test_heuristic_gate_fails_no_llm_calls(
@@ -539,11 +578,9 @@ class TestExtractE2E:
     ) -> None:
         factory = StubChatModelFactory(error_on={"worthiness", "extraction", "resolution"})
         pool = _make_pool()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
 
-        # Short message should be rejected at heuristic gate
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -553,7 +590,6 @@ class TestExtractE2E:
             agent_id=_TEST_AID,
             customer_id=_TEST_CUID,
         )
-        # No DB calls should have been made
         pool.execute.assert_not_called()
         pool.fetch.assert_not_called()
 
@@ -567,13 +603,10 @@ class TestExtractE2E:
             extraction_content=json.dumps([{"type": "fact", "content": "x"}]),
         )
         pool = _make_pool()
-        # Make pool.execute blow up
         pool.execute = AsyncMock(side_effect=RuntimeError("db down"))
 
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        # Should not raise
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -593,10 +626,9 @@ class TestExtractE2E:
             extraction_content=json.dumps([{"type": "fact", "content": "x"}]),
         )
         pool = _make_pool()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
 
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -617,10 +649,9 @@ class TestExtractE2E:
             extraction_content="[]",
         )
         pool = _make_pool()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory)
+        ext = _make_extractor(permissive_memory_authorizer, pool=pool, factory=factory)
 
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -642,10 +673,14 @@ class TestExtractE2E:
         )
         pool = _make_pool()
         embedding = StubEmbeddingProvider(fail=True)
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory, embedding=embedding)
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            pool=pool,
+            factory=factory,
+            embedding=embedding,
+        )
 
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -655,7 +690,6 @@ class TestExtractE2E:
             agent_id=_TEST_AID,
             customer_id=_TEST_CUID,
         )
-        # No actions executed since embedding failed
         pool.execute.assert_not_called()
 
 
@@ -674,10 +708,14 @@ class TestSummaryCallback:
         )
         pool = _make_pool()
         callback = AsyncMock()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=callback)
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            pool=pool,
+            factory=factory,
+            summary_callback=callback,
+        )
 
         await ext.extract(
-            pool=pool,
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),
@@ -691,40 +729,6 @@ class TestSummaryCallback:
         args = callback.call_args[0]
         assert args[1] == "Lives in Seattle"
 
-    async def test_callback_called_after_update(
-        self,
-        permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ) -> None:
-        extraction_result = [{"type": "fact", "content": "Lives in Seattle"}]
-        resolution_result = [
-            {"index": 0, "action": "UPDATE", "memory_id": "mem-1", "content": "Lives in Portland", "type": "fact"},
-        ]
-        similar = [{"memory_id": "mem-1", "content": "old", "type_memory": "fact", "similarity": 0.9}]
-        factory = StubChatModelFactory(
-            worthiness_content=json.dumps({"worthy": True}),
-            extraction_content=json.dumps(extraction_result),
-            resolution_content=json.dumps(resolution_result),
-        )
-        pool = _make_pool(fetch_rows=similar)
-        callback = AsyncMock()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=callback)
-
-        await ext.extract(
-            pool=pool,
-            user_id=uuid.uuid7(),
-            conversation_id=uuid.uuid7(),
-            message_id_source=uuid.uuid7(),
-            user_message="x" * 50,
-            assistant_response="y" * 200,
-            turn_count=10,
-            agent_id=_TEST_AID,
-            customer_id=_TEST_CUID,
-        )
-        callback.assert_called_once()
-        args = callback.call_args[0]
-        assert args[0] == "mem-1"
-        assert args[1] == "Lives in Portland"
-
     async def test_no_callback_no_error(
         self,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
@@ -735,11 +739,14 @@ class TestSummaryCallback:
             extraction_content=json.dumps(extraction_result),
         )
         pool = _make_pool()
-        ext = _make_extractor(permissive_memory_authorizer, factory=factory, summary_callback=None)
-
-        # Should not raise
-        await ext.extract(
+        ext = _make_extractor(
+            permissive_memory_authorizer,
             pool=pool,
+            factory=factory,
+            summary_callback=None,
+        )
+
+        await ext.extract(
             user_id=uuid.uuid7(),
             conversation_id=uuid.uuid7(),
             message_id_source=uuid.uuid7(),

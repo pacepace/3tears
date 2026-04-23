@@ -12,41 +12,75 @@ pip install 3tears-agent-memory
 
 ## Components
 
+### Collections are the single entry point for memory-table SQL
+
+Every memory-table write, single-row read, batch read, and hybrid-search query goes through one of four `BaseCollection` subclasses; no consumer of this package holds an `asyncpg.Pool` reference directly (namespace-task-01 phase 8.5b).
+
+- `MemoriesCollection` — `memories` table. CRUD through `get` / `save_entity` / `delete`; complex queries through `hybrid_search`, `search_by_ids`, `search_by_semantic`, `search_by_fts`, `find_similar_for_dedup`, `count_by_user`, `fetch_content_for_recall`.
+- `MediaCollection` — `media` parent table. CRUD only.
+- `MediaContentCollection` — `media_content` child table. CRUD + `hybrid_search`, `search_by_ids`, `search_by_semantic`, `search_by_fts`, `fetch_content_for_recall`.
+- `MemoryChunkCollection` — `memory_chunks` child table. CRUD + `hybrid_search`, `search_by_ids`, `search_by_semantic`, `fetch_content_for_recall`.
+
+All four resolve their L3 pool through `CollectionRegistry` (same pattern `ConversationCollection` uses); an L1 `SQLiteBackend` attached to the registry populates on `save_entity` and serves subsequent by-id `get` calls without an L3 round-trip. The orphan tables `media` / `media_content` / `memory_chunks` — introduced by migrations v006 / v007 — have Collection coverage for the first time in this release.
+
+Hybrid-search methods carry documented `# cache-bypass: <reason>` inline comments because the query shape (vector distance, FTS rank, multi-table joins) is not primary-key-addressable and the L1 row cache cannot serve the lookup. Keeping the SQL on the Collection preserves the single entry point — the cache-primitive enforcement walker recognises in-Collection bypass sites as legitimate and reports any bypass that leaks back into `retrieval.py` / `extraction.py` / `tools.py` as a violation.
+
 ### MemoryExtractor
 
 Extracts memorable facts from conversation turns. Uses a multi-stage pipeline: candidate extraction via LLM, deduplication against existing memories via embedding similarity, and action resolution (ADD / UPDATE / DELETE).
 
 ```python
-from threetears.agent.memory import MemoryExtractor, MemoryConfig, EmbeddingProvider, ChatModelFactory
+from threetears.agent.memory import (
+    MemoriesCollection,
+    MemoryConfig,
+    MemoryExtractor,
+)
 
 extractor = MemoryExtractor(
     config=MemoryConfig(),
     embedding_provider=my_embedding_provider,
     chat_model_factory=my_chat_model_factory,
+    authorizer=authorizer_bundle,
+    memories_collection=memories_collection,
     summary_callback=on_new_memory,
 )
 
 await extractor.extract(
-    pool=db_pool,
     user_id=user_id,
     conversation_id=conv_id,
     message_id_source=msg_id,
     user_message="I just moved to Portland",
     assistant_response="That's exciting! Portland has great food...",
     turn_count=5,
+    agent_id=agent_id,
+    customer_id=customer_id,
 )
 ```
 
 ### MemoryRetriever
 
-Retrieves relevant memories using hybrid search: pgvector semantic similarity, PostgreSQL full-text search, recency decay, and MMR reranking for diversity.
+Retrieves relevant memories using hybrid search: pgvector semantic similarity, PostgreSQL full-text search, recency decay, and MMR reranking for diversity. Takes the three search-bearing Collections at construction — no pool.
 
 ```python
 from threetears.agent.memory import MemoryRetriever, MemoryConfig
 
-retriever = MemoryRetriever(config=MemoryConfig(), embedding_provider=my_embedding_provider)
+retriever = MemoryRetriever(
+    config=MemoryConfig(),
+    embedding_provider=my_embedding_provider,
+    authorizer=authorizer_bundle,
+    memories_collection=memories_collection,
+    media_content_collection=media_content_collection,
+    memory_chunk_collection=memory_chunk_collection,
+)
 
-result = await retriever.retrieve_with_candidates(pool, user_id, "Tell me about Portland")
+result = await retriever.retrieve_with_candidates(
+    user_id,
+    "Tell me about Portland",
+    agent_id=agent_id,
+    customer_id=customer_id,
+    caller_user_id=user_id,
+    caller_agent_id=agent_id,
+)
 
 # result.context     — formatted string for injection into system prompt
 # result.memories    — raw memory dicts with similarity scores
@@ -74,13 +108,44 @@ class MyChatModelFactory(ChatModelFactory):
 
 ### Tools
 
-LangChain tools for agent use — memory search and recall:
+LangChain tools for agent use — memory search, recall, and explicit add. Factories take Collection references; no pool:
 
 ```python
-from threetears.agent.memory import load_memory_search_tool, load_recall_memory_tool
+from threetears.agent.memory import (
+    load_add_memory_tool,
+    load_memory_search_tool,
+    load_recall_memory_tool,
+)
 
-search_tool = load_memory_search_tool(pool, user_id, embedding_provider, tool_context)
-recall_tool = load_recall_memory_tool(pool, user_id)
+search_tool = await load_memory_search_tool(
+    user_id=user_id,
+    embedding_provider=embedding_provider,
+    agent_id=agent_id,
+    customer_id=customer_id,
+    authorizer=authorizer_bundle,
+    memories_collection=memories_collection,
+    media_content_collection=media_content_collection,
+    memory_chunk_collection=memory_chunk_collection,
+)
+recall_tool = await load_recall_memory_tool(
+    user_id=user_id,
+    agent_id=agent_id,
+    customer_id=customer_id,
+    authorizer=authorizer_bundle,
+    memories_collection=memories_collection,
+    media_content_collection=media_content_collection,
+    memory_chunk_collection=memory_chunk_collection,
+)
+add_tool = await load_add_memory_tool(
+    user_id=user_id,
+    conversation_id=conv_id,
+    message_id=msg_id,
+    embedding_provider=embedding_provider,
+    agent_id=agent_id,
+    customer_id=customer_id,
+    authorizer=authorizer_bundle,
+    memories_collection=memories_collection,
+)
 ```
 
 ### Configuration

@@ -31,7 +31,11 @@ import asyncpg
 import pytest
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
-from threetears.agent.memory.collections import MemoriesCollection
+from threetears.agent.memory.collections import (
+    MediaContentCollection,
+    MemoriesCollection,
+    MemoryChunkCollection,
+)
 from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.retrieval import MemoryRetriever
@@ -45,6 +49,46 @@ from threetears.conversations.migrations import register as register_conversatio
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
+
+
+def _build_memory_collections(
+    pool: asyncpg.Pool,
+    authorizer: MemoryAuthorizerDependencies,
+) -> tuple[
+    MemoriesCollection, MediaContentCollection, MemoryChunkCollection,
+]:
+    """build the three memory-package Collections against one pool.
+
+    :param pool: asyncpg pool
+    :ptype pool: asyncpg.Pool
+    :param authorizer: rbac authorizer bundle
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :return: tuple of (memories, media_content, memory_chunks)
+    :rtype: tuple[MemoriesCollection, MediaContentCollection, MemoryChunkCollection]
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    config = DefaultCoreConfig(
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
+    )
+    memories = MemoriesCollection(
+        registry=registry,
+        config=config,
+        authorizer=authorizer,
+        nats_client=None,
+    )
+    media_content = MediaContentCollection(
+        registry=registry,
+        config=config,
+        nats_client=None,
+    )
+    chunks = MemoryChunkCollection(
+        registry=registry,
+        config=config,
+        nats_client=None,
+    )
+    return memories, media_content, chunks
 
 from .conftest import AsyncpgStore
 
@@ -218,17 +262,8 @@ class TestMemoriesCollectionAgainstLiveSchema:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            registry = CollectionRegistry()
-            config = DefaultCoreConfig(
-                collection_flush="ALWAYS",
-                collection_flush_tables="",
-            )
-            coll = MemoriesCollection(
-                registry=registry,
-                config=config,
-                postgres_pool=pool,
-                authorizer=permissive_memory_authorizer,
-                nats_client=None,
+            coll, _, _ = _build_memory_collections(
+                pool, permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -286,16 +321,8 @@ class TestMemoriesCollectionAgainstLiveSchema:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            registry = CollectionRegistry()
-            config = DefaultCoreConfig(
-                collection_flush="ALWAYS",
-                collection_flush_tables="",
-            )
-            coll = MemoriesCollection(
-                registry=registry,
-                config=config,
-                postgres_pool=pool,
-                authorizer=permissive_memory_authorizer,
+            coll, _, _ = _build_memory_collections(
+                pool, permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -385,11 +412,19 @@ class TestMemoryRetrieverAgainstLiveSchema:
             )
 
             config = MemoryConfig()
+            memories, media_content, chunks = _build_memory_collections(
+                pool, permissive_memory_authorizer,
+            )
             retriever = MemoryRetriever(
-                config, _StubEmbedding(), permissive_memory_authorizer,
+                config,
+                _StubEmbedding(),
+                permissive_memory_authorizer,
+                memories_collection=memories,
+                media_content_collection=media_content,
+                memory_chunk_collection=chunks,
             )
             context = await retriever.retrieve(
-                pool, user_id, "What does user prefer programming?"
+                user_id, "What does user prefer programming?"
             )
             assert context is not None
             assert "Rust" in context
@@ -429,16 +464,19 @@ class TestMemoryExtractorAgainstLiveSchema:
                     [{"type": "fact", "content": "User lives in Seattle"}]
                 ),
             )
+            memories, _, _ = _build_memory_collections(
+                pool, permissive_memory_authorizer,
+            )
             extractor = MemoryExtractor(
                 config=MemoryConfig(),
                 embedding_provider=_StubEmbedding(),
                 chat_model_factory=factory,
                 authorizer=permissive_memory_authorizer,
+                memories_collection=memories,
                 nats_client=None,
             )
             user_id = uuid.uuid4()
             await extractor.extract(
-                pool=pool,
                 user_id=user_id,
                 conversation_id=uuid.uuid4(),
                 message_id_source=uuid.uuid4(),
@@ -492,8 +530,10 @@ class TestMemoryToolsAgainstLiveSchema:
             msg_id = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
+            memories, media_content, chunks = _build_memory_collections(
+                pool, permissive_memory_authorizer,
+            )
             tools = await load_add_memory_tool(
-                pool,
                 user_id,
                 conv_id,
                 msg_id,
@@ -501,6 +541,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
+                memories,
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke(
@@ -541,8 +582,10 @@ class TestMemoryToolsAgainstLiveSchema:
             msg_id = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
+            memories, media_content, chunks = _build_memory_collections(
+                pool, permissive_memory_authorizer,
+            )
             add_tools = await load_add_memory_tool(
-                pool,
                 user_id,
                 conv_id,
                 msg_id,
@@ -550,18 +593,21 @@ class TestMemoryToolsAgainstLiveSchema:
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
+                memories,
             )
             await add_tools[0].ainvoke(
                 {"content": "User loves type hints", "memory_type": "preference"}
             )
 
             search_tools = await load_memory_search_tool(
-                pool,
                 user_id,
                 _StubEmbedding(),
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
+                memories,
+                media_content,
+                chunks,
             )
             assert len(search_tools) == 1
             result = await search_tools[0].ainvoke(
@@ -611,12 +657,17 @@ class TestMemoryToolsAgainstLiveSchema:
                 now,
             )
 
+            memories, media_content, chunks = _build_memory_collections(
+                pool, permissive_memory_authorizer,
+            )
             tools = await load_recall_memory_tool(
-                pool,
                 user_id,
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
+                memories,
+                media_content,
+                chunks,
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke({"id": str(mid), "type": "memory"})
