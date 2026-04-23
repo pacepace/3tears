@@ -133,12 +133,50 @@ class _AsyncpgStore:
         return result
 
 
+# minimal stub of the ``platform`` schema the aibots hub migrations
+# create in production. agent-workspace v003 writes cross-schema into
+# ``platform.namespaces`` (joined through ``platform.agents``) during
+# its namespace backfill. the 3tears core test suite cannot import the
+# hub's platform migrations, so the fixture below stands up the columns
+# the v003 SELECT/INSERT touches — nothing more. this is a test
+# precondition, not a shim: the production flow runs the hub's
+# platform-scope migrations BEFORE any agent-scope migration touches
+# the per-agent schema, and the same invariant is reproduced here.
+_PLATFORM_SCHEMA_DDL = (
+    'CREATE SCHEMA IF NOT EXISTS "platform"',
+    """
+    CREATE TABLE IF NOT EXISTS platform.agents (
+        id UUID PRIMARY KEY,
+        customer_id UUID NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS platform.namespaces (
+        id UUID PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        namespace_type VARCHAR(20) NOT NULL,
+        owner_agent_id UUID,
+        schema_name VARCHAR(100),
+        customer_id UUID,
+        metadata JSONB,
+        date_created TIMESTAMP NOT NULL,
+        date_updated TIMESTAMP NOT NULL
+    )
+    """,
+)
+
+
 @pytest.fixture
 async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     """
     create a fresh schema per test and yield (pg_url, schema_name).
 
     the schema is dropped on teardown so each test gets a clean slate.
+    the ``platform`` schema plus its ``agents`` and ``namespaces``
+    tables are stood up alongside so agent-scope migrations that write
+    cross-schema into ``platform.*`` (agent-workspace v003 is the
+    current example) can run without reaching into the hub's platform
+    migration chain.
 
     :return: tuple of (pg url, fresh schema name)
     :rtype: tuple[str, str]
@@ -149,6 +187,8 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
     try:
         await conn.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        for ddl in _PLATFORM_SCHEMA_DDL:
+            await conn.execute(ddl)
     finally:
         await conn.close()
     yield (pg_url, schema)
