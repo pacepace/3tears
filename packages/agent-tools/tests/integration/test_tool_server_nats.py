@@ -123,20 +123,25 @@ class TestToolServerNatsIntegration:
 
             call_subject = f"{namespace}.tools.internal.{pod_id}"
             correlation_id = str(uuid4())
+            # the CallRequest envelope moved correlation_id into the
+            # nested CallContext. top-level ``correlation_id`` on the
+            # request is explicitly rejected (extra="forbid").
             request_data = json.dumps(
                 {
                     "tool_name": "integration.stub",
                     "tool_version": "1.0",
                     "arguments": {"message": "hello"},
-                    "correlation_id": correlation_id,
+                    "context": {"correlation_id": correlation_id},
                 }
             ).encode("utf-8")
 
             response = await nc.request(call_subject, request_data, timeout=5.0)
             response_data = json.loads(response.data)
 
-            assert response_data["success"] is True
-            assert response_data["correlation_id"] == correlation_id
+            assert response_data["success"] is True, response_data.get("error")
+            assert (
+                response_data["context"]["correlation_id"] == correlation_id
+            )
             content = json.loads(response_data["content"])
             assert content == {"message": "hello"}
 
