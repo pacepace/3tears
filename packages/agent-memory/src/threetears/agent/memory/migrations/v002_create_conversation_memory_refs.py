@@ -2,9 +2,11 @@
 agent-memory v002: create conversation_memory_refs table.
 
 translated from the hub's former alembic migration ``003_memory_refs``.
-the ledger (``threetears.agent.memory.ledger.MemoryLedger``) tracks
-per-conversation memory-surfacing to prevent the agent re-retrieving
-items it has already shown the LLM in the same conversation.
+the composite-pk :class:`~threetears.agent.memory.collections.
+MemoryRefsCollection` (adopted under namespace-task-01 phase 8.5l-2)
+tracks per-conversation memory-surfacing to prevent the agent re-
+retrieving items it has already shown the LLM in the same
+conversation.
 """
 
 from __future__ import annotations

@@ -43,6 +43,7 @@ from threetears.agent.memory.entities import (
     MediaEntity,
     MemoryChunkEntity,
     MemoryEntity,
+    MemoryRefEntity,
 )
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "MediaContentCollection",
     "MemoriesCollection",
     "MemoryChunkCollection",
+    "MemoryRefsCollection",
 ]
 
 log = get_logger(__name__)
@@ -2287,3 +2289,225 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
             return None
         result: str = row["content"]
         return result
+
+
+_MEMORY_REF_FIELD_TYPES: dict[str, Any] = {
+    "conversation_id": UUID,
+    "item_id": UUID,
+    "item_type": str,
+    "short_desc": str,
+    "date_added": datetime,
+}
+
+
+def _coerce_uuid_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """coerce pgproto UUID instances in a row dict to stdlib UUID.
+
+    asyncpg returns UUID columns as ``asyncpg.pgproto.pgproto.UUID``,
+    which SQLite's parameter binder rejects when the row is written
+    into L1 even though pgproto UUID subclasses stdlib UUID (the
+    binder special-cases stdlib UUID and errors on subclasses). the
+    ``type() is not UUID`` check forces conversion for any subclass.
+    converting at the fetch boundary lets every downstream tier
+    accept the values uniformly.
+
+    :param row: row dict as returned by asyncpg
+    :ptype row: dict[str, Any]
+    :return: same dict with pk UUID columns coerced
+    :rtype: dict[str, Any]
+    """
+    for key in ("conversation_id", "item_id"):
+        value = row.get(key)
+        if value is not None and type(value) is not UUID:
+            row[key] = UUID(str(value))
+    return row
+
+
+class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
+    """three-tier collection for :class:`MemoryRefEntity`.
+
+    namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` — the
+    bespoke wrapper that sat on top of ``SQLiteBackend`` with hand-rolled
+    pool.fetch / pool.execute against ``conversation_memory_refs``. on
+    top of 8.5l-1's composite-pk :class:`BaseCollection` support, the
+    table fits the Collection contract natively:
+    ``primary_key_column = ("conversation_id", "item_id")``. the L2
+    invalidation envelope carries ``ids: [<conversation_id>,
+    <item_id>]`` per 8.5l-1's wire format.
+
+    tier configuration: L1 (SQLite) + L2 (NATS KV) + L3 (postgres /
+    ``NatsProxyL3Backend``). full three-tier CRUD via
+    :meth:`save_entity` / :meth:`get` / :meth:`delete`. per-conversation
+    multi-row scans land on :meth:`find_by_conversation` with an
+    explicit ``# cache-bypass:`` annotation documenting the query is
+    not primary-key-addressable.
+    """
+
+    primary_key_column: str | tuple[str, ...] = ("conversation_id", "item_id")
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name
+        :rtype: str
+        """
+        return "conversation_memory_refs"
+
+    @property
+    def entity_class(self) -> type[MemoryRefEntity]:
+        """return entity class for this collection.
+
+        :return: entity class
+        :rtype: type[MemoryRefEntity]
+        """
+        return MemoryRefEntity
+
+    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch one row from L3 by composite pk.
+
+        :param entity_id: ``(conversation_id, item_id)`` tuple; scalar
+            inputs raise in :meth:`BaseCollection._normalize_pk`
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        key = self._normalize_pk(entity_id)
+        row = await self.l3_pool.fetchrow(
+            """
+            SELECT conversation_id, item_id, item_type, short_desc, date_added
+            FROM conversation_memory_refs
+            WHERE conversation_id = $1 AND item_id = $2
+            """,
+            key[0],
+            key[1],
+        )
+        if row is None:
+            return None
+        return _coerce_uuid_fields(dict(row))
+
+    async def _save_to_postgres(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None,
+    ) -> int:
+        """upsert one row into L3 via composite-pk ON CONFLICT.
+
+        the table has no ``date_updated`` column — optimistic-
+        concurrency CAS does not apply and ``original_timestamp`` is
+        ignored. truncate ``short_desc`` to 150 chars to match the
+        migration-v002 VARCHAR(150) bound.
+
+        :param data: row data; must contain both pk columns plus
+            ``item_type`` / ``short_desc`` / ``date_added``
+        :ptype data: dict[str, Any]
+        :param original_timestamp: ignored (no CAS column)
+        :ptype original_timestamp: datetime | None
+        :return: rows affected (1 on success, 0 on failure)
+        :rtype: int
+        """
+        _ = original_timestamp
+        if self.l3_pool is None:
+            return 0
+        desc_value: str = data["short_desc"]
+        if len(desc_value) > 150:
+            desc_value = desc_value[:150]
+        status = await self.l3_pool.execute(
+            """
+            INSERT INTO conversation_memory_refs (
+                conversation_id, item_id, item_type, short_desc, date_added
+            ) VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (conversation_id, item_id) DO UPDATE SET
+                item_type = EXCLUDED.item_type,
+                short_desc = EXCLUDED.short_desc,
+                date_added = EXCLUDED.date_added
+            """,
+            data["conversation_id"],
+            data["item_id"],
+            data["item_type"],
+            desc_value,
+            _to_naive_utc(data["date_added"]),
+        )
+        return 1 if status else 0
+
+    async def _delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete one row from L3 by composite pk.
+
+        :param entity_id: ``(conversation_id, item_id)`` tuple
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        key = self._normalize_pk(entity_id)
+        await self.l3_pool.execute(
+            "DELETE FROM conversation_memory_refs WHERE conversation_id = $1 AND item_id = $2",
+            key[0],
+            key[1],
+        )
+
+    def _serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize a row dict for L2 storage.
+
+        :param data: row data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return json.dumps(data, default=_json_serializer).encode("utf-8")
+
+    def _deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize L2 payload back into a row dict.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: row data with typed columns
+        :rtype: dict[str, Any]
+        """
+        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
+        return _deserialize_with_types(raw, _MEMORY_REF_FIELD_TYPES)
+
+    async def find_by_conversation(
+        self, conversation_id: UUID,
+    ) -> list[MemoryRefEntity]:
+        """fetch every ref for a conversation, ordered by ``date_added`` asc.
+
+        absorbs the former ``MemoryLedger.load(pool, conversation_id)``
+        SQL into a Collection method. multi-row scan is not primary-
+        key-addressable: the query touches every row sharing the
+        ``conversation_id`` prefix of the composite pk, so L1 row-level
+        cache does not apply. each hit is promoted into L2 so other
+        pods starting cold can resolve the row without an L3 round-
+        trip.
+
+        :param conversation_id: conversation UUID to scan for
+        :ptype conversation_id: UUID
+        :return: list of ref entities in chronological order
+        :rtype: list[MemoryRefEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: multi-row scan by ``conversation_id`` (first
+        # column of the composite pk) is not primary-key-addressable.
+        # L1 row cache serves per-``(conversation_id, item_id)`` lookups
+        # only; a prefix scan would not hit. keeping the query on the
+        # Collection preserves the single entry point + lets callers
+        # share L2 invalidation channels.
+        rows = await self.l3_pool.fetch(
+            """
+            SELECT conversation_id, item_id, item_type, short_desc, date_added
+            FROM conversation_memory_refs
+            WHERE conversation_id = $1
+            ORDER BY date_added ASC
+            """,
+            conversation_id,
+        )
+        entities: list[MemoryRefEntity] = []
+        for row in rows:
+            data = _coerce_uuid_fields(dict(row))
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity_id = (data["conversation_id"], data["item_id"])
+            await self._save_to_l2(entity_id, data)
+            entities.append(entity)
+        return entities

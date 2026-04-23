@@ -3,11 +3,14 @@
 Package dependency DAG:
   core <- agent.memory
   core <- agent.tools
-  agent.memory <- agent.tools (ledger used by ToolContextManager)
+  agent.memory <- agent.tools (MemoryRefsCollection + MemoryRefEntity
+      consumed by ToolContextManager for surfaced-refs tracking)
 
-Agent-tools may import from agent.memory (MemoryLedger), but
-agent.memory must not import from agent.tools (checked in
-agent-memory's own enforcement tests).
+Agent-tools may import :class:`MemoryRefsCollection` and
+:class:`MemoryRefEntity` from agent.memory, but agent.memory must not
+import from agent.tools (checked in agent-memory's own enforcement
+tests). namespace-task-01 phase 8.5l-2 retired the bespoke
+``MemoryLedger`` wrapper in favour of the collection.
 """
 
 from __future__ import annotations
@@ -18,10 +21,12 @@ from pathlib import Path
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "tools"
 
-# Only the ledger module is allowed from agent.memory
+# Only the collections + entities modules are allowed from agent.memory.
+# The former ledger module was retired in namespace-task-01 phase 8.5l-2.
 _ALLOWED_MEMORY_IMPORTS = frozenset(
     {
-        "threetears.agent.memory.ledger",
+        "threetears.agent.memory.collections",
+        "threetears.agent.memory.entities",
     }
 )
 

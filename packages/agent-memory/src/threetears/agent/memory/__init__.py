@@ -20,6 +20,7 @@ from threetears.agent.memory.collections import (
     MediaContentCollection,
     MemoriesCollection,
     MemoryChunkCollection,
+    MemoryRefsCollection,
 )
 from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.entities import (
@@ -27,9 +28,9 @@ from threetears.agent.memory.entities import (
     MediaEntity,
     MemoryChunkEntity,
     MemoryEntity,
+    MemoryRefEntity,
 )
 from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
-from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
 from threetears.agent.memory.tools import (
@@ -65,7 +66,8 @@ __all__ = [
     "MemoryConfig",
     "MemoryEntity",
     "MemoryExtractor",
-    "MemoryLedger",
+    "MemoryRefEntity",
+    "MemoryRefsCollection",
     "MemoryRetriever",
     "MemorySearchInput",
     "MemoryType",

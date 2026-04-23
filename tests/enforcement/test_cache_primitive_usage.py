@@ -121,14 +121,6 @@ _MIGRATION_TABLE_ALLOWLIST: frozenset[str] = frozenset({
     # while satisfying LangGraph.
     "checkpoints",
     "checkpoint_writes",
-    # conversation_memory_refs: composite primary key (conversation_id,
-    # item_id) which BaseCollection's single-PK contract cannot model
-    # without a schema migration adding a synthetic surrogate id or
-    # extending BaseCollection to support composite keys. Tracked as
-    # follow-on work under namespace-task-01 phase 8.5l; the wrapper
-    # class (MemoryLedger) that owns reads/writes is exempted in the
-    # matching _cache_exemptions.txt entry with the same rationale.
-    "conversation_memory_refs",
 })
 
 
@@ -146,6 +138,11 @@ _COLLECTION_TABLE_ALLOWLIST: dict[str, str] = {
     "media": "MediaCollection",
     "media_content": "MediaContentCollection",
     "memory_chunks": "MemoryChunkCollection",
+    # conversation_memory_refs: composite-pk table adopted under
+    # namespace-task-01 phase 8.5l-2 on top of 8.5l-1's composite-pk
+    # BaseCollection support. the former MemoryLedger wrapper was
+    # retired outright in the same commit.
+    "conversation_memory_refs": "MemoryRefsCollection",
     "workspaces": "WorkspaceCollection",
     "workspace_files": "WorkspaceFileCollection",
     "workspace_file_versions": "WorkspaceFileVersionCollection",

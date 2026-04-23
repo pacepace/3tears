@@ -4,6 +4,12 @@ Also defines entities for orphan tables adopted under namespace-task-01
 phase 8.5b: :class:`MediaEntity` (parent record from migration v006),
 :class:`MediaContentEntity` (content rows from v006), and
 :class:`MemoryChunkEntity` (document-style chunks from v007).
+
+:class:`MemoryRefEntity` covers the ``conversation_memory_refs`` table
+(migration v002) with its composite primary key
+``(conversation_id, item_id)`` — adopted under namespace-task-01 phase
+8.5l-2 on top of 8.5l-1's composite-pk BaseCollection support. It
+retires the bespoke :class:`MemoryLedger` wrapper entirely.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ __all__ = [
     "MediaEntity",
     "MemoryChunkEntity",
     "MemoryEntity",
+    "MemoryRefEntity",
 ]
 
 
@@ -733,3 +740,150 @@ class MemoryChunkEntity(BaseEntity):
         :ptype value: datetime
         """
         BaseEntity.__setattr__(self, "date_created", value)
+
+
+class MemoryRefEntity(BaseEntity):
+    """cache proxy entity for the ``conversation_memory_refs`` table (v002).
+
+    tracks a single ``(conversation_id, item_id)`` reference recording
+    that a memory / media-content / chunk row has been surfaced to the
+    agent inside one conversation. composite primary key retires the
+    bespoke :class:`MemoryLedger` wrapper on top of 8.5l-1's composite-
+    pk support: ``_id`` holds the ``(conversation_id, item_id)`` tuple
+    so :class:`BaseCollection`'s tuple-aware pk path addresses L1 / L2
+    / L3 uniformly.
+
+    columns mirror the migration-v002 DDL byte-for-byte:
+    ``conversation_id`` UUID, ``item_id`` UUID, ``item_type`` VARCHAR(50),
+    ``short_desc`` VARCHAR(150), ``date_added`` TIMESTAMP.
+    """
+
+    primary_key_field: str = "conversation_id"
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with tuple ``_id`` for composite-pk lookup.
+
+        :class:`BaseEntity.__init__` captures the single-pk field by
+        name; composite-pk entities overwrite ``_id`` with the
+        declared-order tuple so :meth:`BaseCollection._normalize_pk`
+        and :meth:`BaseCollection._l2_key` address the row uniformly
+        across tiers.
+
+        :param data: row dict; must carry ``conversation_id`` and
+            ``item_id`` keys
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        object.__setattr__(
+            self, "_id", (data["conversation_id"], data["item_id"]),
+        )
+
+    @property
+    def conversation_id(self) -> UUID:
+        """get the conversation UUID (first pk column).
+
+        :return: conversation UUID
+        :rtype: UUID
+        """
+        value = self._get_raw("conversation_id")
+        if isinstance(value, UUID):
+            return value
+        return UUID(str(value))
+
+    @conversation_id.setter
+    def conversation_id(self, value: UUID) -> None:
+        """set the conversation UUID.
+
+        :param value: new conversation UUID
+        :ptype value: UUID
+        """
+        BaseEntity.__setattr__(self, "conversation_id", value)
+
+    @property
+    def item_id(self) -> UUID:
+        """get the item UUID (second pk column).
+
+        :return: item UUID
+        :rtype: UUID
+        """
+        value = self._get_raw("item_id")
+        if isinstance(value, UUID):
+            return value
+        return UUID(str(value))
+
+    @item_id.setter
+    def item_id(self, value: UUID) -> None:
+        """set the item UUID.
+
+        :param value: new item UUID
+        :ptype value: UUID
+        """
+        BaseEntity.__setattr__(self, "item_id", value)
+
+    @property
+    def item_type(self) -> str:
+        """get the item-type discriminator (``memory`` / ``media`` / ``chunk``).
+
+        :return: item type string
+        :rtype: str
+        """
+        value: str = self._get_raw("item_type")
+        return value
+
+    @item_type.setter
+    def item_type(self, value: str) -> None:
+        """set the item-type discriminator.
+
+        :param value: new item type
+        :ptype value: str
+        """
+        BaseEntity.__setattr__(self, "item_type", value)
+
+    @property
+    def short_desc(self) -> str:
+        """get the short description (truncated to 150 chars on save).
+
+        :return: description text
+        :rtype: str
+        """
+        value: str = self._get_raw("short_desc")
+        return value
+
+    @short_desc.setter
+    def short_desc(self, value: str) -> None:
+        """set the short description.
+
+        :param value: new description text
+        :ptype value: str
+        """
+        BaseEntity.__setattr__(self, "short_desc", value)
+
+    @property
+    def date_added(self) -> datetime:
+        """get the timestamp when the reference was added.
+
+        :return: added datetime
+        :rtype: datetime
+        """
+        value: datetime = self._get_raw("date_added")
+        return value
+
+    @date_added.setter
+    def date_added(self, value: datetime) -> None:
+        """set the added timestamp.
+
+        :param value: new added datetime
+        :ptype value: datetime
+        """
+        BaseEntity.__setattr__(self, "date_added", value)

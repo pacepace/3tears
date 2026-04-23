@@ -147,12 +147,6 @@ KNOWN_VIOLATIONS: list[tuple[str, str, str, str]] = [
         "_pods",
         "pod health state tracking, migrate to SQLiteBackend L1",
     ),
-    (
-        "agent-memory/ledger.py",
-        "MemoryLedger",
-        "_refs",
-        "memory references, migrate to SQLiteBackend L1",
-    ),
 ]
 
 _ALLOWLIST_SET: set[tuple[str, str, str]] = {(path, cls, attr) for path, cls, attr, _ in ALLOWLIST}

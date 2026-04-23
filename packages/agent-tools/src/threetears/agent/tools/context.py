@@ -6,20 +6,32 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
-from threetears.agent.memory.ledger import MemoryLedger
+from threetears.agent.memory.collections import MemoryRefsCollection
+from threetears.agent.memory.entities import MemoryRefEntity
 from threetears.agent.tools.collections import ContextItemCollection
 
 __all__ = [
     "ToolContextManager",
 ]
 
+_MEMORY_REF_FIFO_CAPACITY = 50
+
 
 class ToolContextManager:
     """Manages conversation context: variables, tool results, media slots, and workflows.
 
     Backed by a :class:`ContextItemCollection` for three-tier persistence
-    (L1 SQLite → L2 NATS KV → L3 PostgreSQL).  Workflow state is transient
-    (in-memory, single-turn only).
+    (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL) and -- for memory-ref
+    surfacing tracking -- by a :class:`MemoryRefsCollection` on the
+    composite-pk ``conversation_memory_refs`` table. workflow state is
+    transient (in-memory, single-turn only).
+
+    the surfaced-items FIFO projection lives in memory (capped at 50)
+    and is backed by the collection: cold-start rehydrates via
+    :meth:`MemoryRefsCollection.find_by_conversation`; writes go through
+    :meth:`MemoryRefsCollection.save_entity` so L1 / L2 / L3 and cross-
+    pod invalidation all stay coherent. retires the bespoke
+    :class:`MemoryLedger` wrapper under namespace-task-01 phase 8.5l-2.
 
     Call :meth:`load_context` after construction to populate from storage.
     """
@@ -33,21 +45,52 @@ class ToolContextManager:
         var_limit: int = 50,
         var_max_chars: int = 50_000,
         result_limit: int | None = None,
-        ledger: MemoryLedger | None = None,
-        l3_pool: Any = None,
+        memory_refs_collection: MemoryRefsCollection | None = None,
     ) -> None:
+        """initialize context manager with required context collection.
+
+        :param collection: three-tier ContextItemCollection for variables
+            / tool results / media slots
+        :ptype collection: ContextItemCollection
+        :param conversation_id: conversation scope (first pk column of
+            memory refs)
+        :ptype conversation_id: UUID
+        :param user_id: invoking user UUID for ownership checks
+        :ptype user_id: UUID
+        :param var_limit: maximum variables before set rejects new keys
+        :ptype var_limit: int
+        :param var_max_chars: truncation cap for variable values
+        :ptype var_max_chars: int
+        :param result_limit: optional LRU cap for tool_result items
+        :ptype result_limit: int | None
+        :param memory_refs_collection: optional three-tier memory-refs
+            collection for cross-pod surfacing tracking. when absent,
+            surfacing writes through :meth:`add_ledger_ref` become
+            no-ops (tests + tool smoke fixtures without an agent pod
+            configured do not need surfacing persistence)
+        :ptype memory_refs_collection: MemoryRefsCollection | None
+        :return: nothing
+        :rtype: None
+        """
         self._collection = collection
         self.conversation_id = conversation_id
         self.user_id = user_id
         self._var_limit = var_limit
         self._var_max_chars = var_max_chars
         self._result_limit = result_limit
-        self._ledger = ledger or MemoryLedger()
-        self._l3_pool = l3_pool
+        self._memory_refs = memory_refs_collection
 
         # Local projection of collection data for this conversation.
         # Populated by load_context(), updated by write methods.
         self._items: list[dict[str, Any]] = []
+
+        # Ordered projection of surfaced memory-ref rows (FIFO), mirror
+        # of the rows persisted via :class:`MemoryRefsCollection`. The
+        # list preserves insertion order so the prompt renders items
+        # chronologically and FIFO eviction drops the oldest first.
+        # Each entry is a dict with keys
+        # ``{item_id, item_type, short_desc, date_added}``.
+        self._memory_refs_projection: list[dict[str, Any]] = []
 
         # Workflow state (transient, single-turn, in-memory only)
         self._workflow: dict[str, Any] | None = None
@@ -57,13 +100,32 @@ class ToolContextManager:
     # ------------------------------------------------------------------
 
     async def load_context(self) -> None:
-        """Load all context items and ledger for this conversation from storage."""
+        """Load all context items and surfaced-refs projection for this conversation.
+
+        pulls the persisted ``conversation_memory_refs`` rows through
+        :meth:`MemoryRefsCollection.find_by_conversation` into the
+        in-memory FIFO projection (capped at 50, oldest first). when
+        no collection is wired (unit tests, smoke fixtures) the
+        projection stays empty and surfacing operations become no-ops.
+        """
         entities = await self._collection.find_by_conversation(self.conversation_id)
         self._items = []
         for entity in entities:
             self._items.append(entity.to_dict())
-        if self._l3_pool is not None:
-            await self._ledger.load(self._l3_pool, self.conversation_id)
+        self._memory_refs_projection = []
+        if self._memory_refs is not None:
+            refs = await self._memory_refs.find_by_conversation(
+                self.conversation_id,
+            )
+            for ref in refs:
+                self._memory_refs_projection.append(
+                    {
+                        "item_id": str(ref.item_id),
+                        "item_type": ref.item_type,
+                        "short_desc": ref.short_desc,
+                        "date_added": ref.date_added.isoformat() if ref.date_added else "",
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Variables
@@ -506,48 +568,117 @@ class ToolContextManager:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Memory ledger (tracks surfaced items to prevent re-retrieval)
+    # Memory refs (tracks surfaced items to prevent re-retrieval)
     # ------------------------------------------------------------------
 
     @property
-    def ledger(self) -> MemoryLedger:
-        """Return the conversation's memory ledger.
+    def memory_refs_count(self) -> int:
+        """return the number of surfaced memory refs in the projection.
 
-        :return: memory ledger instance
-        :rtype: MemoryLedger
+        replaces ``len(self.ledger)`` — graph-node gating keeps its
+        shape (``memory_refs_count >= min_coverage``) without reaching
+        through an intermediate object.
+
+        :return: current surfaced-refs count
+        :rtype: int
         """
-        return self._ledger
+        return len(self._memory_refs_projection)
 
-    async def add_ledger_ref(self, item_id: str, item_type: str, short_desc: str) -> None:
-        """Track a surfaced item in the memory ledger.
+    @property
+    def surfaced_item_ids(self) -> set[str]:
+        """return the set of surfaced item IDs (as strings).
+
+        callers passing this to :meth:`MemoryRetriever.retrieve` as
+        ``surfaced_ids`` get dedup on already-shown items without
+        reaching into the internal projection.
+
+        :return: surfaced item IDs
+        :rtype: set[str]
+        """
+        return {ref["item_id"] for ref in self._memory_refs_projection}
+
+    async def add_ledger_ref(
+        self, item_id: str, item_type: str, short_desc: str,
+    ) -> None:
+        """Track a surfaced item by persisting through MemoryRefsCollection.
+
+        FIFO eviction at capacity 50. truncates ``short_desc`` to 150
+        chars at the write boundary so the L1 / L3 rows satisfy the
+        migration-v002 VARCHAR(150) bound. when
+        ``memory_refs_collection`` was not wired, the projection still
+        updates (so in-conversation dedup works) but no cross-pod
+        persistence happens.
 
         :param item_id: UUID string of the surfaced item
         :ptype item_id: str
-        :param item_type: type of the item (memory, media, chunk, finding, scan)
+        :param item_type: type of the item (memory / media / chunk /
+            finding / scan)
         :ptype item_type: str
-        :param short_desc: short description (≤150 chars)
+        :param short_desc: short description (truncated to 150 chars)
         :ptype short_desc: str
+        :return: nothing
+        :rtype: None
         """
-        if self._l3_pool is not None:
-            await self._ledger.add_ref(self._l3_pool, self.conversation_id, item_id, item_type, short_desc)
+        if any(ref["item_id"] == item_id for ref in self._memory_refs_projection):
+            return
+
+        desc = short_desc[:150] if len(short_desc) > 150 else short_desc
+        now = datetime.now(UTC)
+
+        if len(self._memory_refs_projection) >= _MEMORY_REF_FIFO_CAPACITY:
+            oldest = self._memory_refs_projection.pop(0)
+            if self._memory_refs is not None:
+                await self._memory_refs.delete(
+                    (self.conversation_id, UUID(oldest["item_id"])),
+                )
+
+        self._memory_refs_projection.append(
+            {
+                "item_id": item_id,
+                "item_type": item_type,
+                "short_desc": desc,
+                "date_added": now.isoformat(),
+            },
+        )
+
+        if self._memory_refs is not None:
+            entity = self._memory_refs.create(
+                {
+                    "conversation_id": self.conversation_id,
+                    "item_id": UUID(item_id),
+                    "item_type": item_type,
+                    "short_desc": desc,
+                    "date_added": now,
+                },
+            )
+            await self._memory_refs.save_entity(entity)
 
     def is_known(self, item_id: str) -> bool:
-        """Check if an item is already tracked in the ledger.
+        """Check if an item is already tracked as surfaced.
 
         :param item_id: UUID string to check
         :ptype item_id: str
-        :return: True if already in ledger
+        :return: True if already surfaced this conversation
         :rtype: bool
         """
-        return item_id in self._ledger.ledgered_ids
+        return any(ref["item_id"] == item_id for ref in self._memory_refs_projection)
 
     def build_ledger_prompt(self) -> str:
-        """Format the memory ledger for inclusion in the system prompt.
+        """Format surfaced memory refs for inclusion in system prompt.
 
-        :return: formatted ledger section or empty string
+        :return: formatted section or empty string
         :rtype: str
         """
-        return self._ledger.build_context()
+        if not self._memory_refs_projection:
+            return ""
+        lines = [
+            "Previously recalled in this conversation (use recall_memory with the ID and type shown):"
+        ]
+        for ref in self._memory_refs_projection:
+            itype = ref["item_type"]
+            tag = f"[{itype}:{ref['item_id']}]"
+            lines.append(f"- {tag} type: {itype} — {ref['short_desc']}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Context building

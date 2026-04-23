@@ -66,11 +66,13 @@ def create_context_enrichment_node(
     :ptype entity_searcher: EntitySearcher
     :param entity_formatter: formats entities into a prompt string
     :ptype entity_formatter: EntityFormatter
-    :param context_manager: optional context manager for ledger checking
+    :param context_manager: optional context manager for surfaced-refs
+        coverage checking
     :ptype context_manager: ToolContextManager | None
     :param keywords: optional keyword gate — only enrich if message contains one
     :ptype keywords: frozenset[str] | None
-    :param min_ledger_coverage: skip enrichment if ledger has this many items
+    :param min_ledger_coverage: skip enrichment if surfaced-refs
+        projection has this many items
     :ptype min_ledger_coverage: int
     :return: async node function for LangGraph
     :rtype: Any
@@ -97,8 +99,11 @@ def create_context_enrichment_node(
                 logger.debug("Enrichment skipped: no matching keywords")
                 return {"messages": []}
 
-        if context_manager is not None and len(context_manager.ledger) >= min_ledger_coverage:
-            logger.debug("Enrichment skipped: ledger has sufficient coverage")
+        if (
+            context_manager is not None
+            and context_manager.memory_refs_count >= min_ledger_coverage
+        ):
+            logger.debug("Enrichment skipped: surfaced-refs projection has sufficient coverage")
             return {"messages": []}
 
         try:

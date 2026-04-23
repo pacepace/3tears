@@ -6,8 +6,15 @@ to live raw on a pool is now a call onto
 :class:`MediaContentCollection.hybrid_search`, or
 :class:`MemoryChunkCollection.hybrid_search`. The retriever stays
 responsible for orchestration (parallel gather across the three tables,
-cross-type MMR rerank, ledger dedup, context formatting) but never
-touches SQL directly.
+cross-type MMR rerank, context formatting) but never touches SQL
+directly.
+
+Surfaced-item bookkeeping -- the ``conversation_memory_refs`` table --
+is no longer a retriever concern. callers that want to dedupe already-
+surfaced items pass ``surfaced_ids`` to :meth:`MemoryRetriever.retrieve`
+and persist new surfacings through :class:`MemoryRefsCollection` at
+their own layer. this retires the hand-rolled ``MemoryLedger`` wrapper
+under namespace-task-01 phase 8.5l-2.
 """
 
 from __future__ import annotations
@@ -30,7 +37,6 @@ from threetears.agent.memory.collections import (
     MemoryChunkCollection,
 )
 from threetears.agent.memory.embedding import EmbeddingProvider
-from threetears.agent.memory.ledger import MemoryLedger
 from threetears.agent.memory.types import MemoryConfig
 from threetears.observe import traced
 
@@ -353,8 +359,8 @@ class MemoryRetriever:
         self,
         user_id: UUID,
         user_text: str,
-        ledger: MemoryLedger | None = None,
         *,
+        surfaced_ids: set[str] | None = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
         caller_user_id: UUID | None = None,
@@ -366,8 +372,12 @@ class MemoryRetriever:
         :ptype user_id: UUID
         :param user_text: query text for similarity search
         :ptype user_text: str
-        :param ledger: optional ledger for dedup tracking
-        :ptype ledger: MemoryLedger | None
+        :param surfaced_ids: optional set of item IDs (as strings)
+            already shown to the agent this conversation; rows whose
+            pk stringifies to one of these are filtered out of the
+            formatted context. callers persist these through
+            :class:`MemoryRefsCollection` at their own layer.
+        :ptype surfaced_ids: set[str] | None
         :param agent_id: optional agent ID scope for filtering results
         :ptype agent_id: UUID | None
         :param customer_id: optional customer ID scope for filtering
@@ -384,7 +394,7 @@ class MemoryRetriever:
         result = await self.retrieve_with_candidates(
             user_id,
             user_text,
-            ledger,
+            surfaced_ids=surfaced_ids,
             agent_id=agent_id,
             customer_id=customer_id,
             caller_user_id=caller_user_id,
@@ -397,8 +407,8 @@ class MemoryRetriever:
         self,
         user_id: UUID,
         user_text: str,
-        ledger: MemoryLedger | None = None,
         *,
+        surfaced_ids: set[str] | None = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
         caller_user_id: UUID | None = None,
@@ -410,8 +420,11 @@ class MemoryRetriever:
         :ptype user_id: UUID
         :param user_text: query text for similarity search
         :ptype user_text: str
-        :param ledger: optional ledger for dedup tracking
-        :ptype ledger: MemoryLedger | None
+        :param surfaced_ids: optional set of item IDs (as strings)
+            already surfaced in this conversation; filtered from the
+            returned context. callers persist new surfacings through
+            :class:`MemoryRefsCollection` at their own layer
+        :ptype surfaced_ids: set[str] | None
         :param agent_id: optional agent ID scope for filtering results
         :ptype agent_id: UUID | None
         :param customer_id: optional customer ID scope
@@ -528,7 +541,7 @@ class MemoryRetriever:
             c.pop("embedding", None)
             c.pop("fts_rank", None)
 
-        ledgered_ids = ledger.ledgered_ids if ledger else set()
+        ledgered_ids = surfaced_ids if surfaced_ids is not None else set()
 
         if not memories and not media_content and not memory_chunks:
             return RetrievalResult(embed_tokens=embed_tokens)
@@ -540,25 +553,6 @@ class MemoryRetriever:
             detail_threshold=cfg.detail_threshold,
             ledgered_ids=ledgered_ids,
         )
-
-        if ledger:
-            ledger_pool = self._memories.l3_pool
-            if ledger_pool is not None:
-                for m in memories:
-                    mid = str(m["memory_id"])
-                    if mid not in ledgered_ids:
-                        desc = m.get("summary") or m["content"]
-                        await ledger.add_ref(ledger_pool, UUID(int=0), mid, "memory", desc)
-                for mc in media_content:
-                    cid = str(mc["content_id"])
-                    if cid not in ledgered_ids:
-                        desc = mc.get("title") or mc.get("summary") or mc["content"]
-                        await ledger.add_ref(ledger_pool, UUID(int=0), cid, "media", desc)
-                for chunk in memory_chunks:
-                    ckid = str(chunk["chunk_id"])
-                    if ckid not in ledgered_ids:
-                        desc = chunk.get("title") or chunk.get("summary") or chunk["content"]
-                        await ledger.add_ref(ledger_pool, UUID(int=0), ckid, "chunk", desc)
 
         return RetrievalResult(
             context=context or None,

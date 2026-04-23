@@ -128,11 +128,9 @@ class TestContextEnrichmentNode:
 
     @pytest.mark.asyncio
     async def test_ledger_coverage_skips(self) -> None:
-        """Skips enrichment when ledger has sufficient items."""
+        """Skips enrichment when surfaced-refs projection has sufficient coverage."""
         mock_cm = MagicMock()
-        mock_ledger = MagicMock()
-        mock_ledger.__len__ = MagicMock(return_value=5)
-        mock_cm.ledger = mock_ledger
+        mock_cm.memory_refs_count = 5
 
         called = []
 
