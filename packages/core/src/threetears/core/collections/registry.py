@@ -140,12 +140,26 @@ class CollectionRegistry:
     # ------------------------------------------------------------------
 
     async def start_invalidation_listener(self, nats_client: Any) -> None:
-        """Subscribe to cache invalidation signals from other pods.
+        """subscribe to cache invalidation signals from other pods.
 
-        When a signal is received, evicts the entity from the local L1 cache
-        of the matching collection. This ensures cross-pod cache coherence.
+        wire envelope (stable contract, no shims):
+        ``{"table": <table_name>, "ids": [<v1>, <v2>, ...]}`` -- the
+        ``ids`` field is ALWAYS an array, length matches the target
+        collection's :attr:`BaseCollection.primary_key_columns`
+        declaration. single-pk collections publish length-1 arrays;
+        composite-pk collections publish length-N arrays in declared
+        column order. the previous ``entity_id`` string field is
+        retired; every publisher in the platform emits ``ids``.
 
-        Must be called at application startup after all collections are registered.
+        when a signal is received, evicts the entity from local L1
+        cache of the matching collection. this ensures cross-pod
+        cache coherence. must be called at application startup after
+        all collections are registered.
+
+        :param nats_client: nats client with ``subscribe`` method
+        :ptype nats_client: Any
+        :return: nothing
+        :rtype: None
         """
         self._nats_client = nats_client
 
@@ -153,8 +167,8 @@ class CollectionRegistry:
             try:
                 payload = json.loads(data)
                 table = payload.get("table")
-                entity_id = payload.get("entity_id")
-                if not table or not entity_id:
+                ids = payload.get("ids")
+                if not table or not isinstance(ids, list) or not ids:
                     log.warning(
                         "Malformed invalidation signal",
                         extra={"extra_data": {"raw": data[:200].decode(errors="replace")}},
@@ -163,11 +177,25 @@ class CollectionRegistry:
 
                 collection = self._collections.get(table)
                 if collection is None:
-                    return  # Unknown table — ignore
+                    return  # unknown table — ignore
 
                 l1 = self.get_l1_backend(table)
                 if l1 is not None:
-                    l1.delete_by_id(table, str(entity_id), collection.primary_key_column)
+                    pk_cols = collection.primary_key_columns
+                    if len(ids) != len(pk_cols):
+                        log.warning(
+                            "Invalidation pk arity mismatch",
+                            extra={
+                                "extra_data": {
+                                    "table": table,
+                                    "expected_columns": list(pk_cols),
+                                    "received_values": len(ids),
+                                }
+                            },
+                        )
+                        return
+                    entity_id = tuple(ids)
+                    l1.delete_by_id(table, entity_id, pk_cols)
             except Exception as exc:
                 log.warning(
                     "Error processing invalidation signal",
@@ -177,16 +205,34 @@ class CollectionRegistry:
         await nats_client.subscribe(INVALIDATION_SUBJECT, _on_invalidation)
 
     async def publish_invalidation(self, nats_client: Any, table_name: str, entity_id: Any) -> None:
-        """Publish a cache invalidation signal for an entity.
+        """publish cache invalidation signal for an entity.
 
-        Called by BaseCollection after any write operation. Other pods
-        subscribed to the invalidation subject will evict this entity
-        from their L1 cache.
+        called by :class:`BaseCollection` after any write operation.
+        other pods subscribed to the invalidation subject will evict
+        this entity from their L1 cache. wire envelope carries
+        ``ids`` as an array of stringified pk values (length matches
+        the collection's pk column count).
+
+        :param nats_client: nats client with ``publish`` method;
+            ``None`` short-circuits (no-op)
+        :ptype nats_client: Any
+        :param table_name: target table name
+        :ptype table_name: str
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            in declared order (composite-pk)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
         """
         if nats_client is None:
             return
         try:
-            payload = json.dumps({"table": table_name, "entity_id": str(entity_id)}).encode()
+            if isinstance(entity_id, tuple):
+                values = entity_id
+            else:
+                values = (entity_id,)
+            ids = [str(v) for v in values]
+            payload = json.dumps({"table": table_name, "ids": ids}).encode()
             await nats_client.publish(INVALIDATION_SUBJECT, payload)
         except Exception as exc:
             log.warning(

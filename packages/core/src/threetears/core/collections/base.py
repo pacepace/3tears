@@ -1,4 +1,16 @@
-"""Base collection with three-tier caching."""
+"""base collection with three-tier caching.
+
+composite primary keys are first-class. a subclass declares
+``primary_key_column = "memory_id"`` for single-pk tables (the default
+shape) or ``primary_key_column = ("conversation_id", "item_id")`` for
+composite-pk tables. internally, every cache-keying path normalizes
+the declared pk and caller-supplied id into a tuple via
+:meth:`BaseCollection._normalize_pk`; the L1 (SQLite / DuckDB), L2
+(NATS KV), and L3 (postgres) tiers all accept the tuple uniformly.
+the invalidation wire envelope carries ``ids`` (plural, always an
+array) matching the pk column order, so single-pk emits a length-1
+array and composite-pk emits a length-N array.
+"""
 
 from __future__ import annotations
 
@@ -25,9 +37,14 @@ EntityT = TypeVar("EntityT", bound=BaseEntity)
 class BaseCollection(ABC, Generic[EntityT]):
     """abstract base collection with three-tier caching (L1 -> L2 -> L3).
 
-    :cvar primary_key_column: name of the primary-key column; part of
-        the collection-entity contract (siblings read it during CAS
-        and cache writes). subclasses override with their table's PK.
+    :cvar primary_key_column: name of primary-key column (single-pk
+        shape, ``str``) or tuple of column names in declared order
+        (composite-pk shape, ``tuple[str, ...]``). part of the
+        collection-entity contract (siblings read it during CAS and
+        cache writes). subclasses override with their table's pk.
+        :attr:`primary_key_columns` is the internal-use normalized
+        tuple form; callers iterating pk columns MUST read that
+        property rather than inspecting the attribute directly.
     :ivar l3_pool: asyncpg-compatible connection pool bound to the
         agent's L3 schema (or ``None`` when the collection is configured
         without L3, e.g. unit tests using only L1+L2). this is the
@@ -49,7 +66,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         assuming presence.
     """
 
-    primary_key_column: str = "id"
+    primary_key_column: str | tuple[str, ...] = "id"
 
     def __init__(
         self,
@@ -82,14 +99,92 @@ class BaseCollection(ABC, Generic[EntityT]):
         """Return the entity class for this collection."""
         ...
 
-    @abstractmethod
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None: ...
+    @property
+    def primary_key_columns(self) -> tuple[str, ...]:
+        """normalize :attr:`primary_key_column` to tuple form.
+
+        single-pk subclasses declare ``primary_key_column = "foo"`` and
+        read ``("foo",)`` here; composite-pk subclasses declare
+        ``primary_key_column = ("a", "b")`` and read the same tuple.
+        every internal caller iterating pk columns uses this property.
+
+        :return: tuple of pk column names in declared order
+        :rtype: tuple[str, ...]
+        """
+        if isinstance(self.primary_key_column, tuple):
+            return self.primary_key_column
+        return (self.primary_key_column,)
+
+    def _normalize_pk(self, entity_id: Any) -> tuple[Any, ...]:
+        """normalize caller-supplied id to tuple of pk values.
+
+        single-pk collections accept either ``value`` or ``(value,)``
+        and return ``(value,)``; composite-pk collections MUST receive
+        a tuple of length matching :attr:`primary_key_columns`. a
+        non-tuple input is wrapped in a 1-tuple.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            (composite-pk)
+        :ptype entity_id: Any
+        :return: tuple of pk values matching
+            :attr:`primary_key_columns` length
+        :rtype: tuple[Any, ...]
+        :raises ValueError: if tuple length does not match
+            :attr:`primary_key_columns`
+        """
+        if isinstance(entity_id, tuple):
+            values = entity_id
+        else:
+            values = (entity_id,)
+        pk_cols = self.primary_key_columns
+        if len(values) != len(pk_cols):
+            raise ValueError(
+                f"{self.table_name}: primary key arity mismatch: "
+                f"got {len(values)} value(s) for {len(pk_cols)} column(s) {pk_cols}"
+            )
+        return values
 
     @abstractmethod
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int: ...
+    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch row from L3 keyed by pk.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            (composite-pk). subclass implementations that hand-roll
+            SQL for a composite-pk table MUST accept the tuple shape;
+            existing single-pk subclasses accept the scalar shape
+            unchanged.
+        :ptype entity_id: Any
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        ...
 
     @abstractmethod
-    async def _delete_from_postgres(self, entity_id: Any) -> None: ...
+    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+        """persist row to L3.
+
+        :param data: row data keyed by column name; pk columns named in
+            :attr:`primary_key_columns` MUST be present
+        :ptype data: dict[str, Any]
+        :param original_timestamp: pre-modification ``date_updated``
+            for optimistic-lock validation, ``None`` for inserts
+        :ptype original_timestamp: datetime | None
+        :return: rows affected (0 on optimistic-lock failure, 1 on success)
+        :rtype: int
+        """
+        ...
+
+    @abstractmethod
+    async def _delete_from_postgres(self, entity_id: Any) -> None:
+        """delete row from L3 keyed by pk.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            (composite-pk)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        ...
 
     @abstractmethod
     def _serialize(self, data: dict[str, Any]) -> bytes: ...
@@ -123,7 +218,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return MISSING
-        row = self._l1.select_by_id(self.table_name, str(entity_id), self.primary_key_column)
+        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         if row is None:
             return MISSING
         return row.get(field, MISSING)
@@ -144,11 +239,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, str(entity_id), self.primary_key_column)
+        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         if row is None:
             return False
         row[field] = value
-        self._l1.upsert(self.table_name, row, self.primary_key_column)
+        self._l1.upsert(self.table_name, row, self.primary_key_columns)
         return True
 
     def get_row_sync(self, entity_id: Any) -> dict[str, Any] | None:
@@ -162,23 +257,28 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, str(entity_id), self.primary_key_column)  # type: ignore[no-any-return]
+        return self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
 
-    def write_to_cache_sync(self, data: dict[str, Any], primary_key: str | None = None) -> bool:
-        """upsert a full row into the L1 cache, synchronously.
+    def write_to_cache_sync(
+        self,
+        data: dict[str, Any],
+        primary_key: str | tuple[str, ...] | None = None,
+    ) -> bool:
+        """upsert full row into L1 cache, synchronously.
 
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
-        :param primary_key: override the collection's PK column for
-            this write; defaults to the collection's
-            ``primary_key_column``
-        :ptype primary_key: str | None
-        :return: true on successful write, false when L1 is absent
+        :param primary_key: override collection's pk column(s) for this
+            write; ``None`` defaults to :attr:`primary_key_columns`.
+            accepts either single column name (str) or tuple of column
+            names (composite-pk override).
+        :ptype primary_key: str | tuple[str, ...] | None
+        :return: ``True`` on successful write, ``False`` when L1 is absent
         :rtype: bool
         """
         if self._l1 is None:
             return False
-        pk = primary_key or self.primary_key_column
+        pk: str | tuple[str, ...] = primary_key if primary_key is not None else self.primary_key_columns
         self._l1.upsert(self.table_name, data, pk)
         return True
 
@@ -192,7 +292,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, str(entity_id), self.primary_key_column)
+        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         return row is not None
 
     # --- L2 cache (NATS KV, async) ---
@@ -201,7 +301,30 @@ class BaseCollection(ABC, Generic[EntityT]):
         return self._nats_client.bucket_name("collections")  # type: ignore[no-any-return]
 
     def _l2_key(self, entity_id: Any) -> str:
-        return f"{self.table_name}.{entity_id}"
+        """build NATS KV key for given pk.
+
+        single-pk shape: ``{table_name}.{value}``. composite-pk shape:
+        ``{table_name}.{v1}:{v2}:...`` -- pk values stringified at the
+        NATS boundary (per CLAUDE.md UUID/datetime border-conversion
+        rule) and joined with ``":"``.
+
+        **edge case**: if a pk value naturally contains ``":"`` the
+        composite form is ambiguous with a pk value that contains the
+        resulting joined substring. this is a theoretical concern only
+        for the realistic pk types in use (UUIDs, integers, slug
+        strings, postgres oids) -- none of which legitimately contain
+        ``":"``. callers that introduce colon-bearing pk values MUST
+        either escape them before passing or override this method.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            in declared order (composite-pk)
+        :ptype entity_id: Any
+        :return: nats KV key, scoped by table name
+        :rtype: str
+        """
+        pk_values = self._normalize_pk(entity_id)
+        joined = ":".join(str(v) for v in pk_values)
+        return f"{self.table_name}.{joined}"
 
     async def _get_from_l2(self, entity_id: Any) -> dict[str, Any] | None:
         if self._nats_client is None:
@@ -268,7 +391,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         Returns the row data if found, None if not found in any tier.
         """
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(entity_id), self.primary_key_column)
+            row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
             if row is not None:
                 return row  # type: ignore[no-any-return]
         return sync_await(self._pull_through(entity_id))
@@ -278,12 +401,12 @@ class BaseCollection(ABC, Generic[EntityT]):
         l2_data = await self._get_from_l2(entity_id)
         if l2_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, l2_data, self.primary_key_column)
+                self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
             return l2_data
         pg_data = await self._fetch_from_postgres(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, pg_data, self.primary_key_column)
+                self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
             await self._save_to_l2(entity_id, pg_data)
             return pg_data
         return None
@@ -364,7 +487,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         # Always update L1 with the new timestamp
         if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_column)
+            self._l1.upsert(self.table_name, data, self.primary_key_columns)
 
         # Always propagate to L2
         await self._save_to_l2(entity_id, data)
@@ -426,17 +549,21 @@ class BaseCollection(ABC, Generic[EntityT]):
     # --- Three-tier operations ---
 
     async def ensure(self, entity_id: Any) -> dict[str, Any] | None:
-        """Pull entity into L1 cache through L2/L3 if not already present.
+        """pull entity into L1 cache through L2/L3 if not already present.
 
-        Returns entity data dict if found (in any tier), None if not found
-        anywhere. After ensure() returns data, subscript access is guaranteed
-        to hit L1 (when L1 is available).
+        :param entity_id: pk value (single-pk) or tuple of pk values in
+            declared column order (composite-pk)
+        :ptype entity_id: Any
+        :return: entity data dict if found in any tier, ``None`` if not
+            found anywhere. after ``ensure()`` returns data, subscript
+            access is guaranteed to hit L1 (when L1 is available).
+        :rtype: dict[str, Any] | None
         """
         if self._l1 is not None:
             row: dict[str, Any] | None = self._l1.select_by_id(
                 self.table_name,
-                str(entity_id),
-                self.primary_key_column,
+                self._normalize_pk(entity_id),
+                self.primary_key_columns,
             )
             if row is not None:
                 return row
@@ -445,7 +572,15 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     @traced()
     async def get(self, entity_id: Any) -> EntityT | None:
-        """Three-tier read: L1 -> L2 -> L3, promote on miss."""
+        """three-tier read: L1 -> L2 -> L3, promote on miss.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in
+            declared column order (composite-pk)
+        :ptype entity_id: Any
+        :return: entity instance on hit in any tier, ``None`` on
+            total-miss
+        :rtype: EntityT | None
+        """
         self._set_span_table()
         data = await self.ensure(entity_id)
         if data is None:
@@ -482,7 +617,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         if defer:
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_column)
+                self._l1.upsert(self.table_name, data, self.primary_key_columns)
             await self._save_to_l2(entity_id, data)
             assert self._write_buffer is not None
             await self._write_buffer.add(self.table_name, entity_id, data)
@@ -497,7 +632,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
             if self._l1 is not None:
-                self._l1.upsert(self.table_name, data, self.primary_key_column)
+                self._l1.upsert(self.table_name, data, self.primary_key_columns)
             else:
                 # No L1 backend: repopulate _changes so entity fields remain accessible
                 object.__setattr__(entity, "_changes", dict(data))
@@ -522,29 +657,43 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity.set_data(data)
         entity.original_date_updated = data.get("date_updated")
         if self._l1 is not None:
-            self._l1.upsert(self.table_name, data, self.primary_key_column)
+            self._l1.upsert(self.table_name, data, self.primary_key_columns)
         await self._save_to_l2(entity_id, data)
         await self._publish_invalidation(entity_id)
 
     @traced()
     async def delete(self, entity_id: Any) -> bool:
-        """Delete entity from all tiers."""
+        """delete entity from all tiers.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in
+            declared column order (composite-pk)
+        :ptype entity_id: Any
+        :return: always ``True`` (delete is idempotent across tiers)
+        :rtype: bool
+        """
         self._set_span_table()
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
         await self._delete_from_postgres(entity_id)
         if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, str(entity_id), self.primary_key_column)
+            self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
 
     @traced()
     async def invalidate_cache(self, entity_id: Any) -> None:
-        """Delete from L1 and L2, signal other pods."""
+        """delete from L1 and L2, signal other pods.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in
+            declared column order (composite-pk)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
         self._set_span_table()
         if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, str(entity_id), self.primary_key_column)
+            self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
 

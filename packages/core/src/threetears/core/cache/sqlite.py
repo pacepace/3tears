@@ -163,8 +163,61 @@ class SQLiteBackend:
                 self._pooled_connections.append(conn)
         return _PooledConnection(conn)
 
-    def upsert(self, table: str, data: dict[str, Any], primary_key: str = "id") -> None:
-        """Insert or update a row atomically."""
+    @staticmethod
+    def _pk_columns(primary_key: str | tuple[str, ...]) -> tuple[str, ...]:
+        """normalize ``primary_key`` argument to a tuple of column names.
+
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: tuple of pk column names (length 1 for single-PK)
+        :rtype: tuple[str, ...]
+        """
+        if isinstance(primary_key, tuple):
+            return primary_key
+        return (primary_key,)
+
+    @staticmethod
+    def _pk_values(entity_id: Any, pk_cols: tuple[str, ...]) -> tuple[Any, ...]:
+        """normalize ``entity_id`` argument to tuple of pk values.
+
+        length MUST match ``pk_cols`` when composite; single-value
+        inputs are wrapped in a 1-tuple for single-PK tables.
+
+        :param entity_id: pk value or tuple of pk values
+        :ptype entity_id: Any
+        :param pk_cols: normalized tuple of pk column names
+        :ptype pk_cols: tuple[str, ...]
+        :return: tuple of pk values matching ``pk_cols`` length
+        :rtype: tuple[Any, ...]
+        :raises ValueError: if tuple length does not match ``pk_cols``
+        """
+        if isinstance(entity_id, tuple):
+            values = entity_id
+        else:
+            values = (entity_id,)
+        if len(values) != len(pk_cols):
+            raise ValueError(
+                f"primary key arity mismatch: got {len(values)} value(s) for {len(pk_cols)} column(s) {pk_cols}"
+            )
+        return values
+
+    def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
+        """insert or update row atomically.
+
+        :param table: destination table name
+        :ptype table: str
+        :param data: row data keyed by column name. every pk column
+            named in ``primary_key`` MUST be present.
+        :ptype data: dict[str, Any]
+        :param primary_key: pk column name (single-PK) or tuple of pk
+            column names in declared order (composite-PK). composite
+            emits an ``ON CONFLICT (col_a, col_b, ...) DO UPDATE``
+            clause; single-PK keeps the one-column shape.
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        pk_cols = self._pk_columns(primary_key)
         columns = list(data.keys())
         placeholders = ", ".join(["?" for _ in columns])
         column_names = ", ".join(columns)
@@ -176,13 +229,14 @@ class SQLiteBackend:
             col_type = schema.get(col_name, "TEXT")
             values.append(self.serialize_value(value, col_type))
 
-        update_cols = [c for c in columns if c != primary_key]
+        update_cols = [c for c in columns if c not in pk_cols]
         update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+        conflict_clause = ", ".join(pk_cols)
 
         sql = f"""
             INSERT INTO {table} ({column_names})
             VALUES ({placeholders})
-            ON CONFLICT ({primary_key}) DO UPDATE SET {update_clause}
+            ON CONFLICT ({conflict_clause}) DO UPDATE SET {update_clause}
         """
         values_tuple = tuple(values)
 
@@ -195,36 +249,106 @@ class SQLiteBackend:
             conn.execute("ROLLBACK")
             raise
 
-    def select_by_id(self, table: str, entity_id: str, primary_key: str = "id") -> dict[str, Any] | None:
-        """Select a single row by primary key with type deserialization."""
-        sql = f"SELECT * FROM {table} WHERE {primary_key} = ?"
+    def select_by_id(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> dict[str, Any] | None:
+        """select single row by primary key with type deserialization.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value (single-PK) or tuple of pk values in
+            declared column order (composite-PK)
+        :ptype entity_id: Any
+        :param primary_key: pk column name (single-PK) or tuple of pk
+            column names in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        pk_cols = self._pk_columns(primary_key)
+        pk_vals = self._pk_values(entity_id, pk_cols)
+        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
+        sql = f"SELECT * FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(sql, (entity_id,))
+        cursor = conn.execute(sql, pk_vals)
         row = cursor.fetchone()
         if row is not None:
             return self._deserialize_row(table, dict(row))
         return None
 
-    def select_batch(self, table: str, entity_ids: list[str], primary_key: str = "id") -> list[dict[str, Any]]:
-        """Select multiple rows by primary key with type deserialization."""
+    def select_batch(
+        self,
+        table: str,
+        entity_ids: list[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> list[dict[str, Any]]:
+        """select multiple rows by primary key with type deserialization.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: list of pk values (single-PK) or list of
+            tuples of pk values (composite-PK). composite emits a
+            disjunction of ``(col_a = ? AND col_b = ?)`` predicates;
+            single-PK emits ``col IN (?, ?, ...)``.
+        :ptype entity_ids: list[Any]
+        :param primary_key: pk column name (single-PK) or tuple of pk
+            column names in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: list of row dicts; empty list when ``entity_ids`` is empty
+        :rtype: list[dict[str, Any]]
+        """
         if not entity_ids:
             return []
-        placeholders = ", ".join(["?" for _ in entity_ids])
-        sql = f"SELECT * FROM {table} WHERE {primary_key} IN ({placeholders})"
+        pk_cols = self._pk_columns(primary_key)
+        if len(pk_cols) == 1:
+            placeholders = ", ".join(["?" for _ in entity_ids])
+            sql = f"SELECT * FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            params: tuple[Any, ...] = tuple(entity_ids)
+        else:
+            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
+            sql = f"SELECT * FROM {table} WHERE {disjunct}"
+            flat: list[Any] = []
+            for eid in entity_ids:
+                flat.extend(self._pk_values(eid, pk_cols))
+            params = tuple(flat)
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(sql, tuple(entity_ids))
+        cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
         return [self._deserialize_row(table, dict(row)) for row in rows]
 
-    def delete_by_id(self, table: str, entity_id: str, primary_key: str = "id") -> None:
-        """Delete a single row by primary key."""
-        sql = f"DELETE FROM {table} WHERE {primary_key} = ?"
+    def delete_by_id(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete single row by primary key.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value (single-PK) or tuple of pk values in
+            declared column order (composite-PK)
+        :ptype entity_id: Any
+        :param primary_key: pk column name (single-PK) or tuple of pk
+            column names in declared order (composite-PK)
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        pk_cols = self._pk_columns(primary_key)
+        pk_vals = self._pk_values(entity_id, pk_cols)
+        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(sql, (entity_id,))
+            conn.execute(sql, pk_vals)
             conn.execute("COMMIT")
         except sqlite3.OperationalError:
             conn.execute("ROLLBACK")

@@ -293,7 +293,7 @@ class TestInvalidationSignalContract:
         assert "e1" in pod_b
 
         # Manually publish an invalidation signal
-        signal = json.dumps({"table": "test_entities", "entity_id": "e1"}).encode()
+        signal = json.dumps({"table": "test_entities", "ids": ["e1"]}).encode()
         await shared_nats.publish("threetears.cache.invalidate", signal)
 
         # Both pods' L1 should be evicted
@@ -312,7 +312,7 @@ class TestInvalidationSignalContract:
         await pod_a.ensure("e1")
 
         # Signal for a table that doesn't exist in this registry
-        signal = json.dumps({"table": "nonexistent_table", "entity_id": "e1"}).encode()
+        signal = json.dumps({"table": "nonexistent_table", "ids": ["e1"]}).encode()
         await shared_nats.publish("threetears.cache.invalidate", signal)
 
         # Pod A's data should be untouched
@@ -326,7 +326,7 @@ class TestInvalidationSignalContract:
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
         await reg_a.start_invalidation_listener(shared_nats)
 
-        signal = json.dumps({"table": "test_entities", "entity_id": "nonexistent"}).encode()
+        signal = json.dumps({"table": "test_entities", "ids": ["nonexistent"]}).encode()
         await shared_nats.publish("threetears.cache.invalidate", signal)
 
         # No crash, no side effects
@@ -778,7 +778,7 @@ class TestListenerLifecycle:
         await pod_b.ensure("e1")
 
         # Manually publish invalidation
-        signal = json.dumps({"table": "test_entities", "entity_id": "e1"}).encode()
+        signal = json.dumps({"table": "test_entities", "ids": ["e1"]}).encode()
         await shared_nats.publish("threetears.cache.invalidate", signal)
 
         # Pod B's L1 is NOT evicted (no listener)
