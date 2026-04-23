@@ -87,7 +87,7 @@ class CollectionRegistry:
 
         used by multi-pool agent-side bootstraps (three-tier-task-01
         Phase C2: the rbac metadata Collections need a separate
-        :class:`NatsProxyL3Backend` pool bound to ``platform:rbac``
+        :class:`NatsProxyL3Backend` pool bound to ``system.platform.rbac``
         because the broker route different namespaces to different
         schemas). every key left as ``None`` is ignored so callers can
         layer l1 / l2 / l3 bindings independently.

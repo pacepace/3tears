@@ -325,7 +325,7 @@ class TestMemoryNamespaceName:
         agent_id = UUID("019470a8-b5c3-7def-8123-456789abcdef")
         customer_id = UUID("11112222-3333-4444-5555-666677778888")
         name = memory_namespace_name(agent_id, customer_id)
-        assert name == "memory:019470a8:11112222"
+        assert name == "memories.019470a8.11112222"
 
 
 class TestAuthorizeMemoryAccess:

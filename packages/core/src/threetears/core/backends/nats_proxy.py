@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 from threetears.observe import get_logger
 
 __all__ = ["NatsProxyL3Backend"]
@@ -215,7 +216,9 @@ class NatsProxyL3Backend:
         self._nc = nats_client
         self.ns = namespace_prefix
         self.agent_id = agent_id
-        self.default_namespace = default_namespace or f"agent.{agent_id}"
+        self.default_namespace = default_namespace or build_namespace_name(
+            PLURAL_PREFIX_AGENT, agent_id
+        )
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:

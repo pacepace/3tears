@@ -322,14 +322,17 @@ class TestToolNamespaceNameHelper:
     """cover :func:`_tool_namespace_name` canonical name shape."""
 
     def test_shape_matches_documented_convention(self) -> None:
-        """shape is ``tool:<mcp_name>:<version>``."""
-        assert _tool_namespace_name("aibots.calc", "1.2.0") == "tool:aibots.calc:1.2.0"
+        """shape is ``tools.<sanitized-mcp>.<sanitized-version>``."""
+        assert (
+            _tool_namespace_name("aibots.calc", "1.2.0")
+            == "tools.aibots-calc.1-2-0"
+        )
 
-    def test_version_preserved_verbatim(self) -> None:
-        """semver, pre-release suffix, and plain labels survive unchanged."""
+    def test_version_dotted_segments_are_sanitized(self) -> None:
+        """semver with dots collapses to hyphens inside each segment."""
         assert (
             _tool_namespace_name("platform.x", "2.0.0-rc.1")
-            == "tool:platform.x:2.0.0-rc.1"
+            == "tools.platform-x.2-0-0-rc-1"
         )
 
 

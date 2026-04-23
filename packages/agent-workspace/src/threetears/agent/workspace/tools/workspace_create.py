@@ -33,6 +33,7 @@ import asyncpg
 # the write under the caller's own ``agent.<hex>`` namespace.
 
 from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.core.namespaces import PLURAL_PREFIX_WORKSPACE, build_namespace_name
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -493,7 +494,9 @@ class WorkspaceCreateTool(TearsTool):
             else self._customer_id
         )
         schema_name = f"agent_{self._agent_id.hex}"
-        namespace_name = f"workspace.{workspace_id}"
+        namespace_name = build_namespace_name(
+            PLURAL_PREFIX_WORKSPACE, str(workspace_id)
+        )
 
         # workspace_create is owner-only by construction: it owns the
         # physical rows it is about to materialize. the workspace row

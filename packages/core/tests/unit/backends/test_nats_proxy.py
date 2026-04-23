@@ -124,7 +124,7 @@ class TestDefaultNamespace:
             namespace_prefix="ns",
             agent_id="abc-def",
         )
-        assert proxy.default_namespace == "agent.abc-def"
+        assert proxy.default_namespace == "agents.abc-def"
 
     def test_custom_namespace_override(self) -> None:
         proxy = NatsProxyL3Backend(
@@ -490,7 +490,7 @@ class TestPayloadFormat:
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
         assert payload["agent_id"] == "agent-123"
-        assert payload["namespace"] == "agent.agent-123"
+        assert payload["namespace"] == "agents.agent-123"
         assert payload["operation"] == "select"
         assert payload["query"] == "SELECT * FROM foo WHERE id = $1"
         assert payload["params"] == ["abc"]
@@ -547,7 +547,7 @@ class TestPayloadFormat:
         payload = json.loads(call_args[0][1])
         assert "correlation_id" in payload
         assert payload["agent_id"] == "agent-123"
-        assert payload["namespace"] == "agent.agent-123"
+        assert payload["namespace"] == "agents.agent-123"
         assert payload["transaction"] is False
         assert len(payload["queries"]) == 1
 

@@ -32,6 +32,7 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.observe import clear_context, get_logger, traced
 
 __all__ = [
@@ -53,15 +54,18 @@ __all__ = [
 def _tool_namespace_name(mcp_name: str, version: str) -> str:
     """build the canonical ``platform.namespaces.name`` for a tool row.
 
-    namespace-task-01 phase 2 stamps tool namespaces with the shape
-    ``tool:<mcp_name>:<version>`` so:
-
-    - cross-type lookups stay unambiguous (no collision with a
-      workspace-typed row sharing the name)
-    - per-version pinning is preserved (different versions of the
-      same tool are separate grantable resources)
-    - bulk delete on deregister can use a ``LIKE 'tool:<name>:%'``
-      pattern to sweep every version in one statement
+    namespace-task-01 phase 9.5 pins the canonical shape at
+    ``tools.<mcp_name>.<version>`` (plural prefix + dot separator +
+    dot-sanitized segments). :func:`build_namespace_name` replaces
+    any ``.`` inside a segment with ``-`` before interpolation — a
+    mcp name like ``aibots.admin.backup`` comes through as
+    ``aibots-admin-backup`` and a semver version like ``1.0.0``
+    comes through as ``1-0-0``. the resulting shape stays unambiguous
+    for cross-type lookups (no collision with a workspace-typed row
+    sharing the name), preserves per-version pinning (different
+    versions of the same tool remain distinct namespace rows), and
+    keeps bulk-delete-on-deregister expressible via a
+    ``LIKE 'tools.<sanitized-mcp>.%'`` pattern.
 
     :param mcp_name: tool mcp name (e.g. ``aibots.admin.backup``)
     :ptype mcp_name: str
@@ -70,7 +74,7 @@ def _tool_namespace_name(mcp_name: str, version: str) -> str:
     :return: canonical namespace name string
     :rtype: str
     """
-    return f"tool:{mcp_name}:{version}"
+    return build_namespace_name(PLURAL_PREFIX_TOOL, mcp_name, version)
 
 
 def _tool_namespace_id(

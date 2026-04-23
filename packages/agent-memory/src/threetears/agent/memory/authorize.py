@@ -51,6 +51,7 @@ from threetears.agent.acl import (
     Namespace as AclNamespace,
     evaluate_decision,
 )
+from threetears.core.namespaces import PLURAL_PREFIX_MEMORY, build_namespace_name
 from threetears.observe import get_logger
 
 __all__ = [
@@ -118,9 +119,11 @@ class MemoryAccessDenied(Exception):
 def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     """build the canonical memory namespace name for an (agent, customer) pair.
 
-    shape: ``memory:<agent_id_hex[:8]>:<customer_id_hex[:8]>``. uses
-    the first 8 hex chars of each UUID per the task shard
-    convention; the uniqueness is carried by the full
+    shape: ``memories.<agent_id_hex[:8]>.<customer_id_hex[:8]>`` per
+    the canonical plural-prefix + dot-separator form pinned by
+    :func:`threetears.core.namespaces.build_namespace_name`. uses the
+    first 8 hex chars of each UUID per the task shard convention; the
+    uniqueness is carried by the full
     (namespace_type, owner_agent_id, customer_id) tuple on the row
     itself, so the short prefix is a human-readable display handle
     and not a uniqueness key.
@@ -132,7 +135,11 @@ def memory_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
     :return: canonical namespace name
     :rtype: str
     """
-    return f"memory:{agent_id.hex[:8]}:{customer_id.hex[:8]}"
+    return build_namespace_name(
+        PLURAL_PREFIX_MEMORY,
+        agent_id.hex[:8],
+        customer_id.hex[:8],
+    )
 
 
 def memory_namespace_schema_name(agent_id: UUID, customer_id: UUID) -> str:
