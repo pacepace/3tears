@@ -20,3 +20,12 @@
 # Phase 8.5e flips the mode to strict; if you reach for this file in
 # 8.5e, re-read CLAUDE.md's "NO BACKWARDS-COMPATIBILITY SHIMS" clause
 # and fix the underlying code.
+
+# rationale: WriteBuffer is internal plumbing USED BY BaseCollection itself -- the flush_pending() helper drains WriteBuffer entries and calls collection.persist_to_postgres() on the registered Collection for each. Converting WriteBuffer to a BaseCollection subclass would be circular (BaseCollection using a BaseCollection to buffer writes to BaseCollection). The SQLiteBackend usage here is the primitive's own deferred-write journal, not a bespoke wrapper.
+packages/core/src/threetears/core/collections/flush.py:57:WriteBuffer
+
+# rationale: MemoryLedger persists conversation_memory_refs rows with composite PK (conversation_id, item_id) which BaseCollection's single-primary-key contract cannot express; retirement requires either (a) a schema migration adding a synthetic surrogate id UUID column to conversation_memory_refs + refactoring MemoryLedger to hold a MemoryRefsCollection, or (b) extending BaseCollection to support composite keys. Both are tracked as follow-on work in namespace-task-01 phase 8.5l. The L1 SQLiteBackend usage here is scoped to a bounded FIFO (MAX_SIZE=50) of surfaced memory references per conversation so the failure mode is a warm-cache loss, not data loss. Direct pool.fetch/execute on conversation_memory_refs is covered by the three cache-bypass annotations added in this same commit.
+packages/agent-memory/src/threetears/agent/memory/ledger.py:30:MemoryLedger
+
+# rationale: HeartbeatMonitor persists pod_health rows as a pure L1 crash-recovery mirror for the in-memory PodStatus dict that drives NATS heartbeat subscription + health-check loop. The persistent state is pod_id -> PodStatus (tools list + consecutive_misses counter + date_last_heartbeat); the async NATS subscription machinery and tool-catalog invalidation cannot be expressed through BaseCollection's CRUD contract (no L3 backing, no cross-pod cache invalidation channel because each registry process owns its own heartbeat truth). Retirement requires extracting the PodStatus rows into a dedicated HeartbeatCollection + refactoring the NATS subscription into a separate HeartbeatSubscriber that holds the Collection; tracked as follow-on work in namespace-task-01 phase 8.5l.
+packages/registry/src/threetears/registry/health.py:64:HeartbeatMonitor

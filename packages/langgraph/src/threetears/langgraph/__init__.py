@@ -17,6 +17,7 @@ from threetears.langgraph.protocols import (
     FlushCallback,
 )
 from threetears.langgraph.proxy_checkpoint import ProxyCheckpointSaver
+from threetears.langgraph.serde import UUIDSafeSerializer
 
 __all__ = [
     "AsyncQueryExecutor",
@@ -26,6 +27,7 @@ __all__ = [
     "FlushCallback",
     "ProxyCheckpointSaver",
     "ThreeTierCheckpointSaver",
+    "UUIDSafeSerializer",
     "agent_node",
     "build_chat_agent",
     "build_tool_agent",

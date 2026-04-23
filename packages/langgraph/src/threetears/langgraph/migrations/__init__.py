@@ -6,7 +6,7 @@ migration callables into a shared :class:`~threetears.core.data.
 migrations.runner.MigrationRunner`. the langgraph package owns the
 ``checkpoints`` and ``checkpoint_writes`` tables used by
 :class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver` and
-:class:`~threetears.langgraph.proxy_checkpoint.NatsProxyCheckpointSaver`.
+:class:`~threetears.langgraph.proxy_checkpoint.ProxyCheckpointSaver`.
 """
 
 from __future__ import annotations

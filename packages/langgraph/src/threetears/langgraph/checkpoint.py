@@ -20,7 +20,6 @@ from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any, cast
 
 import asyncpg
-import uuid_utils
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.checkpoint.base import (
@@ -33,9 +32,9 @@ from langgraph.checkpoint.base import (
     get_checkpoint_id,
     get_checkpoint_metadata,
 )
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from threetears.langgraph.protocols import CheckpointL1Cache, CheckpointL2Cache, FlushCallback
+from threetears.langgraph.serde import UUIDSafeSerializer
 
 __all__ = [
     "ThreeTierCheckpointSaver",
@@ -45,38 +44,6 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 _DEFAULT_L2_BUCKET = "checkpoints"
-
-
-class _UUIDSafeSerializer:
-    """Wraps JsonPlusSerializer to convert uuid_utils.UUID to str before packing.
-
-    asyncpg returns uuid_utils.UUID objects (not stdlib uuid.UUID) which
-    ormsgpack cannot serialize. This wrapper walks the data structure and
-    converts them to plain strings so the underlying serializer succeeds.
-    """
-
-    def __init__(self) -> None:
-        self._inner = JsonPlusSerializer()
-
-    @staticmethod
-    def _sanitize(obj: Any) -> Any:
-        if isinstance(obj, uuid_utils.UUID):
-            return str(obj)
-        if isinstance(obj, dict):
-            return {k: _UUIDSafeSerializer._sanitize(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_UUIDSafeSerializer._sanitize(x) for x in obj]
-        if isinstance(obj, tuple):
-            return tuple(_UUIDSafeSerializer._sanitize(x) for x in obj)
-        return obj
-
-    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
-        """Serialize, converting uuid_utils.UUID to strings first."""
-        return self._inner.dumps_typed(self._sanitize(obj))
-
-    def loads_typed(self, data: tuple[str, bytes]) -> Any:
-        """Deserialize (no UUID conversion needed on this path)."""
-        return self._inner.loads_typed(data)
 
 
 class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
@@ -105,7 +72,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         flush_callback: FlushCallback | None = None,
     ) -> None:
         super().__init__()
-        self.serde = _UUIDSafeSerializer()
+        self.serde = UUIDSafeSerializer()
         self._pool = postgres_pool
         self._l1 = l1_cache
         self._l2 = l2_cache

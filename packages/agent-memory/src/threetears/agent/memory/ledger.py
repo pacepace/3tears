@@ -50,6 +50,9 @@ class MemoryLedger:
 
     async def load(self, pool: Any, conversation_id: UUID) -> None:
         """Load from conversation_memory_refs table."""
+        # cache-bypass: conversation_memory_refs has composite PK (conversation_id, item_id)
+        # which BaseCollection's single-PK contract cannot express; retirement tracked under
+        # namespace-task-01 phase 8.5l along with the MemoryLedger wrapper_class exemption.
         rows = await pool.fetch(
             """
             SELECT item_id, item_type, short_desc, date_added
@@ -88,6 +91,8 @@ class MemoryLedger:
             del self._refs[oldest_key]
             if self._l1 is not None:
                 self._l1.delete_by_id("memory_refs", oldest_key, primary_key="key")
+            # cache-bypass: conversation_memory_refs composite-PK table, see module-level
+            # rationale in load() and the corresponding _cache_exemptions.txt entry.
             await pool.execute(
                 "DELETE FROM conversation_memory_refs WHERE conversation_id = $1 AND item_id = $2",
                 conversation_id,
@@ -103,6 +108,8 @@ class MemoryLedger:
         self._refs[item_id] = ref_data
         self._persist_ref_to_l1(item_id, ref_data)
 
+        # cache-bypass: conversation_memory_refs composite-PK table, see module-level
+        # rationale in load() and the corresponding _cache_exemptions.txt entry.
         await pool.execute(
             """
             INSERT INTO conversation_memory_refs (conversation_id, item_id, item_type, short_desc, date_added)

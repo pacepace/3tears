@@ -10,14 +10,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver, _UUIDSafeSerializer
+from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.serde import UUIDSafeSerializer
 
 
 class TestUUIDSafeSerializer:
-    """_UUIDSafeSerializer sanitizes uuid_utils.UUID objects."""
+    """UUIDSafeSerializer sanitizes uuid_utils.UUID objects."""
 
     def test_roundtrip_simple(self):
-        serde = _UUIDSafeSerializer()
+        serde = UUIDSafeSerializer()
         data = {"key": "value", "num": 42, "nested": {"list": [1, 2, 3]}}
         typed = serde.dumps_typed(data)
         result = serde.loads_typed(typed)
@@ -26,7 +27,7 @@ class TestUUIDSafeSerializer:
     def test_sanitizes_uuid_utils(self):
         import uuid_utils
 
-        serde = _UUIDSafeSerializer()
+        serde = UUIDSafeSerializer()
         uid = uuid_utils.uuid7()
         data = {"id": uid, "nested": {"ids": [uid]}}
         typed = serde.dumps_typed(data)
@@ -38,7 +39,7 @@ class TestUUIDSafeSerializer:
         import uuid_utils
 
         uid = uuid_utils.uuid7()
-        sanitized = _UUIDSafeSerializer._sanitize((uid, "hello"))
+        sanitized = UUIDSafeSerializer._sanitize((uid, "hello"))
         assert sanitized == (str(uid), "hello")
 
 

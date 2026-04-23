@@ -29,10 +29,12 @@ been re-introduced:
 
 run mode is controlled by the ``CACHE_ENFORCEMENT_MODE`` env var:
 
-- ``report`` (default, during 8.5b/c/d cleanup) — prints every
-  violation with ``file:line:reason``; asserts nothing.
-- ``strict`` (flipped in 8.5e) — raises ``pytest.fail`` on any
-  violation.
+- ``strict`` (default, flipped in 8.5e) — raises ``pytest.fail`` on
+  any violation. any new bespoke ``SQLiteBackend`` wrapper or
+  direct-pool bypass fails CI.
+- ``report`` — prints every violation with ``file:line:reason``;
+  asserts nothing. retained as an opt-in debugging aid for bulk
+  refactors; production pipelines never set this.
 
 exemptions live in ``tests/enforcement/_cache_exemptions.txt``. each
 entry requires a preceding ``# rationale: <specific reason>`` line; the
@@ -71,7 +73,10 @@ import pytest
 
 MODE_REPORT = "report"
 MODE_STRICT = "strict"
-_DEFAULT_MODE = MODE_REPORT
+# strict is the current production default (flipped in namespace-task-01
+# phase 8.5e). report mode is retained as an opt-in debugging aid for
+# bulk refactors; production and CI pipelines run strict.
+_DEFAULT_MODE = MODE_STRICT
 
 _SKIP_DIRS = frozenset({
     ".venv",
@@ -107,7 +112,24 @@ _ALLOWED_SQLITE_CONSTRUCTION_SITES: frozenset[str] = frozenset({
 _MIGRATION_TABLE_ALLOWLIST: frozenset[str] = frozenset({
     # internal migration runner state — not a business entity
     "_schema_migrations",
-    # every migration's log/trigger body, not a durable table
+    # checkpoints / checkpoint_writes are accessed via
+    # ``threetears.langgraph.ThreeTierCheckpointSaver`` and
+    # ``threetears.langgraph.ProxyCheckpointSaver`` (LangGraph
+    # ``BaseCheckpointSaver`` contract). the LangGraph interface is
+    # sync-and-async and mandates shape details that cannot be
+    # expressed through ``BaseCollection``. 3tears wraps the three-tier
+    # backend under the LangGraph contract so the platform gets L1/L2/L3
+    # while satisfying LangGraph.
+    "checkpoints",
+    "checkpoint_writes",
+    # conversation_memory_refs: composite primary key (conversation_id,
+    # item_id) which BaseCollection's single-PK contract cannot model
+    # without a schema migration adding a synthetic surrogate id or
+    # extending BaseCollection to support composite keys. Tracked as
+    # follow-on work under namespace-task-01 phase 8.5l; the wrapper
+    # class (MemoryLedger) that owns reads/writes is exempted in the
+    # matching _cache_exemptions.txt entry with the same rationale.
+    "conversation_memory_refs",
 })
 
 
@@ -120,7 +142,7 @@ _COLLECTION_TABLE_ALLOWLIST: dict[str, str] = {
     # created by a migration under ``packages/*/migrations/`` and has
     # a Collection somewhere under ``packages/*/src/``)
     "conversations": "ConversationsCollection",
-    "context_items": "ContextItemsCollection",
+    "context_items": "ContextItemCollection",
     "memories": "MemoriesCollection",
     "media": "MediaCollection",
     "media_content": "MediaContentCollection",
@@ -1012,10 +1034,71 @@ def find_direct_pool_access(
 # walker 4 — migration-defined tables without Collections
 # ------------------------------------------------------------------------
 
+# CREATE TABLE regex — requires at least one space after EXISTS when
+# that clause is present, and the captured name must be an identifier
+# (not the keyword ``IF``, ``NOT``, ``EXISTS``). the previous regex
+# collapsed ``IF\s+NOT\s+EXISTS\s+`` into an optional group that could
+# match zero characters when the text lacked the trailing whitespace
+# (docstring/backtick breaks), which let ``IF`` itself be captured as
+# the table name. the rewritten pattern uses two alternatives so the
+# captured identifier is always the table token that follows.
 _CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z_0-9\.]*)",
+    r"CREATE\s+TABLE\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(?!IF\b|NOT\b|EXISTS\b)"
+    r"([A-Za-z_][A-Za-z_0-9\.]*)",
     re.IGNORECASE,
 )
+
+# only scan files under a ``migrations/`` directory whose filename
+# matches the canonical ``v<digits>_<suffix>.py`` migration template
+# (``template.py`` and ``drift.py`` live under ``migrations/`` but are
+# helper modules, not migrations). the walker previously scanned every
+# ``.py`` file that happened to sit under a ``migrations/`` directory,
+# which surfaced every docstring mentioning ``CREATE TABLE IF NOT
+# EXISTS`` as a phantom migration.
+_MIGRATION_FILENAME_RE = re.compile(r"^v\d+_.+\.py$")
+
+
+def _extract_sql_strings(tree: ast.Module) -> list[tuple[int, str]]:
+    """extract every SQL-shaped string literal from the module AST.
+
+    walks :class:`ast.Constant` and :class:`ast.JoinedStr` nodes,
+    ignoring module/class/function docstrings (the first :class:`ast
+    .Expr` wrapping a string constant in a body). returns ``(lineno,
+    text)`` pairs for downstream regex matching.
+
+    using the AST rather than raw text ensures ``CREATE TABLE IF NOT
+    EXISTS`` fragments embedded inside module/class docstrings
+    (``drift.py``, ``template.py``) are never considered; only real
+    SQL-string assignments contribute.
+
+    :param tree: parsed module
+    :ptype tree: ast.Module
+    :return: ``(lineno, string_value)`` tuples in source order
+    :rtype: list[tuple[int, str]]
+    """
+    result: list[tuple[int, str]] = []
+    docstring_nodes: set[int] = set()
+    for container in ast.walk(tree):
+        if isinstance(container, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = getattr(container, "body", None)
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                if isinstance(body[0].value.value, str):
+                    docstring_nodes.add(id(body[0].value))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in docstring_nodes:
+                continue
+            result.append((node.lineno, node.value))
+        elif isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for piece in node.values:
+                if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                    parts.append(piece.value)
+            if parts:
+                result.append((node.lineno, "".join(parts)))
+    return result
 
 
 def find_missing_collections(
@@ -1028,9 +1111,15 @@ def find_missing_collections(
 
     strategy:
 
-    1. walk every ``migrations/`` directory under each src root.
-    2. extract CREATE TABLE statements (regex over source text — no
-       migration execution required).
+    1. walk every ``migrations/`` directory under each src root and
+       match files whose basename follows the
+       ``v<digits>_<suffix>.py`` migration naming convention —
+       helper modules (``template.py``, ``drift.py``, ``__init__.py``)
+       are skipped.
+    2. extract CREATE TABLE statements by scanning only the SQL-shaped
+       string literals in the module AST (docstrings excluded) — no
+       migration execution required and no false positives from
+       backtick-quoted examples inside module documentation.
     3. for every extracted table, check ``table_allowlist`` for the
        expected Collection class name, then confirm a ``class X(
        BaseCollection...)`` with that name exists somewhere under
@@ -1069,56 +1158,54 @@ def find_missing_collections(
         for source in _iter_python_files(root):
             if "migrations" not in source.parts:
                 continue
-            try:
-                text = source.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
+            if not _MIGRATION_FILENAME_RE.match(source.name):
                 continue
-            for match in _CREATE_TABLE_RE.finditer(text):
-                table_raw = match.group(1).lower()
-                # strip schema prefix (``platform.customers`` ->
-                # ``customers``)
-                if "." in table_raw:
-                    table_raw = table_raw.rsplit(".", 1)[1]
-                if table_raw in seen:
-                    continue
-                seen.add(table_raw)
-                if table_raw in migration_allowlist:
-                    continue
-                expected = table_allowlist.get(table_raw)
-                if expected is None:
-                    violations.append(
-                        CacheViolation(
-                            test_name="missing_collection",
-                            file=source,
-                            line=text.count(
-                                "\n", 0, match.start(),
-                            ) + 1,
-                            symbol=table_raw,
-                            reason=(
-                                f"migration creates table '{table_raw}' with no "
-                                "mapping in _COLLECTION_TABLE_ALLOWLIST; either "
-                                "add a Collection + allowlist entry or add to "
-                                "_MIGRATION_TABLE_ALLOWLIST with rationale"
-                            ),
+            tree = _parse_file(source)
+            if tree is None:
+                continue
+            for lineno, text in _extract_sql_strings(tree):
+                for match in _CREATE_TABLE_RE.finditer(text):
+                    table_raw = match.group(1).lower()
+                    # strip schema prefix (``platform.customers`` ->
+                    # ``customers``)
+                    if "." in table_raw:
+                        table_raw = table_raw.rsplit(".", 1)[1]
+                    if table_raw in seen:
+                        continue
+                    seen.add(table_raw)
+                    if table_raw in migration_allowlist:
+                        continue
+                    expected = table_allowlist.get(table_raw)
+                    if expected is None:
+                        violations.append(
+                            CacheViolation(
+                                test_name="missing_collection",
+                                file=source,
+                                line=lineno,
+                                symbol=table_raw,
+                                reason=(
+                                    f"migration creates table '{table_raw}' with no "
+                                    "mapping in _COLLECTION_TABLE_ALLOWLIST; either "
+                                    "add a Collection + allowlist entry or add to "
+                                    "_MIGRATION_TABLE_ALLOWLIST with rationale"
+                                ),
+                            )
                         )
-                    )
-                    continue
-                if expected not in declared_collections:
-                    violations.append(
-                        CacheViolation(
-                            test_name="missing_collection",
-                            file=source,
-                            line=text.count(
-                                "\n", 0, match.start(),
-                            ) + 1,
-                            symbol=table_raw,
-                            reason=(
-                                f"table '{table_raw}' expects "
-                                f"{expected} but no class by that name "
-                                "subclasses BaseCollection anywhere in src/"
-                            ),
+                        continue
+                    if expected not in declared_collections:
+                        violations.append(
+                            CacheViolation(
+                                test_name="missing_collection",
+                                file=source,
+                                line=lineno,
+                                symbol=table_raw,
+                                reason=(
+                                    f"table '{table_raw}' expects "
+                                    f"{expected} but no class by that name "
+                                    "subclasses BaseCollection anywhere in src/"
+                                ),
+                            )
                         )
-                    )
     return violations
 
 

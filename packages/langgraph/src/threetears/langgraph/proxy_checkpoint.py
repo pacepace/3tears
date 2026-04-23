@@ -26,13 +26,12 @@ from langgraph.checkpoint.base import (
     get_checkpoint_id,
     get_checkpoint_metadata,
 )
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
 from threetears.langgraph.protocols import (
     AsyncQueryExecutor,
     CheckpointL1Cache,
     CheckpointL2Cache,
 )
+from threetears.langgraph.serde import UUIDSafeSerializer
 
 __all__ = [
     "ProxyCheckpointSaver",
@@ -40,62 +39,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-
-class _UUIDSafeSerializer:
-    """wraps JsonPlusSerializer to handle uuid_utils.UUID objects.
-
-    converts uuid_utils.UUID to str before packing since ormsgpack
-    cannot serialize them directly.
-    """
-
-    def __init__(self) -> None:
-        """initialize with inner JsonPlusSerializer."""
-        self._inner = JsonPlusSerializer()
-
-    @staticmethod
-    def _sanitize(obj: Any) -> Any:
-        """recursively convert uuid_utils.UUID to str.
-
-        :param obj: object to sanitize
-        :ptype obj: Any
-        :return: sanitized object
-        :rtype: Any
-        """
-        try:
-            import uuid_utils
-
-            if isinstance(obj, uuid_utils.UUID):
-                return str(obj)
-        except ImportError:
-            pass
-        if isinstance(obj, dict):
-            return {k: _UUIDSafeSerializer._sanitize(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_UUIDSafeSerializer._sanitize(x) for x in obj]
-        if isinstance(obj, tuple):
-            return tuple(_UUIDSafeSerializer._sanitize(x) for x in obj)
-        return obj
-
-    def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
-        """serialize with UUID sanitization.
-
-        :param obj: object to serialize
-        :ptype obj: Any
-        :return: tuple of (type string, serialized bytes)
-        :rtype: tuple[str, bytes]
-        """
-        return self._inner.dumps_typed(self._sanitize(obj))
-
-    def loads_typed(self, data: tuple[str, bytes]) -> Any:
-        """deserialize typed data.
-
-        :param data: tuple of (type string, serialized bytes)
-        :ptype data: tuple[str, bytes]
-        :return: deserialized object
-        :rtype: Any
-        """
-        return self._inner.loads_typed(data)
 
 
 class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
@@ -138,7 +81,7 @@ class ProxyCheckpointSaver(BaseCheckpointSaver[int]):
         :ptype l2_bucket: str
         """
         super().__init__()
-        self.serde = _UUIDSafeSerializer()
+        self.serde = UUIDSafeSerializer()
         self._exec = executor
         self._l1 = l1_cache
         self._l2 = l2_cache
