@@ -3,13 +3,14 @@
 
 translated from the hub's former alembic migration ``001_initial_agent_tables``.
 LangGraph checkpoint persistence via
-:class:`~threetears.langgraph.proxy_checkpoint.ProxyCheckpointSaver`
-(agent-side, sandboxed via NATS L3 proxy) or
 :class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver`
-(trusted-service-side with direct asyncpg pool) uses two tables with
-string IDs and BYTEA columns for serialized data. the NATS proxy
-transmits hex-encoded bytes; the L3 worker on the hub side writes the
-bytes as BYTEA.
+uses two tables with string IDs and BYTEA columns for serialized
+data. trusted services back the saver with a direct asyncpg pool
+wrapped in :class:`~threetears.langgraph.protocols.AsyncpgPoolAdapter`;
+sandboxed agents back it with
+:class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`,
+which transmits hex-encoded bytes over NATS and writes BYTEA
+server-side.
 """
 
 from __future__ import annotations

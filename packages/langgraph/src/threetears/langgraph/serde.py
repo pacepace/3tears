@@ -1,17 +1,13 @@
 """Shared LangGraph checkpoint serializer with uuid_utils sanitization.
 
-Both :class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver`
-and :class:`~threetears.langgraph.proxy_checkpoint.ProxyCheckpointSaver`
-serialize LangGraph checkpoint data to bytes for storage. The
+:class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver`
+serializes LangGraph checkpoint data to bytes for storage. The
 underlying :class:`~langgraph.checkpoint.serde.jsonplus.JsonPlusSerializer`
 delegates to ``ormsgpack`` which cannot encode
 :class:`uuid_utils.UUID` instances (those are returned by ``asyncpg``
 column readers on modern drivers). The wrapper walks the structure
 and substitutes plain :class:`str` for every ``uuid_utils.UUID`` before
 passing the object down to the inner serializer.
-
-Previously each saver carried its own private copy of this helper; the
-consolidation lets both implementations share the one truth.
 """
 
 from __future__ import annotations

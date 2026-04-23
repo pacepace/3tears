@@ -11,21 +11,21 @@ from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.context_registry import ContextManagerRegistry, current_conversation_id
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
 from threetears.langgraph.protocols import (
+    AsyncpgPoolAdapter,
     AsyncQueryExecutor,
     CheckpointL1Cache,
     CheckpointL2Cache,
     FlushCallback,
 )
-from threetears.langgraph.proxy_checkpoint import ProxyCheckpointSaver
 from threetears.langgraph.serde import UUIDSafeSerializer
 
 __all__ = [
     "AsyncQueryExecutor",
+    "AsyncpgPoolAdapter",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "ContextManagerRegistry",
     "FlushCallback",
-    "ProxyCheckpointSaver",
     "ThreeTierCheckpointSaver",
     "UUIDSafeSerializer",
     "agent_node",

@@ -2,14 +2,25 @@
 
 L1 and L2 are optional cache layers that sit in front of PostgreSQL.
 Host applications provide implementations matching these protocols.
+
+the module also ships :class:`AsyncpgPoolAdapter`, a thin adapter
+that exposes a raw :class:`asyncpg.Pool` as an
+:class:`AsyncQueryExecutor`. trusted services that hold a direct
+pool (e.g. the hub) wrap once at construction; sandboxed agents
+pass :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+straight through because it implements the protocol natively.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    import asyncpg
 
 __all__ = [
     "AsyncQueryExecutor",
+    "AsyncpgPoolAdapter",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "FlushCallback",
@@ -95,3 +106,79 @@ class FlushCallback(Protocol):
     async def __call__(self) -> int:
         """Flush pending writes. Returns count of items flushed."""
         ...
+
+
+class AsyncpgPoolAdapter:
+    """adapt :class:`asyncpg.Pool` to :class:`AsyncQueryExecutor`.
+
+    :class:`asyncpg.Pool` exposes ``fetch``/``fetchrow``/``execute``
+    but returns :class:`asyncpg.Record` objects rather than plain
+    dicts. the :class:`AsyncQueryExecutor` protocol declares
+    ``list[dict[str, Any]]`` / ``dict[str, Any] | None`` return types,
+    matching what :class:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend`
+    produces. this adapter converts records to dicts so a direct-
+    pool caller and a proxy-backed caller deliver identical row
+    shapes to :class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver`.
+
+    construction is cheap; callers wrap their pool once at wire-up
+    and forward the adapter wherever the checkpointer wants an
+    :class:`AsyncQueryExecutor`.
+
+    :param pool: asyncpg connection pool
+    :ptype pool: asyncpg.Pool
+    """
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        """capture the pool for later delegation.
+
+        :param pool: asyncpg connection pool
+        :ptype pool: asyncpg.Pool
+        :return: nothing
+        :rtype: None
+        """
+        self._pool = pool
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
+        """execute SELECT and return rows as dicts.
+
+        :param query: parameterized SQL query
+        :ptype query: str
+        :param args: query parameter values
+        :ptype args: object
+        :return: list of row dictionaries
+        :rtype: list[dict[str, Any]]
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *args)
+        return [dict(row) for row in rows]
+
+    async def fetchrow(
+        self, query: str, *args: object,
+    ) -> dict[str, Any] | None:
+        """execute SELECT and return first row as dict.
+
+        :param query: parameterized SQL query
+        :ptype query: str
+        :param args: query parameter values
+        :ptype args: object
+        :return: first row dict or None
+        :rtype: dict[str, Any] | None
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(query, *args)
+        result: dict[str, Any] | None = dict(row) if row is not None else None
+        return result
+
+    async def execute(self, query: str, *args: object) -> str:
+        """execute statement and return asyncpg status tag.
+
+        :param query: parameterized SQL query
+        :ptype query: str
+        :param args: query parameter values
+        :ptype args: object
+        :return: asyncpg-style status tag (e.g. ``"UPDATE 3"``)
+        :rtype: str
+        """
+        async with self._pool.acquire() as conn:
+            status: str = await conn.execute(query, *args)
+        return status

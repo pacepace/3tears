@@ -5,8 +5,7 @@ single entry point :func:`register` wires the package's versioned
 migration callables into a shared :class:`~threetears.core.data.
 migrations.runner.MigrationRunner`. the langgraph package owns the
 ``checkpoints`` and ``checkpoint_writes`` tables used by
-:class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver` and
-:class:`~threetears.langgraph.proxy_checkpoint.ProxyCheckpointSaver`.
+:class:`~threetears.langgraph.checkpoint.ThreeTierCheckpointSaver`.
 """
 
 from __future__ import annotations

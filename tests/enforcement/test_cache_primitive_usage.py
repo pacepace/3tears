@@ -113,8 +113,7 @@ _MIGRATION_TABLE_ALLOWLIST: frozenset[str] = frozenset({
     # internal migration runner state — not a business entity
     "_schema_migrations",
     # checkpoints / checkpoint_writes are accessed via
-    # ``threetears.langgraph.ThreeTierCheckpointSaver`` and
-    # ``threetears.langgraph.ProxyCheckpointSaver`` (LangGraph
+    # ``threetears.langgraph.ThreeTierCheckpointSaver`` (LangGraph
     # ``BaseCheckpointSaver`` contract). the LangGraph interface is
     # sync-and-async and mandates shape details that cannot be
     # expressed through ``BaseCollection``. 3tears wraps the three-tier

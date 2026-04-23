@@ -26,7 +26,7 @@ graph TB
     subgraph "Agent Pod"
         AGENT[LangGraph Agent]
         TOOLS[NatsToolWrapper]
-        CHECK[ProxyCheckpointSaver]
+        CHECK[ThreeTierCheckpointSaver]
         DATA[DataStore]
         CTX[ContextManagerRegistry]
     end
@@ -42,7 +42,7 @@ graph TB
     subgraph "3tears LangGraph"
         BUILD[build_tool_agent<br/>build_chat_agent]
         NODES[agent_node<br/>tool_node]
-        CKPT[ThreeTierCheckpointSaver<br/>ProxyCheckpointSaver]
+        CKPT[ThreeTierCheckpointSaver]
         CREG[ContextManagerRegistry]
     end
 
@@ -133,16 +133,20 @@ compiled = graph.compile(checkpointer=saver)
 # Config keys: chat_model, tools, system_prompt, context_manager, data_store, thread_id
 ```
 
-### Checkpoint Savers
+### Checkpoint Saver
 
 ```python
-from threetears.langgraph import ThreeTierCheckpointSaver, ProxyCheckpointSaver
+from threetears.langgraph import (
+    AsyncpgPoolAdapter,
+    ThreeTierCheckpointSaver,
+)
 
-# Direct DB access (Hub, Gateway)
-saver = ThreeTierCheckpointSaver(postgres_pool=pool)
+# Direct DB access (Hub, Gateway) — wrap the pool once
+saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool))
 
-# Sandboxed agents (no DB credentials)
-saver = ProxyCheckpointSaver(executor=nats_l3_adapter)
+# Sandboxed agents (no DB credentials) — NatsProxyL3Backend is
+# already an AsyncQueryExecutor, pass it straight through
+saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
 ```
 
 ### Context Memory
