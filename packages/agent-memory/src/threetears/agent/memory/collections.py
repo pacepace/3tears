@@ -21,11 +21,9 @@ import asyncio
 import json
 import math
 from datetime import UTC, datetime
-from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -67,189 +65,6 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
-
-# Field type mapping for JSON serialization/deserialization
-_MEMORY_FIELD_TYPES: dict[str, Any] = {
-    "memory_id": UUID,
-    "agent_id": UUID,
-    "customer_id": UUID,
-    "user_id": UUID,
-    "conversation_id": UUID,
-    "message_id_source": UUID,
-    "type_memory": str,
-    "content": str,
-    "embedding": list[float],
-    "is_deleted": bool,
-    "media_id": UUID | None,
-    "date_created": datetime,
-    "date_deleted": datetime | None,
-    "date_updated": datetime | None,
-}
-
-
-_MEDIA_FIELD_TYPES: dict[str, Any] = {
-    "media_id": UUID,
-    "agent_id": UUID | None,
-    "customer_id": UUID | None,
-    "user_id": UUID,
-    "media_category": str,
-    "metadata_json": dict,
-    "date_created": datetime,
-    "date_updated": datetime,
-}
-
-
-_MEDIA_CONTENT_FIELD_TYPES: dict[str, Any] = {
-    "content_id": UUID,
-    "media_id": UUID,
-    "agent_id": UUID | None,
-    "customer_id": UUID | None,
-    "user_id": UUID,
-    "content_type": str,
-    "content": str,
-    "summary": str | None,
-    "embedding": list[float],
-    "date_created": datetime,
-}
-
-
-_MEMORY_CHUNK_FIELD_TYPES: dict[str, Any] = {
-    "chunk_id": UUID,
-    "media_id": UUID | None,
-    "agent_id": UUID | None,
-    "customer_id": UUID | None,
-    "user_id": UUID,
-    "content": str,
-    "summary": str | None,
-    "heading_context": str | None,
-    "page_number": int,
-    "embedding": list[float],
-    "date_created": datetime,
-}
-
-
-def _encode_embedding(value: object) -> str | None:
-    """Encode an embedding value for the pgvector ``vector`` column.
-
-    asyncpg has no native pgvector codec; values must be passed as
-    the literal textual representation ``[v1, v2, ...]``. Lists
-    produced by entity setters or extraction code get JSON-encoded
-    here at the WRITE boundary. Already-encoded strings pass through.
-    ``None`` passes through too so callers that omit embeddings stay
-    working.
-
-    :param value: list of floats, string, or None
-    :ptype value: object
-    :return: bracketed textual vector, passthrough string, or None
-    :rtype: str | None
-    """
-    if value is None:
-        result: str | None = None
-    elif isinstance(value, str):
-        result = value
-    elif isinstance(value, list):
-        result = json.dumps(value)
-    else:
-        result = str(value)
-    return result
-
-
-def _to_naive_utc(value: datetime | None) -> datetime | None:
-    """Convert a timezone-aware datetime to naive UTC for TIMESTAMP columns.
-
-    YugabyteDB TIMESTAMP columns (see memory migrations v001/v004) are
-    timezone-naive. Per CLAUDE.md "Datetime Handling", aware datetimes
-    must be converted at the WRITE boundary. Naive inputs are returned
-    as-is; ``None`` passes through.
-
-    :param value: aware or naive datetime, or None
-    :ptype value: datetime | None
-    :return: naive UTC datetime or None
-    :rtype: datetime | None
-    """
-    if value is None:
-        result: datetime | None = None
-    elif value.tzinfo is None:
-        result = value
-    else:
-        result = value.astimezone(UTC).replace(tzinfo=None)
-    return result
-
-
-def _json_serializer(obj: object) -> str | int | float | bool | None:
-    """Serialize non-JSON-native types for json.dumps.
-
-    :param obj: value that ``json.dumps`` could not encode natively
-    :ptype obj: object
-    :return: JSON-compatible representation
-    :rtype: str | int | float | bool | None
-    :raises TypeError: when ``obj`` cannot be serialized
-    """
-    if isinstance(obj, UUID):
-        return str(obj)
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    if isinstance(obj, Enum):
-        return obj.value  # type: ignore[no-any-return]
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
-def _resolve_base_type(type_hint: Any) -> type | None:
-    """Extract the concrete type from a possibly-Optional type hint.
-
-    :param type_hint: python type hint, may be wrapped in ``| None``
-    :ptype type_hint: Any
-    :return: underlying concrete type, or ``None``
-    :rtype: type | None
-    """
-    import types
-    from typing import get_args, get_origin
-
-    origin = get_origin(type_hint)
-    if origin is not None:
-        if origin is types.UnionType:
-            args = get_args(type_hint)
-            non_none = [a for a in args if a is not type(None)]
-            if non_none:
-                inner = non_none[0]
-                inner_origin = get_origin(inner)
-                return inner_origin if inner_origin is not None else inner  # type: ignore[no-any-return]
-            return None
-        return origin  # type: ignore[no-any-return]
-    return type_hint  # type: ignore[no-any-return]
-
-
-def _deserialize_with_types(
-    raw: dict[str, Any], field_types: dict[str, Any],
-) -> dict[str, Any]:
-    """Map JSON-decoded dict back to native python types per ``field_types``.
-
-    :param raw: decoded dict from JSON payload
-    :ptype raw: dict[str, Any]
-    :param field_types: map of column name to declared type hint
-    :ptype field_types: dict[str, Any]
-    :return: dict with values coerced to their typed form
-    :rtype: dict[str, Any]
-    """
-    result: dict[str, Any] = {}
-    for key, value in raw.items():
-        if value is None:
-            result[key] = None
-            continue
-        base_type = _resolve_base_type(field_types.get(key))
-        if base_type is UUID and isinstance(value, str):
-            result[key] = UUID(value)
-        elif base_type is datetime and isinstance(value, str):
-            result[key] = datetime.fromisoformat(value)
-        elif base_type is bool and isinstance(value, (bool, int)):
-            result[key] = bool(value)
-        elif base_type is int and isinstance(value, (int, float)):
-            result[key] = int(value)
-        elif base_type is list and isinstance(value, list):
-            result[key] = value
-        else:
-            result[key] = value
-    return result
 
 
 def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str | None:
@@ -358,7 +173,7 @@ def _recency_weight(created: datetime, half_life_hours: float) -> float:
     return math.exp(-hours_ago / half_life_hours)
 
 
-class MemoriesCollection(BaseCollection[MemoryEntity]):
+class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     """Collection for memory entities with three-tier caching.
 
     CRUD goes through :meth:`get` / :meth:`save_entity` / :meth:`delete`
@@ -370,9 +185,38 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
     not primary-key-addressable and therefore cannot benefit from the
     L1 row cache — but keeping them on the Collection preserves the
     single-entry-point contract enforcement test walker #3 relies on.
+
+    CRUD is generated from :attr:`schema`: embedding is ``VECTOR_TYPE``
+    (pgvector ``::vector`` cast + list[float] decode), ``date_updated``
+    is the CAS fence so concurrent writers race correctly, and the
+    scope columns (agent/customer/user/conversation/message_id_source/
+    type_memory/media_id/date_created) are marked immutable so the
+    ``DO UPDATE SET`` clause narrows to content + embedding +
+    is_deleted + date_deleted + date_updated.
     """
 
     primary_key_column: str = "memory_id"
+    schema = TableSchema(
+        name="memories",
+        primary_key="memory_id",
+        columns=[
+            Column("memory_id", UUID_TYPE),
+            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("user_id", UUID_TYPE, immutable=True),
+            Column("conversation_id", UUID_TYPE, immutable=True),
+            Column("message_id_source", UUID_TYPE, immutable=True),
+            Column("type_memory", STRING_TYPE, immutable=True),
+            Column("content", STRING_TYPE),
+            Column("embedding", VECTOR_TYPE),
+            Column("is_deleted", BOOL_TYPE),
+            Column("media_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_deleted", DATETIME_TYPE, nullable=True),
+            Column("date_updated", DATETIME_TYPE, nullable=True),
+        ],
+        cas_column="date_updated",
+    )
 
     def __init__(
         self,
@@ -425,123 +269,6 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         :rtype: type[MemoryEntity]
         """
         return MemoryEntity
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """Fetch one memory row from L3 by primary key.
-
-        :param entity_id: memory primary-key value
-        :ptype entity_id: Any
-        :return: row dict or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
-            "SELECT * FROM memories WHERE memory_id = $1", entity_id,
-        )
-        result: dict[str, Any] | None = dict(row) if row is not None else None
-        return result
-
-    async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
-    ) -> int:
-        """Upsert one memory row into L3.
-
-        :param data: row data to persist
-        :ptype data: dict[str, Any]
-        :param original_timestamp: optimistic-concurrency guard
-        :ptype original_timestamp: datetime | None
-        :return: rows affected
-        :rtype: int
-        """
-        if self.l3_pool is None:
-            return 0
-        if original_timestamp is None:
-            result = await self.l3_pool.execute(
-                """
-                INSERT INTO memories (
-                    memory_id, agent_id, customer_id, user_id,
-                    conversation_id, message_id_source,
-                    type_memory, content, embedding, is_deleted,
-                    media_id, date_created, date_deleted, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10, $11, $12, $13, $14)
-                ON CONFLICT (memory_id) DO UPDATE SET
-                    content = EXCLUDED.content,
-                    embedding = EXCLUDED.embedding,
-                    is_deleted = EXCLUDED.is_deleted,
-                    date_deleted = EXCLUDED.date_deleted,
-                    date_updated = EXCLUDED.date_updated
-                """,
-                data["memory_id"],
-                data.get("agent_id"),
-                data.get("customer_id"),
-                data["user_id"],
-                data["conversation_id"],
-                data["message_id_source"],
-                data["type_memory"],
-                data["content"],
-                _encode_embedding(data["embedding"]),
-                data["is_deleted"],
-                data.get("media_id"),
-                _to_naive_utc(data["date_created"]),
-                _to_naive_utc(data.get("date_deleted")),
-                _to_naive_utc(data.get("date_updated")),
-            )
-        else:
-            result = await self.l3_pool.execute(
-                """
-                UPDATE memories SET
-                    content = $2,
-                    embedding = $3::vector,
-                    is_deleted = $4,
-                    date_deleted = $5,
-                    date_updated = $6
-                WHERE memory_id = $1 AND date_updated = $7
-                """,
-                data["memory_id"],
-                data["content"],
-                _encode_embedding(data["embedding"]),
-                data["is_deleted"],
-                _to_naive_utc(data.get("date_deleted")),
-                _to_naive_utc(data.get("date_updated")),
-                _to_naive_utc(original_timestamp),
-            )
-        return int(result.split()[-1])
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """Hard-delete a memory row from L3.
-
-        :param entity_id: memory primary-key value
-        :ptype entity_id: Any
-        :return: nothing
-        :rtype: None
-        """
-        if self.l3_pool is None:
-            return
-        await self.l3_pool.execute(
-            "DELETE FROM memories WHERE memory_id = $1", entity_id,
-        )
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """Serialize a row dict for L2 storage.
-
-        :param data: row data
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """Deserialize L2 payload back into a row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row data
-        :rtype: dict[str, Any]
-        """
-        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        return _deserialize_with_types(raw, _MEMORY_FIELD_TYPES)
 
     async def find_by_user(
         self,
@@ -2097,39 +1824,10 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         return result
 
 
-_MEMORY_REF_FIELD_TYPES: dict[str, Any] = {
-    "conversation_id": UUID,
-    "item_id": UUID,
-    "item_type": str,
-    "short_desc": str,
-    "date_added": datetime,
-}
+_MEMORY_REF_SHORT_DESC_MAX = 150
 
 
-def _coerce_uuid_fields(row: dict[str, Any]) -> dict[str, Any]:
-    """coerce pgproto UUID instances in a row dict to stdlib UUID.
-
-    asyncpg returns UUID columns as ``asyncpg.pgproto.pgproto.UUID``,
-    which SQLite's parameter binder rejects when the row is written
-    into L1 even though pgproto UUID subclasses stdlib UUID (the
-    binder special-cases stdlib UUID and errors on subclasses). the
-    ``type() is not UUID`` check forces conversion for any subclass.
-    converting at the fetch boundary lets every downstream tier
-    accept the values uniformly.
-
-    :param row: row dict as returned by asyncpg
-    :ptype row: dict[str, Any]
-    :return: same dict with pk UUID columns coerced
-    :rtype: dict[str, Any]
-    """
-    for key in ("conversation_id", "item_id"):
-        value = row.get(key)
-        if value is not None and type(value) is not UUID:
-            row[key] = UUID(str(value))
-    return row
-
-
-class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
+class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     """three-tier collection for :class:`MemoryRefEntity`.
 
     namespace-task-01 phase 8.5l-2: retires :class:`MemoryLedger` — the
@@ -2147,9 +1845,25 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
     multi-row scans land on :meth:`find_by_conversation` with an
     explicit ``# cache-bypass:`` annotation documenting the query is
     not primary-key-addressable.
+
+    CRUD is generated from :attr:`schema` with composite pk
+    ``(conversation_id, item_id)`` and no CAS column. ``short_desc``
+    is domain-truncated to 150 chars in :meth:`save_to_postgres` to
+    match the migration-v002 VARCHAR(150) bound.
     """
 
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "item_id")
+    schema = TableSchema(
+        name="conversation_memory_refs",
+        primary_key=("conversation_id", "item_id"),
+        columns=[
+            Column("conversation_id", UUID_TYPE),
+            Column("item_id", UUID_TYPE),
+            Column("item_type", STRING_TYPE),
+            Column("short_desc", STRING_TYPE),
+            Column("date_added", DATETIME_TYPE),
+        ],
+    )
 
     @property
     def table_name(self) -> str:
@@ -2169,110 +1883,30 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         """
         return MemoryRefEntity
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch one row from L3 by composite pk.
-
-        :param entity_id: ``(conversation_id, item_id)`` tuple; scalar
-            inputs raise in :meth:`BaseCollection.normalize_pk`
-        :ptype entity_id: Any
-        :return: row dict on hit, ``None`` on miss
-        :rtype: dict[str, Any] | None
-        """
-        if self.l3_pool is None:
-            return None
-        key = self.normalize_pk(entity_id)
-        row = await self.l3_pool.fetchrow(
-            """
-            SELECT conversation_id, item_id, item_type, short_desc, date_added
-            FROM conversation_memory_refs
-            WHERE conversation_id = $1 AND item_id = $2
-            """,
-            key[0],
-            key[1],
-        )
-        if row is None:
-            return None
-        return _coerce_uuid_fields(dict(row))
-
     async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one row into L3 via composite-pk ON CONFLICT.
 
-        the table has no ``date_updated`` column — optimistic-
-        concurrency CAS does not apply and ``original_timestamp`` is
-        ignored. truncate ``short_desc`` to 150 chars to match the
-        migration-v002 VARCHAR(150) bound.
+        truncate ``short_desc`` to :data:`_MEMORY_REF_SHORT_DESC_MAX`
+        (150) chars to match the migration-v002 VARCHAR(150) bound.
+        the truncation is collection-specific domain logic, not
+        primitive-level coercion, so it lives on this override rather
+        than inside :class:`SchemaBackedCollection`.
 
         :param data: row data; must contain both pk columns plus
             ``item_type`` / ``short_desc`` / ``date_added``
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored (no CAS column)
+        :param original_timestamp: ignored (no CAS column on this table)
         :ptype original_timestamp: datetime | None
         :return: rows affected (1 on success, 0 on failure)
         :rtype: int
         """
-        _ = original_timestamp
-        if self.l3_pool is None:
-            return 0
-        desc_value: str = data["short_desc"]
-        if len(desc_value) > 150:
-            desc_value = desc_value[:150]
-        status = await self.l3_pool.execute(
-            """
-            INSERT INTO conversation_memory_refs (
-                conversation_id, item_id, item_type, short_desc, date_added
-            ) VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (conversation_id, item_id) DO UPDATE SET
-                item_type = EXCLUDED.item_type,
-                short_desc = EXCLUDED.short_desc,
-                date_added = EXCLUDED.date_added
-            """,
-            data["conversation_id"],
-            data["item_id"],
-            data["item_type"],
-            desc_value,
-            _to_naive_utc(data["date_added"]),
-        )
-        return 1 if status else 0
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """hard-delete one row from L3 by composite pk.
-
-        :param entity_id: ``(conversation_id, item_id)`` tuple
-        :ptype entity_id: Any
-        :return: nothing
-        :rtype: None
-        """
-        if self.l3_pool is None:
-            return
-        key = self.normalize_pk(entity_id)
-        await self.l3_pool.execute(
-            "DELETE FROM conversation_memory_refs WHERE conversation_id = $1 AND item_id = $2",
-            key[0],
-            key[1],
-        )
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """serialize a row dict for L2 storage.
-
-        :param data: row data
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """deserialize L2 payload back into a row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row data with typed columns
-        :rtype: dict[str, Any]
-        """
-        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        return _deserialize_with_types(raw, _MEMORY_REF_FIELD_TYPES)
+        desc_value = data.get("short_desc")
+        if isinstance(desc_value, str) and len(desc_value) > _MEMORY_REF_SHORT_DESC_MAX:
+            data = dict(data)
+            data["short_desc"] = desc_value[:_MEMORY_REF_SHORT_DESC_MAX]
+        return await super().save_to_postgres(data, original_timestamp)
 
     async def find_by_conversation(
         self, conversation_id: UUID,
@@ -2311,7 +1945,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         )
         entities: list[MemoryRefEntity] = []
         for row in rows:
-            data = _coerce_uuid_fields(dict(row))
+            data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity_id = (data["conversation_id"], data["item_id"])
             await self._save_to_l2(entity_id, data)
