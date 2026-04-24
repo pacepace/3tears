@@ -126,6 +126,15 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
     state_view: dict[str, Any] = dict(state)
     messages, config = await hooks.before_invoke(messages, config, state_view)
 
+    # re-read chat_model / tools from the post-hook configurable so hooks
+    # (notably :class:`threetears.langgraph.hooks.PromptCachingHook`) can
+    # swap in a pre-bound model and an empty tool list to memoize the
+    # bind across turns. a hook that does not touch these keys leaves
+    # the originals in place and the behavior is unchanged.
+    post_configurable = config.get("configurable", {})
+    chat_model = post_configurable.get("chat_model", chat_model)
+    tools = post_configurable.get("tools", tools)
+
     model = chat_model.bind_tools(tools) if tools else chat_model
     response = await model.ainvoke(messages)
     response = await hooks.after_invoke(response, config, state_view)

@@ -19,6 +19,7 @@ from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.context_registry import ContextManagerRegistry, current_conversation_id
 from threetears.langgraph.hooks import (
     AgentNodeHook,
+    PromptCachingHook,
     ToolNodeHook,
     compose_agent_node_hooks,
     compose_tool_node_hooks,
@@ -42,6 +43,7 @@ __all__ = [
     "CheckpointL2Cache",
     "ContextManagerRegistry",
     "FlushCallback",
+    "PromptCachingHook",
     "ThreeTierCheckpointSaver",
     "ToolNodeHook",
     "UUIDSafeSerializer",

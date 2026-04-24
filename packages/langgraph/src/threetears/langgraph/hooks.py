@@ -30,18 +30,34 @@ pass it through multiple graph builds.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+from weakref import WeakKeyDictionary
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+
+from threetears.langgraph.caching import (
+    ChatModelCapabilities,
+    annotate_system_prompt,
+    compute_tool_key,
+    detect_capabilities,
+    extract_cache_usage,
+    should_bind_tools_fresh,
+)
 
 __all__ = [
     "AgentNodeHook",
+    "PromptCachingHook",
     "ToolNodeHook",
     "compose_agent_node_hooks",
     "compose_tool_node_hooks",
 ]
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 @runtime_checkable
@@ -468,3 +484,266 @@ def compose_tool_node_hooks(
     :rtype: ToolNodeHook
     """
     return _ComposedToolNodeHook(hooks)
+
+
+@dataclass
+class _BoundModelCache:
+    """cached tuple of ``(tool_key, bound_model)`` per chat-model instance.
+
+    internal representation behind the module-level
+    :data:`_BOUND_MODEL_CACHE`. a stable :class:`dataclass` rather
+    than a bare tuple keeps field access readable at the call site
+    and makes adding future fields (e.g. ``last_used_at`` for
+    eviction) non-breaking.
+
+    :param tool_key: 16-hex-char digest matching the bound tools at
+        bind time
+    :ptype tool_key: str
+    :param bound_model: the object returned by
+        ``chat_model.bind_tools(sorted_tools)``; may be the original
+        model when no tools are bound
+    :ptype bound_model: Any
+    """
+
+    tool_key: str
+    bound_model: Any
+
+
+_BOUND_MODEL_CACHE: WeakKeyDictionary[Any, _BoundModelCache] = WeakKeyDictionary()
+"""module-level cache keyed on the original chat-model instance.
+
+using a :class:`WeakKeyDictionary` means the cache entry is
+evicted automatically when the chat_model is garbage-collected;
+this is the right semantic for long-lived agent pods that
+occasionally rebuild their chat_model (config reload, rotation)
+and should not leak stale bound-model references.
+
+the dict is intentionally module-level rather than per-hook so
+that multiple :class:`PromptCachingHook` instances wired into
+the same process share the memoization -- the node creates a
+fresh hook per graph build in some code paths, and a per-hook
+cache would rebind tools on every build.
+"""
+
+
+class PromptCachingHook:
+    """annotate the system prompt and memoize tool binding.
+
+    :class:`AgentNodeHook` implementation. before each
+    ``ainvoke``:
+
+    1. detects the chat model's caching capabilities via
+       :func:`threetears.langgraph.caching.detect_capabilities`.
+    2. replaces the bare-string :class:`SystemMessage` at index 0
+       (inserted by :func:`threetears.langgraph.nodes.agent_node`)
+       with the structured-content form carrying
+       ``cache_control={"type": "ephemeral"}`` when the model
+       supports anthropic prompt caching; leaves it as-is
+       otherwise.
+    3. computes a stable tool-key digest
+       (:func:`threetears.langgraph.caching.compute_tool_key`),
+       consults the module-level :data:`_BOUND_MODEL_CACHE`, and
+       either reuses the cached bound-model reference or calls
+       ``chat_model.bind_tools(sorted_tools)`` fresh. when the
+       cache hits, it rewrites ``configurable["chat_model"]`` to
+       the pre-bound model and empties ``configurable["tools"]``
+       so the node's own binding branch becomes a no-op.
+
+    after each ``ainvoke``:
+
+    4. runs :func:`threetears.langgraph.caching.extract_cache_usage`
+       on the response and stashes the normalized dict on
+       ``response.usage_metadata["cache_usage"]`` so downstream
+       callers (tests, gateway telemetry) read the cache-hit
+       counts without shape-juggling.
+
+    for non-caching chat models the hook still performs the
+    tool-binding memoization path -- that's a plain latency win
+    with no provider-side caching interaction.
+    """
+
+    def __init__(self) -> None:
+        """initialize the hook with no captured state.
+
+        the hook is deliberately stateless -- all memoization lives
+        on the module-level :data:`_BOUND_MODEL_CACHE`. instances
+        are cheap to create and safe to drop at any time.
+
+        :return: nothing
+        :rtype: None
+        """
+
+    async def before_invoke(
+        self,
+        messages: list[BaseMessage],
+        config: RunnableConfig,
+        state: dict[str, Any],
+    ) -> tuple[list[BaseMessage], RunnableConfig]:
+        """annotate the system prompt and swap in a memoized bound model.
+
+        the hook reads the original ``chat_model`` and ``tools``
+        from ``configurable`` (the node has not yet captured them
+        because the node re-reads them after the hook chain, see
+        :func:`threetears.langgraph.nodes.agent_node`) and, when
+        the capability detection flags caching support, rewrites
+        ``messages[0]`` to the structured-content form. the tool
+        memoization path runs regardless of caching support.
+
+        :param messages: full message list including system prefix
+        :ptype messages: list[BaseMessage]
+        :param config: runtime config dict
+        :ptype config: RunnableConfig
+        :param state: agent state dict (read-only view)
+        :ptype state: dict[str, Any]
+        :return: ``(messages, config)`` with the possibly-annotated
+            system prompt and possibly-swapped chat_model
+        :rtype: tuple[list[BaseMessage], RunnableConfig]
+        """
+        configurable_raw = config.get("configurable", {})
+        configurable: dict[str, Any] = dict(configurable_raw)
+        chat_model = configurable.get("chat_model")
+        tools = list(configurable.get("tools", []) or [])
+
+        result_messages = list(messages)
+        result_config: RunnableConfig = config
+
+        if chat_model is None:
+            # no model to annotate against; pass the inputs through
+            # rather than raise. the node itself raises on missing
+            # chat_model a few lines later.
+            return result_messages, result_config
+
+        caps = detect_capabilities(chat_model)
+        result_messages = _rewrite_system_prompt_for_cache(result_messages, caps)
+
+        bound_model, rewrite_tools = _memoize_bound_model(chat_model, tools)
+
+        configurable["chat_model"] = bound_model
+        configurable["tools"] = rewrite_tools
+        # preserve any other hook wiring (_hooks, call_context, nc,
+        # heartbeat) under the spread.
+        result_config = {**config, "configurable": configurable}
+        return result_messages, result_config
+
+    async def after_invoke(
+        self,
+        response: Any,
+        config: RunnableConfig,
+        state: dict[str, Any],
+    ) -> Any:
+        """normalize cache-usage counters onto the response.
+
+        sets ``response.usage_metadata["cache_usage"]`` to the
+        dict produced by
+        :func:`threetears.langgraph.caching.extract_cache_usage`.
+        when the response has no ``usage_metadata`` the hook
+        attaches a fresh one carrying only the ``cache_usage``
+        block; the helper already handles the all-zero case so
+        the presence of the key is uniform for downstream readers.
+
+        :param response: model response
+        :ptype response: Any
+        :param config: runtime config dict
+        :ptype config: RunnableConfig
+        :param state: agent state dict (read-only view)
+        :ptype state: dict[str, Any]
+        :return: response with ``usage_metadata["cache_usage"]``
+            populated
+        :rtype: Any
+        """
+        usage = extract_cache_usage(response)
+        existing = getattr(response, "usage_metadata", None)
+        if isinstance(existing, dict):
+            existing["cache_usage"] = usage
+        else:
+            try:
+                response.usage_metadata = {"cache_usage": usage}
+            except AttributeError:
+                # some response shapes (e.g. plain mocks) refuse
+                # attribute assignment; logging once keeps the hook
+                # non-fatal and keeps loki readable.
+                logger.debug(
+                    "response %s does not accept usage_metadata assignment",
+                    type(response).__name__,
+                )
+        return response
+
+
+def _rewrite_system_prompt_for_cache(
+    messages: list[BaseMessage],
+    caps: ChatModelCapabilities,
+) -> list[BaseMessage]:
+    """replace the system message at index 0 with an annotated copy.
+
+    when ``messages[0]`` is a :class:`SystemMessage` and the
+    capability record flags anthropic cache_control support, the
+    function extracts the string content, pipes it through
+    :func:`annotate_system_prompt`, and returns a new list with
+    the annotated message at index 0. messages already carrying
+    structured content are left alone (idempotency when the hook
+    runs twice). non-caching caps return the list unchanged.
+
+    :param messages: full message list; index 0 may or may not be
+        a :class:`SystemMessage`
+    :ptype messages: list[BaseMessage]
+    :param caps: capability record from :func:`detect_capabilities`
+    :ptype caps: ChatModelCapabilities
+    :return: message list with index 0 optionally rewritten
+    :rtype: list[BaseMessage]
+    """
+    result = list(messages)
+    if not caps.supports_anthropic_cache_control:
+        return result
+    if not result or not isinstance(result[0], SystemMessage):
+        return result
+    existing = result[0]
+    if isinstance(existing.content, list):
+        # already structured; assume caller (or a prior run of
+        # this hook) placed cache_control on it.
+        return result
+    prompt_text = existing.content if isinstance(existing.content, str) else str(existing.content)
+    result[0] = annotate_system_prompt(prompt_text, caps)
+    return result
+
+
+def _memoize_bound_model(
+    chat_model: Any,
+    tools: list[Any],
+) -> tuple[Any, list[Any]]:
+    """return the bound model and the tool list to pass downstream.
+
+    when ``tools`` is non-empty, calls :func:`compute_tool_key`
+    and either reuses the cached bound model (when
+    :func:`should_bind_tools_fresh` returns False) or calls
+    ``chat_model.bind_tools(sorted_tools)`` and stores the result
+    on :data:`_BOUND_MODEL_CACHE`. on the cache-hit path the
+    returned tool list is empty so the node's own binding branch
+    becomes a no-op and the cached binding is the one used.
+
+    when ``tools`` is empty, the function returns
+    ``(chat_model, [])`` unchanged -- there is nothing to bind.
+
+    :param chat_model: original chat-model instance (the dict key
+        for :data:`_BOUND_MODEL_CACHE`)
+    :ptype chat_model: Any
+    :param tools: list of tool instances to bind
+    :ptype tools: list[Any]
+    :return: ``(model_for_node, tools_for_node)`` tuple
+    :rtype: tuple[Any, list[Any]]
+    """
+    if not tools:
+        return chat_model, []
+    sorted_tools = sorted(tools, key=lambda t: getattr(t, "name", ""))
+    current_key = compute_tool_key(sorted_tools)
+    cached = _BOUND_MODEL_CACHE.get(chat_model)
+    prev_key = cached.tool_key if cached is not None else None
+    bound_model: Any
+    if should_bind_tools_fresh(prev_key, current_key):
+        bound_model = chat_model.bind_tools(sorted_tools)
+        _BOUND_MODEL_CACHE[chat_model] = _BoundModelCache(
+            tool_key=current_key, bound_model=bound_model,
+        )
+    else:
+        assert cached is not None  # noqa: S101 - guarded by should_bind_tools_fresh
+        bound_model = cached.bound_model
+    return bound_model, []
