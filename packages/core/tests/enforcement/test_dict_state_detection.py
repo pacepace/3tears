@@ -121,13 +121,6 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_entries",
         "synced from NATS KV on load, not a local-only cache",
     ),
-    # -- langgraph: context manager registry --
-    (
-        "langgraph/context_registry.py",
-        "ContextManagerRegistry",
-        "_managers",
-        "live context manager objects, non-serializable",
-    ),
 ]
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,6 @@ graph TB
         TOOLS[NatsToolWrapper]
         CHECK[ThreeTierCheckpointSaver]
         DATA[DataStore]
-        CTX[ContextManagerRegistry]
     end
 
     subgraph "3tears Core"
@@ -43,7 +42,6 @@ graph TB
         BUILD[build_tool_agent<br/>build_chat_agent]
         NODES[agent_node<br/>tool_node]
         CKPT[ThreeTierCheckpointSaver]
-        CREG[ContextManagerRegistry]
     end
 
     subgraph "3tears Registry"
@@ -57,7 +55,6 @@ graph TB
 
     AGENT --> BUILD
     AGENT --> NODES
-    AGENT --> CTX
     CHECK --> CKPT
     DATA --> COL
     COL --> L1 --> L2 --> L3
@@ -152,13 +149,15 @@ saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
 ### Context Memory
 
 ```python
-from threetears.langgraph import ContextManagerRegistry, current_conversation_id
+from threetears.agent.tools.context import ToolContextManager
 
-registry = ContextManagerRegistry(context_collection=collection)
-current_conversation_id.set(str(conversation_id))
-
-await registry.save_tool_result("search", result, "found 5 matches")
-prompt = registry.build_context_prompt()  # injected into system message
+manager = ToolContextManager(
+    collection=context_collection,
+    conversation_id=conversation_id,
+    user_id=user_id,
+)
+await manager.save_tool_result("search", result, "found 5 matches")
+prompt = manager.build_context_prompt()  # injected into system message
 ```
 
 ## Development

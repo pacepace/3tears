@@ -9,7 +9,7 @@ recognized config["configurable"] keys across all builders:
     - chat_model: BaseChatModel instance (required)
     - system_prompt: system prompt string (optional override)
     - tools: list of tool instances (optional override)
-    - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+    - context_manager: ToolContextManager (optional)
     - data_store: DataStore or dict of BaseCollection instances (optional)
     - thread_id: conversation identifier for checkpoint persistence (optional)
 """
@@ -52,7 +52,7 @@ def build_chat_agent(
     config["configurable"] recognized keys:
         - chat_model: BaseChatModel instance (required)
         - system_prompt: override prompt (optional)
-        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - context_manager: ToolContextManager (optional)
         - data_store: DataStore for three-tier entity access in custom nodes (optional)
         - thread_id: conversation ID for checkpoint persistence (optional)
 
@@ -92,7 +92,7 @@ def build_tool_agent(
         - chat_model: BaseChatModel instance (required)
         - tools: list of tool instances (optional, overrides constructor tools)
         - system_prompt: override prompt (optional)
-        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - context_manager: ToolContextManager (optional)
         - data_store: DataStore for three-tier entity access in custom nodes (optional)
         - thread_id: conversation ID for checkpoint persistence (optional)
 

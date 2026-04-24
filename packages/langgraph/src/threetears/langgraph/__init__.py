@@ -16,7 +16,6 @@ from threetears.langgraph.caching import (
     should_bind_tools_fresh,
 )
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
-from threetears.langgraph.context_registry import ContextManagerRegistry, current_conversation_id
 from threetears.langgraph.hooks import (
     AgentNodeHook,
     PromptCachingHook,
@@ -41,7 +40,6 @@ __all__ = [
     "ChatModelCapabilities",
     "CheckpointL1Cache",
     "CheckpointL2Cache",
-    "ContextManagerRegistry",
     "FlushCallback",
     "PromptCachingHook",
     "ThreeTierCheckpointSaver",
@@ -54,7 +52,6 @@ __all__ = [
     "compose_agent_node_hooks",
     "compose_tool_node_hooks",
     "compute_tool_key",
-    "current_conversation_id",
     "detect_capabilities",
     "extract_cache_usage",
     "has_tool_calls",
