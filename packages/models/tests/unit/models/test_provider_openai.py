@@ -99,7 +99,7 @@ class TestOpenAIChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="hi")]
         result = await provider.complete(messages)
@@ -121,7 +121,7 @@ class TestOpenAIChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="weather?")]
         result = await provider.complete(messages)
@@ -142,7 +142,7 @@ class TestOpenAIChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="count tokens")]
         result = await provider.complete(messages)
@@ -156,7 +156,7 @@ class TestOpenAIChatProvider:
         provider = OpenAIChatProvider("gpt-4o", "sk-test-key")
         mock_model = MagicMock()
         mock_model.astream = _mock_astream
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="stream test")]
         chunks: list[ChatChunk] = []
@@ -172,7 +172,7 @@ class TestOpenAIChatProvider:
     def test_bind_tools_clears_model_cache(self) -> None:
         """bind_tools stores tools and clears cached model instance."""
         provider = OpenAIChatProvider("gpt-4o", "sk-test-key")
-        provider._model = MagicMock()
+        provider.model = MagicMock()
 
         tools = [
             ToolDefinition(
@@ -186,7 +186,7 @@ class TestOpenAIChatProvider:
         assert provider._tools is not None
         assert len(provider._tools) == 1
         assert provider._tools[0].name == "get_weather"
-        assert provider._model is None
+        assert provider.model is None
 
     def test_preprocess_returns_messages(self) -> None:
         """preprocess delegates to preprocessing pipeline and returns messages."""
@@ -231,7 +231,7 @@ class TestOpenAIEmbeddingProvider:
         provider = OpenAIEmbeddingProvider("text-embedding-3-small", "sk-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         result = await provider.embed("test text")
 
@@ -245,7 +245,7 @@ class TestOpenAIEmbeddingProvider:
         provider = OpenAIEmbeddingProvider("text-embedding-3-small", "sk-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         results = await provider.embed_batch(["text one", "text two"])
 
@@ -260,7 +260,7 @@ class TestOpenAIEmbeddingProvider:
         provider = OpenAIEmbeddingProvider("text-embedding-3-small", "sk-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         # 20 characters -> 20 // 4 = 5 estimated tokens
         results = await provider.embed_batch(["twelve chars plus 8x"])

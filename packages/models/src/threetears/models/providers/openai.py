@@ -56,7 +56,7 @@ class OpenAIChatProvider:
         self._base_url = base_url
         self._timeout = timeout
         self._max_retries = max_retries
-        self._model: Any = None
+        self.model: Any = None
         self._tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
@@ -69,8 +69,8 @@ class OpenAIChatProvider:
         :return: configured ChatOpenAI instance, optionally with tools bound
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_openai import ChatOpenAI
 
@@ -90,8 +90,8 @@ class OpenAIChatProvider:
             lc_tools = [tool_def_to_lc(t) for t in self._tools]
             base_model = base_model.bind_tools(lc_tools)
 
-        self._model = base_model
-        return self._model
+        self.model = base_model
+        return self.model
 
     async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         """generates chat completion from message history.
@@ -138,7 +138,7 @@ class OpenAIChatProvider:
         :ptype tools: list[ToolDefinition]
         """
         self._tools = list(tools)
-        self._model = None
+        self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """preprocesses messages before sending to OpenAI model.
@@ -196,7 +196,7 @@ class OpenAIEmbeddingProvider:
         self._api_key = api_key
         self._base_url = base_url
         self._embedding_dimensions = embedding_dimensions
-        self._model: Any = None
+        self.model: Any = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches OpenAIEmbeddings instance.
@@ -207,8 +207,8 @@ class OpenAIEmbeddingProvider:
         :return: configured OpenAIEmbeddings instance
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_openai import OpenAIEmbeddings
 
@@ -221,8 +221,8 @@ class OpenAIEmbeddingProvider:
         if self._embedding_dimensions is not None:
             kwargs["dimensions"] = self._embedding_dimensions
 
-        self._model = OpenAIEmbeddings(**kwargs)
-        return self._model
+        self.model = OpenAIEmbeddings(**kwargs)
+        return self.model
 
     @property
     def dimensions(self) -> int:

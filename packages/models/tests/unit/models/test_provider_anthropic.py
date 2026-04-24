@@ -120,7 +120,7 @@ class TestAnthropicChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="hi")]
         result = await provider.complete(messages)
@@ -142,7 +142,7 @@ class TestAnthropicChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="weather?")]
         result = await provider.complete(messages)
@@ -163,7 +163,7 @@ class TestAnthropicChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="count tokens")]
         result = await provider.complete(messages)
@@ -177,7 +177,7 @@ class TestAnthropicChatProvider:
         provider = AnthropicChatProvider("claude-sonnet-4-20250514", "sk-test-key")
         mock_model = MagicMock()
         mock_model.astream = _mock_astream
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="stream test")]
         chunks: list[ChatChunk] = []
@@ -193,7 +193,7 @@ class TestAnthropicChatProvider:
     def test_bind_tools_clears_model_cache(self) -> None:
         """bind_tools stores tools and clears cached model instance."""
         provider = AnthropicChatProvider("claude-sonnet-4-20250514", "sk-test-key")
-        provider._model = MagicMock()
+        provider.model = MagicMock()
 
         tools = [
             ToolDefinition(
@@ -207,7 +207,7 @@ class TestAnthropicChatProvider:
         assert provider._tools is not None
         assert len(provider._tools) == 1
         assert provider._tools[0].name == "get_weather"
-        assert provider._model is None
+        assert provider.model is None
 
     def test_preprocess_returns_messages(self) -> None:
         """preprocess delegates to preprocessing pipeline and returns messages."""

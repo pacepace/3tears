@@ -57,7 +57,7 @@ class AnthropicChatProvider:
         self._base_url = _strip_v1_suffix(base_url) if base_url else None
         self._timeout = timeout
         self._max_retries = max_retries
-        self._model: Any = None
+        self.model: Any = None
         self._tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
@@ -69,8 +69,8 @@ class AnthropicChatProvider:
         :return: configured ChatAnthropic instance, optionally with tools bound
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_anthropic import ChatAnthropic
 
@@ -89,8 +89,8 @@ class AnthropicChatProvider:
             lc_tools = [_tool_def_to_lc(t) for t in self._tools]
             base_model = base_model.bind_tools(lc_tools)
 
-        self._model = base_model
-        return self._model
+        self.model = base_model
+        return self.model
 
     async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         """generates chat completion from message history.
@@ -137,7 +137,7 @@ class AnthropicChatProvider:
         :ptype tools: list[ToolDefinition]
         """
         self._tools = list(tools)
-        self._model = None
+        self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """preprocesses messages before sending to Anthropic model.

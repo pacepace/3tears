@@ -20,7 +20,7 @@ class TestEmbeddingPipeline:
         provider = OpenAIEmbeddingProvider("text-embedding-3-small", "sk-test")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         cache = ModelCache()
         cache.put("openai", "text-embedding-3-small", provider)
@@ -47,7 +47,7 @@ class TestEmbeddingPipeline:
                 [0.7, 0.8, 0.9],
             ]
         )
-        provider._model = mock_model
+        provider.model = mock_model
 
         cache = ModelCache()
         cache.put("openai", "text-embedding-3-small", provider)

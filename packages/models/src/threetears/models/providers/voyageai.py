@@ -43,7 +43,7 @@ class VoyageAIEmbeddingProvider:
         self._api_key = api_key
         self._base_url = base_url
         self._embedding_dimensions = embedding_dimensions
-        self._model: Any = None
+        self.model: Any = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches VoyageAIEmbeddings instance.
@@ -55,8 +55,8 @@ class VoyageAIEmbeddingProvider:
         :return: configured VoyageAIEmbeddings instance
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
@@ -73,8 +73,8 @@ class VoyageAIEmbeddingProvider:
         if self._embedding_dimensions is not None:
             kwargs["output_dimension"] = self._embedding_dimensions
 
-        self._model = VoyageAIEmbeddings(**kwargs)
-        return self._model
+        self.model = VoyageAIEmbeddings(**kwargs)
+        return self.model
 
     @property
     def dimensions(self) -> int:

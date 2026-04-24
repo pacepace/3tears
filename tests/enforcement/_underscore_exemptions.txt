@@ -22,3 +22,13 @@ packages/observe/src/threetears/observe/setup.py:162:_done
 packages/observe/src/threetears/observe/setup.py:273:_TRACER_PROVIDER_SET_ONCE
 # rationale: paired with _TRACER_PROVIDER_SET_ONCE on line 273 -- the flag and its ._done reset travel together
 packages/observe/src/threetears/observe/setup.py:273:_done
+# rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes the wrapped tool's _arun directly to exercise the TearsTool-to-LangChain bridge's override in isolation (without going through Tool.ainvoke's argument-coercion layer). renaming _arun breaks LangChain's framework override contract.
+packages/agent-tools/tests/unit/tools/test_bridge.py:114:_arun
+# rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes the wrapped tool's _arun directly to exercise error-path content handling (TearsTool returns success=False + error string) through the bridge's _arun implementation.
+packages/agent-tools/tests/unit/tools/test_bridge.py:124:_arun
+# rationale: LangChain BaseTool._run is the documented subclass-implementable sync-run hook; test invokes _run directly to verify the bridge's intentional NotImplementedError (TearsTool is async-only; the bridge forces callers through _arun).
+packages/agent-tools/tests/unit/tools/test_bridge.py:162:_run
+# rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes _arun directly on a wrapped CalculatorTool to verify the bridge is generic across concrete TearsTool subclasses.
+packages/agent-tools/tests/unit/tools/test_bridge.py:177:_arun
+# rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes _arun directly to verify the success=False + None error fallback path (falls back to content string).
+packages/agent-tools/tests/unit/tools/test_bridge.py:231:_arun

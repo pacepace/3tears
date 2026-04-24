@@ -106,7 +106,7 @@ class TestOpenRouterChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="hi")]
         result = await provider.complete(messages)
@@ -128,7 +128,7 @@ class TestOpenRouterChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="weather?")]
         result = await provider.complete(messages)
@@ -149,7 +149,7 @@ class TestOpenRouterChatProvider:
         )
         mock_model = MagicMock()
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="count tokens")]
         result = await provider.complete(messages)
@@ -163,7 +163,7 @@ class TestOpenRouterChatProvider:
         provider = OpenRouterChatProvider("deepseek/deepseek-chat-v3-0324", "sk-or-test")
         mock_model = MagicMock()
         mock_model.astream = _mock_astream
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="stream test")]
         chunks: list[ChatChunk] = []
@@ -181,7 +181,7 @@ class TestOpenRouterChatProvider:
         provider = OpenRouterChatProvider("deepseek/deepseek-chat-v3-0324", "sk-or-test")
         mock_model = MagicMock()
         mock_model.astream = _mock_astream_none_finish
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="partial stream")]
         chunks: list[ChatChunk] = []
@@ -195,7 +195,7 @@ class TestOpenRouterChatProvider:
     def test_bind_tools_clears_model_cache(self) -> None:
         """bind_tools stores tools and clears cached model instance."""
         provider = OpenRouterChatProvider("deepseek/deepseek-chat-v3-0324", "sk-or-test")
-        provider._model = MagicMock()
+        provider.model = MagicMock()
 
         tools = [
             ToolDefinition(
@@ -209,7 +209,7 @@ class TestOpenRouterChatProvider:
         assert provider._tools is not None
         assert len(provider._tools) == 1
         assert provider._tools[0].name == "get_weather"
-        assert provider._model is None
+        assert provider.model is None
 
     def test_preprocess_returns_messages(self) -> None:
         """preprocess delegates to preprocessing pipeline and returns messages."""
@@ -233,7 +233,7 @@ class TestOpenRouterChatProvider:
         mock_model.ainvoke = AsyncMock(
             side_effect=ValueError("OpenRouter API returned an error: 429"),
         )
-        provider._model = mock_model
+        provider.model = mock_model
 
         with pytest.raises(ValueError, match="OpenRouter API"):
             await provider.complete([ChatMessage(role=MessageRole.USER, content="test")])
