@@ -48,7 +48,7 @@ def make_nats_mock() -> AsyncMock:
     nats.delete = AsyncMock(side_effect=_delete)
     nats.publish = AsyncMock()
     nats.subscribe = AsyncMock()
-    nats._store = store
+    nats.store = store
     return nats
 
 
@@ -56,14 +56,14 @@ class FakePool:
     """In-memory mock of asyncpg.Pool for testing."""
 
     def __init__(self) -> None:
-        self._rows: dict[str, dict[str, Any]] = {}
+        self.rows: dict[str, dict[str, Any]] = {}
 
     async def fetchrow(self, sql: str, *args: object) -> dict[str, Any] | None:
         sql_lower = sql.strip().lower()
         if "returning context_id" in sql_lower:
             context_id, conversation_id = args[0], args[1]
             key = args[3]
-            for row in self._rows.values():
+            for row in self.rows.values():
                 if (
                     str(row["conversation_id"]) == str(conversation_id)
                     and row["key"] == key
@@ -89,18 +89,18 @@ class FakePool:
                 "date_created": args[9],
                 "date_updated": args[10],
             }
-            self._rows[str(context_id)] = row_data
+            self.rows[str(context_id)] = row_data
             return {"context_id": context_id}
 
         if "select * from context_items where context_id" in sql_lower:
             cid = str(args[0])
-            return self._rows.get(cid)
+            return self.rows.get(cid)
 
         if "select count" in sql_lower:
             cid = str(args[0])
             cnt = sum(
                 1
-                for r in self._rows.values()
+                for r in self.rows.values()
                 if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
             )
             return {"cnt": cnt}
@@ -112,7 +112,7 @@ class FakePool:
 
         if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower:
             cid = str(args[0])
-            rows = [r for r in self._rows.values() if str(r["conversation_id"]) == cid]
+            rows = [r for r in self.rows.values() if str(r["conversation_id"]) == cid]
             rows.sort(key=lambda r: _naive(r.get("date_created", datetime.min)))
             return rows
 
@@ -121,7 +121,7 @@ class FakePool:
             limit = int(args[1])
             tool_results = [
                 r
-                for r in self._rows.values()
+                for r in self.rows.values()
                 if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
             ]
             tool_results.sort(key=lambda r: _naive(r.get("date_accessed", datetime.min)))
@@ -148,29 +148,29 @@ class FakePool:
                 "date_created": args[9],
                 "date_updated": args[10],
             }
-            self._rows[str(context_id)] = row_data
+            self.rows[str(context_id)] = row_data
             return "INSERT 0 1"
 
         if "delete from context_items" in sql_lower:
             cid = str(args[0])
-            if cid in self._rows:
-                del self._rows[cid]
+            if cid in self.rows:
+                del self.rows[cid]
                 return "DELETE 1"
             return "DELETE 0"
 
         if "update context_items set date_accessed" in sql_lower:
             cid = str(args[0])
-            if cid in self._rows:
-                self._rows[cid]["date_accessed"] = args[1]
+            if cid in self.rows:
+                self.rows[cid]["date_accessed"] = args[1]
                 return "UPDATE 1"
             return "UPDATE 0"
 
         if "update context_items set" in sql_lower:
             cid = str(args[0])
-            if cid in self._rows:
-                self._rows[cid]["short_desc"] = args[1]
-                self._rows[cid]["long_desc"] = args[2]
-                self._rows[cid]["content"] = args[3]
+            if cid in self.rows:
+                self.rows[cid]["short_desc"] = args[1]
+                self.rows[cid]["long_desc"] = args[2]
+                self.rows[cid]["content"] = args[3]
                 return "UPDATE 1"
             return "UPDATE 0"
 

@@ -224,7 +224,7 @@ def _make_pool_mock() -> AsyncMock:
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.execute = AsyncMock(side_effect=_execute)
     pool.fetch = AsyncMock(side_effect=_fetch)
-    pool._store = store
+    pool.store = store
     pool._executed = executed
     return pool
 

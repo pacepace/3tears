@@ -101,7 +101,7 @@ def _make_nats_mock() -> AsyncMock:
     nats.get = AsyncMock(side_effect=_get)
     nats.put = AsyncMock(side_effect=_put)
     nats.delete = AsyncMock(side_effect=_delete)
-    nats._store = store  # expose for assertions
+    nats.store = store  # expose for assertions
     return nats
 
 
@@ -148,7 +148,7 @@ class TestThreeTierGet:
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
 
         # Pre-populate L1
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 100})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 100})
 
         entity = await coll.get("e1")
 
@@ -162,7 +162,7 @@ class TestThreeTierGet:
         """L1 miss, L2 hit promotes to L1 and returns entity."""
         nats = _make_nats_mock()
         l2_data = {"id": "e2", "name": "Bob", "score": 50}
-        nats._store["test_entities.e2"] = json.dumps(l2_data).encode()
+        nats.store["test_entities.e2"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
 
         entity = await coll.get("e2")
@@ -170,7 +170,7 @@ class TestThreeTierGet:
         assert entity is not None
         assert entity.name == "Bob"
         # Should be promoted to L1
-        l1_row = coll._l1.select_by_id("test_entities", "e2")
+        l1_row = coll.get_row_sync("e2")
         assert l1_row is not None
         assert l1_row["name"] == "Bob"
 
@@ -186,10 +186,10 @@ class TestThreeTierGet:
         assert entity is not None
         assert entity.name == "Carol"
         # Promoted to L1
-        l1_row = coll._l1.select_by_id("test_entities", "e3")
+        l1_row = coll.get_row_sync("e3")
         assert l1_row is not None
         # Promoted to L2
-        assert "test_entities.e3" in nats._store
+        assert "test_entities.e3" in nats.store
 
     @pytest.mark.asyncio
     async def test_all_miss_returns_none(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
@@ -219,10 +219,10 @@ class TestSaveEntity:
         assert "e1" in pg_store
         assert pg_store["e1"]["name"] == "Alice"
         # Written to L1
-        l1_row = coll._l1.select_by_id("test_entities", "e1")
+        l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         # Written to L2
-        assert "test_entities.e1" in nats._store
+        assert "test_entities.e1" in nats.store
         # Entity is clean
         assert entity.is_dirty is False
         assert entity.is_new is False
@@ -241,10 +241,10 @@ class TestSaveEntity:
         # NOT written to postgres
         assert "e1" not in pg_store
         # Written to L1
-        l1_row = coll._l1.select_by_id("test_entities", "e1")
+        l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         # Written to L2
-        assert "test_entities.e1" in nats._store
+        assert "test_entities.e1" in nats.store
         # In write buffer
         assert buf.pending_count() == 1
         # Entity is clean
@@ -269,8 +269,7 @@ class TestSaveEntity:
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
 
         # Load entity with old timestamp
-        coll._l1.upsert(
-            "test_entities",
+        coll.write_to_cache_sync(
             {"id": "e1", "name": "Alice", "score": 10, "date_updated": ts_old},
         )
         entity = await coll.get("e1")
@@ -303,7 +302,7 @@ class TestReloadEntity:
 
         assert entity.name == "Updated"
         # L1 should be updated
-        l1_row = coll._l1.select_by_id("test_entities", "e1")
+        l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         assert l1_row["name"] == "Updated"
 
@@ -340,9 +339,9 @@ class TestDelete:
         # Removed from L3
         assert "e1" not in pg_store
         # Removed from L1
-        assert coll._l1.select_by_id("test_entities", "e1") is None
+        assert coll.get_row_sync("e1") is None
         # Removed from L2
-        assert "test_entities.e1" not in nats._store
+        assert "test_entities.e1" not in nats.store
 
 
 class TestCreate:
@@ -368,7 +367,7 @@ class TestFieldAccessors:
 
     def test_get_field_sync(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         result = coll.get_field_sync("e1", "name")
 
@@ -387,12 +386,12 @@ class TestFieldAccessors:
 
     def test_set_field_sync(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         result = coll.set_field_sync("e1", "name", "Bob")
 
         assert result is True
-        row = coll._l1.select_by_id("test_entities", "e1")
+        row = coll.get_row_sync("e1")
         assert row["name"] == "Bob"
 
     def test_set_field_sync_missing_entity(
@@ -406,7 +405,7 @@ class TestFieldAccessors:
 
     def test_get_row_sync(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         coll = StubCollection(registry, config_always)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         row = coll.get_row_sync("e1")
 
@@ -427,7 +426,7 @@ class TestFieldAccessors:
         result = coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         assert result is True
-        row = coll._l1.select_by_id("test_entities", "e1")
+        row = coll.get_row_sync("e1")
         assert row is not None
         assert row["name"] == "Alice"
 
@@ -436,7 +435,7 @@ class TestFieldAccessors:
 
         assert coll.exists_in_cache_sync("e1") is False
 
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         assert coll.exists_in_cache_sync("e1") is True
 
@@ -483,7 +482,7 @@ class TestSubscriptGetterPullThrough:
         """collection[id] returns entity from L1 without touching L2/L3."""
         nats = _make_nats_mock()
         coll = StubCollection(registry, config_always, nats_client=nats)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         entity = coll["e1"]
 
@@ -495,7 +494,7 @@ class TestSubscriptGetterPullThrough:
     async def test_getitem_field_l1_hit(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id, field] returns field value from L1."""
         coll = StubCollection(registry, config_always)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         assert coll["e1", "name"] == "Alice"
         assert coll["e1", "score"] == 42
@@ -511,7 +510,7 @@ class TestSubscriptGetterPullThrough:
 
         assert entity.name == "Alice"
         # Should now be in L1
-        l1_row = coll._l1.select_by_id("test_entities", "e1")
+        l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
         assert l1_row["name"] == "Alice"
 
@@ -528,14 +527,14 @@ class TestSubscriptGetterPullThrough:
         """collection[id] pulls through L2 on L1 miss."""
         nats = _make_nats_mock()
         l2_data = {"id": "e1", "name": "Bob", "score": 50}
-        nats._store["test_entities.e1"] = json.dumps(l2_data).encode()
+        nats.store["test_entities.e1"] = json.dumps(l2_data).encode()
         coll = StubCollection(registry, config_always, nats_client=nats)
 
         entity = coll["e1"]
 
         assert entity.name == "Bob"
         # Promoted to L1
-        l1_row = coll._l1.select_by_id("test_entities", "e1")
+        l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
 
     def test_getitem_raises_keyerror_for_missing(
@@ -588,11 +587,11 @@ class TestSubscriptSetterPropagation:
     ) -> None:
         """collection[id, field] = value updates L1 immediately."""
         coll = StubCollection(registry, config_always)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
-        row = coll._l1.select_by_id("test_entities", "e1")
+        row = coll.get_row_sync("e1")
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -604,15 +603,15 @@ class TestSubscriptSetterPropagation:
 
         nats = _make_nats_mock()
         coll = StubCollection(registry, config_always, nats_client=nats)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
         # Give the fire-and-forget a moment to complete
         time.sleep(0.1)
 
-        assert "test_entities.e1" in nats._store
-        l2_data = json.loads(nats._store["test_entities.e1"])
+        assert "test_entities.e1" in nats.store
+        l2_data = json.loads(nats.store["test_entities.e1"])
         assert l2_data["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -625,7 +624,7 @@ class TestSubscriptSetterPropagation:
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
@@ -646,7 +645,7 @@ class TestSubscriptSetterPropagation:
         buf = WriteBuffer()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, pg_store=pg_store)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
@@ -655,7 +654,7 @@ class TestSubscriptSetterPropagation:
         # NOT in L3
         assert "e1" not in pg_store
         # But IS in L2
-        assert "test_entities.e1" in nats._store
+        assert "test_entities.e1" in nats.store
         # And IS in write buffer
         assert buf.pending_count() == 1
 
@@ -673,11 +672,11 @@ class TestSubscriptSetterPropagation:
         time.sleep(0.1)
 
         # L1
-        row = coll._l1.select_by_id("test_entities", "e1")
+        row = coll.get_row_sync("e1")
         assert row is not None
         assert row["name"] == "Alice"
         # L2
-        assert "test_entities.e1" in nats._store
+        assert "test_entities.e1" in nats.store
         # L3
         assert "e1" in pg_store
         assert pg_store["e1"]["name"] == "Alice"
@@ -692,7 +691,7 @@ class TestSubscriptSetterPropagation:
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
-        coll._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         before = datetime.now(UTC)
         coll["e1", "name"] = "Bob"
@@ -773,7 +772,7 @@ class TestMultiPodSimulation:
         assert stale_name == "Alice"
 
         # But L2 has the update (shared NATS KV)
-        l2_raw = nats._store.get("test_entities.e1")
+        l2_raw = nats.store.get("test_entities.e1")
         assert l2_raw is not None
         l2_data = json.loads(l2_raw)
         assert l2_data["name"] == "Bob"
@@ -828,7 +827,7 @@ class TestMultiPodSimulation:
         # L3 still has old value
         assert pg_store["e1"]["name"] == "Alice"
         # L2 has new value
-        l2_data = json.loads(nats._store["test_entities.e1"])
+        l2_data = json.loads(nats.store["test_entities.e1"])
         assert l2_data["name"] == "Deferred"
         # Write buffer has pending entry
         assert buf.pending_count() == 1
@@ -847,13 +846,13 @@ class TestInvalidateCache:
 
         # Populate caches
         await coll.get("e1")
-        assert coll._l1.select_by_id("test_entities", "e1") is not None
-        assert "test_entities.e1" in nats._store
+        assert coll.get_row_sync("e1") is not None
+        assert "test_entities.e1" in nats.store
 
         await coll.invalidate_cache("e1")
 
-        assert coll._l1.select_by_id("test_entities", "e1") is None
-        assert "test_entities.e1" not in nats._store
+        assert coll.get_row_sync("e1") is None
+        assert "test_entities.e1" not in nats.store
 
 
 class TestL3PoolAccessor:

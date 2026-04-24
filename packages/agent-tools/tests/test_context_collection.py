@@ -86,7 +86,7 @@ class TestFindByConversation:
     @pytest.mark.asyncio
     async def test_returns_entities(self, collection: ContextItemCollection, pool: FakePool) -> None:
         item = _make_item()
-        pool._rows[str(item["context_id"])] = item
+        pool.rows[str(item["context_id"])] = item
 
         entities = await collection.find_by_conversation(CONV_ID)
 
@@ -96,12 +96,12 @@ class TestFindByConversation:
     @pytest.mark.asyncio
     async def test_populates_l1(self, collection: ContextItemCollection, pool: FakePool) -> None:
         item = _make_item()
-        pool._rows[str(item["context_id"])] = item
+        pool.rows[str(item["context_id"])] = item
 
         await collection.find_by_conversation(CONV_ID)
 
         # Should be in L1 now
-        l1_row = collection._l1.select_by_id("context_items", str(item["context_id"]), "context_id")
+        l1_row = collection.get_row_sync(str(item["context_id"]))
         assert l1_row is not None
 
     @pytest.mark.asyncio
@@ -128,7 +128,7 @@ class TestUpsertVariable:
         # Should return the original context_id (conflict resolution)
         assert returned_id == item1["context_id"]
         # Value should be updated
-        assert pool._rows[str(item1["context_id"])]["content"] == "Bob"
+        assert pool.rows[str(item1["context_id"])]["content"] == "Bob"
 
 
 class TestTouch:
@@ -136,14 +136,14 @@ class TestTouch:
     async def test_updates_date_accessed(self, collection: ContextItemCollection, pool: FakePool) -> None:
         old_time = datetime.now(UTC) - timedelta(hours=1)
         item = _make_item(date_accessed=old_time)
-        pool._rows[str(item["context_id"])] = item
+        pool.rows[str(item["context_id"])] = item
         # Populate L1
         collection.write_to_cache_sync(item)
 
         await collection.touch(str(item["context_id"]))
 
         # L1 should have updated date_accessed
-        l1_row = collection._l1.select_by_id("context_items", str(item["context_id"]), "context_id")
+        l1_row = collection.get_row_sync(str(item["context_id"]))
         assert l1_row is not None
         # date_accessed should be more recent than old_time
         assert l1_row["date_accessed"] > old_time
@@ -156,7 +156,7 @@ class TestEvictLru:
         items = []
         for i in range(5):
             item = _make_item(key=f"tool{i}", date_accessed=now + timedelta(seconds=i))
-            pool._rows[str(item["context_id"])] = item
+            pool.rows[str(item["context_id"])] = item
             collection.write_to_cache_sync(item)
             items.append(item)
 
@@ -164,12 +164,12 @@ class TestEvictLru:
 
         assert evicted == 2
         # Oldest two should be gone from L3
-        assert str(items[0]["context_id"]) not in pool._rows
-        assert str(items[1]["context_id"]) not in pool._rows
+        assert str(items[0]["context_id"]) not in pool.rows
+        assert str(items[1]["context_id"]) not in pool.rows
         # Newest three should remain
-        assert str(items[2]["context_id"]) in pool._rows
-        assert str(items[3]["context_id"]) in pool._rows
-        assert str(items[4]["context_id"]) in pool._rows
+        assert str(items[2]["context_id"]) in pool.rows
+        assert str(items[3]["context_id"]) in pool.rows
+        assert str(items[4]["context_id"]) in pool.rows
 
     @pytest.mark.asyncio
     async def test_does_not_evict_variables(self, collection: ContextItemCollection, pool: FakePool) -> None:
@@ -182,23 +182,23 @@ class TestEvictLru:
             content="Alice",
             date_accessed=now - timedelta(days=1),
         )
-        pool._rows[str(var["context_id"])] = var
+        pool.rows[str(var["context_id"])] = var
         # Add tool results
         for i in range(3):
             item = _make_item(key=f"tool{i}", date_accessed=now + timedelta(seconds=i))
-            pool._rows[str(item["context_id"])] = item
+            pool.rows[str(item["context_id"])] = item
 
         evicted = await collection.evict_lru(CONV_ID, result_limit=2)
 
         assert evicted == 1
         # Variable should still be there
-        assert str(var["context_id"]) in pool._rows
+        assert str(var["context_id"]) in pool.rows
 
     @pytest.mark.asyncio
     async def test_no_eviction_under_limit(self, collection: ContextItemCollection, pool: FakePool) -> None:
         for i in range(3):
             item = _make_item(key=f"tool{i}")
-            pool._rows[str(item["context_id"])] = item
+            pool.rows[str(item["context_id"])] = item
 
         evicted = await collection.evict_lru(CONV_ID, result_limit=5)
         assert evicted == 0
@@ -208,7 +208,7 @@ class TestThreeTierReadWrite:
     @pytest.mark.asyncio
     async def test_save_and_get(self, collection: ContextItemCollection, pool: FakePool) -> None:
         item = _make_item()
-        pool._rows[str(item["context_id"])] = item
+        pool.rows[str(item["context_id"])] = item
 
         entity = await collection.get(item["context_id"])
 

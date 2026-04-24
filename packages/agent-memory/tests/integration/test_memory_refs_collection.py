@@ -129,7 +129,7 @@ class _InMemoryNatsBus:
         :return: nothing
         :rtype: None
         """
-        self._kv: dict[str, bytes] = {}
+        self.kv: dict[str, bytes] = {}
         self._subs: dict[str, list[Any]] = {}
 
     def bucket_name(self, suffix: str) -> str:
@@ -153,7 +153,7 @@ class _InMemoryNatsBus:
         :rtype: bytes | None
         """
         _ = bucket
-        return self._kv.get(key)
+        return self.kv.get(key)
 
     async def put(self, bucket: str, key: str, value: bytes) -> bool:
         """write bytes for key.
@@ -168,7 +168,7 @@ class _InMemoryNatsBus:
         :rtype: bool
         """
         _ = bucket
-        self._kv[key] = value
+        self.kv[key] = value
         return True
 
     async def delete(self, bucket: str, key: str) -> bool:
@@ -182,7 +182,7 @@ class _InMemoryNatsBus:
         :rtype: bool
         """
         _ = bucket
-        self._kv.pop(key, None)
+        self.kv.pop(key, None)
         return True
 
     async def publish(self, subject: str, data: bytes) -> bool:
@@ -287,7 +287,7 @@ class TestMemoryRefsCollectionThreeTier:
             assert l1_row is not None
 
             # L2 KV entry under composite-form key
-            assert f"conversation_memory_refs.{conv_id}:{item_id}" in nats._kv
+            assert f"conversation_memory_refs.{conv_id}:{item_id}" in nats.kv
         finally:
             await pool.close()
 
@@ -349,7 +349,7 @@ class TestMemoryRefsCollectionThreeTier:
             l1_a.reset()
 
             # clear L2 to force the cold-start L3 pull-through path
-            nats._kv.clear()
+            nats.kv.clear()
 
             # pod 2 starts fresh; resolves through L3
             coll_b, _reg_b, l1_b = _build_pod(pool, nats)

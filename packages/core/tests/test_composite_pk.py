@@ -317,7 +317,7 @@ def _nats_mock() -> AsyncMock:
     nats.get = AsyncMock(side_effect=_get)
     nats.put = AsyncMock(side_effect=_put)
     nats.delete = AsyncMock(side_effect=_delete)
-    nats._store = store
+    nats.store = store
     return nats
 
 
@@ -468,15 +468,11 @@ class TestCollectionOps:
         # L3 keyed by composite tuple
         assert ("conv-A", "item-1") in pg_store
         # L1 has the row
-        l1_row = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-A", "item-1"),
-            ("conversation_id", "item_id"),
-        )
+        l1_row = coll.get_row_sync(("conv-A", "item-1"))
         assert l1_row is not None
         assert l1_row["score"] == 10
         # L2 key uses colon join
-        assert "fake_refs.conv-A:item-1" in nats._store
+        assert "fake_refs.conv-A:item-1" in nats.store
 
         # subsequent get hits L1 (no L2 call)
         nats.get.reset_mock()
@@ -505,11 +501,7 @@ class TestCollectionOps:
         assert loaded is not None
         assert loaded.score == 7
         # now in L1
-        row = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-B", "item-9"),
-            ("conversation_id", "item_id"),
-        )
+        row = coll.get_row_sync(("conv-B", "item-9"))
         assert row is not None
 
     @pytest.mark.asyncio
@@ -530,14 +522,10 @@ class TestCollectionOps:
         # L3 gone
         assert ("conv-A", "item-1") not in pg_store
         # L1 gone
-        row = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-A", "item-1"),
-            ("conversation_id", "item_id"),
-        )
+        row = coll.get_row_sync(("conv-A", "item-1"))
         assert row is None
         # L2 gone
-        assert "fake_refs.conv-A:item-1" not in nats._store
+        assert "fake_refs.conv-A:item-1" not in nats.store
 
 
 # ---------------------------------------------------------------------------
@@ -603,16 +591,10 @@ class TestInvalidationWireFormat:
         nats.subscribe = AsyncMock(side_effect=_subscribe)
 
         # seed L1 with a composite-pk row
-        coll._l1.upsert(
-            "fake_refs",
+        coll.write_to_cache_sync(
             {"conversation_id": "conv-A", "item_id": "item-1", "score": 99, "note": "x"},
-            primary_key=("conversation_id", "item_id"),
         )
-        before = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-A", "item-1"),
-            ("conversation_id", "item_id"),
-        )
+        before = coll.get_row_sync(("conv-A", "item-1"))
         assert before is not None
 
         await composite_registry.start_invalidation_listener(nats)
@@ -622,11 +604,7 @@ class TestInvalidationWireFormat:
         signal = json.dumps({"table": "fake_refs", "ids": ["conv-A", "item-1"]}).encode()
         await subscribers[0](signal)
 
-        after = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-A", "item-1"),
-            ("conversation_id", "item_id"),
-        )
+        after = coll.get_row_sync(("conv-A", "item-1"))
         assert after is None
 
     @pytest.mark.asyncio
@@ -645,10 +623,8 @@ class TestInvalidationWireFormat:
 
         nats.subscribe = AsyncMock(side_effect=_subscribe)
 
-        coll._l1.upsert(
-            "fake_refs",
+        coll.write_to_cache_sync(
             {"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "x"},
-            primary_key=("conversation_id", "item_id"),
         )
         await composite_registry.start_invalidation_listener(nats)
 
@@ -657,11 +633,7 @@ class TestInvalidationWireFormat:
         await subscribers[0](bad_signal)
 
         # row still in L1
-        row = coll._l1.select_by_id(
-            "fake_refs",
-            ("conv-A", "item-1"),
-            ("conversation_id", "item_id"),
-        )
+        row = coll.get_row_sync(("conv-A", "item-1"))
         assert row is not None
 
     @pytest.mark.asyncio

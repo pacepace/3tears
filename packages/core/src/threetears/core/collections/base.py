@@ -335,6 +335,28 @@ class BaseCollection(ABC, Generic[EntityT]):
         row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         return row is not None
 
+    def evict_from_cache_sync(self, entity_id: Any) -> bool:
+        """remove a row from the L1 cache only, synchronously.
+
+        narrower than :meth:`invalidate_cache`: drops the L1 slot for
+        this pod without touching L2, without publishing a cross-pod
+        invalidation, and without awaiting anything. intended for test
+        harnesses that want to simulate an L1 eviction and exercise
+        the L2 / L3 fall-through path, and for single-pod cache-
+        management flows where L2 coherence is driven separately.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+            (composite-pk) identifying the row
+        :ptype entity_id: Any
+        :return: ``True`` when L1 was present and the row (if any) was
+            deleted; ``False`` when L1 is absent
+        :rtype: bool
+        """
+        if self._l1 is None:
+            return False
+        self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+        return True
+
     # --- L2 cache (NATS KV, async) ---
 
     def _l2_bucket(self) -> str:

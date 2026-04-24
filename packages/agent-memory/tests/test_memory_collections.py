@@ -155,7 +155,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
     pg.fetchval = AsyncMock(side_effect=_fetchval)
     pg.execute = AsyncMock(side_effect=_execute)
     pg.fetch = AsyncMock(side_effect=_fetch)
-    pg._store = store
+    pg.store = store
     return pg
 
 
@@ -183,7 +183,7 @@ def _make_nats_mock() -> AsyncMock:
     nats.get = AsyncMock(side_effect=_get)
     nats.put = AsyncMock(side_effect=_put)
     nats.delete = AsyncMock(side_effect=_delete)
-    nats._store = kv_store
+    nats.store = kv_store
     return nats
 
 
@@ -250,7 +250,7 @@ class TestMemoriesCollectionGet:
 
         data = _sample_data()
         l1_data = {k: str(v) if isinstance(v, uuid.UUID) else v for k, v in data.items()}
-        coll._l1.upsert("memories", l1_data, "memory_id")
+        coll.write_to_cache_sync(l1_data, "memory_id")
 
         entity = await coll.get(data["memory_id"])
 
@@ -279,7 +279,7 @@ class TestMemoriesCollectionGet:
 
         assert entity is not None
         assert entity.type_memory == "preference"
-        assert f"memories.{data['memory_id']}" in nats._store
+        assert f"memories.{data['memory_id']}" in nats.store
 
     async def test_all_miss_returns_none(
         self,

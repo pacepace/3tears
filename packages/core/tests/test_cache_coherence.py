@@ -709,7 +709,7 @@ class TestSignalFailureResilience:
         pg_store: dict[str, dict] = {}
         pod_a, reg_a = _make_pod(nats, pg_store, config_always)
 
-        pod_a._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        pod_a.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         # Sabotage publish
         async def broken_publish(subject: str, data: bytes) -> bool:
@@ -720,7 +720,7 @@ class TestSignalFailureResilience:
         pod_a["e1", "name"] = "Bob"
 
         # L1 write succeeded
-        row = pod_a._l1.select_by_id("test_entities", "e1")
+        row = pod_a.get_row_sync("e1")
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio

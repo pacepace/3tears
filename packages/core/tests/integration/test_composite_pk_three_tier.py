@@ -177,21 +177,21 @@ class _InMemoryNatsBus:
     """nats mock with pub/sub + KV store for cross-pod simulation."""
 
     def __init__(self) -> None:
-        self._kv: dict[str, bytes] = {}
+        self.kv: dict[str, bytes] = {}
         self._subs: dict[str, list[Any]] = {}
 
     def bucket_name(self, suffix: str) -> str:
         return f"it-{suffix}"
 
     async def get(self, bucket: str, key: str) -> bytes | None:
-        return self._kv.get(key)
+        return self.kv.get(key)
 
     async def put(self, bucket: str, key: str, value: bytes) -> bool:
-        self._kv[key] = value
+        self.kv[key] = value
         return True
 
     async def delete(self, bucket: str, key: str) -> bool:
-        self._kv.pop(key, None)
+        self.kv.pop(key, None)
         return True
 
     async def publish(self, subject: str, data: bytes) -> bool:
@@ -231,7 +231,7 @@ class TestCompositePkThreeTier:
     ) -> None:
         """save via composite-pk collection persists to L3, L1, L2."""
         nats = _InMemoryNatsBus()
-        coll, _reg, _l1 = _build_pod(pg_pool, nats, cfg_always)
+        coll, _reg, l1 = _build_pod(pg_pool, nats, cfg_always)
         try:
             entity = coll.create(
                 {
@@ -252,16 +252,12 @@ class TestCompositePkThreeTier:
             assert row is not None
             assert row["score"] == 7
 
-            l1_row = coll._l1.select_by_id(
-                "fake_refs",
-                ("conv-i1", "item-i1"),
-                ("conversation_id", "item_id"),
-            )
+            l1_row = coll.get_row_sync(("conv-i1", "item-i1"))
             assert l1_row is not None
 
-            assert "fake_refs.conv-i1:item-i1" in nats._kv
+            assert "fake_refs.conv-i1:item-i1" in nats.kv
         finally:
-            coll._l1.reset()
+            l1.reset()
 
     async def test_cold_start_l3_pull_through(
         self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig
@@ -284,7 +280,7 @@ class TestCompositePkThreeTier:
             l1_a.reset()
 
         # clear L2 to force L3 pull-through
-        nats._kv.clear()
+        nats.kv.clear()
 
         # pod 2 starts fresh; same L3
         coll_b, _reg_b, l1_b = _build_pod(pg_pool, nats, cfg_always)
@@ -293,11 +289,7 @@ class TestCompositePkThreeTier:
             assert loaded is not None
             assert loaded.score == 42
             # now cached in pod 2's L1
-            row = coll_b._l1.select_by_id(
-                "fake_refs",
-                ("conv-cold", "item-cold"),
-                ("conversation_id", "item_id"),
-            )
+            row = coll_b.get_row_sync(("conv-cold", "item-cold"))
             assert row is not None
         finally:
             l1_b.reset()
@@ -326,11 +318,7 @@ class TestCompositePkThreeTier:
             # pod B loads the row — populates its own L1
             loaded_b = await coll_b.get(("conv-xp", "item-xp"))
             assert loaded_b is not None
-            before = coll_b._l1.select_by_id(
-                "fake_refs",
-                ("conv-xp", "item-xp"),
-                ("conversation_id", "item_id"),
-            )
+            before = coll_b.get_row_sync(("conv-xp", "item-xp"))
             assert before is not None
 
             # pod A updates -> publishes ids: ["conv-xp", "item-xp"]
@@ -348,11 +336,7 @@ class TestCompositePkThreeTier:
             await coll_a.save_entity(updated)
 
             # pod B's L1 MUST have been evicted by the invalidation signal
-            after = coll_b._l1.select_by_id(
-                "fake_refs",
-                ("conv-xp", "item-xp"),
-                ("conversation_id", "item_id"),
-            )
+            after = coll_b.get_row_sync(("conv-xp", "item-xp"))
             assert after is None
         finally:
             l1_a.reset()
