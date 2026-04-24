@@ -172,7 +172,7 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        passed, reason = ext._check_heuristic_gates("hi", "x" * 200, 10)
+        passed, reason = ext.check_heuristic_gates("hi", "x" * 200, 10)
         assert not passed
         assert "user_message_too_short" in reason
 
@@ -181,7 +181,7 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        passed, reason = ext._check_heuristic_gates("x" * 50, "short", 10)
+        passed, reason = ext.check_heuristic_gates("x" * 50, "short", 10)
         assert not passed
         assert "assistant_response_too_short" in reason
 
@@ -190,7 +190,7 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        passed, reason = ext._check_heuristic_gates("x" * 50, "x" * 200, 1)
+        passed, reason = ext.check_heuristic_gates("x" * 50, "x" * 200, 1)
         assert not passed
         assert "too_few_turns" in reason
 
@@ -199,7 +199,7 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        passed, reason = ext._check_heuristic_gates("x" * 50, "x" * 200, 10)
+        passed, reason = ext.check_heuristic_gates("x" * 50, "x" * 200, 10)
         assert passed
         assert reason == "passed"
 
@@ -213,7 +213,7 @@ class TestHeuristicGates:
             extraction_min_conversation_turns=1,
         )
         ext = _make_extractor(permissive_memory_authorizer, config=config)
-        passed, _ = ext._check_heuristic_gates("hello", "y" * 10, 1)
+        passed, _ = ext.check_heuristic_gates("hello", "y" * 10, 1)
         assert passed
 
     def test_whitespace_stripped_for_length_check(
@@ -221,7 +221,7 @@ class TestHeuristicGates:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer)
-        passed, reason = ext._check_heuristic_gates("     short", "x" * 200, 10)
+        passed, reason = ext.check_heuristic_gates("     short", "x" * 200, 10)
         assert not passed
         assert "user_message_too_short" in reason
 
@@ -235,7 +235,7 @@ class TestRateLimit:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         ext = _make_extractor(permissive_memory_authorizer, nats_client=None)
-        passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
+        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
 
@@ -247,7 +247,7 @@ class TestRateLimit:
         nats.bucket_name = MagicMock(return_value="locks")
         nats.create = AsyncMock(return_value=True)
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
+        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
 
@@ -259,7 +259,7 @@ class TestRateLimit:
         nats.bucket_name = MagicMock(return_value="locks")
         nats.create = AsyncMock(return_value=False)
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
+        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert not passed
         assert cooldown == 300
 
@@ -270,7 +270,7 @@ class TestRateLimit:
         nats = MagicMock()
         nats.bucket_name = MagicMock(side_effect=RuntimeError("nats down"))
         ext = _make_extractor(permissive_memory_authorizer, nats_client=nats)
-        passed, cooldown = await ext._check_rate_limit(uuid.uuid7())
+        passed, cooldown = await ext.check_rate_limit(uuid.uuid7())
         assert passed
         assert cooldown == 0
 
@@ -287,7 +287,7 @@ class TestWorthinessGate:
             worthiness_content=json.dumps({"worthy": True, "reason": "has facts"}),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, reason = await ext._check_worthiness("hello world", "response text")
+        worthy, reason = await ext.check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "has facts"
 
@@ -299,7 +299,7 @@ class TestWorthinessGate:
             worthiness_content=json.dumps({"worthy": False}),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, _ = await ext._check_worthiness("hello world", "response text")
+        worthy, _ = await ext.check_worthiness("hello world", "response text")
         assert not worthy
 
     async def test_invalid_json_passes_fail_open(
@@ -308,7 +308,7 @@ class TestWorthinessGate:
     ) -> None:
         factory = StubChatModelFactory(worthiness_content="not json at all")
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, reason = await ext._check_worthiness("hello world", "response text")
+        worthy, reason = await ext.check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "parse_error"
 
@@ -318,7 +318,7 @@ class TestWorthinessGate:
     ) -> None:
         factory = StubChatModelFactory(error_on={"worthiness"})
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        worthy, reason = await ext._check_worthiness("hello world", "response text")
+        worthy, reason = await ext.check_worthiness("hello world", "response text")
         assert worthy
         assert reason == "llm_error"
 
@@ -339,7 +339,7 @@ class TestExtractCandidates:
             extraction_content=json.dumps(memories),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert len(result) == 2
         assert result[0]["type"] == "fact"
         assert result[1]["content"] == "Prefers Python"
@@ -356,7 +356,7 @@ class TestExtractCandidates:
             extraction_content=json.dumps(memories),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert len(result) == 1
         assert result[0]["type"] == "fact"
 
@@ -366,7 +366,7 @@ class TestExtractCandidates:
     ) -> None:
         factory = StubChatModelFactory(extraction_content="[]")
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert result == []
 
     async def test_non_list_returns_empty(
@@ -377,7 +377,7 @@ class TestExtractCandidates:
             extraction_content=json.dumps({"type": "fact", "content": "x"}),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert result == []
 
     async def test_markdown_wrapped_json_parsed(
@@ -388,7 +388,7 @@ class TestExtractCandidates:
         wrapped = "```json\n" + json.dumps(memories) + "\n```"
         factory = StubChatModelFactory(extraction_content=wrapped)
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert len(result) == 1
         assert result[0]["content"] == "Lives in Seattle"
 
@@ -405,7 +405,7 @@ class TestExtractCandidates:
             extraction_content=json.dumps(memories),
         )
         ext = _make_extractor(permissive_memory_authorizer, factory=factory)
-        result = await ext._extract_candidates("msg", "resp")
+        result = await ext.extract_candidates("msg", "resp")
         assert len(result) == 1
 
 
@@ -422,7 +422,7 @@ class TestResolveActions:
             {"type": "fact", "content": "x", "embedding": [1.0], "similar_memories": []},
             {"type": "fact", "content": "y", "embedding": [1.0], "similar_memories": []},
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         assert len(actions) == 2
         assert all(a["action"] == "ADD" for a in actions)
 
@@ -435,7 +435,7 @@ class TestResolveActions:
         candidates = [
             {"type": "fact", "content": "x", "embedding": [1.0], "similar_memories": []},
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         assert len(actions) == 1
         assert actions[0]["action"] == "ADD"
 
@@ -460,7 +460,7 @@ class TestResolveActions:
                 ],
             },
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         assert len(actions) == 1
         assert actions[0]["action"] == "UPDATE"
         assert actions[0]["memory_id"] == "abc-123"
@@ -487,7 +487,7 @@ class TestResolveActions:
                 ],
             },
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         valid = [a for a in actions if a["action"] == "ADD"]
         assert len(valid) == 1
         assert valid[0]["index"] == 0
@@ -515,7 +515,7 @@ class TestResolveActions:
                 "similar_memories": [],
             },
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         action_map = {a["index"]: a["action"] for a in actions}
         assert action_map[0] == "NOOP"
         assert action_map[1] == "ADD"
@@ -539,7 +539,7 @@ class TestResolveActions:
                 "similar_memories": [{"memory_id": "id1", "content": "y", "type_memory": "fact", "similarity": 0.8}],
             },
         ]
-        actions = await ext._resolve_actions(candidates)
+        actions = await ext.resolve_actions(candidates)
         assert actions[0]["action"] == "NOOP"
 
 

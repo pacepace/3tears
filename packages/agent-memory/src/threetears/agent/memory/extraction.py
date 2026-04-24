@@ -152,7 +152,7 @@ class MemoryExtractor:
                 deps=self._authorizer,
             )
 
-            passed, reason = self._check_heuristic_gates(
+            passed, reason = self.check_heuristic_gates(
                 user_message,
                 assistant_response,
                 turn_count,
@@ -164,7 +164,7 @@ class MemoryExtractor:
                 )
                 return
 
-            rate_passed, cooldown = await self._check_rate_limit(conversation_id)
+            rate_passed, cooldown = await self.check_rate_limit(conversation_id)
             if not rate_passed:
                 log.debug(
                     "Memory extraction skipped by rate limit, cooldown=%d",
@@ -172,7 +172,7 @@ class MemoryExtractor:
                 )
                 return
 
-            worthy, worthiness_reason = await self._check_worthiness(
+            worthy, worthiness_reason = await self.check_worthiness(
                 user_message,
                 assistant_response,
             )
@@ -183,7 +183,7 @@ class MemoryExtractor:
                 )
                 return
 
-            candidates_raw = await self._extract_candidates(
+            candidates_raw = await self.extract_candidates(
                 user_message,
                 assistant_response,
             )
@@ -211,7 +211,7 @@ class MemoryExtractor:
             if not candidates:
                 return
 
-            actions = await self._resolve_actions(candidates)
+            actions = await self.resolve_actions(candidates)
 
             await self._execute_actions(
                 actions,
@@ -230,13 +230,19 @@ class MemoryExtractor:
                 exc_info=True,
             )
 
-    def _check_heuristic_gates(
+    def check_heuristic_gates(
         self,
         user_message: str,
         assistant_response: str,
         turn_count: int,
     ) -> tuple[bool, str]:
-        """Layer 1: Free, instant heuristic pre-filters.
+        """layer 1 extension point: free, instant heuristic pre-filters.
+
+        public stage hook on :class:`MemoryExtractor`. override in
+        subclasses or replace via duck typing to customize the
+        heuristic gate; tests stub this to bypass length / turn
+        thresholds. stability contract: signature and return shape
+        are part of public api.
 
         :param user_message: raw user message
         :ptype user_message: str
@@ -255,11 +261,17 @@ class MemoryExtractor:
             return False, f"too_few_turns ({turn_count})"
         return True, "passed"
 
-    async def _check_rate_limit(
+    async def check_rate_limit(
         self,
         conversation_id: UUID,
     ) -> tuple[bool, int]:
-        """Layer 2: Rate limiter via NATS KV create().
+        """layer 2 extension point: rate limiter via NATS KV create().
+
+        public stage hook on :class:`MemoryExtractor`. override in
+        subclasses or replace via duck typing to customize rate
+        limiting; tests stub this to bypass the NATS bucket. fail-open
+        on NATS errors is part of the contract. stability contract:
+        signature and return shape are part of public api.
 
         :param conversation_id: conversation UUID to rate-limit
         :ptype conversation_id: UUID
@@ -279,12 +291,19 @@ class MemoryExtractor:
             log.warning("Rate limit check failed, allowing extraction: %s", exc)
             return True, 0
 
-    async def _check_worthiness(
+    async def check_worthiness(
         self,
         user_message: str,
         assistant_response: str,
     ) -> tuple[bool, str]:
-        """Layer 3: Cheap LLM call to decide if extraction is worth running.
+        """layer 3 extension point: cheap LLM call gating extraction.
+
+        public stage hook on :class:`MemoryExtractor`. override in
+        subclasses or replace via duck typing to customize the
+        worthiness gate; tests stub this with a canned LLM response.
+        fail-open on parse or LLM errors is part of the contract.
+        stability contract: signature and return shape are part of
+        public api.
 
         :param user_message: raw user message
         :ptype user_message: str
@@ -323,12 +342,19 @@ class MemoryExtractor:
             return True, "llm_error"
 
     @traced()
-    async def _extract_candidates(
+    async def extract_candidates(
         self,
         user_message: str,
         assistant_response: str,
     ) -> list[dict[str, str]]:
-        """Use LLM to extract candidate memories from a conversation turn.
+        """extraction stage extension point: LLM-driven candidate extraction.
+
+        public stage hook on :class:`MemoryExtractor`. override in
+        subclasses or replace via duck typing to customize candidate
+        extraction; tests stub this with canned candidate lists.
+        returns ``[]`` on parse or LLM errors (fail-closed on this
+        stage is part of the contract). stability contract:
+        signature and return shape are part of public api.
 
         :param user_message: raw user message
         :ptype user_message: str
@@ -412,14 +438,19 @@ class MemoryExtractor:
         ]
 
     @traced()
-    async def _resolve_actions(
+    async def resolve_actions(
         self,
         candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Decide ADD/UPDATE/DELETE/NOOP for each candidate.
+        """resolution stage extension point: decide ADD/UPDATE/DELETE/NOOP.
 
-        Fast path: if no candidates have similar memories, return all ADD
-        without an LLM call.
+        public stage hook on :class:`MemoryExtractor`. override in
+        subclasses or replace via duck typing to customize action
+        resolution; tests stub this with canned action lists. fast
+        path when no candidate has similar memories returns all ADD
+        without an LLM call. fail-closed fallback to all-ADD on parse
+        or LLM errors is part of the contract. stability contract:
+        signature and return shape are part of public api.
 
         :param candidates: candidate memories with similar-memory context
         :ptype candidates: list[dict[str, Any]]
@@ -543,7 +574,7 @@ class MemoryExtractor:
     ) -> None:
         """Execute ADD/UPDATE/DELETE/NOOP actions via the Collection.
 
-        :param actions: resolved action list from _resolve_actions
+        :param actions: resolved action list from resolve_actions
         :ptype actions: list[dict[str, Any]]
         :param candidates: candidate memories with embeddings
         :ptype candidates: list[dict[str, Any]]
