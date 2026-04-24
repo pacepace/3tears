@@ -111,7 +111,7 @@ class InMemoryNatsBus:
     def __init__(self) -> None:
         self._kv_store: dict[str, bytes] = {}
         self._subscribers: dict[str, list[Any]] = {}  # subject -> [callbacks]
-        self._publish_count: int = 0
+        self.publish_count: int = 0
         self._received_messages: list[tuple[str, bytes]] = []
 
     def bucket_name(self, suffix: str) -> str:
@@ -134,7 +134,7 @@ class InMemoryNatsBus:
 
     async def publish(self, subject: str, data: bytes) -> bool:
         """Publish a message. All subscribers on this subject receive it."""
-        self._publish_count += 1
+        self.publish_count += 1
         self._received_messages.append((subject, data))
         callbacks = self._subscribers.get(subject, [])
         for cb in callbacks:
@@ -169,9 +169,9 @@ def _make_pod(
 def _wait_for_publish(nats: InMemoryNatsBus, target_count: int, timeout: float = 5.0) -> None:
     """Poll until the NATS bus has received at least target_count publishes."""
     deadline = time.monotonic() + timeout
-    while nats._publish_count < target_count:
+    while nats.publish_count < target_count:
         if time.monotonic() > deadline:
-            raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats._publish_count})")
+            raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats.publish_count})")
         time.sleep(0.02)
 
 
@@ -373,7 +373,7 @@ class TestSetterEmitsSignal:
         await pod_b.ensure("e1")
         assert "e1" in pod_b
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Bob"
@@ -403,7 +403,7 @@ class TestSetterEmitsSignal:
         shared_pg["e1"] = {"id": "e1", "name": "Alice", "score": 42}
         await pod_b.ensure("e1")
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # Pod A writes full dict
         pod_a["e1"] = {"id": "e1", "name": "Replaced", "score": 99}
@@ -426,13 +426,13 @@ class TestSaveEntityEmitsSignal:
         await reg_a.start_invalidation_listener(shared_nats)
         await reg_b.start_invalidation_listener(shared_nats)
 
-        initial_publish_count = shared_nats._publish_count
+        initial_publish_count = shared_nats.publish_count
 
         entity = pod_a.create({"id": "e1", "name": "New", "score": 0})
         await pod_a.save_entity(entity)
 
         # Signal was published
-        assert shared_nats._publish_count > initial_publish_count
+        assert shared_nats.publish_count > initial_publish_count
 
         # Pod B can read the new entity (via L2/L3)
         entity_b = await pod_b.get("e1")
@@ -595,7 +595,7 @@ class TestCacheConvergence:
         await pod_a.ensure("e1")
         await pod_b.ensure("e1")
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # 10 sequential save_entity calls (async, so signals are synchronous)
         for i in range(10):
@@ -604,7 +604,7 @@ class TestCacheConvergence:
             await pod_a.save_entity(entity)
 
         # All 10 saves produced signals (save_entity publishes synchronously)
-        assert shared_nats._publish_count >= initial_publish + 10
+        assert shared_nats.publish_count >= initial_publish + 10
 
         # Pod B's L1 should be evicted
         assert "e1" not in pod_b

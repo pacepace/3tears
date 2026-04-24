@@ -62,10 +62,34 @@ class McpClient:
     endpoints.
     """
 
-    def __init__(self, base_url: str, timeout: int | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int | None = None,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        """construct mcp client.
+
+        :param base_url: mcp server base url (trailing slash stripped)
+        :ptype base_url: str
+        :param timeout: request timeout in seconds, or ``None`` to fall back to
+            ``THREETEARS_MCP_TIMEOUT`` env var / platform default
+        :ptype timeout: int | None
+        :param http_client: optional pre-built async http client; when supplied,
+            caller owns lifecycle and the client bypasses the internal
+            ``httpx.AsyncClient`` construction. primarily for tests that inject
+            a mock transport.
+        :ptype http_client: httpx.AsyncClient | None
+        :return: nothing
+        :rtype: None
+        """
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout if timeout is not None else _get_mcp_timeout()
-        self._http = httpx.AsyncClient(timeout=self._timeout)
+        if http_client is not None:
+            self._http = http_client
+        else:
+            self._http = httpx.AsyncClient(timeout=self._timeout)
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

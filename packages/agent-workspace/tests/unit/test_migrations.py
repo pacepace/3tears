@@ -26,16 +26,16 @@ class _FakeDataStore:
 
     mirrors the DataStore.execute and DataStore.query surface used by
     MigrationRunner. state lives in three members: executed captures
-    every execute call's (sql, params); _migrations_rows emulates the
-    _schema_migrations bookkeeping row set; _migrations_table_created
+    every execute call's (sql, params); migrations_rows emulates the
+    _schema_migrations bookkeeping row set; migrations_table_created
     flips the first time the runner issues the CREATE TABLE.
     """
 
     def __init__(self) -> None:
         """initialize empty execution log and migrations tracker."""
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
-        self._migrations_rows: list[dict[str, Any]] = []
-        self._migrations_table_created = False
+        self.migrations_rows: list[dict[str, Any]] = []
+        self.migrations_table_created = False
 
     async def execute(self, sql: str, *params: Any) -> str:
         """
@@ -52,11 +52,11 @@ class _FakeDataStore:
         normalized = " ".join(sql.split()).upper()
         result: str
         if "CREATE TABLE IF NOT EXISTS _SCHEMA_MIGRATIONS" in normalized:
-            self._migrations_table_created = True
+            self.migrations_table_created = True
             result = "CREATE TABLE"
             return result
         if normalized.startswith("INSERT INTO _SCHEMA_MIGRATIONS"):
-            self._migrations_rows.append(
+            self.migrations_rows.append(
                 {
                     "version": params[0],
                     "package": params[1],
@@ -85,12 +85,12 @@ class _FakeDataStore:
         if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
             result = [
                 {"version": row["version"], "package": row["package"]}
-                for row in self._migrations_rows
+                for row in self.migrations_rows
             ]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
             max_version = max(
-                (row["version"] for row in self._migrations_rows), default=0
+                (row["version"] for row in self.migrations_rows), default=0
             )
             result = [{"max_version": max_version}]
             return result
@@ -128,8 +128,8 @@ class TestRegisterWorkspaceMigrations:
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
         assert first_count == 3
-        assert store._migrations_table_created is True
-        assert [row["version"] for row in store._migrations_rows] == [1, 2, 3]
+        assert store.migrations_table_created is True
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -251,8 +251,8 @@ class TestDirectMigrationFunction:
         """direct invocation does not touch _schema_migrations bookkeeping."""
         store = _FakeDataStore()
         await create_workspace_tables(store)  # type: ignore[arg-type]
-        assert store._migrations_table_created is False
-        assert store._migrations_rows == []
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
 
 
 class TestDuplicateVersionGuard:

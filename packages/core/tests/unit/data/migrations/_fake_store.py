@@ -17,7 +17,7 @@ class FakeDataStore:
     ``_schema_migrations`` bookkeeping contract used by MigrationRunner.
 
     :ivar executed: list of (sql, params) tuples for every execute call
-    :ivar _migrations_rows: list of applied migration row dicts
+    :ivar migrations_rows: list of applied migration row dicts
     :ivar fail_on: sql substring that, when present, triggers RuntimeError
     """
 
@@ -29,8 +29,8 @@ class FakeDataStore:
         :ptype fail_on: str | None
         """
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
-        self._migrations_rows: list[dict[str, Any]] = []
-        self._migrations_table_created = False
+        self.migrations_rows: list[dict[str, Any]] = []
+        self.migrations_table_created = False
         self._fail_on = fail_on
         self._tables: set[str] = set()
         # monotonically increasing counter stamped as date_applied so
@@ -56,12 +56,12 @@ class FakeDataStore:
         normalized = " ".join(sql.split()).upper()
         result: str
         if "CREATE TABLE IF NOT EXISTS _SCHEMA_MIGRATIONS" in normalized:
-            self._migrations_table_created = True
+            self.migrations_table_created = True
             result = "CREATE TABLE"
             return result
         if normalized.startswith("INSERT INTO _SCHEMA_MIGRATIONS"):
             self._apply_counter += 1
-            self._migrations_rows.append(
+            self.migrations_rows.append(
                 {
                     "version": params[0],
                     "package": params[1],
@@ -74,9 +74,9 @@ class FakeDataStore:
         if normalized.startswith("DELETE FROM _SCHEMA_MIGRATIONS"):
             target_version = params[0]
             target_package = params[1]
-            self._migrations_rows = [
+            self.migrations_rows = [
                 row
-                for row in self._migrations_rows
+                for row in self.migrations_rows
                 if not (row["version"] == target_version and row["package"] == target_package)
             ]
             result = "DELETE 1"
@@ -100,7 +100,7 @@ class FakeDataStore:
         if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
             result = [
                 {"version": row["version"], "package": row["package"]}
-                for row in self._migrations_rows
+                for row in self.migrations_rows
             ]
             return result
         if "SELECT VERSION, PACKAGE, DESCRIPTION, DATE_APPLIED FROM _SCHEMA_MIGRATIONS" in normalized:
@@ -112,13 +112,13 @@ class FakeDataStore:
                     "date_applied": row["date_applied"],
                 }
                 for row in sorted(
-                    self._migrations_rows,
+                    self.migrations_rows,
                     key=lambda r: (r["date_applied"], r["version"], r["package"]),
                 )
             ]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
-            max_version = max((row["version"] for row in self._migrations_rows), default=0)
+            max_version = max((row["version"] for row in self.migrations_rows), default=0)
             result = [{"max_version": max_version}]
             return result
         result = []

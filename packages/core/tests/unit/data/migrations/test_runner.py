@@ -72,8 +72,8 @@ class TestIdempotentApply:
 
         assert first == 1
         assert second == 0
-        assert store._migrations_table_created is True
-        assert [row["version"] for row in store._migrations_rows] == [1]
+        assert store.migrations_table_created is True
+        assert [row["version"] for row in store.migrations_rows] == [1]
 
     async def test_platform_apply_twice_applies_once(self) -> None:
         """apply_for_platform_schema records v1 once, re-apply is a no-op."""
@@ -213,7 +213,7 @@ class TestRollbackOnFailure:
         assert "memory:2" in str(exc_info.value)
         # v1 executed fully and was recorded; v2 executed but its record was reverted
         assert applied == [1, 2]
-        assert [row["version"] for row in store._migrations_rows] == [1]
+        assert [row["version"] for row in store.migrations_rows] == [1]
 
 
 class TestScopeSeparation:

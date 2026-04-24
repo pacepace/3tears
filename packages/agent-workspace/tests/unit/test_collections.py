@@ -225,7 +225,7 @@ def _make_pool_mock() -> AsyncMock:
     pool.execute = AsyncMock(side_effect=_execute)
     pool.fetch = AsyncMock(side_effect=_fetch)
     pool.store = store
-    pool._executed = executed
+    pool.executed = executed
     return pool
 
 
@@ -306,7 +306,7 @@ class TestWorkspaceCollectionSave:
         row = _make_workspace_row()
         rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspaces" in issued_sql
         assert "ON CONFLICT (id) DO UPDATE" in issued_sql
 
@@ -322,7 +322,7 @@ class TestWorkspaceCollectionSave:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
         await coll.delete_from_postgres(target_id)
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspaces" in issued_sql
         assert "WHERE id = $1" in issued_sql
 
@@ -343,7 +343,7 @@ class TestWorkspaceFileCollectionSave:
         row = _make_workspace_file_row()
         rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_files" in issued_sql
         assert "ON CONFLICT (id) DO UPDATE" in issued_sql
 
@@ -359,7 +359,7 @@ class TestWorkspaceFileCollectionSave:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
         await coll.delete_from_postgres(target_id)
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspace_files" in issued_sql
 
     def test_bytes_content_roundtrip(
@@ -400,7 +400,7 @@ class TestWorkspaceFileVersionCollectionSave:
         row = _make_workspace_file_version_row()
         rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_file_versions" in issued_sql
         assert "ON CONFLICT" not in issued_sql.upper()
 
@@ -572,7 +572,7 @@ class TestWorkspaceCollectionFindByAgent:
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-        pool._executed = executed
+        pool.executed = executed
         return pool
 
     async def test_find_by_agent_returns_entities_for_agent(
@@ -608,7 +608,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert {e.name for e in entities} == {"alpha", "beta"}
         for e in entities:
             assert e.agent_id == agent_id
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "SELECT * FROM workspaces" in issued_sql
         assert "WHERE agent_id = $1" in issued_sql
         assert "date_deleted IS NULL" in issued_sql
@@ -645,7 +645,7 @@ class TestWorkspaceCollectionFindByAgent:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        pool._executed = executed
+        pool.executed = executed
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
 
         live_only = await coll.find_by_agent(agent_id)
@@ -700,7 +700,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert isinstance(found, Workspace)
         assert found.name == "main"
         assert found.agent_id == agent_id
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "SELECT * FROM workspaces" in issued_sql
         assert "WHERE agent_id = $1 AND name = $2" in issued_sql
 
@@ -743,7 +743,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert found is not None
         assert found.date_deleted is not None
         # confirm SQL shape lacks the date_deleted filter
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "date_deleted" not in issued_sql
 
 
@@ -763,12 +763,12 @@ class TestWorkspaceCollectionSaveIncludesDateDeleted:
         row = _make_workspace_row()
         row["date_deleted"] = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
         await coll.save_to_postgres(row)
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "date_deleted" in issued_sql
         # ON CONFLICT clause also wires the column
         assert "date_deleted = EXCLUDED.date_deleted" in issued_sql
         # confirm the row's date_deleted value got bound (last positional arg)
-        bound_args = pool._executed[0][1]
+        bound_args = pool.executed[0][1]
         assert row["date_deleted"] in bound_args
 
 
@@ -805,7 +805,7 @@ class TestWorkspaceFileCollectionFindByWorkspace:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        pool._executed = executed
+        pool.executed = executed
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
 
         entities = await coll.find_by_workspace(workspace_id)

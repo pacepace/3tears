@@ -20,10 +20,21 @@ def _mock_response(json_data: dict, status_code: int = 200) -> MagicMock:
     return resp
 
 
+def _client_with_post(post_mock: AsyncMock) -> McpClient:
+    """construct McpClient with an injected mock http client bound to ``post``.
+
+    :param post_mock: AsyncMock that the client's ``post`` method should invoke
+    :ptype post_mock: AsyncMock
+    :return: client whose internal http transport is the injected mock
+    :rtype: McpClient
+    """
+    http = AsyncMock()
+    http.post = post_mock
+    return McpClient("http://localhost:9000", http_client=http)
+
+
 async def test_list_tools():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(
+    post = AsyncMock(
         return_value=_mock_response(
             {
                 "tools": [
@@ -33,6 +44,7 @@ async def test_list_tools():
             }
         )
     )
+    client = _client_with_post(post)
 
     tools = await client.list_tools()
     assert len(tools) == 2
@@ -44,18 +56,15 @@ async def test_list_tools():
 
 
 async def test_list_tools_error():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    post = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    client = _client_with_post(post)
 
     tools = await client.list_tools()
     assert tools == []
 
 
 async def test_invoke_tool_success():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(
+    post = AsyncMock(
         return_value=_mock_response(
             {
                 "content": [
@@ -67,6 +76,7 @@ async def test_invoke_tool_success():
             }
         )
     )
+    client = _client_with_post(post)
 
     result = await client.invoke_tool("greet", {"name": "test"})
     assert result.success is True
@@ -75,9 +85,7 @@ async def test_invoke_tool_success():
 
 
 async def test_invoke_tool_error_flag():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(
+    post = AsyncMock(
         return_value=_mock_response(
             {
                 "content": [{"type": "text", "text": "something went wrong"}],
@@ -85,6 +93,7 @@ async def test_invoke_tool_error_flag():
             }
         )
     )
+    client = _client_with_post(post)
 
     result = await client.invoke_tool("failing", {})
     assert result.success is False
@@ -92,9 +101,8 @@ async def test_invoke_tool_error_flag():
 
 
 async def test_invoke_tool_timeout():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+    post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+    client = _client_with_post(post)
 
     result = await client.invoke_tool("slow_tool", {})
     assert result.success is False
@@ -102,9 +110,8 @@ async def test_invoke_tool_timeout():
 
 
 async def test_invoke_tool_connection_error():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    client = _client_with_post(post)
 
     result = await client.invoke_tool("unreachable", {})
     assert result.success is False
@@ -113,16 +120,14 @@ async def test_invoke_tool_connection_error():
 
 
 async def test_test_connection_success():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(return_value=_mock_response({"tools": []}))
+    post = AsyncMock(return_value=_mock_response({"tools": []}))
+    client = _client_with_post(post)
 
     assert await client.test_connection() is True
 
 
 async def test_test_connection_failure():
-    client = McpClient("http://localhost:9000")
-    client._http = AsyncMock()
-    client._http.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    client = _client_with_post(post)
 
     assert await client.test_connection() is False

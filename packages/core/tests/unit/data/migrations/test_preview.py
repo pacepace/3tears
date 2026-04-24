@@ -94,7 +94,7 @@ class TestPreviewFreshApply:
         assert "CREATE TABLE IF NOT EXISTS gizmos" in ddl[1]
         assert "CREATE INDEX IF NOT EXISTS idx_gizmos_id" in ddl[2]
         # underlying store is untouched: no bookkeeping row was written
-        assert store._migrations_rows == []
+        assert store.migrations_rows == []
 
 
 class TestPreviewAlreadyApplied:
@@ -176,7 +176,7 @@ class TestTargetVersion:
 
         count = await runner.apply_for_agent_schema(store, target=1)
         assert count == 1
-        versions = {row["version"] for row in store._migrations_rows}
+        versions = {row["version"] for row in store.migrations_rows}
         assert versions == {1}
 
 
@@ -198,7 +198,7 @@ class TestDowngrade:
 
         rolled_back = await runner.downgrade_for_scope(store, MigrationScope.AGENT, steps=1)
         assert rolled_back == 1
-        remaining = {row["version"] for row in store._migrations_rows}
+        remaining = {row["version"] for row in store.migrations_rows}
         assert remaining == {1}
 
     async def test_downgrade_refuses_without_registered_down(self) -> None:
@@ -260,7 +260,7 @@ class TestStamp:
         runner = MigrationRunner()
         store = FakeDataStore()
         await runner.stamp_version(store, "ghost_pkg", 42)
-        versions = [(r["package"], r["version"]) for r in store._migrations_rows]
+        versions = [(r["package"], r["version"]) for r in store.migrations_rows]
         assert ("ghost_pkg", 42) in versions
 
 
