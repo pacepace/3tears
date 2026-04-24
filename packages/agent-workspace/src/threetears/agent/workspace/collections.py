@@ -1,18 +1,32 @@
-"""workspace collections -- three-tier CRUD for workspace entities."""
+"""workspace collections -- three-tier CRUD for workspace entities.
+
+all three collections (workspaces, workspace_files, workspace_file_versions)
+are :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`
+subclasses. CRUD comes from the declarative :class:`TableSchema`;
+domain queries (``find_by_agent``, ``find_by_workspace``,
+``find_by_workspace_and_relative_path``, history-shaped selects) stay
+on subclasses because their query shape is per-collection.
+"""
 
 from __future__ import annotations
 
-import base64
-import json
-import types
 from datetime import datetime
-from enum import Enum
-from typing import Any, get_args, get_origin
+from typing import Any
 from uuid import UUID
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import (
+    BYTES_TYPE,
+    DATETIME_TYPE,
+    INT_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
@@ -27,162 +41,38 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_WORKSPACE_FIELD_TYPES: dict[str, Any] = {
-    "id": UUID,
-    "agent_id": UUID,
-    "name": str,
-    "description": str | None,
-    "template_name": str | None,
-    "created_by": UUID,
-    "current_version": int,
-    "date_created": datetime,
-    "date_updated": datetime,
-    "date_deleted": datetime | None,
-}
+class WorkspaceCollection(SchemaBackedCollection[Workspace]):
+    """collection for Workspace entities with three-tier caching.
 
+    CRUD is generated from :attr:`schema`. no CAS column -- the v034
+    workspace write path relies on table-level SERIALIZABLE semantics
+    composed at the transaction level by the calling tool, not
+    row-level OCC on this collection.
 
-_UPSERT_WORKSPACE_SQL = """
-INSERT INTO workspaces (
-    id, agent_id, name, description, template_name,
-    created_by, current_version, date_created, date_updated, date_deleted
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (id) DO UPDATE SET
-    name = EXCLUDED.name,
-    description = EXCLUDED.description,
-    template_name = EXCLUDED.template_name,
-    current_version = EXCLUDED.current_version,
-    date_updated = EXCLUDED.date_updated,
-    date_deleted = EXCLUDED.date_deleted
-"""
-
-_WORKSPACE_FILE_FIELD_TYPES: dict[str, Any] = {
-    "id": UUID,
-    "workspace_id": UUID,
-    "relative_path": str,
-    "content": bytes,
-    "sha256": str,
-    "version": int,
-    "date_updated": datetime,
-}
-
-_WORKSPACE_FILE_VERSION_FIELD_TYPES: dict[str, Any] = {
-    "id": UUID,
-    "workspace_id": UUID,
-    "relative_path": str,
-    "version": int,
-    "content": bytes,
-    "sha256": str,
-    "action": str,
-    "label": str | None,
-    "actor_id": UUID,
-    "correlation_id": UUID,
-    "date_created": datetime,
-}
-
-
-def _json_serializer(obj: object) -> str | int | float | bool | None:
+    three-tier-task-01 phase F: the paired ``platform.namespaces``
+    write that lived on the old hand-rolled save_to_postgres moved to
+    :class:`WorkspaceCreateTool._insert_all`, which persists the
+    namespace via :meth:`NamespaceCollection.save_entity` after the
+    workspace transaction commits.
     """
-    serializes non-JSON-native types for json.dumps at L2 boundary.
-
-    :param obj: value requiring custom serialization
-    :ptype obj: object
-    :return: JSON-compatible scalar representation
-    :rtype: str | int | float | bool | None
-    :raises TypeError: if obj type is not handled
-    """
-    if isinstance(obj, UUID):
-        return str(obj)
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    if isinstance(obj, bytes):
-        return base64.b64encode(obj).decode("ascii")
-    if isinstance(obj, Enum):
-        result: str | int | float | bool | None = obj.value
-        return result
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
-def _resolve_base_type(type_hint: Any) -> type | None:
-    """
-    extracts concrete type from possibly-Optional or generic type hint.
-
-    :param type_hint: Python type hint from _FIELD_TYPES mapping
-    :ptype type_hint: Any
-    :return: resolved base type or None when hint cannot be resolved
-    :rtype: type | None
-    """
-    origin = get_origin(type_hint)
-    result: type | None
-    if origin is None:
-        result = type_hint if isinstance(type_hint, type) else None
-    elif origin is types.UnionType:
-        args = get_args(type_hint)
-        non_none = [a for a in args if a is not type(None)]
-        if not non_none:
-            result = None
-        else:
-            inner = non_none[0]
-            inner_origin = get_origin(inner)
-            result = inner_origin if inner_origin is not None else inner
-    else:
-        result = origin
-    return result
-
-
-def _deserialize_field(key: str, value: Any, field_types: dict[str, Any]) -> Any:
-    """
-    converts one JSON-decoded value back to its native Python type.
-
-    :param key: field name used to look up declared type
-    :ptype key: str
-    :param value: JSON-decoded raw value
-    :ptype value: Any
-    :param field_types: mapping of field name to declared type
-    :ptype field_types: dict[str, Any]
-    :return: value converted to native Python type
-    :rtype: Any
-    """
-    if value is None:
-        return None
-    base_type = _resolve_base_type(field_types.get(key))
-    result: Any
-    if base_type is UUID and isinstance(value, str):
-        result = UUID(value)
-    elif base_type is datetime and isinstance(value, str):
-        result = datetime.fromisoformat(value)
-    elif base_type is bytes and isinstance(value, str):
-        result = base64.b64decode(value.encode("ascii"))
-    elif base_type is bool and isinstance(value, (bool, int)):
-        result = bool(value)
-    elif base_type is int and isinstance(value, int):
-        result = value
-    else:
-        result = value
-    return result
-
-
-def _deserialize_row(data: bytes, field_types: dict[str, Any]) -> dict[str, Any]:
-    """
-    decodes JSON bytes to row dict with typed field coercion.
-
-    :param data: JSON-encoded bytes from L2 cache
-    :ptype data: bytes
-    :param field_types: mapping of field name to declared type
-    :ptype field_types: dict[str, Any]
-    :return: row dict with native Python types
-    :rtype: dict[str, Any]
-    """
-    raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-    result: dict[str, Any] = {}
-    for key, value in raw.items():
-        result[key] = _deserialize_field(key, value, field_types)
-    return result
-
-
-class WorkspaceCollection(BaseCollection[Workspace]):
-    """collection for Workspace entities with three-tier caching."""
 
     primary_key_column: str = "id"
+    schema = TableSchema(
+        name="workspaces",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("agent_id", UUID_TYPE, immutable=True),
+            Column("name", STRING_TYPE),
+            Column("description", STRING_TYPE, nullable=True),
+            Column("template_name", STRING_TYPE, nullable=True),
+            Column("created_by", UUID_TYPE, immutable=True),
+            Column("current_version", INT_TYPE),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_updated", DATETIME_TYPE),
+            Column("date_deleted", DATETIME_TYPE, nullable=True),
+        ],
+    )
 
     def __init__(
         self,
@@ -192,11 +82,12 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
-        """
-        initializes collection with required dependencies.
+        """initialize collection with required dependencies.
 
         consumers compose multi-row transactions (see shard 11/12/14);
-        collection exposes CRUD only.
+        collection exposes CRUD only. the ``postgres_pool`` kwarg is
+        stored onto ``self.l3_pool`` so the generic CRUD path finds
+        the pool uniformly with registry-resolved siblings.
 
         :param registry: collection registry for dependency injection
         :ptype registry: CollectionRegistry
@@ -209,13 +100,16 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         :param write_buffer: optional deferred-write buffer for batched flushes
         :ptype write_buffer: WriteBuffer | None
         """
-        self._postgres_pool = postgres_pool
         super().__init__(registry, config, nats_client, write_buffer)
+        # override the registry-resolved pool with the ctor-injected one.
+        # callers that construct directly (tests, cross-agent tooling)
+        # bypass the registry's l3 binding; this keeps the public
+        # ``postgres_pool`` ctor surface without a second pool field
+        self.l3_pool = postgres_pool
 
     @property
     def table_name(self) -> str:
-        """
-        returns database table name for this collection.
+        """returns database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -224,83 +118,12 @@ class WorkspaceCollection(BaseCollection[Workspace]):
 
     @property
     def entity_class(self) -> type[Workspace]:
-        """
-        returns entity class for this collection.
+        """returns entity class for this collection.
 
         :return: Workspace entity class
         :rtype: type[Workspace]
         """
         return Workspace
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """
-        reads workspace row by primary key.
-
-        :param entity_id: workspace UUID to fetch
-        :ptype entity_id: Any
-        :return: row dict or None when missing
-        :rtype: dict[str, Any] | None
-        """
-        row = await self._postgres_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE id = $1",
-            entity_id,
-        )
-        result: dict[str, Any] | None = None if row is None else dict(row)
-        return result
-
-    async def save_to_postgres(
-        self,
-        data: dict[str, Any],
-        original_timestamp: datetime | None = None,
-    ) -> int:
-        """
-        upsert workspace row through the collection's postgres pool.
-
-        three-tier-task-01 phase F: the paired
-        ``platform.namespaces`` write that lived here previously has
-        moved to :class:`WorkspaceCreateTool._insert_all`, which
-        persists the namespace via
-        :meth:`NamespaceCollection.save_entity` after the workspace
-        transaction commits. keeping the namespace write off this
-        path means every save_entity call on the Collection is a
-        single write; the tool is the sole orchestrator of the paired
-        namespace materialization.
-
-        :param data: workspace row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :param original_timestamp: optional prior date_updated for OCC
-        :ptype original_timestamp: datetime | None
-        :return: affected row count on the workspaces upsert
-        :rtype: int
-        """
-        _ = original_timestamp
-        result = await self._postgres_pool.execute(
-            _UPSERT_WORKSPACE_SQL,
-            data["id"],
-            data["agent_id"],
-            data["name"],
-            data.get("description"),
-            data.get("template_name"),
-            data["created_by"],
-            data["current_version"],
-            data["date_created"],
-            data["date_updated"],
-            data.get("date_deleted"),
-        )
-        affected: int = int(result.split()[-1])
-        return affected
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """
-        removes workspace row by primary key; FK cascade drops children.
-
-        :param entity_id: workspace UUID to delete
-        :ptype entity_id: Any
-        """
-        await self._postgres_pool.execute(
-            "DELETE FROM workspaces WHERE id = $1",
-            entity_id,
-        )
 
     async def find_by_agent(
         self,
@@ -331,7 +154,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             sql = "SELECT * FROM workspaces WHERE agent_id = $1 ORDER BY date_updated DESC"
         else:
             sql = "SELECT * FROM workspaces WHERE agent_id = $1 AND date_deleted IS NULL ORDER BY date_updated DESC"
-        rows = await self._postgres_pool.fetch(sql, agent_id)
+        rows = await self.l3_pool.fetch(sql, agent_id)
         entities: list[Workspace] = []
         for row in rows:
             data = dict(row)
@@ -372,12 +195,12 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         :rtype: Workspace | None
         """
         if agent_id is None:
-            row = await self._postgres_pool.fetchrow(
+            row = await self.l3_pool.fetchrow(
                 "SELECT * FROM workspaces WHERE id = $1 AND date_deleted IS NULL",
                 workspace_id,
             )
         else:
-            row = await self._postgres_pool.fetchrow(
+            row = await self.l3_pool.fetchrow(
                 "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
                 workspace_id,
                 agent_id,
@@ -408,7 +231,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self._postgres_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2",
             workspace_id,
             agent_id,
@@ -440,7 +263,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         :return: matching workspace entity or None
         :rtype: Workspace | None
         """
-        row = await self._postgres_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             "SELECT * FROM workspaces WHERE agent_id = $1 AND name = $2",
             agent_id,
             name,
@@ -453,33 +276,31 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             result = entity
         return result
 
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """
-        encodes row dict to JSON bytes for L2 storage.
 
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
+class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
+    """collection for WorkspaceFile head-state entities with three-tier caching.
 
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """
-        decodes JSON bytes from L2 into typed row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row dict with native Python types
-        :rtype: dict[str, Any]
-        """
-        return _deserialize_row(data, _WORKSPACE_FIELD_TYPES)
-
-
-class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
-    """collection for WorkspaceFile head-state entities with three-tier caching."""
+    CRUD is generated from :attr:`schema`. no CAS column at this level
+    -- writers needing optimistic concurrency compose it at the
+    transaction level (fs_write, fs_edit, doc_* read-within-transaction
+    + direct conn.fetchrow). content is BYTES_TYPE so base64 round-trip
+    through L2 preserves arbitrary bytes including NULs.
+    """
 
     primary_key_column: str = "id"
+    schema = TableSchema(
+        name="workspace_files",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("workspace_id", UUID_TYPE, immutable=True),
+            Column("relative_path", STRING_TYPE, immutable=True),
+            Column("content", BYTES_TYPE),
+            Column("sha256", STRING_TYPE),
+            Column("version", INT_TYPE),
+            Column("date_updated", DATETIME_TYPE),
+        ],
+    )
 
     def __init__(
         self,
@@ -489,8 +310,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
-        """
-        initializes collection with required dependencies.
+        """initialize collection with required dependencies.
 
         consumers compose multi-row transactions that pair head-state
         upsert with journal insert; collection exposes CRUD only.
@@ -506,13 +326,12 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         :param write_buffer: optional deferred-write buffer for batched flushes
         :ptype write_buffer: WriteBuffer | None
         """
-        self._postgres_pool = postgres_pool
         super().__init__(registry, config, nats_client, write_buffer)
+        self.l3_pool = postgres_pool
 
     @property
     def table_name(self) -> str:
-        """
-        returns database table name for this collection.
+        """returns database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -521,79 +340,12 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
 
     @property
     def entity_class(self) -> type[WorkspaceFile]:
-        """
-        returns entity class for this collection.
+        """returns entity class for this collection.
 
         :return: WorkspaceFile entity class
         :rtype: type[WorkspaceFile]
         """
         return WorkspaceFile
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """
-        reads workspace_file head row by primary key.
-
-        :param entity_id: workspace_file UUID to fetch
-        :ptype entity_id: Any
-        :return: row dict or None when missing
-        :rtype: dict[str, Any] | None
-        """
-        row = await self._postgres_pool.fetchrow(
-            "SELECT * FROM workspace_files WHERE id = $1",
-            entity_id,
-        )
-        result: dict[str, Any] | None = None if row is None else dict(row)
-        return result
-
-    async def save_to_postgres(
-        self,
-        data: dict[str, Any],
-        original_timestamp: datetime | None = None,
-    ) -> int:
-        """
-        upserts workspace_file head row by primary key.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :param original_timestamp: optional prior date_updated for OCC
-        :ptype original_timestamp: datetime | None
-        :return: affected row count
-        :rtype: int
-        """
-        result = await self._postgres_pool.execute(
-            """
-            INSERT INTO workspace_files (
-                id, workspace_id, relative_path, content,
-                sha256, version, date_updated
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (id) DO UPDATE SET
-                content = EXCLUDED.content,
-                sha256 = EXCLUDED.sha256,
-                version = EXCLUDED.version,
-                date_updated = EXCLUDED.date_updated
-            """,
-            data["id"],
-            data["workspace_id"],
-            data["relative_path"],
-            data["content"],
-            data["sha256"],
-            data["version"],
-            data["date_updated"],
-        )
-        affected: int = int(result.split()[-1])
-        return affected
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """
-        removes workspace_file head row by primary key.
-
-        :param entity_id: workspace_file UUID to delete
-        :ptype entity_id: Any
-        """
-        await self._postgres_pool.execute(
-            "DELETE FROM workspace_files WHERE id = $1",
-            entity_id,
-        )
 
     async def find_by_workspace_and_relative_path(self, workspace_id: UUID, relative_path: str) -> WorkspaceFile | None:
         """
@@ -612,7 +364,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         :return: matching file entity or None
         :rtype: WorkspaceFile | None
         """
-        row = await self._postgres_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             "SELECT * FROM workspace_files WHERE workspace_id = $1 AND relative_path = $2",
             workspace_id,
             relative_path,
@@ -640,7 +392,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         :return: list of file entities for workspace
         :rtype: list[WorkspaceFile]
         """
-        rows = await self._postgres_pool.fetch(
+        rows = await self.l3_pool.fetch(
             "SELECT * FROM workspace_files WHERE workspace_id = $1",
             workspace_id,
         )
@@ -652,30 +404,8 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
             entities.append(entity)
         return entities
 
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """
-        encodes row dict to JSON bytes for L2 storage with bytes base64-encoded.
 
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """
-        decodes JSON bytes from L2 into typed row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row dict with native Python types
-        :rtype: dict[str, Any]
-        """
-        return _deserialize_row(data, _WORKSPACE_FILE_FIELD_TYPES)
-
-
-class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
+class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion]):
     """collection for WorkspaceFileVersion append-only journal entities.
 
     journal is strictly append-only; duplicate (workspace_id, relative_path,
@@ -694,8 +424,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
-        """
-        initializes collection with required dependencies.
+        """initialize collection with required dependencies.
 
         :param registry: collection registry for dependency injection
         :ptype registry: CollectionRegistry
@@ -708,13 +437,12 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :param write_buffer: optional deferred-write buffer for batched flushes
         :ptype write_buffer: WriteBuffer | None
         """
-        self._postgres_pool = postgres_pool
         super().__init__(registry, config, nats_client, write_buffer)
+        self.l3_pool = postgres_pool
 
     @property
     def table_name(self) -> str:
-        """
-        returns database table name for this collection.
+        """returns database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -740,7 +468,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :return: row dict or None when missing
         :rtype: dict[str, Any] | None
         """
-        row = await self._postgres_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             "SELECT * FROM workspace_file_versions WHERE id = $1",
             entity_id,
         )
@@ -768,7 +496,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :rtype: int
         :raises asyncpg.UniqueViolationError: on duplicate triple insert
         """
-        result = await self._postgres_pool.execute(
+        result = await self.l3_pool.execute(
             """
             INSERT INTO workspace_file_versions (
                 id, workspace_id, relative_path, version, content,
@@ -801,7 +529,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :param entity_id: journal row UUID to delete
         :ptype entity_id: Any
         """
-        await self._postgres_pool.execute(
+        await self.l3_pool.execute(
             "DELETE FROM workspace_file_versions WHERE id = $1",
             entity_id,
         )
@@ -825,7 +553,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self._postgres_pool.fetch(
+        rows = await self.l3_pool.fetch(
             "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
             workspace_id,
             limit,
@@ -856,7 +584,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         :return: newest-first list of journal entities bounded by limit
         :rtype: list[WorkspaceFileVersion]
         """
-        rows = await self._postgres_pool.fetch(
+        rows = await self.l3_pool.fetch(
             "SELECT * FROM workspace_file_versions "
             "WHERE workspace_id = $1 AND relative_path = $2 "
             "ORDER BY date_created DESC LIMIT $3",
