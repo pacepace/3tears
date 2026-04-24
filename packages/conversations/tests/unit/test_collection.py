@@ -138,7 +138,7 @@ class TestFetchFromPostgres:
         store: dict[str, dict[str, Any]] = {str(data["id"]): data}
         pg = _make_pg_mock(store)
         collection = ConversationsCollection.__new__(ConversationsCollection)
-        collection.postgres_pool = pg
+        collection.l3_pool = pg
 
         result = await collection.fetch_from_postgres(data["id"])
 
@@ -148,7 +148,7 @@ class TestFetchFromPostgres:
         """fetch_from_postgres returns None on a miss."""
         pg = _make_pg_mock({})
         collection = ConversationsCollection.__new__(ConversationsCollection)
-        collection.postgres_pool = pg
+        collection.l3_pool = pg
 
         result = await collection.fetch_from_postgres(uuid7())
 
@@ -164,7 +164,7 @@ class TestSaveToPostgres:
         l3: dict[str, dict[str, Any]] = {}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
-        collection.postgres_pool = pg
+        collection.l3_pool = pg
 
         affected = await collection.save_to_postgres(data)
 
@@ -177,7 +177,7 @@ class TestSaveToPostgres:
         l3: dict[str, dict[str, Any]] = {str(data["id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
-        collection.postgres_pool = pg
+        collection.l3_pool = pg
 
         updated = dict(data)
         updated["status"] = "closed"
@@ -198,7 +198,7 @@ class TestDeleteFromPostgres:
         l3: dict[str, dict[str, Any]] = {str(data["id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
-        collection.postgres_pool = pg
+        collection.l3_pool = pg
 
         await collection.delete_from_postgres(data["id"])
 
