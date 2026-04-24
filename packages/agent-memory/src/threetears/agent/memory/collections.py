@@ -1328,21 +1328,40 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
         return await super().save_to_postgres(data)
 
 
-class MediaContentCollection(BaseCollection[MediaContentEntity]):
+class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
     """three-tier collection for :class:`MediaContentEntity`.
 
     carries content rows attached to :class:`MediaEntity` through
     ``media_id``. hybrid-search surface
     (:meth:`hybrid_search`, :meth:`search_by_ids`) lives on this
     collection because vector/FTS queries are the primary way callers
-    probe this table; by-ID pull-through is rare.
+    probe this table; by-ID pull-through is rare. CRUD is generated
+    from :attr:`schema`; the embedding column uses ``VECTOR_TYPE`` so
+    the generator emits ``$N::vector`` on the INSERT path and decodes
+    the textual response back to ``list[float]`` on read.
     """
 
     primary_key_column: str = "content_id"
+    schema = TableSchema(
+        name="media_content",
+        primary_key="content_id",
+        columns=[
+            Column("content_id", UUID_TYPE),
+            Column("media_id", UUID_TYPE, immutable=True),
+            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("user_id", UUID_TYPE, immutable=True),
+            Column("content_type", STRING_TYPE),
+            Column("content", STRING_TYPE),
+            Column("summary", STRING_TYPE, nullable=True),
+            Column("embedding", VECTOR_TYPE, nullable=True),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+        ],
+    )
 
     @property
     def table_name(self) -> str:
-        """Return the database table name for this collection.
+        """return the database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -1351,105 +1370,12 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
 
     @property
     def entity_class(self) -> type[MediaContentEntity]:
-        """Return the entity class for this collection.
+        """return the entity class for this collection.
 
         :return: entity class
         :rtype: type[MediaContentEntity]
         """
         return MediaContentEntity
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch one media_content row from L3 by primary key.
-
-        :param entity_id: content primary-key value
-        :ptype entity_id: Any
-        :return: row dict or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
-            "SELECT * FROM media_content WHERE content_id = $1", entity_id,
-        )
-        result: dict[str, Any] | None = dict(row) if row is not None else None
-        return result
-
-    async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
-    ) -> int:
-        """upsert one media_content row into L3.
-
-        :param data: row data to persist
-        :ptype data: dict[str, Any]
-        :param original_timestamp: ignored for media_content (no CAS
-            column distinct from ``date_created``)
-        :ptype original_timestamp: datetime | None
-        :return: rows affected
-        :rtype: int
-        """
-        _ = original_timestamp
-        if self.l3_pool is None:
-            return 0
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO media_content (
-                content_id, media_id, agent_id, customer_id,
-                user_id, content_type, content, summary,
-                embedding, date_created
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
-            ON CONFLICT (content_id) DO UPDATE SET
-                content_type = EXCLUDED.content_type,
-                content = EXCLUDED.content,
-                summary = EXCLUDED.summary,
-                embedding = EXCLUDED.embedding
-            """,
-            data["content_id"],
-            data["media_id"],
-            data.get("agent_id"),
-            data.get("customer_id"),
-            data["user_id"],
-            data["content_type"],
-            data["content"],
-            data.get("summary"),
-            _encode_embedding(data.get("embedding")),
-            _to_naive_utc(data["date_created"]),
-        )
-        return int(result.split()[-1])
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """hard-delete a media_content row from L3.
-
-        :param entity_id: content primary-key value
-        :ptype entity_id: Any
-        :return: nothing
-        :rtype: None
-        """
-        if self.l3_pool is None:
-            return
-        await self.l3_pool.execute(
-            "DELETE FROM media_content WHERE content_id = $1", entity_id,
-        )
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """serialize a row dict for L2 storage.
-
-        :param data: row data
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """deserialize L2 payload back into a row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row data
-        :rtype: dict[str, Any]
-        """
-        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        return _deserialize_with_types(raw, _MEDIA_CONTENT_FIELD_TYPES)
 
     async def hybrid_search(
         self,
@@ -1825,18 +1751,37 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
         return result
 
 
-class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
+class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
     """three-tier collection for :class:`MemoryChunkEntity`.
 
     document-style chunks with heading / page metadata; optional
-    parent :class:`MediaEntity` through ``media_id``.
+    parent :class:`MediaEntity` through ``media_id``. CRUD is generated
+    from :attr:`schema`; the embedding column uses ``VECTOR_TYPE`` for
+    pgvector cast on write + ``list[float]`` decode on read.
     """
 
     primary_key_column: str = "chunk_id"
+    schema = TableSchema(
+        name="memory_chunks",
+        primary_key="chunk_id",
+        columns=[
+            Column("chunk_id", UUID_TYPE),
+            Column("media_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("user_id", UUID_TYPE, immutable=True),
+            Column("content", STRING_TYPE),
+            Column("summary", STRING_TYPE, nullable=True),
+            Column("heading_context", STRING_TYPE, nullable=True),
+            Column("page_number", INT_TYPE, nullable=True),
+            Column("embedding", VECTOR_TYPE, nullable=True),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+        ],
+    )
 
     @property
     def table_name(self) -> str:
-        """Return the database table name for this collection.
+        """return the database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -1845,107 +1790,12 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
 
     @property
     def entity_class(self) -> type[MemoryChunkEntity]:
-        """Return the entity class for this collection.
+        """return the entity class for this collection.
 
         :return: entity class
         :rtype: type[MemoryChunkEntity]
         """
         return MemoryChunkEntity
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch one memory_chunks row from L3 by primary key.
-
-        :param entity_id: chunk primary-key value
-        :ptype entity_id: Any
-        :return: row dict or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
-            "SELECT * FROM memory_chunks WHERE chunk_id = $1", entity_id,
-        )
-        result: dict[str, Any] | None = dict(row) if row is not None else None
-        return result
-
-    async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
-    ) -> int:
-        """upsert one memory_chunks row into L3.
-
-        :param data: row data to persist
-        :ptype data: dict[str, Any]
-        :param original_timestamp: ignored for chunks (no CAS column
-            distinct from ``date_created``)
-        :ptype original_timestamp: datetime | None
-        :return: rows affected
-        :rtype: int
-        """
-        _ = original_timestamp
-        if self.l3_pool is None:
-            return 0
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO memory_chunks (
-                chunk_id, media_id, agent_id, customer_id,
-                user_id, content, summary, heading_context,
-                page_number, embedding, date_created
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11)
-            ON CONFLICT (chunk_id) DO UPDATE SET
-                content = EXCLUDED.content,
-                summary = EXCLUDED.summary,
-                heading_context = EXCLUDED.heading_context,
-                page_number = EXCLUDED.page_number,
-                embedding = EXCLUDED.embedding
-            """,
-            data["chunk_id"],
-            data.get("media_id"),
-            data.get("agent_id"),
-            data.get("customer_id"),
-            data["user_id"],
-            data["content"],
-            data.get("summary"),
-            data.get("heading_context"),
-            data.get("page_number"),
-            _encode_embedding(data.get("embedding")),
-            _to_naive_utc(data["date_created"]),
-        )
-        return int(result.split()[-1])
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """hard-delete a memory_chunks row from L3.
-
-        :param entity_id: chunk primary-key value
-        :ptype entity_id: Any
-        :return: nothing
-        :rtype: None
-        """
-        if self.l3_pool is None:
-            return
-        await self.l3_pool.execute(
-            "DELETE FROM memory_chunks WHERE chunk_id = $1", entity_id,
-        )
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """serialize a row dict for L2 storage.
-
-        :param data: row data
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """deserialize L2 payload back into a row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row data
-        :rtype: dict[str, Any]
-        """
-        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        return _deserialize_with_types(raw, _MEMORY_CHUNK_FIELD_TYPES)
 
     async def hybrid_search(
         self,
