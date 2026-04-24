@@ -47,8 +47,6 @@ class ContextManagerRegistry:
 
     :param context_collection: three-tier collection for context storage
     :ptype context_collection: Any
-    :param l3_pool: optional L3 pool for direct persistence
-    :ptype l3_pool: Any
     :param var_limit: max variables per conversation
     :ptype var_limit: int
     :param result_limit: max tool results before LRU eviction
@@ -60,17 +58,14 @@ class ContextManagerRegistry:
     def __init__(
         self,
         context_collection: Any,
-        l3_pool: Any = None,
         var_limit: int = 50,
         result_limit: int | None = None,
         max_managers: int = 500,
     ) -> None:
-        """initialize registry with shared collection and pool.
+        """initialize registry with shared collection.
 
         :param context_collection: three-tier collection for context storage
         :ptype context_collection: Any
-        :param l3_pool: optional L3 pool for direct persistence
-        :ptype l3_pool: Any
         :param var_limit: max variables per conversation
         :ptype var_limit: int
         :param result_limit: max tool results before LRU eviction
@@ -79,7 +74,6 @@ class ContextManagerRegistry:
         :ptype max_managers: int
         """
         self._collection = context_collection
-        self._l3_pool = l3_pool
         self._var_limit = var_limit
         self._result_limit = result_limit
         self._max_managers = max_managers
@@ -109,7 +103,6 @@ class ContextManagerRegistry:
                 user_id=UUID(int=0),
                 var_limit=self._var_limit,
                 result_limit=self._result_limit,
-                l3_pool=self._l3_pool,
             )
         # update access order for LRU
         if conv_id in self._access_order:

@@ -23,7 +23,7 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState
 
@@ -110,7 +110,10 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
     system_prompt = configurable.get("system_prompt", "")
     tools = configurable.get("tools", [])
 
-    messages = list(state["messages"])
+    # explicit list[BaseMessage] annotation required because list is
+    # invariant and MessagesState types the underlying list with a
+    # narrower BaseMessage union
+    messages: list[BaseMessage] = list(state["messages"])
 
     # build context sections if context_manager available
     context_manager = configurable.get("context_manager")
@@ -185,8 +188,12 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
 
     hooks = _resolve_tool_hooks(config)
     state_view: dict[str, Any] = dict(state)
+    # convert ToolCall TypedDicts to plain dicts at the protocol
+    # boundary; list[ToolCall] is not assignable to list[dict[str, Any]]
+    # because list is invariant, even though ToolCall is structurally
+    # a dict[str, Any]
     tool_calls, config = await hooks.before_dispatch(
-        list(last_message.tool_calls), config, state_view,
+        [dict(tc) for tc in last_message.tool_calls], config, state_view,
     )
 
     for tool_call in tool_calls:
