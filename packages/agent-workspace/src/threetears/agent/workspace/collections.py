@@ -10,11 +10,9 @@ on subclasses because their query shape is per-collection.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -408,13 +406,36 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
 class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion]):
     """collection for WorkspaceFileVersion append-only journal entities.
 
-    journal is strictly append-only; duplicate (workspace_id, relative_path,
-    version) inserts raise via UNIQUE constraint. no update or soft-delete
-    semantics exist on this collection. delete by primary key is provided for
-    test and retention cleanup only; production callers do not rewrite history.
+    journal is strictly append-only; duplicate ``(workspace_id,
+    relative_path, version)`` inserts raise via the UNIQUE constraint
+    surfaced by asyncpg. no update or soft-delete semantics exist on
+    this collection. delete by primary key is provided for test and
+    retention cleanup only; production callers do not rewrite history.
+
+    CRUD is generated from :attr:`schema` with ``append_only=True`` so
+    the generator emits plain INSERT -- no ON CONFLICT clause, no DO
+    UPDATE SET -- matching the journal semantics.
     """
 
     primary_key_column: str = "id"
+    schema = TableSchema(
+        name="workspace_file_versions",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("workspace_id", UUID_TYPE, immutable=True),
+            Column("relative_path", STRING_TYPE, immutable=True),
+            Column("version", INT_TYPE, immutable=True),
+            Column("content", BYTES_TYPE, immutable=True),
+            Column("sha256", STRING_TYPE, immutable=True),
+            Column("action", STRING_TYPE, immutable=True),
+            Column("label", STRING_TYPE, nullable=True, immutable=True),
+            Column("actor_id", UUID_TYPE, immutable=True),
+            Column("correlation_id", UUID_TYPE, immutable=True),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+        ],
+        append_only=True,
+    )
 
     def __init__(
         self,
@@ -458,81 +479,6 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
         :rtype: type[WorkspaceFileVersion]
         """
         return WorkspaceFileVersion
-
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """
-        reads workspace_file_versions journal row by primary key.
-
-        :param entity_id: journal row UUID to fetch
-        :ptype entity_id: Any
-        :return: row dict or None when missing
-        :rtype: dict[str, Any] | None
-        """
-        row = await self.l3_pool.fetchrow(
-            "SELECT * FROM workspace_file_versions WHERE id = $1",
-            entity_id,
-        )
-        result: dict[str, Any] | None = None if row is None else dict(row)
-        return result
-
-    async def save_to_postgres(
-        self,
-        data: dict[str, Any],
-        original_timestamp: datetime | None = None,
-    ) -> int:
-        """
-        inserts journal row; raises on UNIQUE conflict (journal is append-only).
-
-        no ON CONFLICT clause: duplicate (workspace_id, relative_path, version)
-        attempts are rejected by the UNIQUE constraint. original_timestamp is
-        accepted for signature compatibility with BaseCollection but ignored
-        because journal rows are never updated.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :param original_timestamp: accepted for signature compatibility, unused
-        :ptype original_timestamp: datetime | None
-        :return: affected row count, always 1 on success
-        :rtype: int
-        :raises asyncpg.UniqueViolationError: on duplicate triple insert
-        """
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO workspace_file_versions (
-                id, workspace_id, relative_path, version, content,
-                sha256, action, label, actor_id, correlation_id, date_created
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            """,
-            data["id"],
-            data["workspace_id"],
-            data["relative_path"],
-            data["version"],
-            data["content"],
-            data["sha256"],
-            data["action"],
-            data.get("label"),
-            data["actor_id"],
-            data["correlation_id"],
-            data["date_created"],
-        )
-        affected: int = int(result.split()[-1])
-        return affected
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """
-        removes journal row by primary key; reserved for retention and tests.
-
-        production callers do not rewrite history; this is provided only so
-        the BaseCollection abstract contract is satisfied and retention jobs
-        can prune rows under operator control.
-
-        :param entity_id: journal row UUID to delete
-        :ptype entity_id: Any
-        """
-        await self.l3_pool.execute(
-            "DELETE FROM workspace_file_versions WHERE id = $1",
-            entity_id,
-        )
 
     async def find_by_workspace(self, workspace_id: UUID, limit: int) -> list[WorkspaceFileVersion]:
         """
@@ -598,25 +544,3 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             entity = self.entity_class(data, is_new=False, collection=self)
             entities.append(entity)
         return entities
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """
-        encodes row dict to JSON bytes for L2 storage with bytes base64-encoded.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """
-        decodes JSON bytes from L2 into typed row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row dict with native Python types
-        :rtype: dict[str, Any]
-        """
-        return _deserialize_row(data, _WORKSPACE_FILE_VERSION_FIELD_TYPES)
