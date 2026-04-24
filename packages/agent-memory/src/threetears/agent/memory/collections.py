@@ -28,6 +28,18 @@ from uuid import UUID
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import (
+    BOOL_TYPE,
+    DATETIME_TYPE,
+    INT_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    VECTOR_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
 
@@ -1245,21 +1257,38 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         return result
 
 
-class MediaCollection(BaseCollection[MediaEntity]):
+class MediaCollection(SchemaBackedCollection[MediaEntity]):
     """three-tier collection for :class:`MediaEntity` (table ``media``).
 
     the media parent record carries a category discriminator and a
     JSONB metadata blob; child rows live in
     :class:`MediaContentCollection` and :class:`MemoryChunkCollection`.
     adopted under namespace-task-01 phase 8.5b — the v006 migration
-    had no Collection before now.
+    had no Collection before now. CRUD is generated from
+    :attr:`schema` via :class:`SchemaBackedCollection`; no CAS path
+    because the table has no ``date_updated`` fence column distinct
+    from ``date_created``.
     """
 
     primary_key_column: str = "media_id"
+    schema = TableSchema(
+        name="media",
+        primary_key="media_id",
+        columns=[
+            Column("media_id", UUID_TYPE),
+            Column("agent_id", UUID_TYPE, nullable=True),
+            Column("customer_id", UUID_TYPE, nullable=True),
+            Column("user_id", UUID_TYPE),
+            Column("media_category", STRING_TYPE),
+            Column("metadata_json", JSONB_TYPE, nullable=True),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_updated", DATETIME_TYPE),
+        ],
+    )
 
     @property
     def table_name(self) -> str:
-        """Return the database table name for this collection.
+        """return the database table name for this collection.
 
         :return: table name
         :rtype: str
@@ -1268,108 +1297,35 @@ class MediaCollection(BaseCollection[MediaEntity]):
 
     @property
     def entity_class(self) -> type[MediaEntity]:
-        """Return the entity class for this collection.
+        """return the entity class for this collection.
 
         :return: entity class
         :rtype: type[MediaEntity]
         """
         return MediaEntity
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch one media row from L3 by primary key.
-
-        :param entity_id: media primary-key value
-        :ptype entity_id: Any
-        :return: row dict or ``None``
-        :rtype: dict[str, Any] | None
-        """
-        if self.l3_pool is None:
-            return None
-        row = await self.l3_pool.fetchrow(
-            "SELECT * FROM media WHERE media_id = $1", entity_id,
-        )
-        result: dict[str, Any] | None = dict(row) if row is not None else None
-        return result
-
     async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one media row into L3.
 
+        thin override of the generic path to fill in ``date_updated``
+        from ``date_created`` when callers omit it -- the v006
+        migration predates the fence-column convention and many
+        writers still pass only ``date_created``.
+
         :param data: row data to persist
         :ptype data: dict[str, Any]
-        :param original_timestamp: ignored for media (no CAS column
-            distinct from ``date_updated``)
+        :param original_timestamp: ignored (no CAS column on media)
         :ptype original_timestamp: datetime | None
         :return: rows affected
         :rtype: int
         """
         _ = original_timestamp
-        if self.l3_pool is None:
-            return 0
-        metadata_value = data.get("metadata_json")
-        if metadata_value is not None and not isinstance(metadata_value, str):
-            metadata_value = json.dumps(metadata_value, default=_json_serializer)
-        result = await self.l3_pool.execute(
-            """
-            INSERT INTO media (
-                media_id, agent_id, customer_id, user_id,
-                media_category, metadata_json,
-                date_created, date_updated
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (media_id) DO UPDATE SET
-                agent_id = EXCLUDED.agent_id,
-                customer_id = EXCLUDED.customer_id,
-                user_id = EXCLUDED.user_id,
-                media_category = EXCLUDED.media_category,
-                metadata_json = EXCLUDED.metadata_json,
-                date_updated = EXCLUDED.date_updated
-            """,
-            data["media_id"],
-            data.get("agent_id"),
-            data.get("customer_id"),
-            data["user_id"],
-            data["media_category"],
-            metadata_value,
-            _to_naive_utc(data["date_created"]),
-            _to_naive_utc(data.get("date_updated") or data["date_created"]),
-        )
-        return int(result.split()[-1])
-
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """hard-delete a media row from L3.
-
-        :param entity_id: media primary-key value
-        :ptype entity_id: Any
-        :return: nothing
-        :rtype: None
-        """
-        if self.l3_pool is None:
-            return
-        await self.l3_pool.execute(
-            "DELETE FROM media WHERE media_id = $1", entity_id,
-        )
-
-    def serialize(self, data: dict[str, Any]) -> bytes:
-        """serialize a row dict for L2 storage.
-
-        :param data: row data
-        :ptype data: dict[str, Any]
-        :return: JSON-encoded bytes
-        :rtype: bytes
-        """
-        return json.dumps(data, default=_json_serializer).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> dict[str, Any]:
-        """deserialize L2 payload back into a row dict.
-
-        :param data: JSON-encoded bytes
-        :ptype data: bytes
-        :return: row data
-        :rtype: dict[str, Any]
-        """
-        raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        return _deserialize_with_types(raw, _MEDIA_FIELD_TYPES)
+        if data.get("date_updated") is None and data.get("date_created") is not None:
+            data = dict(data)
+            data["date_updated"] = data["date_created"]
+        return await super().save_to_postgres(data)
 
 
 class MediaContentCollection(BaseCollection[MediaContentEntity]):
