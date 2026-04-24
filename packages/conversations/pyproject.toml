@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "3tears-agent-acl",
 ]
 
 [project.urls]
@@ -30,6 +31,7 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
 
 [tool.mypy]
 strict = true

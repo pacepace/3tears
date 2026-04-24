@@ -86,6 +86,7 @@ class TestPluralPrefixMapping:
         [
             ("agent", "agents"),
             ("channel", "channels"),
+            ("conversation", "conversations"),
             ("datasource", "datasources"),
             ("memory", "memories"),
             ("model", "models"),
@@ -102,6 +103,6 @@ class TestPluralPrefixMapping:
         assert PLURAL_PREFIX_BY_NAMESPACE_TYPE[namespace_type] == expected
 
     def test_mapping_closed_set_size(self) -> None:
-        # pins the 10-value closed set; adding a new namespace_type
+        # pins the 11-value closed set; adding a new namespace_type
         # requires updating v018's CHECK constraint + this mapping.
-        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 10
+        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 11

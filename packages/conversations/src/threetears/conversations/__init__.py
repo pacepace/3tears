@@ -12,12 +12,36 @@ from __future__ import annotations
 
 __version__ = "0.5.0"
 
+from threetears.conversations.authorize import (
+    ACTION_CONVERSATION_DELETE,
+    ACTION_CONVERSATION_READ,
+    ACTION_CONVERSATION_WRITE,
+    CONVERSATION_NAMESPACE_TYPE,
+    CONVERSATION_OWNER_GROUP_PREFIX,
+    CONVERSATION_OWNER_ROLE_NAME,
+    ConversationAccessDenied,
+    ConversationAuthorizerDependencies,
+    authorize_conversation_access,
+    conversation_namespace_name,
+    ensure_conversation_owner_assignment,
+)
 from threetears.conversations.collection import ConversationsCollection
 from threetears.conversations.entity import Conversation
 from threetears.conversations.migrations import register
 
 __all__ = [
+    "ACTION_CONVERSATION_DELETE",
+    "ACTION_CONVERSATION_READ",
+    "ACTION_CONVERSATION_WRITE",
+    "CONVERSATION_NAMESPACE_TYPE",
+    "CONVERSATION_OWNER_GROUP_PREFIX",
+    "CONVERSATION_OWNER_ROLE_NAME",
     "Conversation",
+    "ConversationAccessDenied",
+    "ConversationAuthorizerDependencies",
     "ConversationsCollection",
+    "authorize_conversation_access",
+    "conversation_namespace_name",
+    "ensure_conversation_owner_assignment",
     "register",
 ]
