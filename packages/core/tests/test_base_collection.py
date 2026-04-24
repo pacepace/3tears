@@ -59,10 +59,10 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def _fetch_from_postgres(self, entity_id: object) -> dict | None:
+    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
         return self._pg_store.get(str(entity_id))
 
-    async def _save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._pg_store.get(str(pk))
@@ -71,13 +71,13 @@ class StubCollection(BaseCollection[StubEntity]):
         self._pg_store[str(pk)] = dict(data)
         return 1
 
-    async def _delete_from_postgres(self, entity_id: object) -> None:
+    async def delete_from_postgres(self, entity_id: object) -> None:
         self._pg_store.pop(str(entity_id), None)
 
-    def _serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data: bytes) -> dict:
+    def deserialize(self, data: bytes) -> dict:
         return json.loads(data)
 
 

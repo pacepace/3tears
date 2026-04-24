@@ -414,7 +414,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         """
         return MemoryEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch one memory row from L3 by primary key.
 
         :param entity_id: memory primary-key value
@@ -430,7 +430,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         result: dict[str, Any] | None = dict(row) if row is not None else None
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """Upsert one memory row into L3.
@@ -496,7 +496,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
             )
         return int(result.split()[-1])
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """Hard-delete a memory row from L3.
 
         :param entity_id: memory primary-key value
@@ -510,7 +510,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
             "DELETE FROM memories WHERE memory_id = $1", entity_id,
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """Serialize a row dict for L2 storage.
 
         :param data: row data
@@ -520,7 +520,7 @@ class MemoriesCollection(BaseCollection[MemoryEntity]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """Deserialize L2 payload back into a row dict.
 
         :param data: JSON-encoded bytes
@@ -1275,7 +1275,7 @@ class MediaCollection(BaseCollection[MediaEntity]):
         """
         return MediaEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch one media row from L3 by primary key.
 
         :param entity_id: media primary-key value
@@ -1291,7 +1291,7 @@ class MediaCollection(BaseCollection[MediaEntity]):
         result: dict[str, Any] | None = dict(row) if row is not None else None
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one media row into L3.
@@ -1336,7 +1336,7 @@ class MediaCollection(BaseCollection[MediaEntity]):
         )
         return int(result.split()[-1])
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """hard-delete a media row from L3.
 
         :param entity_id: media primary-key value
@@ -1350,7 +1350,7 @@ class MediaCollection(BaseCollection[MediaEntity]):
             "DELETE FROM media WHERE media_id = $1", entity_id,
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize a row dict for L2 storage.
 
         :param data: row data
@@ -1360,7 +1360,7 @@ class MediaCollection(BaseCollection[MediaEntity]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize L2 payload back into a row dict.
 
         :param data: JSON-encoded bytes
@@ -1402,7 +1402,7 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
         """
         return MediaContentEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch one media_content row from L3 by primary key.
 
         :param entity_id: content primary-key value
@@ -1418,7 +1418,7 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
         result: dict[str, Any] | None = dict(row) if row is not None else None
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one media_content row into L3.
@@ -1460,7 +1460,7 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
         )
         return int(result.split()[-1])
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """hard-delete a media_content row from L3.
 
         :param entity_id: content primary-key value
@@ -1474,7 +1474,7 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
             "DELETE FROM media_content WHERE content_id = $1", entity_id,
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize a row dict for L2 storage.
 
         :param data: row data
@@ -1484,7 +1484,7 @@ class MediaContentCollection(BaseCollection[MediaContentEntity]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize L2 payload back into a row dict.
 
         :param data: JSON-encoded bytes
@@ -1896,7 +1896,7 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
         """
         return MemoryChunkEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch one memory_chunks row from L3 by primary key.
 
         :param entity_id: chunk primary-key value
@@ -1912,7 +1912,7 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
         result: dict[str, Any] | None = dict(row) if row is not None else None
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one memory_chunks row into L3.
@@ -1956,7 +1956,7 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
         )
         return int(result.split()[-1])
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """hard-delete a memory_chunks row from L3.
 
         :param entity_id: chunk primary-key value
@@ -1970,7 +1970,7 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
             "DELETE FROM memory_chunks WHERE chunk_id = $1", entity_id,
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize a row dict for L2 storage.
 
         :param data: row data
@@ -1980,7 +1980,7 @@ class MemoryChunkCollection(BaseCollection[MemoryChunkEntity]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize L2 payload back into a row dict.
 
         :param data: JSON-encoded bytes
@@ -2363,7 +2363,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         """
         return MemoryRefEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch one row from L3 by composite pk.
 
         :param entity_id: ``(conversation_id, item_id)`` tuple; scalar
@@ -2388,7 +2388,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
             return None
         return _coerce_uuid_fields(dict(row))
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None,
     ) -> int:
         """upsert one row into L3 via composite-pk ON CONFLICT.
@@ -2430,7 +2430,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         )
         return 1 if status else 0
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """hard-delete one row from L3 by composite pk.
 
         :param entity_id: ``(conversation_id, item_id)`` tuple
@@ -2447,7 +2447,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
             key[1],
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize a row dict for L2 storage.
 
         :param data: row data
@@ -2457,7 +2457,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """deserialize L2 payload back into a row dict.
 
         :param data: JSON-encoded bytes

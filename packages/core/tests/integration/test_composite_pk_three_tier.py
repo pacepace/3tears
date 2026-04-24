@@ -126,7 +126,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
     def entity_class(self) -> type[FakeRefEntity]:
         return FakeRefEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         key = self._normalize_pk(entity_id)
         row = await self.l3_pool.fetchrow(
             "SELECT * FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
@@ -137,7 +137,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
             return None
         return dict(row)
 
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         status = await self.l3_pool.execute(
             """
             INSERT INTO fake_refs
@@ -158,7 +158,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         # asyncpg execute returns e.g. "INSERT 0 1"; treat any non-empty status as 1 row affected
         return 1 if status else 0
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         key = self._normalize_pk(entity_id)
         await self.l3_pool.execute(
             "DELETE FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
@@ -166,10 +166,10 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
             key[1],
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         return json.loads(data)
 
 

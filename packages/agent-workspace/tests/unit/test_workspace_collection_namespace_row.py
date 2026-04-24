@@ -1,10 +1,10 @@
-"""unit tests for :meth:`WorkspaceCollection._save_to_postgres`.
+"""unit tests for :meth:`WorkspaceCollection.save_to_postgres`.
 
 three-tier-task-01 phase F retired the paired
 ``platform.namespaces`` insert that used to ride this method: the
 workspace create tool now emits the namespace row through
 :meth:`NamespaceCollection.save_entity` after the workspace tx
-commits. this test file asserts the collection's own ``_save_to_postgres``
+commits. this test file asserts the collection's own ``save_to_postgres``
 is a single-statement write against the ``workspaces`` table — no
 ``platform.namespaces`` insert, no transaction wrap for a second
 write.
@@ -79,7 +79,7 @@ async def test_save_issues_single_workspaces_upsert(
     workspaces_l1: SQLiteBackend,
     config_always: DefaultCoreConfig,
 ) -> None:
-    """_save_to_postgres issues exactly one statement against workspaces.
+    """save_to_postgres issues exactly one statement against workspaces.
 
     phase F moved the paired ``platform.namespaces`` write to the
     create tool, so the collection's own upsert is a single
@@ -122,7 +122,7 @@ async def test_save_issues_single_workspaces_upsert(
         "schema_name": "agent_test",
     }
 
-    affected = await collection._save_to_postgres(data, original_timestamp=None)
+    affected = await collection.save_to_postgres(data, original_timestamp=None)
 
     assert affected == 1
     pool.execute.assert_awaited_once()

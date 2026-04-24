@@ -173,7 +173,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         """
         return Conversation
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """
         read a single row by primary key from L3.
 
@@ -188,7 +188,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         result: dict[str, Any] | None = None if row is None else dict(row)
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self, data: dict[str, Any], original_timestamp: datetime | None = None
     ) -> int:
         """
@@ -256,7 +256,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         affected = int(result.split()[-1])
         return affected
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """
         delete a conversation row from L3.
 
@@ -267,7 +267,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
             "DELETE FROM conversations WHERE id = $1", entity_id
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """
         serialize a row dict for L2 storage.
 
@@ -278,7 +278,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """
         deserialize an L2 row payload, coercing UUIDs and timestamps.
 

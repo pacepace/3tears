@@ -1,8 +1,8 @@
 """
 unit tests for :class:`ConversationsCollection`.
 
-exercises the L3 SQL paths (``_fetch_from_postgres``,
-``_save_to_postgres``, ``_delete_from_postgres``) via an asyncpg mock,
+exercises the L3 SQL paths (``fetch_from_postgres``,
+``save_to_postgres``, ``delete_from_postgres``) via an asyncpg mock,
 plus the serialize / deserialize round-trip used by L2.
 """
 
@@ -133,24 +133,24 @@ class TestFetchFromPostgres:
     """tests for L3 read path."""
 
     async def test_fetch_returns_row_dict(self) -> None:
-        """_fetch_from_postgres returns the row as a dict when present."""
+        """fetch_from_postgres returns the row as a dict when present."""
         data = _sample_data()
         store: dict[str, dict[str, Any]] = {str(data["id"]): data}
         pg = _make_pg_mock(store)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection._postgres_pool = pg  # type: ignore[attr-defined]
 
-        result = await collection._fetch_from_postgres(data["id"])
+        result = await collection.fetch_from_postgres(data["id"])
 
         assert result == data
 
     async def test_fetch_returns_none_when_missing(self) -> None:
-        """_fetch_from_postgres returns None on a miss."""
+        """fetch_from_postgres returns None on a miss."""
         pg = _make_pg_mock({})
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection._postgres_pool = pg  # type: ignore[attr-defined]
 
-        result = await collection._fetch_from_postgres(uuid7())
+        result = await collection.fetch_from_postgres(uuid7())
 
         assert result is None
 
@@ -159,14 +159,14 @@ class TestSaveToPostgres:
     """tests for L3 write path."""
 
     async def test_insert_new_row(self) -> None:
-        """_save_to_postgres insert path stores a row and reports 1 affected."""
+        """save_to_postgres insert path stores a row and reports 1 affected."""
         data = _sample_data()
         l3: dict[str, dict[str, Any]] = {}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection._postgres_pool = pg  # type: ignore[attr-defined]
 
-        affected = await collection._save_to_postgres(data)
+        affected = await collection.save_to_postgres(data)
 
         assert affected == 1
         assert str(data["id"]) in l3
@@ -181,7 +181,7 @@ class TestSaveToPostgres:
 
         updated = dict(data)
         updated["status"] = "closed"
-        affected = await collection._save_to_postgres(
+        affected = await collection.save_to_postgres(
             updated, original_timestamp=data["date_updated"]
         )
 
@@ -193,14 +193,14 @@ class TestDeleteFromPostgres:
     """tests for L3 delete path."""
 
     async def test_delete_removes_row(self) -> None:
-        """_delete_from_postgres removes the row from the backing store."""
+        """delete_from_postgres removes the row from the backing store."""
         data = _sample_data()
         l3: dict[str, dict[str, Any]] = {str(data["id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection._postgres_pool = pg  # type: ignore[attr-defined]
 
-        await collection._delete_from_postgres(data["id"])
+        await collection.delete_from_postgres(data["id"])
 
         assert str(data["id"]) not in l3
 
@@ -213,8 +213,8 @@ class TestSerializationRoundTrip:
         data = _sample_data()
         collection = ConversationsCollection.__new__(ConversationsCollection)
 
-        payload = collection._serialize(data)
-        restored = collection._deserialize(payload)
+        payload = collection.serialize(data)
+        restored = collection.deserialize(payload)
 
         assert restored["channel_type"] == data["channel_type"]
         assert restored["status"] == data["status"]
@@ -225,8 +225,8 @@ class TestSerializationRoundTrip:
         data = _sample_data()
         collection = ConversationsCollection.__new__(ConversationsCollection)
 
-        payload = collection._serialize(data)
-        restored = collection._deserialize(payload)
+        payload = collection.serialize(data)
+        restored = collection.deserialize(payload)
 
         assert isinstance(restored["agent_id"], UUID)
         assert isinstance(restored["customer_id"], UUID)
@@ -238,8 +238,8 @@ class TestSerializationRoundTrip:
         data = _sample_data()
         collection = ConversationsCollection.__new__(ConversationsCollection)
 
-        payload = collection._serialize(data)
-        restored = collection._deserialize(payload)
+        payload = collection.serialize(data)
+        restored = collection.deserialize(payload)
 
         assert isinstance(restored["date_created"], datetime)
         assert restored["date_created"] == data["date_created"]

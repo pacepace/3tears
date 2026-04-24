@@ -69,25 +69,25 @@ class UsersCollection(BaseCollection[UserEntity]):
     def entity_class(self) -> type[UserEntity]:
         return UserEntity
 
-    async def _fetch_from_postgres(self, entity_id):
+    async def fetch_from_postgres(self, entity_id):
         row = await self.l3_pool.fetchrow(
             "SELECT * FROM users WHERE user_id = $1", entity_id
         )
         return dict(row) if row else None
 
-    async def _save_to_postgres(self, data, original_timestamp=None):
+    async def save_to_postgres(self, data, original_timestamp=None):
         # INSERT or UPDATE with optimistic locking
         ...
 
-    async def _delete_from_postgres(self, entity_id):
+    async def delete_from_postgres(self, entity_id):
         await self.l3_pool.execute(
             "DELETE FROM users WHERE user_id = $1", entity_id
         )
 
-    def _serialize(self, data):
+    def serialize(self, data):
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data):
+    def deserialize(self, data):
         return json.loads(data)
 ```
 
@@ -208,7 +208,7 @@ Only tables listed in `collection_flush_tables` are eligible for deferred writes
 
 ## Optimistic Locking
 
-Collections use `date_updated` for optimistic locking. When saving an existing entity, the `_save_to_postgres` implementation should check:
+Collections use `date_updated` for optimistic locking. When saving an existing entity, the `save_to_postgres` implementation should check:
 
 ```sql
 UPDATE users SET ... WHERE user_id = $1 AND date_updated = $2
@@ -220,4 +220,4 @@ If `rows_affected == 0` for an UPDATE, `BaseCollection.save_entity()` raises `Co
 
 **BaseEntity**: Set `primary_key_field` to your PK column name. Add computed properties as needed. Do NOT store data in instance attributes — all data lives in L1.
 
-**BaseCollection**: Set `primary_key_column`. Implement the 5 abstract methods: `_fetch_from_postgres`, `_save_to_postgres`, `_delete_from_postgres`, `_serialize`, `_deserialize`. Use `self.l3_pool` for database access. Add domain-specific query methods (e.g., `find_by_email`).
+**BaseCollection**: Set `primary_key_column`. Implement the 5 abstract methods: `fetch_from_postgres`, `save_to_postgres`, `delete_from_postgres`, `serialize`, `deserialize`. Use `self.l3_pool` for database access. Add domain-specific query methods (e.g., `find_by_email`).

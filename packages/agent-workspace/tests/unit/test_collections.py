@@ -278,9 +278,9 @@ class TestWorkspaceCollectionSerialization:
         row = _make_workspace_row()
         row["date_created"] = datetime(2026, 1, 1, tzinfo=UTC)
         row["date_updated"] = datetime(2026, 1, 2, tzinfo=UTC)
-        payload = coll._serialize(row)
+        payload = coll.serialize(row)
         assert isinstance(payload, bytes)
-        restored = coll._deserialize(payload)
+        restored = coll.deserialize(payload)
         assert restored["id"] == row["id"]
         assert restored["agent_id"] == row["agent_id"]
         assert restored["created_by"] == row["created_by"]
@@ -304,7 +304,7 @@ class TestWorkspaceCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
         issued_sql = pool._executed[0][0]
         assert "INSERT INTO workspaces" in issued_sql
@@ -315,13 +315,13 @@ class TestWorkspaceCollectionSave:
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """_delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll._delete_from_postgres(target_id)
+        await coll.delete_from_postgres(target_id)
         issued_sql = pool._executed[0][0]
         assert "DELETE FROM workspaces" in issued_sql
         assert "WHERE id = $1" in issued_sql
@@ -341,7 +341,7 @@ class TestWorkspaceFileCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
         issued_sql = pool._executed[0][0]
         assert "INSERT INTO workspace_files" in issued_sql
@@ -352,13 +352,13 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """_delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll._delete_from_postgres(target_id)
+        await coll.delete_from_postgres(target_id)
         issued_sql = pool._executed[0][0]
         assert "DELETE FROM workspace_files" in issued_sql
 
@@ -374,12 +374,12 @@ class TestWorkspaceFileCollectionSave:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_row()
         row["content"] = b"\x00\x01\x02\xff payload bytes"
-        payload = coll._serialize(row)
+        payload = coll.serialize(row)
         # confirm wire format base64-encoded the bytes
         parsed = json.loads(payload)
         assert isinstance(parsed["content"], str)
         assert base64.b64decode(parsed["content"]) == row["content"]
-        restored = coll._deserialize(payload)
+        restored = coll.deserialize(payload)
         assert restored["content"] == row["content"]
         assert isinstance(restored["content"], bytes)
 
@@ -398,7 +398,7 @@ class TestWorkspaceFileVersionCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
         issued_sql = pool._executed[0][0]
         assert "INSERT INTO workspace_file_versions" in issued_sql
@@ -428,7 +428,7 @@ class TestWorkspaceFileVersionCollectionSave:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
         with pytest.raises(_UniqueViolation):
-            await coll._save_to_postgres(row)
+            await coll.save_to_postgres(row)
 
 
 class TestCrossPodInvalidation:
@@ -762,7 +762,7 @@ class TestWorkspaceCollectionSaveIncludesDateDeleted:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
         row["date_deleted"] = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
-        await coll._save_to_postgres(row)
+        await coll.save_to_postgres(row)
         issued_sql = pool._executed[0][0]
         assert "date_deleted" in issued_sql
         # ON CONFLICT clause also wires the column

@@ -130,7 +130,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
     # -- Standard BaseCollection abstract methods --
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         row = await self.l3_pool.fetchrow(
             "SELECT * FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
@@ -139,7 +139,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             return None
         return _decode_metadata_in_row(dict(row))
 
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         context_id = data["context_id"]
         if not isinstance(context_id, UUID):
             context_id = UUID(str(context_id))
@@ -198,16 +198,16 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             )
         return int(result.split()[-1])
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         await self.l3_pool.execute(
             "DELETE FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return serialize_to_json(data)
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         return deserialize_from_json(data, _FIELD_TYPES)
 
     # -- Conversation-scoped queries --
@@ -355,7 +355,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         evicted = 0
         for row in evict_rows:
             eid = row["context_id"]
-            await self._delete_from_postgres(eid)
+            await self.delete_from_postgres(eid)
             if self._l1 is not None:
                 self._l1.delete_by_id(self.table_name, str(eid), self.primary_key_column)
             await self._delete_from_l2(eid)

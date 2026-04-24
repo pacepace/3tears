@@ -505,10 +505,10 @@ class TestMemoriesCollectionSerialization:
         data["date_created"] = datetime(2025, 6, 1, tzinfo=UTC)
         data["date_updated"] = datetime(2025, 6, 2, tzinfo=UTC)
 
-        serialized = coll._serialize(data)
+        serialized = coll.serialize(data)
         assert isinstance(serialized, bytes)
 
-        deserialized = coll._deserialize(serialized)
+        deserialized = coll.deserialize(serialized)
 
         assert deserialized["memory_id"] == data["memory_id"]
         assert deserialized["user_id"] == data["user_id"]
@@ -538,7 +538,7 @@ class TestMemoriesCollectionSerialization:
             }
         ).encode("utf-8")
 
-        result = coll._deserialize(raw)
+        result = coll.deserialize(raw)
         assert result["media_id"] is None
         assert result["date_deleted"] is None
 

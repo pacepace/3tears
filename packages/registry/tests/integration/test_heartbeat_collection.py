@@ -4,9 +4,9 @@ validates the L1+L2 coherence contract that was introduced in
 namespace-task-01 phase 8.5l-3:
 
 - a save populates L1; ``get`` returns from L1 without hitting L3
-  (``_fetch_from_postgres`` raises by design, so any test that
+  (``fetch_from_postgres`` raises by design, so any test that
   exercises pull-through implicitly asserts L3 was not reached).
-- ``_fetch_from_postgres`` raises on direct invocation (defensive
+- ``fetch_from_postgres`` raises on direct invocation (defensive
   guard -- L1+L2 only).
 - cross-registry coherence: pod A writes; pod B's L1 miss resolves
   via L2 pull-through into pod B's L1. when pod A deletes, pod B's
@@ -191,27 +191,27 @@ class TestHeartbeatCollectionL1Only:
 
     @pytest.mark.asyncio
     async def test_fetch_from_postgres_raises(self) -> None:
-        """_fetch_from_postgres raises -- L3 is intentionally off."""
+        """fetch_from_postgres raises -- L3 is intentionally off."""
         nats = InMemoryNatsBus()
         collection, _ = _make_pod(nats)
         with pytest.raises(RuntimeError):
-            await collection._fetch_from_postgres("pod-x")
+            await collection.fetch_from_postgres("pod-x")
 
     @pytest.mark.asyncio
     async def test_save_to_postgres_raises(self) -> None:
-        """_save_to_postgres raises -- L3 is intentionally off."""
+        """save_to_postgres raises -- L3 is intentionally off."""
         nats = InMemoryNatsBus()
         collection, _ = _make_pod(nats)
         with pytest.raises(RuntimeError):
-            await collection._save_to_postgres({"pod_id": "pod-x"})
+            await collection.save_to_postgres({"pod_id": "pod-x"})
 
     @pytest.mark.asyncio
     async def test_delete_from_postgres_raises(self) -> None:
-        """_delete_from_postgres raises -- L3 is intentionally off."""
+        """delete_from_postgres raises -- L3 is intentionally off."""
         nats = InMemoryNatsBus()
         collection, _ = _make_pod(nats)
         with pytest.raises(RuntimeError):
-            await collection._delete_from_postgres("pod-x")
+            await collection.delete_from_postgres("pod-x")
 
 
 # ---------------------------------------------------------------------------

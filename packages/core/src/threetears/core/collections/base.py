@@ -145,8 +145,15 @@ class BaseCollection(ABC, Generic[EntityT]):
         return values
 
     @abstractmethod
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch row from L3 keyed by pk.
+
+        public extension point. subclasses override to emit their
+        own SELECT. framework invokes on L1+L2 miss via
+        :meth:`_pull_through` and on :meth:`reload_entity`. callers
+        that need a direct-to-L3 read without cache side-effects may
+        invoke this method from outside the collection; prefer
+        :meth:`ensure` or :meth:`get` for the normal three-tier path.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk). subclass implementations that hand-roll
@@ -160,8 +167,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         """persist row to L3.
+
+        public extension point. subclasses override to emit their
+        own INSERT ... ON CONFLICT DO UPDATE. framework invokes on
+        every non-deferred :meth:`save_entity` and from
+        :meth:`persist_to_postgres` during write-buffer flush.
 
         :param data: row data keyed by column name; pk columns named in
             :attr:`primary_key_columns` MUST be present
@@ -175,8 +187,11 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """delete row from L3 keyed by pk.
+
+        public extension point. subclasses override to emit their
+        own DELETE. framework invokes from :meth:`delete`.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk)
@@ -187,10 +202,35 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    def _serialize(self, data: dict[str, Any]) -> bytes: ...
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """encode row dict to bytes for the L2 (NATS KV) tier.
+
+        public extension point. subclasses override to apply their
+        JSON codec (typically :func:`threetears.core.serialization.serialize_to_json`)
+        plus any domain-specific pre-encoding.
+
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: serialized bytes ready for L2 write
+        :rtype: bytes
+        """
+        ...
 
     @abstractmethod
-    def _deserialize(self, data: bytes) -> dict[str, Any]: ...
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """decode bytes from the L2 tier back to a row dict.
+
+        public extension point. subclasses override to reverse
+        :meth:`serialize`, rehydrating typed fields (UUID, Decimal,
+        datetime) from their JSON representations.
+
+        :param data: serialized bytes previously produced by
+            :meth:`serialize`
+        :ptype data: bytes
+        :return: row dict keyed by column name
+        :rtype: dict[str, Any]
+        """
+        ...
 
     # --- L1 cache (sync, for BaseEntity) ---
     #
@@ -333,7 +373,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             raw = await self._nats_client.get(self._l2_bucket(), self._l2_key(entity_id))
             if raw is None:
                 return None
-            return self._deserialize(raw)
+            return self.deserialize(raw)
         except Exception as exc:
             log.warning(
                 "L2 cache read failed",
@@ -351,7 +391,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return False
         try:
-            return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self._serialize(data))  # type: ignore[no-any-return]
+            return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self.serialize(data))  # type: ignore[no-any-return]
         except Exception as exc:
             log.warning(
                 "L2 cache write failed",
@@ -403,7 +443,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
             return l2_data
-        pg_data = await self._fetch_from_postgres(entity_id)
+        pg_data = await self.fetch_from_postgres(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
@@ -506,7 +546,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
             try:
-                await self._save_to_postgres(data)
+                await self.save_to_postgres(data)
             except Exception as exc:
                 log.error(
                     "Background L3 write failed",
@@ -624,7 +664,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
         else:
-            rows_affected = await self._save_to_postgres(data, original_timestamp)
+            rows_affected = await self.save_to_postgres(data, original_timestamp)
             if rows_affected == 0:
                 if entity.is_new:
                     raise RuntimeError(f"INSERT failed for {self.table_name} entity {entity_id}: 0 rows affected")
@@ -642,7 +682,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     async def persist_to_postgres(self, data: dict[str, Any]) -> int:
         """Used by flush_pending."""
-        return await self._save_to_postgres(data)
+        return await self.save_to_postgres(data)
 
     @traced()
     async def reload_entity(self, entity: BaseEntity) -> None:
@@ -651,7 +691,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity_id = entity.id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        data = await self._fetch_from_postgres(entity_id)
+        data = await self.fetch_from_postgres(entity_id)
         if data is None:
             raise ValueError(f"Entity {entity_id} not found in storage")
         entity.set_data(data)
@@ -674,7 +714,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._set_span_table()
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        await self._delete_from_postgres(entity_id)
+        await self.delete_from_postgres(entity_id)
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)

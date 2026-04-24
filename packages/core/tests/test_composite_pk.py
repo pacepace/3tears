@@ -278,23 +278,23 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
     def entity_class(self) -> type[FakeRefEntity]:
         return FakeRefEntity
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         key = self._normalize_pk(entity_id)
         return self._pg_store.get(key)
 
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         key = (data["conversation_id"], data["item_id"])
         self._pg_store[key] = dict(data)
         return 1
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         key = self._normalize_pk(entity_id)
         self._pg_store.pop(key, None)
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         return json.loads(data)
 
 
@@ -364,21 +364,21 @@ class TestNormalizePk:
             def entity_class(self) -> type[BaseEntity]:
                 return BaseEntity
 
-            async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+            async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def _save_to_postgres(
+            async def save_to_postgres(
                 self, data: dict[str, Any], original_timestamp: datetime | None = None
             ) -> int:
                 return 1
 
-            async def _delete_from_postgres(self, entity_id: Any) -> None:
+            async def delete_from_postgres(self, entity_id: Any) -> None:
                 return None
 
-            def _serialize(self, data: dict[str, Any]) -> bytes:
+            def serialize(self, data: dict[str, Any]) -> bytes:
                 return b""
 
-            def _deserialize(self, data: bytes) -> dict[str, Any]:
+            def deserialize(self, data: bytes) -> dict[str, Any]:
                 return {}
 
         coll = SingleColl(composite_registry, always_cfg)
@@ -419,21 +419,21 @@ class TestL2Key:
             def entity_class(self) -> type[BaseEntity]:
                 return BaseEntity
 
-            async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+            async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def _save_to_postgres(
+            async def save_to_postgres(
                 self, data: dict[str, Any], original_timestamp: datetime | None = None
             ) -> int:
                 return 1
 
-            async def _delete_from_postgres(self, entity_id: Any) -> None:
+            async def delete_from_postgres(self, entity_id: Any) -> None:
                 return None
 
-            def _serialize(self, data: dict[str, Any]) -> bytes:
+            def serialize(self, data: dict[str, Any]) -> bytes:
                 return b""
 
-            def _deserialize(self, data: bytes) -> dict[str, Any]:
+            def deserialize(self, data: bytes) -> dict[str, Any]:
                 return {}
 
         coll = SingleColl(composite_registry, always_cfg)

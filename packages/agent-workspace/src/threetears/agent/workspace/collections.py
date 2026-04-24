@@ -232,7 +232,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         """
         return Workspace
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """
         reads workspace row by primary key.
 
@@ -248,7 +248,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         result: dict[str, Any] | None = None if row is None else dict(row)
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -290,7 +290,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         affected: int = int(result.split()[-1])
         return affected
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """
         removes workspace row by primary key; FK cascade drops children.
 
@@ -453,7 +453,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
             result = entity
         return result
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """
         encodes row dict to JSON bytes for L2 storage.
 
@@ -464,7 +464,7 @@ class WorkspaceCollection(BaseCollection[Workspace]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """
         decodes JSON bytes from L2 into typed row dict.
 
@@ -529,7 +529,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         """
         return WorkspaceFile
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """
         reads workspace_file head row by primary key.
 
@@ -545,7 +545,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         result: dict[str, Any] | None = None if row is None else dict(row)
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -583,7 +583,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         affected: int = int(result.split()[-1])
         return affected
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """
         removes workspace_file head row by primary key.
 
@@ -652,7 +652,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
             entities.append(entity)
         return entities
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """
         encodes row dict to JSON bytes for L2 storage with bytes base64-encoded.
 
@@ -663,7 +663,7 @@ class WorkspaceFileCollection(BaseCollection[WorkspaceFile]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """
         decodes JSON bytes from L2 into typed row dict.
 
@@ -731,7 +731,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         """
         return WorkspaceFileVersion
 
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
         """
         reads workspace_file_versions journal row by primary key.
 
@@ -747,7 +747,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         result: dict[str, Any] | None = None if row is None else dict(row)
         return result
 
-    async def _save_to_postgres(
+    async def save_to_postgres(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -790,7 +790,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         affected: int = int(result.split()[-1])
         return affected
 
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_postgres(self, entity_id: Any) -> None:
         """
         removes journal row by primary key; reserved for retention and tests.
 
@@ -871,7 +871,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
             entities.append(entity)
         return entities
 
-    def _serialize(self, data: dict[str, Any]) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         """
         encodes row dict to JSON bytes for L2 storage with bytes base64-encoded.
 
@@ -882,7 +882,7 @@ class WorkspaceFileVersionCollection(BaseCollection[WorkspaceFileVersion]):
         """
         return json.dumps(data, default=_json_serializer).encode("utf-8")
 
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
+    def deserialize(self, data: bytes) -> dict[str, Any]:
         """
         decodes JSON bytes from L2 into typed row dict.
 

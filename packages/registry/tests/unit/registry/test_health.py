@@ -526,21 +526,21 @@ class TestHeartbeatCollectionL1:
         """the L3 hop is unreachable and raises on direct invocation."""
         collection = _make_collection()
         with pytest.raises(RuntimeError):
-            await collection._fetch_from_postgres("pod-x")
+            await collection.fetch_from_postgres("pod-x")
 
     @pytest.mark.asyncio
     async def test_save_to_postgres_raises(self) -> None:
         """L3 write hop raises on direct invocation."""
         collection = _make_collection()
         with pytest.raises(RuntimeError):
-            await collection._save_to_postgres({"pod_id": "p"})
+            await collection.save_to_postgres({"pod_id": "p"})
 
     @pytest.mark.asyncio
     async def test_delete_from_postgres_raises(self) -> None:
         """L3 delete hop raises on direct invocation."""
         collection = _make_collection()
         with pytest.raises(RuntimeError):
-            await collection._delete_from_postgres("pod-x")
+            await collection.delete_from_postgres("pod-x")
 
     @pytest.mark.asyncio
     async def test_delete_removes_row_from_l1(self) -> None:
