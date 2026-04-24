@@ -574,6 +574,42 @@ class ToolServer:
         """
         return self._nc is not None
 
+    @property
+    def is_running(self) -> bool:
+        """return whether :meth:`serve` has started and not yet shut down.
+
+        flips ``True`` inside :meth:`serve` once the NATS connection is
+        attached and the heartbeat loop is about to start; flips back to
+        ``False`` at the top of :meth:`shutdown`. exposed as a public
+        read so health-probe callers and tests can observe the serve
+        loop's lifecycle without reaching into internal state.
+        independent of :attr:`is_connected`: a standalone server flips
+        both together, but the combined state is useful when debugging
+        a partial shutdown where one moves before the other.
+
+        :return: true while the serve loop is active
+        :rtype: bool
+        """
+        return self._running
+
+    @property
+    def owns_nats_connection(self) -> bool:
+        """return whether :meth:`shutdown` will close the NATS client.
+
+        ``True`` when the server was constructed with ``nats_url`` and
+        opened its own connection in :meth:`serve`; ``False`` when the
+        caller supplied a pre-connected ``nats_client`` whose lifecycle
+        belongs to them. callers coordinating shutdown ordering across
+        multiple NATS-using components (agent bootstrap sharing one
+        connection between tool server, graph handler, heartbeat) use
+        this property to decide whether they must close the connection
+        themselves after :meth:`shutdown` returns.
+
+        :return: true iff the server will close the NATS client on shutdown
+        :rtype: bool
+        """
+        return self._owns_nats_connection
+
     async def wait_ready(self, timeout: float | None = None) -> None:
         """block until serve() has subscribed to NATS and published registration.
 

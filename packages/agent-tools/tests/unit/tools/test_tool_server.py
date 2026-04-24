@@ -153,8 +153,8 @@ class TestToolServerRegister:
         server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
-        assert "test.stub@1.0" in server._tools
-        assert server._tools["test.stub@1.0"] is tool
+        assert "test.stub@1.0" in server.tool_names
+        assert server.tools_count == 1
 
     def test_register_multiple_tools(self) -> None:
         """register stores multiple distinct tools."""
@@ -163,18 +163,26 @@ class TestToolServerRegister:
         tool_b = StubTool(name="test.beta", version="2.0")
         server.register(tool_a)
         server.register(tool_b)
-        assert len(server._tools) == 2
-        assert "test.alpha@1.0" in server._tools
-        assert "test.beta@2.0" in server._tools
+        assert server.tools_count == 2
+        assert "test.alpha@1.0" in server.tool_names
+        assert "test.beta@2.0" in server.tool_names
 
     def test_register_same_key_overwrites(self) -> None:
-        """registering tool with same name@version overwrites previous."""
+        """registering tool with same name@version overwrites previous.
+
+        the ``name@version`` key stays at one registration (the later
+        ``register`` call wins) so ``tools_count`` remains 1 and
+        ``tool_names`` carries exactly one entry. dispatch semantics
+        (``tool_b`` replaces ``tool_a``) are covered in
+        :class:`TestToolServerHandleCall`.
+        """
         server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         tool_a = StubTool(name="test.stub", version="1.0")
         tool_b = StubTool(name="test.stub", version="1.0")
         server.register(tool_a)
         server.register(tool_b)
-        assert server._tools["test.stub@1.0"] is tool_b
+        assert server.tools_count == 1
+        assert server.tool_names == ("test.stub@1.0",)
 
 
 # -- serve tests --
@@ -499,7 +507,7 @@ class TestToolServerShutdown:
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
             await asyncio.sleep(0.05)
-            assert server._running is True
+            assert server.is_running is True
             await server.shutdown()
             await asyncio.sleep(0.05)
             serve_task.cancel()
@@ -508,7 +516,7 @@ class TestToolServerShutdown:
             except asyncio.CancelledError:
                 pass
 
-        assert server._running is False
+        assert server.is_running is False
         mock_nc.drain.assert_called_once()
         mock_nc.close.assert_called_once()
 
@@ -728,13 +736,17 @@ class TestToolServerProbe:
         await server.handle_probe(msg)
 
         # probe handler only responds; it must not flip the serve()-caller
-        # ready signal. the _ready_event attribute itself is constructed at
-        # __init__ as the signal that serve() has finished subscribing -- that
-        # is a separate concern from probe dispatch. readiness from the
-        # caller's perspective is established by polling the registry's
-        # discovery subject (see wait_until_ready).
+        # ready signal. readiness from the caller's perspective is
+        # established by serve() finishing subscription (observable via
+        # ``wait_ready`` / ``is_running``) and by polling the registry's
+        # discovery subject (see wait_until_ready). we assert here that
+        # a bare handle_probe call (no serve() yet) has not caused
+        # wait_ready to unblock -- the quickest observable check is that
+        # ``wait_ready`` still times out.
         msg.respond.assert_called_once()
-        assert not server._ready_event.is_set()
+        assert server.is_running is False
+        with pytest.raises(asyncio.TimeoutError):
+            await server.wait_ready(timeout=0.01)
 
     @pytest.mark.asyncio
     async def test_wait_until_ready_unblocks_when_discovery_reports_available(self) -> None:
@@ -765,13 +777,6 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
-            pod_id="wait-pod",
-            namespace_collection=None,
-        )
-        server.register(_FakeTool())
-
         discovery_reply = MagicMock()
         discovery_reply.data = json.dumps(
             {
@@ -784,7 +789,12 @@ class TestToolServerProbe:
 
         nc = MagicMock()
         nc.request = AsyncMock(return_value=discovery_reply)
-        server._nc = nc
+        server = ToolServer(
+            nats_client=nc,
+            pod_id="wait-pod",
+            namespace_collection=None,
+        )
+        server.register(_FakeTool())
 
         ready = await server.wait_until_ready(timeout=1.0)
         assert ready is True
@@ -819,13 +829,6 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        server = ToolServer(
-            nats_url="nats://localhost:9999",
-            pod_id="slow-pod",
-            namespace_collection=None,
-        )
-        server.register(_FakeTool())
-
         discovery_reply = MagicMock()
         discovery_reply.data = json.dumps(
             {
@@ -838,7 +841,12 @@ class TestToolServerProbe:
 
         nc = MagicMock()
         nc.request = AsyncMock(return_value=discovery_reply)
-        server._nc = nc
+        server = ToolServer(
+            nats_client=nc,
+            pod_id="slow-pod",
+            namespace_collection=None,
+        )
+        server.register(_FakeTool())
 
         ready = await server.wait_until_ready(timeout=0.05)
         assert ready is False
@@ -909,8 +917,7 @@ class TestIsConnectedProperty:
         assert server.is_connected is False
 
     def test_is_connected_true_when_nc_set(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
-        server._nc = MagicMock()
+        server = ToolServer(nats_client=MagicMock(), namespace_collection=None)
         assert server.is_connected is True
 
 
@@ -925,15 +932,14 @@ class TestPublishRegistrationPublicMethod:
 
     @pytest.mark.asyncio
     async def test_publish_registration_publishes_on_configured_subject(self) -> None:
+        nc = AsyncMock()
         server = ToolServer(
-            nats_url="nats://localhost:4222",
+            nats_client=nc,
             namespace="testns",
             pod_id="pod-7",
             namespace_collection=None,
         )
         server.register(StubTool(name="alpha", version="1.0"))
-        nc = AsyncMock()
-        server._nc = nc
         await server.publish_registration()
         nc.publish.assert_awaited_once()
         subject, payload = nc.publish.await_args.args
@@ -951,26 +957,24 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_register_tool_adds_and_publishes(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         nc = AsyncMock()
-        server._nc = nc
+        server = ToolServer(nats_client=nc, namespace_collection=None)
         await server.register_tool(StubTool(name="x", version="1.0"))
         assert server.tools_count == 1
         nc.publish.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_register_tool_skips_publish_when_not_connected(self) -> None:
+        # no nats_client injected: pre-serve() registration path
         server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
-        # no _nc: pre-serve() registration path
         await server.register_tool(StubTool(name="x", version="1.0"))
         assert server.tools_count == 1  # tool still registered
 
     @pytest.mark.asyncio
     async def test_deregister_tool_removes_and_publishes(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
-        server.register(StubTool(name="x", version="1.0"))
         nc = AsyncMock()
-        server._nc = nc
+        server = ToolServer(nats_client=nc, namespace_collection=None)
+        server.register(StubTool(name="x", version="1.0"))
         removed = await server.deregister_tool("x")
         assert removed is True
         assert server.tools_count == 0
@@ -978,9 +982,8 @@ class TestRegisterToolDeregisterTool:
 
     @pytest.mark.asyncio
     async def test_deregister_tool_returns_false_when_missing(self) -> None:
-        server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
         nc = AsyncMock()
-        server._nc = nc
+        server = ToolServer(nats_client=nc, namespace_collection=None)
         removed = await server.deregister_tool("never-registered")
         assert removed is False
         nc.publish.assert_not_awaited()
@@ -1007,21 +1010,38 @@ class TestToolServerInjectedNatsClient:
     def test_constructor_with_injected_client_records_non_ownership(
         self,
     ) -> None:
-        """supplying ``nats_client`` flips the ownership flag."""
+        """supplying ``nats_client`` flips the ownership flag.
+
+        the injected client is already live from the caller's
+        perspective, so ``is_connected`` is ``True`` at construction
+        time and ``owns_nats_connection`` is ``False`` (shutdown will
+        not close it).
+        """
         nc = AsyncMock()
         server = ToolServer(nats_client=nc, namespace_collection=None)
-        assert server._nc is nc
-        assert server._owns_nats_connection is False
+        assert server.is_connected is True
+        assert server.owns_nats_connection is False
 
     def test_constructor_with_url_records_ownership(self) -> None:
-        """supplying only ``nats_url`` means the server owns the connection."""
+        """supplying only ``nats_url`` means the server owns the connection.
+
+        ``is_connected`` stays ``False`` until :meth:`serve` opens the
+        connection; ``owns_nats_connection`` is ``True`` so shutdown
+        will drain + close it.
+        """
         server = ToolServer(nats_url="nats://localhost:4222", namespace_collection=None)
-        assert server._nc is None
-        assert server._owns_nats_connection is True
+        assert server.is_connected is False
+        assert server.owns_nats_connection is True
 
     @pytest.mark.asyncio
     async def test_serve_skips_connect_when_client_injected(self) -> None:
-        """``serve()`` reuses the injected client rather than opening a new one."""
+        """``serve()`` reuses the injected client rather than opening a new one.
+
+        identity of the injected client is observed behaviorally: the
+        mock's ``subscribe`` + ``publish`` receive the calls that serve
+        would otherwise dispatch to a freshly-opened client, and
+        ``nats_connect`` is never awaited.
+        """
         nc = AsyncMock()
         server = ToolServer(
             nats_client=nc,
@@ -1035,12 +1055,14 @@ class TestToolServerInjectedNatsClient:
             serve_task = asyncio.create_task(server.serve())
             await asyncio.sleep(0)
             try:
-                await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+                await server.wait_ready(timeout=1.0)
             finally:
                 await server.shutdown()
                 await asyncio.wait_for(serve_task, timeout=1.0)
         connect_mock.assert_not_awaited()
-        assert server._nc is nc
+        assert server.is_connected is True
+        assert server.owns_nats_connection is False
+        nc.subscribe.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_shutdown_does_not_close_injected_client(self) -> None:
@@ -1053,7 +1075,7 @@ class TestToolServerInjectedNatsClient:
         )
         serve_task = asyncio.create_task(server.serve())
         await asyncio.sleep(0)
-        await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+        await server.wait_ready(timeout=1.0)
         await server.shutdown()
         await asyncio.wait_for(serve_task, timeout=1.0)
         nc.drain.assert_not_awaited()
@@ -1074,7 +1096,7 @@ class TestToolServerInjectedNatsClient:
         ):
             serve_task = asyncio.create_task(server.serve())
             await asyncio.sleep(0)
-            await asyncio.wait_for(server._ready_event.wait(), timeout=1.0)
+            await server.wait_ready(timeout=1.0)
             await server.shutdown()
             await asyncio.wait_for(serve_task, timeout=1.0)
         nc.drain.assert_awaited_once()
