@@ -9,6 +9,12 @@ __version__ = "0.5.0"
 from threetears.langgraph.builders import build_chat_agent, build_tool_agent
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
 from threetears.langgraph.context_registry import ContextManagerRegistry, current_conversation_id
+from threetears.langgraph.hooks import (
+    AgentNodeHook,
+    ToolNodeHook,
+    compose_agent_node_hooks,
+    compose_tool_node_hooks,
+)
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
 from threetears.langgraph.protocols import (
     AsyncpgPoolAdapter,
@@ -20,6 +26,7 @@ from threetears.langgraph.protocols import (
 from threetears.langgraph.serde import UUIDSafeSerializer
 
 __all__ = [
+    "AgentNodeHook",
     "AsyncQueryExecutor",
     "AsyncpgPoolAdapter",
     "CheckpointL1Cache",
@@ -27,10 +34,13 @@ __all__ = [
     "ContextManagerRegistry",
     "FlushCallback",
     "ThreeTierCheckpointSaver",
+    "ToolNodeHook",
     "UUIDSafeSerializer",
     "agent_node",
     "build_chat_agent",
     "build_tool_agent",
+    "compose_agent_node_hooks",
+    "compose_tool_node_hooks",
     "current_conversation_id",
     "has_tool_calls",
     "tool_node",
