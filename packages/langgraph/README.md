@@ -27,3 +27,24 @@ saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
 
 graph = builder.compile(checkpointer=saver)
 ```
+
+## Prompt caching
+
+The package ships `PromptCachingHook`, an `AgentNodeHook` implementation that rewrites the system prompt with Anthropic `cache_control={"type": "ephemeral"}` annotations and memoizes tool binding across turns. Non-Anthropic adapters degrade silently to bare-string system messages.
+
+```python
+from threetears.langgraph import PromptCachingHook, agent_node
+
+config = {
+    "configurable": {
+        "chat_model": chat_anthropic,
+        "system_prompt": long_prompt,
+        "_hooks": {"agent": [PromptCachingHook()]},
+    },
+}
+result = await agent_node(state, config)
+usage = result["messages"][0].usage_metadata["cache_usage"]
+# {"cache_read_input_tokens": ..., "cache_creation_input_tokens": ..., "cached_tokens": ...}
+```
+
+See [`3tears/docs/prompt-caching.md`](../../docs/prompt-caching.md) for the full contract, summarization interaction, downstream wiring checklist, and a worked example.
