@@ -135,7 +135,7 @@ class HeartbeatSubscriber:
         self._nc = nc
         self._running = True
         subject = f"{self._namespace}.tools.heartbeat.>"
-        self._sub = await nc.subscribe(subject, cb=self._handle_heartbeat)
+        self._sub = await nc.subscribe(subject, cb=self.handle_heartbeat)
         self._check_task = asyncio.create_task(self._health_check_loop())
         log.info(
             "heartbeat subscriber started",
@@ -172,8 +172,14 @@ class HeartbeatSubscriber:
             self._sub = None
         log.info("heartbeat subscriber stopped")
 
-    async def _handle_heartbeat(self, msg: Any) -> None:
-        """handle incoming heartbeat message from a tool pod.
+    async def handle_heartbeat(self, msg: Any) -> None:
+        """public NATS-subject handler for incoming heartbeat from a tool pod.
+
+        bound by :meth:`start` as the ``cb`` callback on
+        ``{namespace}.tools.heartbeat.>`` so every heartbeat-publishing
+        tool pod's message arrives here. tests exercise this surface
+        directly; the name, the single ``msg`` parameter, and the lack
+        of return value are part of the stability contract.
 
         updates the pod's state in the Collection (creating it if
         this is the pod's first heartbeat), marks every endpoint for

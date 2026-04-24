@@ -449,7 +449,7 @@ class ToolServer:
         :ptype nats_client: NatsClient | None
         :param agent_id: owning-agent UUID for this pod. stamped on
             the ``owner_agent_id`` axis of every baseline ``tool.call``
-            audit envelope emitted from :meth:`_handle_call` and on
+            audit envelope emitted from :meth:`handle_call` and on
             every tool namespace row emitted from
             :meth:`register_tool`. ``None`` in platform-spun ToolServers
             (platform built-in tool pods have no owning agent); each
@@ -678,14 +678,14 @@ class ToolServer:
         self._running = True
 
         call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
-        await self._nc.subscribe(call_subject, cb=self._handle_call)
+        await self._nc.subscribe(call_subject, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
             extra={"extra_data": {"subject": call_subject}},
         )
 
         probe_subject = f"{self._namespace}.tools.probe.{self._pod_id}"
-        await self._nc.subscribe(probe_subject, cb=self._handle_probe)
+        await self._nc.subscribe(probe_subject, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",
             extra={"extra_data": {"subject": probe_subject}},
@@ -699,8 +699,13 @@ class ToolServer:
 
         await self._shutdown_event.wait()
 
-    async def _handle_probe(self, msg: NatsMsg) -> None:
-        """respond to reachability probe from registry.
+    async def handle_probe(self, msg: NatsMsg) -> None:
+        """public NATS-subject handler replying to reachability probes.
+
+        bound by :meth:`serve` as the ``cb`` callback on
+        ``{namespace}.tools.probe.{pod_id}``. tests exercise this
+        surface directly; the name + single-``msg`` shape are part of
+        the stability contract.
 
         replies with a ProbeAck carrying pod_id and ready=True so the
         registry can promote this pod's pending endpoints to available.
@@ -1039,8 +1044,13 @@ class ToolServer:
         )
 
     @traced(record_args=True)
-    async def _handle_call(self, msg: NatsMsg) -> None:
-        """handle incoming tool call request.
+    async def handle_call(self, msg: NatsMsg) -> None:
+        """public NATS-subject handler for incoming tool call request.
+
+        bound by :meth:`serve` as the ``cb`` callback on
+        ``{namespace}.tools.internal.{pod_id}``. tests exercise this
+        surface directly; the name + single-``msg`` shape are part of
+        the stability contract.
 
         parses call request, dispatches to matching tool, and sends
         response back via NATS reply. the inbound :class:`CallContext`
@@ -1295,7 +1305,7 @@ class ToolServer:
         resulting scope carries ``context_manager=None`` and any tool
         that requires it raises at first use.
 
-        factory exceptions propagate to :meth:`_handle_call`'s except
+        factory exceptions propagate to :meth:`handle_call`'s except
         block so the call is surfaced as a failed tool result rather
         than a silent no-context handoff.
 

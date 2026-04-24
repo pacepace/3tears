@@ -7,7 +7,7 @@ audit-task-01 Phase 3: workspace tools now publish unified
 unified helper is ``{namespace}.audit.{event_type}`` verbatim, so e.g.
 ``workspace.doc_set`` rides on ``{namespace}.audit.workspace.doc_set``.
 each tool emission is **additive** on top of the baseline
-``tool.call`` envelope that :class:`ToolServer._handle_call` emits;
+``tool.call`` envelope that :class:`ToolServer.handle_call` emits;
 the baseline is exercised in the agent-tools test suite.
 
 the mainline tests for each tool live in their own ``test_*.py`` module

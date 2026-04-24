@@ -299,15 +299,15 @@ class TestToolServerServe:
         assert "testns.tools.internal.test-pod-3" in subjects
 
 
-# -- _handle_call tests --
+# -- handle_call tests --
 
 
 class TestToolServerHandleCall:
-    """tests for ToolServer._handle_call method."""
+    """tests for ToolServer.handle_call method."""
 
     @pytest.mark.asyncio
     async def test_handle_call_routes_to_correct_tool(self) -> None:
-        """_handle_call dispatches to tool matching name@version.
+        """handle_call dispatches to tool matching name@version.
 
         correlation_id rides on ``context.correlation_id`` (UUID) per
         context-task-01; the server echoes the whole
@@ -328,7 +328,7 @@ class TestToolServerHandleCall:
             }
         )
 
-        await server._handle_call(msg)
+        await server.handle_call(msg)
 
         msg.respond.assert_called_once()
         response_data = json.loads(msg.respond.call_args[0][0])
@@ -340,7 +340,7 @@ class TestToolServerHandleCall:
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_tool_result_on_success(self) -> None:
-        """_handle_call returns serialized ToolResult with success=True."""
+        """handle_call returns serialized ToolResult with success=True."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
@@ -354,7 +354,7 @@ class TestToolServerHandleCall:
             }
         )
 
-        await server._handle_call(msg)
+        await server.handle_call(msg)
 
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is True
@@ -362,7 +362,7 @@ class TestToolServerHandleCall:
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_unknown_tool(self) -> None:
-        """_handle_call returns error response for unregistered tool."""
+        """handle_call returns error response for unregistered tool."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
         correlation_id = uuid4()
@@ -375,7 +375,7 @@ class TestToolServerHandleCall:
             }
         )
 
-        await server._handle_call(msg)
+        await server.handle_call(msg)
 
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is False
@@ -384,7 +384,7 @@ class TestToolServerHandleCall:
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_execution_failure(self) -> None:
-        """_handle_call returns error response when tool raises exception."""
+        """handle_call returns error response when tool raises exception."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
         tool = FailingTool()
         server.register(tool)
@@ -399,7 +399,7 @@ class TestToolServerHandleCall:
             }
         )
 
-        await server._handle_call(msg)
+        await server.handle_call(msg)
 
         response_data = json.loads(msg.respond.call_args[0][0])
         assert response_data["success"] is False
@@ -408,14 +408,14 @@ class TestToolServerHandleCall:
 
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_malformed_request(self) -> None:
-        """_handle_call returns error response for invalid JSON payload."""
+        """handle_call returns error response for invalid JSON payload."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
         msg = MagicMock()
         msg.data = b"not valid json"
         msg.respond = AsyncMock()
 
-        await server._handle_call(msg)
+        await server.handle_call(msg)
 
         msg.respond.assert_called_once()
         response_data = json.loads(msg.respond.call_args[0][0])
@@ -694,7 +694,7 @@ class TestToolServerProbe:
 
     @pytest.mark.asyncio
     async def test_handle_probe_responds_with_ack(self) -> None:
-        """_handle_probe replies with ProbeAck carrying pod_id and ready=True."""
+        """handle_probe replies with ProbeAck carrying pod_id and ready=True."""
         server = ToolServer(
             nats_url="nats://localhost:9999",
             pod_id="ack-pod",
@@ -705,7 +705,7 @@ class TestToolServerProbe:
         msg.data = b'{"pod_id": "ack-pod"}'
         msg.respond = AsyncMock()
 
-        await server._handle_probe(msg)
+        await server.handle_probe(msg)
 
         msg.respond.assert_called_once()
         payload = json.loads(msg.respond.call_args[0][0])
@@ -714,7 +714,7 @@ class TestToolServerProbe:
 
     @pytest.mark.asyncio
     async def test_handle_probe_does_not_mutate_server_state(self) -> None:
-        """_handle_probe is a pure responder -- readiness is driven by discovery."""
+        """handle_probe is a pure responder -- readiness is driven by discovery."""
         server = ToolServer(
             nats_url="nats://localhost:9999",
             pod_id="ready-pod",
@@ -725,7 +725,7 @@ class TestToolServerProbe:
         msg.data = b'{"pod_id": "ready-pod"}'
         msg.respond = AsyncMock()
 
-        await server._handle_probe(msg)
+        await server.handle_probe(msg)
 
         # probe handler only responds; it must not flip the serve()-caller
         # ready signal. the _ready_event attribute itself is constructed at

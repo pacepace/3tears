@@ -108,7 +108,7 @@ class TestDiscoveryAvailable:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -148,7 +148,7 @@ class TestDiscoveryUnavailable:
             tools=[{"name": "threetears.nonexistent", "version": "1.0.0"}],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -172,7 +172,7 @@ class TestDiscoveryUnavailable:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -209,7 +209,7 @@ class TestDiscoveryMixed:
             ],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -238,7 +238,7 @@ class TestDiscoveryEmpty:
 
         request = _make_discover_request(tools=[])
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -276,7 +276,7 @@ class TestDiscoveryMultiEndpoint:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -309,7 +309,7 @@ class TestDiscoveryMultiEndpoint:
 
         request = _make_discover_request(tools=[])
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])

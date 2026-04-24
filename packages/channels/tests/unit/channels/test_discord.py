@@ -420,7 +420,7 @@ class TestDiscordAdapterBotFiltering:
         )
 
         message = _make_mock_message(author=mock_client_user)
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
         assert router.last_message is None
 
     @patch("threetears.channels.discord.discord")
@@ -441,7 +441,7 @@ class TestDiscordAdapterBotFiltering:
 
         bot_author = _make_mock_author(author_id=888, bot=True)
         message = _make_mock_message(author=bot_author)
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
         assert router.last_message is None
 
     @patch("threetears.channels.discord.discord")
@@ -466,7 +466,7 @@ class TestDiscordAdapterBotFiltering:
         mock_thread.send = AsyncMock()
         message = _make_mock_message(author=human_author, channel=channel)
         message.create_thread.return_value = mock_thread
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
         assert router.last_message is not None
 
 
@@ -510,7 +510,7 @@ class TestDiscordAdapterInboundNormalization:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -544,7 +544,7 @@ class TestDiscordAdapterInboundNormalization:
             content="dm message",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -572,7 +572,7 @@ class TestDiscordAdapterInboundNormalization:
             content="in thread",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -600,7 +600,7 @@ class TestDiscordAdapterInboundNormalization:
         message = _make_mock_message(channel=channel, content="top level")
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -640,7 +640,7 @@ class TestDiscordAdapterInboundNormalization:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -679,7 +679,7 @@ class TestDiscordAdapterInboundNormalization:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -711,7 +711,7 @@ class TestDiscordAdapterInboundNormalization:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -743,7 +743,7 @@ class TestDiscordAdapterInboundNormalization:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -772,7 +772,7 @@ class TestDiscordAdapterInboundNormalization:
         mock_thread.send = AsyncMock()
         message = _make_mock_message(content="hello", channel=channel)
         message.create_thread.return_value = mock_thread
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -811,7 +811,7 @@ class TestDiscordAdapterThreading:
             content="dm message",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         dm_channel.send.assert_awaited()
         message.create_thread.assert_not_awaited()
@@ -838,7 +838,7 @@ class TestDiscordAdapterThreading:
             content="in thread",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         thread_channel.send.assert_awaited()
         message.create_thread.assert_not_awaited()
@@ -869,7 +869,7 @@ class TestDiscordAdapterThreading:
         )
         message.create_thread.return_value = mock_thread
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         message.create_thread.assert_awaited_once()
         mock_thread.send.assert_awaited()
@@ -904,7 +904,7 @@ class TestDiscordAdapterResponseRouting:
         mock_thread.send = AsyncMock()
         message = _make_mock_message(content="specific content", channel=channel)
         message.create_thread.return_value = mock_thread
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         msg = router.last_message
         assert msg is not None
@@ -930,7 +930,7 @@ class TestDiscordAdapterResponseRouting:
 
         channel = _make_mock_channel()
         message = _make_mock_message(channel=channel, content="ignored")
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         channel.send.assert_not_awaited()
         message.create_thread.assert_not_awaited()
@@ -959,7 +959,7 @@ class TestDiscordAdapterResponseRouting:
             content="give me long text",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         send_calls = dm_channel.send.await_args_list
         assert len(send_calls) == 3
@@ -1000,7 +1000,7 @@ class TestDiscordAdapterResponseRouting:
             content="get data",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         mock_discord.File.assert_called_once()
         call_kwargs = mock_discord.File.call_args
@@ -1123,7 +1123,7 @@ class TestDiscordAdapterRichFormatting:
             content="give me results",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         # embed should have been created
         mock_embed_cls.assert_called_once()
@@ -1159,7 +1159,7 @@ class TestDiscordAdapterRichFormatting:
             content="hello",
         )
 
-        await adapter._handle_message(message)
+        await adapter.handle_message(message)
 
         dm_channel.send.assert_awaited()
         send_kwargs = dm_channel.send.await_args.kwargs

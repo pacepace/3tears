@@ -152,7 +152,7 @@ class TestRegistrationHandlerValidation:
         await handler.start(nc)
 
         msg = _make_nats_msg(data=b"not json")
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -169,7 +169,7 @@ class TestRegistrationHandlerValidation:
 
         manifest = _make_manifest(pod_id="")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -188,7 +188,7 @@ class TestRegistrationHandlerValidation:
         msg = _make_nats_msg(
             data=manifest.model_dump_json().encode("utf-8"),
         )
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -215,7 +215,7 @@ class TestRegistrationHandlerMultiPod:
 
         manifest = _make_manifest(pod_id="pod-NEW")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -235,7 +235,7 @@ class TestRegistrationHandlerMultiPod:
 
         manifest = _make_manifest(pod_id="pod-001")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -252,11 +252,11 @@ class TestRegistrationHandlerMultiPod:
 
         manifest_a = _make_manifest(pod_id="pod-A")
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_a)
+        await handler.handle_registration(msg_a)
 
         manifest_b = _make_manifest(pod_id="pod-B")
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_b)
+        await handler.handle_registration(msg_b)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -281,7 +281,7 @@ class TestRegistrationHandlerSuccess:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -321,7 +321,7 @@ class TestRegistrationHandlerSuccess:
             ],
         )
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         response_data = json.loads(nc.publish.call_args[0][1])
         assert response_data["success"] is True
@@ -342,7 +342,7 @@ class TestRegistrationHandlerSuccess:
             data=manifest.model_dump_json().encode("utf-8"),
             reply=None,
         )
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.publish.assert_not_called()
         assert catalog.get("threetears.calculator@1.0.0") is not None

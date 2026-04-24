@@ -138,7 +138,7 @@ class TestHeartbeatSubscriberHandling:
         await subscriber.start(nc)
 
         msg = _make_heartbeat_msg(pod_id="pod-new")
-        await subscriber._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         assert "pod-new" in subscriber.known_pod_ids
         entity = await collection.get("pod-new")
@@ -157,13 +157,13 @@ class TestHeartbeatSubscriberHandling:
         await subscriber.start(nc)
 
         msg1 = _make_heartbeat_msg(pod_id="pod-001")
-        await subscriber._handle_heartbeat(msg1)
+        await subscriber.handle_heartbeat(msg1)
         first_entity = await collection.get("pod-001")
         assert first_entity is not None
         first_hb = first_entity.date_last_heartbeat
 
         msg2 = _make_heartbeat_msg(pod_id="pod-001")
-        await subscriber._handle_heartbeat(msg2)
+        await subscriber.handle_heartbeat(msg2)
         second_entity = await collection.get("pod-001")
         assert second_entity is not None
         second_hb = second_entity.date_last_heartbeat
@@ -195,7 +195,7 @@ class TestHeartbeatSubscriberHandling:
         subscriber._known_pod_ids.add("pod-001")
 
         msg = _make_heartbeat_msg(pod_id="pod-001")
-        await subscriber._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         reloaded = await collection.get("pod-001")
         assert reloaded is not None
@@ -214,7 +214,7 @@ class TestHeartbeatSubscriberHandling:
 
         msg = MagicMock()
         msg.data = b"not json"
-        await subscriber._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         assert subscriber.known_pod_ids == set()
         await subscriber.stop()
@@ -241,7 +241,7 @@ class TestHeartbeatSubscriberHandling:
         await subscriber.start(nc)
 
         msg = _make_heartbeat_msg(pod_id="pod-001")
-        await subscriber._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         registered = catalog.get("threetears.calculator@1.0.0")
         assert registered is not None

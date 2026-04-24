@@ -144,7 +144,7 @@ class DiscoveryHandler:
         self._sub = await nc.subscribe(
             subject,
             queue="registry",
-            cb=self._handle_discover,
+            cb=self.handle_discover,
         )
         _logger.info(
             "discovery handler started",
@@ -158,8 +158,13 @@ class DiscoveryHandler:
             self._sub = None
         _logger.info("discovery handler stopped")
 
-    async def _handle_discover(self, msg: Any) -> None:
-        """handle incoming discovery request.
+    async def handle_discover(self, msg: Any) -> None:
+        """public NATS-subject handler for tool-manifest discovery.
+
+        bound by :meth:`start` as the ``cb`` callback on
+        ``{namespace}.tools.discover``. tests exercise this surface
+        directly; the name + single-``msg`` shape are part of the
+        stability contract.
 
         parses request, resolves each pinned tool against catalog,
         and replies with full schemas for available tools or
@@ -170,7 +175,7 @@ class DiscoveryHandler:
         :raises RuntimeError: when invoked before ``start`` connects NATS
         """
         if self._nc is None:
-            raise RuntimeError("_handle_discover invoked before NATS connected")
+            raise RuntimeError("handle_discover invoked before NATS connected")
         try:
             request = DiscoverRequest.model_validate_json(msg.data)
         except Exception as exc:

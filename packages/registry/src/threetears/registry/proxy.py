@@ -203,7 +203,7 @@ class CallProxy:
         self._sub = await nc.subscribe(
             subject,
             queue="registry",
-            cb=self._handle_call,
+            cb=self.handle_call,
         )
         log.info(
             "call proxy started",
@@ -224,8 +224,13 @@ class CallProxy:
             self._active_tasks.clear()
         log.info("call proxy stopped")
 
-    async def _handle_call(self, msg: Any) -> None:
-        """dispatch incoming tool call to background task.
+    async def handle_call(self, msg: Any) -> None:
+        """public NATS-subject handler that dispatches a tool call.
+
+        bound by :meth:`start` as the ``cb`` callback on
+        ``{namespace}.tools.call``. tests exercise this surface
+        directly; the name + single-``msg`` shape are part of the
+        stability contract.
 
         spawns _process_call as concurrent task so the NATS
         subscription callback returns immediately, allowing

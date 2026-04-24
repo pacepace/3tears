@@ -274,7 +274,7 @@ class TestMultiPodRegistration:
 
         manifest_a = _make_manifest(pod_id="pod-A")
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_a)
+        await handler.handle_registration(msg_a)
 
         response_a = json.loads(nc.publish.call_args[0][1])
         assert response_a["success"] is True
@@ -283,7 +283,7 @@ class TestMultiPodRegistration:
 
         manifest_b = _make_manifest(pod_id="pod-B")
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_b)
+        await handler.handle_registration(msg_b)
 
         response_b = json.loads(nc.publish.call_args[0][1])
         assert response_b["success"] is True
@@ -306,7 +306,7 @@ class TestMultiPodRegistration:
         for pod_id in ("pod-A", "pod-B", "pod-C"):
             manifest = _make_manifest(pod_id=pod_id)
             msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-            await handler._handle_registration(msg)
+            await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -325,7 +325,7 @@ class TestMultiPodRegistration:
 
         manifest = _make_manifest(pod_id="pod-A")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -336,7 +336,7 @@ class TestMultiPodRegistration:
 
         manifest_again = _make_manifest(pod_id="pod-A")
         msg_again = _make_nats_msg(data=manifest_again.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_again)
+        await handler.handle_registration(msg_again)
 
         response = json.loads(nc.publish.call_args[0][1])
         assert response["success"] is True
@@ -391,7 +391,7 @@ class TestMultiPodRouting:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
 
         registered_entry = catalog.get("threetears.calculator@1.0.0")
         assert registered_entry is not None
@@ -413,7 +413,7 @@ class TestMultiPodRouting:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
 
         registered_entry = catalog.get("threetears.calculator@1.0.0")
         assert registered_entry is not None
@@ -547,7 +547,7 @@ class TestMultiPodDiscovery:
             ],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -580,7 +580,7 @@ class TestMultiPodDiscovery:
             ],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
         nc.publish.assert_called_once()
         response_data = json.loads(nc.publish.call_args[0][1])

@@ -181,7 +181,7 @@ class TestCallProxySuccess:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -204,7 +204,7 @@ class TestCallProxySuccess:
         original_args = {"expression": "2+2", "precision": 4, "debug": True}
         request = _make_call_request(arguments=original_args)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -230,7 +230,7 @@ class TestCallProxySuccess:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         publish_calls = nc.publish.call_args_list
@@ -264,7 +264,7 @@ class TestCallProxySuccess:
 
         request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         forwarded_payload = json.loads(nc.request.call_args[0][1])
@@ -298,7 +298,7 @@ class TestCallProxyUnavailable:
             tool_version="1.0.0",
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
@@ -320,7 +320,7 @@ class TestCallProxyUnavailable:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
@@ -341,7 +341,7 @@ class TestCallProxyUnavailable:
             tool_version="1.0.0",
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_not_called()
@@ -367,7 +367,7 @@ class TestCallProxyTimeout:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
@@ -395,7 +395,7 @@ class TestCallProxyTimeout:
 
         request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -439,7 +439,7 @@ class TestCallProxyTimeout:
             tool_version="1.0",
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -473,7 +473,7 @@ class TestCallProxyTimeout:
             tool_version="1.0",
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -515,7 +515,7 @@ class TestCallProxyTimeout:
             arguments={"seconds": 100},
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -565,7 +565,7 @@ class TestCallProxyInFlightTracking:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         assert captured_in_flight == [1]
@@ -588,7 +588,7 @@ class TestCallProxyInFlightTracking:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         assert endpoint.in_flight == 0
@@ -624,7 +624,7 @@ class TestCallProxyRouting:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -662,7 +662,7 @@ class TestCallProxyRouting:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         strategy.select.assert_called_once_with(entry.endpoints)

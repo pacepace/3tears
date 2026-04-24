@@ -128,7 +128,7 @@ class TestCallProxyRefusesPendingEndpoints:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.publish.assert_called_once()
@@ -150,7 +150,7 @@ class TestCallProxyRefusesPendingEndpoints:
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_not_called()
@@ -170,7 +170,7 @@ class TestCallProxyRefusesPendingEndpoints:
 
         request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         response_data = json.loads(nc.publish.call_args[0][1])
@@ -214,7 +214,7 @@ class TestCallProxyRefusesPendingEndpoints:
 
         request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
         nc.request.assert_called_once()
@@ -253,7 +253,7 @@ class TestCallProxyRefusesPendingEndpoints:
         msg_pending = _make_nats_msg(
             data=req_pending.model_dump_json().encode("utf-8"),
         )
-        await proxy._handle_call(msg_pending)
+        await proxy.handle_call(msg_pending)
         await asyncio.sleep(0)
         resp_pending = json.loads(nc.publish.call_args_list[-1][0][1])
         assert resp_pending["error_code"] == "TOOL_NOT_READY"
@@ -266,7 +266,7 @@ class TestCallProxyRefusesPendingEndpoints:
         msg_unavail = _make_nats_msg(
             data=req_unavail.model_dump_json().encode("utf-8"),
         )
-        await proxy._handle_call(msg_unavail)
+        await proxy.handle_call(msg_unavail)
         await asyncio.sleep(0)
         resp_unavail = json.loads(nc.publish.call_args_list[-1][0][1])
         assert resp_unavail["error_code"] == "TOOL_UNAVAILABLE"

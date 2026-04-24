@@ -93,7 +93,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -120,7 +120,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -137,7 +137,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -159,7 +159,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -183,7 +183,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -200,7 +200,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest(pod_id="pod-subject-check")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.request.assert_called_once()
         call_args = nc.request.call_args
@@ -217,7 +217,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest(pod_id="pod-payload-001")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         call_args = nc.request.call_args
         payload_bytes = call_args[0][1]
@@ -235,7 +235,7 @@ class TestRegistrationBarrierStateMachine:
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         call_args = nc.request.call_args
         assert call_args[1]["timeout"] == 2.5
@@ -276,7 +276,7 @@ class TestRegistrationBarrierMultipleTools:
             ],
         )
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         calc_entry = catalog.get("threetears.calculator@1.0.0")
         dict_entry = catalog.get("threetears.dictionary@1.0.0")
@@ -297,7 +297,7 @@ class TestRegistrationBarrierMultipleTools:
         await handler.start(nc_a)
         manifest_a = _make_manifest(pod_id="pod-A")
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_a)
+        await handler.handle_registration(msg_a)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -313,7 +313,7 @@ class TestRegistrationBarrierMultipleTools:
         await handler.start(nc_b)
         manifest_b = _make_manifest(pod_id="pod-B")
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_b)
+        await handler.handle_registration(msg_b)
 
         entry_after = catalog.get("threetears.calculator@1.0.0")
         assert entry_after is not None

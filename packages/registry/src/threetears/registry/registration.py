@@ -30,6 +30,12 @@ __all__ = [
     "RegistrationResponse",
 ]
 
+# NOTE: ``RegistrationHandler.handle_registration`` is a public method on the
+# class; classes exported through ``__all__`` publish their public methods
+# automatically. the rename from ``_handle_registration`` to ``handle_registration``
+# codifies the existing stability contract: tests drive this handler directly,
+# subclass authors may override it, so the leading underscore was wrong.
+
 log = get_logger(__name__)
 
 
@@ -121,7 +127,7 @@ class RegistrationHandler:
         """
         self._nc = nc
         subject = f"{self._namespace}.tools.register"
-        self._sub = await nc.subscribe(subject, cb=self._handle_registration)
+        self._sub = await nc.subscribe(subject, cb=self.handle_registration)
         log.info(
             "registration handler started",
             extra={"extra_data": {"subject": subject}},
@@ -134,8 +140,16 @@ class RegistrationHandler:
             self._sub = None
         log.info("registration handler stopped")
 
-    async def _handle_registration(self, msg: Any) -> None:
-        """handle incoming registration manifest.
+    async def handle_registration(self, msg: Any) -> None:
+        """public NATS-subject handler for incoming registration manifest.
+
+        bound by :meth:`start` as the ``cb`` callback on
+        ``{namespace}.tools.register`` so every registering tool pod's
+        manifest arrives here. tests exercise this surface directly by
+        synthesizing a NATS message and awaiting the handler; keeping
+        the entry point public is a stability contract -- subclasses and
+        test doubles may rely on the name, the single ``msg`` parameter,
+        and the absence of return value.
 
         validates manifest, authenticates pod, and registers
         tools with additive endpoint merging. replies with
@@ -146,7 +160,7 @@ class RegistrationHandler:
         :raises RuntimeError: when invoked before ``start`` connects NATS
         """
         if self._nc is None:
-            raise RuntimeError("_handle_registration invoked before NATS connected")
+            raise RuntimeError("handle_registration invoked before NATS connected")
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:

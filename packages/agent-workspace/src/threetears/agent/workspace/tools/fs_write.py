@@ -220,7 +220,7 @@ class FsWriteTool(TearsTool):
             )
             # defense-in-depth audit publish: additive per-tool event.
             # the ToolServer baseline ``tool.call`` event is emitted by
-            # :class:`threetears.agent.tools.ToolServer._handle_call`;
+            # :class:`threetears.agent.tools.ToolServer.handle_call`;
             # this event carries the workspace-specific detail that the
             # baseline cannot (resource namespace id, sha/bytes/version).
             try:

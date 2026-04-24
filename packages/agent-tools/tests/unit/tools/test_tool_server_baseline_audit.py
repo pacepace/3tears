@@ -1,6 +1,6 @@
 """unit tests for the baseline ``tool.call`` audit emission on dispatch.
 
-audit-task-01 Phase 3 (AUD-03): :meth:`ToolServer._handle_call` emits
+audit-task-01 Phase 3 (AUD-03): :meth:`ToolServer.handle_call` emits
 one :class:`AuditEvent` per dispatch with ``event_type='tool.call'``,
 outcome derived from the response / exception path, and identity axes
 pulled from the inbound :class:`CallContext`. the baseline event is
@@ -137,7 +137,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1
@@ -174,7 +174,7 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     assert any(s == "proj.audit.tool.call" for s, _ in nats.published)
 
@@ -201,7 +201,7 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1
@@ -225,7 +225,7 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1
@@ -249,7 +249,7 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1
@@ -268,7 +268,7 @@ async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
 
     msg = _make_msg(b"<<not valid json>>")
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1
@@ -306,7 +306,7 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
     )
 
     # no exception, and there is no nats client to observe publishes on
-    await server._handle_call(msg)
+    await server.handle_call(msg)
     # sanity: response still succeeded
     msg.respond.assert_called_once()
 
@@ -332,7 +332,7 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
     )
 
     # does not raise
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     response_data = json.loads(msg.respond.call_args[0][0])
     assert response_data["success"] is True
@@ -359,7 +359,7 @@ async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert envelopes[0]["correlation_id"] == str(correlation_id)
@@ -379,7 +379,7 @@ async def test_baseline_audit_correlation_id_synthesized_when_context_missing() 
         },
     )
 
-    await server._handle_call(msg)
+    await server.handle_call(msg)
 
     envelopes = _audit_envelopes(nats, ".audit.tool.call")
     assert len(envelopes) == 1

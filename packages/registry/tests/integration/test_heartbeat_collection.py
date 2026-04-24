@@ -373,7 +373,7 @@ class TestHeartbeatSubscriberFlow:
         )
         msg = MagicMock()
         msg.data = heartbeat.model_dump_json().encode("utf-8")
-        await subscriber._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         saved = await collection.get("pod-sub")
         assert saved is not None

@@ -27,7 +27,7 @@ usage from the tool server::
     )
     from threetears.agent.tools.context_envelope import CallContext
 
-    async def _handle_call(request):
+    async def handle_call(request):
         ctx = await factory(request.context.conversation_id, request.context.user_id)
         scope = ToolCallScope(
             context=request.context or CallContext(),

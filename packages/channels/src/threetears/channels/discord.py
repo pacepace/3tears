@@ -96,16 +96,21 @@ class DiscordAdapter:
     async def _on_message(self, message: Any) -> None:
         """handle discord on_message event.
 
-        delegates to _handle_message for processing. registered as
-        discord.py event handler via client.event().
+        delegates to :meth:`handle_message` for processing.
+        registered as discord.py event handler via client.event().
 
         :param message: discord message object
         :ptype message: Any
         """
-        await self._handle_message(message)
+        await self.handle_message(message)
 
-    async def _handle_message(self, message: Any) -> None:
-        """process inbound discord message.
+    async def handle_message(self, message: Any) -> None:
+        """public discord-event handler for inbound messages.
+
+        invoked from :meth:`_on_message` (discord.py's raw event
+        callback) and by tests that synthesize a message object and
+        await the handler directly. the name + single-``message``
+        shape are part of the stability contract.
 
         filters self and bot messages, normalizes to ChannelMessage,
         routes through router, and delivers response.
