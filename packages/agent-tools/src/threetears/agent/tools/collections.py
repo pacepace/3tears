@@ -131,6 +131,14 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
     # -- Standard BaseCollection abstract methods --
 
     async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch context-item row from L3 by primary key.
+
+        :param entity_id: context id to fetch
+        :ptype entity_id: Any
+        :return: row dict with metadata normalized to ``dict``, or ``None``
+            if no row exists for ``entity_id``
+        :rtype: dict[str, Any] | None
+        """
         row = await self.l3_pool.fetchrow(
             "SELECT * FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
@@ -140,6 +148,21 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         return _decode_metadata_in_row(dict(row))
 
     async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+        """persist context-item row to L3 with optimistic concurrency.
+
+        inserts when ``original_timestamp`` is ``None``, otherwise updates
+        only when the row's ``date_updated`` still matches the caller's
+        snapshot. ``metadata`` is serialized to a json string for jsonb
+        binding.
+
+        :param data: full row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param original_timestamp: pre-mutation ``date_updated`` for
+            optimistic concurrency on update; ``None`` triggers upsert
+        :ptype original_timestamp: datetime | None
+        :return: affected row count reported by the server
+        :rtype: int
+        """
         context_id = data["context_id"]
         if not isinstance(context_id, UUID):
             context_id = UUID(str(context_id))
@@ -199,15 +222,39 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         return int(result.split()[-1])
 
     async def delete_from_postgres(self, entity_id: Any) -> None:
+        """delete context-item row from L3 by primary key.
+
+        :param entity_id: context id to delete
+        :ptype entity_id: Any
+        :return: no return value
+        :rtype: None
+        """
         await self.l3_pool.execute(
             "DELETE FROM context_items WHERE context_id = $1",
             entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
         )
 
     def serialize(self, data: dict[str, Any]) -> bytes:
+        """encode row payload to json bytes for L2 storage.
+
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: utf-8 json bytes
+        :rtype: bytes
+        """
         return serialize_to_json(data)
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
+        """decode json bytes from L2 back into a typed row dict.
+
+        applies ``_FIELD_TYPES`` to restore ``UUID`` and ``datetime``
+        columns from their wire-format strings.
+
+        :param data: utf-8 json bytes as produced by :meth:`serialize`
+        :ptype data: bytes
+        :return: row dict with typed values
+        :rtype: dict[str, Any]
+        """
         return deserialize_from_json(data, _FIELD_TYPES)
 
     # -- Conversation-scoped queries --
