@@ -74,8 +74,8 @@ class TestCacheSerializationHelpers:
         parent_id = "cp-122"
         pending = [("task-1", "messages", {"content": "hello"})]
 
-        blob = saver._serialize_checkpoint_tuple(checkpoint, metadata, parent_id, pending)
-        result = saver._deserialize_checkpoint_tuple(blob)
+        blob = saver.serialize_checkpoint_tuple(checkpoint, metadata, parent_id, pending)
+        result = saver.deserialize_checkpoint_tuple(blob)
 
         assert result["checkpoint"]["id"] == "cp-123"
         assert result["metadata"]["source"] == "loop"
@@ -87,8 +87,8 @@ class TestCacheSerializationHelpers:
         checkpoint = {"id": "cp-1", "ts": "2026-01-01", "channel_values": {}}
         metadata = {}
 
-        blob = saver._serialize_checkpoint_tuple(checkpoint, metadata, None, [])
-        result = saver._deserialize_checkpoint_tuple(blob)
+        blob = saver.serialize_checkpoint_tuple(checkpoint, metadata, None, [])
+        result = saver.deserialize_checkpoint_tuple(blob)
 
         assert result["parent_checkpoint_id"] is None
         assert result["pending_writes"] == []

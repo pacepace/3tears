@@ -273,7 +273,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     # Serialization helpers
     # ------------------------------------------------------------------
 
-    def _serialize_checkpoint_tuple(
+    def serialize_checkpoint_tuple(
         self,
         checkpoint: Checkpoint,
         metadata: CheckpointMetadata,
@@ -281,6 +281,13 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         pending_writes: list[tuple[str, str, Any]] | None,
     ) -> bytes:
         """serialize full checkpoint tuple for cache storage (L1/L2).
+
+        public extension point for subclasses that customize
+        checkpoint envelope serialization. override in tandem with
+        :meth:`deserialize_checkpoint_tuple` to change the on-wire
+        cache format; the base implementation prepends the serde
+        type tag so the matching deserializer can recover the
+        encoded payload without ambiguity.
 
         :param checkpoint: checkpoint state
         :ptype checkpoint: Checkpoint
@@ -303,11 +310,17 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         type_bytes = _type.encode("utf-8")
         return len(type_bytes).to_bytes(4, "big") + type_bytes + blob
 
-    def _deserialize_checkpoint_tuple(self, data: bytes) -> dict[str, Any]:
+    def deserialize_checkpoint_tuple(self, data: bytes) -> dict[str, Any]:
         """deserialize checkpoint tuple from cache blob.
 
+        public extension point for subclasses that customize
+        checkpoint envelope serialization. must round-trip with
+        :meth:`serialize_checkpoint_tuple`; the base implementation
+        reads the serde type tag prepended by the matching serializer
+        and hands the remainder to the serde's typed loader.
+
         :param data: cache blob produced by
-            :meth:`_serialize_checkpoint_tuple`
+            :meth:`serialize_checkpoint_tuple`
         :ptype data: bytes
         :return: decoded bundle dict
         :rtype: dict[str, Any]
@@ -331,7 +344,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :param checkpoint_ns: checkpoint namespace
         :ptype checkpoint_ns: str
         :param bundle: bundle from
-            :meth:`_deserialize_checkpoint_tuple`
+            :meth:`deserialize_checkpoint_tuple`
         :ptype bundle: dict[str, Any]
         :return: reconstituted checkpoint tuple
         :rtype: CheckpointTuple
@@ -392,7 +405,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             cached = await self._l1_get(thread_id, checkpoint_ns)
             if cached is not None:
                 try:
-                    bundle = self._deserialize_checkpoint_tuple(cached)
+                    bundle = self.deserialize_checkpoint_tuple(cached)
                     return self._bundle_to_tuple(thread_id, checkpoint_ns, bundle)
                 except Exception:
                     logger.warning(
@@ -404,7 +417,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             cached = await self._l2_get(thread_id, checkpoint_ns)
             if cached is not None:
                 try:
-                    bundle = self._deserialize_checkpoint_tuple(cached)
+                    bundle = self.deserialize_checkpoint_tuple(cached)
                     tup = self._bundle_to_tuple(thread_id, checkpoint_ns, bundle)
                     await self._l1_put(thread_id, checkpoint_ns, cached)
                     return tup
@@ -527,7 +540,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # Warm L1 and L2
         try:
-            cache_blob = self._serialize_checkpoint_tuple(
+            cache_blob = self.serialize_checkpoint_tuple(
                 checkpoint, metadata, parent_id, pending_writes,
             )
             await self._l2_put(thread_id, checkpoint_ns, cache_blob)
@@ -691,7 +704,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         # --- Warm L2 and L1 caches ---
         try:
-            cache_blob = self._serialize_checkpoint_tuple(
+            cache_blob = self.serialize_checkpoint_tuple(
                 checkpoint, serializable_metadata, parent_checkpoint_id, [],
             )
             await self._l2_put(thread_id, checkpoint_ns, cache_blob)
