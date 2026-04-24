@@ -43,9 +43,11 @@ from __future__ import annotations
 __all__ = [
     "NAMESPACE_NAME_SEPARATOR",
     "PLURAL_PREFIX_AGENT",
+    "PLURAL_PREFIX_API_KEY",
     "PLURAL_PREFIX_AUDIT",
     "PLURAL_PREFIX_CHANNEL",
     "PLURAL_PREFIX_CONVERSATION",
+    "PLURAL_PREFIX_CUSTOMER",
     "PLURAL_PREFIX_DATASOURCE",
     "PLURAL_PREFIX_MEMORY",
     "PLURAL_PREFIX_MODEL",
@@ -72,9 +74,11 @@ NAMESPACE_NAME_SEPARATOR = "."
 # their prefix from it so adding a new namespace type is a one-line
 # change here plus a new helper wrapper.
 PLURAL_PREFIX_AGENT = "agents"
+PLURAL_PREFIX_API_KEY = "api_keys"
 PLURAL_PREFIX_AUDIT = "audits"
 PLURAL_PREFIX_CHANNEL = "channels"
 PLURAL_PREFIX_CONVERSATION = "conversations"
+PLURAL_PREFIX_CUSTOMER = "customers"
 PLURAL_PREFIX_DATASOURCE = "datasources"
 PLURAL_PREFIX_MEMORY = "memories"
 PLURAL_PREFIX_MODEL = "models"
@@ -92,9 +96,11 @@ PLURAL_PREFIX_WORKSPACE = "workspaces"
 #: ``model``).
 PLURAL_PREFIX_BY_NAMESPACE_TYPE: dict[str, str] = {
     "agent": PLURAL_PREFIX_AGENT,
+    "api_key": PLURAL_PREFIX_API_KEY,
     "audit": PLURAL_PREFIX_AUDIT,
     "channel": PLURAL_PREFIX_CHANNEL,
     "conversation": PLURAL_PREFIX_CONVERSATION,
+    "customer": PLURAL_PREFIX_CUSTOMER,
     "datasource": PLURAL_PREFIX_DATASOURCE,
     "memory": PLURAL_PREFIX_MEMORY,
     "model": PLURAL_PREFIX_MODEL,
