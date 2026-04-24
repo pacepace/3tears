@@ -45,9 +45,9 @@ class ModelsLabImageProvider:
         max_polls: int = 40,
     ) -> None:
         self._api_key = api_key
-        self._base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/")
         self._model_id = model_id
-        self._timeout = timeout
+        self.timeout = timeout
         self._poll_interval = poll_interval
         self._max_polls = max_polls
 
@@ -92,9 +92,9 @@ class ModelsLabImageProvider:
             "height": 512,
         }
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self._base_url}/images/text2img",
+                f"{self.base_url}/images/text2img",
                 json=payload,
             )
             response.raise_for_status()

@@ -54,9 +54,9 @@ class WhisperTranscriptionProvider:
         timeout: int = 120,
     ) -> None:
         self._api_key = api_key
-        self._model_name = model_name
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
 
     async def transcribe(
         self,
@@ -84,15 +84,15 @@ class WhisperTranscriptionProvider:
         filename = f"audio.{ext}"
 
         data: dict[str, str] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "response_format": "verbose_json",
         }
         if language_hint is not None:
             data["language"] = language_hint
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self._base_url}/audio/transcriptions",
+                f"{self.base_url}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 files={"file": (filename, audio_data, mime_type)},
                 data=data,

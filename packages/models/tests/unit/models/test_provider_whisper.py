@@ -47,17 +47,17 @@ class TestWhisperTranscriptionProvider:
     def test_default_model_name(self) -> None:
         """default model_name is whisper-1."""
         provider = WhisperTranscriptionProvider("sk-test")
-        assert provider._model_name == "whisper-1"
+        assert provider.model_name == "whisper-1"
 
     def test_default_base_url(self) -> None:
         """default base_url is OpenAI API v1 endpoint."""
         provider = WhisperTranscriptionProvider("sk-test")
-        assert provider._base_url == "https://api.openai.com/v1"
+        assert provider.base_url == "https://api.openai.com/v1"
 
     def test_default_timeout(self) -> None:
         """default timeout is 120 seconds."""
         provider = WhisperTranscriptionProvider("sk-test")
-        assert provider._timeout == 120
+        assert provider.timeout == 120
 
     def test_custom_config(self) -> None:
         """custom model_name, base_url, and timeout are stored correctly."""
@@ -67,10 +67,27 @@ class TestWhisperTranscriptionProvider:
             base_url="https://custom.api.com/v1",
             timeout=60,
         )
-        assert provider._model_name == "whisper-large-v3"
-        assert provider._base_url == "https://custom.api.com/v1"
-        assert provider._timeout == 60
-        assert provider._api_key == "sk-custom"
+        assert provider.model_name == "whisper-large-v3"
+        assert provider.base_url == "https://custom.api.com/v1"
+        assert provider.timeout == 60
+
+    @pytest.mark.asyncio
+    async def test_api_key_sent_in_authorization_header(self) -> None:
+        """api_key is forwarded as Bearer token in Authorization header of request."""
+        provider = WhisperTranscriptionProvider("sk-custom")
+
+        json_data = {"text": "hello", "language": "en", "duration": 1.0}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = _mock_response(json_data)
+
+        with patch("threetears.models.providers.whisper.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__.return_value = False
+            await provider.transcribe(b"audio", "audio/wav")
+
+        call_kwargs = mock_client.post.call_args
+        assert call_kwargs.kwargs["headers"]["Authorization"] == "Bearer sk-custom"
 
     def test_base_url_trailing_slash_stripped(self) -> None:
         """trailing slash on base_url is stripped during init."""
@@ -78,7 +95,7 @@ class TestWhisperTranscriptionProvider:
             "sk-test",
             base_url="https://api.com/v1/",
         )
-        assert provider._base_url == "https://api.com/v1"
+        assert provider.base_url == "https://api.com/v1"
 
     @pytest.mark.asyncio
     async def test_transcribe_returns_result(self) -> None:

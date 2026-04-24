@@ -70,12 +70,29 @@ class TestOpenAIImageProvider:
     def test_default_config(self) -> None:
         """default configuration values are set correctly."""
         provider = OpenAIImageProvider("sk-test")
-        assert provider._api_key == "sk-test"
-        assert provider._model_name == "dall-e-3"
-        assert provider._base_url == "https://api.openai.com/v1"
+        assert provider.model_name == "dall-e-3"
+        assert provider.base_url == "https://api.openai.com/v1"
         assert provider._size == "1024x1024"
         assert provider._quality == "standard"
-        assert provider._timeout == 120
+        assert provider.timeout == 120
+
+    @pytest.mark.asyncio
+    async def test_api_key_sent_in_authorization_header(self) -> None:
+        """api_key is forwarded as Bearer token in Authorization header of request."""
+        provider = OpenAIImageProvider("sk-custom")
+        image_b64 = base64.b64encode(b"fake-png-data").decode()
+        json_data = {"data": [{"b64_json": image_b64}]}
+
+        mock_client = AsyncMock()
+        mock_client.post.return_value = _mock_json_response(json_data)
+
+        with patch("threetears.models.providers.image.openai.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__.return_value = mock_client
+            MockClient.return_value.__aexit__.return_value = False
+            await provider.generate("a cat")
+
+        call_kwargs = mock_client.post.call_args
+        assert call_kwargs.kwargs["headers"]["Authorization"] == "Bearer sk-custom"
 
     @pytest.mark.asyncio
     async def test_generate_returns_generated_image(self) -> None:

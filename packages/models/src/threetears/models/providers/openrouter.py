@@ -45,9 +45,9 @@ class OpenRouterChatProvider:
         timeout: int = 120,
         max_retries: int = 2,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._timeout = timeout
+        self.timeout = timeout
         self._max_retries = max_retries
         self.model: Any = None
         self._tools: list[ToolDefinition] | None = None
@@ -68,9 +68,9 @@ class OpenRouterChatProvider:
         from langchain_openrouter import ChatOpenRouter
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
-            "timeout": self._timeout * 1000,
+            "timeout": self.timeout * 1000,
             "max_retries": self._max_retries,
         }
 
@@ -147,7 +147,7 @@ class OpenRouterChatProvider:
         from threetears.models.preprocessing import preprocess_messages
 
         capabilities = ModelCapabilities(
-            model_name=self._model_name,
+            model_name=self.model_name,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,

@@ -82,7 +82,7 @@ class TestAnthropicChatProvider:
             "sk-test-key",
             base_url="https://api.anthropic.com/v1",
         )
-        assert provider._base_url == "https://api.anthropic.com"
+        assert provider.base_url == "https://api.anthropic.com"
 
     def test_base_url_v1_slash_stripped(self) -> None:
         """base_url ending with /v1/ has suffix stripped."""
@@ -91,7 +91,7 @@ class TestAnthropicChatProvider:
             "sk-test-key",
             base_url="https://api.anthropic.com/v1/",
         )
-        assert provider._base_url == "https://api.anthropic.com"
+        assert provider.base_url == "https://api.anthropic.com"
 
     def test_base_url_without_v1_unchanged(self) -> None:
         """base_url without /v1 suffix is preserved unchanged."""
@@ -100,7 +100,7 @@ class TestAnthropicChatProvider:
             "sk-test-key",
             base_url="https://custom.api.com",
         )
-        assert provider._base_url == "https://custom.api.com"
+        assert provider.base_url == "https://custom.api.com"
 
     def test_base_url_none_accepted(self) -> None:
         """base_url=None is stored as None without error."""
@@ -109,7 +109,7 @@ class TestAnthropicChatProvider:
             "sk-test-key",
             base_url=None,
         )
-        assert provider._base_url is None
+        assert provider.base_url is None
 
     async def test_complete_returns_chat_result(self) -> None:
         """complete converts AIMessage response to ChatResult."""

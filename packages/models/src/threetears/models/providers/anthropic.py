@@ -52,10 +52,10 @@ class AnthropicChatProvider:
         timeout: int = 120,
         max_retries: int = 2,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = _strip_v1_suffix(base_url) if base_url else None
-        self._timeout = timeout
+        self.base_url = _strip_v1_suffix(base_url) if base_url else None
+        self.timeout = timeout
         self._max_retries = max_retries
         self.model: Any = None
         self._tools: list[ToolDefinition] | None = None
@@ -75,13 +75,13 @@ class AnthropicChatProvider:
         from langchain_anthropic import ChatAnthropic
 
         kwargs: dict[str, Any] = {
-            "model_name": self._model_name,
+            "model_name": self.model_name,
             "api_key": self._api_key,
-            "timeout": self._timeout,
+            "timeout": self.timeout,
             "max_retries": self._max_retries,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
 
         base_model: Any = ChatAnthropic(**kwargs)
 
@@ -156,7 +156,7 @@ class AnthropicChatProvider:
         from threetears.models.preprocessing import preprocess_messages
 
         capabilities = ModelCapabilities(
-            model_name=self._model_name,
+            model_name=self.model_name,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,

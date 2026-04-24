@@ -39,9 +39,9 @@ class VoyageAIEmbeddingProvider:
         base_url: str | None = None,
         embedding_dimensions: int | None = None,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = base_url
+        self.base_url = base_url
         self._embedding_dimensions = embedding_dimensions
         self.model: Any = None
 
@@ -65,11 +65,11 @@ class VoyageAIEmbeddingProvider:
         from langchain_voyageai import VoyageAIEmbeddings
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
         if self._embedding_dimensions is not None:
             kwargs["output_dimension"] = self._embedding_dimensions
 
@@ -122,7 +122,7 @@ class VoyageAIEmbeddingProvider:
                 EmbeddingResult(
                     vector=embedding,
                     dimensions=len(embedding),
-                    model=self._model_name,
+                    model=self.model_name,
                     token_count=len(text) // 4,
                 )
             )

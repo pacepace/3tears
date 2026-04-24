@@ -45,11 +45,11 @@ class OpenAIImageProvider:
         timeout: int = 120,
     ) -> None:
         self._api_key = api_key
-        self._model_name = model_name
-        self._base_url = base_url.rstrip("/")
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
         self._size = size
         self._quality = quality
-        self._timeout = timeout
+        self.timeout = timeout
 
     async def generate(
         self,
@@ -78,7 +78,7 @@ class OpenAIImageProvider:
         """
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             if source_image is not None:
                 response = await self._img2img(
                     client,
@@ -126,7 +126,7 @@ class OpenAIImageProvider:
         :rtype: httpx.Response
         """
         payload: dict[str, str | int] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "prompt": prompt,
             "size": self._size,
             "quality": self._quality,
@@ -137,7 +137,7 @@ class OpenAIImageProvider:
             payload["style"] = style
 
         response = await client.post(
-            f"{self._base_url}/images/generations",
+            f"{self.base_url}/images/generations",
             headers=headers,
             json=payload,
         )
@@ -169,7 +169,7 @@ class OpenAIImageProvider:
         mime = source_mime_type or "image/png"
         files = {"image": ("source.png", source_image, mime)}
         data = {
-            "model": self._model_name,
+            "model": self.model_name,
             "prompt": prompt,
             "size": self._size,
             "response_format": "b64_json",
@@ -177,7 +177,7 @@ class OpenAIImageProvider:
         }
 
         response = await client.post(
-            f"{self._base_url}/images/edits",
+            f"{self.base_url}/images/edits",
             headers=headers,
             files=files,
             data=data,

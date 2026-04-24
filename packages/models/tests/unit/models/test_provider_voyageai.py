@@ -70,7 +70,7 @@ class TestVoyageAIEmbeddingProvider:
     def test_default_model_name(self) -> None:
         """default model_name is voyage-3-lite."""
         provider = VoyageAIEmbeddingProvider("pa-test-key")
-        assert provider._model_name == "voyage-3-lite"
+        assert provider.model_name == "voyage-3-lite"
 
     def test_custom_model_name(self) -> None:
         """custom model_name is stored correctly."""
@@ -78,7 +78,7 @@ class TestVoyageAIEmbeddingProvider:
             "pa-test-key",
             model_name="voyage-3",
         )
-        assert provider._model_name == "voyage-3"
+        assert provider.model_name == "voyage-3"
 
     async def test_embed_returns_single_result(self) -> None:
         """embed returns single EmbeddingResult from aembed_documents."""
@@ -142,4 +142,4 @@ class TestVoyageAIEmbeddingProvider:
             "pa-test-key",
             base_url="https://custom.voyageai.com/v1",
         )
-        assert provider._base_url == "https://custom.voyageai.com/v1"
+        assert provider.base_url == "https://custom.voyageai.com/v1"

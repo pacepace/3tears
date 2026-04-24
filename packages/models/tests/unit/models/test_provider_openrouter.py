@@ -90,12 +90,12 @@ class TestOpenRouterChatProvider:
     def test_timeout_stored_in_seconds(self) -> None:
         """timeout parameter stored in seconds for internal conversion."""
         provider = OpenRouterChatProvider("deepseek/deepseek-chat-v3-0324", "sk-or-test", timeout=90)
-        assert provider._timeout == 90
+        assert provider.timeout == 90
 
     def test_timeout_default_value(self) -> None:
         """timeout defaults to 120 seconds when not specified."""
         provider = OpenRouterChatProvider("deepseek/deepseek-chat-v3-0324", "sk-or-test")
-        assert provider._timeout == 120
+        assert provider.timeout == 120
 
     async def test_complete_returns_chat_result(self) -> None:
         """complete converts AIMessage response to ChatResult."""

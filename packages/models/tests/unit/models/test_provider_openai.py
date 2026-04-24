@@ -79,7 +79,7 @@ class TestOpenAIChatProvider:
             "sk-test-key",
             base_url="https://api.openai.com/v1",
         )
-        assert provider._base_url == "https://api.openai.com/v1"
+        assert provider.base_url == "https://api.openai.com/v1"
 
     def test_base_url_none_accepted(self) -> None:
         """base_url=None is stored as None without error."""
@@ -88,7 +88,7 @@ class TestOpenAIChatProvider:
             "sk-test-key",
             base_url=None,
         )
-        assert provider._base_url is None
+        assert provider.base_url is None
 
     async def test_complete_returns_chat_result(self) -> None:
         """complete converts AIMessage response to ChatResult."""
@@ -274,4 +274,4 @@ class TestOpenAIEmbeddingProvider:
             "sk-test-key",
             base_url="https://custom.api.com/v1",
         )
-        assert provider._base_url == "https://custom.api.com/v1"
+        assert provider.base_url == "https://custom.api.com/v1"
