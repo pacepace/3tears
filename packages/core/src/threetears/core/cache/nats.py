@@ -43,9 +43,9 @@ class NatsClient:
 
     def __init__(self, bucket_prefix: str = "threetears") -> None:
         self._prefix = bucket_prefix
-        self._nc: NATSClient | None = None
-        self._js: Any = None  # JetStreamContext
-        self._buckets: dict[str, KeyValue] = {}
+        self.nc: NATSClient | None = None
+        self.js: Any = None  # JetStreamContext
+        self.buckets: dict[str, KeyValue] = {}
 
     def bucket_name(self, suffix: str) -> str:
         """Return the full bucket name for a given suffix."""
@@ -61,8 +61,8 @@ class NatsClient:
         Always creates the 'collections' bucket (TTL 7200s).
         Additional buckets can be registered via extra_buckets.
         """
-        self._nc = await nats.connect(url, allow_reconnect=True, max_reconnect_attempts=-1)
-        self._js = self._nc.jetstream()
+        self.nc = await nats.connect(url, allow_reconnect=True, max_reconnect_attempts=-1)
+        self.js = self.nc.jetstream()
 
         # Default buckets — collections uses FILE storage so data survives restarts
         all_buckets = [BucketConfig("collections", 7200, storage="file")]
@@ -73,13 +73,13 @@ class NatsClient:
 
     async def _ensure_buckets(self, configs: list[BucketConfig]) -> None:
         """Create or bind KV buckets."""
-        assert self._js is not None
+        assert self.js is not None
         for cfg in configs:
             full_name = self.bucket_name(cfg.name)
             kv: KeyValue | None = None
             storage = StorageType.FILE if cfg.storage == "file" else StorageType.MEMORY
             try:
-                kv = await self._js.create_key_value(
+                kv = await self.js.create_key_value(
                     KeyValueConfig(
                         bucket=full_name,
                         ttl=cfg.ttl_seconds,
@@ -92,14 +92,14 @@ class NatsClient:
                     "KV bucket already exists — binding existing bucket",
                     extra={"extra_data": {"bucket": full_name}},
                 )
-                kv = await self._js.key_value(full_name)
-            self._buckets[full_name] = kv
+                kv = await self.js.key_value(full_name)
+            self.buckets[full_name] = kv
 
     async def close(self) -> None:
         """Drain and close the NATS connection."""
-        if self._nc is not None:
-            await self._nc.drain()
-            await self._nc.close()
+        if self.nc is not None:
+            await self.nc.drain()
+            await self.nc.close()
 
     # ------------------------------------------------------------------
     # Pub/sub operations — fail-open
@@ -107,10 +107,10 @@ class NatsClient:
 
     async def publish(self, subject: str, data: bytes) -> bool:
         """Publish a message to a NATS subject. Returns True on success."""
-        if self._nc is None:
+        if self.nc is None:
             return False
         try:
-            await self._nc.publish(subject, data)
+            await self.nc.publish(subject, data)
             return True
         except Exception as exc:
             log.warning(
@@ -124,10 +124,10 @@ class NatsClient:
 
         Returns the NATS subscription object for later unsubscribe.
         """
-        if self._nc is None:
+        if self.nc is None:
             return None
         try:
-            sub = await self._nc.subscribe(subject)
+            sub = await self.nc.subscribe(subject)
 
             async def _dispatch() -> None:
                 async for msg in sub.messages:
@@ -156,7 +156,7 @@ class NatsClient:
 
     async def get(self, bucket: str, key: str) -> bytes | None:
         """Get value for key. Returns None on miss or error."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("get called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return None
@@ -171,7 +171,7 @@ class NatsClient:
 
     async def put(self, bucket: str, key: str, value: bytes) -> bool:
         """Store value. Returns True on success, False on error."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("put called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return False
@@ -184,7 +184,7 @@ class NatsClient:
 
     async def delete(self, bucket: str, key: str) -> bool:
         """Delete key. Returns True on success or if key absent, False on error."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("delete called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return False
@@ -199,7 +199,7 @@ class NatsClient:
 
     async def create(self, bucket: str, key: str, value: bytes) -> bool:
         """Create key only if it doesn't exist (SET NX). Returns True if created, False if exists or error."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("create called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return False
@@ -214,7 +214,7 @@ class NatsClient:
 
     async def update(self, bucket: str, key: str, value: bytes, revision: int) -> int | None:
         """Compare-and-swap write. Returns new revision on success, None on mismatch or error."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("update called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return None
@@ -229,7 +229,7 @@ class NatsClient:
 
     async def get_entry(self, bucket: str, key: str) -> tuple[bytes, int] | None:
         """Get value and revision for CAS reads. Returns (value, revision) or None."""
-        kv = self._buckets.get(bucket)
+        kv = self.buckets.get(bucket)
         if kv is None:
             log.warning("get_entry called for unknown bucket", extra={"extra_data": {"bucket": bucket, "key": key}})
             return None
@@ -247,7 +247,7 @@ class NatsClient:
     async def ping(self) -> bool:
         """Health check. Returns True if JetStream is reachable."""
         try:
-            await self._js.account_info()
+            await self.js.account_info()
             return True
         except Exception:
             return False

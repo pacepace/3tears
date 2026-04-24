@@ -248,7 +248,7 @@ def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     return out
 
 
-async def _snapshot_disk(disk_root: Path) -> dict[str, tuple[bytes, str]]:
+async def snapshot_disk(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     """async wrapper around :func:`_snapshot_disk_sync` via :func:`asyncio.to_thread`.
 
     :param disk_root: absolute path to sandboxed root directory
@@ -325,7 +325,7 @@ async def _seed_l3_from_disk(
             workspace.id,
         )
         if not existing:
-            disk = await _snapshot_disk(disk_root)
+            disk = await snapshot_disk(disk_root)
             if disk:
                 n_touched = await _seed_l3_import_all(
                     workspace=workspace,
@@ -343,7 +343,7 @@ async def _seed_l3_from_disk(
                     },
                 )
     else:
-        disk = await _snapshot_disk(disk_root)
+        disk = await snapshot_disk(disk_root)
         existing_rows = await workspace_file_collection.find_by_workspace(
             workspace.id,
         )
@@ -473,7 +473,7 @@ async def _seed_l3_disk_wins(
     :param workspace: target workspace entity
     :ptype workspace: Any
     :param disk: mapping of ``relative_path`` to ``(content, sha256)``
-        produced by :func:`_snapshot_disk`
+        produced by :func:`snapshot_disk`
     :ptype disk: dict[str, tuple[bytes, str]]
     :param existing_by_path: existing head-state indexed by relative
         path, mapping to ``(sha256, version)``
@@ -1064,7 +1064,7 @@ async def _capture_back(
     del workspace_file_version_collection
     del workspace_collection
 
-    disk = await _snapshot_disk(disk_root)
+    disk = await snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
     updates: list[tuple[str, bytes, str]] = []
@@ -1547,7 +1547,7 @@ async def recover(
     head_rows = await workspace_file_collection.find_by_workspace(workspace_id)
     head_by_path: dict[str, tuple[str, int]] = {row.relative_path: (row.sha256, row.version) for row in head_rows}
 
-    disk = await _snapshot_disk(disk_root)
+    disk = await snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
     updates: list[tuple[str, bytes, str]] = []

@@ -24,6 +24,7 @@ into two focused classes:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -113,6 +114,16 @@ class HeartbeatSubscriber:
         self._known_pod_ids: set[str] = set()
 
     @property
+    def has_active_check_task(self) -> bool:
+        """return whether the periodic health-check task is currently running.
+
+        :return: ``True`` after :meth:`start` creates the task and
+            before :meth:`stop` cancels it; ``False`` otherwise
+        :rtype: bool
+        """
+        return self._check_task is not None
+
+    @property
     def known_pod_ids(self) -> set[str]:
         """return pod ids currently tracked by the subscriber.
 
@@ -120,6 +131,35 @@ class HeartbeatSubscriber:
         :rtype: set[str]
         """
         return set(self._known_pod_ids)
+
+    def track_pod(self, pod_id: str) -> None:
+        """seed a pod id into the in-memory known-pods set.
+
+        normally :meth:`handle_heartbeat` populates the set on first
+        heartbeat; this method lets tests and recovery paths inject a
+        pod id directly so the next :meth:`run_health_check` sweep
+        will examine it.
+
+        :param pod_id: pod identifier to start tracking
+        :ptype pod_id: str
+        :return: nothing
+        :rtype: None
+        """
+        self._known_pod_ids.add(pod_id)
+
+    def track_pods(self, pod_ids: Iterable[str]) -> None:
+        """seed multiple pod ids into the in-memory known-pods set.
+
+        batch variant of :meth:`track_pod`; convenient for restoring
+        tracking state from a Collection scan at pod startup or for
+        multi-pod test setup.
+
+        :param pod_ids: iterable of pod identifiers to start tracking
+        :ptype pod_ids: Iterable[str]
+        :return: nothing
+        :rtype: None
+        """
+        self._known_pod_ids.update(pod_ids)
 
     async def start(self, nc: Any) -> None:
         """start heartbeat monitoring.
@@ -246,14 +286,14 @@ class HeartbeatSubscriber:
             if not self._running:
                 break
             try:
-                await self._run_health_check()
+                await self.run_health_check()
             except Exception as exc:
                 log.warning(
                     "health check sweep failed",
                     extra={"extra_data": {"error": str(exc)}},
                 )
 
-    async def _run_health_check(self) -> None:
+    async def run_health_check(self) -> None:
         """execute one health-check sweep across known pods.
 
         asks the Collection for each known pod and compares its

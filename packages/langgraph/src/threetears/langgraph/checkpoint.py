@@ -137,7 +137,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     # L1 helpers
     # ------------------------------------------------------------------
 
-    async def _l1_get(self, thread_id: str, checkpoint_ns: str) -> bytes | None:
+    async def l1_get(self, thread_id: str, checkpoint_ns: str) -> bytes | None:
         """read from L1 cache, returning None on miss or error.
 
         :param thread_id: conversation/thread identifier
@@ -156,7 +156,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                 result = None
         return result
 
-    async def _l1_put(self, thread_id: str, checkpoint_ns: str, data: bytes) -> None:
+    async def l1_put(self, thread_id: str, checkpoint_ns: str, data: bytes) -> None:
         """write to L1 cache, swallowing errors.
 
         :param thread_id: conversation/thread identifier
@@ -175,7 +175,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         except Exception:
             logger.warning("L1 checkpoint write failed", exc_info=True)
 
-    async def _l1_delete(self, thread_id: str) -> None:
+    async def l1_delete(self, thread_id: str) -> None:
         """delete a thread's L1 entry, swallowing errors.
 
         :param thread_id: conversation/thread identifier
@@ -194,7 +194,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
     # L2 helpers
     # ------------------------------------------------------------------
 
-    def _l2_key(self, thread_id: str, checkpoint_ns: str) -> str:
+    def l2_key(self, thread_id: str, checkpoint_ns: str) -> str:
         """build L2 cache key from thread and namespace.
 
         :param thread_id: conversation/thread identifier
@@ -210,7 +210,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             result = f"{thread_id}.{checkpoint_ns}"
         return result
 
-    async def _l2_get(self, thread_id: str, checkpoint_ns: str) -> bytes | None:
+    async def l2_get(self, thread_id: str, checkpoint_ns: str) -> bytes | None:
         """read from L2 cache, returning None on miss or error.
 
         :param thread_id: conversation/thread identifier
@@ -224,14 +224,14 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         if self._l2 is not None:
             try:
                 result = await self._l2.get(
-                    self._l2_bucket, self._l2_key(thread_id, checkpoint_ns),
+                    self._l2_bucket, self.l2_key(thread_id, checkpoint_ns),
                 )
             except Exception:
                 logger.warning("L2 checkpoint read failed", exc_info=True)
                 result = None
         return result
 
-    async def _l2_put(self, thread_id: str, checkpoint_ns: str, data: bytes) -> None:
+    async def l2_put(self, thread_id: str, checkpoint_ns: str, data: bytes) -> None:
         """write to L2 cache, swallowing errors.
 
         :param thread_id: conversation/thread identifier
@@ -247,12 +247,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return
         try:
             await self._l2.put(
-                self._l2_bucket, self._l2_key(thread_id, checkpoint_ns), data,
+                self._l2_bucket, self.l2_key(thread_id, checkpoint_ns), data,
             )
         except Exception:
             logger.warning("L2 checkpoint write failed", exc_info=True)
 
-    async def _l2_delete(self, thread_id: str) -> None:
+    async def l2_delete(self, thread_id: str) -> None:
         """delete a thread's L2 entry, swallowing errors.
 
         :param thread_id: conversation/thread identifier
@@ -264,7 +264,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return
         try:
             await self._l2.delete(
-                self._l2_bucket, self._l2_key(thread_id, ""),
+                self._l2_bucket, self.l2_key(thread_id, ""),
             )
         except Exception:
             logger.warning("L2 checkpoint delete failed", exc_info=True)
@@ -402,7 +402,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
 
         if checkpoint_id is None:
             # --- L1 attempt ---
-            cached = await self._l1_get(thread_id, checkpoint_ns)
+            cached = await self.l1_get(thread_id, checkpoint_ns)
             if cached is not None:
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
@@ -414,12 +414,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
                     )
 
             # --- L2 attempt ---
-            cached = await self._l2_get(thread_id, checkpoint_ns)
+            cached = await self.l2_get(thread_id, checkpoint_ns)
             if cached is not None:
                 try:
                     bundle = self.deserialize_checkpoint_tuple(cached)
                     tup = self._bundle_to_tuple(thread_id, checkpoint_ns, bundle)
-                    await self._l1_put(thread_id, checkpoint_ns, cached)
+                    await self.l1_put(thread_id, checkpoint_ns, cached)
                     return tup
                 except Exception:
                     logger.warning(
@@ -543,8 +543,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             cache_blob = self.serialize_checkpoint_tuple(
                 checkpoint, metadata, parent_id, pending_writes,
             )
-            await self._l2_put(thread_id, checkpoint_ns, cache_blob)
-            await self._l1_put(thread_id, checkpoint_ns, cache_blob)
+            await self.l2_put(thread_id, checkpoint_ns, cache_blob)
+            await self.l1_put(thread_id, checkpoint_ns, cache_blob)
         except Exception:
             logger.warning("Failed to warm caches after L3 read", exc_info=True)
 
@@ -707,8 +707,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             cache_blob = self.serialize_checkpoint_tuple(
                 checkpoint, serializable_metadata, parent_checkpoint_id, [],
             )
-            await self._l2_put(thread_id, checkpoint_ns, cache_blob)
-            await self._l1_put(thread_id, checkpoint_ns, cache_blob)
+            await self.l2_put(thread_id, checkpoint_ns, cache_blob)
+            await self.l1_put(thread_id, checkpoint_ns, cache_blob)
         except Exception:
             logger.warning("Failed to warm caches after L3 write", exc_info=True)
 
@@ -791,8 +791,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             "DELETE FROM checkpoints WHERE thread_id = $1", thread_id,
         )
 
-        await self._l2_delete(thread_id)
-        await self._l1_delete(thread_id)
+        await self.l2_delete(thread_id)
+        await self.l1_delete(thread_id)
 
     # ------------------------------------------------------------------
     # Sync methods -- not supported (async-only application)

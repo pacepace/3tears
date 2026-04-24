@@ -78,7 +78,7 @@ class PdfRenderer:
         :raises PandocNotFoundError: if pandoc is not installed
         :raises RuntimeError: if pandoc exits with non-zero code
         """
-        cmd = self._build_command(output_path, template_path, variables)
+        cmd = self.build_command(output_path, template_path, variables)
 
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -110,7 +110,7 @@ class PdfRenderer:
         finally:
             os.unlink(tmp.name)
 
-    def _build_command(
+    def build_command(
         self,
         output_path: str,
         template_path: str | None,

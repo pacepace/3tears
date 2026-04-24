@@ -465,9 +465,9 @@ class TestMultiPodFailover:
         )
         await collection.save_entity(stale_entity)
         await collection.save_entity(healthy_entity)
-        subscriber._known_pod_ids.update({"pod-A", "pod-B"})
+        subscriber.track_pods({"pod-A", "pod-B"})
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert "pod-A" not in subscriber.known_pod_ids
         assert "pod-B" in subscriber.known_pod_ids
@@ -509,9 +509,9 @@ class TestMultiPodFailover:
                 }
             )
             await collection.save_entity(entity)
-            subscriber._known_pod_ids.add(pod_id)
+            subscriber.track_pod(pod_id)
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert subscriber.known_pod_ids == set()
         assert catalog.get("threetears.calculator@1.0.0") is None

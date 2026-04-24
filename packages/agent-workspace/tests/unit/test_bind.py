@@ -74,12 +74,12 @@ class _FakeWorkspaceCollection:
     """fake :class:`WorkspaceCollection` exposing :meth:`find_by_id`."""
 
     def __init__(self, workspaces: list[_FakeWorkspace]) -> None:
-        self._workspaces = workspaces
+        self.workspaces = workspaces
         self.find_by_id_calls: list[UUID] = []
 
     async def find_by_id(self, workspace_id: UUID) -> _FakeWorkspace | None:
         self.find_by_id_calls.append(workspace_id)
-        for ws in self._workspaces:
+        for ws in self.workspaces:
             if ws.id == workspace_id and ws.date_deleted is None:
                 return ws
         return None
@@ -104,10 +104,10 @@ class _FakeSandbox:
     """stand-in for :class:`WorkspaceSandbox`; resolve -> ``tmp_path / root / name``."""
 
     def __init__(self, roots: dict[str, Path]) -> None:
-        self._roots = roots
+        self.roots = roots
 
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
-        root = self._roots[root_name]
+        root = self.roots[root_name]
         candidate = (root / path).resolve()
         candidate.relative_to(root)
         return candidate
@@ -465,7 +465,7 @@ async def test_bind_different_root_name_yields_different_lease_key(
 ) -> None:
     """custom root_name produces a distinct lease key."""
     harness = _build_harness(tmp_path, initial_files=[])
-    harness["sandbox"]._roots["secondary"] = harness["bind_root"]
+    harness["sandbox"].roots["secondary"] = harness["bind_root"]
     async with await _call_bind(harness, root_name="secondary"):
         pass
     assert harness["lease"].acquired[0][1] == "bind:secondary"
@@ -485,7 +485,7 @@ async def test_bind_soft_deleted_workspace_raises(tmp_path: Path) -> None:
 async def test_bind_unknown_workspace_raises(tmp_path: Path) -> None:
     """bind on a workspace id the collection does not resolve raises ValueError."""
     harness = _build_harness(tmp_path, initial_files=[])
-    harness["workspace_coll"]._workspaces = []
+    harness["workspace_coll"].workspaces = []
     with pytest.raises(ValueError):
         async with await _call_bind(harness):
             pass
@@ -557,7 +557,7 @@ async def test_recover_unchanged_file_skipped(tmp_path: Path) -> None:
 async def test_recover_unknown_workspace_raises(tmp_path: Path) -> None:
     """recover on unknown workspace id raises ValueError."""
     harness = _build_harness(tmp_path, initial_files=[])
-    harness["workspace_coll"]._workspaces = []
+    harness["workspace_coll"].workspaces = []
     with pytest.raises(ValueError):
         await recover(
             workspace_id=harness["workspace_id"],

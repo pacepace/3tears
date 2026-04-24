@@ -127,7 +127,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return FakeRefEntity
 
     async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         row = await self.l3_pool.fetchrow(
             "SELECT * FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
             key[0],
@@ -159,7 +159,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return 1 if status else 0
 
     async def delete_from_postgres(self, entity_id: Any) -> None:
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         await self.l3_pool.execute(
             "DELETE FROM fake_refs WHERE conversation_id = $1 AND item_id = $2",
             key[0],

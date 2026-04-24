@@ -887,7 +887,7 @@ class TestL3PoolAccessor:
         # override must be registered BEFORE BaseCollection.__init__ reads it;
         # the collection's auto-register call happens last so we pre-stage
         # the override on the registry by hand.
-        reg._overrides["test_entities"] = {"l3_pool": override_pool}
+        reg.bind_table("test_entities", l3_pool=override_pool)
         coll = StubCollection(reg, config_always)
         assert coll.l3_pool is override_pool
 

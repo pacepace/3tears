@@ -57,7 +57,7 @@ class OpenAIChatProvider:
         self.timeout = timeout
         self._max_retries = max_retries
         self.model: Any = None
-        self._tools: list[ToolDefinition] | None = None
+        self.tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches ChatOpenAI instance.
@@ -86,8 +86,8 @@ class OpenAIChatProvider:
 
         base_model: Any = ChatOpenAI(**kwargs)
 
-        if self._tools:
-            lc_tools = [tool_def_to_lc(t) for t in self._tools]
+        if self.tools:
+            lc_tools = [tool_def_to_lc(t) for t in self.tools]
             base_model = base_model.bind_tools(lc_tools)
 
         self.model = base_model
@@ -137,7 +137,7 @@ class OpenAIChatProvider:
         :param tools: tool definitions available to model
         :ptype tools: list[ToolDefinition]
         """
-        self._tools = list(tools)
+        self.tools = list(tools)
         self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:

@@ -183,9 +183,9 @@ class TestOpenAIChatProvider:
         ]
         provider.bind_tools(tools)
 
-        assert provider._tools is not None
-        assert len(provider._tools) == 1
-        assert provider._tools[0].name == "get_weather"
+        assert provider.tools is not None
+        assert len(provider.tools) == 1
+        assert provider.tools[0].name == "get_weather"
         assert provider.model is None
 
     def test_preprocess_returns_messages(self) -> None:

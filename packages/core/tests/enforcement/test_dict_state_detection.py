@@ -80,7 +80,7 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
     (
         "core/cache/nats.py",
         "NatsClient",
-        "_buckets",
+        "buckets",
         "live NATS KV connection references, non-serializable",
     ),
     (
@@ -243,11 +243,17 @@ def _is_bad_value(node: ast.expr) -> bool:
 
 
 def _get_self_attr_name(target: ast.expr) -> str | None:
-    """extract attribute name from ``self._xxx`` target, or None.
+    """extract attribute name from ``self.xxx`` or ``self._xxx`` target, or None.
+
+    the walker accepts both public and private attribute names because
+    the Collection-primitive rule applies regardless of python name
+    privacy: a bespoke in-memory dict of domain state on a class that
+    also has cache-style public api is a cache wrapper and belongs in
+    a BaseCollection, whether the dict is named ``_cache`` or ``cache``.
 
     :param target: AST expression node representing assignment target
     :ptype target: ast.expr
-    :return: attribute name if target is self._xxx, else None
+    :return: attribute name if target is self.xxx, else None
     :rtype: str | None
     """
     if not isinstance(target, ast.Attribute):
@@ -255,8 +261,6 @@ def _get_self_attr_name(target: ast.expr) -> str | None:
     if not isinstance(target.value, ast.Name):
         return None
     if target.value.id != "self":
-        return None
-    if not target.attr.startswith("_"):
         return None
     result = target.attr
     return result

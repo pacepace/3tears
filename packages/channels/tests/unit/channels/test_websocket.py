@@ -634,7 +634,7 @@ class TestWebSocketHandlerConfig:
         router = _EchoRouter()
         config = {"heartbeat_interval": 15}
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth, config=config)
-        assert handler._config["heartbeat_interval"] == 15
+        assert handler.config["heartbeat_interval"] == 15
 
     @pytest.mark.asyncio
     async def test_handler_default_config(self) -> None:
@@ -643,7 +643,7 @@ class TestWebSocketHandlerConfig:
 
         router = _EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
-        assert isinstance(handler._config, dict)
+        assert isinstance(handler.config, dict)
 
 
 # ============================================================
@@ -817,7 +817,7 @@ class TestWebSocketHandlerHeartbeat:
 
         router = _EchoRouter()
         handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
-        assert handler._heartbeat_interval == 30
+        assert handler.heartbeat_interval == 30
 
     @pytest.mark.asyncio
     async def test_heartbeat_config_custom_interval(self) -> None:
@@ -830,7 +830,7 @@ class TestWebSocketHandlerHeartbeat:
             auth_validator=_valid_auth,
             config={"heartbeat_interval": 15},
         )
-        assert handler._heartbeat_interval == 15
+        assert handler.heartbeat_interval == 15
 
 
 # ============================================================
@@ -904,7 +904,7 @@ class TestWebSocketHandlerMessageSizeEnforcement:
             auth_validator=_valid_auth,
             config={"max_message_size": 1024},
         )
-        assert handler._max_message_size == 1024
+        assert handler.max_message_size == 1024
 
 
 class TestWebSocketHandlerRateLimiting:
@@ -1006,5 +1006,5 @@ class TestWebSocketHandlerRateLimiting:
                 "rate_limit_window": 5.0,
             },
         )
-        assert handler._rate_limit_messages == 20
-        assert handler._rate_limit_window == 5.0
+        assert handler.rate_limit_messages == 20
+        assert handler.rate_limit_window == 5.0

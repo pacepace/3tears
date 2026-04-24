@@ -50,6 +50,25 @@ select = ["SLF"]
 # the public sys.settrace alternative has different semantics. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
+# test monkeypatches module-level _otel_available cache sentinel to exercise
+# both the "otel installed" and "otel missing" branches; the sentinel is an
+# import-time implementation anchor with no public accessor (would become a
+# new public api surface just for tests; no library caller needs it). paired
+# entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/tests/test_tracing.py" = ["SLF001"]
+# test monkeypatches module-level _HAS_DUCKDB import-availability sentinel to
+# force the ImportError branch without uninstalling the duckdb package.
+# Analogous to _otel_available above: a stable import-time anchor that tests
+# legitimately observe; no public accessor warranted. paired entry lives in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_duckdb_backend.py" = ["SLF001"]
+# autouse fixture clears the module-level _RESOLVED cache between tests so
+# import-order does not leak stub-resolved entries across cases. the cache
+# itself is an import-time implementation-stable anchor for the
+# import-at-most-once contract; no public clear-cache helper on the module
+# because the only legitimate caller is this test fixture. paired entry
+# lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/agent-workspace/tests/unit/test_validators.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

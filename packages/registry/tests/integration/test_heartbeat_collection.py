@@ -419,9 +419,9 @@ class TestHeartbeatSubscriberFlow:
             }
         )
         await collection.save_entity(stale_entity)
-        subscriber._known_pod_ids.add("pod-stale")
+        subscriber.track_pod("pod-stale")
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         # pod removed from subscriber's known-set and Collection
         assert "pod-stale" not in subscriber.known_pod_ids

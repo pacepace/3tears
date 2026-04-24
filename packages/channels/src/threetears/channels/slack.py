@@ -65,9 +65,9 @@ class SlackAdapter:
         :ptype config: dict[str, Any] | None
         """
         self._app = AsyncApp(token=bot_token)
-        self._app_token = app_token
-        self._router = router
-        self._config: dict[str, Any] = config if config is not None else {}
+        self.app_token = app_token
+        self.router = router
+        self.config: dict[str, Any] = config if config is not None else {}
         self._handler: AsyncSocketModeHandler | None = None
 
         self._app.event("message")(self.handle_message_event)
@@ -77,7 +77,7 @@ class SlackAdapter:
 
         creates AsyncSocketModeHandler and initiates websocket connection.
         """
-        self._handler = AsyncSocketModeHandler(self._app, self._app_token)
+        self._handler = AsyncSocketModeHandler(self._app, self.app_token)
         await self._handler.start_async()
 
     async def stop(self) -> None:
@@ -143,7 +143,7 @@ class SlackAdapter:
             timestamp=datetime.now(UTC),
         )
 
-        response = await self._router.route_inbound(channel_message)
+        response = await self.router.route_inbound(channel_message)
 
         if response is None:
             return

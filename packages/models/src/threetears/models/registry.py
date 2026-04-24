@@ -6,10 +6,11 @@ import importlib
 from types import ModuleType
 
 __all__ = [
+    "BUILTIN_PROVIDERS",
     "ProviderRegistry",
 ]
 
-_BUILTIN_PROVIDERS: dict[str, str] = {
+BUILTIN_PROVIDERS: dict[str, str] = {
     "anthropic": "threetears.models.providers.anthropic",
     "openai": "threetears.models.providers.openai",
     "openrouter": "threetears.models.providers.openrouter",
@@ -27,7 +28,7 @@ class ProviderRegistry:
     """
 
     def __init__(self) -> None:
-        self._providers: dict[str, str] = dict(_BUILTIN_PROVIDERS)
+        self._providers: dict[str, str] = dict(BUILTIN_PROVIDERS)
         self._modules: dict[str, ModuleType] = {}
 
     def register(self, name: str, import_path: str) -> None:
@@ -66,7 +67,7 @@ class ProviderRegistry:
             try:
                 module = importlib.import_module(import_path)
             except ImportError as exc:
-                if name in _BUILTIN_PROVIDERS:
+                if name in BUILTIN_PROVIDERS:
                     raise ImportError(
                         f"Failed to import provider '{name}' from "
                         f"'{import_path}': {exc}. "

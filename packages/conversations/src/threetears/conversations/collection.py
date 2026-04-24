@@ -150,7 +150,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         :param write_buffer: optional shared write buffer
         :ptype write_buffer: WriteBuffer | None
         """
-        self._postgres_pool = postgres_pool
+        self.postgres_pool = postgres_pool
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -182,7 +182,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         :return: row dict or ``None`` if missing
         :rtype: dict[str, Any] | None
         """
-        row = await self._postgres_pool.fetchrow(
+        row = await self.postgres_pool.fetchrow(
             "SELECT * FROM conversations WHERE id = $1", entity_id
         )
         result: dict[str, Any] | None = None if row is None else dict(row)
@@ -221,7 +221,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
                 "date_last_message = EXCLUDED.date_last_message, "
                 "metadata = EXCLUDED.metadata"
             )
-            result = await self._postgres_pool.execute(
+            result = await self.postgres_pool.execute(
                 sql_insert,
                 data["id"],
                 data["agent_id"],
@@ -243,7 +243,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
                 "date_last_message = $5, metadata = $6 "
                 "WHERE id = $1 AND date_updated = $7"
             )
-            result = await self._postgres_pool.execute(
+            result = await self.postgres_pool.execute(
                 sql_update,
                 data["id"],
                 data["status"],
@@ -263,7 +263,7 @@ class ConversationsCollection(BaseCollection[Conversation]):
         :param entity_id: conversation UUID
         :ptype entity_id: Any
         """
-        await self._postgres_pool.execute(
+        await self.postgres_pool.execute(
             "DELETE FROM conversations WHERE id = $1", entity_id
         )
 
@@ -320,13 +320,13 @@ class ConversationsCollection(BaseCollection[Conversation]):
         :rtype: list[Conversation]
         """
         if include_closed:
-            rows = await self._postgres_pool.fetch(
+            rows = await self.postgres_pool.fetch(
                 "SELECT * FROM conversations WHERE user_id = $1 "
                 "ORDER BY date_created DESC",
                 user_id,
             )
         else:
-            rows = await self._postgres_pool.fetch(
+            rows = await self.postgres_pool.fetch(
                 "SELECT * FROM conversations WHERE user_id = $1 AND status != $2 "
                 "ORDER BY date_created DESC",
                 user_id,

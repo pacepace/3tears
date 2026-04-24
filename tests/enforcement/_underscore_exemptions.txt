@@ -32,3 +32,29 @@ packages/agent-tools/tests/unit/tools/test_bridge.py:162:_run
 packages/agent-tools/tests/unit/tools/test_bridge.py:177:_arun
 # rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes _arun directly to verify the success=False + None error fallback path (falls back to content string).
 packages/agent-tools/tests/unit/tools/test_bridge.py:231:_arun
+# rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
+packages/observe/tests/test_tracing.py:24:_otel_available
+# rationale: fixture restores module-level _otel_available cache between tests so import-order does not leak patched state.
+packages/observe/tests/test_tracing.py:26:_otel_available
+# rationale: test resets module-level _otel_available sentinel to None to force the first-call cache-population path through _check_otel().
+packages/observe/tests/test_tracing.py:35:_otel_available
+# rationale: test resets module-level _otel_available sentinel to None so the next _check_otel() call populates the cache under test observation.
+packages/observe/tests/test_tracing.py:43:_otel_available
+# rationale: test asserts module-level _otel_available is no longer None after _check_otel() runs -- pins the memoization invariant.
+packages/observe/tests/test_tracing.py:45:_otel_available
+# rationale: test captures the cached module-level _otel_available value to compare identity across repeated _check_otel() calls.
+packages/observe/tests/test_tracing.py:47:_otel_available
+# rationale: test asserts the module-level _otel_available cache value is stable across repeated _check_otel() calls (identity check).
+packages/observe/tests/test_tracing.py:49:_otel_available
+# rationale: test forces module-level _otel_available to False to exercise the traced-decorator passthrough branch when OTel reports unavailable.
+packages/observe/tests/test_tracing.py:178:_otel_available
+# rationale: test forces module-level _otel_available to False to exercise the async-traced-decorator passthrough branch when OTel reports unavailable.
+packages/observe/tests/test_tracing.py:189:_otel_available
+# rationale: test reads module-level _HAS_DUCKDB import-availability sentinel to snapshot the original value before monkeypatching it to False for the ImportError-branch test.
+packages/core/tests/test_duckdb_backend.py:55:_HAS_DUCKDB
+# rationale: test monkeypatches module-level _HAS_DUCKDB to False to force DuckDBBackend.__init__()'s ImportError branch without uninstalling the optional duckdb extra.
+packages/core/tests/test_duckdb_backend.py:58:_HAS_DUCKDB
+# rationale: test restores module-level _HAS_DUCKDB to its original import-time value after the ImportError-branch assertion so subsequent tests see the real sentinel.
+packages/core/tests/test_duckdb_backend.py:62:_HAS_DUCKDB
+# rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
+packages/agent-workspace/tests/unit/test_validators.py:138:_RESOLVED

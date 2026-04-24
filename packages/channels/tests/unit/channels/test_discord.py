@@ -310,7 +310,7 @@ class TestDiscordAdapterConstructor:
             bot_token="test-bot-token",
             router=router,
         )
-        assert adapter._router is router
+        assert adapter.router is router
 
     @patch("threetears.channels.discord.discord")
     def test_stores_config(self, mock_discord: MagicMock) -> None:
@@ -324,7 +324,7 @@ class TestDiscordAdapterConstructor:
             router=router,
             config=config,
         )
-        assert adapter._config == config
+        assert adapter.config == config
 
     @patch("threetears.channels.discord.discord")
     def test_config_defaults_to_empty_dict(self, mock_discord: MagicMock) -> None:
@@ -336,7 +336,7 @@ class TestDiscordAdapterConstructor:
             bot_token="test-bot-token",
             router=router,
         )
-        assert adapter._config == {}
+        assert adapter.config == {}
 
     @patch("threetears.channels.discord.discord")
     def test_stores_bot_token(self, mock_discord: MagicMock) -> None:
@@ -348,7 +348,7 @@ class TestDiscordAdapterConstructor:
             bot_token="test-bot-token",
             router=router,
         )
-        assert adapter._bot_token == "test-bot-token"
+        assert adapter.bot_token == "test-bot-token"
 
 
 # ---------------------------------------------------------------------------

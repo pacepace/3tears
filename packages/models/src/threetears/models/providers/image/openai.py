@@ -47,8 +47,8 @@ class OpenAIImageProvider:
         self._api_key = api_key
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
-        self._size = size
-        self._quality = quality
+        self.size = size
+        self.quality = quality
         self.timeout = timeout
 
     async def generate(
@@ -95,7 +95,7 @@ class OpenAIImageProvider:
         data = response.json()
         b64_data = data["data"][0]["b64_json"]
         image_bytes = base64.b64decode(b64_data)
-        w, h = self._size.split("x")
+        w, h = self.size.split("x")
 
         result = GeneratedImage(
             data=image_bytes,
@@ -128,8 +128,8 @@ class OpenAIImageProvider:
         payload: dict[str, str | int] = {
             "model": self.model_name,
             "prompt": prompt,
-            "size": self._size,
-            "quality": self._quality,
+            "size": self.size,
+            "quality": self.quality,
             "response_format": "b64_json",
             "n": 1,
         }
@@ -171,7 +171,7 @@ class OpenAIImageProvider:
         data = {
             "model": self.model_name,
             "prompt": prompt,
-            "size": self._size,
+            "size": self.size,
             "response_format": "b64_json",
             "n": "1",
         }

@@ -263,13 +263,13 @@ class WebSocketHandler:
         :param config: optional handler configuration overrides
         :ptype config: dict[str, Any] | None
         """
-        self._router = router
+        self.router = router
         self._auth_validator = auth_validator
-        self._config: dict[str, Any] = config if config is not None else {}
-        self._heartbeat_interval: int = self._config.get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
-        self._max_message_size: int = self._config.get("max_message_size", _DEFAULT_MAX_MESSAGE_SIZE)
-        self._rate_limit_messages: int = self._config.get("rate_limit_messages", _DEFAULT_RATE_LIMIT_MESSAGES)
-        self._rate_limit_window: float = self._config.get("rate_limit_window", _DEFAULT_RATE_LIMIT_WINDOW)
+        self.config: dict[str, Any] = config if config is not None else {}
+        self.heartbeat_interval: int = self.config.get("heartbeat_interval", _DEFAULT_HEARTBEAT_INTERVAL)
+        self.max_message_size: int = self.config.get("max_message_size", _DEFAULT_MAX_MESSAGE_SIZE)
+        self.rate_limit_messages: int = self.config.get("rate_limit_messages", _DEFAULT_RATE_LIMIT_MESSAGES)
+        self.rate_limit_window: float = self.config.get("rate_limit_window", _DEFAULT_RATE_LIMIT_WINDOW)
         self.registry = ConnectionRegistry()
 
     async def handle_connection(self, websocket: Any) -> None:
@@ -351,7 +351,7 @@ class WebSocketHandler:
         :param user_id: identifier of authenticated user
         :ptype user_id: str
         """
-        is_streaming = isinstance(self._router, StreamingChannelRouter)
+        is_streaming = isinstance(self.router, StreamingChannelRouter)
 
         rate_window_start = time.monotonic()
         rate_message_count = 0
@@ -366,16 +366,16 @@ class WebSocketHandler:
                 )
                 break
 
-            if len(raw) > self._max_message_size:
+            if len(raw) > self.max_message_size:
                 await websocket.send_text(json.dumps({"type": "error", "message": "message too large"}))
                 continue
 
             now = time.monotonic()
-            if now - rate_window_start >= self._rate_limit_window:
+            if now - rate_window_start >= self.rate_limit_window:
                 rate_window_start = now
                 rate_message_count = 0
             rate_message_count += 1
-            if rate_message_count > self._rate_limit_messages:
+            if rate_message_count > self.rate_limit_messages:
                 await websocket.send_text(json.dumps({"type": "error", "message": "rate limit exceeded"}))
                 continue
 
@@ -415,7 +415,7 @@ class WebSocketHandler:
         :param message: normalized inbound message
         :ptype message: ChannelMessage
         """
-        response = await self._router.route_inbound(message)
+        response = await self.router.route_inbound(message)
         if response is None:
             return
         await websocket.send_text(
@@ -448,7 +448,7 @@ class WebSocketHandler:
             """
             await websocket.send_text(json.dumps({"type": "stream", "content": token}))
 
-        response = await self._router.route_inbound_streaming(message, send_token)
+        response = await self.router.route_inbound_streaming(message, send_token)
         if response is None:
             return
         await websocket.send_text(

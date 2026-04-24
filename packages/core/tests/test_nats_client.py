@@ -22,7 +22,7 @@ def client_with_bucket() -> tuple[NatsClient, AsyncMock, str]:
     c = NatsClient()
     mock_kv = AsyncMock()
     bucket = c.bucket_name("collections")
-    c._buckets[bucket] = mock_kv
+    c.buckets[bucket] = mock_kv
     return c, mock_kv, bucket
 
 
@@ -264,16 +264,16 @@ class TestGetEntry:
 class TestPing:
     @pytest.mark.asyncio
     async def test_ping_success(self, client: NatsClient) -> None:
-        client._js = AsyncMock()
+        client.js = AsyncMock()
 
         result = await client.ping()
         assert result is True
-        client._js.account_info.assert_awaited_once()
+        client.js.account_info.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_ping_failure(self, client: NatsClient) -> None:
-        client._js = AsyncMock()
-        client._js.account_info.side_effect = RuntimeError("unreachable")
+        client.js = AsyncMock()
+        client.js.account_info.side_effect = RuntimeError("unreachable")
 
         result = await client.ping()
         assert result is False
@@ -288,7 +288,7 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_drains(self, client: NatsClient) -> None:
         mock_nc = AsyncMock()
-        client._nc = mock_nc
+        client.nc = mock_nc
 
         await client.close()
 

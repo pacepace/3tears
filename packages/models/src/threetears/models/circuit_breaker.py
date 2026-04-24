@@ -71,8 +71,8 @@ class CircuitBreaker:
         self._failure_threshold = failure_threshold
         self._recovery_timeout_seconds = recovery_timeout_seconds
         self._state = CircuitState.CLOSED
-        self._failure_count = 0
-        self._last_failure_time: float = 0.0
+        self.failure_count = 0
+        self.last_failure_time: float = 0.0
         self._lock = threading.Lock()
 
     @property
@@ -100,7 +100,7 @@ class CircuitBreaker:
             if self._state == CircuitState.HALF_OPEN:
                 return
 
-            elapsed = time.monotonic() - self._last_failure_time
+            elapsed = time.monotonic() - self.last_failure_time
             if elapsed >= self._recovery_timeout_seconds:
                 self._state = CircuitState.HALF_OPEN
                 logger.warning(
@@ -121,7 +121,7 @@ class CircuitBreaker:
         with self._lock:
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.CLOSED
-                self._failure_count = 0
+                self.failure_count = 0
                 logger.warning(
                     "circuit breaker transitioning to CLOSED for %s",
                     self._provider_name,
@@ -129,7 +129,7 @@ class CircuitBreaker:
                 return
 
             if self._state == CircuitState.CLOSED:
-                self._failure_count = 0
+                self.failure_count = 0
                 return
 
     def record_failure(self) -> None:
@@ -140,8 +140,8 @@ class CircuitBreaker:
         failure count reaches threshold.
         """
         with self._lock:
-            self._failure_count += 1
-            self._last_failure_time = time.monotonic()
+            self.failure_count += 1
+            self.last_failure_time = time.monotonic()
 
             if self._state == CircuitState.HALF_OPEN:
                 self._state = CircuitState.OPEN
@@ -151,12 +151,12 @@ class CircuitBreaker:
                 )
                 return
 
-            if self._state == CircuitState.CLOSED and self._failure_count >= self._failure_threshold:
+            if self._state == CircuitState.CLOSED and self.failure_count >= self._failure_threshold:
                 self._state = CircuitState.OPEN
                 logger.warning(
                     "circuit breaker opening for %s after %d failures",
                     self._provider_name,
-                    self._failure_count,
+                    self.failure_count,
                 )
                 return
 
@@ -167,7 +167,7 @@ class CircuitBreaker:
         """
         with self._lock:
             self._state = CircuitState.CLOSED
-            self._failure_count = 0
+            self.failure_count = 0
             logger.info(
                 "circuit breaker manually reset for %s",
                 self._provider_name,

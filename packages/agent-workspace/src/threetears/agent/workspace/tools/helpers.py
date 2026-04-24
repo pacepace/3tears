@@ -190,7 +190,7 @@ if TYPE_CHECKING:
     from threetears.agent.workspace.config import ValidatorEntry
     from threetears.agent.workspace.entities import Workspace
 
-from threetears.agent.workspace import pin as _pin
+from threetears.agent.workspace import pin as pin_module
 from threetears.agent.workspace.validators import dispatch_validators
 
 
@@ -496,7 +496,7 @@ async def _resolve_workspace(
         if result is None:
             raise WorkspaceNotFound(f"workspace {workspace_arg!r} not found")
     else:
-        snapshot = await _pin.get_pin(context)
+        snapshot = await pin_module.get_pin(context)
         if snapshot is None:
             raise NoWorkspacePinned("no workspace pinned; call workspace.use(name) first")
         result = await workspace_collection.find_by_id_and_agent(snapshot.workspace_id, agent_id)

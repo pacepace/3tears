@@ -409,8 +409,8 @@ class TestCallProxyTimeout:
         await catalog.register(entry)
 
         proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
-        assert proxy._timeout == 120.0, (
-            f"CallProxy default is {proxy._timeout}s but must be 120s. "
+        assert proxy.timeout == 120.0, (
+            f"CallProxy default is {proxy.timeout}s but must be 120s. "
             f"Hardcoded 30s killed slow tools for an entire day."
         )
 

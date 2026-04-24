@@ -72,8 +72,8 @@ class TestOpenAIImageProvider:
         provider = OpenAIImageProvider("sk-test")
         assert provider.model_name == "dall-e-3"
         assert provider.base_url == "https://api.openai.com/v1"
-        assert provider._size == "1024x1024"
-        assert provider._quality == "standard"
+        assert provider.size == "1024x1024"
+        assert provider.quality == "standard"
         assert provider.timeout == 120
 
     @pytest.mark.asyncio

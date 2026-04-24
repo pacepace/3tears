@@ -97,6 +97,7 @@ def _make_subscriber(
     *,
     timeout: float = 30.0,
     check_interval: float = 5.0,
+    namespace: str = "test",
 ) -> tuple[HeartbeatSubscriber, HeartbeatCollection]:
     """build subscriber + collection pair for tests.
 
@@ -107,6 +108,8 @@ def _make_subscriber(
     :ptype timeout: float
     :param check_interval: sweep interval
     :ptype check_interval: float
+    :param namespace: NATS subject namespace for heartbeat subscription
+    :ptype namespace: str
     :return: (subscriber, collection) pair
     :rtype: tuple[HeartbeatSubscriber, HeartbeatCollection]
     """
@@ -115,7 +118,7 @@ def _make_subscriber(
     subscriber = HeartbeatSubscriber(
         cat,
         collection,
-        namespace="test",
+        namespace=namespace,
         check_interval=check_interval,
         timeout=timeout,
     )
@@ -192,7 +195,7 @@ class TestHeartbeatSubscriberHandling:
             }
         )
         await collection.save_entity(stale_entity)
-        subscriber._known_pod_ids.add("pod-001")
+        subscriber.track_pod("pod-001")
 
         msg = _make_heartbeat_msg(pod_id="pod-001")
         await subscriber.handle_heartbeat(msg)
@@ -279,9 +282,9 @@ class TestHeartbeatSubscriberHealthCheck:
             }
         )
         await collection.save_entity(stale_entity)
-        subscriber._known_pod_ids.add("pod-stale")
+        subscriber.track_pod("pod-stale")
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert "pod-stale" not in subscriber.known_pod_ids
         assert await collection.get("pod-stale") is None
@@ -308,9 +311,9 @@ class TestHeartbeatSubscriberHealthCheck:
             }
         )
         await collection.save_entity(healthy_entity)
-        subscriber._known_pod_ids.add("pod-healthy")
+        subscriber.track_pod("pod-healthy")
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert "pod-healthy" in subscriber.known_pod_ids
         assert catalog.get("threetears.calculator@1.0.0") is not None
@@ -358,9 +361,9 @@ class TestHeartbeatSubscriberHealthCheck:
         )
         await collection.save_entity(stale_entity)
         await collection.save_entity(healthy_entity)
-        subscriber._known_pod_ids.update({"pod-stale", "pod-healthy"})
+        subscriber.track_pods({"pod-stale", "pod-healthy"})
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert "pod-stale" not in subscriber.known_pod_ids
         assert "pod-healthy" in subscriber.known_pod_ids
@@ -404,9 +407,9 @@ class TestHeartbeatSubscriberHealthCheck:
                 }
             )
             await collection.save_entity(entity)
-            subscriber._known_pod_ids.add(pod_id)
+            subscriber.track_pod(pod_id)
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert subscriber.known_pod_ids == set()
         assert catalog.get("tool.alpha@1.0") is None
@@ -433,9 +436,9 @@ class TestHeartbeatSubscriberHealthCheck:
             }
         )
         await collection.save_entity(stale_entity)
-        subscriber._known_pod_ids.add("pod-miss")
+        subscriber.track_pod("pod-miss")
 
-        await subscriber._run_health_check()
+        await subscriber.run_health_check()
 
         assert "pod-miss" not in subscriber.known_pod_ids
 
@@ -450,8 +453,7 @@ class TestHeartbeatSubscriberLifecycle:
     async def test_start_subscribes_to_heartbeat_wildcard(self) -> None:
         """start subscribes to {namespace}.tools.heartbeat.>."""
         catalog = ToolCatalog()
-        subscriber, _ = _make_subscriber(catalog=catalog)
-        subscriber._namespace = "myns"
+        subscriber, _ = _make_subscriber(catalog=catalog, namespace="myns")
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
@@ -469,9 +471,9 @@ class TestHeartbeatSubscriberLifecycle:
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await subscriber.start(nc)
-        assert subscriber._check_task is not None
+        assert subscriber.has_active_check_task is True
         await subscriber.stop()
-        assert subscriber._check_task is None
+        assert subscriber.has_active_check_task is False
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:

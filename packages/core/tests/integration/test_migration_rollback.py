@@ -283,7 +283,7 @@ class TestScenarioB_MidSequenceRollback:
             await store.execute("CREATE TABLE broken_table (THIS_IS_NOT_VALID_SQL)")
 
         conversations_pkg = runner.packages["conversations"]
-        conversations_pkg._versions[99] = broken_migration
+        conversations_pkg.version(99)(broken_migration)
 
         conn = await asyncpg.connect(url)
         try:

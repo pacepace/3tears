@@ -35,12 +35,12 @@ class WorkspaceFileLease:
     targeting the same file in the same workspace serialize cleanly while
     distinct workspaces or distinct files remain concurrent.
 
-    :cvar _MAX_KEY_LEN: practical NATS KV key length ceiling; raw keys
+    :cvar MAX_KEY_LEN: practical NATS KV key length ceiling; raw keys
         longer than this fall through to the sha256-bounded form so bucket
         writes never fail on length.
     """
 
-    _MAX_KEY_LEN = 200
+    MAX_KEY_LEN = 200
 
     def __init__(
         self,
@@ -105,7 +105,7 @@ class WorkspaceFileLease:
         """acquire lease for ``(workspace_id, relative_path)``.
 
         delegates to :meth:`KVLease.acquire` with a namespaced key built
-        by :meth:`_make_key`. returns the raw core :class:`LeaseHandle`
+        by :meth:`make_key`. returns the raw core :class:`LeaseHandle`
         so callers use the same refresh/release surface regardless of
         which wrapper created the lease.
 
@@ -123,18 +123,18 @@ class WorkspaceFileLease:
         :raises LeaseUnavailable: if ``max_wait_seconds == 0`` and key is held
         :raises LeaseTimeout: if deadline elapses before lease becomes free
         """
-        key = self._make_key(workspace_id, relative_path)
+        key = self.make_key(workspace_id, relative_path)
         return await self._kvlease.acquire(
             key,
             ttl_seconds=ttl_seconds,
             max_wait_seconds=max_wait_seconds,
         )
 
-    def _make_key(self, workspace_id: UUID, relative_path: str) -> str:
+    def make_key(self, workspace_id: UUID, relative_path: str) -> str:
         """build namespaced KV key for ``(workspace_id, relative_path)``.
 
         raw form ``workspace:{workspace_id.hex}:{relative_path}`` is used
-        when total length is within :attr:`_MAX_KEY_LEN`; otherwise the
+        when total length is within :attr:`MAX_KEY_LEN`; otherwise the
         relative path is sha256-hashed so the key length is bounded
         regardless of input path length. workspace id remains readable in
         both forms for operational debugging.
@@ -147,7 +147,7 @@ class WorkspaceFileLease:
         :rtype: str
         """
         raw = f"workspace:{workspace_id.hex}:{relative_path}"
-        if len(raw) <= self._MAX_KEY_LEN:
+        if len(raw) <= self.MAX_KEY_LEN:
             result = raw
         else:
             digest = hashlib.sha256(relative_path.encode("utf-8")).hexdigest()

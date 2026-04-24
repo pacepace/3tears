@@ -155,11 +155,11 @@ class PathSandbox(Sandbox):
     action vocabulary is ``{"read", "write"}``; unknown actions deny by
     default.
 
-    :cvar _MAX_KEY_LEN: maximum accepted length for any relative key;
+    :cvar MAX_KEY_LEN: maximum accepted length for any relative key;
         keys longer than this are rejected before pattern matching
     """
 
-    _MAX_KEY_LEN = 512
+    MAX_KEY_LEN = 512
 
     def __init__(
         self,
@@ -215,7 +215,7 @@ class PathSandbox(Sandbox):
         validation sequence (first failing rule returns DENY):
 
         1. key is non-empty
-        2. ``len(key) <= _MAX_KEY_LEN``
+        2. ``len(key) <= MAX_KEY_LEN``
         3. no NUL byte nor control character (``ord(c) < 32``) except
            ``\\t`` and ``\\n``
         4. key is not absolute (no leading ``/``, no windows drive letter)
@@ -255,11 +255,11 @@ class PathSandbox(Sandbox):
         """
         if not key:
             raise SandboxDenied("access", key, "key is empty")
-        if len(key) > self._MAX_KEY_LEN:
+        if len(key) > self.MAX_KEY_LEN:
             raise SandboxDenied(
                 "access",
                 key,
-                f"key length {len(key)} exceeds max {self._MAX_KEY_LEN}",
+                f"key length {len(key)} exceeds max {self.MAX_KEY_LEN}",
             )
         if self._contains_control_char(key):
             raise SandboxDenied(
@@ -354,10 +354,10 @@ class PathSandbox(Sandbox):
         result: tuple[SandboxDecision, str]
         if not key:
             result = (SandboxDecision.DENY, "key is empty")
-        elif len(key) > self._MAX_KEY_LEN:
+        elif len(key) > self.MAX_KEY_LEN:
             result = (
                 SandboxDecision.DENY,
-                f"key length {len(key)} exceeds max {self._MAX_KEY_LEN}",
+                f"key length {len(key)} exceeds max {self.MAX_KEY_LEN}",
             )
         elif self._contains_control_char(key):
             result = (

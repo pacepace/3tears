@@ -256,7 +256,7 @@ async def test_fs_read_no_workspace_and_no_pin_returns_clean_error(
     async def _no_pin(context: Any) -> Any:
         return None
 
-    monkeypatch.setattr(helpers_module._pin, "get_pin", _no_pin)
+    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _no_pin)
     tool, _files, _sandbox, _ = _build_tool(acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="x")
     assert result.success is False

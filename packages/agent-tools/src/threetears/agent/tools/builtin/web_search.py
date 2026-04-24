@@ -104,8 +104,8 @@ class WebSearchTool(TearsTool):
         :param base_url: base URL of SearXNG instance (trailing slash stripped)
         :ptype base_url: str
         """
-        self._base_url = base_url.rstrip("/")
-        self._search_fn = _create_search_fn(self._base_url)
+        self.base_url = base_url.rstrip("/")
+        self._search_fn = _create_search_fn(self.base_url)
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """perform web search.

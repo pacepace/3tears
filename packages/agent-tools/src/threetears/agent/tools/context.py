@@ -82,7 +82,7 @@ class ToolContextManager:
 
         # Local projection of collection data for this conversation.
         # Populated by load_context(), updated by write methods.
-        self._items: list[dict[str, Any]] = []
+        self.items: list[dict[str, Any]] = []
 
         # Ordered projection of surfaced memory-ref rows (FIFO), mirror
         # of the rows persisted via :class:`MemoryRefsCollection`. The
@@ -109,9 +109,9 @@ class ToolContextManager:
         projection stays empty and surfacing operations become no-ops.
         """
         entities = await self._collection.find_by_conversation(self.conversation_id)
-        self._items = []
+        self.items = []
         for entity in entities:
-            self._items.append(entity.to_dict())
+            self.items.append(entity.to_dict())
         self._memory_refs_projection = []
         if self._memory_refs is not None:
             refs = await self._memory_refs.find_by_conversation(
@@ -133,9 +133,9 @@ class ToolContextManager:
 
     async def set_variable(self, key: str, value: str, value_type: str = "string") -> str:
         """Set or update a variable.  Returns the context_id."""
-        var_count = sum(1 for i in self._items if i["context_type"] == "variable")
+        var_count = sum(1 for i in self.items if i["context_type"] == "variable")
         existing = next(
-            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            (i for i in self.items if i["context_type"] == "variable" and i["key"] == key),
             None,
         )
         if existing is None and var_count >= self._var_limit:
@@ -164,15 +164,15 @@ class ToolContextManager:
         context_id_str = str(returned_id)
 
         # Update local projection
-        self._items = [i for i in self._items if not (i["context_type"] == "variable" and i["key"] == key)]
+        self.items = [i for i in self.items if not (i["context_type"] == "variable" and i["key"] == key)]
         data["context_id"] = returned_id
-        self._items.append(data)
+        self.items.append(data)
 
         return context_id_str
 
     async def get_variable(self, key: str) -> dict[str, Any] | None:
         """Get a variable by key, or ``None`` if not found."""
-        for item in self._items:
+        for item in self.items:
             if item["context_type"] == "variable" and item["key"] == key:
                 vtype = (item.get("metadata") or {}).get("value_type", "string")
                 return {"value": item["content"], "value_type": vtype}
@@ -180,18 +180,18 @@ class ToolContextManager:
 
     async def get_all_variables(self) -> list[dict[str, Any]]:
         """Return all variables as a list of dicts."""
-        return [i for i in self._items if i["context_type"] == "variable"]
+        return [i for i in self.items if i["context_type"] == "variable"]
 
     async def delete_variable(self, key: str) -> bool:
         """Delete a variable by key.  Returns ``True`` if it existed."""
         target = next(
-            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            (i for i in self.items if i["context_type"] == "variable" and i["key"] == key),
             None,
         )
         if target is None:
             return False
 
-        self._items = [i for i in self._items if i is not target]
+        self.items = [i for i in self.items if i is not target]
         await self._collection.delete(target["context_id"])
         return True
 
@@ -271,7 +271,7 @@ class ToolContextManager:
         await self._collection.save_entity(
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
-        self._items.append(data)
+        self.items.append(data)
 
         # LRU eviction
         if self._result_limit is not None:
@@ -280,12 +280,12 @@ class ToolContextManager:
                 # Refresh local projection to drop evicted items
                 evicted_ids = {
                     str(i["context_id"])
-                    for i in self._items
+                    for i in self.items
                     if i["context_type"] == "tool_result"
                     and not self._collection.exists_in_cache_sync(i["context_id"])
                 }
                 if evicted_ids:
-                    self._items = [i for i in self._items if str(i["context_id"]) not in evicted_ids]
+                    self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
 
         return str(context_id)
 
@@ -297,7 +297,7 @@ class ToolContextManager:
         cid = str(context_id)
         if cid.startswith("ctx:"):
             cid = cid[4:]
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
                 await self._collection.touch(cid)
                 item["date_accessed"] = datetime.now(UTC)
@@ -316,7 +316,7 @@ class ToolContextManager:
         :rtype: str | None
         """
         cid = str(context_id)
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
                 val: str | None = item.get("long_desc", "")
                 return val
@@ -331,7 +331,7 @@ class ToolContextManager:
         :rtype: dict[str, Any] | None
         """
         cid = str(context_id)
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
                 return item
         return None
@@ -360,7 +360,7 @@ class ToolContextManager:
         :rtype: dict[str, Any] | None
         """
         result: dict[str, Any] | None = None
-        for item in self._items:
+        for item in self.items:
             if item["context_type"] == context_type and item["key"] == key:
                 result = item
                 break
@@ -402,7 +402,7 @@ class ToolContextManager:
         # every storage tier (local projection, L1, L2, L3).
         existing = await self.get_item_by_type_and_key(context_type, key)
         if existing is not None:
-            self._items = [i for i in self._items if i is not existing]
+            self.items = [i for i in self.items if i is not existing]
             await self._collection.delete(existing["context_id"])
 
         now = datetime.now(UTC)
@@ -427,7 +427,7 @@ class ToolContextManager:
                 collection=self._collection,
             )
         )
-        self._items.append(data)
+        self.items.append(data)
         return str(context_id)
 
     async def delete_item_by_type_and_key(
@@ -452,7 +452,7 @@ class ToolContextManager:
         if existing is None:
             result = False
         else:
-            self._items = [i for i in self._items if i is not existing]
+            self.items = [i for i in self.items if i is not existing]
             await self._collection.delete(existing["context_id"])
             result = True
         return result
@@ -482,16 +482,16 @@ class ToolContextManager:
         await self._collection.save_entity(
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
-        self._items.append(data)
+        self.items.append(data)
         return str(context_id)
 
     def get_slots(self) -> dict[str, dict[str, Any]]:
         """Return all registered media slots."""
-        return {i["key"]: i for i in self._items if i["context_type"] == "media_slot"}
+        return {i["key"]: i for i in self.items if i["context_type"] == "media_slot"}
 
     def build_media_context(self) -> str | None:
         """Format media slots into a prompt string, or ``None`` if empty."""
-        slots = [i for i in self._items if i["context_type"] == "media_slot"]
+        slots = [i for i in self.items if i["context_type"] == "media_slot"]
         if not slots:
             return None
         lines = ["[Active Media Slots]"]
@@ -689,8 +689,8 @@ class ToolContextManager:
 
         Returns ``None`` if there is no context to include.
         """
-        variables = [i for i in self._items if i["context_type"] == "variable"]
-        tool_results = [i for i in self._items if i["context_type"] == "tool_result"]
+        variables = [i for i in self.items if i["context_type"] == "variable"]
+        tool_results = [i for i in self.items if i["context_type"] == "tool_result"]
 
         if not variables and not tool_results:
             return None
@@ -715,4 +715,4 @@ class ToolContextManager:
     @property
     def has_context(self) -> bool:
         """Whether there is any context (variables, tool results, or media)."""
-        return bool(self._items)
+        return bool(self.items)

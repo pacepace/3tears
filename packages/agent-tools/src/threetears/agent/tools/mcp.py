@@ -84,7 +84,7 @@ class McpClient:
         :return: nothing
         :rtype: None
         """
-        self._base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/")
         self._timeout = timeout if timeout is not None else _get_mcp_timeout()
         if http_client is not None:
             self._http = http_client
@@ -99,7 +99,7 @@ class McpClient:
     async def list_tools(self) -> list[McpTool]:
         """Discover available tools from the MCP server."""
         try:
-            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
+            resp = await self._http.post(f"{self.base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             data = resp.json()
             return [
@@ -113,7 +113,7 @@ class McpClient:
         except Exception as exc:
             log.error(
                 "Failed to list MCP tools",
-                extra={"extra_data": {"error": str(exc), "url": self._base_url}},
+                extra={"extra_data": {"error": str(exc), "url": self.base_url}},
             )
             return []
 
@@ -122,7 +122,7 @@ class McpClient:
         """Invoke a tool on the MCP server."""
         try:
             resp = await self._http.post(
-                f"{self._base_url}/mcp/v1/tools/call",
+                f"{self.base_url}/mcp/v1/tools/call",
                 json={"name": tool_name, "arguments": arguments},
             )
             resp.raise_for_status()
@@ -138,7 +138,7 @@ class McpClient:
     async def test_connection(self) -> bool:
         """Test whether the MCP server is reachable."""
         try:
-            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
+            resp = await self._http.post(f"{self.base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             return True
         except Exception:

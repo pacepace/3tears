@@ -2,7 +2,7 @@
 
 phase 8.5l-1 foundation: BaseCollection accepts
 ``primary_key_column = ("col_a", "col_b")`` for composite-pk tables,
-normalizes caller-supplied ids via :meth:`BaseCollection._normalize_pk`,
+normalizes caller-supplied ids via :meth:`BaseCollection.normalize_pk`,
 and routes through L1 (:class:`SQLiteBackend`) + L2 (NATS KV) + the
 invalidation wire envelope uniformly. these tests pin:
 
@@ -279,7 +279,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return FakeRefEntity
 
     async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         return self._pg_store.get(key)
 
     async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
@@ -288,7 +288,7 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return 1
 
     async def delete_from_postgres(self, entity_id: Any) -> None:
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         self._pg_store.pop(key, None)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
@@ -346,7 +346,7 @@ def always_cfg() -> DefaultCoreConfig:
 
 
 class TestNormalizePk:
-    """verify BaseCollection._normalize_pk contract."""
+    """verify BaseCollection.normalize_pk contract."""
 
     def test_scalar_wraps_into_1_tuple_on_single_pk(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
@@ -383,8 +383,8 @@ class TestNormalizePk:
 
         coll = SingleColl(composite_registry, always_cfg)
         assert coll.primary_key_columns == ("id",)
-        assert coll._normalize_pk("e1") == ("e1",)
-        assert coll._normalize_pk(("e1",)) == ("e1",)
+        assert coll.normalize_pk("e1") == ("e1",)
+        assert coll.normalize_pk(("e1",)) == ("e1",)
 
     def test_composite_requires_tuple(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
@@ -393,13 +393,13 @@ class TestNormalizePk:
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
         assert coll.primary_key_columns == ("conversation_id", "item_id")
         with pytest.raises(ValueError, match="arity mismatch"):
-            coll._normalize_pk("conv-A")
+            coll.normalize_pk("conv-A")
 
     def test_composite_tuple_passes_through(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
     ) -> None:
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
-        assert coll._normalize_pk(("conv-A", "item-1")) == ("conv-A", "item-1")
+        assert coll.normalize_pk(("conv-A", "item-1")) == ("conv-A", "item-1")
 
 
 class TestL2Key:
@@ -437,15 +437,15 @@ class TestL2Key:
                 return {}
 
         coll = SingleColl(composite_registry, always_cfg)
-        assert coll._l2_key("e1") == "single_pk_table.e1"
+        assert coll.l2_key("e1") == "single_pk_table.e1"
         # tuple input also valid for single-pk
-        assert coll._l2_key(("e1",)) == "single_pk_table.e1"
+        assert coll.l2_key(("e1",)) == "single_pk_table.e1"
 
     def test_composite_key_joins_with_colon(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
     ) -> None:
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
-        assert coll._l2_key(("conv-A", "item-1")) == "fake_refs.conv-A:item-1"
+        assert coll.l2_key(("conv-A", "item-1")) == "fake_refs.conv-A:item-1"
 
 
 class TestCollectionOps:

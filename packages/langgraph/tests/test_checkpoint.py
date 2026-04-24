@@ -42,7 +42,7 @@ class TestUUIDSafeSerializer:
         result = serde.loads_typed(typed)
         assert result == data
 
-    def test_sanitizes_uuid_utils(self):
+    def testsanitizes_uuid_utils(self):
         import uuid_utils
 
         serde = UUIDSafeSerializer()
@@ -53,11 +53,11 @@ class TestUUIDSafeSerializer:
         assert result["id"] == str(uid)
         assert result["nested"]["ids"][0] == str(uid)
 
-    def test_sanitizes_tuple(self):
+    def testsanitizes_tuple(self):
         import uuid_utils
 
         uid = uuid_utils.uuid7()
-        sanitized = UUIDSafeSerializer._sanitize((uid, "hello"))
+        sanitized = UUIDSafeSerializer.sanitize((uid, "hello"))
         assert sanitized == (str(uid), "hello")
 
 
@@ -97,50 +97,50 @@ class TestCacheSerializationHelpers:
 class TestL1Degradation:
     """L1 cache failures degrade gracefully."""
 
-    async def test_l1_get_returns_none_on_error(self):
+    async def testl1_get_returns_none_on_error(self):
         l1 = AsyncMock()
         l1.get.side_effect = RuntimeError("L1 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
 
-        result = await saver._l1_get("thread-1", "")
+        result = await saver.l1_get("thread-1", "")
         assert result is None
 
-    async def test_l1_put_swallows_error(self):
+    async def testl1_put_swallows_error(self):
         l1 = AsyncMock()
         l1.put.side_effect = RuntimeError("L1 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
 
         # Should not raise
-        await saver._l1_put("thread-1", "", b"data")
+        await saver.l1_put("thread-1", "", b"data")
 
-    async def test_l1_delete_swallows_error(self):
+    async def testl1_delete_swallows_error(self):
         l1 = AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l1_cache=l1)
 
-        await saver._l1_delete("thread-1")
+        await saver.l1_delete("thread-1")
 
 
 class TestL2Degradation:
     """L2 cache failures degrade gracefully."""
 
-    async def test_l2_get_returns_none_on_error(self):
+    async def testl2_get_returns_none_on_error(self):
         l2 = AsyncMock()
         l2.get.side_effect = RuntimeError("L2 down")
 
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), l2_cache=l2)
 
-        result = await saver._l2_get("thread-1", "")
+        result = await saver.l2_get("thread-1", "")
         assert result is None
 
-    async def test_l2_key_with_ns(self):
+    async def testl2_key_with_ns(self):
         saver = ThreeTierCheckpointSaver(executor=_make_executor())
 
-        assert saver._l2_key("thread-1", "") == "thread-1"
-        assert saver._l2_key("thread-1", "ns1") == "thread-1.ns1"
+        assert saver.l2_key("thread-1", "") == "thread-1"
+        assert saver.l2_key("thread-1", "ns1") == "thread-1.ns1"
 
 
 class TestNoCacheProvided:
@@ -149,16 +149,16 @@ class TestNoCacheProvided:
     async def test_l1_ops_are_noop(self):
         saver = ThreeTierCheckpointSaver(executor=_make_executor())
 
-        assert await saver._l1_get("t", "") is None
-        await saver._l1_put("t", "", b"data")  # no-op
-        await saver._l1_delete("t")  # no-op
+        assert await saver.l1_get("t", "") is None
+        await saver.l1_put("t", "", b"data")  # no-op
+        await saver.l1_delete("t")  # no-op
 
     async def test_l2_ops_are_noop(self):
         saver = ThreeTierCheckpointSaver(executor=_make_executor())
 
-        assert await saver._l2_get("t", "") is None
-        await saver._l2_put("t", "", b"data")  # no-op
-        await saver._l2_delete("t")  # no-op
+        assert await saver.l2_get("t", "") is None
+        await saver.l2_put("t", "", b"data")  # no-op
+        await saver.l2_delete("t")  # no-op
 
 
 class TestSyncMethodsRaise:

@@ -111,7 +111,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._app_token == "xapp-test-token"
+        assert adapter.app_token == "xapp-test-token"
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_stores_router(self, mock_app_cls: MagicMock) -> None:
@@ -124,7 +124,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._router is router
+        assert adapter.router is router
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_stores_config(self, mock_app_cls: MagicMock) -> None:
@@ -139,7 +139,7 @@ class TestSlackAdapterConstructor:
             router=router,
             config=config,
         )
-        assert adapter._config == config
+        assert adapter.config == config
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_config_defaults_to_empty_dict(self, mock_app_cls: MagicMock) -> None:
@@ -152,7 +152,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._config == {}
+        assert adapter.config == {}
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_registers_message_event_handler(self, mock_app_cls: MagicMock) -> None:

@@ -43,7 +43,7 @@ class UUIDSafeSerializer:
         self._inner = JsonPlusSerializer()
 
     @staticmethod
-    def _sanitize(obj: Any) -> Any:
+    def sanitize(obj: Any) -> Any:
         """recursively convert ``uuid_utils.UUID`` values to strings.
 
         :param obj: arbitrary object to sanitize
@@ -55,11 +55,11 @@ class UUIDSafeSerializer:
         if _uuid_utils is not None and isinstance(obj, _uuid_utils.UUID):
             result = str(obj)
         elif isinstance(obj, dict):
-            result = {k: UUIDSafeSerializer._sanitize(v) for k, v in obj.items()}
+            result = {k: UUIDSafeSerializer.sanitize(v) for k, v in obj.items()}
         elif isinstance(obj, list):
-            result = [UUIDSafeSerializer._sanitize(x) for x in obj]
+            result = [UUIDSafeSerializer.sanitize(x) for x in obj]
         elif isinstance(obj, tuple):
-            result = tuple(UUIDSafeSerializer._sanitize(x) for x in obj)
+            result = tuple(UUIDSafeSerializer.sanitize(x) for x in obj)
         else:
             result = obj
         return result
@@ -72,7 +72,7 @@ class UUIDSafeSerializer:
         :return: tuple of (type tag, encoded bytes)
         :rtype: tuple[str, bytes]
         """
-        return self._inner.dumps_typed(self._sanitize(obj))
+        return self._inner.dumps_typed(self.sanitize(obj))
 
     def loads_typed(self, data: tuple[str, bytes]) -> Any:
         """deserialize typed bytes back into a python object.

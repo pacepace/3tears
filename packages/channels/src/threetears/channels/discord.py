@@ -59,9 +59,9 @@ class DiscordAdapter:
         :param config: optional adapter configuration overrides
         :ptype config: dict[str, Any] | None
         """
-        self._bot_token = bot_token
-        self._router = router
-        self._config: dict[str, Any] = config if config is not None else {}
+        self.bot_token = bot_token
+        self.router = router
+        self.config: dict[str, Any] = config if config is not None else {}
 
         intents = discord.Intents.default()
         intents.messages = True
@@ -77,7 +77,7 @@ class DiscordAdapter:
         uses client.start() which is a coroutine, NOT client.run()
         which would block and create its own event loop.
         """
-        await self._client.start(self._bot_token)
+        await self._client.start(self.bot_token)
 
     async def stop(self) -> None:
         """stop discord gateway connection.
@@ -126,7 +126,7 @@ class DiscordAdapter:
 
         channel_message = _build_channel_message(message)
 
-        response = await self._router.route_inbound(channel_message)
+        response = await self.router.route_inbound(channel_message)
 
         if response is None:
             return

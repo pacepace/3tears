@@ -217,12 +217,12 @@ async def test_materialize_byte_identical_roundtrip_for_binary_content(
 
 
 # ---------------------------------------------------------------------------
-# _snapshot_disk: symlink-escape rejection + asyncio.to_thread dispatch
+# snapshot_disk: symlink-escape rejection + asyncio.to_thread dispatch
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_snapshot_disk_skips_symlink_that_escapes_root(
+async def testsnapshot_disk_skips_symlink_that_escapes_root(
     tmp_path: Path,
 ) -> None:
     """symlinks whose target resolves outside the root are dropped silently.
@@ -241,7 +241,7 @@ async def test_snapshot_disk_skips_symlink_that_escapes_root(
     link = root / "escape.txt"
     link.symlink_to(outside)
 
-    result = await materialize_module._snapshot_disk(root)
+    result = await materialize_module.snapshot_disk(root)
     # only the legit file is present
     assert "ok.txt" in result
     assert result["ok.txt"][0] == b"inside"
@@ -250,7 +250,7 @@ async def test_snapshot_disk_skips_symlink_that_escapes_root(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_disk_includes_in_root_symlink(tmp_path: Path) -> None:
+async def testsnapshot_disk_includes_in_root_symlink(tmp_path: Path) -> None:
     """symlink whose resolved target stays inside the root is still read."""
     root = tmp_path / "root"
     root.mkdir()
@@ -259,7 +259,7 @@ async def test_snapshot_disk_includes_in_root_symlink(tmp_path: Path) -> None:
     link = root / "alias.txt"
     link.symlink_to(root / "ok.txt")
 
-    result = await materialize_module._snapshot_disk(root)
+    result = await materialize_module.snapshot_disk(root)
     assert "ok.txt" in result
     assert "alias.txt" in result
     assert result["alias.txt"][0] == b"inside"

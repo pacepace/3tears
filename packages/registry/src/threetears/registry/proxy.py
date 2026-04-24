@@ -185,7 +185,7 @@ class CallProxy:
 
         self._catalog = catalog
         self._namespace = namespace
-        self._timeout = timeout if timeout is not None else get_call_timeout()
+        self.timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._nc: Any | None = None
@@ -207,7 +207,7 @@ class CallProxy:
         )
         log.info(
             "call proxy started",
-            extra={"extra_data": {"subject": subject, "timeout": self._timeout}},
+            extra={"extra_data": {"subject": subject, "timeout": self.timeout}},
         )
 
     async def stop(self) -> None:
@@ -503,7 +503,7 @@ class CallProxy:
         if entry is not None and entry.timeout_seconds is not None:
             result: float = entry.timeout_seconds
             return result
-        return self._timeout
+        return self.timeout
 
     async def _forward_call(
         self,

@@ -2367,14 +2367,14 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         """fetch one row from L3 by composite pk.
 
         :param entity_id: ``(conversation_id, item_id)`` tuple; scalar
-            inputs raise in :meth:`BaseCollection._normalize_pk`
+            inputs raise in :meth:`BaseCollection.normalize_pk`
         :ptype entity_id: Any
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
         """
         if self.l3_pool is None:
             return None
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         row = await self.l3_pool.fetchrow(
             """
             SELECT conversation_id, item_id, item_type, short_desc, date_added
@@ -2440,7 +2440,7 @@ class MemoryRefsCollection(BaseCollection[MemoryRefEntity]):
         """
         if self.l3_pool is None:
             return
-        key = self._normalize_pk(entity_id)
+        key = self.normalize_pk(entity_id)
         await self.l3_pool.execute(
             "DELETE FROM conversation_memory_refs WHERE conversation_id = $1 AND item_id = $2",
             key[0],

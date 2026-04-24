@@ -5,7 +5,7 @@ composite primary keys are first-class. a subclass declares
 shape) or ``primary_key_column = ("conversation_id", "item_id")`` for
 composite-pk tables. internally, every cache-keying path normalizes
 the declared pk and caller-supplied id into a tuple via
-:meth:`BaseCollection._normalize_pk`; the L1 (SQLite / DuckDB), L2
+:meth:`BaseCollection.normalize_pk`; the L1 (SQLite / DuckDB), L2
 (NATS KV), and L3 (postgres) tiers all accept the tuple uniformly.
 the invalidation wire envelope carries ``ids`` (plural, always an
 array) matching the pk column order, so single-pk emits a length-1
@@ -115,7 +115,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             return self.primary_key_column
         return (self.primary_key_column,)
 
-    def _normalize_pk(self, entity_id: Any) -> tuple[Any, ...]:
+    def normalize_pk(self, entity_id: Any) -> tuple[Any, ...]:
         """normalize caller-supplied id to tuple of pk values.
 
         single-pk collections accept either ``value`` or ``(value,)``
@@ -258,7 +258,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return MISSING
-        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         if row is None:
             return MISSING
         return row.get(field, MISSING)
@@ -279,7 +279,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         if row is None:
             return False
         row[field] = value
@@ -297,7 +297,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return None
-        return self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
+        return self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)  # type: ignore[no-any-return]
 
     def write_to_cache_sync(
         self,
@@ -332,7 +332,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+        row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         return row is not None
 
     def evict_from_cache_sync(self, entity_id: Any) -> bool:
@@ -354,7 +354,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None:
             return False
-        self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+        self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         return True
 
     # --- L2 cache (NATS KV, async) ---
@@ -362,7 +362,7 @@ class BaseCollection(ABC, Generic[EntityT]):
     def _l2_bucket(self) -> str:
         return self._nats_client.bucket_name("collections")  # type: ignore[no-any-return]
 
-    def _l2_key(self, entity_id: Any) -> str:
+    def l2_key(self, entity_id: Any) -> str:
         """build NATS KV key for given pk.
 
         single-pk shape: ``{table_name}.{value}``. composite-pk shape:
@@ -384,7 +384,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nats KV key, scoped by table name
         :rtype: str
         """
-        pk_values = self._normalize_pk(entity_id)
+        pk_values = self.normalize_pk(entity_id)
         joined = ":".join(str(v) for v in pk_values)
         return f"{self.table_name}.{joined}"
 
@@ -392,7 +392,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return None
         try:
-            raw = await self._nats_client.get(self._l2_bucket(), self._l2_key(entity_id))
+            raw = await self._nats_client.get(self._l2_bucket(), self.l2_key(entity_id))
             if raw is None:
                 return None
             return self.deserialize(raw)
@@ -413,7 +413,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return False
         try:
-            return await self._nats_client.put(self._l2_bucket(), self._l2_key(entity_id), self.serialize(data))  # type: ignore[no-any-return]
+            return await self._nats_client.put(self._l2_bucket(), self.l2_key(entity_id), self.serialize(data))  # type: ignore[no-any-return]
         except Exception as exc:
             log.warning(
                 "L2 cache write failed",
@@ -431,7 +431,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             return False
         try:
-            return await self._nats_client.delete(self._l2_bucket(), self._l2_key(entity_id))  # type: ignore[no-any-return]
+            return await self._nats_client.delete(self._l2_bucket(), self.l2_key(entity_id))  # type: ignore[no-any-return]
         except Exception as exc:
             log.warning(
                 "L2 cache delete failed",
@@ -453,7 +453,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         Returns the row data if found, None if not found in any tier.
         """
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+            row = self._l1.select_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
             if row is not None:
                 return row  # type: ignore[no-any-return]
         return sync_await(self._pull_through(entity_id))
@@ -624,7 +624,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._l1 is not None:
             row: dict[str, Any] | None = self._l1.select_by_id(
                 self.table_name,
-                self._normalize_pk(entity_id),
+                self.normalize_pk(entity_id),
                 self.primary_key_columns,
             )
             if row is not None:
@@ -738,7 +738,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.remove(self.table_name, entity_id)
         await self.delete_from_postgres(entity_id)
         if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
@@ -755,7 +755,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         self._set_span_table()
         if self._l1 is not None:
-            self._l1.delete_by_id(self.table_name, self._normalize_pk(entity_id), self.primary_key_columns)
+            self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
 

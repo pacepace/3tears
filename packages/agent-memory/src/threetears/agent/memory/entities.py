@@ -770,8 +770,8 @@ class MemoryRefEntity(BaseEntity):
 
         :class:`BaseEntity.__init__` captures the single-pk field by
         name; composite-pk entities overwrite ``_id`` with the
-        declared-order tuple so :meth:`BaseCollection._normalize_pk`
-        and :meth:`BaseCollection._l2_key` address the row uniformly
+        declared-order tuple so :meth:`BaseCollection.normalize_pk`
+        and :meth:`BaseCollection.l2_key` address the row uniformly
         across tiers.
 
         :param data: row dict; must carry ``conversation_id`` and

@@ -95,8 +95,10 @@ class TestCollectionRegistry:
         assert registry.get_collection("t1") is None
         assert registry.get_collection("t2") is None
         # Defaults are NOT cleared by clear()
-        # Overrides are cleared
-        assert registry._overrides == {}
+        # Overrides are cleared: t1's per-table l1 override registered
+        # above must no longer win over the (absent) default; since no
+        # default is set, the public get_l1_backend returns None.
+        assert registry.get_l1_backend("t1") is None
 
     def test_configure_partial_update(self) -> None:
         """Calling configure multiple times only updates provided fields."""

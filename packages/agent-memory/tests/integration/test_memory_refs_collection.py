@@ -6,7 +6,7 @@ composite-pk support. this suite exercises the end-to-end tier
 behaviour through a real pgvector/pg16 container:
 
 1. ``save_entity`` populates L1 + L2 + L3 for a composite-pk row
-   (tuple-keyed ``_l2_key`` / ``select_by_id``).
+   (tuple-keyed ``l2_key`` / ``select_by_id``).
 2. ``.get((conversation_id, item_id))`` serves from L1 without an
    L3 round-trip on warm cache, and pulls through L3 -> L1 on a
    cold-start pod (fresh L1 + existing L3 row).
