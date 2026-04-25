@@ -89,21 +89,21 @@ CONVERSATION_NAMESPACE_TYPE = "conversation"
 #: canonical action string for conversation reads. evaluated against
 #: the ``conversation`` bucket of the caller's roles via
 #: :meth:`~threetears.agent.acl.types.Role.actions_for`.
-ACTION_CONVERSATION_READ = "conversation.read"
+ACTION_CONVERSATION_READ: Literal["conversation.read"] = "conversation.read"
 
 
 #: canonical action string for conversation writes (sending messages
 #: into the conversation). distinct from ``conversation.read`` so
 #: operators can grant "user may browse conversation history but may
 #: not append new messages" without also granting write.
-ACTION_CONVERSATION_WRITE = "conversation.write"
+ACTION_CONVERSATION_WRITE: Literal["conversation.write"] = "conversation.write"
 
 
 #: canonical action string for conversation deletes. rarely granted —
 #: a user almost never owns delete on their own conversation (the
 #: hub's GDPR flow deletes via the admin path). kept distinct so
 #: operators can audit delete separately from write.
-ACTION_CONVERSATION_DELETE = "conversation.delete"
+ACTION_CONVERSATION_DELETE: Literal["conversation.delete"] = "conversation.delete"
 
 
 #: role name seeded by the hub v043 migration for the per-user

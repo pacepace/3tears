@@ -248,7 +248,13 @@ def create_dynamic_collection(
             result = rows[0] if rows else None
             return result
 
-        async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+        async def save_to_postgres(
+            self,
+            data: dict[str, Any],
+            original_timestamp: datetime | None = None,
+            *,
+            conn: Any = None,
+        ) -> int:
             """persist entity data to L3 via upsert.
 
             when original_timestamp is provided, performs optimistic
@@ -258,14 +264,18 @@ def create_dynamic_collection(
             :ptype data: dict[str, Any]
             :param original_timestamp: expected date_updated for concurrency check
             :ptype original_timestamp: datetime | None
+            :param conn: optional asyncpg-compatible connection that
+                overrides :attr:`l3_pool` for this single write so the
+                INSERT binds to the caller's transaction
+            :ptype conn: Any
             :return: number of rows affected
             :rtype: int
             """
-            pool = self.l3_pool
-            if pool is None:
+            executor: Any = conn if conn is not None else self.l3_pool
+            if executor is None:
                 return 0
             values = [data.get(col, None) for col in column_names]
-            result_str = await pool.execute(upsert_sql, *values)
+            result_str = await executor.execute(upsert_sql, *values)
             result = 1 if result_str else 0
             return result
 

@@ -124,17 +124,20 @@ class DataStore:
 
     @traced
     async def run_migrations(self, runner: MigrationRunner) -> int:
-        """run pending schema migrations using provided runner.
+        """run pending agent-scope migrations against this store's schema.
 
-        convenience method that delegates to runner.apply() and
-        returns count of migrations applied.
+        convenience method that delegates to
+        :meth:`MigrationRunner.apply_for_agent_schema`. :class:`DataStore`
+        is constructed with an ``agent_id`` so its bound schema is the
+        per-agent schema; the runner's agent-scope entry point is the
+        only correct delegation target.
 
-        :param runner: migration runner with registered migrations
+        :param runner: migration runner with registered packages
         :ptype runner: MigrationRunner
-        :return: number of migrations applied
+        :return: number of migrations applied across all agent packages
         :rtype: int
         """
-        result = await runner.apply()
+        result: int = await runner.apply_for_agent_schema(self)
         return result
 
     def __getitem__(self, table_name: str) -> BaseCollection[Any]:

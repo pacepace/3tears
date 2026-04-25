@@ -63,6 +63,7 @@ NamespaceTypeFilter = Literal[
     "tool",
     "channel",
     "shared_agent",
+    "model",
 ]
 
 

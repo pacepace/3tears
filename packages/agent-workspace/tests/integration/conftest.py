@@ -303,9 +303,9 @@ class _FakeStore:
             )
 
     def _handle_update_workspace(self, args: tuple[Any, ...]) -> None:
-        new_version, date_updated, workspace_id = args
+        new_version, date_updated, workspace_id, agent_id = args
         ws = self.workspaces.get(workspace_id)
-        if ws is not None:
+        if ws is not None and ws.agent_id == agent_id:
             ws.current_version = max(ws.current_version, new_version)
             ws.date_updated = date_updated
 
@@ -455,8 +455,13 @@ class _StoreBackedWorkspaceCollection:
             return None
         return ws
 
-    async def find_by_id(self, workspace_id: UUID) -> _StoredWorkspace | None:
-        return self._store.workspaces.get(workspace_id)
+    async def find_by_id(
+        self, agent_id: UUID, workspace_id: UUID,
+    ) -> _StoredWorkspace | None:
+        ws = self._store.workspaces.get(workspace_id)
+        if ws is None or ws.agent_id != agent_id:
+            return None
+        return ws
 
 
 class _StoreBackedFileCollection:

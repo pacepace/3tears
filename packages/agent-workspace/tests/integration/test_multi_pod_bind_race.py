@@ -50,6 +50,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 class _FakeWorkspace:
     id: UUID
     name: str
+    agent_id: UUID
     current_version: int = 0
     date_deleted: datetime | None = None
 
@@ -58,13 +59,22 @@ class _FakeWorkspace:
         """canonical workspace namespace name (WS-ACL-06)."""
         return f"workspace.{self.id}"
 
+    @property
+    def owner_agent_id(self) -> UUID:
+        """alias of :attr:`agent_id` matching the production entity."""
+        return self.agent_id
+
 
 class _FakeWorkspaceCollection:
     def __init__(self, ws: _FakeWorkspace) -> None:
         self._ws = ws
 
-    async def find_by_id(self, workspace_id: UUID) -> _FakeWorkspace | None:
-        return self._ws if workspace_id == self._ws.id else None
+    async def find_by_id(
+        self, agent_id: UUID, workspace_id: UUID,
+    ) -> _FakeWorkspace | None:
+        if workspace_id != self._ws.id or agent_id != self._ws.agent_id:
+            return None
+        return self._ws
 
 
 class _FakeFileCollection:
@@ -142,7 +152,8 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
     ws_id = uuid7()
     ws_name = "racer"
     (bind_root / ws_name).mkdir()
-    workspace = _FakeWorkspace(id=ws_id, name=ws_name)
+    agent_id = uuid4()
+    workspace = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
     nats = FakeNatsClient()
     lease_a = WorkspaceFileLease(nats, namespace="test", pod_id="pod-A")
@@ -155,6 +166,7 @@ async def test_two_pods_peak_concurrency_is_one(tmp_path: Path) -> None:
     async def _run_pod(label: str, lease: WorkspaceFileLease) -> None:
         sandbox = _FakeSandbox({"bind": bind_root})
         async with bind(
+            agent_id=agent_id,
             workspace_id=ws_id,
             sandbox=sandbox,  # type: ignore[arg-type]
             lease=lease,

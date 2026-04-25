@@ -47,6 +47,7 @@ def _sha(content: bytes) -> str:
 class _FakeWorkspace:
     id: UUID
     name: str
+    agent_id: UUID
     current_version: int = 0
     date_deleted: datetime | None = None
 
@@ -54,6 +55,11 @@ class _FakeWorkspace:
     def namespace_name(self) -> str:
         """canonical workspace namespace name (WS-ACL-06)."""
         return f"workspace.{self.id}"
+
+    @property
+    def owner_agent_id(self) -> UUID:
+        """alias of :attr:`agent_id` matching the production entity."""
+        return self.agent_id
 
 
 @dataclass
@@ -68,8 +74,12 @@ class _FakeWorkspaceCollection:
     def __init__(self, ws: _FakeWorkspace) -> None:
         self._ws = ws
 
-    async def find_by_id(self, workspace_id: UUID) -> _FakeWorkspace | None:
-        return self._ws if workspace_id == self._ws.id else None
+    async def find_by_id(
+        self, agent_id: UUID, workspace_id: UUID,
+    ) -> _FakeWorkspace | None:
+        if workspace_id != self._ws.id or agent_id != self._ws.agent_id:
+            return None
+        return self._ws
 
 
 class _FakeFileCollection:
@@ -173,7 +183,8 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
     ws_id = uuid7()
     workspace_name = "racer"
     (bind_root / workspace_name).mkdir(parents=True, exist_ok=True)
-    ws = _FakeWorkspace(id=ws_id, name=workspace_name)
+    agent_id = uuid4()
+    ws = _FakeWorkspace(id=ws_id, name=workspace_name, agent_id=agent_id)
 
     fake_nats = FakeNatsClient()
     lease_a = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-A")
@@ -191,6 +202,7 @@ async def test_two_pods_binding_same_workspace_serialize_on_lease(
         pool = _FakePool()
         order.append(f"{label}:enter-attempt")
         async with bind(
+            agent_id=agent_id,
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease,
@@ -246,7 +258,8 @@ async def test_second_pod_gets_lease_after_first_releases(
     ws_id = uuid7()
     ws_name = "waiter"
     (bind_root / ws_name).mkdir(parents=True, exist_ok=True)
-    ws = _FakeWorkspace(id=ws_id, name=ws_name)
+    agent_id = uuid4()
+    ws = _FakeWorkspace(id=ws_id, name=ws_name, agent_id=agent_id)
 
     fake_nats = FakeNatsClient()
     lease_a = WorkspaceFileLease(fake_nats, namespace="test", pod_id="pod-A")
@@ -261,6 +274,7 @@ async def test_second_pod_gets_lease_after_first_releases(
         workspace_coll = _FakeWorkspaceCollection(ws)
         pool = _FakePool()
         async with bind(
+            agent_id=agent_id,
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease_a,
@@ -283,6 +297,7 @@ async def test_second_pod_gets_lease_after_first_releases(
         workspace_coll = _FakeWorkspaceCollection(ws)
         pool = _FakePool()
         async with bind(
+            agent_id=agent_id,
             workspace_id=ws_id,
             sandbox=sandbox,
             lease=lease_b,

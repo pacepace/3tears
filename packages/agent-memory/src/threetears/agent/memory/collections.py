@@ -2061,7 +2061,11 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         return MemoryRefEntity
 
     async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
     ) -> int:
         """upsert one row into L3 via composite-pk ON CONFLICT.
 
@@ -2076,6 +2080,10 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         :ptype data: dict[str, Any]
         :param original_timestamp: ignored (no CAS column on this table)
         :ptype original_timestamp: datetime | None
+        :param conn: optional asyncpg-compatible connection; forwarded
+            to :class:`SchemaBackedCollection` so the framework's
+            transactional save_entity path stays atomic
+        :ptype conn: Any
         :return: rows affected (1 on success, 0 on failure)
         :rtype: int
         """
@@ -2083,7 +2091,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         if isinstance(desc_value, str) and len(desc_value) > _MEMORY_REF_SHORT_DESC_MAX:
             data = dict(data)
             data["short_desc"] = desc_value[:_MEMORY_REF_SHORT_DESC_MAX]
-        return await super().save_to_postgres(data, original_timestamp)
+        return await super().save_to_postgres(data, original_timestamp, conn=conn)
 
     async def find_by_conversation(
         self, conversation_id: UUID,
