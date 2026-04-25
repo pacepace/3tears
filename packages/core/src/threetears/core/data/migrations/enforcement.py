@@ -829,11 +829,13 @@ def get_enforcement_mode() -> str:
     return the current walker mode (``strict`` / ``report``).
 
     consults the ``MIGRATION_ENFORCEMENT_MODE`` env var. the default is
-    ``report`` so the walker is non-blocking during retro-rewrites; the
-    sub-task 7 flip changes the default to ``strict``.
+    ``strict`` (sub-task 7 flip) so any new migration that introduces
+    a walker-flagged anti-pattern fails CI from the first commit.
+    explicitly set ``MIGRATION_ENFORCEMENT_MODE=report`` to surface
+    violations without blocking the build during a cleanup window.
 
     :return: lower-cased mode string
     :rtype: str
     """
-    result = os.environ.get("MIGRATION_ENFORCEMENT_MODE", "report").lower()
+    result = os.environ.get("MIGRATION_ENFORCEMENT_MODE", "strict").lower()
     return result
