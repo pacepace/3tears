@@ -37,14 +37,44 @@ def _as_uuid(value: object) -> UUID:
 
 
 class MemoryEntity(BaseEntity):
-    """Cache proxy entity for the ``memories`` table."""
+    """Cache proxy entity for the ``memories`` table.
+
+    collections-task-04 partitioned ``memories`` on ``agent_id``;
+    the composite primary key is ``(agent_id, memory_id)``. the
+    constructor sets ``_id`` to that tuple so
+    :meth:`BaseCollection.normalize_pk` and :meth:`BaseCollection.l2_key`
+    address the row uniformly across L1 / L2 / L3.
+    """
 
     primary_key_field: str = "memory_id"
 
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with composite ``_id`` for composite-pk lookup.
+
+        :param data: row dict; must carry ``agent_id`` and ``memory_id``
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        if "agent_id" in data and "memory_id" in data:
+            object.__setattr__(
+                self, "_id", (data["agent_id"], data["memory_id"]),
+            )
+
     @property
     def memory_id(self) -> UUID:
-        """Get the memory ID (alias for primary key)."""
-        return _as_uuid(self.id)
+        """Get the memory ID."""
+        return _as_uuid(self._get_raw("memory_id"))
 
     @property
     def agent_id(self) -> UUID:
@@ -188,14 +218,40 @@ class MediaEntity(BaseEntity):
 
     primary_key_field: str = "media_id"
 
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with composite ``_id`` for composite-pk lookup.
+
+        collections-task-04 partitioned ``media`` on ``agent_id``;
+        composite PK is ``(agent_id, media_id)``.
+
+        :param data: row dict; must carry ``agent_id`` and ``media_id``
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        if "agent_id" in data and "media_id" in data:
+            object.__setattr__(
+                self, "_id", (data["agent_id"], data["media_id"]),
+            )
+
     @property
     def media_id(self) -> UUID:
-        """get the media ID (primary key).
+        """get the media ID.
 
         :return: media UUID
         :rtype: UUID
         """
-        return _as_uuid(self.id)
+        return _as_uuid(self._get_raw("media_id"))
 
     @property
     def agent_id(self) -> UUID | None:
@@ -343,14 +399,40 @@ class MediaContentEntity(BaseEntity):
 
     primary_key_field: str = "content_id"
 
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with composite ``_id`` for composite-pk lookup.
+
+        collections-task-04 partitioned ``media_content`` on
+        ``agent_id``; composite PK is ``(agent_id, content_id)``.
+
+        :param data: row dict; must carry ``agent_id`` and ``content_id``
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        if "agent_id" in data and "content_id" in data:
+            object.__setattr__(
+                self, "_id", (data["agent_id"], data["content_id"]),
+            )
+
     @property
     def content_id(self) -> UUID:
-        """get the content ID (primary key).
+        """get the content ID.
 
         :return: content UUID
         :rtype: UUID
         """
-        return _as_uuid(self.id)
+        return _as_uuid(self._get_raw("content_id"))
 
     @property
     def media_id(self) -> UUID:
@@ -537,14 +619,40 @@ class MemoryChunkEntity(BaseEntity):
 
     primary_key_field: str = "chunk_id"
 
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with composite ``_id`` for composite-pk lookup.
+
+        collections-task-04 partitioned ``memory_chunks`` on
+        ``agent_id``; composite PK is ``(agent_id, chunk_id)``.
+
+        :param data: row dict; must carry ``agent_id`` and ``chunk_id``
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        if "agent_id" in data and "chunk_id" in data:
+            object.__setattr__(
+                self, "_id", (data["agent_id"], data["chunk_id"]),
+            )
+
     @property
     def chunk_id(self) -> UUID:
-        """get the chunk ID (primary key).
+        """get the chunk ID.
 
         :return: chunk UUID
         :rtype: UUID
         """
-        return _as_uuid(self.id)
+        return _as_uuid(self._get_raw("chunk_id"))
 
     @property
     def media_id(self) -> UUID | None:

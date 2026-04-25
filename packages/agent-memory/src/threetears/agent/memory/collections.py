@@ -21,7 +21,7 @@ import asyncio
 import json
 import math
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 from threetears.core.collections.flush import WriteBuffer
@@ -37,6 +37,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    spans_partitions,
 )
 from threetears.core.config import CoreConfig
 from threetears.observe import get_logger
@@ -88,24 +89,25 @@ def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str
 def _build_user_scope_clause(
     user_id: UUID,
     *,
-    agent_id: UUID | None = None,
-    customer_id: UUID | None = None,
+    agent_id: UUID,
+    customer_id: UUID,
     start_param: int = 2,
     table_prefix: str = "",
 ) -> tuple[str, list[UUID], int]:
-    """Build WHERE fragments scoping by user/agent/customer.
+    """Build WHERE fragments scoping by agent / customer / user.
 
-    shared across the four Collections' hybrid-search methods: the
-    same signature :mod:`retrieval.py` + :mod:`tools.py` already use
-    so callers that migrate onto the Collection API keep their
-    parameterisation identical.
+    collections-task-04 requires the partition column ``agent_id`` and
+    its sub-scope ``customer_id`` to be mandatory: the legacy "optional
+    scoping tag" doctrine is retired with v008's NOT NULL restoration.
+    every memory hybrid-search SQL site receives a fully-scoped
+    ``(agent_id, customer_id, user_id)`` triple.
 
-    :param user_id: user ID (always included)
+    :param user_id: user ID
     :ptype user_id: UUID
-    :param agent_id: optional agent ID scope
-    :ptype agent_id: UUID | None
-    :param customer_id: optional customer ID scope
-    :ptype customer_id: UUID | None
+    :param agent_id: partition column for the memory tables; required
+    :ptype agent_id: UUID
+    :param customer_id: customer ID sub-scope; required
+    :ptype customer_id: UUID
     :param start_param: starting positional parameter index
     :ptype start_param: int
     :param table_prefix: optional table alias prefix
@@ -119,15 +121,13 @@ def _build_user_scope_clause(
     params: list[UUID] = []
     idx = start_param
 
-    if agent_id is not None:
-        conditions.append(f"{prefix}agent_id = ${idx}")
-        params.append(agent_id)
-        idx += 1
+    conditions.append(f"{prefix}agent_id = ${idx}")
+    params.append(agent_id)
+    idx += 1
 
-    if customer_id is not None:
-        conditions.append(f"{prefix}customer_id = ${idx}")
-        params.append(customer_id)
-        idx += 1
+    conditions.append(f"{prefix}customer_id = ${idx}")
+    params.append(customer_id)
+    idx += 1
 
     conditions.append(f"{prefix}user_id = ${idx}")
     params.append(user_id)
@@ -195,14 +195,24 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
     is_deleted + date_deleted + date_updated.
     """
 
-    primary_key_column: str = "memory_id"
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "memory_id")
+    # rationale: ``soft_delete`` operates on a fully-formed
+    # :class:`MemoryEntity` whose composite pk already pins the
+    # partition; the method reads agent_id off the entity rather than
+    # accepting it as a redundant parameter. ``create`` / ``get`` are
+    # framework methods inherited from :class:`SchemaBackedCollection`
+    # but Python's MRO surfaces them on the subclass via the property /
+    # generic decoration; declaring them exempt here keeps the
+    # __init_subclass__ guard quiet without weakening the partition
+    # contract on the read-write surface.
+    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"soft_delete"})
     schema = TableSchema(
         name="memories",
-        primary_key="memory_id",
+        primary_key=("agent_id", "memory_id"),
         columns=[
             Column("memory_id", UUID_TYPE),
-            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("customer_id", UUID_TYPE, immutable=True),
             Column("user_id", UUID_TYPE, immutable=True),
             Column("conversation_id", UUID_TYPE, immutable=True),
             Column("message_id_source", UUID_TYPE, immutable=True),
@@ -275,38 +285,34 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         user_id: UUID,
         include_deleted: bool = False,
         *,
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
+        agent_id: UUID,
+        customer_id: UUID,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
     ) -> list[MemoryEntity]:
-        """fetch memories for user from L3, enforcing rbac on user reads.
+        """fetch memories for ``(agent_id, user_id)`` from L3, enforcing rbac.
 
-        when ``caller_user_id`` is provided the rbac evaluator decides
-        ``memory.read`` on the ``(agent_id, customer_id)`` memory
-        namespace before the SQL runs. the owner short-circuit fires
-        when ``caller_agent_id == agent_id``; a mismatched pair
-        surfaces :class:`MemoryAccessDenied` from
-        :func:`authorize_memory_access`. the row-level
-        ``user_id = $1`` filter is kept as a belt-and-suspenders cut
-        against grants that resolve to broad type_customer scope but
-        should still respect the per-row owner column.
+        ``agent_id`` is the partition column on the memories table;
+        every read must include the partition predicate. ``customer_id``
+        is a required sub-scope. when ``caller_user_id`` is provided
+        the rbac evaluator decides ``memory.read`` on the
+        ``(agent_id, customer_id)`` memory namespace before the SQL
+        runs. the owner short-circuit fires when
+        ``caller_agent_id == agent_id``; a mismatched pair surfaces
+        :class:`MemoryAccessDenied` from :func:`authorize_memory_access`.
 
-        passing ``caller_user_id`` without ``agent_id`` + ``customer_id``
-        is a programming error — the evaluator cannot resolve the
-        memory namespace without both. internal agent-only callers
-        that want row-filter-only access pass ``caller_user_id=None``.
+        the row-level ``user_id`` filter is kept as a belt-and-suspenders
+        cut against grants that resolve to broad type_customer scope
+        but should still respect the per-row owner column.
 
         :param user_id: user whose memories to fetch (row filter)
         :ptype user_id: UUID
         :param include_deleted: whether to include soft-deleted memories
         :ptype include_deleted: bool
-        :param agent_id: owning agent UUID (memory namespace owner);
-            required when ``caller_user_id`` is set
-        :ptype agent_id: UUID | None
-        :param customer_id: owning customer UUID; required when
-            ``caller_user_id`` is set
-        :ptype customer_id: UUID | None
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param caller_user_id: invoking user UUID for evaluator
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID for evaluator
@@ -314,14 +320,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :return: list of memory entities belonging to user
         :rtype: list[MemoryEntity]
         :raises MemoryAccessDenied: when rbac enforcement denies
-        :raises ValueError: when ``caller_user_id`` is set without
-            both ``agent_id`` and ``customer_id``
         """
         if caller_user_id is not None:
-            if agent_id is None or customer_id is None:
-                raise ValueError(
-                    "find_by_user with caller_user_id requires agent_id + customer_id",
-                )
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
                 agent_id=agent_id,
@@ -334,17 +334,27 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if self.l3_pool is None:
             return []
         if include_deleted:
-            # cache-bypass: multi-row scan by user_id is not primary-key
-            # addressable; L1 row cache would not help. method on
-            # Collection preserves single entry point.
+            # cache-bypass: multi-row scan by (agent_id, customer_id,
+            # user_id) is not primary-key addressable; L1 row cache
+            # would not help. method on Collection preserves single
+            # entry point.
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories WHERE user_id = $1 ORDER BY date_created DESC",
+                "SELECT * FROM memories "
+                "WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3 "
+                "ORDER BY date_created DESC",
+                agent_id,
+                customer_id,
                 user_id,
             )
         else:
             # cache-bypass: same as above — multi-row scan path.
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories WHERE user_id = $1 AND is_deleted = false ORDER BY date_created DESC",
+                "SELECT * FROM memories "
+                "WHERE agent_id = $1 AND customer_id = $2 AND user_id = $3 "
+                "AND is_deleted = false "
+                "ORDER BY date_created DESC",
+                agent_id,
+                customer_id,
                 user_id,
             )
         entities: list[MemoryEntity] = []
@@ -352,7 +362,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = data["memory_id"]
+            entity_id = (data["agent_id"], data["memory_id"])
             # Promote to L2
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
@@ -441,7 +451,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = data["memory_id"]
+            entity_id = (data["agent_id"], data["memory_id"])
             await self._save_to_l2(entity_id, data)
             entities.append(entity)
         return entities
@@ -528,17 +538,21 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         entity.date_deleted = datetime.now(UTC)
         await self.save_entity(entity)
 
-    async def count_by_user(self, user_id: UUID) -> bool:
-        """check whether any memory row exists for the given user.
+    async def count_by_user(self, user_id: UUID, *, agent_id: UUID) -> bool:
+        """check whether any memory row exists for ``(agent_id, user_id)``.
 
         returns a boolean rather than an exact count — every caller
         today uses the existence flag (tools.py first-write ensure
         gate). keeps the query cheap (``SELECT EXISTS(...)``) and
-        side-steps full row-count pagination concerns.
+        side-steps full row-count pagination concerns. ``agent_id`` is
+        the partition column on memories and is required.
 
         :param user_id: user UUID to probe
         :ptype user_id: UUID
-        :return: ``True`` iff user has at least one memory row
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :return: ``True`` iff user has at least one memory row in
+            this agent's partition
         :rtype: bool
         """
         if self.l3_pool is None:
@@ -547,7 +561,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # L1 row cache would not help. method on Collection preserves
         # single entry point.
         value = await self.l3_pool.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM memories WHERE user_id = $1)",
+            "SELECT EXISTS(SELECT 1 FROM memories "
+            "WHERE agent_id = $1 AND user_id = $2)",
+            agent_id,
             user_id,
         )
         return bool(value)
@@ -556,6 +572,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         embedding: list[float],
         top_k: int,
         threshold: float,
@@ -565,10 +582,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         used by :class:`MemoryExtractor._get_similar_memories` +
         :class:`add_memory` tool dedup guard. returns memories whose
         cosine similarity to ``embedding`` exceeds ``threshold``,
-        capped at ``top_k``.
+        capped at ``top_k``. ``agent_id`` is the partition column and
+        is required.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param top_k: maximum candidates to consider
@@ -590,11 +610,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             SELECT memory_id, content, type_memory,
                    1 - (embedding <=> $1::vector) AS similarity
             FROM memories
-            WHERE user_id = $2 AND is_deleted = false
+            WHERE agent_id = $2 AND user_id = $3 AND is_deleted = false
             ORDER BY embedding <=> $1::vector
-            LIMIT $3
+            LIMIT $4
             """,
             embedding_str,
+            agent_id,
             user_id,
             top_k,
         )
@@ -613,6 +634,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
         embedding: list[float],
         user_text: str,
         top_k: int,
@@ -620,8 +643,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         similarity_threshold: float,
         recency_half_life_hours: float,
         signal_weights: dict[str, float],
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
         fts_min_len: int = 3,
         fts_max_len: int = 500,
     ) -> list[dict[str, Any]]:
@@ -636,6 +657,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param user_text: raw query text for FTS
@@ -651,10 +676,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :param signal_weights: mapping ``{"semantic", "keyword",
             "recency"}`` to weights
         :ptype signal_weights: dict[str, float]
-        :param agent_id: optional agent scope
-        :ptype agent_id: UUID | None
-        :param customer_id: optional customer scope
-        :ptype customer_id: UUID | None
         :param fts_min_len: minimum query length for FTS activation
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
@@ -787,18 +808,23 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         self,
         memory_ids: list[UUID],
         user_id: UUID,
+        *,
+        agent_id: UUID,
     ) -> list[dict[str, Any]]:
-        """batch lookup of memories by primary key, scoped to a user.
+        """batch lookup of memories by primary key, scoped to ``(agent_id, user_id)``.
 
         absorbs the ``SELECT ... FROM memories WHERE memory_id = ANY(...)``
         leg of :func:`_search_by_ids` in :mod:`tools.py`. scoped by
-        ``user_id`` so a leaked memory_id from another user does not
-        surface content.
+        ``agent_id`` (partition predicate) and ``user_id`` (row-level
+        owner) so a leaked memory_id from another partition or another
+        user does not surface content.
 
         :param memory_ids: primary-key values to fetch
         :ptype memory_ids: list[UUID]
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :return: list of row dicts (content + metadata)
         :rtype: list[dict[str, Any]]
         """
@@ -815,10 +841,12 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             """
             SELECT memory_id, type_memory, content, date_created
             FROM memories
-            WHERE memory_id = ANY($1::uuid[])
-              AND user_id = $2
+            WHERE agent_id = $1
+              AND memory_id = ANY($2::uuid[])
+              AND user_id = $3
               AND is_deleted = false
             """,
+            agent_id,
             memory_ids,
             user_id,
         )
@@ -828,6 +856,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         embedding: list[float],
         max_results: int,
         similarity_threshold: float,
@@ -840,10 +869,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         rows whose cosine similarity exceeds ``similarity_threshold``,
         capped at ``max_results``. ``type_filter`` is validated by the
         caller; this method trusts the value and applies it as an
-        equality predicate.
+        equality predicate. ``agent_id`` is the partition column on
+        memories and is required.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param max_results: cap on returned rows
@@ -858,9 +890,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if self.l3_pool is None:
             return []
         embedding_str = json.dumps(embedding)
-        params: list[Any] = [embedding_str, user_id]
-        conditions = ["user_id = $2", "is_deleted = false"]
-        param_idx = 3
+        params: list[Any] = [embedding_str, agent_id, user_id]
+        conditions = ["agent_id = $2", "user_id = $3", "is_deleted = false"]
+        param_idx = 4
         if type_filter:
             conditions.append(f"type_memory = ${param_idx}")
             params.append(type_filter)
@@ -894,6 +926,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         fts_text: str,
         max_results: int,
         type_filter: str | None = None,
@@ -901,10 +934,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         """FTS keyword search for the add/search memory tools.
 
         complements :meth:`search_by_semantic` — run both in parallel
-        and merge on ``memory_id``.
+        and merge on ``memory_id``. ``agent_id`` is the partition
+        column on memories and is required.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :param fts_text: FTS query text
         :ptype fts_text: str
         :param max_results: cap on returned rows
@@ -917,12 +953,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if self.l3_pool is None:
             return []
         conditions = [
-            "user_id = $2",
+            "agent_id = $2",
+            "user_id = $3",
             "is_deleted = false",
             "search_vector @@ websearch_to_tsquery('english', $1)",
         ]
-        params: list[Any] = [fts_text, user_id]
-        idx = 3
+        params: list[Any] = [fts_text, agent_id, user_id]
+        idx = 4
         if type_filter:
             conditions.append(f"type_memory = ${idx}")
             params.append(type_filter)
@@ -954,15 +991,20 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         *,
         memory_id: UUID,
         user_id: UUID,
+        agent_id: UUID,
     ) -> str | None:
         """fetch just the ``content`` field for the recall_memory tool.
 
-        scoped by ``user_id`` so a leaked ID does not cross users.
+        scoped by ``agent_id`` (partition predicate) and ``user_id``
+        (row-level owner) so a leaked ID does not cross partitions or
+        users.
 
         :param memory_id: memory primary-key value
         :ptype memory_id: UUID
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :return: content text or ``None`` if not found
         :rtype: str | None
         """
@@ -974,7 +1016,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # that the L1 row cache cannot enforce. the authoritative read
         # must stay at the database.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM memories WHERE memory_id = $1 AND user_id = $2 AND is_deleted = false",
+            "SELECT content FROM memories "
+            "WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3 "
+            "AND is_deleted = false",
+            agent_id,
             memory_id,
             user_id,
         )
@@ -982,6 +1027,84 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             return None
         result: str = row["content"]
         return result
+
+    @spans_partitions
+    async def find_for_user_in_agents(
+        self,
+        *,
+        user_id: UUID,
+        agent_ids: tuple[UUID, ...],
+        customer_id: UUID | None = None,
+    ) -> list[MemoryEntity]:
+        """fetch memories for ``user_id`` across an authorized set of agents.
+
+        canonical cross-partition retrieval pattern: the caller has
+        resolved an authorized set of agent partitions upstream
+        (typically via :class:`MemoryAccessService` evaluating the
+        unified RBAC engine on each candidate memory namespace) and
+        passes the resolved set in as a tuple. the tuple shape is the
+        type signal that distinguishes "deliberately fan out across
+        these partitions" from "any partitions you want" -- the
+        :func:`spans_partitions` decorator validates the shape at call
+        time and refuses an empty tuple.
+
+        ACL is NOT evaluated inside this method; the Collection is
+        domain-pure. wire it through :class:`MemoryAccessService` (in
+        :mod:`threetears.agent.memory.access`) to compose authorization
+        with the partition fan-out.
+
+        :param user_id: owning user UUID (row filter applied
+            consistently in every selected partition)
+        :ptype user_id: UUID
+        :param agent_ids: tuple of agent UUIDs the caller has been
+            authorized to read from. must be non-empty (the
+            :func:`spans_partitions` decorator rejects empty tuples;
+            service-layer callers short-circuit when no agents resolve
+            and never invoke this method with an empty set)
+        :ptype agent_ids: tuple[UUID, ...]
+        :param customer_id: optional customer ID sub-scope; when
+            provided, narrows the result set to rows whose
+            ``customer_id`` matches
+        :ptype customer_id: UUID | None
+        :return: list of memory entities across the authorized agent
+            partitions, ordered by ``date_created`` DESC
+        :rtype: list[MemoryEntity]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: cross-partition fan-out by ANY($N::uuid[]) is
+        # not primary-key-addressable; L1 row cache cannot serve a
+        # multi-partition projection. method on Collection preserves
+        # single entry point and is decorated @spans_partitions so the
+        # AST walker treats agent_id as deliberately fanned-out.
+        if customer_id is None:
+            rows = await self.l3_pool.fetch(
+                "SELECT * FROM memories "
+                "WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 "
+                "AND is_deleted = false "
+                "ORDER BY date_created DESC",
+                list(agent_ids),
+                user_id,
+            )
+        else:
+            rows = await self.l3_pool.fetch(
+                "SELECT * FROM memories "
+                "WHERE agent_id = ANY($1::uuid[]) AND customer_id = $2 "
+                "AND user_id = $3 AND is_deleted = false "
+                "ORDER BY date_created DESC",
+                list(agent_ids),
+                customer_id,
+                user_id,
+            )
+        entities: list[MemoryEntity] = []
+        for row in rows:
+            data = dict(row)
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            entity_id = (data["agent_id"], data["memory_id"])
+            await self._save_to_l2(entity_id, data)
+            entities.append(entity)
+        return entities
 
 
 class MediaCollection(SchemaBackedCollection[MediaEntity]):
@@ -997,14 +1120,14 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
     from ``date_created``.
     """
 
-    primary_key_column: str = "media_id"
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "media_id")
     schema = TableSchema(
         name="media",
-        primary_key="media_id",
+        primary_key=("agent_id", "media_id"),
         columns=[
             Column("media_id", UUID_TYPE),
-            Column("agent_id", UUID_TYPE, nullable=True),
-            Column("customer_id", UUID_TYPE, nullable=True),
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("customer_id", UUID_TYPE),
             Column("user_id", UUID_TYPE),
             Column("media_category", STRING_TYPE),
             Column("metadata_json", JSONB_TYPE, nullable=True),
@@ -1031,29 +1154,6 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
         """
         return MediaEntity
 
-    async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
-    ) -> int:
-        """upsert one media row into L3.
-
-        thin override of the generic path to fill in ``date_updated``
-        from ``date_created`` when callers omit it -- the v006
-        migration predates the fence-column convention and many
-        writers still pass only ``date_created``.
-
-        :param data: row data to persist
-        :ptype data: dict[str, Any]
-        :param original_timestamp: ignored (no CAS column on media)
-        :ptype original_timestamp: datetime | None
-        :return: rows affected
-        :rtype: int
-        """
-        _ = original_timestamp
-        if data.get("date_updated") is None and data.get("date_created") is not None:
-            data = dict(data)
-            data["date_updated"] = data["date_created"]
-        return await super().save_to_postgres(data)
-
 
 class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
     """three-tier collection for :class:`MediaContentEntity`.
@@ -1068,15 +1168,15 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
     the textual response back to ``list[float]`` on read.
     """
 
-    primary_key_column: str = "content_id"
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "content_id")
     schema = TableSchema(
         name="media_content",
-        primary_key="content_id",
+        primary_key=("agent_id", "content_id"),
         columns=[
             Column("content_id", UUID_TYPE),
             Column("media_id", UUID_TYPE, immutable=True),
-            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("customer_id", UUID_TYPE, immutable=True),
             Column("user_id", UUID_TYPE, immutable=True),
             Column("content_type", STRING_TYPE),
             Column("content", STRING_TYPE),
@@ -1108,6 +1208,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
         embedding: list[float],
         user_text: str,
         top_k: int,
@@ -1115,18 +1217,23 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         similarity_threshold: float,
         recency_half_life_hours: float,
         signal_weights: dict[str, float],
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
         fts_min_len: int = 3,
         fts_max_len: int = 500,
     ) -> list[dict[str, Any]]:
         """parallel vector + FTS hybrid search joining media_content to media.
 
         absorbs :meth:`MemoryRetriever._query_media_content` from the
-        retrieval module.
+        retrieval module. ``agent_id`` is the partition column on both
+        media_content and media; the JOIN matches on the composite
+        ``(agent_id, media_id)`` so the relationship cannot stretch
+        across partitions. ``customer_id`` is a required sub-scope.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on media_content + media; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param user_text: raw query text for FTS
@@ -1142,10 +1249,6 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :param signal_weights: mapping ``{"semantic", "keyword",
             "recency"}`` to weights
         :ptype signal_weights: dict[str, float]
-        :param agent_id: optional agent scope
-        :ptype agent_id: UUID | None
-        :param customer_id: optional customer scope
-        :ptype customer_id: UUID | None
         :param fts_min_len: minimum query length for FTS activation
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
@@ -1169,7 +1272,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         # cache-bypass: vector-distance search joining media_content ->
         # media. not primary-key-addressable on either side; L1 row
         # cache cannot help. method on Collection preserves single
-        # entry point + audit hooks.
+        # entry point + audit hooks. composite JOIN on (agent_id,
+        # media_id) keeps the relationship inside one partition.
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.content_id, mc.content, mc.summary, mc.content_type,
@@ -1177,7 +1281,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                    med.media_category, med.metadata_json,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM media_content mc
-            JOIN media med ON mc.media_id = med.media_id
+            JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
             WHERE {scope_conditions} AND mc.embedding IS NOT NULL
             ORDER BY mc.embedding <=> $1::vector
             LIMIT {limit_param}
@@ -1208,7 +1314,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                        med.media_category, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM media_content mc
-                JOIN media med ON mc.media_id = med.media_id
+                JOIN media med
+                  ON mc.agent_id = med.agent_id
+                 AND mc.media_id = med.media_id
                 WHERE {fts_scope_conditions} AND mc.embedding IS NOT NULL
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                 ORDER BY fts_rank DESC
@@ -1304,16 +1412,20 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         self,
         content_ids: list[UUID],
         user_id: UUID,
+        *,
+        agent_id: UUID,
     ) -> list[dict[str, Any]]:
         """batch lookup of media_content rows by primary key.
 
         joins to the parent :class:`MediaEntity` for ``media_category``
-        + ``metadata_json``, scoped to ``user_id``.
+        + ``metadata_json``, scoped to ``(agent_id, user_id)``.
 
         :param content_ids: primary-key values to fetch
         :ptype content_ids: list[UUID]
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on media_content + media; required
+        :ptype agent_id: UUID
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
@@ -1326,9 +1438,14 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             SELECT mc.content_id, mc.content, mc.content_type, mc.media_id,
                    med.media_category, med.metadata_json, med.date_created
             FROM media_content mc
-            JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.content_id = ANY($1::uuid[]) AND mc.user_id = $2
+            JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
+            WHERE mc.agent_id = $1
+              AND mc.content_id = ANY($2::uuid[])
+              AND mc.user_id = $3
             """,
+            agent_id,
             content_ids,
             user_id,
         )
@@ -1338,6 +1455,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         embedding: list[float],
         max_results: int,
         similarity_threshold: float,
@@ -1346,6 +1464,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
 
         :param user_id: owning user UUID
         :ptype user_id: UUID
+        :param agent_id: partition column on media_content + media; required
+        :ptype agent_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param max_results: cap on returned rows
@@ -1359,7 +1479,9 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             return []
         embedding_str = json.dumps(embedding)
         # cache-bypass: vector-distance search joining media_content ->
-        # media. see :meth:`hybrid_search`.
+        # media. see :meth:`hybrid_search`. composite JOIN on
+        # (agent_id, media_id) keeps the relationship inside one
+        # partition.
         rows = await self.l3_pool.fetch(
             """
             SELECT mc.content_id, mc.content, mc.content_type,
@@ -1367,13 +1489,17 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                    med.date_created,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM media_content mc
-            JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.user_id = $2
+            JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
+            WHERE mc.agent_id = $2
+              AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
             ORDER BY mc.embedding <=> $1::vector
-            LIMIT $3
+            LIMIT $4
             """,
             embedding_str,
+            agent_id,
             user_id,
             max_results,
         )
@@ -1400,6 +1526,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         fts_text: str,
         max_results: int,
     ) -> list[dict[str, Any]]:
@@ -1407,6 +1534,8 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
 
         :param user_id: owning user UUID
         :ptype user_id: UUID
+        :param agent_id: partition column on media_content + media; required
+        :ptype agent_id: UUID
         :param fts_text: FTS query text
         :ptype fts_text: str
         :param max_results: cap on returned rows
@@ -1424,14 +1553,18 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                    med.date_created,
                    ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
             FROM media_content mc
-            JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.user_id = $2
+            JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
+            WHERE mc.agent_id = $2
+              AND mc.user_id = $3
               AND mc.embedding IS NOT NULL
               AND mc.search_vector @@ websearch_to_tsquery('english', $1)
             ORDER BY fts_rank DESC
-            LIMIT $3
+            LIMIT $4
             """,
             fts_text,
+            agent_id,
             user_id,
             max_results,
         )
@@ -1453,6 +1586,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         *,
         content_id: UUID,
         user_id: UUID,
+        agent_id: UUID,
     ) -> str | None:
         """fetch ``content`` for the recall_memory tool (media leg).
 
@@ -1460,15 +1594,19 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         :ptype content_id: UUID
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on media_content; required
+        :ptype agent_id: UUID
         :return: content text or ``None``
         :rtype: str | None
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by user_id — the user_id
-        # guard is a security predicate the L1 cache cannot enforce.
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM media_content WHERE content_id = $1 AND user_id = $2",
+            "SELECT content FROM media_content "
+            "WHERE agent_id = $1 AND content_id = $2 AND user_id = $3",
+            agent_id,
             content_id,
             user_id,
         )
@@ -1487,15 +1625,15 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
     pgvector cast on write + ``list[float]`` decode on read.
     """
 
-    primary_key_column: str = "chunk_id"
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "chunk_id")
     schema = TableSchema(
         name="memory_chunks",
-        primary_key="chunk_id",
+        primary_key=("agent_id", "chunk_id"),
         columns=[
             Column("chunk_id", UUID_TYPE),
             Column("media_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("agent_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
+            Column("agent_id", UUID_TYPE, partition=True),
+            Column("customer_id", UUID_TYPE, immutable=True),
             Column("user_id", UUID_TYPE, immutable=True),
             Column("content", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
@@ -1528,13 +1666,13 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
         embedding: list[float],
         user_text: str,
         candidate_k: int,
         similarity_threshold: float,
         chunk_signal_weights: dict[str, float],
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
         fts_min_len: int = 3,
         fts_max_len: int = 500,
     ) -> list[dict[str, Any]]:
@@ -1543,10 +1681,16 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         absorbs :meth:`MemoryRetriever._query_chunks`. two-signal
         ranking (semantic + keyword); no recency decay because chunks
         come from documents whose freshness signal is the upload
-        event, not the chunk's own lifecycle.
+        event, not the chunk's own lifecycle. ``agent_id`` is the
+        partition column on memory_chunks + media; ``customer_id`` is
+        a required sub-scope.
 
         :param user_id: owning user UUID
         :ptype user_id: UUID
+        :param agent_id: partition column; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param user_text: raw query text for FTS
@@ -1558,10 +1702,6 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :param chunk_signal_weights: mapping ``{"semantic",
             "keyword"}`` to weights
         :ptype chunk_signal_weights: dict[str, float]
-        :param agent_id: optional agent scope
-        :ptype agent_id: UUID | None
-        :param customer_id: optional customer scope
-        :ptype customer_id: UUID | None
         :param fts_min_len: minimum query length for FTS activation
         :ptype fts_min_len: int
         :param fts_max_len: truncation length for FTS queries
@@ -1584,7 +1724,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         # cache-bypass: vector-distance search joining memory_chunks ->
         # media. not primary-key-addressable; L1 row cache cannot help.
-        # method on Collection preserves single entry point.
+        # method on Collection preserves single entry point. composite
+        # LEFT JOIN on (agent_id, media_id) keeps the optional
+        # relationship inside one partition when present.
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
@@ -1592,7 +1734,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                    mc.embedding, med.metadata_json,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM memory_chunks mc
-            LEFT JOIN media med ON mc.media_id = med.media_id
+            LEFT JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
             WHERE {scope_conditions}
             ORDER BY mc.embedding <=> $1::vector
             LIMIT {limit_param}
@@ -1622,7 +1766,9 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                        mc.embedding, med.metadata_json,
                        ts_rank_cd(mc.search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memory_chunks mc
-                LEFT JOIN media med ON mc.media_id = med.media_id
+                LEFT JOIN media med
+                  ON mc.agent_id = med.agent_id
+                 AND mc.media_id = med.media_id
                 WHERE {fts_scope_conditions}
                   AND mc.search_vector @@ websearch_to_tsquery('english', $1)
                 ORDER BY fts_rank DESC
@@ -1709,6 +1855,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         self,
         chunk_ids: list[UUID],
         user_id: UUID,
+        *,
+        agent_id: UUID,
     ) -> list[dict[str, Any]]:
         """batch lookup of memory_chunks rows by primary key.
 
@@ -1716,21 +1864,29 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype chunk_ids: list[UUID]
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
         :return: list of row dicts joined to media
         :rtype: list[dict[str, Any]]
         """
         if self.l3_pool is None or not chunk_ids:
             return []
         # cache-bypass: batch IN(...) left-join spanning memory_chunks
-        # -> media. see :meth:`hybrid_search`.
+        # -> media. see :meth:`hybrid_search`. composite LEFT JOIN on
+        # (agent_id, media_id) keeps optional parent in same partition.
         rows = await self.l3_pool.fetch(
             """
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
                    med.metadata_json
             FROM memory_chunks mc
-            LEFT JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.chunk_id = ANY($1::uuid[]) AND mc.user_id = $2
+            LEFT JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
+            WHERE mc.agent_id = $1
+              AND mc.chunk_id = ANY($2::uuid[])
+              AND mc.user_id = $3
             """,
+            agent_id,
             chunk_ids,
             user_id,
         )
@@ -1740,6 +1896,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         self,
         *,
         user_id: UUID,
+        agent_id: UUID,
         embedding: list[float],
         max_results: int,
         similarity_threshold: float,
@@ -1748,6 +1905,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         :param user_id: owning user UUID
         :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks + media; required
+        :ptype agent_id: UUID
         :param embedding: query embedding vector
         :ptype embedding: list[float]
         :param max_results: cap on returned rows
@@ -1768,12 +1927,16 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                    med.metadata_json,
                    1 - (mc.embedding <=> $1::vector) AS similarity
             FROM memory_chunks mc
-            LEFT JOIN media med ON mc.media_id = med.media_id
-            WHERE mc.user_id = $2
+            LEFT JOIN media med
+              ON mc.agent_id = med.agent_id
+             AND mc.media_id = med.media_id
+            WHERE mc.agent_id = $2
+              AND mc.user_id = $3
             ORDER BY mc.embedding <=> $1::vector
-            LIMIT $3
+            LIMIT $4
             """,
             embedding_str,
+            agent_id,
             user_id,
             max_results,
         )
@@ -1799,6 +1962,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         *,
         chunk_id: UUID,
         user_id: UUID,
+        agent_id: UUID,
     ) -> str | None:
         """fetch ``content`` for the recall_memory tool (chunk leg).
 
@@ -1806,15 +1970,19 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype chunk_id: UUID
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memory_chunks; required
+        :ptype agent_id: UUID
         :return: chunk text or ``None``
         :rtype: str | None
         """
         if self.l3_pool is None:
             return None
-        # cache-bypass: by-ID fetch scoped by user_id — security
-        # predicate the L1 cache cannot enforce.
+        # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
+        # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM memory_chunks WHERE chunk_id = $1 AND user_id = $2",
+            "SELECT content FROM memory_chunks "
+            "WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
+            agent_id,
             chunk_id,
             user_id,
         )
@@ -1853,11 +2021,20 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "item_id")
+    # rationale: ``save_to_postgres`` is a framework override that
+    # truncates ``short_desc`` to the migration-v002 VARCHAR(150) bound;
+    # the underlying ``data`` dict already carries ``conversation_id``
+    # (the partition column) by construction since
+    # :class:`SchemaBackedCollection` enforces required-column presence
+    # before this override runs. exempting the framework override
+    # keeps the partition contract on the read surface
+    # (``find_by_conversation``) without weakening the static guard.
+    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"save_to_postgres"})
     schema = TableSchema(
         name="conversation_memory_refs",
         primary_key=("conversation_id", "item_id"),
         columns=[
-            Column("conversation_id", UUID_TYPE),
+            Column("conversation_id", UUID_TYPE, partition=True),
             Column("item_id", UUID_TYPE),
             Column("item_type", STRING_TYPE),
             Column("short_desc", STRING_TYPE),
