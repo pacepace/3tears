@@ -14,6 +14,7 @@ members = [
     "3tears-conversations",
     "3tears-langgraph",
     "3tears-models",
+    "3tears-nats",
     "3tears-observe",
     "3tears-registry",
 ]
@@ -352,6 +353,23 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
 ]
 provides-extras = ["anthropic", "openai", "openrouter", "voyageai", "whisper", "image"]
+
+[[package]]
+name = "3tears-nats"
+version = "0.5.0"
+source = { editable = "packages/nats" }
+dependencies = [
+    { name = "3tears-observe" },
+    { name = "nats-py" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears-observe", editable = "packages/observe" },
+    { name = "nats-py", specifier = ">=2.10" },
+    { name = "pydantic", specifier = ">=2.10" },
+]
 
 [[package]]
 name = "3tears-observe"
