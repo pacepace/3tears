@@ -404,9 +404,11 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
     this collection. delete by primary key is provided for test and
     retention cleanup only; production callers do not rewrite history.
 
-    CRUD is generated from :attr:`schema` with ``append_only=True`` so
+    CRUD is generated from :attr:`schema` with ``on_conflict="raise"`` so
     the generator emits plain INSERT -- no ON CONFLICT clause, no DO
-    UPDATE SET -- matching the journal semantics.
+    UPDATE SET -- matching the journal semantics. duplicate ``(workspace_id,
+    relative_path, version)`` inserts surface as
+    :class:`asyncpg.exceptions.UniqueViolationError` from asyncpg.
     """
 
     primary_key_column: str = "id"
@@ -426,7 +428,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             Column("correlation_id", UUID_TYPE, immutable=True),
             Column("date_created", DATETIME_TYPE, immutable=True),
         ],
-        append_only=True,
+        on_conflict="raise",
     )
 
     def __init__(
