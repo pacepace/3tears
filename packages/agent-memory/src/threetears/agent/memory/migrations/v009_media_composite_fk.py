@@ -22,14 +22,27 @@ the composite FK declared here is from ``memories.media_id`` BACK into
 ``media`` is unaffected. v009 only modifies the ``media`` table itself
 to enforce partitioning on ``agent_id``.
 
-idempotency: every step is guarded by information_schema / pg_constraint
-checks inside DO blocks so replay on recovery is a no-op. pre-GA, no
-data backfill -- existing rows with NULL agent_id are removed before
-SET NOT NULL via TRUNCATE so the constraint fires cleanly.
+idempotency: every step is guarded by information_schema /
+``pg_constraint`` checks inside DO blocks (or via the
+``replace_primary_key`` helper's own guard) so replay on recovery is
+a no-op. pre-GA, no data backfill -- existing rows with NULL agent_id
+are removed before SET NOT NULL via TRUNCATE so the constraint fires
+cleanly.
+
+implemented via :func:`threetears.core.data.migrations.helpers.
+replace_primary_key`. migration-helpers-task-01 retrofit replaces
+the prior hand-rolled PK-swap DO blocks with the helper's
+declarative call; the FK-drop step stays explicit because the
+inbound simple FKs from media_content + memory_chunks are NOT
+recreated against the new media PK in this migration -- v010 + v011
+add composite FKs back as the next-step pattern.
 """
 
 from __future__ import annotations
 
+from threetears.core.data.migrations.helpers import (
+    replace_primary_key,
+)
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -49,6 +62,8 @@ _TRUNCATE_MEDIA_SQL = "TRUNCATE TABLE media CASCADE"
 # ``media_pkey`` index, so dropping the index requires dropping the
 # dependent FKs first. v010 / v011 reinstall composite FKs, so this
 # drop is one of the steps that compose the new partition shape.
+# the FK constraint name is unknown (PG auto-generates ``media_content
+# _media_id_fkey`` style) so the DO block discovers it at runtime.
 _DROP_MEDIA_CONTENT_SIMPLE_FK_SQL = """
 DO $$
 DECLARE
@@ -97,72 +112,6 @@ _SET_AGENT_ID_NOT_NULL_SQL = (
     "ALTER TABLE media ALTER COLUMN agent_id SET NOT NULL"
 )
 
-_DROP_OLD_PK_SQL = """
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_pkey'
-    ) THEN
-        ALTER TABLE media DROP CONSTRAINT media_pkey;
-    END IF;
-END
-$$
-"""
-
-_ADD_COMPOSITE_PK_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_pkey'
-    ) THEN
-        ALTER TABLE media
-            ADD CONSTRAINT media_pkey
-            PRIMARY KEY (agent_id, media_id);
-    END IF;
-END
-$$
-"""
-
-_ADD_MEDIA_ID_UNIQUE_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_media_id_key'
-    ) THEN
-        ALTER TABLE media
-            ADD CONSTRAINT media_media_id_key UNIQUE (media_id);
-    END IF;
-END
-$$
-"""
-
 
 async def media_composite_fk(store: DataStore) -> None:
     """make agent_id NOT NULL on media and switch PK to composite shape.
@@ -177,6 +126,9 @@ async def media_composite_fk(store: DataStore) -> None:
     await store.execute(_DROP_MEDIA_CONTENT_SIMPLE_FK_SQL)
     await store.execute(_DROP_MEMORY_CHUNKS_SIMPLE_FK_SQL)
     await store.execute(_SET_AGENT_ID_NOT_NULL_SQL)
-    await store.execute(_DROP_OLD_PK_SQL)
-    await store.execute(_ADD_COMPOSITE_PK_SQL)
-    await store.execute(_ADD_MEDIA_ID_UNIQUE_SQL)
+    await replace_primary_key(
+        store,
+        table="media",
+        new_columns=("agent_id", "media_id"),
+        preserve_unique_id_column="media_id",
+    )

@@ -20,15 +20,23 @@ without dragging the partition column into every reference; the
 composite FK from those children carries the partition column
 explicitly.
 
-idempotency: every step is guarded by an information_schema check
-inside a DO block so replay on recovery is a no-op. pre-GA there
-are no live rows with NULL agent_id / customer_id; the ALTER COLUMN
-... SET NOT NULL fires unconditionally because no backfill is
-needed.
+idempotency: ``replace_primary_key`` consults ``pg_get_constraintdef``
+and short-circuits when the table is already on the target composite
+PK form, so replay on recovery is a no-op. pre-GA there are no live
+rows with NULL agent_id / customer_id; the ALTER COLUMN SET NOT NULL
+statements fire unconditionally because no backfill is needed.
+
+implemented via :func:`threetears.core.data.migrations.helpers.
+replace_primary_key`. migration-helpers-task-01 retrofit replaces
+the prior hand-rolled PK-swap DO blocks with one declarative helper
+call.
 """
 
 from __future__ import annotations
 
+from threetears.core.data.migrations.helpers import (
+    replace_primary_key,
+)
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -47,72 +55,6 @@ _SET_CUSTOMER_ID_NOT_NULL_SQL = (
     "ALTER TABLE memories ALTER COLUMN customer_id SET NOT NULL"
 )
 
-_DROP_OLD_PK_SQL = """
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'memories'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'memories_pkey'
-    ) THEN
-        ALTER TABLE memories DROP CONSTRAINT memories_pkey;
-    END IF;
-END
-$$
-"""
-
-_ADD_COMPOSITE_PK_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'memories'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'memories_pkey'
-    ) THEN
-        ALTER TABLE memories
-            ADD CONSTRAINT memories_pkey
-            PRIMARY KEY (agent_id, memory_id);
-    END IF;
-END
-$$
-"""
-
-_ADD_MEMORY_ID_UNIQUE_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'memories'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'memories_memory_id_key'
-    ) THEN
-        ALTER TABLE memories
-            ADD CONSTRAINT memories_memory_id_key UNIQUE (memory_id);
-    END IF;
-END
-$$
-"""
-
 
 async def restore_memories_agent_customer_not_null(store: DataStore) -> None:
     """restore NOT NULL on agent_id / customer_id and switch to composite PK.
@@ -127,6 +69,9 @@ async def restore_memories_agent_customer_not_null(store: DataStore) -> None:
     )
     await store.execute(_SET_AGENT_ID_NOT_NULL_SQL)
     await store.execute(_SET_CUSTOMER_ID_NOT_NULL_SQL)
-    await store.execute(_DROP_OLD_PK_SQL)
-    await store.execute(_ADD_COMPOSITE_PK_SQL)
-    await store.execute(_ADD_MEMORY_ID_UNIQUE_SQL)
+    await replace_primary_key(
+        store,
+        table="memories",
+        new_columns=("agent_id", "memory_id"),
+        preserve_unique_id_column="memory_id",
+    )

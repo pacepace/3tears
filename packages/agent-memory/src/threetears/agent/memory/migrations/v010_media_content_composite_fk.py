@@ -15,13 +15,24 @@ primary key changes from ``(content_id)`` to the composite
 references content rows by id alone keeps working.
 
 idempotency: every step is guarded by ``information_schema`` /
-``pg_constraint`` checks inside DO blocks so replay on recovery is a
-no-op. pre-GA: TRUNCATE first to clear pre-existing rows so the
+``pg_constraint`` checks inside DO blocks (or via the
+``replace_primary_key`` helper's own guard) so replay on recovery is
+a no-op. pre-GA: TRUNCATE first to clear pre-existing rows so the
 SET NOT NULL fires cleanly without per-row backfill.
+
+implemented via :func:`threetears.core.data.migrations.helpers.
+replace_primary_key`. migration-helpers-task-01 retrofit replaces
+the prior hand-rolled PK-swap DO blocks with the helper; the
+composite-FK ADD remains explicit because the FK targets media's
+new ``UNIQUE (media_id)`` (preserved by v009's replace_primary_key
+call).
 """
 
 from __future__ import annotations
 
+from threetears.core.data.migrations.helpers import (
+    replace_primary_key,
+)
 from threetears.core.data.store import DataStore
 from threetears.observe import get_logger
 
@@ -38,93 +49,6 @@ _SET_AGENT_ID_NOT_NULL_SQL = (
     "ALTER TABLE media_content ALTER COLUMN agent_id SET NOT NULL"
 )
 
-_DROP_SIMPLE_MEDIA_FK_SQL = """
-DO $$
-DECLARE
-    fk_name text;
-BEGIN
-    SELECT conname INTO fk_name
-      FROM pg_constraint c
-      JOIN pg_class cls ON cls.oid = c.conrelid
-     WHERE cls.relname = 'media_content'
-       AND cls.relnamespace = (
-           SELECT oid FROM pg_namespace
-            WHERE nspname = current_schema()
-       )
-       AND c.contype = 'f'
-       AND pg_get_constraintdef(c.oid) LIKE 'FOREIGN KEY (media_id)%';
-    IF fk_name IS NOT NULL THEN
-        EXECUTE 'ALTER TABLE media_content DROP CONSTRAINT ' || quote_ident(fk_name);
-    END IF;
-END
-$$
-"""
-
-_DROP_OLD_PK_SQL = """
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media_content'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_content_pkey'
-    ) THEN
-        ALTER TABLE media_content DROP CONSTRAINT media_content_pkey;
-    END IF;
-END
-$$
-"""
-
-_ADD_COMPOSITE_PK_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media_content'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_content_pkey'
-    ) THEN
-        ALTER TABLE media_content
-            ADD CONSTRAINT media_content_pkey
-            PRIMARY KEY (agent_id, content_id);
-    END IF;
-END
-$$
-"""
-
-_ADD_CONTENT_ID_UNIQUE_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-         WHERE conrelid = (
-             SELECT oid FROM pg_class
-              WHERE relname = 'media_content'
-                AND relnamespace = (
-                    SELECT oid FROM pg_namespace
-                     WHERE nspname = current_schema()
-                )
-         )
-           AND conname = 'media_content_content_id_key'
-    ) THEN
-        ALTER TABLE media_content
-            ADD CONSTRAINT media_content_content_id_key UNIQUE (content_id);
-    END IF;
-END
-$$
-"""
 
 _ADD_COMPOSITE_FK_SQL = """
 DO $$
@@ -163,8 +87,10 @@ async def media_content_composite_fk(store: DataStore) -> None:
     log.info("partitioning media_content on agent_id + composite FK (v010)")
     await store.execute(_TRUNCATE_MEDIA_CONTENT_SQL)
     await store.execute(_SET_AGENT_ID_NOT_NULL_SQL)
-    await store.execute(_DROP_SIMPLE_MEDIA_FK_SQL)
-    await store.execute(_DROP_OLD_PK_SQL)
-    await store.execute(_ADD_COMPOSITE_PK_SQL)
-    await store.execute(_ADD_CONTENT_ID_UNIQUE_SQL)
+    await replace_primary_key(
+        store,
+        table="media_content",
+        new_columns=("agent_id", "content_id"),
+        preserve_unique_id_column="content_id",
+    )
     await store.execute(_ADD_COMPOSITE_FK_SQL)

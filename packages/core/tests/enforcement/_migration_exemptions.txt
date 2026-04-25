@@ -8,3 +8,7 @@
 #
 # every entry's <file_path> is an absolute path; the walker's per-test
 # helper rewrites this into match keys at load time.
+
+/Users/pace/crypt/pub/dev-wsl/vscode/3tears/3tears/packages/agent-memory/src/threetears/agent/memory/migrations/v009_media_composite_fk.py:M-5 # rationale: pre-GA media table clear before partitioning agent_id NOT NULL; no production data to preserve and the alternative (per-row backfill) requires a tombstone column we have no need for post-GA
+/Users/pace/crypt/pub/dev-wsl/vscode/3tears/3tears/packages/agent-memory/src/threetears/agent/memory/migrations/v010_media_content_composite_fk.py:M-5 # rationale: pre-GA media_content table clear before partitioning agent_id NOT NULL; the table is fully derived from media via composite FK so re-population happens on next agent run with no data loss
+/Users/pace/crypt/pub/dev-wsl/vscode/3tears/3tears/packages/agent-memory/src/threetears/agent/memory/migrations/v011_memory_chunks_composite_fk.py:M-5 # rationale: pre-GA memory_chunks table clear before partitioning agent_id NOT NULL; chunks are derived from media + memories so re-extraction happens on next agent run with no data loss
