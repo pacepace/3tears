@@ -1,11 +1,11 @@
-"""shared rbac evaluator + cache for the 3tears platform.
+"""shared rbac evaluator + cache + collections for the 3tears platform.
 
 this package is the single source of truth for "can actor do action
 on namespace" decisions. the same code runs in the hub broker and
 inside every agent pod, so authorization answers are byte-identical
 across processes and one set of unit tests covers every caller.
 
-public surface:
+public surface — evaluation:
 
 - :func:`evaluate_decision` — fast yes/no path for the production
   hot path; cache-friendly when wired behind :class:`AclCache`.
@@ -23,13 +23,33 @@ public surface:
   :class:`LimitingSide`.
 - i/o protocols :class:`MembershipLoader` and :class:`GrantLoader`.
 
-callers wire concrete loaders against their persistence layer and
-hand the loaders + a :class:`AclCache` instance to the evaluator on
-every call. this package never opens a database connection or
-publishes a NATS message itself.
+public surface — persistence:
+
+- collections :class:`GroupCollection`,
+  :class:`GroupMemberCollection`, :class:`RoleCollection`,
+  :class:`RoleAssignmentCollection`,
+  :class:`NamespaceCollection` — three-tier collections fronting
+  the canonical rbac tables.
+- entities :class:`GroupEntity`, :class:`GroupMemberEntity`,
+  :class:`RoleEntity`, :class:`RoleAssignmentEntity`,
+  :class:`NamespaceEntity`.
+- loaders :class:`CollectionMembershipLoader`,
+  :class:`CollectionGrantLoader` — concrete impls of the loader
+  Protocols backed by the canonical Collections.
+- invalidation models :class:`MembershipInvalidatePayload`,
+  :class:`AssignmentInvalidatePayload`,
+  :class:`RoleInvalidatePayload` — typed NATS payloads for
+  cross-process cache invalidation.
+
+callers wire concrete loaders against their persistence layer (or
+use :class:`CollectionMembershipLoader` /
+:class:`CollectionGrantLoader` against the canonical Collections)
+and hand the loaders + a :class:`AclCache` instance to the evaluator
+on every call. evaluation logic itself never opens a database
+connection or publishes a NATS message.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from threetears.agent.acl.audit_vocabulary import (
     RBAC_AUDIT_ACTIONS,
@@ -48,6 +68,20 @@ from threetears.agent.acl.cache import (
     GroupTypeCustomerEntry,
     GroupTypeCustomerKey,
 )
+from threetears.agent.acl.collections import (
+    GroupCollection,
+    GroupMemberCollection,
+    NamespaceCollection,
+    RoleAssignmentCollection,
+    RoleCollection,
+)
+from threetears.agent.acl.entities import (
+    GroupEntity,
+    GroupMemberEntity,
+    NamespaceEntity,
+    RoleAssignmentEntity,
+    RoleEntity,
+)
 from threetears.agent.acl.evaluator import (
     READ_FILE_MATCHING_PREFIX,
     WRITE_FILE_MATCHING_PREFIX,
@@ -55,7 +89,16 @@ from threetears.agent.acl.evaluator import (
     evaluate_file_access,
     evaluate_with_trail,
 )
+from threetears.agent.acl.invalidation import (
+    AssignmentInvalidatePayload,
+    MembershipInvalidatePayload,
+    RoleInvalidatePayload,
+)
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
+from threetears.agent.acl.loaders import (
+    CollectionGrantLoader,
+    CollectionMembershipLoader,
+)
 from threetears.agent.acl.types import (
     ActorType,
     EvaluationContext,
@@ -77,10 +120,17 @@ __all__ = [
     "ActorMembershipEntry",
     "ActorMembershipKey",
     "ActorType",
+    "AssignmentInvalidatePayload",
+    "CollectionGrantLoader",
+    "CollectionMembershipLoader",
     "EvaluationContext",
     "EvaluationResult",
     "GrantLoader",
     "Group",
+    "GroupCollection",
+    "GroupEntity",
+    "GroupMemberCollection",
+    "GroupMemberEntity",
     "GroupMembership",
     "GroupNamespaceEntry",
     "GroupNamespaceKey",
@@ -88,8 +138,11 @@ __all__ = [
     "GroupTypeCustomerKey",
     "LimitingSide",
     "MemberType",
+    "MembershipInvalidatePayload",
     "MembershipLoader",
     "Namespace",
+    "NamespaceCollection",
+    "NamespaceEntity",
     "READ_FILE_MATCHING_PREFIX",
     "RBAC_AUDIT_ACTIONS",
     "RBAC_AUDIT_EVENT_TYPES",
@@ -99,6 +152,11 @@ __all__ = [
     "RbacEventType",
     "Role",
     "RoleAssignment",
+    "RoleAssignmentCollection",
+    "RoleAssignmentEntity",
+    "RoleCollection",
+    "RoleEntity",
+    "RoleInvalidatePayload",
     "ScopeType",
     "Trail",
     "WILDCARD_RESOURCE_TYPE",
