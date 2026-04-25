@@ -29,8 +29,10 @@ from threetears.core.collections.schema_backed import (
     UUID_TYPE,
     VECTOR_TYPE,
     Column,
+    PartitionEnforcementError,
     SchemaBackedCollection,
     TableSchema,
+    spans_partitions,
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -242,6 +244,244 @@ class TestTableSchemaValidation:
         )
         mutable = [c.name for c in schema.mutable_columns()]
         assert mutable == ["value"]
+
+
+# ---------------------------------------------------------------------------
+# partition column primitive (collections-task-02)
+# ---------------------------------------------------------------------------
+
+
+class TestPartitionColumnSchema:
+    """validation of the ``partition=True`` flag on :class:`Column`."""
+
+    def test_partition_column_exposed_via_property(self) -> None:
+        """schema.partition_column returns the flagged column name."""
+        schema = TableSchema(
+            name="t",
+            primary_key=("a", "b"),
+            columns=[
+                Column("a", UUID_TYPE, partition=True),
+                Column("b", UUID_TYPE),
+            ],
+        )
+        assert schema.partition_column == "a"
+
+    def test_no_partition_returns_none(self) -> None:
+        """tables without a partition flag report None."""
+        schema = TableSchema(
+            name="t",
+            primary_key="id",
+            columns=[Column("id", UUID_TYPE)],
+        )
+        assert schema.partition_column is None
+
+    def test_partition_must_be_part_of_primary_key(self) -> None:
+        """partition column must appear in primary_key."""
+        with pytest.raises(ValueError, match="must be part of primary_key"):
+            TableSchema(
+                name="t",
+                primary_key="id",
+                columns=[
+                    Column("id", UUID_TYPE),
+                    Column("agent_id", UUID_TYPE, partition=True),
+                ],
+            )
+
+    def test_only_one_partition_per_table(self) -> None:
+        """multiple partition columns are rejected."""
+        with pytest.raises(ValueError, match="only one partition"):
+            TableSchema(
+                name="t",
+                primary_key=("a", "b", "c"),
+                columns=[
+                    Column("a", UUID_TYPE, partition=True),
+                    Column("b", UUID_TYPE, partition=True),
+                    Column("c", UUID_TYPE),
+                ],
+            )
+
+    def test_partition_implies_immutable(self) -> None:
+        """partition=True coerces immutable=True automatically."""
+        schema = TableSchema(
+            name="t",
+            primary_key=("a", "b"),
+            columns=[
+                Column("a", UUID_TYPE, partition=True),
+                Column("b", UUID_TYPE),
+                Column("name", STRING_TYPE),
+            ],
+        )
+        assert schema.column("a").immutable is True
+        # mutable_columns excludes pk; partition should not appear
+        mutable_names = [c.name for c in schema.mutable_columns()]
+        assert "a" not in mutable_names
+        assert "name" in mutable_names
+
+
+class _PartitionedEntity(BaseEntity):
+    primary_key_field = "id"
+
+
+class TestPartitionEnforcementSubclass:
+    """``__init_subclass__`` blocks classes that violate the partition guard."""
+
+    def test_subclass_with_partition_aware_methods_loads(self) -> None:
+        """method that accepts the partition column passes the guard."""
+
+        class _GoodCollection(SchemaBackedCollection[_PartitionedEntity]):
+            primary_key_column: str | tuple[str, ...] = ("conversation_id", "id")
+            schema = TableSchema(
+                name="ctx",
+                primary_key=("conversation_id", "id"),
+                columns=[
+                    Column("conversation_id", UUID_TYPE, partition=True),
+                    Column("id", UUID_TYPE),
+                    Column("payload", STRING_TYPE),
+                ],
+            )
+
+            @property
+            def table_name(self) -> str:
+                return "ctx"
+
+            @property
+            def entity_class(self) -> type[_PartitionedEntity]:
+                return _PartitionedEntity
+
+            async def find_by_conversation(
+                self, conversation_id: uuid.UUID,
+            ) -> list[_PartitionedEntity]:
+                _ = conversation_id
+                return []
+
+        # construction succeeds; class is well-formed
+        assert _GoodCollection.schema.partition_column == "conversation_id"
+
+    def test_subclass_with_unscoped_method_fails(self) -> None:
+        """method missing partition column triggers PartitionEnforcementError."""
+        with pytest.raises(PartitionEnforcementError, match="find_all"):
+
+            class _BadCollection(SchemaBackedCollection[_PartitionedEntity]):
+                primary_key_column: str | tuple[str, ...] = ("conversation_id", "id")
+                schema = TableSchema(
+                    name="ctx",
+                    primary_key=("conversation_id", "id"),
+                    columns=[
+                        Column("conversation_id", UUID_TYPE, partition=True),
+                        Column("id", UUID_TYPE),
+                        Column("payload", STRING_TYPE),
+                    ],
+                )
+
+                @property
+                def table_name(self) -> str:
+                    return "ctx"
+
+                @property
+                def entity_class(self) -> type[_PartitionedEntity]:
+                    return _PartitionedEntity
+
+                async def find_all(self) -> list[_PartitionedEntity]:
+                    return []
+
+    def test_spans_partitions_decorator_passes_guard(self) -> None:
+        """``@spans_partitions`` opt-in is accepted by the guard."""
+
+        class _SpansCollection(SchemaBackedCollection[_PartitionedEntity]):
+            primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
+            schema = TableSchema(
+                name="memories",
+                primary_key=("agent_id", "id"),
+                columns=[
+                    Column("agent_id", UUID_TYPE, partition=True),
+                    Column("id", UUID_TYPE),
+                    Column("payload", STRING_TYPE),
+                ],
+            )
+
+            @property
+            def table_name(self) -> str:
+                return "memories"
+
+            @property
+            def entity_class(self) -> type[_PartitionedEntity]:
+                return _PartitionedEntity
+
+            @spans_partitions
+            async def find_for_user_in_agents(
+                self, *, user_id: uuid.UUID, agent_ids: tuple[uuid.UUID, ...],
+            ) -> list[_PartitionedEntity]:
+                _ = user_id
+                _ = agent_ids
+                return []
+
+        assert _SpansCollection.schema.partition_column == "agent_id"
+
+    def test_partition_exempt_methods_allowlist(self) -> None:
+        """``_partition_exempt_methods`` allowlist is honored."""
+
+        class _ExemptCollection(SchemaBackedCollection[_PartitionedEntity]):
+            primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
+            schema = TableSchema(
+                name="t",
+                primary_key=("agent_id", "id"),
+                columns=[
+                    Column("agent_id", UUID_TYPE, partition=True),
+                    Column("id", UUID_TYPE),
+                ],
+            )
+            # rationale: per-pod operational summary for monitoring
+            _partition_exempt_methods = frozenset({"count_total"})
+
+            @property
+            def table_name(self) -> str:
+                return "t"
+
+            @property
+            def entity_class(self) -> type[_PartitionedEntity]:
+                return _PartitionedEntity
+
+            async def count_total(self) -> int:
+                return 0
+
+        assert _ExemptCollection.schema.partition_column == "agent_id"
+
+
+class TestSpansPartitionsDecorator:
+    """call-time validation of ``@spans_partitions``-decorated methods."""
+
+    @pytest.mark.asyncio
+    async def test_tuple_argument_passes(self) -> None:
+        """tuple of partition values is accepted."""
+
+        @spans_partitions
+        async def find_in(*, agent_ids: tuple[uuid.UUID, ...]) -> int:
+            return len(agent_ids)
+
+        result = await find_in(agent_ids=(uuid.uuid4(), uuid.uuid4()))
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_list_argument_rejected(self) -> None:
+        """list (rather than tuple) is rejected as ambiguous."""
+
+        @spans_partitions
+        async def find_in(*, agent_ids: tuple[uuid.UUID, ...]) -> int:
+            return len(agent_ids)
+
+        with pytest.raises(TypeError, match="must be a tuple"):
+            await find_in(agent_ids=[uuid.uuid4()])  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_empty_tuple_rejected(self) -> None:
+        """empty tuple refuses to emit a zero-partition query."""
+
+        @spans_partitions
+        async def find_in(*, agent_ids: tuple[uuid.UUID, ...]) -> int:
+            return len(agent_ids)
+
+        with pytest.raises(TypeError, match="empty tuple"):
+            await find_in(agent_ids=())
 
 
 # ---------------------------------------------------------------------------

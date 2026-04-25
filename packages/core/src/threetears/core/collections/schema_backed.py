@@ -33,10 +33,13 @@ CAS.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Generic
+from functools import wraps
+from typing import Any, ClassVar, Generic, TypeVar
 from uuid import UUID
 
 from threetears.core.collections.base import BaseCollection, EntityT
@@ -49,11 +52,13 @@ __all__ = [
     "DATETIME_TYPE",
     "INT_TYPE",
     "JSONB_TYPE",
+    "PartitionEnforcementError",
     "SchemaBackedCollection",
     "STRING_TYPE",
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
+    "spans_partitions",
 ]
 
 log = get_logger(__name__)
@@ -94,6 +99,25 @@ class Column:
         default to ``None``; when ``False``, a missing key raises
         :class:`KeyError` at write time so an incomplete payload
         fails loudly instead of silently writing ``NULL``
+    :cvar partition: when ``True``, column is the partition key for
+        the table. partition columns must be part of
+        :attr:`TableSchema.primary_key` so the schema enforces row
+        uniqueness through the partition. partition columns are also
+        :attr:`immutable` by definition (the value identifies WHICH
+        partition the row belongs to and changing it would corrupt
+        the partition map); the :class:`TableSchema` validator coerces
+        ``immutable=True`` automatically when ``partition=True`` to
+        keep declarations terse. on a Collection mixed with the
+        :class:`SchemaBackedCollection` partition guard, every
+        public read / write method must either accept the partition
+        column as a required argument, be decorated
+        ``@spans_partitions`` to opt into multi-partition reads, or
+        be allowlisted via ``_partition_exempt_methods`` with an
+        explicit rationale -- protects against the cross-partition
+        bleed class of bug
+    :cvar nullable: when ``True``, missing values default to ``None``;
+        ignored when ``partition=True`` (partition columns must be
+        non-null by construction)
 
     :param name: column name
     :ptype name: str
@@ -103,12 +127,15 @@ class Column:
     :ptype immutable: bool
     :param nullable: defaultable flag; defaults to ``False``
     :ptype nullable: bool
+    :param partition: partition-column flag; defaults to ``False``
+    :ptype partition: bool
     """
 
     name: str
     column_type: str
     immutable: bool = False
     nullable: bool = False
+    partition: bool = False
 
 
 @dataclass(frozen=True)
@@ -142,6 +169,7 @@ class TableSchema:
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
+    _partition_column: str | None = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """validate + index the schema after construction.
@@ -149,13 +177,47 @@ class TableSchema:
         :return: nothing
         :rtype: None
         :raises ValueError: when a pk column is not declared in
-            :attr:`columns`, when a declared pk column is not marked
-            immutable-compatible, or when :attr:`cas_column` is set but
-            missing from :attr:`columns`
+            :attr:`columns`, when :attr:`cas_column` is set but missing
+            from :attr:`columns`, when more than one column is flagged
+            ``partition=True`` (only one partition column per table),
+            or when a partition column is not part of
+            :attr:`primary_key` (the schema must enforce row uniqueness
+            through the partition)
         """
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
-        by_name = {c.name: c for c in self.columns}
+        # coerce partition columns to immutable so callers do not have
+        # to declare both flags. partition columns identify the slot a
+        # row belongs to; mutating the value would corrupt the partition
+        # map.
+        coerced_columns: list[Column] = []
+        partition_cols: list[str] = []
+        for col in self.columns:
+            if col.partition:
+                partition_cols.append(col.name)
+                if not col.immutable:
+                    col = Column(  # noqa: PLW2901 -- intentional coercion
+                        name=col.name,
+                        column_type=col.column_type,
+                        immutable=True,
+                        nullable=col.nullable,
+                        partition=True,
+                    )
+            coerced_columns.append(col)
+        if len(partition_cols) > 1:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): only one partition "
+                f"column per table is supported, got {partition_cols!r}",
+            )
+        partition_column: str | None = partition_cols[0] if partition_cols else None
+        if partition_column is not None and partition_column not in pk_cols:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): partition column "
+                f"{partition_column!r} must be part of primary_key "
+                f"(got primary_key={pk_cols!r}) so the schema enforces "
+                f"row uniqueness through the partition",
+            )
+        by_name = {c.name: c for c in coerced_columns}
         for pk_col in pk_cols:
             if pk_col not in by_name:
                 raise ValueError(
@@ -169,8 +231,10 @@ class TableSchema:
             )
         # dataclass is frozen, use object.__setattr__ to install derived
         # attributes
+        object.__setattr__(self, "columns", coerced_columns)
         object.__setattr__(self, "_pk_columns", pk_cols)
         object.__setattr__(self, "_by_name", by_name)
+        object.__setattr__(self, "_partition_column", partition_column)
 
     @property
     def pk_columns(self) -> tuple[str, ...]:
@@ -180,6 +244,16 @@ class TableSchema:
         :rtype: tuple[str, ...]
         """
         return self._pk_columns
+
+    @property
+    def partition_column(self) -> str | None:
+        """return the partition-column name, or ``None`` for non-partitioned tables.
+
+        :return: partition column name when one column is flagged
+            ``partition=True``, ``None`` otherwise
+        :rtype: str | None
+        """
+        return self._partition_column
 
     def column(self, name: str) -> Column:
         """resolve a column descriptor by name.
@@ -414,6 +488,122 @@ def _decode_l2_value(column: Column, value: Any) -> Any:
     return result
 
 
+class PartitionEnforcementError(TypeError):
+    """raised at class-definition time when a partitioned collection
+    declares a public method that neither accepts the partition column
+    nor opts into the cross-partition path via :func:`spans_partitions`.
+
+    catches the cross-partition bleed class of bug at import time --
+    long before a stray ``find_by_user`` lacking ``conversation_id``
+    can ship to production and silently surface another conversation's
+    rows.
+
+    resolution: add the partition column to the method signature, mark
+    the method with ``@spans_partitions``, or list it in
+    ``cls._partition_exempt_methods`` with a ``# rationale: ...``
+    inline comment. blanket exemptions ("internal helper", "tests need
+    this") are rejected by code review.
+    """
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def spans_partitions(method: F) -> F:
+    """mark a Collection method as deliberately cross-partition.
+
+    decorated methods are exempt from the
+    :class:`SchemaBackedCollection` partition-column guard; they may
+    span multiple partitions intentionally (e.g. an authorized
+    cross-agent retrieval where the caller has resolved the authorized
+    set of agent IDs upstream and passes them in as a tuple).
+
+    contract: at call time, the decorator validates that the caller
+    passed a ``tuple`` (not a list, not a single value, not a
+    generator) for the partition-spanning argument. tuples are an
+    explicit "I deliberately fan out across these partitions" signal;
+    anything else is treated as a programming error and raises
+    :class:`TypeError`. the wrapped callable inspects the method
+    signature to find the first parameter whose name ends in ``_ids``,
+    a plural form of the partition column. callers that need a
+    different sentinel should override the convention by passing the
+    ``tuple`` argument under any name ending in ``_ids``.
+
+    :param method: collection method to decorate
+    :ptype method: Callable[..., Any]
+    :return: wrapped method that validates the cross-partition
+        argument shape
+    :rtype: Callable[..., Any]
+    """
+    sig = inspect.signature(method)
+    plural_param: str | None = None
+    for name in sig.parameters:
+        if name.endswith("_ids"):
+            plural_param = name
+            break
+
+    @wraps(method)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        """call-site guard for ``@spans_partitions``-marked methods.
+
+        :raises TypeError: when the cross-partition argument is not a
+            ``tuple`` or has length zero
+        """
+        if plural_param is not None:
+            bound = sig.bind(*args, **kwargs)
+            value = bound.arguments.get(plural_param)
+            if value is not None:
+                if not isinstance(value, tuple):
+                    raise TypeError(
+                        f"{method.__qualname__}: cross-partition argument "
+                        f"{plural_param!r} must be a tuple (deliberate "
+                        f"fan-out signal); got {type(value).__name__}",
+                    )
+                if len(value) == 0:
+                    raise TypeError(
+                        f"{method.__qualname__}: cross-partition argument "
+                        f"{plural_param!r} is an empty tuple; refusing to "
+                        f"emit a query that spans zero partitions",
+                    )
+        return method(*args, **kwargs)
+
+    setattr(wrapper, "_spans_partitions", True)
+    return wrapper  # type: ignore[return-value]
+
+
+def _is_partition_exempt(method: Any) -> bool:
+    """true iff ``method`` is decorated with :func:`spans_partitions`.
+
+    :param method: function or method object
+    :ptype method: Any
+    :return: presence of the marker attribute
+    :rtype: bool
+    """
+    return getattr(method, "_spans_partitions", False) is True
+
+
+def _method_accepts_partition(method: Any, partition_column: str) -> bool:
+    """true iff ``method`` declares a parameter named ``partition_column``.
+
+    used by the :class:`SchemaBackedCollection` ``__init_subclass__``
+    hook to verify every public method on a partitioned Collection
+    accepts the partition column. matches positional and keyword-only
+    parameters.
+
+    :param method: function or method object
+    :ptype method: Any
+    :param partition_column: name of the table's partition column
+    :ptype partition_column: str
+    :return: presence of a parameter named ``partition_column``
+    :rtype: bool
+    """
+    try:
+        sig = inspect.signature(method)
+    except (TypeError, ValueError):
+        return False
+    return partition_column in sig.parameters
+
+
 class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     """base collection that generates CRUD SQL from a :class:`TableSchema`.
 
@@ -445,9 +635,91 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     ``postgres_pool`` constructor kwarg should assign it onto
     ``self.l3_pool`` in their ``__init__`` after calling ``super()``
     so the generic path finds the pool uniformly.
+
+    **partition-column guard.** when :attr:`schema` declares a
+    partition column (one :class:`Column` flagged ``partition=True``),
+    every public read / write method on the subclass must satisfy at
+    least one of:
+
+    1. accept the partition column as a parameter (positional or
+       keyword) -- the SQL generator will then enforce the
+       partition predicate naturally.
+    2. be decorated with :func:`spans_partitions` -- the caller is
+       deliberately fanning out across an authorized set of
+       partition values supplied as a tuple.
+    3. appear in :attr:`_partition_exempt_methods` -- a narrow,
+       audited allowlist for methods that legitimately span every
+       partition (e.g. ``count_total`` on a per-pod operational
+       summary).
+
+    a subclass that violates the guard fails at class-definition
+    time with :class:`PartitionEnforcementError`. resolution priority:
+    (1) add the partition column to the method signature; (2) decorate
+    with :func:`spans_partitions`; (3) extend
+    :attr:`_partition_exempt_methods` with a documented rationale.
     """
 
     schema: ClassVar[TableSchema]
+    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """validate the partition-column contract at class-definition time.
+
+        executed once per subclass at import time. when
+        :attr:`schema` declares a partition column, every public
+        async method that is not inherited from the framework must
+        either accept the partition column as a parameter, be
+        decorated with :func:`spans_partitions`, or be listed in
+        :attr:`_partition_exempt_methods`.
+
+        framework-level methods inherited from
+        :class:`BaseCollection` / :class:`SchemaBackedCollection`
+        are exempt by construction (they thread the pk through
+        :meth:`BaseCollection.normalize_pk` which already includes
+        the partition column when the table has one). only methods
+        defined directly on the subclass are checked.
+
+        :param kwargs: PEP-487 keyword arguments forwarded to base
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
+        :raises PartitionEnforcementError: when a public subclass
+            method violates the partition contract
+        """
+        super().__init_subclass__(**kwargs)
+        schema = cls.__dict__.get("schema")
+        if schema is None or not isinstance(schema, TableSchema):
+            return None
+        partition_column = schema.partition_column
+        if partition_column is None:
+            return None
+        exempt = cls._partition_exempt_methods
+        violations: list[str] = []
+        for name, member in cls.__dict__.items():
+            if not callable(member):
+                continue
+            if name.startswith("_"):
+                continue
+            if isinstance(member, (classmethod, staticmethod, property)):
+                continue
+            if name in exempt:
+                continue
+            if _is_partition_exempt(member):
+                continue
+            if _method_accepts_partition(member, partition_column):
+                continue
+            violations.append(name)
+        if violations:
+            raise PartitionEnforcementError(
+                f"{cls.__name__}: schema declares partition column "
+                f"{partition_column!r}; method(s) {violations!r} neither "
+                f"accept it nor opt into @spans_partitions, and are not "
+                f"in _partition_exempt_methods. add the partition "
+                f"column to the signature, decorate the method with "
+                f"@spans_partitions, or extend _partition_exempt_methods "
+                f"with a documented rationale.",
+            )
+        return None
 
     # --- SQL generation ---
 

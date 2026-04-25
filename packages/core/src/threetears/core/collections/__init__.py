@@ -11,8 +11,10 @@ from threetears.core.collections.schema_backed import (
     UUID_TYPE,
     VECTOR_TYPE,
     Column,
+    PartitionEnforcementError,
     SchemaBackedCollection,
     TableSchema,
+    spans_partitions,
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
@@ -26,6 +28,7 @@ __all__ = [
     "FlushStrategy",
     "INT_TYPE",
     "JSONB_TYPE",
+    "PartitionEnforcementError",
     "STRING_TYPE",
     "SchemaBackedCollection",
     "TableSchema",
@@ -35,4 +38,5 @@ __all__ = [
     "deserialize_from_json",
     "flush_pending",
     "serialize_to_json",
+    "spans_partitions",
 ]
