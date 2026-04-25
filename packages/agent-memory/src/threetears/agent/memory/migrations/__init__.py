@@ -46,6 +46,11 @@ version history:
 - v011 partitions ``memory_chunks`` on ``agent_id`` and replaces the
   simple FK on ``media_id`` with the composite
   ``(agent_id, media_id) REFERENCES media(agent_id, media_id)``.
+- v012 (partition-hardening-task-01) adds the composite FK from
+  ``memories.(agent_id, media_id)`` to ``media(agent_id, media_id)``
+  with ``ON DELETE SET NULL`` semantics -- the v004 ``media_id``
+  column landed without an FK constraint; this closes the gap. the
+  AST walker enforces query-shape; the FK enforces data integrity.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -88,6 +93,9 @@ from threetears.agent.memory.migrations.v010_media_content_composite_fk import (
 from threetears.agent.memory.migrations.v011_memory_chunks_composite_fk import (
     memory_chunks_composite_fk,
 )
+from threetears.agent.memory.migrations.v012_memories_media_composite_fk import (
+    memories_media_composite_fk,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -127,6 +135,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(9)(media_composite_fk)
     pkg.version(10)(media_content_composite_fk)
     pkg.version(11)(memory_chunks_composite_fk)
+    pkg.version(12)(memories_media_composite_fk)
     runner.register(pkg)
     return pkg
 
@@ -141,6 +150,7 @@ __all__ = [
     "create_memory_chunks",
     "media_composite_fk",
     "media_content_composite_fk",
+    "memories_media_composite_fk",
     "memory_chunks_composite_fk",
     "reconcile_memory_columns",
     "register",

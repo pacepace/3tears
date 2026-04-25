@@ -116,6 +116,35 @@ async def _index_exists(
     return result
 
 
+async def _constraint_exists(
+    conn: asyncpg.Connection, schema: str, constraint_name: str,
+) -> bool:
+    """
+    return whether ``schema.constraint_name`` exists in pg_constraint.
+
+    :param conn: live asyncpg connection
+    :ptype conn: asyncpg.Connection
+    :param schema: schema to check
+    :ptype schema: str
+    :param constraint_name: constraint name to check
+    :ptype constraint_name: str
+    :return: True if constraint exists
+    :rtype: bool
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_namespace ns ON ns.oid = c.connamespace
+         WHERE ns.nspname = $1
+           AND c.conname = $2
+        """,
+        schema,
+        constraint_name,
+    )
+    result = row is not None
+    return result
+
+
 class TestFullChainApplies:
     """v001-v007 apply cleanly producing the expected schema."""
 
@@ -182,9 +211,219 @@ class TestFullChainApplies:
             assert await _index_exists(conn, schema, "idx_mc_search_vector")
             assert await _index_exists(conn, schema, "idx_chunks_search_vector")
 
+            # v012 composite FK from memories to media on (agent_id, media_id)
+            assert await _constraint_exists(
+                conn, schema, "memories_media_composite_fk",
+            )
+
             # re-apply is a no-op
             count2 = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
             assert count2 == 0
+        finally:
+            await conn.close()
+
+
+class TestV012MemoriesMediaCompositeFK:
+    """v012 composite FK semantics: SET NULL on media delete + reject orphans."""
+
+    async def test_v012_fk_declares_on_delete_set_null(
+        self, pg_schema: tuple[str, str],
+    ) -> None:
+        """v012 FK metadata declares ``ON DELETE SET NULL`` semantics.
+
+        memory-references-media is a soft relationship: deleting the
+        source media should null the memory's reference, not cascade-
+        delete the memory itself. ``ON DELETE CASCADE`` would drop
+        extracted facts whenever the source artifact was removed --
+        the wrong data semantic. this test verifies the constraint
+        in pg_constraint declares the expected delete action, locking
+        the choice against accidental migration to CASCADE on a
+        future rewrite.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            # confdeltype: 'a' = NO ACTION, 'r' = RESTRICT, 'c' = CASCADE,
+            # 'n' = SET NULL, 'd' = SET DEFAULT. asyncpg returns this
+            # postgres ``"char"`` column as a single-byte ``bytes`` object.
+            row = await conn.fetchrow(
+                """
+                SELECT confdeltype
+                  FROM pg_constraint c
+                  JOIN pg_namespace ns ON ns.oid = c.connamespace
+                 WHERE ns.nspname = $1
+                   AND c.conname = 'memories_media_composite_fk'
+                """,
+                schema,
+            )
+            assert row is not None
+            assert row["confdeltype"] == b"n", (
+                f"expected SET NULL (b'n') ON DELETE; got "
+                f"{row['confdeltype']!r}"
+            )
+        finally:
+            await conn.close()
+
+    async def test_media_delete_nulls_referencing_memory(
+        self, pg_schema: tuple[str, str],
+    ) -> None:
+        """deleting a media row flips referencing ``memories.media_id`` to NULL.
+
+        the v012 FK declares ``ON DELETE SET NULL`` matching the
+        memory-references-media semantic: the extracted memory still
+        exists after the source media is removed. test inserts a
+        media + memory pair, deletes the media, observes the memory
+        survives with media_id = NULL.
+
+        the metadata-shape leg of this contract is pinned by
+        :meth:`test_v012_fk_declares_on_delete_set_null` -- this
+        method exercises the runtime behaviour over an actual
+        ``DELETE FROM media``.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC).replace(tzinfo=None)
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
+            media_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
+
+            await conn.execute(
+                "INSERT INTO media ("
+                "media_id, agent_id, customer_id, user_id, "
+                "media_category, date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, 'document', $5, $5)",
+                media_id,
+                agent_id,
+                customer_id,
+                user_id,
+                now,
+            )
+
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, message_id_source, type_memory, content, "
+                "summary, embedding, is_deleted, media_id, "
+                "date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
+                "$9::vector, FALSE, $10, $11, $11)",
+                memory_id,
+                agent_id,
+                customer_id,
+                user_id,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "fact text content body",
+                "fact summary",
+                "[" + ",".join(["0.1"] * 1024) + "]",
+                media_id,
+                now,
+            )
+
+            # confirm the link is present before the delete
+            pre_row = await conn.fetchrow(
+                "SELECT media_id FROM memories "
+                "WHERE agent_id = $1 AND memory_id = $2",
+                agent_id,
+                memory_id,
+            )
+            assert pre_row is not None
+            assert pre_row["media_id"] == media_id
+
+            # deleting the media row fires ON DELETE SET NULL on
+            # ``media_id`` only (PG 15+ column-list form) -- agent_id
+            # stays populated so the partition discipline holds.
+            await conn.execute(
+                "DELETE FROM media WHERE agent_id = $1 AND media_id = $2",
+                agent_id,
+                media_id,
+            )
+
+            row = await conn.fetchrow(
+                "SELECT agent_id, media_id FROM memories "
+                "WHERE agent_id = $1 AND memory_id = $2",
+                agent_id,
+                memory_id,
+            )
+            assert row is not None
+            assert row["media_id"] is None
+            assert row["agent_id"] == agent_id  # partition not nulled
+        finally:
+            await conn.close()
+
+    async def test_orphan_media_id_rejected(
+        self, pg_schema: tuple[str, str],
+    ) -> None:
+        """inserting a memory with non-existent ``(agent_id, media_id)`` fails.
+
+        the v012 composite FK rejects orphan ``media_id`` references
+        at INSERT time. test attempts to insert a memory pointing at
+        a never-existed media row and observes the FK violation.
+
+        :param pg_schema: (url, schema) tuple
+        :ptype pg_schema: tuple[str, str]
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC).replace(tzinfo=None)
+            agent_id = uuid.uuid4()
+            ghost_media_id = uuid.uuid4()  # never inserted
+
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
+            with pytest.raises(asyncpg.exceptions.ForeignKeyViolationError):
+                await conn.execute(
+                    "INSERT INTO memories ("
+                    "memory_id, agent_id, customer_id, user_id, "
+                    "conversation_id, message_id_source, type_memory, "
+                    "content, summary, embedding, is_deleted, media_id, "
+                    "date_created, date_updated"
+                    ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
+                    "$9::vector, FALSE, $10, $11, $11)",
+                    memory_id,
+                    agent_id,
+                    customer_id,
+                    user_id,
+                    uuid.uuid4(),
+                    uuid.uuid4(),
+                    "fact text",
+                    "fact summary",
+                    "[" + ",".join(["0.1"] * 1024) + "]",
+                    ghost_media_id,
+                    now,
+                )
         finally:
             await conn.close()
 
