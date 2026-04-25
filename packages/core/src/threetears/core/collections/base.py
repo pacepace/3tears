@@ -167,7 +167,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
         """persist row to L3.
 
         public extension point. subclasses override to emit their
@@ -181,6 +187,16 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param original_timestamp: pre-modification ``date_updated``
             for optimistic-lock validation, ``None`` for inserts
         :ptype original_timestamp: datetime | None
+        :param conn: optional asyncpg-compatible connection that
+            overrides :attr:`l3_pool` for this single write. when
+            supplied, the INSERT/UPDATE binds to the caller's
+            transaction so the write commits atomically with whatever
+            other operations the caller already issued on the same
+            connection. ``None`` defers to the collection's own pool
+            (legacy behaviour). subclasses MUST honor this parameter
+            so the framework's transactional save_entity path stays
+            atomic
+        :ptype conn: Any
         :return: rows affected (0 on optimistic-lock failure, 1 on success)
         :rtype: int
         """
@@ -653,8 +669,29 @@ class BaseCollection(ABC, Generic[EntityT]):
         return result
 
     @traced()
-    async def save_entity(self, entity: BaseEntity) -> None:
-        """Save entity through three-tier write path."""
+    async def save_entity(
+        self, entity: BaseEntity, *, conn: Any = None,
+    ) -> None:
+        """save entity through the three-tier write path.
+
+        :param entity: entity instance to persist
+        :ptype entity: BaseEntity
+        :param conn: optional asyncpg-compatible connection that
+            overrides :attr:`l3_pool` for the L3 write only. when
+            supplied, the L3 INSERT/UPDATE binds to the caller's
+            transaction (the caller is responsible for COMMIT /
+            ROLLBACK), which makes the write atomic with whatever
+            other DDL/DML the caller already issued on the same
+            connection. L1 / L2 / invalidation publish run unchanged.
+            ``None`` keeps the legacy behaviour: the collection's
+            own pool services the write
+        :ptype conn: Any
+        :return: nothing
+        :rtype: None
+        :raises ConcurrentModificationError: on optimistic-lock fence
+            mismatch when the entity carries an
+            ``original_date_updated`` value
+        """
         self._set_span_table()
         entity_id = entity.id
         data = entity.to_dict()
@@ -686,7 +723,14 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
         else:
-            rows_affected = await self.save_to_postgres(data, original_timestamp)
+            if conn is not None:
+                rows_affected = await self.save_to_postgres(
+                    data, original_timestamp, conn=conn,
+                )
+            else:
+                rows_affected = await self.save_to_postgres(
+                    data, original_timestamp,
+                )
             if rows_affected == 0:
                 if entity.is_new:
                     raise RuntimeError(f"INSERT failed for {self.table_name} entity {entity_id}: 0 rows affected")

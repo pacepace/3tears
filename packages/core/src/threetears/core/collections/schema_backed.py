@@ -1175,7 +1175,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return result
 
     async def save_to_postgres(
-        self, data: dict[str, Any], original_timestamp: datetime | None = None,
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
     ) -> int:
         """persist one row to L3.
 
@@ -1198,12 +1202,21 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             when :attr:`TableSchema.cas_column` is ``None`` or when
             :attr:`TableSchema.on_conflict` is not ``"update"``
         :ptype original_timestamp: datetime | None
+        :param conn: optional asyncpg-compatible connection that
+            overrides :attr:`l3_pool` for this single write. when
+            supplied, the INSERT/UPDATE binds to the caller's
+            transaction so the write commits atomically with the
+            caller's other operations on the same connection.
+            ``None`` defers to the collection's own pool (legacy
+            behaviour)
+        :ptype conn: Any
         :return: rows affected reported by asyncpg (0 on CAS failure or
             ON CONFLICT DO NOTHING miss, 1 on success)
         :rtype: int
         """
         result: int
-        if self.l3_pool is None:
+        executor: Any = conn if conn is not None else self.l3_pool
+        if executor is None:
             result = 0
         else:
             schema = self.schema
@@ -1218,7 +1231,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             else:
                 sql = self._build_insert_sql()
                 params = self._build_insert_params(data)
-            status = await self.l3_pool.execute(sql, *params)
+            status = await executor.execute(sql, *params)
             result = self._parse_rowcount(status)
         return result
 
