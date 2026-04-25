@@ -16,37 +16,17 @@ task-01 sub-task 4 closes the gap for the partition walker.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-from typing import Any
+
+# import the walker by sibling-module path. test_partition_column_enforcement
+# lives in the same enforcement directory; ``from .test_module import X``
+# is the standard pattern (also used by the hub's
+# test_underscore_access_self.py / test_cache_primitive_usage_self.py).
+from packages.core.tests.enforcement.test_partition_column_enforcement import (  # type: ignore[import-not-found]  # noqa: E501
+    _violations_in_file,
+)
 
 __all__: list[str] = []
-
-
-def _load_walker() -> Any:
-    """import the partition walker module by file path.
-
-    pytest's ``--import-mode=importlib`` does not give sibling test
-    modules a stable importable name, so the walker module is loaded
-    by file location. avoids any package-layout assumption.
-
-    :return: the imported walker module
-    :rtype: Any
-    """
-    here = Path(__file__).resolve().parent
-    target = here / "test_partition_column_enforcement.py"
-    spec = importlib.util.spec_from_file_location(
-        "_partition_walker_under_test", target,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-_walker = _load_walker()
-_violations_in_file = _walker._violations_in_file
 
 
 def _write(path: Path, text: str) -> Path:
