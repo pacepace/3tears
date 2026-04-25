@@ -2,6 +2,7 @@
 
 __version__ = "0.5.0"
 
+from threetears.agent.memory.access import MemoryAccessService
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
     ACTION_MEMORY_READ,
@@ -60,6 +61,7 @@ __all__ = [
     "MediaEntity",
     "MemoriesCollection",
     "MemoryAccessDenied",
+    "MemoryAccessService",
     "MemoryAuthorizerDependencies",
     "MemoryChunkCollection",
     "MemoryChunkEntity",
