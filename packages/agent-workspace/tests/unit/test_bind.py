@@ -591,13 +591,23 @@ async def test_recover_unknown_workspace_raises(tmp_path: Path) -> None:
 
 @dataclass
 class _FakeNats:
-    """records ``publish`` calls for audit envelope assertions."""
+    """records ``publish`` calls for audit envelope assertions.
+
+    matches the canonical :class:`threetears.nats.NatsClient` wrapper
+    surface :func:`publish_audit` consumes: kw-only ``subject`` (typed
+    :class:`Subject`) + ``message`` (typed Pydantic). recorded as
+    ``(subject_path, payload_bytes)`` so existing assertions stay
+    unchanged.
+    """
 
     published: list[tuple[str, bytes]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
-    async def publish(self, subject: str, payload: bytes) -> None:
-        self.published.append((subject, payload))
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any | None = None) -> None:
+        del reply_to
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        payload = message.model_dump_json().encode("utf-8")
+        self.published.append((subject_path, payload))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
 

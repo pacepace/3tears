@@ -513,14 +513,16 @@ class _StoreBackedVersionCollection:
 
 class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
     """
-    fake NATS client with publish recording on top of the core fake KV.
+    fake NATS wrapper with publish recording on top of the core fake KV.
 
-    the core fake covers the JetStream + KV surface :class:`KVLease`
-    depends on; this subclass adds :meth:`publish` so audit envelopes
-    emitted by :func:`threetears.agent.audit.publish_audit` are
-    captured for assertion. subscriptions are handled in-process:
-    :meth:`subscribe` registers a coroutine that :meth:`publish`
-    awaits for any matching subject prefix.
+    the core fake covers :meth:`kv_bucket` + :class:`FakeKvBucket`
+    surface :class:`KVLease` depends on; this subclass adds
+    :meth:`publish` matching the canonical
+    :class:`threetears.nats.NatsClient` wrapper shape so audit
+    envelopes emitted by :func:`threetears.agent.audit.publish_audit`
+    are captured for assertion. subscriptions are handled in-process:
+    :meth:`register_subscription` registers a coroutine that
+    :meth:`publish` awaits for any matching subject prefix.
     """
 
     def __init__(self) -> None:
@@ -528,20 +530,37 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
         self.published: list[tuple[str, bytes]] = []
         self._subscriptions: list[tuple[str, Any]] = []
 
-    async def publish(self, subject: str, payload: bytes) -> None:
+    async def publish(
+        self,
+        *,
+        subject: Any,
+        message: Any,
+        reply_to: Any | None = None,
+    ) -> None:
         """record publish, dispatch to any matching in-process subscriber.
 
-        :param subject: NATS subject string
-        :ptype subject: str
-        :param payload: payload bytes
-        :ptype payload: bytes
+        matches the canonical wrapper signature: kw-only ``subject``
+        (a :class:`Subject`) + ``message`` (a Pydantic model). the
+        recorded ``(subject_path, payload_bytes)`` tuple lets existing
+        assertions stay unchanged: we serialize the typed message here
+        so consumers see bytes the same way they would on the wire.
+
+        :param subject: typed :class:`Subject` carrying the dotted path
+        :ptype subject: Any
+        :param message: typed Pydantic message
+        :ptype message: Any
+        :param reply_to: optional reply subject; ignored by recorder
+        :ptype reply_to: Any | None
         :return: None
         :rtype: None
         """
-        self.published.append((subject, payload))
+        del reply_to
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        payload = message.model_dump_json().encode("utf-8")
+        self.published.append((subject_path, payload))
         for prefix, handler in self._subscriptions:
-            if _subject_matches(subject, prefix):
-                await handler(_FakeMsg(subject=subject, data=payload))
+            if _subject_matches(subject_path, prefix):
+                await handler(_FakeMsg(subject=subject_path, data=payload))
 
     def register_subscription(self, subject_prefix: str, handler: Any) -> None:
         """

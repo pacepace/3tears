@@ -103,13 +103,13 @@ class TestAcquireRoundTrip:
         await handle.release()
 
     async def test_acquire_uses_namespaced_bucket_in_jetstream(self) -> None:
-        """acquire opens the '{namespace}_workspace_locks' bucket on fake JS."""
+        """acquire opens the '{namespace}_workspace_locks' bucket on fake wrapper."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
-        bucket = await fake.jetstream().key_value("ns_workspace_locks")
-        entry = await bucket.get(handle.key)
-        assert entry is not None
+        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        value = await bucket.get(key=handle.key)
+        assert value is not None
         await handle.release()
 
     async def test_release_removes_entry_from_bucket(self) -> None:
@@ -118,11 +118,11 @@ class TestAcquireRoundTrip:
         lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
         await handle.release()
-        bucket = await fake.jetstream().key_value("ns_workspace_locks")
-        from nats.js.errors import KeyNotFoundError
-
-        with pytest.raises(KeyNotFoundError):
-            await bucket.get(handle.key)
+        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        # the wrapper bucket returns ``None`` on miss instead of raising
+        # KeyNotFoundError; the lease's release path leaves the entry
+        # gone so ``get`` should yield ``None``.
+        assert await bucket.get(key=handle.key) is None
 
     async def test_async_context_manager_releases_on_exit(self) -> None:
         """async with handle releases lease cleanly on context exit."""

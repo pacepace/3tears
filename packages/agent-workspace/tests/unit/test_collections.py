@@ -165,16 +165,32 @@ class _FakeNatsBus:
         for handler in self._subscribers.get(subject, []):
             await handler(payload)
 
-    async def subscribe(self, subject: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+    async def subscribe(
+        self,
+        subject: str,
+        handler: Callable[[bytes], Awaitable[None]] | None = None,
+        *,
+        cb: Callable[[bytes], Awaitable[None]] | None = None,
+    ) -> None:
         """
         register async handler for subject.
 
+        accepts both positional ``handler`` (legacy NatsKvClient shape)
+        and keyword-only ``cb=`` (used by
+        :meth:`CollectionRegistry.start_invalidation_listener`) so the
+        fake matches both call surfaces in the codebase.
+
         :param subject: NATS subject name
         :ptype subject: str
-        :param handler: async callback receiving raw message bytes
-        :ptype handler: Callable[[bytes], Awaitable[None]]
+        :param handler: async callback (positional, legacy shape)
+        :ptype handler: Callable[[bytes], Awaitable[None]] | None
+        :param cb: async callback (kw-only, invalidation listener shape)
+        :ptype cb: Callable[[bytes], Awaitable[None]] | None
         """
-        self._subscribers.setdefault(subject, []).append(handler)
+        chosen = cb if cb is not None else handler
+        if chosen is None:
+            raise TypeError("subscribe requires either handler or cb")
+        self._subscribers.setdefault(subject, []).append(chosen)
 
     async def get(self, bucket: str, key: str) -> bytes | None:
         """fetch bytes for key from bucket or None."""

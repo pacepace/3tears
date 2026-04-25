@@ -13,7 +13,7 @@ a consumer-side change.
 
 from __future__ import annotations
 
-from threetears.nats import NatsClient, Subjects
+from threetears.nats import NatsClient, Subject
 from threetears.observe import get_logger
 
 from threetears.agent.audit.envelope import AuditEvent
@@ -38,11 +38,15 @@ async def publish_audit(
     ``nats_client`` is ``None`` the call is an explicit no-op (useful
     in tests and bootstrap windows before NATS wiring is complete).
 
-    the ``namespace`` argument stays in the signature for backwards-
-    compatible call-site shape but is reserved -- the
-    :class:`Subjects.audit_event` builder reads the wrapper's bound
-    namespace from the :class:`Subjects` ContextVar, so ``namespace``
-    here only feeds diagnostics.
+    the subject is built with the explicit ``namespace`` argument
+    rather than reading the :class:`Subjects` ContextVar so callers
+    that route audit traffic on a per-call namespace (multi-tenant
+    test fixtures, in-process audit consumers under explicit prefix
+    control) get the namespace they passed regardless of which
+    ContextVar value happens to be bound on the calling task.
+    ``event.event_type`` carries dots verbatim (e.g.
+    ``workspace.fs_write``); they form the subject hierarchy and are
+    NOT sanitized.
 
     :param event: typed audit envelope to publish
     :ptype event: AuditEvent
@@ -50,8 +54,7 @@ async def publish_audit(
         :class:`threetears.nats.NatsClient` wrapper; ``None`` is a no-op
     :ptype nats_client: NatsClient | None
     :param namespace: NATS subject namespace (environment-scoped
-        prefix from ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``);
-        diagnostic only
+        prefix from ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``)
     :ptype namespace: str
     :return: nothing
     :rtype: None
@@ -59,7 +62,7 @@ async def publish_audit(
     if nats_client is None:
         # bootstrap / test scenario; explicit no-op
         return
-    subject = Subjects.audit_event(event.event_type)
+    subject = Subject.raw(f"{namespace}.audit.{event.event_type}")
     try:
         await nats_client.publish(subject=subject, message=event)
     # NOSILENT: audit publish is fire-and-forget; failures log at WARN

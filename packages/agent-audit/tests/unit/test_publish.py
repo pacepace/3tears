@@ -76,7 +76,6 @@ def _build_event(event_type: str = "workspace.fs_write") -> AuditEvent:
 
 async def test_publish_posts_to_namespace_dot_audit_dot_event_type() -> None:
     """subject is ``{namespace}.audit.{event_type}`` verbatim."""
-    set_default_namespace("dev")
     nats = _FakeWrapper()
     event = _build_event("workspace.fs_write")
 
@@ -89,7 +88,6 @@ async def test_publish_posts_to_namespace_dot_audit_dot_event_type() -> None:
 
 async def test_publish_emits_typed_audit_event() -> None:
     """recorded message is the same :class:`AuditEvent` instance round-trippable to JSON."""
-    set_default_namespace("staging")
     nats = _FakeWrapper()
     event = _build_event("rbac.assignment.create")
 
@@ -136,7 +134,6 @@ async def test_publish_preserves_dotted_event_type_in_subject(
     event_type: str,
 ) -> None:
     """every dotted event_type appears verbatim in the subject."""
-    set_default_namespace("prod")
     nats = _FakeWrapper()
     event = _build_event(event_type)
 
