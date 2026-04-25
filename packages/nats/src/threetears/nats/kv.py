@@ -287,24 +287,35 @@ class NatsKvBucket:
             ) from exc
         return int(new_revision)
 
-    async def delete(self, *, key: str) -> bool:
-        """delete a key.
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+        """delete a key, optionally guarded by a CAS revision.
 
-        returns True on success or if key was already absent. transport
-        failures raise :class:`KvError`.
+        when ``revision`` is supplied the underlying nats-py call
+        becomes a compare-and-swap delete: the delete only succeeds if
+        the stored revision matches. on revision mismatch the method
+        returns ``False`` (analogous to :meth:`update` returning
+        ``None``); on a missing key it returns ``True`` (delete is
+        idempotent). transport failures raise :class:`KvError`.
 
         :param key: key to delete
         :ptype key: str
-        :return: True (always — KeyNotFound is success)
+        :param revision: expected current revision for CAS delete; ``None`` performs an unconditional delete
+        :ptype revision: int | None
+        :return: ``True`` on success or absent key, ``False`` only on revision mismatch
         :rtype: bool
         :raises KvError: on transport failure
         """
         try:
-            await self._kv.delete(key)
+            if revision is None:
+                await self._kv.delete(key)
+            else:
+                await self._kv.delete(key, last=revision)
         except KeyNotFoundError:
             return True
+        except KeyWrongLastSequenceError:
+            return False
         except Exception as exc:
             raise KvError(
-                f"KV delete failed: bucket={self._full_name} key={key}: {exc}"
+                f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}"
             ) from exc
         return True
