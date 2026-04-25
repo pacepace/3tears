@@ -30,7 +30,6 @@ pass it through multiple graph builds.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -47,6 +46,7 @@ from threetears.langgraph.caching import (
     extract_cache_usage,
     should_bind_tools_fresh,
 )
+from threetears.observe import get_logger
 
 __all__ = [
     "AgentNodeHook",
@@ -56,8 +56,7 @@ __all__ = [
     "compose_tool_node_hooks",
 ]
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
+log = get_logger(__name__)
 
 
 @runtime_checkable
@@ -662,7 +661,7 @@ class PromptCachingHook:
                 # some response shapes (e.g. plain mocks) refuse
                 # attribute assignment; logging once keeps the hook
                 # non-fatal and keeps loki readable.
-                logger.debug(
+                log.debug(
                     "response %s does not accept usage_metadata assignment",
                     type(response).__name__,
                 )

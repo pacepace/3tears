@@ -18,7 +18,6 @@ on the hook, not on the node.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -33,6 +32,7 @@ from threetears.langgraph.hooks import (
     compose_agent_node_hooks,
     compose_tool_node_hooks,
 )
+from threetears.observe import get_logger
 
 __all__ = [
     "agent_node",
@@ -40,8 +40,7 @@ __all__ = [
     "tool_node",
 ]
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
+log = get_logger(__name__)
 
 
 def _resolve_agent_hooks(config: RunnableConfig) -> AgentNodeHook:

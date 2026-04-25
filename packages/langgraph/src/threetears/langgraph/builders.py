@@ -20,17 +20,15 @@ from typing import Any
 
 from langgraph.graph import END, START, MessagesState, StateGraph
 
-import logging
-
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
+from threetears.observe import get_logger
 
 __all__ = [
     "build_chat_agent",
     "build_tool_agent",
 ]
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
+log = get_logger(__name__)
 
 _DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _DEFAULT_MAX_ITERATIONS = 10
