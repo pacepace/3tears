@@ -8,14 +8,21 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from nats.aio.client import Client as NatsClient
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
+from threetears.nats import (
+    IncomingMessage,
+    NatsClient,
+    Subject,
+    Subjects,
+    set_default_namespace,
+)
 
 
 def _nats_reachable() -> bool:
@@ -118,10 +125,14 @@ class TestToolServerNatsIntegration:
         await asyncio.sleep(0.2)
 
         try:
-            nc = NatsClient()
-            await nc.connect(_NATS_URL)
+            set_default_namespace(namespace)
+            nc = await NatsClient.connect(
+                nats_url=_NATS_URL,
+                nats_subject_namespace=namespace,
+                client_name="tool-server-itest",
+            )
 
-            call_subject = f"{namespace}.tools.internal.{pod_id}"
+            call_subject = Subjects.tools_internal(pod_id)
             correlation_id = str(uuid4())
             # the CallRequest envelope moved correlation_id into the
             # nested CallContext. top-level ``correlation_id`` on the
@@ -135,8 +146,12 @@ class TestToolServerNatsIntegration:
                 }
             ).encode("utf-8")
 
-            response = await nc.request(call_subject, request_data, timeout=5.0)
-            response_data = json.loads(response.data)
+            response_bytes = await nc.request_raw(
+                subject=call_subject,
+                payload=request_data,
+                timeout=timedelta(seconds=5),
+            )
+            response_data = json.loads(response_bytes)
 
             assert response_data["success"] is True, response_data.get("error")
             assert (
@@ -145,7 +160,7 @@ class TestToolServerNatsIntegration:
             content = json.loads(response_data["content"])
             assert content == {"message": "hello"}
 
-            await nc.close()
+            await nc.shutdown()
         finally:
             await server.shutdown()
             await asyncio.sleep(0.1)
@@ -173,16 +188,20 @@ class TestToolServerNatsIntegration:
 
         heartbeats: list[dict[str, Any]] = []
 
-        nc = NatsClient()
-        await nc.connect(_NATS_URL)
+        set_default_namespace(namespace)
+        nc = await NatsClient.connect(
+            nats_url=_NATS_URL,
+            nats_subject_namespace=namespace,
+            client_name="tool-heartbeat-itest",
+        )
 
-        heartbeat_subject = f"{namespace}.tools.heartbeat.{pod_id}"
+        heartbeat_subject = Subjects.tools_heartbeat(pod_id)
 
-        async def _on_heartbeat(msg: Any) -> None:
+        async def _on_heartbeat(msg: IncomingMessage) -> None:
             """collect heartbeat messages."""
             heartbeats.append(json.loads(msg.data))
 
-        await nc.subscribe(heartbeat_subject, cb=_on_heartbeat)
+        await nc.subscribe(subject=heartbeat_subject, cb=_on_heartbeat)
 
         serve_task = asyncio.create_task(server.serve())
         await asyncio.sleep(0.5)
@@ -200,4 +219,4 @@ class TestToolServerNatsIntegration:
                 await serve_task
             except asyncio.CancelledError:
                 pass
-            await nc.close()
+            await nc.shutdown()

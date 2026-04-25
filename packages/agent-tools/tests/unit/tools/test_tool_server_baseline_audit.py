@@ -18,13 +18,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
+from threetears.nats import IncomingMessage, Subject, set_default_namespace
 
 
 # ---------------------------------------------------------------------------
@@ -34,15 +35,34 @@ from threetears.agent.tools.server import ToolServer
 
 @dataclass
 class _FakeNats:
-    """records ``publish`` calls; optionally raises on publish."""
+    """records :meth:`publish` + :meth:`publish_reply` calls.
 
-    published: list[tuple[str, bytes]] = field(default_factory=list)
+    matches the canonical :class:`threetears.nats.NatsClient` wrapper
+    surface ToolServer touches: kw-only ``subject`` + ``message`` for
+    typed publishes, kw-only ``reply_subject`` + ``message`` for
+    request-reply responses. ``raise_on_publish`` lets tests simulate
+    a transient publish failure without breaking the publish_reply
+    path that the inbound dispatch needs.
+    """
+
+    published: list[tuple[Subject, BaseModel]] = field(default_factory=list)
+    replies: list[tuple[str, BaseModel]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
-    async def publish(self, subject: str, payload: bytes) -> None:
-        self.published.append((subject, payload))
+    async def publish(
+        self,
+        *,
+        subject: Subject,
+        message: BaseModel,
+        reply_to: Subject | None = None,
+    ) -> None:
+        del reply_to
+        self.published.append((subject, message))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
+
+    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
+        self.replies.append((reply_subject, message))
 
 
 class _StubTool(TearsTool):
@@ -82,23 +102,34 @@ class _StubTool(TearsTool):
         return self._version
 
 
-def _make_msg(payload: dict[str, Any] | bytes) -> MagicMock:
-    msg = MagicMock()
+def _make_msg(payload: dict[str, Any] | bytes) -> IncomingMessage:
+    """build an :class:`IncomingMessage` envelope with ``payload``.
+
+    :param payload: either a dict (JSON-serialized) or pre-encoded bytes
+    :ptype payload: dict[str, Any] | bytes
+    :return: wrapper-shaped envelope with a deterministic reply subject
+    :rtype: IncomingMessage
+    """
     if isinstance(payload, bytes):
-        msg.data = payload
+        data = payload
     else:
-        msg.data = json.dumps(payload).encode("utf-8")
-    msg.respond = AsyncMock()
-    return msg
+        data = json.dumps(payload).encode("utf-8")
+    return IncomingMessage(data=data, reply_subject="_INBOX.audit-test")
 
 
 def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any]]:
-    """extract decoded JSON envelopes with matching subject suffix."""
+    """extract decoded envelopes whose subject path ends with ``subject_suffix``."""
     result: list[dict[str, Any]] = []
-    for subject, payload in nats.published:
-        if subject.endswith(subject_suffix):
-            result.append(json.loads(payload.decode("utf-8")))
+    for subject, message in nats.published:
+        if subject.path.endswith(subject_suffix):
+            result.append(json.loads(message.model_dump_json()))
     return result
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default ``aibots`` namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("aibots")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +140,7 @@ def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any
 @pytest.mark.asyncio
 async def test_baseline_audit_emitted_on_success_path() -> None:
     """success dispatch publishes one ``tool.call`` envelope with outcome=success."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     owner_agent_id = uuid4()
     server = ToolServer(
@@ -162,6 +194,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_subject_uses_namespace() -> None:
     """the published subject is ``{namespace}.audit.tool.call``."""
+    set_default_namespace("proj")
     nats = _FakeNats()
     server = ToolServer(namespace="proj", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
@@ -176,7 +209,7 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
 
     await server.handle_call(msg)
 
-    assert any(s == "proj.audit.tool.call" for s, _ in nats.published)
+    assert any(s.path == "proj.audit.tool.call" for s, _ in nats.published)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +220,7 @@ async def test_baseline_audit_subject_uses_namespace() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
     """tool returning success=False surfaces as outcome=failure."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(
@@ -213,6 +247,7 @@ async def test_baseline_audit_outcome_failure_when_tool_returns_false() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
     """tool raising an exception surfaces as outcome=error."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool(raise_exc=RuntimeError("boom")))
@@ -237,6 +272,7 @@ async def test_baseline_audit_outcome_error_when_tool_raises() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
     """unknown tool key emits ``tool.call`` with outcome=failure."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     # no tool registered
@@ -263,6 +299,7 @@ async def test_baseline_audit_outcome_failure_on_unknown_tool() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_outcome_failure_on_malformed_request() -> None:
     """malformed JSON emits a baseline envelope with minimal fields."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
 
@@ -307,8 +344,7 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
 
     # no exception, and there is no nats client to observe publishes on
     await server.handle_call(msg)
-    # sanity: response still succeeded
-    msg.respond.assert_called_once()
+    # sanity: dispatch returned cleanly even though no reply could be sent
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +354,8 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
 
 @pytest.mark.asyncio
 async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
-    """a raising NATS publish is swallowed; response still carries success."""
+    """a raising NATS publish is swallowed; reply still carries success."""
+    set_default_namespace("ns")
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
@@ -334,7 +371,12 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
     # does not raise
     await server.handle_call(msg)
 
-    response_data = json.loads(msg.respond.call_args[0][0])
+    # the dispatch reply landed via publish_reply (which does NOT
+    # share the audit publish failure path) so the caller still sees
+    # a success response.
+    assert len(nats.replies) == 1
+    _reply_subject, response = nats.replies[0]
+    response_data = json.loads(response.model_dump_json())
     assert response_data["success"] is True
 
 
@@ -346,6 +388,7 @@ async def test_baseline_audit_publish_failure_does_not_taint_response() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
     """when CallContext carries a correlation_id, the envelope reuses it."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())
@@ -368,6 +411,7 @@ async def test_baseline_audit_correlation_id_lifted_from_context() -> None:
 @pytest.mark.asyncio
 async def test_baseline_audit_correlation_id_synthesized_when_context_missing() -> None:
     """no-context dispatch still emits with a freshly minted correlation id."""
+    set_default_namespace("ns")
     nats = _FakeNats()
     server = ToolServer(namespace="ns", nats_client=nats, namespace_collection=None)
     server.register(_StubTool())

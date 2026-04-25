@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import (
@@ -19,6 +20,7 @@ from threetears.agent.tools.server import (
     ToolManifestEntry,
     ToolServer,
 )
+from threetears.nats import IncomingMessage, Subject
 
 
 # -- helpers --
@@ -128,18 +130,70 @@ class FailingTool(TearsTool):
         return "1.0"
 
 
-def _make_nats_msg(data: dict[str, Any]) -> MagicMock:
-    """create mock NATS message with given data payload.
+def _make_nats_msg(
+    data: dict[str, Any],
+    *,
+    reply_subject: str = "_INBOX.test",
+) -> IncomingMessage:
+    """build an :class:`IncomingMessage` envelope for handler tests.
+
+    handlers receive the wrapper's typed envelope (``data`` +
+    ``reply_subject``); the legacy ``msg.respond(...)`` shape was
+    replaced by ``self._respond(msg, response)`` which routes through
+    :meth:`NatsClient.publish_reply` against the inbound reply
+    subject. tests inject a stub ``NatsClient`` on ``server._nc`` so
+    they can assert which response landed on which reply subject.
 
     :param data: payload dict to serialize as JSON
     :ptype data: dict[str, Any]
-    :return: mock message with .data and .respond attributes
-    :rtype: MagicMock
+    :param reply_subject: reply inbox subject the handler will respond on
+    :ptype reply_subject: str
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = json.dumps(data).encode("utf-8")
-    msg.respond = AsyncMock()
-    return msg
+    return IncomingMessage(
+        data=json.dumps(data).encode("utf-8"),
+        reply_subject=reply_subject,
+    )
+
+
+class _RecordingNatsClient:
+    """tiny stand-in for :class:`threetears.nats.NatsClient`.
+
+    captures :meth:`publish_reply` invocations so handler tests can
+    assert which response landed on which reply subject. mirrors only
+    the surface ToolServer's handlers actually touch.
+    """
+
+    def __init__(self) -> None:
+        self.replies: list[tuple[str, BaseModel]] = []
+
+    async def publish_reply(self, *, reply_subject: str, message: BaseModel) -> None:
+        """record the reply publish call."""
+        self.replies.append((reply_subject, message))
+
+    @property
+    def last_reply(self) -> tuple[str, BaseModel]:
+        """return most recent ``(reply_subject, message)`` recorded."""
+        return self.replies[-1]
+
+
+def _attach_recording_nc(server: ToolServer) -> _RecordingNatsClient:
+    """install a recording NATS stub on ``server._nc`` and return it.
+
+    handlers under test call ``self._respond(msg, response)`` which
+    requires ``self._nc.publish_reply`` to exist; tests that drive
+    handlers directly without going through :meth:`serve` use this
+    helper to satisfy that wiring without standing up a real connection.
+
+    :param server: tool server under test
+    :ptype server: ToolServer
+    :return: the recording stub bound on ``server._nc``
+    :rtype: _RecordingNatsClient
+    """
+    rec = _RecordingNatsClient()
+    server._nc = rec  # type: ignore[assignment]
+    return rec
 
 
 # -- registration tests --
@@ -254,19 +308,21 @@ class TestToolServerServe:
             except asyncio.CancelledError:
                 pass
 
-        # find the registration publish call
+        # find the registration publish call (kw-only ``subject=Subject(...)``)
         publish_calls = mock_nc.publish.call_args_list
         registration_call = None
         for call in publish_calls:
-            subject = call[0][0] if call[0] else call[1].get("subject", "")
-            if "tools.register" in subject:
+            subj_arg = call.kwargs.get("subject")
+            subject_path = subj_arg.path if subj_arg is not None else ""
+            if "tools.register" in subject_path:
                 registration_call = call
                 break
 
         assert registration_call is not None
-        subject = registration_call[0][0]
-        assert subject == "testns.tools.register"
-        payload = json.loads(registration_call[0][1])
+        subject_arg = registration_call.kwargs["subject"]
+        assert subject_arg.path == "testns.tools.register"
+        message = registration_call.kwargs["message"]
+        payload = json.loads(message.model_dump_json())
         assert payload["pod_id"] == "test-pod-2"
         assert len(payload["tools"]) == 1
         assert payload["tools"][0]["name"] == "test.stub"
@@ -303,8 +359,8 @@ class TestToolServerServe:
                 pass
 
         subscribe_calls = mock_nc.subscribe.call_args_list
-        subjects = [c[0][0] for c in subscribe_calls]
-        assert "testns.tools.internal.test-pod-3" in subjects
+        subject_paths = [c.kwargs["subject"].path for c in subscribe_calls]
+        assert "testns.tools.internal.test-pod-3" in subject_paths
 
 
 # -- handle_call tests --
@@ -335,11 +391,14 @@ class TestToolServerHandleCall:
                 "context": {"correlation_id": str(correlation_id)},
             }
         )
+        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
-        msg.respond.assert_called_once()
-        response_data = json.loads(msg.respond.call_args[0][0])
+        assert len(rec.replies) == 1
+        reply_subject, response = rec.last_reply
+        assert reply_subject == "_INBOX.test"
+        response_data = json.loads(response.model_dump_json())
         assert response_data["success"] is True
         assert "correlation_id" not in response_data
         assert response_data["context"]["correlation_id"] == str(correlation_id)
@@ -361,10 +420,11 @@ class TestToolServerHandleCall:
                 "context": {"correlation_id": str(uuid4())},
             }
         )
+        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
-        response_data = json.loads(msg.respond.call_args[0][0])
+        response_data = json.loads(rec.last_reply[1].model_dump_json())
         assert response_data["success"] is True
         assert response_data["error"] is None
 
@@ -382,10 +442,11 @@ class TestToolServerHandleCall:
                 "context": {"correlation_id": str(correlation_id)},
             }
         )
+        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
-        response_data = json.loads(msg.respond.call_args[0][0])
+        response_data = json.loads(rec.last_reply[1].model_dump_json())
         assert response_data["success"] is False
         assert "nonexistent.tool@1.0" in response_data["error"]
         assert response_data["context"]["correlation_id"] == str(correlation_id)
@@ -406,10 +467,11 @@ class TestToolServerHandleCall:
                 "context": {"correlation_id": str(correlation_id)},
             }
         )
+        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
-        response_data = json.loads(msg.respond.call_args[0][0])
+        response_data = json.loads(rec.last_reply[1].model_dump_json())
         assert response_data["success"] is False
         assert "intentional failure" in response_data["error"]
         assert response_data["context"]["correlation_id"] == str(correlation_id)
@@ -419,14 +481,13 @@ class TestToolServerHandleCall:
         """handle_call returns error response for invalid JSON payload."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
-        msg = MagicMock()
-        msg.data = b"not valid json"
-        msg.respond = AsyncMock()
+        msg = IncomingMessage(data=b"not valid json", reply_subject="_INBOX.test")
+        rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
 
-        msg.respond.assert_called_once()
-        response_data = json.loads(msg.respond.call_args[0][0])
+        assert len(rec.replies) == 1
+        response_data = json.loads(rec.last_reply[1].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error"] is not None
 
@@ -469,11 +530,16 @@ class TestToolServerHeartbeat:
             except asyncio.CancelledError:
                 pass
 
-        heartbeat_calls = [c for c in mock_nc.publish.call_args_list if "heartbeat" in (c[0][0] if c[0] else "")]
+        heartbeat_calls = [
+            c
+            for c in mock_nc.publish.call_args_list
+            if "heartbeat" in c.kwargs.get("subject").path
+        ]
         assert len(heartbeat_calls) >= 1
-        subject = heartbeat_calls[0][0][0]
-        assert subject == "testns.tools.heartbeat.hb-pod"
-        payload = json.loads(heartbeat_calls[0][0][1])
+        subject_arg = heartbeat_calls[0].kwargs["subject"]
+        assert subject_arg.path == "testns.tools.heartbeat.hb-pod"
+        message = heartbeat_calls[0].kwargs["message"]
+        payload = json.loads(message.model_dump_json())
         assert payload["pod_id"] == "hb-pod"
         assert payload["tools_count"] == 1
         assert "timestamp" in payload
@@ -517,8 +583,9 @@ class TestToolServerShutdown:
                 pass
 
         assert server.is_running is False
-        mock_nc.drain.assert_called_once()
-        mock_nc.close.assert_called_once()
+        # the wrapper exposes a single ``shutdown()`` that internally
+        # drains + closes the underlying nats-py connection.
+        mock_nc.shutdown.assert_called_once()
 
 
 # -- wire format model tests --
@@ -644,8 +711,8 @@ class TestToolServerProbe:
                 pass
 
         subscribe_calls = mock_nc.subscribe.call_args_list
-        subjects = [c[0][0] for c in subscribe_calls]
-        assert "testns.tools.probe.probe-pod-1" in subjects
+        subject_paths = [c.kwargs["subject"].path for c in subscribe_calls]
+        assert "testns.tools.probe.probe-pod-1" in subject_paths
 
     @pytest.mark.asyncio
     async def test_serve_subscribes_before_publishing_registration(self) -> None:
@@ -662,15 +729,17 @@ class TestToolServerProbe:
         order: list[str] = []
 
         async def record_subscribe(*args: Any, **kwargs: Any) -> AsyncMock:
-            """capture subscribe call order."""
-            subject = args[0] if args else kwargs.get("subject", "")
-            order.append(f"subscribe:{subject}")
+            """capture subscribe call order (kw-only ``subject=Subject(...)``)."""
+            subject_arg = kwargs.get("subject")
+            path = subject_arg.path if subject_arg is not None else ""
+            order.append(f"subscribe:{path}")
             return AsyncMock()
 
         async def record_publish(*args: Any, **kwargs: Any) -> None:
-            """capture publish call order."""
-            subject = args[0] if args else kwargs.get("subject", "")
-            order.append(f"publish:{subject}")
+            """capture publish call order (kw-only ``subject=Subject(...)``)."""
+            subject_arg = kwargs.get("subject")
+            path = subject_arg.path if subject_arg is not None else ""
+            order.append(f"publish:{path}")
 
         mock_nc = AsyncMock()
         mock_nc.is_connected = True
@@ -708,15 +777,16 @@ class TestToolServerProbe:
             pod_id="ack-pod",
             namespace_collection=None,
         )
+        rec = _attach_recording_nc(server)
 
-        msg = MagicMock()
-        msg.data = b'{"pod_id": "ack-pod"}'
-        msg.respond = AsyncMock()
+        msg = IncomingMessage(data=b'{"pod_id": "ack-pod"}', reply_subject="_INBOX.probe")
 
         await server.handle_probe(msg)
 
-        msg.respond.assert_called_once()
-        payload = json.loads(msg.respond.call_args[0][0])
+        assert len(rec.replies) == 1
+        reply_subject, response = rec.last_reply
+        assert reply_subject == "_INBOX.probe"
+        payload = json.loads(response.model_dump_json())
         assert payload["pod_id"] == "ack-pod"
         assert payload["ready"] is True
 
@@ -728,10 +798,9 @@ class TestToolServerProbe:
             pod_id="ready-pod",
             namespace_collection=None,
         )
+        rec = _attach_recording_nc(server)
 
-        msg = MagicMock()
-        msg.data = b'{"pod_id": "ready-pod"}'
-        msg.respond = AsyncMock()
+        msg = IncomingMessage(data=b'{"pod_id": "ready-pod"}', reply_subject="_INBOX.probe")
 
         await server.handle_probe(msg)
 
@@ -743,7 +812,7 @@ class TestToolServerProbe:
         # a bare handle_probe call (no serve() yet) has not caused
         # wait_ready to unblock -- the quickest observable check is that
         # ``wait_ready`` still times out.
-        msg.respond.assert_called_once()
+        assert len(rec.replies) == 1
         assert server.is_running is False
         with pytest.raises(asyncio.TimeoutError):
             await server.wait_ready(timeout=0.01)
@@ -777,18 +846,22 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        discovery_reply = MagicMock()
-        discovery_reply.data = json.dumps(
-            {
-                "agent_id": "wait-pod",
-                "tools": [
-                    {"name": "test.probe", "version": "1.0.0", "status": "available"},
-                ],
-            }
-        ).encode("utf-8")
+        from threetears.agent.tools.server import (
+            DiscoveryProbeResponse,
+            DiscoveryProbeResultEntry,
+        )
+
+        discovery_response = DiscoveryProbeResponse(
+            agent_id="wait-pod",
+            tools=[
+                DiscoveryProbeResultEntry(
+                    name="test.probe", version="1.0.0", status="available"
+                ),
+            ],
+        )
 
         nc = MagicMock()
-        nc.request = AsyncMock(return_value=discovery_reply)
+        nc.request = AsyncMock(return_value=discovery_response)
         server = ToolServer(
             nats_client=nc,
             pod_id="wait-pod",
@@ -829,18 +902,22 @@ class TestToolServerProbe:
                 """no-op execution path."""
                 return {"ok": True}
 
-        discovery_reply = MagicMock()
-        discovery_reply.data = json.dumps(
-            {
-                "agent_id": "slow-pod",
-                "tools": [
-                    {"name": "test.slow", "version": "1.0.0", "status": "unavailable"},
-                ],
-            }
-        ).encode("utf-8")
+        from threetears.agent.tools.server import (
+            DiscoveryProbeResponse,
+            DiscoveryProbeResultEntry,
+        )
+
+        discovery_response = DiscoveryProbeResponse(
+            agent_id="slow-pod",
+            tools=[
+                DiscoveryProbeResultEntry(
+                    name="test.slow", version="1.0.0", status="unavailable"
+                ),
+            ],
+        )
 
         nc = MagicMock()
-        nc.request = AsyncMock(return_value=discovery_reply)
+        nc.request = AsyncMock(return_value=discovery_response)
         server = ToolServer(
             nats_client=nc,
             pod_id="slow-pod",
@@ -932,6 +1009,9 @@ class TestPublishRegistrationPublicMethod:
 
     @pytest.mark.asyncio
     async def test_publish_registration_publishes_on_configured_subject(self) -> None:
+        from threetears.nats import set_default_namespace
+
+        set_default_namespace("testns")
         nc = AsyncMock()
         server = ToolServer(
             nats_client=nc,
@@ -942,9 +1022,10 @@ class TestPublishRegistrationPublicMethod:
         server.register(StubTool(name="alpha", version="1.0"))
         await server.publish_registration()
         nc.publish.assert_awaited_once()
-        subject, payload = nc.publish.await_args.args
-        assert subject == "testns.tools.register"
-        parsed = json.loads(payload)
+        subject_arg = nc.publish.await_args.kwargs["subject"]
+        message = nc.publish.await_args.kwargs["message"]
+        assert subject_arg.path == "testns.tools.register"
+        parsed = json.loads(message.model_dump_json())
         assert parsed["pod_id"] == "pod-7"
         assert parsed["tools"][0]["name"] == "alpha"
 
@@ -1078,12 +1159,14 @@ class TestToolServerInjectedNatsClient:
         await server.wait_ready(timeout=1.0)
         await server.shutdown()
         await asyncio.wait_for(serve_task, timeout=1.0)
-        nc.drain.assert_not_awaited()
-        nc.close.assert_not_awaited()
+        # the wrapper exposes ``shutdown()``, not the legacy
+        # ``drain()`` + ``close()`` pair; injected clients must be
+        # left open for the owning caller to dispose.
+        nc.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_shutdown_closes_self_owned_client(self) -> None:
-        """server-owned connection is drained + closed on ``shutdown()``."""
+        """server-owned connection is shut down (drain + close) on ``shutdown()``."""
         nc = AsyncMock()
         server = ToolServer(
             nats_url="nats://localhost:4222",
@@ -1099,5 +1182,6 @@ class TestToolServerInjectedNatsClient:
             await server.wait_ready(timeout=1.0)
             await server.shutdown()
             await asyncio.wait_for(serve_task, timeout=1.0)
-        nc.drain.assert_awaited_once()
-        nc.close.assert_awaited_once()
+        # the wrapper's ``shutdown()`` internally drains + closes the
+        # underlying nats-py connection.
+        nc.shutdown.assert_awaited_once()

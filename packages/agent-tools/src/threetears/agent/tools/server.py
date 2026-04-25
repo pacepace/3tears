@@ -12,8 +12,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from uuid import NAMESPACE_DNS, UUID, uuid5, uuid7
 
-from nats.aio.client import Client as NatsClient
-from nats.aio.msg import Msg as NatsMsg
+from datetime import timedelta
+
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.audit import AuditEvent, publish_audit
@@ -33,6 +33,13 @@ from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.nats import (
+    IncomingMessage,
+    NatsClient,
+    RequestError,
+    Subjects,
+    set_default_namespace,
+)
 from threetears.observe import clear_context, get_logger, traced
 
 __all__ = [
@@ -125,17 +132,25 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str) -> NatsClient:
-    """connect to NATS server at given URL.
+async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+    """connect to NATS server via the canonical wrapper.
+
+    standalone tool pods that did not receive a pre-connected
+    :class:`NatsClient` from the bootstrap call this helper to open
+    their own. tests patch this symbol to swap a fake transport in.
 
     :param url: NATS server URL
     :ptype url: str
-    :return: connected NATS client
+    :param namespace: NATS subject namespace prefix bound on the wrapper
+    :ptype namespace: str
+    :return: connected canonical wrapper client
     :rtype: NatsClient
     """
-    nc = NatsClient()
-    await nc.connect(url)
-    return nc
+    return await NatsClient.connect(
+        nats_url=url,
+        nats_subject_namespace=namespace,
+        client_name="tool-server",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +417,7 @@ class ToolServer:
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
         context_factory: ("Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None") = None,
-        nats_client: NatsClient | None = None,
+        nats_client: "NatsClient | None" = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
     ) -> None:
@@ -440,7 +455,8 @@ class ToolServer:
             omitted, tools that require a context crash with a
             :class:`RuntimeError` at first use, same as today
         :ptype context_factory: Callable[[UUID, UUID], Awaitable[ToolContextManager]] | None
-        :param nats_client: pre-connected NATS client supplied by a
+        :param nats_client: pre-connected canonical
+            :class:`threetears.nats.NatsClient` wrapper supplied by a
             caller that owns its lifecycle (typically the agent
             bootstrap sharing one connection across strategy,
             handler, and heartbeat). when set, ``nats_url`` is
@@ -497,7 +513,7 @@ class ToolServer:
         self._customer_id = customer_id
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
-        self._nc: NatsClient | None = nats_client
+        self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
@@ -692,7 +708,7 @@ class ToolServer:
         not yet bound.
         """
         if self._nc is None:
-            self._nc = await nats_connect(self._nats_url)
+            self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
             log.info(
                 "connected to NATS",
                 extra={
@@ -711,20 +727,33 @@ class ToolServer:
                     }
                 },
             )
+        # the server's configured ``namespace`` is the one that must
+        # appear on every subject built below. when the server opens
+        # its own connection :class:`NatsClient.connect` already binds
+        # the prefix; when a caller injects a pre-connected client, we
+        # bind here so :class:`Subjects` builders pick up the same
+        # prefix the server was constructed with rather than whatever
+        # the injected client picked up at connect time.
+        set_default_namespace(self._namespace)
         self._running = True
 
-        call_subject = f"{self._namespace}.tools.internal.{self._pod_id}"
-        await self._nc.subscribe(call_subject, cb=self.handle_call)
+        # DQ-B7 queue-group sweep: call_subject and probe_subject are
+        # pod-specific (``{ns}.tools.internal.{pod_id}`` /
+        # ``{ns}.tools.probe.{pod_id}``); only this pod's connection
+        # binds them, so a queue group would be redundant. heartbeat
+        # publishes are write-only and need no queue group.
+        call_subject = Subjects.tools_internal(self._pod_id)
+        await self._nc.subscribe(subject=call_subject, cb=self.handle_call)
         log.info(
             "subscribed to call subject",
-            extra={"extra_data": {"subject": call_subject}},
+            extra={"extra_data": {"subject": call_subject.path}},
         )
 
-        probe_subject = f"{self._namespace}.tools.probe.{self._pod_id}"
-        await self._nc.subscribe(probe_subject, cb=self.handle_probe)
+        probe_subject = Subjects.tools_probe(self._pod_id)
+        await self._nc.subscribe(subject=probe_subject, cb=self.handle_probe)
         log.info(
             "subscribed to probe subject",
-            extra={"extra_data": {"subject": probe_subject}},
+            extra={"extra_data": {"subject": probe_subject.path}},
         )
 
         await self.publish_registration()
@@ -735,7 +764,7 @@ class ToolServer:
 
         await self._shutdown_event.wait()
 
-    async def handle_probe(self, msg: NatsMsg) -> None:
+    async def handle_probe(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler replying to reachability probes.
 
         bound by :meth:`serve` as the ``cb`` callback on
@@ -752,11 +781,13 @@ class ToolServer:
         the pending -> available transition before ``wait_until_ready``
         unblocks.
 
-        :param msg: incoming NATS message containing probe request
-        :ptype msg: NatsMsg
+        :param msg: incoming wrapper envelope carrying the probe request
+        :ptype msg: IncomingMessage
         """
+        if msg.reply_subject is None or self._nc is None:
+            return
         ack = ProbeAck(pod_id=self._pod_id, ready=True)
-        await msg.respond(ack.model_dump_json().encode("utf-8"))
+        await self._nc.publish_reply(reply_subject=msg.reply_subject, message=ack)
 
     async def wait_until_ready(self, timeout: float | None = None) -> bool:
         """block until registry catalog reports every tool as available.
@@ -807,12 +838,18 @@ class ToolServer:
                     agent_id=self._pod_id,
                     tool_manifest=[DiscoveryProbeToolEntry(name=m.name, version=m.version) for m in manifest_names],
                 )
-                reply = await self._nc.request(
-                    f"{self._namespace}.tools.discover",
-                    request.model_dump_json().encode("utf-8"),
-                    timeout=min(1.0, max(deadline - asyncio.get_event_loop().time(), 0.01)),
+                request_timeout = timedelta(
+                    seconds=min(
+                        1.0,
+                        max(deadline - asyncio.get_event_loop().time(), 0.01),
+                    )
                 )
-                response = DiscoveryProbeResponse.model_validate_json(reply.data)
+                response = await self._nc.request(
+                    subject=Subjects.tools_discover(),
+                    message=request,
+                    response_type=DiscoveryProbeResponse,
+                    timeout=request_timeout,
+                )
                 available_count = sum(1 for tool in response.tools if tool.status == "available")
                 if available_count == expected_count:
                     ready = True
@@ -1048,6 +1085,12 @@ class ToolServer:
         nc = self._nc
         if nc is None:
             raise RuntimeError("publish_registration called before NATS connected")
+        # idempotent re-bind so :class:`Subjects` builders below render
+        # against this server's configured namespace even when callers
+        # invoke :meth:`publish_registration` directly without going
+        # through :meth:`serve` (e.g. dynamic register_tool / deregister_tool
+        # flows on a server constructed with an injected nats_client).
+        set_default_namespace(self._namespace)
         tools_list: list[ToolManifestEntry] = []
         for tool in self._tools.values():
             schema = tool.mcp_schema()
@@ -1066,13 +1109,13 @@ class ToolServer:
             bootstrap_token=self._bootstrap_token,
         )
 
-        subject = f"{self._namespace}.tools.register"
-        await nc.publish(subject, manifest.model_dump_json().encode("utf-8"))
+        subject = Subjects.tools_register()
+        await nc.publish(subject=subject, message=manifest)
         log.debug(
             "published registration manifest",
             extra={
                 "extra_data": {
-                    "subject": subject,
+                    "subject": subject.path,
                     "pod_id": self._pod_id,
                     "tools_count": len(tools_list),
                 }
@@ -1080,7 +1123,7 @@ class ToolServer:
         )
 
     @traced(record_args=True)
-    async def handle_call(self, msg: NatsMsg) -> None:
+    async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
         bound by :meth:`serve` as the ``cb`` callback on
@@ -1089,8 +1132,9 @@ class ToolServer:
         the stability contract.
 
         parses call request, dispatches to matching tool, and sends
-        response back via NATS reply. the inbound :class:`CallContext`
-        is echoed verbatim on the :class:`CallResponse` so the response
+        response back via :meth:`NatsClient.publish_reply` against
+        ``msg.reply_subject``. the inbound :class:`CallContext` is
+        echoed verbatim on the :class:`CallResponse` so the response
         carries identity in the same shape as the request. binds the
         canonical logging context tags (``cid``/``conv``/``user``/
         ``agent``/``customer``) from the :class:`CallContext` for the
@@ -1110,8 +1154,8 @@ class ToolServer:
         dispatch regardless of whether the tool bothered to emit its
         own detail event.
 
-        :param msg: incoming NATS message containing call request
-        :ptype msg: NatsMsg
+        :param msg: incoming wrapper envelope carrying the call request
+        :ptype msg: IncomingMessage
         """
         start_monotonic = time.monotonic()
         request: CallRequest | None = None
@@ -1129,7 +1173,7 @@ class ToolServer:
                 content="",
                 error=f"malformed call request: {exc}",
             )
-            await msg.respond(error_response.model_dump_json().encode("utf-8"))
+            await self._respond(msg, error_response)
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
                 request=None,
@@ -1166,7 +1210,7 @@ class ToolServer:
                     error=f"unknown tool: {tool_key}",
                     context=request.context,
                 )
-                await msg.respond(error_response.model_dump_json().encode("utf-8"))
+                await self._respond(msg, error_response)
                 log.warning(
                     "unknown tool requested",
                     extra={
@@ -1214,7 +1258,7 @@ class ToolServer:
                 outcome = "error"
                 failure_reason = f"tool execution failed: {exc}"
 
-            await msg.respond(response.model_dump_json().encode("utf-8"))
+            await self._respond(msg, response)
         finally:
             duration_ms = (time.monotonic() - start_monotonic) * 1000.0
             await self._publish_baseline_audit(
@@ -1226,6 +1270,26 @@ class ToolServer:
                 failure_reason=failure_reason,
             )
             clear_context()
+
+    async def _respond(self, msg: IncomingMessage, response: BaseModel) -> None:
+        """publish ``response`` to the inbound message's reply subject.
+
+        equivalent to the pre-migration ``msg.respond(...)`` shape; when
+        the inbound message did not carry a reply subject (pure
+        fire-and-forget; should not happen in production but possible
+        in synthetic test envelopes), the call becomes a no-op so the
+        handler chain stays robust.
+
+        :param msg: inbound wrapper envelope
+        :ptype msg: IncomingMessage
+        :param response: typed response to publish
+        :ptype response: BaseModel
+        :return: nothing
+        :rtype: None
+        """
+        if msg.reply_subject is None or self._nc is None:
+            return
+        await self._nc.publish_reply(reply_subject=msg.reply_subject, message=response)
 
     async def _publish_baseline_audit(
         self,
@@ -1390,7 +1454,7 @@ class ToolServer:
         nc = self._nc
         if nc is None:
             raise RuntimeError("_heartbeat_loop started before NATS connected")
-        subject = f"{self._namespace}.tools.heartbeat.{self._pod_id}"
+        subject = Subjects.tools_heartbeat(self._pod_id)
         while self._running:
             heartbeat = HeartbeatMessage(
                 pod_id=self._pod_id,
@@ -1398,7 +1462,7 @@ class ToolServer:
                 tools_count=len(self._tools),
             )
             try:
-                await nc.publish(subject, heartbeat.model_dump_json().encode("utf-8"))
+                await nc.publish(subject=subject, message=heartbeat)
             except Exception as exc:
                 log.warning(
                     "heartbeat publish failed",
@@ -1441,7 +1505,6 @@ class ToolServer:
             self._heartbeat_task = None
 
         if self._nc is not None and self._owns_nats_connection:
-            await self._nc.drain()
-            await self._nc.close()
+            await self._nc.shutdown()
 
         self._shutdown_event.set()
