@@ -520,6 +520,76 @@ class TestSpansPartitionsDecorator:
         with pytest.raises(TypeError, match="empty tuple"):
             await find_in(agent_ids=())
 
+    def test_spans_partitions_raises_when_no_ids_param_and_not_marker_only(
+        self,
+    ) -> None:
+        """decoration fails fast when no ``_ids`` param is found.
+
+        review-task-01 finding D-2: the original decorator silently
+        degraded to a marker-only role when no ``_ids``-suffix
+        parameter was found. partition-hardening-task-01 sub-task 2
+        flips this from silent to fail-fast at decoration time --
+        callers must either rename the parameter to end in ``_ids``
+        or opt into the marker-only path explicitly via
+        ``marker_only=True``.
+        """
+        with pytest.raises(PartitionEnforcementError, match="marker_only"):
+            @spans_partitions
+            async def list_with_filters(
+                self: Any, sql: str, params: list[Any],
+            ) -> list[Any]:
+                _ = self
+                _ = sql
+                _ = params
+                return []
+
+    def test_spans_partitions_marker_only_skips_ids_check(self) -> None:
+        """``marker_only=True`` opt-in skips the ``_ids`` parameter scan.
+
+        a method that is structurally cross-partition by other means
+        (e.g. an opaque pre-built SQL string where ACL is enforced
+        upstream) opts into the marker-only path via
+        ``@spans_partitions(marker_only=True)``. decoration succeeds
+        even though the signature has no ``_ids`` parameter.
+        """
+
+        @spans_partitions(marker_only=True)
+        async def list_with_filters(
+            self: Any, sql: str, params: list[Any],
+        ) -> list[Any]:
+            _ = self
+            _ = sql
+            _ = params
+            return []
+
+        assert getattr(list_with_filters, "_spans_partitions", False) is True
+
+    @pytest.mark.asyncio
+    async def test_spans_partitions_marker_only_skips_runtime_guard(
+        self,
+    ) -> None:
+        """``marker_only=True`` callable skips the tuple-shape runtime guard.
+
+        the runtime guard is the ``_ids``-tuple validator that fires
+        on the non-marker-only path. a marker-only method may be
+        called with arbitrary arg shapes (string / list / dict) --
+        the partition discipline is satisfied by the structural
+        upstream guarantee, not by the call-site argument shape.
+        """
+
+        @spans_partitions(marker_only=True)
+        async def list_with_filters(
+            sql: str, params: list[Any],
+        ) -> int:
+            _ = sql
+            return len(params)
+
+        # arbitrary arg shapes pass without TypeError on the guard
+        result = await list_with_filters(
+            "SELECT 1", ["a", "b", "c"],
+        )
+        assert result == 3
+
 
 # ---------------------------------------------------------------------------
 # SQL generation

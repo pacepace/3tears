@@ -628,7 +628,9 @@ class PartitionEnforcementError(TypeError):
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def spans_partitions(method: F) -> F:
+def spans_partitions(
+    method: F | None = None, *, marker_only: bool = False,
+) -> F | Callable[[F], F]:
     """mark a Collection method as deliberately cross-partition.
 
     decorated methods are exempt from the
@@ -648,46 +650,92 @@ def spans_partitions(method: F) -> F:
     different sentinel should override the convention by passing the
     ``tuple`` argument under any name ending in ``_ids``.
 
-    :param method: collection method to decorate
-    :ptype method: Callable[..., Any]
-    :return: wrapped method that validates the cross-partition
-        argument shape
-    :rtype: Callable[..., Any]
+    when no ``_ids``-suffix parameter is found, decoration FAILS at
+    class-definition time with :class:`PartitionEnforcementError`
+    unless the caller explicitly passed ``marker_only=True``. the
+    marker-only opt-in is a deliberate noise -- adding it to a method
+    requires the author to justify why the method is structurally
+    cross-partition by other means (e.g. an opaque pre-built SQL
+    string where ACL is enforced upstream). this closes the silent-
+    degrade failure mode flagged by review-task-01 finding D-2 in
+    partition-hardening-task-01 sub-task 2.
+
+    two calling forms are supported:
+
+    - ``@spans_partitions`` (bare) -- method must declare an
+      ``_ids``-suffix parameter; runtime guard validates tuple shape.
+    - ``@spans_partitions(marker_only=True)`` -- method has no
+      ``_ids`` parameter; runtime guard is skipped entirely; the
+      decorator becomes a pure compile-time exemption marker against
+      :meth:`SchemaBackedCollection.__init_subclass__`'s partition
+      discipline.
+
+    :param method: collection method to decorate (bare-decorator form)
+    :ptype method: Callable[..., Any] | None
+    :param marker_only: when ``True``, skip the ``_ids`` parameter
+        scan + runtime guard; method becomes a pure compile-time
+        exemption marker
+    :ptype marker_only: bool
+    :return: wrapped method, or a decorator factory when invoked with
+        keyword arguments
+    :rtype: Callable[..., Any] | Callable[[F], F]
+    :raises PartitionEnforcementError: at decoration time when the
+        target method has no ``_ids``-suffix parameter and
+        ``marker_only=True`` was not passed
     """
-    sig = inspect.signature(method)
-    plural_param: str | None = None
-    for name in sig.parameters:
-        if name.endswith("_ids"):
-            plural_param = name
-            break
+    def _decorate(target: F) -> F:
+        sig = inspect.signature(target)
+        plural_param: str | None = None
+        for name in sig.parameters:
+            if name.endswith("_ids"):
+                plural_param = name
+                break
+        if plural_param is None and not marker_only:
+            raise PartitionEnforcementError(
+                f"{target.__qualname__}: @spans_partitions found no "
+                f"parameter ending in '_ids'. either rename the "
+                f"partition-spanning parameter to end in '_ids' so the "
+                f"runtime tuple-shape guard can validate the fan-out, "
+                f"OR opt into the marker-only path with "
+                f"@spans_partitions(marker_only=True) -- the latter "
+                f"declares 'this method is structurally cross-partition "
+                f"by other means' (e.g. opaque pre-built SQL with ACL "
+                f"enforced upstream) and skips the runtime guard.",
+            )
 
-    @wraps(method)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        """call-site guard for ``@spans_partitions``-marked methods.
+        @wraps(target)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            """call-site guard for ``@spans_partitions``-marked methods.
 
-        :raises TypeError: when the cross-partition argument is not a
-            ``tuple`` or has length zero
-        """
-        if plural_param is not None:
-            bound = sig.bind(*args, **kwargs)
-            value = bound.arguments.get(plural_param)
-            if value is not None:
-                if not isinstance(value, tuple):
-                    raise TypeError(
-                        f"{method.__qualname__}: cross-partition argument "
-                        f"{plural_param!r} must be a tuple (deliberate "
-                        f"fan-out signal); got {type(value).__name__}",
-                    )
-                if len(value) == 0:
-                    raise TypeError(
-                        f"{method.__qualname__}: cross-partition argument "
-                        f"{plural_param!r} is an empty tuple; refusing to "
-                        f"emit a query that spans zero partitions",
-                    )
-        return method(*args, **kwargs)
+            :raises TypeError: when the cross-partition argument is not
+                a ``tuple`` or has length zero
+            """
+            if plural_param is not None and not marker_only:
+                bound = sig.bind(*args, **kwargs)
+                value = bound.arguments.get(plural_param)
+                if value is not None:
+                    if not isinstance(value, tuple):
+                        raise TypeError(
+                            f"{target.__qualname__}: cross-partition "
+                            f"argument {plural_param!r} must be a tuple "
+                            f"(deliberate fan-out signal); got "
+                            f"{type(value).__name__}",
+                        )
+                    if len(value) == 0:
+                        raise TypeError(
+                            f"{target.__qualname__}: cross-partition "
+                            f"argument {plural_param!r} is an empty "
+                            f"tuple; refusing to emit a query that "
+                            f"spans zero partitions",
+                        )
+            return target(*args, **kwargs)
 
-    setattr(wrapper, "_spans_partitions", True)
-    return wrapper  # type: ignore[return-value]
+        setattr(wrapper, "_spans_partitions", True)
+        return wrapper  # type: ignore[return-value]
+
+    if method is not None:
+        return _decorate(method)
+    return _decorate
 
 
 def _is_partition_exempt(method: Any) -> bool:
