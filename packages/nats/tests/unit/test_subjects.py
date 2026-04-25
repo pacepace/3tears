@@ -130,11 +130,18 @@ def test_audit_event_rejects_empty() -> None:
 
 
 def test_l3_subjects() -> None:
-    """l3 broker subject builders produce documented shapes."""
+    """l3 broker subject builders produce documented shapes.
+
+    the platform broker exposes six per-op transaction subjects so DML
+    ``execute``, single-row ``fetchrow``, and multi-row ``fetch`` are
+    addressable independently.
+    """
     assert Subjects.l3_query().path == "aibots.l3.query"
     assert Subjects.l3_batch().path == "aibots.l3.batch"
     assert Subjects.l3_tx("begin").path == "aibots.l3.tx.begin"
-    assert Subjects.l3_tx("exec").path == "aibots.l3.tx.exec"
+    assert Subjects.l3_tx("execute").path == "aibots.l3.tx.execute"
+    assert Subjects.l3_tx("fetchrow").path == "aibots.l3.tx.fetchrow"
+    assert Subjects.l3_tx("fetch").path == "aibots.l3.tx.fetch"
     assert Subjects.l3_tx("commit").path == "aibots.l3.tx.commit"
     assert Subjects.l3_tx("rollback").path == "aibots.l3.tx.rollback"
 

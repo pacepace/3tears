@@ -511,11 +511,21 @@ class Subjects:
         return Subject(path=f"{_ns()}.l3.batch", kind="point")
 
     @classmethod
-    def l3_tx(cls, op: Literal["begin", "exec", "commit", "rollback"]) -> Subject:
+    def l3_tx(
+        cls,
+        op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"],
+    ) -> Subject:
         """request/reply subject for L3 broker explicit-transaction operations.
 
+        the platform broker exposes six per-op subjects (versus the
+        original four-method shape) so DML ``execute``, single-row
+        ``fetchrow``, and multi-row ``fetch`` are addressable
+        independently from a generic ``exec``. the asyncpg session
+        on the broker side dispatches each op to the matching
+        connection method without pre-classifying the SQL verb.
+
         :param op: transaction operation phase
-        :ptype op: Literal["begin", "exec", "commit", "rollback"]
+        :ptype op: Literal["begin", "execute", "fetchrow", "fetch", "commit", "rollback"]
         :return: subject ``{ns}.l3.tx.{op}``
         :rtype: Subject
         """
