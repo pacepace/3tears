@@ -160,7 +160,7 @@ class ToolContextManager:
             "date_updated": now,
         }
 
-        returned_id = await self._collection.upsert_variable(data)
+        returned_id = await self._collection.upsert_variable(self.conversation_id, data)
         context_id_str = str(returned_id)
 
         # Update local projection
@@ -192,7 +192,7 @@ class ToolContextManager:
             return False
 
         self.items = [i for i in self.items if i is not target]
-        await self._collection.delete(target["context_id"])
+        await self._collection.delete((self.conversation_id, target["context_id"]))
         return True
 
     # ------------------------------------------------------------------
@@ -282,7 +282,9 @@ class ToolContextManager:
                     str(i["context_id"])
                     for i in self.items
                     if i["context_type"] == "tool_result"
-                    and not self._collection.exists_in_cache_sync(i["context_id"])
+                    and not self._collection.exists_in_cache_sync(
+                        (self.conversation_id, i["context_id"]),
+                    )
                 }
                 if evicted_ids:
                     self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
@@ -299,7 +301,7 @@ class ToolContextManager:
             cid = cid[4:]
         for item in self.items:
             if str(item["context_id"]) == cid:
-                await self._collection.touch(cid)
+                await self._collection.touch(self.conversation_id, cid)
                 item["date_accessed"] = datetime.now(UTC)
                 return item
         return None
@@ -403,7 +405,9 @@ class ToolContextManager:
         existing = await self.get_item_by_type_and_key(context_type, key)
         if existing is not None:
             self.items = [i for i in self.items if i is not existing]
-            await self._collection.delete(existing["context_id"])
+            await self._collection.delete(
+                (self.conversation_id, existing["context_id"]),
+            )
 
         now = datetime.now(UTC)
         context_id = uuid7()
@@ -453,7 +457,9 @@ class ToolContextManager:
             result = False
         else:
             self.items = [i for i in self.items if i is not existing]
-            await self._collection.delete(existing["context_id"])
+            await self._collection.delete(
+                (self.conversation_id, existing["context_id"]),
+            )
             result = True
         return result
 

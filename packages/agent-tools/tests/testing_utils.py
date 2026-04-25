@@ -61,6 +61,7 @@ class FakePool:
     async def fetchrow(self, sql: str, *args: object) -> dict[str, Any] | None:
         sql_lower = sql.strip().lower()
         if "returning context_id" in sql_lower:
+            # upsert_variable: (context_id, conversation_id, context_type, key, ...)
             context_id, conversation_id = args[0], args[1]
             key = args[3]
             for row in self.rows.values():
@@ -92,8 +93,9 @@ class FakePool:
             self.rows[str(context_id)] = row_data
             return {"context_id": context_id}
 
-        if "select * from context_items where context_id" in sql_lower:
-            cid = str(args[0])
+        # composite-pk fetch: WHERE conversation_id = $1 AND context_id = $2
+        if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower and "and context_id" in sql_lower:
+            cid = str(args[1])
             return self.rows.get(cid)
 
         if "select count" in sql_lower:
@@ -133,17 +135,21 @@ class FakePool:
         sql_lower = sql.strip().lower()
 
         if "insert into context_items" in sql_lower:
-            context_id = args[0]
+            # composite-pk schema column order: conversation_id, context_id,
+            # context_type, key, short_desc, long_desc, content, metadata,
+            # date_accessed, date_created, date_updated
+            conversation_id = args[0]
+            context_id = args[1]
             metadata_raw = args[7]
             row_data = {
+                "conversation_id": conversation_id,
                 "context_id": context_id,
-                "conversation_id": args[1],
                 "context_type": args[2],
                 "key": args[3],
                 "short_desc": args[4],
                 "long_desc": args[5],
                 "content": args[6],
-                "metadata": json.loads(metadata_raw) if metadata_raw else None,
+                "metadata": json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw,
                 "date_accessed": args[8],
                 "date_created": args[9],
                 "date_updated": args[10],
@@ -152,25 +158,29 @@ class FakePool:
             return "INSERT 0 1"
 
         if "delete from context_items" in sql_lower:
-            cid = str(args[0])
+            # composite-pk delete: conversation_id = $1 AND context_id = $2
+            cid = str(args[1])
             if cid in self.rows:
                 del self.rows[cid]
                 return "DELETE 1"
             return "DELETE 0"
 
         if "update context_items set date_accessed" in sql_lower:
-            cid = str(args[0])
+            # composite-pk: WHERE conversation_id = $1 AND context_id = $2
+            # SET date_accessed = $3
+            cid = str(args[1])
             if cid in self.rows:
-                self.rows[cid]["date_accessed"] = args[1]
+                self.rows[cid]["date_accessed"] = args[2]
                 return "UPDATE 1"
             return "UPDATE 0"
 
         if "update context_items set" in sql_lower:
-            cid = str(args[0])
+            # CAS-style update keyed by composite pk
+            cid = str(args[1])
             if cid in self.rows:
-                self.rows[cid]["short_desc"] = args[1]
-                self.rows[cid]["long_desc"] = args[2]
-                self.rows[cid]["content"] = args[3]
+                self.rows[cid]["short_desc"] = args[2]
+                self.rows[cid]["long_desc"] = args[3]
+                self.rows[cid]["content"] = args[4]
                 return "UPDATE 1"
             return "UPDATE 0"
 

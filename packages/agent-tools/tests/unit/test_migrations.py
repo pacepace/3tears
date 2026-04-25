@@ -164,8 +164,9 @@ class TestRegisterAgentToolsMigrations:
         await runner.apply_package(store, PACKAGE_NAME)
         joined = _joined_executed_sql(store)
         assert re.search(r"CREATE TABLE IF NOT EXISTS context_items", joined)
-        assert "context_id UUID PRIMARY KEY" in joined
         assert re.search(r"conversation_id UUID NOT NULL", joined)
+        assert re.search(r"context_id UUID NOT NULL", joined)
+        assert "PRIMARY KEY (conversation_id, context_id)" in joined
         assert "context_type VARCHAR(50) NOT NULL" in joined
         assert "key VARCHAR(255) NOT NULL" in joined
         assert "short_desc VARCHAR(200)" in joined

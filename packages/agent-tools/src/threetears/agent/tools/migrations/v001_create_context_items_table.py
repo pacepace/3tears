@@ -26,8 +26,8 @@ log = get_logger(__name__)
 
 _CREATE_CONTEXT_ITEMS_SQL = """
 CREATE TABLE IF NOT EXISTS context_items (
-    context_id UUID PRIMARY KEY,
     conversation_id UUID NOT NULL,
+    context_id UUID NOT NULL,
     context_type VARCHAR(50) NOT NULL,
     key VARCHAR(255) NOT NULL,
     short_desc VARCHAR(200),
@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS context_items (
     metadata JSONB,
     date_accessed TIMESTAMP NOT NULL,
     date_created TIMESTAMP NOT NULL,
-    date_updated TIMESTAMP NOT NULL
+    date_updated TIMESTAMP NOT NULL,
+    PRIMARY KEY (conversation_id, context_id)
 )
 """
 

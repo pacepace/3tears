@@ -104,6 +104,13 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
     # authoring discipline (every consumer of _build_user_scope_clause
     # passes scope params).
     ("websearch_to_tsquery", "dynamic-scope-clause"),
+    # rationale: one-time data translation at boot. matches the
+    # CLAUDE.md "translation, not shim" carve-out -- the helper
+    # backfills new columns from old columns on legacy rows during
+    # the v0.5.0 schema migration; the UPDATE deliberately spans
+    # every partition because the migration runs globally before
+    # any per-conversation read path is exercised.
+    ("long_desc = LEFT(content, 1000)", "one-time-schema-migration"),
 )
 
 

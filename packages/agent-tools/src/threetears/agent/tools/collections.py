@@ -47,7 +47,9 @@ def context_items_table(metadata: MetaData) -> Table:
 
     call this before ``SQLiteBackend.initialize(metadata)`` so the L1
     cache gets the correct schema. safe to call multiple times -- returns
-    the existing table if already registered.
+    the existing table if already registered. composite primary key on
+    ``(conversation_id, context_id)`` mirrors the L3 partition layout
+    so cache rows are isolated per partition.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
@@ -59,8 +61,8 @@ def context_items_table(metadata: MetaData) -> Table:
     return Table(
         "context_items",
         metadata,
-        SAColumn("context_id", PgUUID(as_uuid=True), primary_key=True),
-        SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("context_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
         SAColumn("context_type", Text(), nullable=False),
         SAColumn("key", Text(), nullable=False),
         SAColumn("short_desc", Text(), nullable=False),
@@ -84,13 +86,13 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
     shape is per-collection.
     """
 
-    primary_key_column: str = "context_id"
+    primary_key_column: str | tuple[str, ...] = ("conversation_id", "context_id")
     schema = TableSchema(
         name="context_items",
-        primary_key="context_id",
+        primary_key=("conversation_id", "context_id"),
         columns=[
+            Column("conversation_id", UUID_TYPE, partition=True),
             Column("context_id", UUID_TYPE),
-            Column("conversation_id", UUID_TYPE, immutable=True),
             Column("context_type", STRING_TYPE, immutable=True),
             Column("key", STRING_TYPE, immutable=True),
             Column("short_desc", STRING_TYPE),
@@ -150,14 +152,19 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             entities.append(entity)
         return entities
 
-    async def upsert_variable(self, data: dict[str, Any]) -> UUID:
+    async def upsert_variable(self, conversation_id: UUID, data: dict[str, Any]) -> UUID:
         """upsert a variable using the partial unique index.
 
         returns the context_id (may differ from input on conflict). uses
         the ``(conversation_id, key) WHERE context_type = 'variable'``
         partial unique index so a name collision returns the existing
-        row's id rather than inserting a duplicate.
+        row's id rather than inserting a duplicate. ``conversation_id``
+        is the partition column and is also read from ``data`` for
+        backwards compatibility with existing callers; the explicit
+        positional argument satisfies the partition-column contract.
 
+        :param conversation_id: conversation partition the variable lives in
+        :ptype conversation_id: UUID
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
         :return: authoritative context_id (existing on conflict, new on insert)
@@ -166,9 +173,9 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         context_id = data["context_id"]
         if not isinstance(context_id, UUID):
             context_id = UUID(str(context_id))
-        conversation_id = data["conversation_id"]
-        if not isinstance(conversation_id, UUID):
-            conversation_id = UUID(str(conversation_id))
+        if data.get("conversation_id") != conversation_id:
+            data = dict(data)
+            data["conversation_id"] = conversation_id
 
         metadata_val = data.get("metadata")
         if isinstance(metadata_val, dict):
@@ -205,21 +212,29 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         )
         returned_id: UUID = row["context_id"]
 
-        # Update L1 cache
+        # Update L1 cache. composite pk on (conversation_id, context_id)
+        # so L2 / invalidation addressing must be the tuple form.
         cache_data = dict(data)
         cache_data["context_id"] = returned_id
+        cache_data["conversation_id"] = conversation_id
+        pk = (conversation_id, returned_id)
         self.write_to_cache_sync(cache_data)
-        await self._save_to_l2(returned_id, cache_data)
-        await self._publish_invalidation(returned_id)
+        await self._save_to_l2(pk, cache_data)
+        await self._publish_invalidation(pk)
 
         return returned_id
 
-    async def touch(self, context_id: str | UUID) -> None:
+    async def touch(self, conversation_id: UUID, context_id: str | UUID) -> None:
         """update ``date_accessed`` for LRU tracking.
 
         writes to L1 synchronously, propagates to L3. L2 stays coherent
         via the standard invalidation path on subsequent writes.
+        ``conversation_id`` is required because the table is partitioned
+        on it; cache-row addressing uses the composite ``(conversation_id,
+        context_id)`` tuple.
 
+        :param conversation_id: conversation partition the row lives in
+        :ptype conversation_id: UUID
         :param context_id: entity identifier (accepts string or UUID)
         :ptype context_id: str | UUID
         :return: nothing
@@ -228,24 +243,39 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         cid = context_id if isinstance(context_id, UUID) else UUID(str(context_id))
         now = datetime.now(UTC)
 
-        # Update L1 immediately
+        # Update L1 immediately. composite-pk row keyed on
+        # (conversation_id, context_id) tuple per the partition layout.
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(cid), self.primary_key_column)
+            row = self._l1.select_by_id(
+                self.table_name,
+                (conversation_id, cid),
+                self.primary_key_columns,
+            )
             if row is not None:
                 row["date_accessed"] = now
-                self._l1.upsert(self.table_name, row, self.primary_key_column)
+                self._l1.upsert(self.table_name, row, self.primary_key_columns)
 
-        # Propagate to L3 (fire-and-forget via background)
+        # Propagate to L3. partition predicate on conversation_id keeps
+        # the UPDATE inside one partition and satisfies the SQL-level
+        # partition-column enforcement.
         try:
             await self.l3_pool.execute(
-                "UPDATE context_items SET date_accessed = $2 WHERE context_id = $1",
+                "UPDATE context_items SET date_accessed = $3 "
+                "WHERE conversation_id = $1 AND context_id = $2",
+                conversation_id,
                 cid,
                 now,
             )
         except Exception as exc:
             log.warning(
                 "Failed to update date_accessed in L3",
-                extra={"extra_data": {"context_id": str(cid), "error": str(exc)}},
+                extra={
+                    "extra_data": {
+                        "conversation_id": str(conversation_id),
+                        "context_id": str(cid),
+                        "error": str(exc),
+                    },
+                },
             )
 
     async def count_results(self, conversation_id: str | UUID) -> int:
@@ -300,11 +330,12 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         evicted = 0
         for row in evict_rows:
             eid = row["context_id"]
-            await self.delete_from_postgres(eid)
+            pk = (cid, eid)
+            await self.delete_from_postgres(pk)
             if self._l1 is not None:
-                self._l1.delete_by_id(self.table_name, str(eid), self.primary_key_column)
-            await self._delete_from_l2(eid)
-            await self._publish_invalidation(eid)
+                self._l1.delete_by_id(self.table_name, pk, self.primary_key_columns)
+            await self._delete_from_l2(pk)
+            await self._publish_invalidation(pk)
             evicted += 1
 
         if evicted:

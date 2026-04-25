@@ -80,6 +80,7 @@ def _make_item(
 
 
 CONV_ID = "00000000-0000-0000-0000-000000000001"
+CONV_UUID = uuid.UUID(CONV_ID)
 
 
 class TestFindByConversation:
@@ -88,7 +89,7 @@ class TestFindByConversation:
         item = _make_item()
         pool.rows[str(item["context_id"])] = item
 
-        entities = await collection.find_by_conversation(CONV_ID)
+        entities = await collection.find_by_conversation(CONV_UUID)
 
         assert len(entities) == 1
         assert isinstance(entities[0], ContextItemEntity)
@@ -98,15 +99,15 @@ class TestFindByConversation:
         item = _make_item()
         pool.rows[str(item["context_id"])] = item
 
-        await collection.find_by_conversation(CONV_ID)
+        await collection.find_by_conversation(CONV_UUID)
 
-        # Should be in L1 now
-        l1_row = collection.get_row_sync(str(item["context_id"]))
+        # Should be in L1 now (composite-pk row keyed on tuple).
+        l1_row = collection.get_row_sync((CONV_UUID, item["context_id"]))
         assert l1_row is not None
 
     @pytest.mark.asyncio
     async def test_empty_conversation(self, collection: ContextItemCollection) -> None:
-        entities = await collection.find_by_conversation(CONV_ID)
+        entities = await collection.find_by_conversation(CONV_UUID)
         assert entities == []
 
 
@@ -114,16 +115,16 @@ class TestUpsertVariable:
     @pytest.mark.asyncio
     async def test_insert_new(self, collection: ContextItemCollection) -> None:
         item = _make_item(context_type="variable", key="name", short_desc="Alice", content="Alice")
-        returned_id = await collection.upsert_variable(item)
+        returned_id = await collection.upsert_variable(CONV_UUID, item)
         assert returned_id == item["context_id"]
 
     @pytest.mark.asyncio
     async def test_upsert_existing(self, collection: ContextItemCollection, pool: FakePool) -> None:
         item1 = _make_item(context_type="variable", key="name", short_desc="Alice", content="Alice")
-        await collection.upsert_variable(item1)
+        await collection.upsert_variable(CONV_UUID, item1)
 
         item2 = _make_item(context_type="variable", key="name", short_desc="Bob", content="Bob")
-        returned_id = await collection.upsert_variable(item2)
+        returned_id = await collection.upsert_variable(CONV_UUID, item2)
 
         # Should return the original context_id (conflict resolution)
         assert returned_id == item1["context_id"]
@@ -140,10 +141,11 @@ class TestTouch:
         # Populate L1
         collection.write_to_cache_sync(item)
 
-        await collection.touch(str(item["context_id"]))
+        await collection.touch(CONV_UUID, str(item["context_id"]))
 
-        # L1 should have updated date_accessed
-        l1_row = collection.get_row_sync(str(item["context_id"]))
+        # L1 should have updated date_accessed. composite-pk row keyed
+        # on (conversation_id, context_id) tuple.
+        l1_row = collection.get_row_sync((CONV_UUID, item["context_id"]))
         assert l1_row is not None
         # date_accessed should be more recent than old_time
         assert l1_row["date_accessed"] > old_time
@@ -160,7 +162,7 @@ class TestEvictLru:
             collection.write_to_cache_sync(item)
             items.append(item)
 
-        evicted = await collection.evict_lru(CONV_ID, result_limit=3)
+        evicted = await collection.evict_lru(CONV_UUID, result_limit=3)
 
         assert evicted == 2
         # Oldest two should be gone from L3
@@ -188,7 +190,7 @@ class TestEvictLru:
             item = _make_item(key=f"tool{i}", date_accessed=now + timedelta(seconds=i))
             pool.rows[str(item["context_id"])] = item
 
-        evicted = await collection.evict_lru(CONV_ID, result_limit=2)
+        evicted = await collection.evict_lru(CONV_UUID, result_limit=2)
 
         assert evicted == 1
         # Variable should still be there
@@ -200,7 +202,7 @@ class TestEvictLru:
             item = _make_item(key=f"tool{i}")
             pool.rows[str(item["context_id"])] = item
 
-        evicted = await collection.evict_lru(CONV_ID, result_limit=5)
+        evicted = await collection.evict_lru(CONV_UUID, result_limit=5)
         assert evicted == 0
 
 
@@ -210,7 +212,7 @@ class TestThreeTierReadWrite:
         item = _make_item()
         pool.rows[str(item["context_id"])] = item
 
-        entity = await collection.get(item["context_id"])
+        entity = await collection.get((CONV_UUID, item["context_id"]))
 
         assert entity is not None
         assert entity.key == "calc"
