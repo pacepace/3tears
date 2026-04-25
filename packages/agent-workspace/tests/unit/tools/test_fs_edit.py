@@ -27,6 +27,7 @@ class _FakeWorkspaceEntity:
     id: UUID
     name: str
     date_deleted: datetime | None = None
+    agent_id: UUID = field(default_factory=uuid4)
 
     @property
     def namespace_name(self) -> str:

@@ -566,7 +566,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -715,6 +715,7 @@ async def _write_file_atomic(
                 new_version,
                 now,
                 workspace.id,
+                workspace.agent_id,
             )
     return new_version, new_sha256
 

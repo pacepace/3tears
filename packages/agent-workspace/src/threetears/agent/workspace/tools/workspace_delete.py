@@ -61,7 +61,10 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-_SOFT_DELETE_WORKSPACE_SQL = "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2"
+_SOFT_DELETE_WORKSPACE_SQL = (
+    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 "
+    "WHERE id = $2 AND agent_id = $3"
+)
 
 
 class WorkspaceDeleteTool(TearsTool):
@@ -162,7 +165,12 @@ class WorkspaceDeleteTool(TearsTool):
                 # a branch.
                 async with self._db_pool.acquire() as conn:
                     async with conn.transaction(namespace=workspace.namespace_name):
-                        await conn.execute(_SOFT_DELETE_WORKSPACE_SQL, now, workspace.id)
+                        await conn.execute(
+                            _SOFT_DELETE_WORKSPACE_SQL,
+                            now,
+                            workspace.id,
+                            workspace.agent_id,
+                        )
 
                 ctx = self._context_provider()
                 snapshot = await pin.get_pin(ctx)

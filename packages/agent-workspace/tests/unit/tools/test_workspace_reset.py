@@ -34,6 +34,7 @@ class _FakeWorkspaceEntity:
     name: str
     template_name: str | None
     current_version: int = 0
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
 
 

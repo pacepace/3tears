@@ -71,6 +71,9 @@ class _FakeWorkspaceEntity:
     # tests do not depend on the specific identity values.
     owner_agent_id: UUID = field(default_factory=uuid4)
     customer_id: UUID | None = field(default_factory=uuid4)
+    # collections-task-02 partition column on workspaces; helpers and
+    # tools thread workspace.agent_id into UPDATE workspaces SQL.
+    agent_id: UUID = field(default_factory=uuid4)
 
     @property
     def namespace_name(self) -> str:

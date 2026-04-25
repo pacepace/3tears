@@ -38,11 +38,13 @@ class _FakeWorkspaceEntity:
 
     :ivar id: workspace identifier
     :ivar name: workspace name
+    :ivar agent_id: owning agent (partition column on workspaces)
     :ivar date_deleted: soft-delete timestamp, None when live
     """
 
     id: UUID
     name: str
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
 
     @property

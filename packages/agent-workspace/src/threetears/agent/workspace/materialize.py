@@ -129,7 +129,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -440,6 +440,7 @@ async def _seed_l3_import_all(
                 max_version,
                 now,
                 workspace.id,
+                workspace.agent_id,
             )
     return len(disk)
 
@@ -605,6 +606,7 @@ async def _seed_l3_disk_wins(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
         n_touched = len(creates) + len(updates) + len(deletes)
     return n_touched
@@ -911,6 +913,7 @@ async def _handle_watch_batch(
                         max_version,
                         now,
                         workspace.id,
+                        workspace.agent_id,
                     )
     return changed
 
@@ -1200,6 +1203,7 @@ async def _capture_back(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
         # defense-in-depth: publish one additive audit event per
         # changed file on top of the baseline ``tool.call`` emitted
@@ -1278,6 +1282,7 @@ async def _capture_back(
 @asynccontextmanager
 async def bind(
     *,
+    agent_id: UUID,
     workspace_id: UUID,
     sandbox: WorkspaceSandbox,
     lease: WorkspaceFileLease,
@@ -1354,7 +1359,7 @@ async def bind(
     :raises KeyError: if ``root_name`` is not configured on sandbox
     :raises SandboxDenied: if ``workspace.name`` escapes the named root
     """
-    workspace = await workspace_collection.find_by_id(workspace_id)
+    workspace = await workspace_collection.find_by_id(agent_id, workspace_id)
     if workspace is None:
         raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
@@ -1488,6 +1493,7 @@ async def bind(
 
 async def recover(
     *,
+    agent_id: UUID,
     workspace_id: UUID,
     sandbox: WorkspaceSandbox,
     workspace_collection: WorkspaceCollection,
@@ -1539,7 +1545,7 @@ async def recover(
     :raises KeyError: if ``root_name`` is not configured on sandbox
     :raises SandboxDenied: if ``workspace.name`` escapes the named root
     """
-    workspace = await workspace_collection.find_by_id(workspace_id)
+    workspace = await workspace_collection.find_by_id(agent_id, workspace_id)
     if workspace is None:
         raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
@@ -1642,6 +1648,7 @@ async def recover(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
     log.info(
         "workspace.recover.done",

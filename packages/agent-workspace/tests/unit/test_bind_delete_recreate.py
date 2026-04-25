@@ -49,7 +49,7 @@ def _sha256(data: bytes) -> str:
 
 @dataclass
 class _FakeWorkspace:
-    """minimal stand-in exposing only the ``id`` attribute ``_capture_back`` reads."""
+    """minimal stand-in exposing only the ``id`` + ``agent_id`` attrs ``_capture_back`` reads."""
 
     @property
     def namespace_name(self) -> str:
@@ -57,6 +57,7 @@ class _FakeWorkspace:
         return f"workspace.{self.id}"
 
     id: UUID
+    agent_id: UUID = field(default_factory=uuid4)
 
 
 @dataclass

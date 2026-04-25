@@ -97,7 +97,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -312,6 +312,7 @@ class WorkspaceRefreshTool(TearsTool):
                         max_version,
                         now,
                         workspace.id,
+                        workspace.agent_id,
                     )
             n_imported = len(creates) + len(updates)
         return n_imported

@@ -63,6 +63,7 @@ class _FakeWorkspace:
     name: str
     current_version: int = 0
     date_deleted: datetime | None = None
+    agent_id: UUID = field(default_factory=uuid4)
 
     @property
     def namespace_name(self) -> str:
@@ -99,9 +100,13 @@ class _FakeWorkspaceCollection:
         """
         self._workspaces = workspaces
 
-    async def find_by_id(self, workspace_id: UUID) -> _FakeWorkspace | None:
-        """locate a live workspace by id.
+    async def find_by_id(
+        self, agent_id: UUID, workspace_id: UUID,
+    ) -> _FakeWorkspace | None:
+        """locate a live workspace by ``(agent_id, workspace_id)`` pair.
 
+        :param agent_id: agent partition the workspace belongs to
+        :ptype agent_id: UUID
         :param workspace_id: identifier to lookup
         :ptype workspace_id: UUID
         :return: matched workspace or None
@@ -109,7 +114,11 @@ class _FakeWorkspaceCollection:
         """
         result: _FakeWorkspace | None = None
         for ws in self._workspaces:
-            if ws.id == workspace_id and ws.date_deleted is None:
+            if (
+                ws.id == workspace_id
+                and ws.agent_id == agent_id
+                and ws.date_deleted is None
+            ):
                 result = ws
                 break
         return result
@@ -470,6 +479,7 @@ def _harness(
     return {
         "workspace_id": ws_id,
         "workspace": ws,
+        "agent_id": ws.agent_id,
         "sandbox": sandbox,
         "bind_root": bind_root,
         "workspace_coll": _FakeWorkspaceCollection([ws]),
@@ -497,6 +507,7 @@ async def _enter_and_exit_bind(
     :rtype: None
     """
     async with bind(
+        agent_id=h["agent_id"],
         workspace_id=h["workspace_id"],
         sandbox=h["sandbox"],
         lease=h["lease"],

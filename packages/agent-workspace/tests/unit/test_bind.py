@@ -53,6 +53,10 @@ class _FakeWorkspace:
     date_deleted: datetime | None = None
     # WS-ACL-10: capture-back audit publishes require owner_agent_id
     owner_agent_id: UUID = field(default_factory=uuid4)
+    # collections-task-02: workspaces is partitioned on agent_id; the
+    # capture / watch / seed paths thread workspace.agent_id into
+    # UPDATE workspaces SQL.
+    agent_id: UUID = field(default_factory=uuid4)
 
     @property
     def namespace_name(self) -> str:
@@ -75,12 +79,16 @@ class _FakeWorkspaceCollection:
 
     def __init__(self, workspaces: list[_FakeWorkspace]) -> None:
         self.workspaces = workspaces
-        self.find_by_id_calls: list[UUID] = []
+        self.find_by_id_calls: list[tuple[UUID, UUID]] = []
 
-    async def find_by_id(self, workspace_id: UUID) -> _FakeWorkspace | None:
-        self.find_by_id_calls.append(workspace_id)
+    async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> _FakeWorkspace | None:
+        self.find_by_id_calls.append((agent_id, workspace_id))
         for ws in self.workspaces:
-            if ws.id == workspace_id and ws.date_deleted is None:
+            if (
+                ws.id == workspace_id
+                and ws.agent_id == agent_id
+                and ws.date_deleted is None
+            ):
                 return ws
         return None
 
@@ -278,6 +286,7 @@ def _build_harness(
     return {
         "workspace_id": ws_id,
         "workspace": ws,
+        "agent_id": ws.agent_id,
         "sandbox": sandbox,
         "bind_root": bind_root,
         "workspace_coll": workspace_coll,
@@ -296,6 +305,7 @@ async def _call_bind(
     on_conflict: BindConflictPolicy = BindConflictPolicy.L3_WINS,
 ) -> Any:
     return bind(
+        agent_id=harness["agent_id"],
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
         lease=harness["lease"],
@@ -512,6 +522,7 @@ async def test_recover_writes_disk_diffs_back_to_l3(tmp_path: Path) -> None:
     (disk_root / "brand_new.txt").write_bytes(b"new stuff")
 
     changed = await recover(
+        agent_id=harness["agent_id"],
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
         workspace_collection=harness["workspace_coll"],
@@ -540,6 +551,7 @@ async def test_recover_unchanged_file_skipped(tmp_path: Path) -> None:
     (disk_root / "keep.txt").write_bytes(content)
 
     changed = await recover(
+        agent_id=harness["agent_id"],
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
         workspace_collection=harness["workspace_coll"],
@@ -560,6 +572,7 @@ async def test_recover_unknown_workspace_raises(tmp_path: Path) -> None:
     harness["workspace_coll"].workspaces = []
     with pytest.raises(ValueError):
         await recover(
+            agent_id=harness["agent_id"],
             workspace_id=harness["workspace_id"],
             sandbox=harness["sandbox"],
             workspace_collection=harness["workspace_coll"],
@@ -620,6 +633,7 @@ async def test_bind_emits_one_audit_event_per_changed_file(
     )
     async with enter_call_scope(scope):
         async with bind(
+            agent_id=harness["agent_id"],
             workspace_id=harness["workspace_id"],
             sandbox=harness["sandbox"],
             lease=harness["lease"],
@@ -670,6 +684,7 @@ async def test_bind_audit_publish_failure_does_not_break_capture_back(
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
     # bind body should complete cleanly even though publish raises
     async with bind(
+        agent_id=harness["agent_id"],
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
         lease=harness["lease"],
@@ -699,6 +714,7 @@ async def test_bind_no_changes_publishes_no_audit_events(tmp_path: Path) -> None
     )
     nats = _FakeNats()
     async with bind(
+        agent_id=harness["agent_id"],
         workspace_id=harness["workspace_id"],
         sandbox=harness["sandbox"],
         lease=harness["lease"],

@@ -93,7 +93,10 @@ INSERT INTO workspace_file_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
-_UPDATE_WORKSPACE_VERSION_SQL = "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3"
+_UPDATE_WORKSPACE_VERSION_SQL = (
+    "UPDATE workspaces SET current_version = $1, date_updated = $2 "
+    "WHERE id = $3 AND agent_id = $4"
+)
 
 
 class WorkspaceResetTool(TearsTool):
@@ -434,7 +437,13 @@ class WorkspaceResetTool(TearsTool):
                         now,
                         correlation_id,
                     )
-                await conn.execute(_UPDATE_WORKSPACE_VERSION_SQL, new_version, now, workspace_id)
+                await conn.execute(
+                    _UPDATE_WORKSPACE_VERSION_SQL,
+                    new_version,
+                    now,
+                    workspace_id,
+                    self._agent_id,
+                )
         return n_changed
 
     async def _upsert_file(

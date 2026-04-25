@@ -163,46 +163,38 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
 
     async def find_by_id(
         self,
+        agent_id: UUID,
         workspace_id: UUID,
-        *,
-        agent_id: UUID | None = None,
     ) -> Workspace | None:
         """
-        fetches workspace by id, optionally scoped to owning agent.
+        fetches a live workspace by (agent_id, workspace_id).
 
         used by low-level runtime primitives (bind, materialize, recover)
         that hold a workspace_id directly and resolve the authoritative
-        row without context for an owning agent. filters on
-        ``date_deleted IS NULL`` so soft-deleted workspaces are not
-        bindable -- a bind onto a tombstone would silently write capture
-        rows against a row list operations no longer surface, which is a
-        correctness hazard. callers that need the soft-deleted row
-        (admin/recovery flows) use :meth:`find_by_id_and_agent` directly.
+        row. filters on ``date_deleted IS NULL`` so soft-deleted
+        workspaces are not bindable -- a bind onto a tombstone would
+        silently write capture rows against a row list operations no
+        longer surface, which is a correctness hazard. callers that
+        need the soft-deleted row (admin / recovery flows) use
+        :meth:`find_by_id_and_agent` directly.
 
-        when ``agent_id`` is supplied, the query adds an ``AND agent_id =
-        $2`` clause so a poisoned workspace_id cannot leak across agents.
-        callers that already trust the id (internal bind/materialize)
-        pass None and get the unscoped lookup.
+        ``agent_id`` is the partition column on the ``workspaces``
+        table; the caller supplies it explicitly so a poisoned
+        ``workspace_id`` cannot leak across agents.
 
+        :param agent_id: agent partition the workspace belongs to
+        :ptype agent_id: UUID
         :param workspace_id: identifier of workspace to fetch
         :ptype workspace_id: UUID
-        :param agent_id: optional owning-agent scope; when None, no
-            ownership filter is applied
-        :ptype agent_id: UUID | None
         :return: matching live workspace entity or None
         :rtype: Workspace | None
         """
-        if agent_id is None:
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM workspaces WHERE id = $1 AND date_deleted IS NULL",
-                workspace_id,
-            )
-        else:
-            row = await self.l3_pool.fetchrow(
-                "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
-                workspace_id,
-                agent_id,
-            )
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM workspaces "
+            "WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
+            workspace_id,
+            agent_id,
+        )
         result: Workspace | None = None
         if row is not None:
             data = dict(row)

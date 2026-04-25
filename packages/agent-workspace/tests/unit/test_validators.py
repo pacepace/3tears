@@ -37,6 +37,7 @@ from threetears.agent.workspace import validators as validators_module
 class _FakeWorkspaceEntity:
     id: UUID
     name: str = "ws"
+    agent_id: UUID = field(default_factory=uuid4)
 
     @property
     def namespace_name(self) -> str:

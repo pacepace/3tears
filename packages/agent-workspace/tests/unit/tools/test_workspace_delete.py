@@ -32,6 +32,7 @@ class _FakeWorkspaceEntity:
 
     id: UUID
     name: str
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
 
 
