@@ -1,0 +1,10 @@
+# migration yugabyte-safety walker exemptions for the 3tears repo.
+#
+# format: <file_path>:<rule_name> # rationale: <specific reason>
+#
+# blank rationales ("internal access needed", "tests need this", etc.)
+# are rejected by the walker meta-test. each rationale must explain
+# WHY the violation is acceptable in this specific case.
+#
+# every entry's <file_path> is an absolute path; the walker's per-test
+# helper rewrites this into match keys at load time.
