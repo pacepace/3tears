@@ -360,9 +360,9 @@ class MemoryRetriever:
         user_id: UUID,
         user_text: str,
         *,
+        agent_id: UUID,
+        customer_id: UUID,
         surfaced_ids: set[str] | None = None,
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
     ) -> str | None:
@@ -372,16 +372,16 @@ class MemoryRetriever:
         :ptype user_id: UUID
         :param user_text: query text for similarity search
         :ptype user_text: str
+        :param agent_id: partition column on the memory tables; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param surfaced_ids: optional set of item IDs (as strings)
             already shown to the agent this conversation; rows whose
             pk stringifies to one of these are filtered out of the
             formatted context. callers persist these through
             :class:`MemoryRefsCollection` at their own layer.
         :ptype surfaced_ids: set[str] | None
-        :param agent_id: optional agent ID scope for filtering results
-        :ptype agent_id: UUID | None
-        :param customer_id: optional customer ID scope for filtering
-        :ptype customer_id: UUID | None
         :param caller_user_id: invoking user UUID for rbac evaluator
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID; owner short-
@@ -394,9 +394,9 @@ class MemoryRetriever:
         result = await self.retrieve_with_candidates(
             user_id,
             user_text,
-            surfaced_ids=surfaced_ids,
             agent_id=agent_id,
             customer_id=customer_id,
+            surfaced_ids=surfaced_ids,
             caller_user_id=caller_user_id,
             caller_agent_id=caller_agent_id,
         )
@@ -408,9 +408,9 @@ class MemoryRetriever:
         user_id: UUID,
         user_text: str,
         *,
+        agent_id: UUID,
+        customer_id: UUID,
         surfaced_ids: set[str] | None = None,
-        agent_id: UUID | None = None,
-        customer_id: UUID | None = None,
         caller_user_id: UUID | None = None,
         caller_agent_id: UUID | None = None,
     ) -> RetrievalResult:
@@ -420,23 +420,21 @@ class MemoryRetriever:
         :ptype user_id: UUID
         :param user_text: query text for similarity search
         :ptype user_text: str
+        :param agent_id: partition column on the memory tables; required
+        :ptype agent_id: UUID
+        :param customer_id: required sub-scope
+        :ptype customer_id: UUID
         :param surfaced_ids: optional set of item IDs (as strings)
             already surfaced in this conversation; filtered from the
             returned context. callers persist new surfacings through
             :class:`MemoryRefsCollection` at their own layer
         :ptype surfaced_ids: set[str] | None
-        :param agent_id: optional agent ID scope for filtering results
-        :ptype agent_id: UUID | None
-        :param customer_id: optional customer ID scope
-        :ptype customer_id: UUID | None
         :param caller_user_id: invoking user UUID for rbac evaluator
         :ptype caller_user_id: UUID | None
         :param caller_agent_id: invoking agent UUID
         :ptype caller_agent_id: UUID | None
         :return: structured retrieval results
         :rtype: RetrievalResult
-        :raises ValueError: when ``caller_user_id`` is set without
-            both ``agent_id`` and ``customer_id``
         :raises MemoryAccessDenied: when rbac enforcement denies
         """
         empty = RetrievalResult()
@@ -444,10 +442,6 @@ class MemoryRetriever:
             return empty
 
         if caller_user_id is not None:
-            if agent_id is None or customer_id is None:
-                raise ValueError(
-                    "retrieve with caller_user_id requires agent_id + customer_id",
-                )
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
                 agent_id=agent_id,

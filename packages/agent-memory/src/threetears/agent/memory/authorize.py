@@ -79,18 +79,18 @@ MEMORY_NAMESPACE_TYPE = "memory"
 #: canonical action string for memory reads. evaluated against the
 #: ``memory`` bucket of the caller's roles via
 #: :meth:`~threetears.agent.acl.types.Role.actions_for`.
-ACTION_MEMORY_READ = "memory.read"
+ACTION_MEMORY_READ: Literal["memory.read"] = "memory.read"
 
 
 #: canonical action string for user-initiated memory writes.
-ACTION_MEMORY_WRITE = "memory.write"
+ACTION_MEMORY_WRITE: Literal["memory.write"] = "memory.write"
 
 
 #: canonical action string for agent-internal memory extraction.
 #: distinct from ``memory.write`` so operators can grant / audit
 #: "LLM emitted memories on the user's behalf" separately from
 #: "user explicitly added a memory."
-ACTION_MEMORY_EXTRACT = "memory.extract"
+ACTION_MEMORY_EXTRACT: Literal["memory.extract"] = "memory.extract"
 
 
 #: role name seeded by the hub v020 migration for the per-user

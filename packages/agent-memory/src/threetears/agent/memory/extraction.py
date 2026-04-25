@@ -29,6 +29,7 @@ from threetears.agent.memory.authorize import (
 )
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.embedding import EmbeddingProvider
+from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 from threetears.observe import get_logger, traced
@@ -198,7 +199,9 @@ class MemoryExtractor:
                 )
                 if embedding is None:
                     continue
-                similar = await self._get_similar_memories(embedding, user_id)
+                similar = await self._get_similar_memories(
+                    embedding, user_id, agent_id,
+                )
                 candidates.append(
                     {
                         "type": mem["type"],
@@ -411,6 +414,7 @@ class MemoryExtractor:
         self,
         embedding: list[float],
         user_id: UUID,
+        agent_id: UUID,
     ) -> list[dict[str, Any]]:
         """Query existing memories similar to a candidate via the Collection.
 
@@ -418,11 +422,14 @@ class MemoryExtractor:
         :ptype embedding: list[float]
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
+        :param agent_id: partition column on memories; required
+        :ptype agent_id: UUID
         :return: list of similar memory dicts
         :rtype: list[dict[str, Any]]
         """
         rows = await self._memories.find_similar_for_dedup(
             user_id=user_id,
+            agent_id=agent_id,
             embedding=embedding,
             top_k=self._config.similar_memory_top_k,
             threshold=self._config.similar_memory_threshold,
@@ -617,8 +624,8 @@ class MemoryExtractor:
                         "date_deleted": None,
                         "date_updated": now,
                     }
-                    entity = self._memories.create(new_data)
-                    await self._memories.save_entity(entity)
+                    new_entity: MemoryEntity = self._memories.create(new_data)
+                    await self._memories.save_entity(new_entity)
                     if self._summary_callback:
                         await self._summary_callback(
                             str(memory_id),
@@ -633,13 +640,15 @@ class MemoryExtractor:
                     )
                     if new_embedding is not None:
                         memory_uuid = UUID(act["memory_id"])
-                        entity = await self._memories.get(memory_uuid)
-                        if entity is None or entity.user_id != user_id or entity.is_deleted:
+                        update_entity: MemoryEntity | None = await self._memories.get(
+                            (agent_id, memory_uuid),
+                        )
+                        if update_entity is None or update_entity.user_id != user_id or update_entity.is_deleted:
                             continue
-                        entity.content = updated_content
-                        entity.type_memory = updated_type
-                        entity.embedding = new_embedding
-                        await self._memories.save_entity(entity)
+                        update_entity.content = updated_content
+                        update_entity.type_memory = updated_type
+                        update_entity.embedding = new_embedding
+                        await self._memories.save_entity(update_entity)
                         if self._summary_callback:
                             await self._summary_callback(
                                 act["memory_id"],
@@ -648,10 +657,12 @@ class MemoryExtractor:
 
                 elif action == "DELETE":
                     memory_uuid = UUID(act["memory_id"])
-                    entity = await self._memories.get(memory_uuid)
-                    if entity is None or entity.user_id != user_id or entity.is_deleted:
+                    delete_entity: MemoryEntity | None = await self._memories.get(
+                        (agent_id, memory_uuid),
+                    )
+                    if delete_entity is None or delete_entity.user_id != user_id or delete_entity.is_deleted:
                         continue
-                    await self._memories.soft_delete(entity)
+                    await self._memories.soft_delete(delete_entity)
 
             except Exception as exc:
                 log.warning(

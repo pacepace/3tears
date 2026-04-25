@@ -181,7 +181,9 @@ async def _ensure_first_write_owner_assignment(
     :return: nothing
     :rtype: None
     """
-    has_rows = await memories_collection.count_by_user(user_id)
+    has_rows = await memories_collection.count_by_user(
+        user_id, agent_id=ns_entity.owner_agent_id,
+    )
     if has_rows:
         return None
     await ensure_memory_owner_assignment(
@@ -198,6 +200,8 @@ async def _search_by_ids(
     memory_chunk_collection: MemoryChunkCollection,
     user_id: UUID,
     ids: list[str],
+    *,
+    agent_id: UUID,
     ledger_callback: LedgerCallback | None = None,
 ) -> str:
     """Batch-lookup memories, media content, and chunks by ID via Collections.
@@ -212,6 +216,9 @@ async def _search_by_ids(
     :ptype user_id: UUID
     :param ids: list of raw UUID strings from the model
     :ptype ids: list[str]
+    :param agent_id: partition column on every Collection touched here;
+        required
+    :ptype agent_id: UUID
     :param ledger_callback: optional surfaced-item notification
     :ptype ledger_callback: LedgerCallback | None
     :return: formatted tool output
@@ -230,9 +237,15 @@ async def _search_by_ids(
 
     try:
         mem_rows, mc_rows, chunk_rows = await asyncio.gather(
-            memories_collection.search_by_ids(valid_uuids, user_id),
-            media_content_collection.search_by_ids(valid_uuids, user_id),
-            memory_chunk_collection.search_by_ids(valid_uuids, user_id),
+            memories_collection.search_by_ids(
+                valid_uuids, user_id, agent_id=agent_id,
+            ),
+            media_content_collection.search_by_ids(
+                valid_uuids, user_id, agent_id=agent_id,
+            ),
+            memory_chunk_collection.search_by_ids(
+                valid_uuids, user_id, agent_id=agent_id,
+            ),
         )
     except Exception as exc:
         return _tool_error("memory_search", "id_lookup", str(exc))
@@ -368,7 +381,8 @@ async def load_memory_search_tool(
                 memory_chunk_collection,
                 user_id,
                 ids,
-                ledger_callback,
+                agent_id=agent_id,
+                ledger_callback=ledger_callback,
             )
 
         if not query:
@@ -392,6 +406,7 @@ async def load_memory_search_tool(
         try:
             memories = await memories_collection.search_by_semantic(
                 user_id=user_id,
+                agent_id=agent_id,
                 embedding=embedding,
                 max_results=max_results,
                 similarity_threshold=sim_threshold,
@@ -406,6 +421,7 @@ async def load_memory_search_tool(
             try:
                 fts_rows = await memories_collection.search_by_fts(
                     user_id=user_id,
+                    agent_id=agent_id,
                     fts_text=fts_text,
                     max_results=max_results,
                     type_filter=type_filter,
@@ -430,6 +446,7 @@ async def load_memory_search_tool(
         try:
             mc_rows = await media_content_collection.search_by_semantic(
                 user_id=user_id,
+                agent_id=agent_id,
                 embedding=embedding,
                 max_results=5,
                 similarity_threshold=sim_threshold,
@@ -453,6 +470,7 @@ async def load_memory_search_tool(
             if fts_text:
                 fts_mc_rows = await media_content_collection.search_by_fts(
                     user_id=user_id,
+                    agent_id=agent_id,
                     fts_text=fts_text,
                     max_results=5,
                 )
@@ -479,6 +497,7 @@ async def load_memory_search_tool(
         try:
             chunk_rows = await memory_chunk_collection.search_by_semantic(
                 user_id=user_id,
+                agent_id=agent_id,
                 embedding=embedding,
                 max_results=5,
                 similarity_threshold=sim_threshold,
@@ -616,7 +635,7 @@ async def load_recall_memory_tool(
 
         if item_type == "memory":
             content = await memories_collection.fetch_content_for_recall(
-                memory_id=item_uuid, user_id=user_id,
+                memory_id=item_uuid, user_id=user_id, agent_id=agent_id,
             )
             if content is None:
                 return "Memory not found or access denied."
@@ -624,7 +643,7 @@ async def load_recall_memory_tool(
 
         elif item_type == "media":
             content = await media_content_collection.fetch_content_for_recall(
-                content_id=item_uuid, user_id=user_id,
+                content_id=item_uuid, user_id=user_id, agent_id=agent_id,
             )
             if content is None:
                 return "Media content not found or access denied."
@@ -634,7 +653,7 @@ async def load_recall_memory_tool(
 
         elif item_type == "chunk":
             content = await memory_chunk_collection.fetch_content_for_recall(
-                chunk_id=item_uuid, user_id=user_id,
+                chunk_id=item_uuid, user_id=user_id, agent_id=agent_id,
             )
             if content is None:
                 return "Document chunk not found or access denied."
@@ -784,6 +803,7 @@ async def load_add_memory_tool(
         try:
             similar_rows = await memories_collection.find_similar_for_dedup(
                 user_id=user_id,
+                agent_id=agent_id,
                 embedding=embedding,
                 top_k=3,
                 threshold=0.0,
@@ -791,7 +811,9 @@ async def load_add_memory_tool(
             for row in similar_rows:
                 if float(row["similarity"]) >= dedup_threshold:
                     existing_id = row["memory_id"]
-                    existing_entity = await memories_collection.get(existing_id)
+                    existing_entity = await memories_collection.get(
+                        (agent_id, existing_id),
+                    )
                     if existing_entity is None:
                         continue
                     existing_entity.content = content
