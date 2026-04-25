@@ -18,10 +18,12 @@ allowlist (always-permitted import sites):
 
 mode is controlled by the ``NATS_ENFORCEMENT_MODE`` env var:
 
-- ``strict``: violations fail the test
-- ``report`` (default during nats-wrapper-task-01 cleanup window):
-  violations log; test still passes. flips to ``strict`` once
-  sub-task 6 (migration sweep) lands and the catalog is empty.
+- ``strict`` (default after nats-migration-agents-task-01 closeout):
+  violations fail the test. enabled once the migration sweep
+  emptied the catalog across all four repos.
+- ``report``: violations log; test still passes. retained for
+  short-term cleanup windows when a new ad-hoc nats-py site
+  surfaces during refactor work.
 
 mirrors the partition walker / underscore walker discipline. exemption
 rationales like "internal access needed" / "tests need this" are
@@ -44,7 +46,7 @@ resolved by walking up four parents from this test file:
 enforcement -> tests -> nats -> packages -> repo root.
 """
 
-ENFORCEMENT_MODE = os.environ.get("NATS_ENFORCEMENT_MODE", "report")
+ENFORCEMENT_MODE = os.environ.get("NATS_ENFORCEMENT_MODE", "strict")
 
 
 # wrapper modules that LEGITIMATELY consume nats-py
