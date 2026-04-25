@@ -39,7 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 from uuid import UUID
 
 from threetears.core.collections.base import BaseCollection, EntityT
@@ -52,6 +52,7 @@ __all__ = [
     "DATETIME_TYPE",
     "INT_TYPE",
     "JSONB_TYPE",
+    "OnConflict",
     "PartitionEnforcementError",
     "SchemaBackedCollection",
     "STRING_TYPE",
@@ -60,6 +61,18 @@ __all__ = [
     "VECTOR_TYPE",
     "spans_partitions",
 ]
+
+# on_conflict enum values for :class:`TableSchema`.
+#
+# - ``"raise"``: emit plain INSERT with no ``ON CONFLICT`` clause; duplicate
+#   primary-key inserts surface the asyncpg ``UniqueViolationError`` directly
+#   to the caller. journal / append-only tables.
+# - ``"ignore"``: emit ``INSERT ... ON CONFLICT (pk) DO NOTHING``; duplicate
+#   primary-key inserts are silently dropped. dedup-on-redelivery tables
+#   (audit envelopes, idempotent event logs).
+# - ``"update"``: emit ``INSERT ... ON CONFLICT (pk) DO UPDATE SET <mutable>``
+#   (default). standard upsert behaviour for editable rows.
+OnConflict = Literal["raise", "ignore", "update"]
 
 log = get_logger(__name__)
 
@@ -156,16 +169,23 @@ class TableSchema:
         emits a separate UPDATE fenced on ``cas_column = $N``. when
         ``None``, the ``original_timestamp`` argument is silently
         ignored
-    :cvar append_only: when ``True``, the generator emits plain INSERT
-        with no ``ON CONFLICT`` clause. duplicate-key conflicts raise
-        from asyncpg naturally. intended for journal tables
+    :cvar on_conflict: behaviour of
+        :meth:`SchemaBackedCollection.save_to_postgres` on primary-key
+        conflict. ``"update"`` (default) emits ``ON CONFLICT (pk) DO
+        UPDATE SET <mutable>`` -- the standard upsert path. ``"raise"``
+        emits plain INSERT with no ``ON CONFLICT`` clause; duplicate
+        primary keys raise :class:`asyncpg.exceptions.UniqueViolationError`
+        from asyncpg naturally (journal / append-only tables).
+        ``"ignore"`` emits ``ON CONFLICT (pk) DO NOTHING``; duplicate
+        primary keys are silently dropped (dedup-on-redelivery tables
+        like ``audit_events`` keyed on ``(correlation_id, event_type)``)
     """
 
     name: str
     primary_key: str | tuple[str, ...]
     columns: list[Column]
     cas_column: str | None = None
-    append_only: bool = False
+    on_conflict: OnConflict = "update"
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -755,10 +775,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return result
 
     def _build_insert_sql(self) -> str:
-        """build INSERT SQL (with or without ON CONFLICT per schema).
+        """build INSERT SQL with the conflict clause selected by schema.
 
         column order matches :attr:`TableSchema.columns` exactly; tests
         that assert on positional asyncpg parameters can rely on that.
+
+        branches on :attr:`TableSchema.on_conflict`:
+
+        * ``"raise"``: plain INSERT with no ON CONFLICT clause
+        * ``"ignore"``: ``INSERT ... ON CONFLICT (pk) DO NOTHING``
+        * ``"update"`` (default): ``INSERT ... ON CONFLICT (pk) DO
+          UPDATE SET <mutable>``; falls back to ``DO NOTHING`` when
+          every non-pk column is immutable so existing rows are not
+          clobbered
 
         :return: parameterized INSERT SQL
         :rtype: str
@@ -768,10 +797,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         col_names = ", ".join(c.name for c in cols)
         placeholders = ", ".join(self._render_param(c, i + 1) for i, c in enumerate(cols))
         sql = f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})"
-        if schema.append_only:
+        pk_cols = ", ".join(schema.pk_columns)
+        if schema.on_conflict == "raise":
             result = sql
+        elif schema.on_conflict == "ignore":
+            result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         else:
-            pk_cols = ", ".join(schema.pk_columns)
             mutable = schema.mutable_columns()
             if mutable:
                 set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable)
@@ -993,21 +1024,25 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         behaviour branches on schema configuration:
 
-        * ``append_only=True``: INSERT only, no ``ON CONFLICT``;
+        * ``on_conflict="raise"``: INSERT only, no ``ON CONFLICT``;
           duplicate-key conflicts raise from asyncpg naturally
-        * ``cas_column`` set AND ``original_timestamp is not None``:
-          emit UPDATE fenced on ``cas_column``; returns 0 on fence
-          mismatch (:class:`~threetears.core.exceptions.ConcurrentModificationError`
+        * ``on_conflict="ignore"``: ``INSERT ... ON CONFLICT DO NOTHING``;
+          duplicate-key conflicts silently dropped
+        * ``cas_column`` set AND ``original_timestamp is not None`` AND
+          ``on_conflict="update"``: emit UPDATE fenced on ``cas_column``;
+          returns 0 on fence mismatch
+          (:class:`~threetears.core.exceptions.ConcurrentModificationError`
           surfaces from the caller)
-        * otherwise: upsert via INSERT ... ON CONFLICT (pk) DO UPDATE
+        * otherwise: upsert via ``INSERT ... ON CONFLICT (pk) DO UPDATE``
 
         :param data: row payload keyed by column name
         :ptype data: dict[str, Any]
         :param original_timestamp: pre-mutation CAS fence value; ignored
-            when :attr:`TableSchema.cas_column` is ``None``
+            when :attr:`TableSchema.cas_column` is ``None`` or when
+            :attr:`TableSchema.on_conflict` is not ``"update"``
         :ptype original_timestamp: datetime | None
-        :return: rows affected reported by asyncpg (0 on CAS failure, 1
-            on success)
+        :return: rows affected reported by asyncpg (0 on CAS failure or
+            ON CONFLICT DO NOTHING miss, 1 on success)
         :rtype: int
         """
         result: int
@@ -1015,9 +1050,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = 0
         else:
             schema = self.schema
-            if schema.cas_column is not None and original_timestamp is not None and not schema.append_only:
+            cas_eligible = (
+                schema.cas_column is not None
+                and original_timestamp is not None
+                and schema.on_conflict == "update"
+            )
+            if cas_eligible:
                 sql = self._build_cas_update_sql()
-                params = self._build_cas_params(data, original_timestamp)
+                params = self._build_cas_params(data, original_timestamp)  # type: ignore[arg-type]
             else:
                 sql = self._build_insert_sql()
                 params = self._build_insert_params(data)

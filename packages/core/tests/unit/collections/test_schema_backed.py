@@ -92,7 +92,7 @@ class _JournalCollection(SchemaBackedCollection[_StubEntity]):
             Column("event", STRING_TYPE),
             Column("date_created", DATETIME_TYPE, immutable=True),
         ],
-        append_only=True,
+        on_conflict="raise",
     )
 
     @property
@@ -529,8 +529,8 @@ class TestInsertSqlShape:
         assert "::vector" in sql
 
     @pytest.mark.asyncio
-    async def test_append_only_has_no_on_conflict(self) -> None:
-        """append-only tables get plain INSERT only."""
+    async def test_on_conflict_raise_has_no_on_conflict(self) -> None:
+        """on_conflict='raise' tables get plain INSERT only."""
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _JournalCollection(_registry(pool), _config(), nats_client=_nats())
@@ -544,6 +544,47 @@ class TestInsertSqlShape:
         sql = pool.calls[0][1]
         assert "INSERT INTO journal" in sql
         assert "ON CONFLICT" not in sql
+
+    @pytest.mark.asyncio
+    async def test_on_conflict_ignore_emits_do_nothing(self) -> None:
+        """on_conflict='ignore' tables emit ON CONFLICT (pk) DO NOTHING."""
+
+        class _DedupCollection(SchemaBackedCollection[_StubEntity]):
+            """dedup-on-redelivery variant."""
+
+            primary_key_column: str = "id"
+            schema = TableSchema(
+                name="dedup",
+                primary_key="id",
+                columns=[
+                    Column("id", UUID_TYPE),
+                    Column("event", STRING_TYPE),
+                    Column("date_created", DATETIME_TYPE, immutable=True),
+                ],
+                on_conflict="ignore",
+            )
+
+            @property
+            def table_name(self) -> str:
+                return "dedup"
+
+            @property
+            def entity_class(self) -> type[_StubEntity]:
+                return _StubEntity
+
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _DedupCollection(_registry(pool), _config(), nats_client=_nats())
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "event": "hello",
+                "date_created": datetime.now(UTC),
+            },
+        )
+        sql = pool.calls[0][1]
+        assert "INSERT INTO dedup" in sql
+        assert "ON CONFLICT (id) DO NOTHING" in sql
 
     @pytest.mark.asyncio
     async def test_composite_pk_on_conflict_uses_both_columns(self) -> None:
