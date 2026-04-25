@@ -31,6 +31,11 @@ from threetears.agent.memory.entities import MemoryEntity
 def _make_metadata() -> MetaData:
     """build a SQLite-compatible MetaData mirror of the memories table.
 
+    collections-task-04 made ``agent_id`` part of the composite primary
+    key on ``memories``; the L1 metadata mirrors that so
+    :class:`SQLiteBackend` keys rows on the full ``(agent_id,
+    memory_id)`` tuple just like L3 does.
+
     :return: SQLAlchemy metadata
     :rtype: MetaData
     """
@@ -38,8 +43,8 @@ def _make_metadata() -> MetaData:
     Table(
         "memories",
         metadata,
+        Column("agent_id", String(255), primary_key=True),
         Column("memory_id", String(255), primary_key=True),
-        Column("agent_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("conversation_id", String(255)),
@@ -83,6 +88,14 @@ def _sample_data() -> dict:
 def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
     """Create a mock asyncpg pool backed by an in-memory dict.
 
+    collections-task-04 partitioned the memories table on ``agent_id``
+    and rewrote the primary key to the composite ``(agent_id,
+    memory_id)``. the mock continues to key its in-memory dict by
+    ``memory_id`` (UNIQUE constraint preserved on the table) so test
+    setup stays terse, but every fetch / fetchval / fetch path now
+    branches on the leading ``agent_id`` parameter the SQL emits and
+    filters accordingly.
+
     :param store: initial pool contents keyed by memory_id string
     :ptype store: dict[str, dict] | None
     :return: asyncpg-shape mock
@@ -93,12 +106,29 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
     pg = AsyncMock()
 
     async def _fetchrow(query: str, *args: object) -> dict | None:
-        entity_id = args[0] if args else None
-        return store.get(str(entity_id))
+        # composite-pk fetch: SQL is ``WHERE agent_id = $1 AND memory_id = $2``
+        # so ``args`` is ``(agent_id, memory_id)``; lookup keyed by
+        # memory_id (the UNIQUE side) keeps the mock terse but still
+        # filters on agent_id explicitly.
+        if "agent_id = $1" in query and len(args) >= 2:
+            agent_id = str(args[0])
+            memory_id = str(args[1])
+            row = store.get(memory_id)
+            if row is None or str(row.get("agent_id")) != agent_id:
+                return None
+            return row
+        # fetch_content_for_recall: agent_id, memory_id, user_id
+        return store.get(str(args[0]) if args else None)
 
     async def _fetchval(query: str, *args: object) -> bool:
-        user_id = str(args[0]) if args else None
-        return any(str(row.get("user_id")) == user_id for row in store.values())
+        # count_by_user query: agent_id $1, user_id $2
+        agent_id = str(args[0]) if args else None
+        user_id = str(args[1]) if len(args) > 1 else None
+        return any(
+            str(row.get("agent_id")) == agent_id
+            and str(row.get("user_id")) == user_id
+            for row in store.values()
+        )
 
     async def _execute(query: str, *args: object) -> str:
         if "INSERT" in query:
@@ -122,31 +152,43 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
             store[str(data["memory_id"])] = data
             return "INSERT 0 1"
         elif "UPDATE" in query:
-            entity_id = str(args[0])
-            existing = store.get(entity_id)
-            if existing is None:
+            # composite-pk CAS: $1=agent_id, $2=memory_id, then
+            # mutable column values, with the CAS fence as the last
+            # parameter.
+            agent_id = str(args[0])
+            memory_id = str(args[1])
+            existing = store.get(memory_id)
+            if existing is None or str(existing.get("agent_id")) != agent_id:
                 return "UPDATE 0"
-            if len(args) > 6 and args[6] is not None:
-                if existing.get("date_updated") != args[6]:
-                    return "UPDATE 0"
-            existing["content"] = args[1]
-            existing["embedding"] = args[2]
-            existing["is_deleted"] = args[3]
-            existing["date_deleted"] = args[4]
-            existing["date_updated"] = args[5]
+            cas_fence = args[-1]
+            if cas_fence is not None and existing.get("date_updated") != cas_fence:
+                return "UPDATE 0"
+            # mutable columns in declared order:
+            # content, embedding, is_deleted, date_deleted, date_updated
+            existing["content"] = args[2]
+            existing["embedding"] = args[3]
+            existing["is_deleted"] = args[4]
+            existing["date_deleted"] = args[5]
+            existing["date_updated"] = args[6]
             return "UPDATE 1"
         elif "DELETE" in query:
-            entity_id = str(args[0])
-            store.pop(entity_id, None)
+            # composite-pk delete: $1=agent_id, $2=memory_id
+            memory_id = str(args[1] if len(args) > 1 else args[0])
+            store.pop(memory_id, None)
             return "DELETE 1"
         return "0"
 
     async def _fetch(query: str, *args: object) -> list[dict]:
-        user_id = str(args[0]) if args else None
+        # find_by_user: agent_id $1, customer_id $2, user_id $3
+        agent_id = str(args[0]) if args else None
+        user_id = str(args[2]) if len(args) > 2 else None
         include_deleted = "is_deleted" not in query
         results = []
         for row in store.values():
-            if str(row.get("user_id")) == user_id:
+            if (
+                str(row.get("agent_id")) == agent_id
+                and str(row.get("user_id")) == user_id
+            ):
                 if include_deleted or not row.get("is_deleted", False):
                     results.append(dict(row))
         return results
@@ -250,9 +292,9 @@ class TestMemoriesCollectionGet:
 
         data = _sample_data()
         l1_data = {k: str(v) if isinstance(v, uuid.UUID) else v for k, v in data.items()}
-        coll.write_to_cache_sync(l1_data, "memory_id")
+        coll.write_to_cache_sync(l1_data, ("agent_id", "memory_id"))
 
-        entity = await coll.get(data["memory_id"])
+        entity = await coll.get((data["agent_id"], data["memory_id"]))
 
         assert entity is not None
         assert entity.content == "User prefers dark mode"
@@ -275,11 +317,13 @@ class TestMemoriesCollectionGet:
             nats_client=nats,
         )
 
-        entity = await coll.get(data["memory_id"])
+        entity = await coll.get((data["agent_id"], data["memory_id"]))
 
         assert entity is not None
         assert entity.type_memory == "preference"
-        assert f"memories.{data['memory_id']}" in nats.store
+        assert any(
+            str(data["memory_id"]) in key for key in nats.store
+        )
 
     async def test_all_miss_returns_none(
         self,
@@ -293,7 +337,7 @@ class TestMemoriesCollectionGet:
             authorizer=permissive_memory_authorizer,
         )
 
-        entity = await coll.get(uuid.uuid7())
+        entity = await coll.get((uuid.uuid7(), uuid.uuid7()))
         assert entity is None
 
 
@@ -339,7 +383,7 @@ class TestMemoriesCollectionSave:
             authorizer=permissive_memory_authorizer,
         )
 
-        entity = await coll.get(data["memory_id"])
+        entity = await coll.get((data["agent_id"], data["memory_id"]))
         assert entity is not None
 
         entity.content = "Updated preference"
@@ -367,8 +411,9 @@ class TestMemoriesCollectionDelete:
             nats_client=nats,
         )
 
-        await coll.get(data["memory_id"])
-        result = await coll.delete(data["memory_id"])
+        pk = (data["agent_id"], data["memory_id"])
+        await coll.get(pk)
+        result = await coll.delete(pk)
 
         assert result is True
         assert str(data["memory_id"]) not in pg_store
@@ -391,7 +436,7 @@ class TestMemoriesCollectionSoftDelete:
             authorizer=permissive_memory_authorizer,
         )
 
-        entity = await coll.get(data["memory_id"])
+        entity = await coll.get((data["agent_id"], data["memory_id"]))
         assert entity is not None
 
         await coll.soft_delete(entity)
@@ -408,10 +453,16 @@ class TestMemoriesCollectionFindByUser:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         user_id = uuid.uuid7()
+        agent_id = uuid.uuid7()
+        customer_id = uuid.uuid7()
         data1 = _sample_data()
         data1["user_id"] = user_id
+        data1["agent_id"] = agent_id
+        data1["customer_id"] = customer_id
         data2 = _sample_data()
         data2["user_id"] = user_id
+        data2["agent_id"] = agent_id
+        data2["customer_id"] = customer_id
         pg_store = {
             str(data1["memory_id"]): data1,
             str(data2["memory_id"]): data2,
@@ -424,7 +475,9 @@ class TestMemoriesCollectionFindByUser:
             authorizer=permissive_memory_authorizer,
         )
 
-        entities = await coll.find_by_user(user_id)
+        entities = await coll.find_by_user(
+            user_id, agent_id=agent_id, customer_id=customer_id,
+        )
 
         assert len(entities) == 2
         assert all(isinstance(e, MemoryEntity) for e in entities)
@@ -436,11 +489,17 @@ class TestMemoriesCollectionFindByUser:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         user_id = uuid.uuid7()
+        agent_id = uuid.uuid7()
+        customer_id = uuid.uuid7()
         data1 = _sample_data()
         data1["user_id"] = user_id
+        data1["agent_id"] = agent_id
+        data1["customer_id"] = customer_id
         data1["is_deleted"] = False
         data2 = _sample_data()
         data2["user_id"] = user_id
+        data2["agent_id"] = agent_id
+        data2["customer_id"] = customer_id
         data2["is_deleted"] = True
         pg_store = {
             str(data1["memory_id"]): data1,
@@ -454,7 +513,12 @@ class TestMemoriesCollectionFindByUser:
             authorizer=permissive_memory_authorizer,
         )
 
-        entities = await coll.find_by_user(user_id, include_deleted=False)
+        entities = await coll.find_by_user(
+            user_id,
+            include_deleted=False,
+            agent_id=agent_id,
+            customer_id=customer_id,
+        )
 
         assert len(entities) == 1
 
@@ -465,11 +529,17 @@ class TestMemoriesCollectionFindByUser:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         user_id = uuid.uuid7()
+        agent_id = uuid.uuid7()
+        customer_id = uuid.uuid7()
         data1 = _sample_data()
         data1["user_id"] = user_id
+        data1["agent_id"] = agent_id
+        data1["customer_id"] = customer_id
         data1["is_deleted"] = False
         data2 = _sample_data()
         data2["user_id"] = user_id
+        data2["agent_id"] = agent_id
+        data2["customer_id"] = customer_id
         data2["is_deleted"] = True
         pg_store = {
             str(data1["memory_id"]): data1,
@@ -483,7 +553,12 @@ class TestMemoriesCollectionFindByUser:
             authorizer=permissive_memory_authorizer,
         )
 
-        entities = await coll.find_by_user(user_id, include_deleted=True)
+        entities = await coll.find_by_user(
+            user_id,
+            include_deleted=True,
+            agent_id=agent_id,
+            customer_id=customer_id,
+        )
 
         assert len(entities) == 2
 
@@ -581,7 +656,7 @@ class TestMemoriesCollectionTableName:
             config_always,
             authorizer=permissive_memory_authorizer,
         )
-        assert coll.primary_key_column == "memory_id"
+        assert coll.primary_key_column == ("agent_id", "memory_id")
 
 
 class TestMemoriesCollectionCountByUser:
@@ -601,7 +676,9 @@ class TestMemoriesCollectionCountByUser:
             authorizer=permissive_memory_authorizer,
         )
 
-        result = await coll.count_by_user(data["user_id"])
+        result = await coll.count_by_user(
+            data["user_id"], agent_id=data["agent_id"],
+        )
         assert result is True
 
     async def test_count_by_user_absent(
@@ -616,5 +693,5 @@ class TestMemoriesCollectionCountByUser:
             authorizer=permissive_memory_authorizer,
         )
 
-        result = await coll.count_by_user(uuid.uuid7())
+        result = await coll.count_by_user(uuid.uuid7(), agent_id=uuid.uuid7())
         assert result is False

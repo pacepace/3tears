@@ -181,6 +181,10 @@ class TestLoadAddMemoryTool:
             ]
 
         async def _fetchrow(query: str, *args):
+            # composite-pk fetch: SQL is ``WHERE agent_id = $1 AND memory_id = $2``
+            # so ``args`` is ``(agent_id, memory_id)``.
+            if len(args) >= 2 and str(args[1]) == str(existing_id):
+                return existing_row
             if args and str(args[0]) == str(existing_id):
                 return existing_row
             return None

@@ -268,11 +268,12 @@ class TestMemoriesCollectionAgainstLiveSchema:
 
             user_id = uuid.uuid4()
             agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             vec = [0.1] * 1024
             data_common = {
                 "agent_id": agent_id,
-                "customer_id": uuid.uuid4(),
+                "customer_id": customer_id,
                 "user_id": user_id,
                 "conversation_id": uuid.uuid4(),
                 "message_id_source": uuid.uuid4(),
@@ -292,7 +293,9 @@ class TestMemoriesCollectionAgainstLiveSchema:
             await coll.save_entity(entity_a)
             await coll.save_entity(entity_b)
 
-            entities = await coll.find_by_user(user_id)
+            entities = await coll.find_by_user(
+                user_id, agent_id=agent_id, customer_id=customer_id,
+            )
             contents = {e.content for e in entities}
             assert contents == {"mem A", "mem B"}
 
@@ -327,11 +330,13 @@ class TestMemoriesCollectionAgainstLiveSchema:
 
             user_id = uuid.uuid4()
             mid = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             data = {
                 "memory_id": mid,
-                "agent_id": uuid.uuid4(),
-                "customer_id": uuid.uuid4(),
+                "agent_id": agent_id,
+                "customer_id": customer_id,
                 "user_id": user_id,
                 "conversation_id": uuid.uuid4(),
                 "message_id_source": uuid.uuid4(),
@@ -356,10 +361,17 @@ class TestMemoriesCollectionAgainstLiveSchema:
                 later,
             )
 
-            visible = await coll.find_by_user(user_id)
+            visible = await coll.find_by_user(
+                user_id, agent_id=agent_id, customer_id=customer_id,
+            )
             assert visible == []
 
-            all_mem = await coll.find_by_user(user_id, include_deleted=True)
+            all_mem = await coll.find_by_user(
+                user_id,
+                include_deleted=True,
+                agent_id=agent_id,
+                customer_id=customer_id,
+            )
             assert len(all_mem) == 1
         finally:
             await pool.close()
@@ -390,6 +402,8 @@ class TestMemoryRetrieverAgainstLiveSchema:
         pool = await _make_pool(url, schema)
         try:
             user_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             vec = [0.1] * 1024
             vec_str = json.dumps(vec)
@@ -401,8 +415,8 @@ class TestMemoryRetrieverAgainstLiveSchema:
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'preference', $7, NULL, "
                 "$8::vector, FALSE, $9, $9)",
                 uuid.uuid4(),
-                uuid.uuid4(),
-                uuid.uuid4(),
+                agent_id,
+                customer_id,
                 user_id,
                 uuid.uuid4(),
                 uuid.uuid4(),
@@ -424,7 +438,10 @@ class TestMemoryRetrieverAgainstLiveSchema:
                 memory_chunk_collection=chunks,
             )
             context = await retriever.retrieve(
-                user_id, "What does user prefer programming?"
+                user_id,
+                "What does user prefer programming?",
+                agent_id=agent_id,
+                customer_id=customer_id,
             )
             assert context is not None
             assert "Rust" in context
@@ -647,8 +664,8 @@ class TestMemoryToolsAgainstLiveSchema:
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, "
                 "$8::vector, FALSE, $9, $9)",
                 mid,
-                uuid.uuid4(),
-                uuid.uuid4(),
+                agent_id,
+                customer_id,
                 user_id,
                 uuid.uuid4(),
                 uuid.uuid4(),

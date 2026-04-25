@@ -53,13 +53,18 @@ pytestmark = pytest.mark.integration
 
 
 def _build_l1_metadata() -> MetaData:
-    """build an L1 mirror of the four memory tables."""
+    """build an L1 mirror of the four memory tables.
+
+    collections-task-04 partitioned every memory table on ``agent_id``;
+    L1 keys mirror the composite PK shape so SQLite addresses rows the
+    same way L3 does.
+    """
     meta = MetaData()
     Table(
         "memories",
         meta,
+        Column("agent_id", String(255), primary_key=True),
         Column("memory_id", String(255), primary_key=True),
-        Column("agent_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("conversation_id", String(255)),
@@ -76,8 +81,8 @@ def _build_l1_metadata() -> MetaData:
     Table(
         "media",
         meta,
+        Column("agent_id", String(255), primary_key=True),
         Column("media_id", String(255), primary_key=True),
-        Column("agent_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("media_category", String(64)),
@@ -88,9 +93,9 @@ def _build_l1_metadata() -> MetaData:
     Table(
         "media_content",
         meta,
+        Column("agent_id", String(255), primary_key=True),
         Column("content_id", String(255), primary_key=True),
         Column("media_id", String(255)),
-        Column("agent_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("content_type", String(64)),
@@ -102,9 +107,9 @@ def _build_l1_metadata() -> MetaData:
     Table(
         "memory_chunks",
         meta,
+        Column("agent_id", String(255), primary_key=True),
         Column("chunk_id", String(255), primary_key=True),
         Column("media_id", String(255)),
-        Column("agent_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("content", Text),
@@ -191,10 +196,11 @@ class TestMemoryCollectionsL1:
 
             user_id = uuid.uuid4()
             mid = uuid.uuid4()
+            agent_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             data = {
                 "memory_id": mid,
-                "agent_id": uuid.uuid4(),
+                "agent_id": agent_id,
                 "customer_id": uuid.uuid4(),
                 "user_id": user_id,
                 "conversation_id": uuid.uuid4(),
@@ -212,12 +218,16 @@ class TestMemoryCollectionsL1:
             await memories.save_entity(entity)
 
             # L1 populated — direct backend probe confirms
-            row = l1.select_by_id("memories", str(mid), "memory_id")
+            row = l1.select_by_id(
+                "memories",
+                (str(agent_id), str(mid)),
+                ("agent_id", "memory_id"),
+            )
             assert row is not None
             assert row["content"] == "cached content"
 
             # .get() returns from L1 without hitting L3
-            entity2 = await memories.get(mid)
+            entity2 = await memories.get((agent_id, mid))
             assert entity2 is not None
             assert entity2.content == "cached content"
         finally:
@@ -237,10 +247,11 @@ class TestMemoryCollectionsL1:
             )
 
             media_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             data = {
                 "media_id": media_id,
-                "agent_id": uuid.uuid4(),
+                "agent_id": agent_id,
                 "customer_id": uuid.uuid4(),
                 "user_id": uuid.uuid4(),
                 "media_category": "image",
@@ -251,11 +262,15 @@ class TestMemoryCollectionsL1:
             entity = media.create(data)
             await media.save_entity(entity)
 
-            row = l1.select_by_id("media", str(media_id), "media_id")
+            row = l1.select_by_id(
+                "media",
+                (str(agent_id), str(media_id)),
+                ("agent_id", "media_id"),
+            )
             assert row is not None
             assert row["media_category"] == "image"
 
-            entity2 = await media.get(media_id)
+            entity2 = await media.get((agent_id, media_id))
             assert entity2 is not None
             assert entity2.media_category == "image"
         finally:
@@ -276,11 +291,12 @@ class TestMemoryCollectionsL1:
 
             # seed a media parent first (FK)
             media_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             media_entity = media.create(
                 {
                     "media_id": media_id,
-                    "agent_id": uuid.uuid4(),
+                    "agent_id": agent_id,
                     "customer_id": uuid.uuid4(),
                     "user_id": uuid.uuid4(),
                     "media_category": "document",
@@ -295,7 +311,7 @@ class TestMemoryCollectionsL1:
             mc_data = {
                 "content_id": content_id,
                 "media_id": media_id,
-                "agent_id": uuid.uuid4(),
+                "agent_id": agent_id,
                 "customer_id": uuid.uuid4(),
                 "user_id": uuid.uuid4(),
                 "content_type": "ocr",
@@ -308,12 +324,14 @@ class TestMemoryCollectionsL1:
             await media_content.save_entity(mc_entity)
 
             row = l1.select_by_id(
-                "media_content", str(content_id), "content_id",
+                "media_content",
+                (str(agent_id), str(content_id)),
+                ("agent_id", "content_id"),
             )
             assert row is not None
             assert row["content"] == "cached media content"
 
-            entity2 = await media_content.get(content_id)
+            entity2 = await media_content.get((agent_id, content_id))
             assert entity2 is not None
             assert entity2.content == "cached media content"
         finally:
@@ -333,11 +351,12 @@ class TestMemoryCollectionsL1:
             )
 
             chunk_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
             chunk_data = {
                 "chunk_id": chunk_id,
                 "media_id": None,
-                "agent_id": uuid.uuid4(),
+                "agent_id": agent_id,
                 "customer_id": uuid.uuid4(),
                 "user_id": uuid.uuid4(),
                 "content": "cached chunk content",
@@ -350,11 +369,15 @@ class TestMemoryCollectionsL1:
             entity = chunks.create(chunk_data)
             await chunks.save_entity(entity)
 
-            row = l1.select_by_id("memory_chunks", str(chunk_id), "chunk_id")
+            row = l1.select_by_id(
+                "memory_chunks",
+                (str(agent_id), str(chunk_id)),
+                ("agent_id", "chunk_id"),
+            )
             assert row is not None
             assert row["content"] == "cached chunk content"
 
-            entity2 = await chunks.get(chunk_id)
+            entity2 = await chunks.get((agent_id, chunk_id))
             assert entity2 is not None
             assert entity2.content == "cached chunk content"
         finally:
@@ -378,6 +401,8 @@ class TestHybridSearchRegression:
             )
 
             user_id = uuid.uuid4()
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
             now = datetime.now(UTC).replace(tzinfo=None)
 
             # seed via Collection save_entity path so we go through the
@@ -386,8 +411,8 @@ class TestHybridSearchRegression:
             for i in range(3):
                 data = {
                     "memory_id": uuid.uuid4(),
-                    "agent_id": uuid.uuid4(),
-                    "customer_id": uuid.uuid4(),
+                    "agent_id": agent_id,
+                    "customer_id": customer_id,
                     "user_id": user_id,
                     "conversation_id": uuid.uuid4(),
                     "message_id_source": uuid.uuid4(),
@@ -405,6 +430,8 @@ class TestHybridSearchRegression:
 
             results = await memories.hybrid_search(
                 user_id=user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
                 embedding=vec,
                 user_text="memory",
                 top_k=10,

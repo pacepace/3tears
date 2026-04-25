@@ -74,19 +74,10 @@ _PARTITIONED_TABLES: dict[str, str] = {
 # tables whose partition-column hits stay in report-only mode while a
 # follow-up shard finishes the cross-agent retrieval surface. each entry
 # carries a one-line rationale tying back to the deferring task.
-_DEFERRED_TABLES: dict[str, str] = {
-    # rationale: deferred to collections-task-04 -- memories cross-agent
-    # retrieval shard. memory hybrid-search SQL composes scope predicates
-    # via _build_user_scope_clause; the static walker cannot prove the
-    # rendered SQL hits the partition column, so the entire memories
-    # surface stays in report mode until task-04 lands the dynamic
-    # composite-pk routing layer.
-    "memories": "deferred to collections-task-04",
-    "media": "deferred to collections-task-04",
-    "media_content": "deferred to collections-task-04",
-    "memory_chunks": "deferred to collections-task-04",
-    "conversation_memory_refs": "deferred to collections-task-04",
-}
+# collections-task-04 cleared the memories surface; this map is empty
+# now and the partition guard runs in strict mode against every
+# partitioned table.
+_DEFERRED_TABLES: dict[str, str] = {}
 
 
 # packages to walk. additions go here when a new repo / package is
@@ -155,14 +146,35 @@ def _collect_string_literals(tree: ast.AST) -> list[tuple[str, int]]:
     concatenation (the parser folds those into a single Constant
     already, so no special handling needed).
 
+    constants nested inside a JoinedStr (the literal fragments
+    interleaved with FormattedValue parts of an f-string) are NOT
+    collected separately — they were already absorbed into the joined
+    string the walker emits for the parent JoinedStr. collecting them
+    again would surface false positives where the partial literal
+    "SELECT * FROM memories WHERE " (the constant fragment before
+    a ``{scope_conditions}`` interpolation) lacks the partition column
+    by construction even though the joined string does carry the
+    `__PLACEHOLDER__` marker the partition guard accepts.
+
     :param tree: AST root
     :ptype tree: ast.AST
     :return: list of (literal text, line number) pairs
     :rtype: list[tuple[str, int]]
     """
+    # find every Constant that is a child of a JoinedStr so we can
+    # skip them in the outer walk (they're already accounted for via
+    # the JoinedStr's joined emission).
+    joined_constants: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr):
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    joined_constants.add(id(v))
     results: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in joined_constants:
+                continue
             results.append((node.value, node.lineno))
         elif isinstance(node, ast.JoinedStr):
             parts: list[str] = []

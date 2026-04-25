@@ -418,7 +418,12 @@ class TestMemoryRetrieverE2E:
         )
         retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(uuid.uuid7(), "Tell me about Python")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "Tell me about Python",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is not None
         assert "User likes Python" in result
         assert "Things you remember" in result
@@ -430,7 +435,12 @@ class TestMemoryRetrieverE2E:
         pool = AsyncMock()
         retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(uuid.uuid7(), "  ")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "  ",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None
 
     async def test_embedding_failure_returns_none(
@@ -474,7 +484,12 @@ class TestMemoryRetrieverE2E:
             memory_chunk_collection=chunks,
         )
 
-        result = await retriever.retrieve(uuid.uuid7(), "hello world")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "hello world",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None
 
     async def test_no_results_returns_none(
@@ -484,5 +499,10 @@ class TestMemoryRetrieverE2E:
         pool = _make_mock_pool()
         retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(uuid.uuid7(), "hello world")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "hello world",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None
