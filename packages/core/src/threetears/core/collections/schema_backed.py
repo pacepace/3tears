@@ -39,7 +39,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
-from typing import Any, ClassVar, Generic, Literal, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 from uuid import UUID
 
 from threetears.core.collections.base import BaseCollection, EntityT
@@ -626,6 +626,16 @@ class PartitionEnforcementError(TypeError):
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+@overload
+def spans_partitions(method: F) -> F: ...
+
+
+@overload
+def spans_partitions(
+    method: None = None, *, marker_only: bool = False,
+) -> Callable[[F], F]: ...
 
 
 def spans_partitions(
