@@ -33,6 +33,19 @@ version history:
 - v006 creates ``media`` + ``media_content`` tables with their own
   FTS triggers.
 - v007 creates ``memory_chunks`` with its FTS trigger.
+- v008 (collections-task-04) restores ``memories.agent_id`` /
+  ``memories.customer_id`` to NOT NULL and rewrites the primary key
+  to the composite ``(agent_id, memory_id)`` so the partition column
+  is part of every uniqueness check; ``memory_id`` keeps its
+  standalone UNIQUE constraint for child tables that reference it.
+- v009 partitions ``media`` on ``agent_id`` (NOT NULL + composite PK
+  on ``(agent_id, media_id)`` + UNIQUE on ``media_id``).
+- v010 partitions ``media_content`` on ``agent_id`` and replaces the
+  simple FK on ``media_id`` with the composite
+  ``(agent_id, media_id) REFERENCES media(agent_id, media_id)``.
+- v011 partitions ``memory_chunks`` on ``agent_id`` and replaces the
+  simple FK on ``media_id`` with the composite
+  ``(agent_id, media_id) REFERENCES media(agent_id, media_id)``.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -62,6 +75,18 @@ from threetears.agent.memory.migrations.v006_memory_media_content import (
 )
 from threetears.agent.memory.migrations.v007_memory_chunks import (
     create_memory_chunks,
+)
+from threetears.agent.memory.migrations.v008_restore_memories_agent_customer_not_null import (
+    restore_memories_agent_customer_not_null,
+)
+from threetears.agent.memory.migrations.v009_media_composite_fk import (
+    media_composite_fk,
+)
+from threetears.agent.memory.migrations.v010_media_content_composite_fk import (
+    media_content_composite_fk,
+)
+from threetears.agent.memory.migrations.v011_memory_chunks_composite_fk import (
+    memory_chunks_composite_fk,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -98,6 +123,10 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(5)(add_memory_fts)
     pkg.version(6)(create_media_tables)
     pkg.version(7)(create_memory_chunks)
+    pkg.version(8)(restore_memories_agent_customer_not_null)
+    pkg.version(9)(media_composite_fk)
+    pkg.version(10)(media_content_composite_fk)
+    pkg.version(11)(memory_chunks_composite_fk)
     runner.register(pkg)
     return pkg
 
@@ -110,6 +139,10 @@ __all__ = [
     "create_media_tables",
     "create_memories_table",
     "create_memory_chunks",
+    "media_composite_fk",
+    "media_content_composite_fk",
+    "memory_chunks_composite_fk",
     "reconcile_memory_columns",
     "register",
+    "restore_memories_agent_customer_not_null",
 ]
