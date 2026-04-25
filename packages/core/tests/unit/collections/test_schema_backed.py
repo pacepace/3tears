@@ -23,6 +23,7 @@ from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
     DATETIME_TYPE,
+    DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -125,6 +126,42 @@ class _CompositeCollection(SchemaBackedCollection[_StubEntity]):
     def table_name(self) -> str:
         """return table name."""
         return "pairs"
+
+    @property
+    def entity_class(self) -> type[_StubEntity]:
+        """return entity class."""
+        return _StubEntity
+
+
+class _TzCollection(SchemaBackedCollection[_StubEntity]):
+    """TIMESTAMPTZ-bearing collection for the DATETIMETZ_TYPE coverage.
+
+    mirrors the shape of the hub's RBAC collections (groups / roles)
+    where ``date_created`` / ``date_updated`` are TIMESTAMPTZ on the
+    L3 side and CAS rides ``date_updated``. exists so the unit tests
+    can exercise the aware-UTC write coercion (the path that
+    collections-task-03c proved was broken when DATETIMETZ_TYPE
+    columns were declared as DATETIME_TYPE -- the codec then silently
+    shifted writes by the host's local TZ offset).
+    """
+
+    primary_key_column: str = "id"
+    schema = TableSchema(
+        name="tzitems",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("name", STRING_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+        ],
+        cas_column="date_updated",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return table name."""
+        return "tzitems"
 
     @property
     def entity_class(self) -> type[_StubEntity]:
@@ -749,6 +786,94 @@ class TestWriteCoercion:
         assert args[8] == datetime(2026, 1, 2, 3, 4, 5)
 
     @pytest.mark.asyncio
+    async def test_datetimetz_keeps_aware_utc_on_insert(self) -> None:
+        """DATETIMETZ_TYPE columns bind aware-UTC, never naive.
+
+        regression coverage for collections-task-03c: asyncpg's
+        TIMESTAMPTZ codec runs ``obj.astimezone(utc)`` on every bound
+        value, which interprets a naive datetime as the host's local
+        timezone and silently shifts the wire value by the local
+        offset. binding aware-UTC makes the codec's astimezone a
+        no-op and keeps the stored instant byte-stable across hosts.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
+        aware = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+        await coll.save_to_postgres({
+            "id": uuid.uuid4(),
+            "name": "x",
+            "date_created": aware,
+            "date_updated": aware,
+        })
+        args = pool.calls[0][2]
+        # date_created at column index 2, date_updated at index 3
+        assert args[2].tzinfo is UTC
+        assert args[2] == aware
+        assert args[3].tzinfo is UTC
+        assert args[3] == aware
+
+    @pytest.mark.asyncio
+    async def test_datetimetz_naive_input_wrapped_with_utc(self) -> None:
+        """naive datetime bound to a DATETIMETZ_TYPE column is interpreted as UTC.
+
+        :class:`BaseCollection.save_entity` strips ``tzinfo`` from
+        every datetime before invoking ``save_to_postgres`` so the
+        TIMESTAMP-column path round-trips cleanly. for TIMESTAMPTZ
+        columns the per-column write coercion has to UN-strip:
+        re-wrap a naive value with ``UTC`` so asyncpg's TIMESTAMPTZ
+        codec sees an aware value and runs its ``astimezone(utc)`` as
+        a no-op. without this defensive re-wrap the strip-then-bind
+        sequence shifts the wire value by the local TZ offset.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
+        naive = datetime(2026, 1, 2, 3, 4, 5)  # naive but logically UTC
+        await coll.save_to_postgres({
+            "id": uuid.uuid4(),
+            "name": "x",
+            "date_created": naive,
+            "date_updated": naive,
+        })
+        args = pool.calls[0][2]
+        assert args[2].tzinfo is UTC
+        assert args[2] == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+        assert args[3].tzinfo is UTC
+
+    @pytest.mark.asyncio
+    async def test_datetimetz_cas_fence_keeps_aware_utc(self) -> None:
+        """CAS fence bound on a DATETIMETZ_TYPE column is aware-UTC.
+
+        the bug surfaced because the CAS predicate value flowed
+        through the same naive coercion as the column write -- the
+        predicate then mismatched the stored aware-UTC instant on
+        non-UTC hosts. this test pins the fix: the fence value is
+        aware-UTC even when the entity passes naive (the realistic
+        path because save_entity strips tzinfo before invoking
+        save_to_postgres).
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "UPDATE 1"
+        coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
+        original = datetime(2026, 1, 1, tzinfo=UTC)
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "name": "x",
+                "date_created": datetime(2026, 1, 1, tzinfo=UTC),
+                "date_updated": datetime(2026, 1, 2, tzinfo=UTC),
+            },
+            original_timestamp=original,
+        )
+        args = pool.calls[0][2]
+        # CAS fence value is the last positional arg (per
+        # _build_cas_update_sql). it must be aware-UTC so the
+        # TIMESTAMPTZ codec's astimezone(utc) is a no-op.
+        assert args[-1].tzinfo is UTC
+        assert args[-1] == original
+
+    @pytest.mark.asyncio
     async def test_missing_required_column_raises(self) -> None:
         """non-nullable columns without a data-dict entry raise KeyError."""
         pool = _RecordingPool()
@@ -898,6 +1023,44 @@ class TestReadCoercion:
         row = await coll.fetch_from_postgres(item_id)
         assert row is not None
         assert row["vec"] == [1.5, 2.5, 3.5]
+
+    @pytest.mark.asyncio
+    async def test_fetch_normalizes_datetimetz_to_aware_utc(self) -> None:
+        """DATETIMETZ_TYPE columns arriving aware (asyncpg's typical
+        TIMESTAMPTZ shape) pass through with ``tzinfo`` retained.
+
+        also covers the defensive path where a value flows in naive
+        from a non-asyncpg source (L2 JSON rehydration through a
+        bespoke path, hand-rolled proxy pool round-tripping through
+        string isoformat) -- the read coercion wraps with ``UTC`` so
+        downstream callers always see a stable aware-UTC shape.
+        """
+        pool = _RecordingPool()
+        item_id = uuid.uuid4()
+        aware = datetime(2026, 1, 1, tzinfo=UTC)
+        pool.fetchrow_row = {
+            "id": item_id,
+            "name": "x",
+            "date_created": aware,
+            "date_updated": aware,
+        }
+        coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
+        row = await coll.fetch_from_postgres(item_id)
+        assert row is not None
+        assert row["date_created"].tzinfo is UTC
+        assert row["date_updated"].tzinfo is UTC
+
+        # naive arrival path -- defensive normalization
+        pool.fetchrow_row = {
+            "id": item_id,
+            "name": "x",
+            "date_created": datetime(2026, 1, 1),
+            "date_updated": datetime(2026, 1, 1),
+        }
+        row = await coll.fetch_from_postgres(item_id)
+        assert row is not None
+        assert row["date_created"].tzinfo is UTC
+        assert row["date_updated"].tzinfo is UTC
 
 
 # ---------------------------------------------------------------------------

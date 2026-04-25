@@ -50,6 +50,7 @@ __all__ = [
     "BYTES_TYPE",
     "Column",
     "DATETIME_TYPE",
+    "DATETIMETZ_TYPE",
     "INT_TYPE",
     "JSONB_TYPE",
     "OnConflict",
@@ -84,7 +85,30 @@ log = get_logger(__name__)
 # rather than by runtime ``isinstance`` checks.
 UUID_TYPE = "uuid"
 STRING_TYPE = "string"
+# DATETIME_TYPE: column declared as ``TIMESTAMP`` (timezone-naive
+# wall-clock) in the L3 DDL. asyncpg's TIMESTAMP codec accepts naive
+# datetimes only and rejects aware ones with ``DataError``; the write
+# coercion strips ``tzinfo`` (after projecting any aware input to UTC)
+# so callers that hold aware-UTC datetimes throughout the platform
+# (per CLAUDE.md datetime rule) round-trip cleanly.
 DATETIME_TYPE = "datetime"
+# DATETIMETZ_TYPE: column declared as ``TIMESTAMPTZ`` (timezone-aware
+# instant) in the L3 DDL. asyncpg's TIMESTAMPTZ codec calls
+# ``obj.astimezone(utc)`` on every value, which interprets a naive
+# datetime as the **client's local timezone** (not UTC). that means
+# stripping ``tzinfo`` before binding silently shifts the wire value
+# by the developer's local TZ offset on non-UTC hosts -- the row gets
+# stored as ``utc + local_offset``, the next read returns
+# ``utc + local_offset``, and any subsequent CAS predicate that strips
+# tzinfo again shifts a second time and fails to match. the write
+# coercion for this type ensures a tz-aware UTC datetime regardless of
+# input shape (naive inputs are wrapped with ``UTC``; aware inputs are
+# normalized via ``astimezone(UTC)``) so the codec's
+# ``obj.astimezone(utc)`` is a no-op and the wire value is the true
+# UTC instant. read coercion ensures the returned value carries
+# ``tzinfo=UTC`` so downstream callers (and CAS predicates that
+# round-trip through this collection) see a stable shape.
+DATETIMETZ_TYPE = "datetimetz"
 JSONB_TYPE = "jsonb"
 BYTES_TYPE = "bytes"
 INT_TYPE = "int"
@@ -362,6 +386,75 @@ def _coerce_datetime_for_write(value: Any) -> datetime | None:
     return result
 
 
+def _coerce_datetime_for_write_tz(value: Any) -> datetime | None:
+    """coerce a datetime to aware-UTC form for TIMESTAMPTZ column writes.
+
+    asyncpg's TIMESTAMPTZ codec runs ``obj.astimezone(utc)`` on every
+    bound parameter. for a naive input the call interprets the wall-
+    clock value as the **client's local timezone**, so a naive value
+    that semantically represents UTC (which is what
+    :meth:`BaseCollection.save_entity` passes after stripping ``tzinfo``
+    for the legacy TIMESTAMP path) gets shifted by the host's local
+    offset before it ever reaches the database. on non-UTC hosts that
+    leak silently corrupts every TIMESTAMPTZ write and breaks every
+    subsequent CAS predicate (the predicate value goes through the
+    same shift on the way out).
+
+    this coercion eliminates the ambiguity by ensuring the value is
+    aware-UTC before binding: a naive input is interpreted as UTC
+    (``replace(tzinfo=UTC)``) -- the contract for
+    :class:`SchemaBackedCollection` is "core code holds aware UTC
+    everywhere; if a value reached this point as naive it was a
+    UTC-projected naive (per CLAUDE.md datetime rule)". an aware
+    input is normalized via ``astimezone(UTC)`` so non-UTC tzinfo
+    values (rare but legal) flatten to UTC before the codec runs its
+    own no-op ``astimezone(utc)``. ``None`` pass-through.
+
+    :param value: datetime input (aware / naive) or ``None``
+    :ptype value: Any
+    :return: aware-UTC datetime or ``None``
+    :rtype: datetime | None
+    """
+    if value is None:
+        result: datetime | None = None
+    elif not isinstance(value, datetime):
+        result = value
+    elif value.tzinfo is None:
+        result = value.replace(tzinfo=UTC)
+    else:
+        result = value.astimezone(UTC)
+    return result
+
+
+def _coerce_datetime_for_read_tz(value: Any) -> datetime | None:
+    """coerce a TIMESTAMPTZ read value to aware-UTC form.
+
+    asyncpg's TIMESTAMPTZ decoder already returns aware-UTC datetimes,
+    so the typical path is a passthrough. this coercion exists for the
+    edge cases where a TIMESTAMPTZ value re-enters the read normalizer
+    from a non-asyncpg source (L2 JSON deserialization, hand-rolled
+    proxy pools that round-trip through string isoformat) and arrives
+    naive. naive values are wrapped with ``UTC`` (the column type
+    asserts "this is a UTC instant"), aware values are normalized to
+    UTC tzinfo so equality comparisons against asyncpg-decoded values
+    are byte-stable. ``None`` pass-through.
+
+    :param value: datetime input (aware / naive) or ``None``
+    :ptype value: Any
+    :return: aware-UTC datetime or ``None``
+    :rtype: datetime | None
+    """
+    if value is None:
+        result: datetime | None = None
+    elif not isinstance(value, datetime):
+        result = value
+    elif value.tzinfo is None:
+        result = value.replace(tzinfo=UTC)
+    else:
+        result = value.astimezone(UTC)
+    return result
+
+
 def _encode_vector(value: Any) -> str | None:
     """encode a vector for pgvector's ``::vector`` cast.
 
@@ -491,6 +584,12 @@ def _decode_l2_value(column: Column, value: Any) -> Any:
         result = UUID(value)
     elif column.column_type == DATETIME_TYPE and isinstance(value, str):
         result = datetime.fromisoformat(value)
+    elif column.column_type == DATETIMETZ_TYPE and isinstance(value, str):
+        # isoformat strings carrying ``+00:00`` round-trip to aware UTC
+        # naturally; strings without an offset (legacy L2 payloads from
+        # before this column type existed) are interpreted as UTC.
+        parsed = datetime.fromisoformat(value)
+        result = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     elif column.column_type == BYTES_TYPE and isinstance(value, str):
         result = base64.b64decode(value.encode("ascii"))
     elif column.column_type == BOOL_TYPE and isinstance(value, (bool, int)):
@@ -885,6 +984,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = _coerce_uuid(value)
         elif column.column_type == DATETIME_TYPE:
             result = _coerce_datetime_for_write(value)
+        elif column.column_type == DATETIMETZ_TYPE:
+            result = _coerce_datetime_for_write_tz(value)
         elif column.column_type == JSONB_TYPE:
             result = _encode_jsonb(value)
         elif column.column_type == VECTOR_TYPE:
@@ -909,6 +1010,14 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             # always coerce to stdlib UUID -- pgproto UUID is a subclass
             # that SQLite's binder rejects
             result = _coerce_uuid(value)
+        elif column.column_type == DATETIMETZ_TYPE:
+            # asyncpg's TIMESTAMPTZ decoder returns aware-UTC datetimes
+            # already; the coercion is a defensive normalization that
+            # also handles the edge case where a value flows in from a
+            # non-asyncpg source (L2 JSON, hand-rolled proxy pool) and
+            # arrives naive. result is always aware-UTC -- callers can
+            # rely on a stable shape downstream.
+            result = _coerce_datetime_for_read_tz(value)
         elif column.column_type == JSONB_TYPE:
             result = _decode_jsonb(value)
         elif column.column_type == VECTOR_TYPE:
