@@ -31,6 +31,7 @@ from threetears.nats.subjects import (
     set_default_namespace,
 )
 from threetears.nats.transport import (
+    IncomingMessage,
     MessageCallback,
     RawMessageCallback,
     StreamTransport,
@@ -52,7 +53,8 @@ __all__ = [
     "set_default_namespace",
     # KV
     "NatsKvBucket",
-    # transport Protocols
+    # transport Protocols + message envelope
+    "IncomingMessage",
     "MessageCallback",
     "RawMessageCallback",
     "StreamTransport",

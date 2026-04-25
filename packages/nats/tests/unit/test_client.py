@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from threetears.nats import (
     DEFAULT_NAMESPACE,
+    IncomingMessage,
     NatsClient,
     PublishError,
     RequestError,
@@ -181,7 +182,7 @@ async def test_subscribe_is_kw_only() -> None:
     """positional subscribe args raise TypeError — the cb-as-positional footgun is impossible."""
     client, _ = _make_client()
 
-    async def handler(_data: bytes) -> None:
+    async def handler(_msg: IncomingMessage) -> None:
         pass
 
     with pytest.raises(TypeError):
@@ -292,7 +293,7 @@ async def test_subscribe_with_queue_group() -> None:
     """queue group is forwarded to underlying subscribe."""
     client, fake = _make_client()
 
-    async def handler(_data: bytes) -> None:
+    async def handler(_msg: IncomingMessage) -> None:
         pass
 
     await client.subscribe(
@@ -308,7 +309,7 @@ async def test_subscribe_max_in_flight_invalid() -> None:
     """max_in_flight=0 is rejected."""
     client, _ = _make_client()
 
-    async def handler(_data: bytes) -> None:
+    async def handler(_msg: IncomingMessage) -> None:
         pass
 
     with pytest.raises(SubscribeError):
@@ -372,7 +373,7 @@ async def test_unsubscribe_marks_closed_and_drops_underlying() -> None:
     """unsubscribe is idempotent and unsubscribes underlying."""
     client, fake = _make_client()
 
-    async def handler(_data: bytes) -> None:
+    async def handler(_msg: IncomingMessage) -> None:
         pass
 
     sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
@@ -390,13 +391,50 @@ async def test_shutdown_drains_subscriptions() -> None:
     """shutdown unsubscribes everything and drains underlying client."""
     client, fake = _make_client()
 
-    async def handler(_data: bytes) -> None:
+    async def handler(_msg: IncomingMessage) -> None:
         pass
 
     sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
     await client.shutdown(drain_timeout=timedelta(seconds=1))
     assert sub.is_closed is True
     assert fake.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_receives_incoming_message_envelope() -> None:
+    """raw subscribe callback receives :class:`IncomingMessage` carrying data + reply_subject."""
+    client, fake = _make_client()
+    received: list[IncomingMessage] = []
+
+    async def handler(msg: IncomingMessage) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    fake_sub = fake.subscribed[0][2]
+    await fake_sub.queue.put(_FakeMsg(data=b"payload-bytes", reply="aibots._INBOX.42"))
+    await asyncio.sleep(0.05)
+    assert len(received) == 1
+    assert received[0].data == b"payload-bytes"
+    assert received[0].reply_subject == "aibots._INBOX.42"
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_reply_subject_none_for_pubsub() -> None:
+    """raw subscribe callback receives ``reply_subject=None`` when producer skipped reply-to."""
+    client, fake = _make_client()
+    received: list[IncomingMessage] = []
+
+    async def handler(msg: IncomingMessage) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    fake_sub = fake.subscribed[0][2]
+    # _FakeMsg.reply defaults to "" — the wrapper coerces empty to None
+    await fake_sub.queue.put(_FakeMsg(data=b"pubsub"))
+    await asyncio.sleep(0.05)
+    assert received == [IncomingMessage(data=b"pubsub", reply_subject=None)]
+    await client.unsubscribe(sub)
 
 
 @pytest.mark.asyncio

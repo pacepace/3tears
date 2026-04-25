@@ -8,6 +8,7 @@ rather than emulate the full client surface.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, TypeVar, runtime_checkable
 
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
     from threetears.nats.subjects import Subject
 
 __all__ = [
+    "IncomingMessage",
     "MessageCallback",
     "RawMessageCallback",
     "StreamTransport",
@@ -24,6 +26,27 @@ __all__ = [
 
 
 _M = TypeVar("_M", bound="BaseModel")
+
+
+@dataclass(frozen=True, slots=True)
+class IncomingMessage:
+    """opaque envelope handed to a :class:`NatsClient.subscribe` callback.
+
+    exposes the two surfaces a request/reply server needs: payload bytes
+    and the per-request reply subject (the opaque inbox nats-py
+    populates on inbound requests). ``reply_subject`` is ``None`` when
+    the producer published without a reply-to (pub/sub fire-and-forget
+    pattern), so handlers that mix request/reply with pub/sub can
+    branch on its presence rather than guessing.
+
+    :param data: raw payload bytes
+    :ptype data: bytes
+    :param reply_subject: opaque reply subject for request/reply patterns; ``None`` for pub/sub
+    :ptype reply_subject: str | None
+    """
+
+    data: bytes
+    reply_subject: str | None
 
 
 MessageCallback = Callable[["BaseModel"], Awaitable[None]]
@@ -35,12 +58,14 @@ deadletter dispatcher when the subscription has
 """
 
 
-RawMessageCallback = Callable[[bytes], Awaitable[None]]
+RawMessageCallback = Callable[[IncomingMessage], Awaitable[None]]
 """raw subscribe callback shape for :meth:`NatsClient.subscribe`.
 
-receives the message payload as bytes; the caller is responsible for
-decoding. high-throughput sites that bypass Pydantic validation use
-this shape.
+receives the inbound :class:`IncomingMessage` envelope so request/reply
+servers can read both the payload bytes (``msg.data``) and the
+per-request reply subject (``msg.reply_subject``). pure pub/sub
+subscribers ignore ``reply_subject``; handlers that respond via
+:meth:`NatsClient.publish_reply` consume it.
 """
 
 

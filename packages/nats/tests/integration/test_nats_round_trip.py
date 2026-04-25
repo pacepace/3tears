@@ -19,7 +19,7 @@ from datetime import timedelta
 import pytest
 from pydantic import BaseModel
 
-from threetears.nats import NatsClient, Subjects, set_default_namespace
+from threetears.nats import IncomingMessage, NatsClient, Subjects, set_default_namespace
 
 
 pytestmark = pytest.mark.integration
@@ -94,31 +94,14 @@ async def test_request_response_round_trip(nats_url: str) -> None:
         client_name="rr",
     ) as nc:
 
-        async def responder(data: bytes) -> None:
-            req = _Echo.model_validate_json(data)
-            # publish via reply path is not exercised by handler-only-bytes;
-            # instead mirror the request via a simple subscribe-and-respond pattern
-            # using the underlying client's reply support.
-            # The fake here uses a placeholder; integration responders subscribe
-            # via the nats-py reply mechanism.
-
-        # Use raw subscribe to subscribe with reply-aware handler
-        from nats.aio.msg import Msg
-
-        async def raw_handler(msg: Msg) -> None:
+        async def responder(msg: IncomingMessage) -> None:
+            """decode request bytes, build reply, publish via reply_subject."""
             req = _Echo.model_validate_json(msg.data)
             response = _Echo(text=f"echo: {req.text}", n=req.n + 1)
-            if msg.reply:
-                await nc.publish_reply(reply_subject=msg.reply, message=response)
+            if msg.reply_subject is not None:
+                await nc.publish_reply(reply_subject=msg.reply_subject, message=response)
 
-        # subscribe via the underlying client (request/reply needs the message
-        # object directly, not just the bytes)
-        async def dispatch_loop() -> None:
-            async for msg in raw_sub.messages:
-                await raw_handler(msg)
-
-        raw_sub = await nc.raw.subscribe(Subjects.tools_call().path)
-        task = asyncio.create_task(dispatch_loop())
+        sub = await nc.subscribe(subject=Subjects.tools_call(), cb=responder)
         try:
             await asyncio.sleep(0.1)
             response = await nc.request(
@@ -129,8 +112,7 @@ async def test_request_response_round_trip(nats_url: str) -> None:
             )
             assert response == _Echo(text="echo: ping", n=2)
         finally:
-            task.cancel()
-            await raw_sub.unsubscribe()
+            await nc.unsubscribe(sub)
 
 
 @pytest.mark.asyncio

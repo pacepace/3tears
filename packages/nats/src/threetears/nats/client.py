@@ -75,6 +75,9 @@ if TYPE_CHECKING:
     from threetears.nats.kv import NatsKvBucket
     from threetears.nats.transport import MessageCallback, RawMessageCallback
 
+
+from threetears.nats.transport import IncomingMessage
+
 __all__ = [
     "DEFAULT_REQUEST_TIMEOUT",
     "DEFAULT_STARTUP_TIMEOUT",
@@ -572,15 +575,18 @@ class NatsClient:
         max_in_flight: int | None = None,
         deadletter_on_error: bool = True,
     ) -> Subscription:
-        """subscribe to subject with raw-bytes callback.
+        """subscribe to subject with raw-bytes + reply-subject callback.
 
         kw-only; positional callback impossible. high-throughput sites
         that bypass Pydantic decoding use this; everything else should
-        prefer :meth:`subscribe_typed`.
+        prefer :meth:`subscribe_typed`. callback receives an
+        :class:`IncomingMessage` envelope so request/reply handlers can
+        read ``msg.reply_subject`` and respond via
+        :meth:`publish_reply`.
 
         :param subject: subject (point or wildcard pattern) to subscribe on
         :ptype subject: Subject
-        :param cb: async callback receiving raw payload bytes
+        :param cb: async callback receiving :class:`IncomingMessage` envelope
         :ptype cb: RawMessageCallback
         :param queue: optional queue group; messages on the subject load-balance across all subscribers in the same queue
         :ptype queue: str | None
@@ -700,7 +706,11 @@ class NatsClient:
                     await typed_cb(parsed)
                 else:
                     assert raw_cb is not None
-                    await raw_cb(msg.data)
+                    incoming = IncomingMessage(
+                        data=msg.data,
+                        reply_subject=msg.reply or None,
+                    )
+                    await raw_cb(incoming)
             except ValidationError as exc:
                 log.warning(
                     "subscribe_typed validation failure",
