@@ -164,6 +164,19 @@ def _has_replay_guard(literal: str, column: str) -> bool:
     if where_match is None:
         return False
     where_clause = where_match.group(1)
+    # WHERE id = $N (or = '<uuid>'::uuid, or = ANY(...)) is a structural
+    # single-row replay guard: the predicate scopes the UPDATE to one
+    # row whose identity is supplied by the Python caller. re-running
+    # the migration with the same caller-supplied id is a no-op
+    # because the SET produces the same value. this matches the
+    # ``UNIQUE (id)`` reasoning the partition walker uses for SELECT.
+    by_id_re = re.compile(
+        r"\b(?:[a-zA-Z_]\w*\.)?id\s*=\s*"
+        r"(?:\$\d+\b|'[^']+'::uuid|ANY\s*\()",
+        re.IGNORECASE,
+    )
+    if by_id_re.search(where_clause) is not None:
+        return True
     column_re = re.escape(column)
     patterns = (
         rf"\b{column_re}\s+IS\s+NULL\b",
@@ -364,37 +377,45 @@ def _collect_string_literals(tree: ast.AST) -> list[tuple[str, int]]:
     return results
 
 
+_SQL_LEADING_TOKENS = (
+    "ALTER",
+    "CREATE",
+    "DROP",
+    "UPDATE",
+    "INSERT",
+    "DELETE",
+    "TRUNCATE",
+    "DO",
+    "WITH",
+    "SELECT",
+)
+
+
 def _is_sql_literal(literal: str) -> bool:
     """
-    return ``True`` when the literal looks like SQL.
+    return ``True`` when the literal is SQL-shaped (vs prose / log message).
 
-    used to filter docstrings / prose from the walker's input. a literal
-    counts as SQL when it contains at least one SQL keyword (DDL or DML
-    or DO).
+    used to filter docstrings, log strings, and other prose from the
+    walker's input. a literal counts as SQL when its first non-whitespace
+    token (after the leading newline / indent block stripped) is a SQL
+    leading verb.
+
+    log messages like ``"v026: datasource has NULL customer_id; skipping
+    -- operator must UPDATE ..."`` are NOT SQL even though they
+    contain the word ``UPDATE``.
 
     :param literal: candidate literal
     :ptype literal: str
-    :return: whether the literal is SQL-shaped
+    :return: whether the literal starts with a SQL leading token
     :rtype: bool
     """
-    upper = literal.upper()
-    sql_tokens = (
-        "ALTER TABLE",
-        "CREATE TABLE",
-        "CREATE INDEX",
-        "CREATE UNIQUE INDEX",
-        "DROP TABLE",
-        "DROP INDEX",
-        "DROP CONSTRAINT",
-        "ADD CONSTRAINT",
-        "ADD COLUMN",
-        "UPDATE ",
-        "INSERT INTO",
-        "DELETE FROM",
-        "TRUNCATE TABLE",
-        "DO $$",
+    stripped = literal.lstrip()
+    upper = stripped.upper()
+    # tolerate a leading SQL comment / DECLARE block.
+    result = any(
+        upper.startswith(tok + " ") or upper.startswith(tok + "\n")
+        for tok in _SQL_LEADING_TOKENS
     )
-    result = any(token in upper for token in sql_tokens)
     return result
 
 
@@ -418,6 +439,30 @@ def _matches_any(patterns: tuple[re.Pattern[str], ...], literal: str) -> bool:
     return result
 
 
+def _strip_pl_pgsql_string_literals(literal: str) -> str:
+    """
+    return ``literal`` with single-quoted SQL string literals replaced by ``''``.
+
+    pl/pgsql ``RAISE EXCEPTION 'message ... UPDATE ...'`` constructs
+    embed prose into a SQL string literal that should NOT count as DML
+    for the M-1 mixing check. similarly, a CHECK expression like
+    ``c IN ('a', 'b')`` embeds enum values that should not be parsed
+    as SQL keywords. this helper strips every single-quoted segment
+    so the regex scanners only see structural SQL.
+
+    :param literal: SQL string literal under inspection
+    :ptype literal: str
+    :return: literal with single-quoted segments collapsed
+    :rtype: str
+    """
+    # match single-quoted strings, including doubled-quote escapes
+    # (`'don''t'` is one literal). dotall so newlines inside multi-line
+    # error messages do not terminate the match early.
+    pattern = re.compile(r"'(?:''|[^'])*'", re.DOTALL)
+    result = pattern.sub("''", literal)
+    return result
+
+
 def _evaluate_m1_ddl_dml_mixing(
     literal: str,
     path: Path,
@@ -425,6 +470,10 @@ def _evaluate_m1_ddl_dml_mixing(
 ) -> MigrationViolation | None:
     """
     return an M-1 violation when the literal mixes DDL and DML inside a DO block.
+
+    string literals inside the SQL (``RAISE EXCEPTION 'message...'``)
+    are stripped before pattern matching so prose inside an error
+    message does not produce a false positive.
 
     :param literal: SQL string literal
     :ptype literal: str
@@ -438,8 +487,9 @@ def _evaluate_m1_ddl_dml_mixing(
     result: MigrationViolation | None = None
     if _DO_BLOCK_PATTERN.search(literal) is None:
         return result
-    has_ddl = _matches_any(_DDL_PATTERNS, literal)
-    has_dml = _matches_any(_DML_PATTERNS, literal)
+    structural = _strip_pl_pgsql_string_literals(literal)
+    has_ddl = _matches_any(_DDL_PATTERNS, structural)
+    has_dml = _matches_any(_DML_PATTERNS, structural)
     if has_ddl and has_dml:
         result = MigrationViolation(
             path=path,
