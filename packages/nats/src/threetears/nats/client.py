@@ -4,10 +4,11 @@
 talk to NATS. it absorbs the lifecycle, dual-phase reconnect-ceiling,
 rate-limited error logging, deadletter dispatch, typed publish, and
 JetStream KV access that previously lived in three half-overlapping
-wrappers (``aibots/hub/common/nats.py``, ``threetears.core.cache.nats``,
-``aibots_agents.runtime.nats_transport``). there is exactly one
-canonical wrapper now; :func:`from nats import` outside this module is
-flagged by the per-repo enforcement walker.
+wrappers (``aibots/hub/common/nats.py``,
+``threetears.core.cache.kv.NatsKvClient`` (formerly
+``cache.nats.NatsClient``), ``aibots_agents.runtime.nats_transport``).
+there is exactly one canonical wrapper now; :func:`from nats import`
+outside this module is flagged by the per-repo enforcement walker.
 
 design notes
 ------------

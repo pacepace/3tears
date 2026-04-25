@@ -78,9 +78,9 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
     ),
     # -- core: L1/L2 cache backends (non-serializable connection state) --
     (
-        "core/cache/nats.py",
-        "NatsClient",
-        "buckets",
+        "core/cache/kv.py",
+        "NatsKvClient",
+        "_buckets",
         "live NATS KV connection references, non-serializable",
     ),
     (
