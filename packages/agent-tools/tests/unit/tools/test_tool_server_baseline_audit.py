@@ -114,7 +114,11 @@ def _make_msg(payload: dict[str, Any] | bytes) -> IncomingMessage:
         data = payload
     else:
         data = json.dumps(payload).encode("utf-8")
-    return IncomingMessage(data=data, reply_subject="_INBOX.audit-test")
+    return IncomingMessage(
+        data=data,
+        reply_subject="_INBOX.audit-test",
+        subject="aibots.tools.internal.test-pod",
+    )
 
 
 def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any]]:

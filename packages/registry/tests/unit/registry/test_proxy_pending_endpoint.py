@@ -82,7 +82,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply)
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.call")
 
 
 def _make_entry_with_pending_endpoint(

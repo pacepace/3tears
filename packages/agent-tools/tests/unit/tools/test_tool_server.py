@@ -154,6 +154,7 @@ def _make_nats_msg(
     return IncomingMessage(
         data=json.dumps(data).encode("utf-8"),
         reply_subject=reply_subject,
+        subject="aibots.tools.internal.test-pod",
     )
 
 
@@ -484,7 +485,11 @@ class TestToolServerHandleCall:
         """handle_call returns error response for invalid JSON payload."""
         server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
 
-        msg = IncomingMessage(data=b"not valid json", reply_subject="_INBOX.test")
+        msg = IncomingMessage(
+            data=b"not valid json",
+            reply_subject="_INBOX.test",
+            subject="aibots.tools.internal.test-pod",
+        )
         rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
@@ -782,7 +787,11 @@ class TestToolServerProbe:
         )
         rec = _attach_recording_nc(server)
 
-        msg = IncomingMessage(data=b'{"pod_id": "ack-pod"}', reply_subject="_INBOX.probe")
+        msg = IncomingMessage(
+            data=b'{"pod_id": "ack-pod"}',
+            reply_subject="_INBOX.probe",
+            subject="aibots.tools.probe.ack-pod",
+        )
 
         await server.handle_probe(msg)
 
@@ -803,7 +812,11 @@ class TestToolServerProbe:
         )
         rec = _attach_recording_nc(server)
 
-        msg = IncomingMessage(data=b'{"pod_id": "ready-pod"}', reply_subject="_INBOX.probe")
+        msg = IncomingMessage(
+            data=b'{"pod_id": "ready-pod"}',
+            reply_subject="_INBOX.probe",
+            subject="aibots.tools.probe.ready-pod",
+        )
 
         await server.handle_probe(msg)
 

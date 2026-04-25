@@ -32,21 +32,29 @@ _M = TypeVar("_M", bound="BaseModel")
 class IncomingMessage:
     """opaque envelope handed to a :class:`NatsClient.subscribe` callback.
 
-    exposes the two surfaces a request/reply server needs: payload bytes
-    and the per-request reply subject (the opaque inbox nats-py
-    populates on inbound requests). ``reply_subject`` is ``None`` when
-    the producer published without a reply-to (pub/sub fire-and-forget
+    exposes the three surfaces a request/reply or wildcard subscribe
+    server needs: payload bytes, the per-request reply subject (the
+    opaque inbox nats-py populates on inbound requests), and the
+    matched subject string. ``reply_subject`` is ``None`` when the
+    producer published without a reply-to (pub/sub fire-and-forget
     pattern), so handlers that mix request/reply with pub/sub can
-    branch on its presence rather than guessing.
+    branch on its presence rather than guessing. ``subject`` carries
+    the concrete subject the message arrived on, which is what
+    distinguishes one delivery from another for wildcard subscribers
+    (``{ns}.audit.>``, ``{ns}.agents.route.>``, etc.) — they read
+    ``subject`` to extract the wildcard segment(s).
 
     :param data: raw payload bytes
     :ptype data: bytes
     :param reply_subject: opaque reply subject for request/reply patterns; ``None`` for pub/sub
     :ptype reply_subject: str | None
+    :param subject: concrete subject the message arrived on (matters for wildcard subscribers)
+    :ptype subject: str
     """
 
     data: bytes
     reply_subject: str | None
+    subject: str
 
 
 MessageCallback = Callable[["BaseModel"], Awaitable[None]]

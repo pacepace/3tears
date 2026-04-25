@@ -70,7 +70,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply)
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.discover")
 
 
 def _make_discover_request(

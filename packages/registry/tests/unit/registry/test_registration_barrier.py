@@ -73,7 +73,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply)
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.register")
 
 
 # -- state machine tests --

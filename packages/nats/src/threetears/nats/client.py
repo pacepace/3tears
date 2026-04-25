@@ -536,6 +536,37 @@ class NatsClient:
         except Exception as exc:
             raise PublishError(f"publish_reply failed: subject={reply_subject}: {exc}") from exc
 
+    async def publish_raw_reply(
+        self,
+        *,
+        reply_subject: str,
+        payload: bytes,
+    ) -> None:
+        """publish raw bytes to a request's reply subject.
+
+        explicit escape hatch for sites that already serialize upstream
+        — most commonly transparent proxies that forward an opaque
+        downstream response back to the original requester without
+        decoding the body. prefer :meth:`publish_reply` for sites that
+        own the response type.
+
+        :param reply_subject: opaque reply subject from request envelope
+        :ptype reply_subject: str
+        :param payload: pre-serialized response bytes
+        :ptype payload: bytes
+        :return: nothing
+        :rtype: None
+        :raises PublishError: if underlying publish fails
+        """
+        if not reply_subject:
+            raise PublishError("reply_subject must be non-empty")
+        try:
+            await self._raw.publish(reply_subject, payload)
+        except Exception as exc:
+            raise PublishError(
+                f"publish_raw_reply failed: subject={reply_subject}: {exc}"
+            ) from exc
+
     async def _publish_bytes(
         self,
         *,
@@ -710,6 +741,7 @@ class NatsClient:
                     incoming = IncomingMessage(
                         data=msg.data,
                         reply_subject=msg.reply or None,
+                        subject=msg.subject,
                     )
                     await raw_cb(incoming)
             except ValidationError as exc:

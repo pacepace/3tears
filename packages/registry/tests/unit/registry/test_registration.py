@@ -100,6 +100,7 @@ def _make_manifest(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
+    subject: str = "aibots.tools.register",
 ) -> IncomingMessage:
     """build a wrapper :class:`IncomingMessage` envelope.
 
@@ -107,10 +108,12 @@ def _make_nats_msg(
     :ptype data: bytes
     :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
+    :param subject: concrete subject the message arrived on
+    :ptype subject: str
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply)
+    return IncomingMessage(data=data, reply_subject=reply, subject=subject)
 
 
 def _make_entry(

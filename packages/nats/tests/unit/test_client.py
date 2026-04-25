@@ -58,11 +58,12 @@ class _FakeSubscription:
 
 
 class _FakeMsg:
-    """tiny stand-in for nats.aio.msg.Msg with .data and .reply."""
+    """tiny stand-in for nats.aio.msg.Msg with .data, .reply, and .subject."""
 
-    def __init__(self, *, data: bytes, reply: str = "") -> None:
+    def __init__(self, *, data: bytes, reply: str = "", subject: str = "aibots.tools.call") -> None:
         self.data = data
         self.reply = reply
+        self.subject = subject
 
 
 class _FakeNatsPyClient:
@@ -433,7 +434,9 @@ async def test_subscribe_callback_reply_subject_none_for_pubsub() -> None:
     # _FakeMsg.reply defaults to "" — the wrapper coerces empty to None
     await fake_sub.queue.put(_FakeMsg(data=b"pubsub"))
     await asyncio.sleep(0.05)
-    assert received == [IncomingMessage(data=b"pubsub", reply_subject=None)]
+    assert received == [
+        IncomingMessage(data=b"pubsub", reply_subject=None, subject="aibots.tools.call"),
+    ]
     await client.unsubscribe(sub)
 
 
