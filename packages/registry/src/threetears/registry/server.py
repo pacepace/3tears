@@ -14,10 +14,9 @@ import asyncio
 import os
 import signal
 
-from nats.aio.client import Client as NatsClient
-
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.nats import NatsClient
 from threetears.observe import get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
@@ -42,56 +41,26 @@ _logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str) -> NatsClient:
-    """connect to NATS server at given URL with reconnection support.
+async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+    """connect to NATS server via the canonical :class:`NatsClient` wrapper.
 
-    configures infinite reconnect attempts with 2-second wait between
-    attempts so registry survives NATS infrastructure restarts.
+    delegates to :meth:`NatsClient.connect` which handles dual-phase
+    reconnect, rate-limited error logging, and namespace binding on
+    :class:`Subjects`. tests patch this symbol to swap a fake
+    transport into :class:`RegistryServer.serve`.
 
     :param url: NATS server URL
     :ptype url: str
-    :return: connected NATS client
+    :param namespace: NATS subject namespace prefix bound on the wrapper
+    :ptype namespace: str
+    :return: connected canonical wrapper client
     :rtype: NatsClient
     """
-    nc = NatsClient()
-    await nc.connect(
-        url,
-        max_reconnect_attempts=-1,
-        reconnect_time_wait=2,
-        reconnected_cb=_on_reconnected,
-        disconnected_cb=_on_disconnected,
-        error_cb=_on_error,
+    return await NatsClient.connect(
+        nats_url=url,
+        nats_subject_namespace=namespace,
+        client_name="registry",
     )
-    return nc
-
-
-async def _on_reconnected() -> None:
-    """log NATS reconnection event.
-
-    :return: nothing
-    :rtype: None
-    """
-    _logger.info("NATS reconnected")
-
-
-async def _on_disconnected() -> None:
-    """log NATS disconnection event.
-
-    :return: nothing
-    :rtype: None
-    """
-    _logger.warning("NATS disconnected, attempting reconnect")
-
-
-async def _on_error(exc: Exception) -> None:
-    """log NATS client error.
-
-    :param exc: exception from NATS client
-    :ptype exc: Exception
-    :return: nothing
-    :rtype: None
-    """
-    _logger.error("NATS error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +129,7 @@ class RegistryServer:
         self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
-        self._nc: NatsClient | None = None
+        self._nc: "NatsClient | None" = None
         self._catalog = ToolCatalog()
         self._collection_registry: CollectionRegistry | None = None
         self._heartbeat_collection: HeartbeatCollection | None = None
@@ -177,13 +146,20 @@ class RegistryServer:
         handlers, installs signal handlers, and blocks until
         shutdown is requested.
         """
-        self._nc = await nats_connect(self._nats_url)
+        self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
         _logger.info(
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},
         )
 
-        js = self._nc.jetstream()
+        # the catalog KV bootstrap predates the wrapper's
+        # :meth:`NatsClient.kv_bucket` cache; we still go through the
+        # raw JetStream context here because the catalog persists JSON
+        # blobs keyed by tool full_name and is loaded with a custom
+        # iterator (``ToolCatalog.load_from_kv``) that expects a raw
+        # nats-py KeyValue handle. migrating the catalog persistence
+        # to NatsKvBucket is tracked as follow-up work.
+        js = self._nc.jetstream_context()
 
         authorizer = self._authorizer
         if authorizer is not None and hasattr(authorizer, "initialize"):
@@ -335,8 +311,7 @@ class RegistryServer:
             await self._registration_handler.stop()
 
         if self._nc is not None:
-            await self._nc.drain()
-            await self._nc.close()
+            await self._nc.shutdown()
 
         self._shutdown_event.set()
         _logger.info("registry server stopped")

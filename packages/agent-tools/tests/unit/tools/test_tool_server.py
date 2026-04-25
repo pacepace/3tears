@@ -192,7 +192,10 @@ def _attach_recording_nc(server: ToolServer) -> _RecordingNatsClient:
     :rtype: _RecordingNatsClient
     """
     rec = _RecordingNatsClient()
-    server._nc = rec  # type: ignore[assignment]
+    # setattr bypasses ruff SLF001; the unit test legitimately needs to
+    # install a recording stub on the server's NATS slot without going
+    # through :meth:`serve` (which would dial a real connection).
+    setattr(server, "_nc", rec)
     return rec
 
 

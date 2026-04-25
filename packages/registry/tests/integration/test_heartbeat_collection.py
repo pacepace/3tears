@@ -127,17 +127,32 @@ class InMemoryNatsBus:
             await cb(data)
         return True
 
-    async def subscribe(self, subject: str, callback: Any) -> None:
+    async def subscribe(
+        self,
+        subject: str,
+        callback: Any | None = None,
+        *,
+        cb: Any | None = None,
+    ) -> None:
         """register a callback for a subject.
+
+        accepts both legacy positional ``callback`` and the new
+        kw-only ``cb=`` shape used by
+        :meth:`CollectionRegistry.start_invalidation_listener`.
 
         :param subject: NATS subject
         :ptype subject: str
-        :param callback: async callable invoked with message bytes
-        :ptype callback: Any
+        :param callback: async callable (positional, legacy)
+        :ptype callback: Any | None
+        :param cb: async callable (kw-only, current)
+        :ptype cb: Any | None
         :return: nothing
         :rtype: None
         """
-        self._subscribers.setdefault(subject, []).append(callback)
+        chosen = cb if cb is not None else callback
+        if chosen is None:
+            raise TypeError("subscribe requires either callback or cb")
+        self._subscribers.setdefault(subject, []).append(chosen)
 
 
 def _make_pod(

@@ -14,6 +14,7 @@ from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.server import HeartbeatMessage, RegistrationManifest, ToolManifestEntry
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.nats import IncomingMessage, RequestError, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, DiscoveryHandler
 from threetears.registry.health import HeartbeatSubscriber
@@ -21,8 +22,14 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
-from threetears.registry.registration import RegistrationHandler
+from threetears.registry.registration import ProbeResponse, RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("test")
 
 
 def _build_heartbeat_subscriber(
@@ -85,20 +92,17 @@ def _make_manifest(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-) -> MagicMock:
-    """create mock NATS message.
+) -> IncomingMessage:
+    """build a wrapper :class:`IncomingMessage` envelope.
 
     :param data: raw message payload bytes
     :ptype data: bytes
-    :param reply: optional reply subject
+    :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
-    :return: mock NATS message
-    :rtype: MagicMock
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = data
-    msg.reply = reply
-    return msg
+    return IncomingMessage(data=data, reply_subject=reply)
 
 
 _DEFAULT_CORRELATION_ID = UUID("01948a00-6666-7000-8000-0000abcdef01")
@@ -155,8 +159,8 @@ def _make_tool_response(
     success: bool = True,
     content: str = "result: 4",
     correlation_id: UUID | None = None,
-) -> MagicMock:
-    """create mock NATS reply from tool pod.
+) -> bytes:
+    """build the bytes :meth:`NatsClient.request_raw` returns for a tool reply.
 
     :param success: whether tool execution succeeded
     :ptype success: bool
@@ -165,8 +169,8 @@ def _make_tool_response(
     :param correlation_id: request correlation identifier stamped on
         the echoed :class:`CallContext`; defaults to a stable UUID
     :ptype correlation_id: UUID | None
-    :return: mock NATS reply message
-    :rtype: MagicMock
+    :return: serialized response bytes
+    :rtype: bytes
     """
     effective_correlation_id = (
         correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
@@ -176,9 +180,7 @@ def _make_tool_response(
         content=content,
         context=CallContext(correlation_id=effective_correlation_id),
     )
-    reply = MagicMock()
-    reply.data = response.model_dump_json().encode("utf-8")
-    return reply
+    return response.model_dump_json().encode("utf-8")
 
 
 def _make_endpoint(
@@ -276,7 +278,9 @@ class TestMultiPodRegistration:
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_a)
 
-        response_a = json.loads(nc.publish.call_args[0][1])
+        response_a = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_a["success"] is True
 
         nc.reset_mock()
@@ -285,7 +289,9 @@ class TestMultiPodRegistration:
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_b)
 
-        response_b = json.loads(nc.publish.call_args[0][1])
+        response_b = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_b["success"] is True
 
         entry = catalog.get("threetears.calculator@1.0.0")
@@ -338,7 +344,9 @@ class TestMultiPodRegistration:
         msg_again = _make_nats_msg(data=manifest_again.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_again)
 
-        response = json.loads(nc.publish.call_args[0][1])
+        response = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response["success"] is True
 
         entry_after = catalog.get("threetears.calculator@1.0.0")
@@ -386,7 +394,7 @@ class TestMultiPodRouting:
 
         proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=1.0)
         nc = AsyncMock()
-        nc.request = AsyncMock(side_effect=TimeoutError("timed out"))
+        nc.request_raw = AsyncMock(side_effect=TimeoutError("timed out"))
         await proxy.start(nc)
 
         request = _make_call_request()
@@ -408,7 +416,7 @@ class TestMultiPodRouting:
 
         proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=5.0)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=_make_tool_response())
+        nc.request_raw = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)
 
         request = _make_call_request()
@@ -549,8 +557,10 @@ class TestMultiPodDiscovery:
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.calculator"
@@ -582,8 +592,10 @@ class TestMultiPodDiscovery:
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
         await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["status"] == "available"

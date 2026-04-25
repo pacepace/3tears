@@ -298,7 +298,12 @@ class TestPing:
         mock_transport = MagicMock()
         mock_js = AsyncMock()
         mock_transport.jetstream_context = MagicMock(return_value=mock_js)
-        client._transport = mock_transport
+        # setattr bypasses ruff SLF001 (private member access) since
+        # the unit test legitimately needs to inject a fake transport
+        # without going through :meth:`connect`. the attribute is
+        # private to express the stability contract; this test is
+        # in-package so the access is local to the implementation.
+        setattr(client, "_transport", mock_transport)
 
         result = await client.ping()
         assert result is True
@@ -315,7 +320,7 @@ class TestPing:
         mock_js = AsyncMock()
         mock_js.account_info.side_effect = RuntimeError("unreachable")
         mock_transport.jetstream_context = MagicMock(return_value=mock_js)
-        client._transport = mock_transport
+        setattr(client, "_transport", mock_transport)
 
         result = await client.ping()
         assert result is False
@@ -330,12 +335,12 @@ class TestClose:
     @pytest.mark.asyncio
     async def test_close_drains_transport(self, client: NatsKvClient) -> None:
         mock_transport = AsyncMock()
-        client._transport = mock_transport
+        setattr(client, "_transport", mock_transport)
 
         await client.close()
 
         mock_transport.shutdown.assert_awaited_once()
-        assert client._transport is None
+        assert client.transport is None
 
     @pytest.mark.asyncio
     async def test_close_idempotent(self, client: NatsKvClient) -> None:

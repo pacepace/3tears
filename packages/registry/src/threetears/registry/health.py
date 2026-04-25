@@ -26,13 +26,17 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from threetears.agent.tools.server import HeartbeatMessage
+from threetears.nats import Subjects
 from threetears.observe import get_logger
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.entities import HeartbeatEntity
 from threetears.registry.heartbeat_collection import HeartbeatCollection
+
+if TYPE_CHECKING:
+    from threetears.nats import NatsClient, Subscription
 
 __all__ = ["HeartbeatSubscriber"]
 
@@ -107,8 +111,8 @@ class HeartbeatSubscriber:
             else get_heartbeat_check_interval()
         )
         self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
-        self._nc: Any | None = None
-        self._sub: Any | None = None
+        self._nc: "NatsClient | None" = None
+        self._sub: "Subscription | None" = None
         self._check_task: asyncio.Task[None] | None = None
         self._running = False
         self._known_pod_ids: set[str] = set()
@@ -161,27 +165,33 @@ class HeartbeatSubscriber:
         """
         self._known_pod_ids.update(pod_ids)
 
-    async def start(self, nc: Any) -> None:
+    async def start(self, nc: "NatsClient") -> None:
         """start heartbeat monitoring.
 
         subscribes to the heartbeat wildcard subject and spawns the
         periodic health-check loop.
 
-        :param nc: connected NATS client
-        :ptype nc: Any
+        DQ-B7 queue-group note: heartbeat subscription is intentionally
+        NOT in a queue group -- every registry replica must observe
+        every pod's heartbeats so its local catalog stays warm. the
+        Collection's invalidation pipeline keeps cross-replica state
+        consistent.
+
+        :param nc: connected canonical NATS wrapper client
+        :ptype nc: NatsClient
         :return: nothing
         :rtype: None
         """
         self._nc = nc
         self._running = True
-        subject = f"{self._namespace}.tools.heartbeat.>"
-        self._sub = await nc.subscribe(subject, cb=self.handle_heartbeat)
+        subject = Subjects.tools_heartbeat_wildcard()
+        self._sub = await nc.subscribe(subject=subject, cb=self.handle_heartbeat)
         self._check_task = asyncio.create_task(self._health_check_loop())
         log.info(
             "heartbeat subscriber started",
             extra={
                 "extra_data": {
-                    "subject": subject,
+                    "subject": subject.path,
                     "check_interval": self._check_interval,
                     "timeout": self._timeout,
                 }
@@ -207,8 +217,8 @@ class HeartbeatSubscriber:
             except asyncio.CancelledError:
                 pass
             self._check_task = None
-        if self._sub is not None:
-            await self._sub.unsubscribe()
+        if self._sub is not None and self._nc is not None:
+            await self._nc.unsubscribe(self._sub)
             self._sub = None
         log.info("heartbeat subscriber stopped")
 
@@ -221,6 +231,12 @@ class HeartbeatSubscriber:
         directly; the name, the single ``msg`` parameter, and the lack
         of return value are part of the stability contract.
 
+        the parameter type stays ``Any`` (not :class:`IncomingMessage`)
+        because the unit tests call this handler directly with raw
+        :class:`HeartbeatMessage` -shaped wire bytes wrapped in a
+        :class:`MagicMock`; ``msg.data`` is the only field read in the
+        body.
+
         updates the pod's state in the Collection (creating it if
         this is the pod's first heartbeat), marks every endpoint for
         this pod available in the catalog, and records the pod id
@@ -230,7 +246,9 @@ class HeartbeatSubscriber:
         malformed payloads are logged and dropped; no persistent
         state is mutated.
 
-        :param msg: incoming NATS message containing heartbeat
+        :param msg: wrapper :class:`IncomingMessage` envelope OR raw
+            NATS-shaped object exposing ``.data`` (for legacy test
+            doubles)
         :ptype msg: Any
         :return: nothing
         :rtype: None

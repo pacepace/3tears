@@ -9,15 +9,20 @@ NATS request-reply.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
+from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
+
+if TYPE_CHECKING:
+    from threetears.nats import NatsClient, Subscription
 
 __all__ = [
     "CallProxy",
@@ -188,32 +193,40 @@ class CallProxy:
         self.timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
-        self._nc: Any | None = None
-        self._sub: Any | None = None
+        self._nc: "NatsClient | None" = None
+        self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
 
-    async def start(self, nc: Any) -> None:
+    async def start(self, nc: "NatsClient") -> None:
         """start listening for tool call requests.
 
-        :param nc: connected NATS client
-        :ptype nc: Any
+        DQ-B7 queue-group note: ``queue="registry"`` makes
+        ``{ns}.tools.call`` load-balance across registry replicas so
+        each agent call is handled by exactly one replica. each
+        replica's local routing strategy then selects an endpoint
+        from the shared catalog.
+
+        :param nc: connected canonical NATS wrapper client
+        :ptype nc: NatsClient
+        :return: nothing
+        :rtype: None
         """
         self._nc = nc
-        subject = f"{self._namespace}.tools.call"
+        subject = Subjects.tools_call()
         self._sub = await nc.subscribe(
-            subject,
+            subject=subject,
             queue="registry",
             cb=self.handle_call,
         )
         log.info(
             "call proxy started",
-            extra={"extra_data": {"subject": subject, "timeout": self.timeout}},
+            extra={"extra_data": {"subject": subject.path, "timeout": self.timeout}},
         )
 
     async def stop(self) -> None:
         """stop listening and drain in-flight tool call tasks."""
-        if self._sub is not None:
-            await self._sub.unsubscribe()
+        if self._sub is not None and self._nc is not None:
+            await self._nc.unsubscribe(self._sub)
             self._sub = None
         if self._active_tasks:
             log.info(
@@ -224,7 +237,7 @@ class CallProxy:
             self._active_tasks.clear()
         log.info("call proxy stopped")
 
-    async def handle_call(self, msg: Any) -> None:
+    async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler that dispatches a tool call.
 
         bound by :meth:`start` as the ``cb`` callback on
@@ -236,14 +249,14 @@ class CallProxy:
         subscription callback returns immediately, allowing
         parallel processing of multiple tool call requests.
 
-        :param msg: incoming NATS message containing call request
-        :ptype msg: Any
+        :param msg: incoming wrapper envelope containing call request
+        :ptype msg: IncomingMessage
         """
         task = asyncio.create_task(self._process_call(msg))
         self._active_tasks.add(task)
         task.add_done_callback(self._active_tasks.discard)
 
-    async def _process_call(self, msg: Any) -> None:
+    async def _process_call(self, msg: IncomingMessage) -> None:
         """process tool call request concurrently.
 
         validates tool exists, selects endpoint via routing strategy,
@@ -274,10 +287,10 @@ class CallProxy:
                 error=f"malformed call request: {exc}",
                 error_code="MALFORMED_REQUEST",
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             return
 
@@ -290,7 +303,7 @@ class CallProxy:
     async def _dispatch_call(
         self,
         request: "ProxyCallRequest",
-        msg: Any,
+        msg: IncomingMessage,
     ) -> None:
         """body of :meth:`_process_call` after the logging-context bind.
 
@@ -301,9 +314,9 @@ class CallProxy:
 
         :param request: parsed + identity-bound call request
         :ptype request: ProxyCallRequest
-        :param msg: incoming NATS message (for reply subject)
-        :ptype msg: Any
-        :return: nothing; response bytes are published to ``msg.reply``
+        :param msg: incoming wrapper envelope (for reply subject)
+        :ptype msg: IncomingMessage
+        :return: nothing; response is published to ``msg.reply_subject``
             by each branch below
         :rtype: None
         """
@@ -319,10 +332,10 @@ class CallProxy:
                 error_code="MALFORMED_REQUEST",
                 context=request.context,
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             log.warning(
                 "proxy call missing agent_id in context",
@@ -364,10 +377,10 @@ class CallProxy:
                     error_code="TOOL_NOT_AUTHORIZED",
                     context=request.context,
                 )
-                if msg.reply:
-                    await self._nc.publish(
-                        msg.reply,
-                        response.model_dump_json().encode("utf-8"),
+                if msg.reply_subject is not None:
+                    await self._nc.publish_reply(
+                        reply_subject=msg.reply_subject,
+                        message=response,
                     )
                 log.warning(
                     "agent tool call denied",
@@ -393,10 +406,10 @@ class CallProxy:
                 error_code="TOOL_UNAVAILABLE",
                 context=request.context,
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             log.warning(
                 "tool not found for call",
@@ -426,10 +439,10 @@ class CallProxy:
                     error_code="TOOL_NOT_READY",
                     context=request.context,
                 )
-                if msg.reply:
-                    await self._nc.publish(
-                        msg.reply,
-                        response.model_dump_json().encode("utf-8"),
+                if msg.reply_subject is not None:
+                    await self._nc.publish_reply(
+                        reply_subject=msg.reply_subject,
+                        message=response,
                     )
                 log.warning(
                     "tool endpoints still pending probe confirmation",
@@ -450,10 +463,10 @@ class CallProxy:
                 error_code="TOOL_UNAVAILABLE",
                 context=request.context,
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             log.warning(
                 "no available endpoints for call",
@@ -479,10 +492,10 @@ class CallProxy:
             response = await self._forward_call(request, endpoint.pod_id)
         finally:
             endpoint.in_flight -= 1
-        if msg.reply:
-            await self._nc.publish(
-                msg.reply,
-                response.model_dump_json().encode("utf-8"),
+        if msg.reply_subject is not None:
+            await self._nc.publish_reply(
+                reply_subject=msg.reply_subject,
+                message=response,
             )
 
     def _resolve_timeout(self, tool_name: str, tool_version: str) -> float:
@@ -525,35 +538,51 @@ class CallProxy:
         """
         if self._nc is None:
             raise RuntimeError("_forward_call invoked before NATS connected")
-        internal_subject = f"{self._namespace}.tools.internal.{pod_id}"
+        internal_subject = Subjects.tools_internal(pod_id)
         internal_payload = _build_internal_payload(request)
         effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
         correlation_id_log = _correlation_id_str(request)
 
         try:
-            reply = await self._nc.request(
-                internal_subject,
-                internal_payload,
-                timeout=effective_timeout,
+            reply_bytes = await self._nc.request_raw(
+                subject=internal_subject,
+                payload=internal_payload,
+                timeout=timedelta(seconds=effective_timeout),
             )
-            response = ProxyCallResponse.model_validate_json(reply.data)
-        except TimeoutError:
+            response = ProxyCallResponse.model_validate_json(reply_bytes)
+        except (TimeoutError, RequestError) as exc:
+            # the wrapper raises RequestError ("timed out" / "no responders" /
+            # "connection closed") for transport-level failures; we coalesce
+            # the timeout case (which the catalog mapping cares about) and
+            # surface anything else as TOOL_UNAVAILABLE so the agent gets a
+            # well-typed response rather than a bare TOOL_TIMEOUT for a
+            # connectivity blip.
+            if isinstance(exc, RequestError) and "timed out" not in str(exc):
+                error_code = "TOOL_UNAVAILABLE"
+                error_msg = (
+                    f"tool call transport failure after "
+                    f"{effective_timeout}s: {exc}"
+                )
+            else:
+                error_code = "TOOL_TIMEOUT"
+                error_msg = f"tool call timed out after {effective_timeout}s"
             log.warning(
-                "tool call timed out",
+                "tool call failed in transport",
                 extra={
                     "extra_data": {
                         "pod_id": pod_id,
                         "tool_name": request.tool_name,
                         "correlation_id": correlation_id_log,
                         "timeout": effective_timeout,
+                        "error_code": error_code,
                     }
                 },
             )
             response = ProxyCallResponse(
                 success=False,
                 content="",
-                error=f"tool call timed out after {effective_timeout}s",
-                error_code="TOOL_TIMEOUT",
+                error=error_msg,
+                error_code=error_code,
                 context=request.context,
             )
         return response

@@ -452,15 +452,19 @@ class TestHeartbeatSubscriberLifecycle:
     @pytest.mark.asyncio
     async def test_start_subscribes_to_heartbeat_wildcard(self) -> None:
         """start subscribes to {namespace}.tools.heartbeat.>."""
+        from threetears.nats import set_default_namespace
+
+        set_default_namespace("myns")
         catalog = ToolCatalog()
         subscriber, _ = _make_subscriber(catalog=catalog, namespace="myns")
         nc = AsyncMock()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await subscriber.start(nc)
         nc.subscribe.assert_called_once()
         call_args = nc.subscribe.call_args
-        assert call_args[0][0] == "myns.tools.heartbeat.>"
+        # wrapper subscribe is kw-only with typed Subject (wildcard pattern)
+        assert call_args.kwargs["subject"].path == "myns.tools.heartbeat.>"
         await subscriber.stop()
 
     @pytest.mark.asyncio
@@ -477,14 +481,14 @@ class TestHeartbeatSubscriberLifecycle:
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:
-        """stop unsubscribes from heartbeat subject."""
+        """stop unsubscribes from heartbeat subject through the wrapper."""
         subscriber, _ = _make_subscriber()
         nc = AsyncMock()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await subscriber.start(nc)
         await subscriber.stop()
-        mock_sub.unsubscribe.assert_called_once()
+        nc.unsubscribe.assert_called_once_with(mock_sub)
 
 
 # -- HeartbeatCollection-only tests --

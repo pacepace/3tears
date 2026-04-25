@@ -202,8 +202,15 @@ class _InMemoryNatsBus:
                 pass
         return True
 
-    async def subscribe(self, subject: str, callback: Any) -> None:
-        self._subs.setdefault(subject, []).append(callback)
+    async def subscribe(
+        self,
+        subject: str,
+        callback: Any | None = None,
+        *,
+        cb: Any | None = None,
+    ) -> None:
+        chosen = cb if cb is not None else callback
+        self._subs.setdefault(subject, []).append(chosen)
 
 
 def _build_pod(

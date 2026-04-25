@@ -585,8 +585,14 @@ class TestInvalidationWireFormat:
 
         subscribers: list[Any] = []
 
-        async def _subscribe(subject: str, callback: Any) -> None:
-            subscribers.append(callback)
+        async def _subscribe(
+            subject: str,
+            callback: Any | None = None,
+            *,
+            cb: Any | None = None,
+        ) -> None:
+            chosen = cb if cb is not None else callback
+            subscribers.append(chosen)
 
         nats.subscribe = AsyncMock(side_effect=_subscribe)
 
@@ -618,8 +624,14 @@ class TestInvalidationWireFormat:
 
         subscribers: list[Any] = []
 
-        async def _subscribe(subject: str, callback: Any) -> None:
-            subscribers.append(callback)
+        async def _subscribe(
+            subject: str,
+            callback: Any | None = None,
+            *,
+            cb: Any | None = None,
+        ) -> None:
+            chosen = cb if cb is not None else callback
+            subscribers.append(chosen)
 
         nats.subscribe = AsyncMock(side_effect=_subscribe)
 
@@ -643,8 +655,14 @@ class TestInvalidationWireFormat:
         nats = AsyncMock()
         subscribers: list[Any] = []
 
-        async def _subscribe(subject: str, callback: Any) -> None:
-            subscribers.append(callback)
+        async def _subscribe(
+            subject: str,
+            callback: Any | None = None,
+            *,
+            cb: Any | None = None,
+        ) -> None:
+            chosen = cb if cb is not None else callback
+            subscribers.append(chosen)
 
         nats.subscribe = AsyncMock(side_effect=_subscribe)
         await reg.start_invalidation_listener(nats)

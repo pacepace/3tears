@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.registration import (
     ProbeResponse,
@@ -17,39 +18,52 @@ from threetears.registry.registration import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default namespace so :class:`Subjects` builders are deterministic.
+
+    each test that needs a different prefix calls
+    :func:`set_default_namespace` directly inside its body; this
+    fixture resets to ``test`` so cross-test bleed is impossible.
+    """
+    set_default_namespace("test")
+
+
 # -- helpers --
 
 
-def _make_probe_reply(pod_id: str, ready: bool = True) -> MagicMock:
-    """build a NATS reply mock carrying a valid ProbeResponse payload.
-
-    :param pod_id: pod identifier echoed into the ack
-    :ptype pod_id: str
-    :param ready: readiness flag asserted by the pod
-    :ptype ready: bool
-    :return: mock NATS message with JSON-encoded ProbeResponse in ``.data``
-    :rtype: MagicMock
-    """
-    reply = MagicMock()
-    reply.data = ProbeResponse(pod_id=pod_id, ready=ready).model_dump_json().encode("utf-8")
-    return reply
-
-
 def _make_registry_nc() -> AsyncMock:
-    """build an AsyncMock NATS client that replies to every probe subject.
+    """build an :class:`AsyncMock` NATS wrapper replying to every probe subject.
 
-    probe subjects follow ``<ns>.tools.probe.<pod_id>``; the mock's
-    ``request`` method parses pod_id out of the subject and echoes it
-    back in a valid :class:`ProbeResponse`. tests never have to wire
-    probe replies per pod_id.
+    probe subjects follow ``{ns}.tools.probe.{pod_id}``; the mock's
+    ``request`` method parses pod_id out of the subject (a typed
+    :class:`Subject`) and echoes it back in a valid
+    :class:`ProbeResponse`. tests never have to wire probe replies
+    per pod_id.
 
-    :return: configured AsyncMock NATS client
+    matches the canonical wrapper surface RegistrationHandler depends
+    on: kw-only ``request(subject, message, response_type, timeout)``,
+    kw-only ``subscribe(subject, cb, queue=None)``, kw-only
+    ``publish_reply(reply_subject, message)``,
+    ``unsubscribe(sub)``.
+
+    :return: configured AsyncMock NATS wrapper
     :rtype: AsyncMock
     """
 
-    async def _reply(subject: str, *_args: Any, **_kwargs: Any) -> MagicMock:
-        pod_id = subject.rsplit(".", 1)[-1]
-        return _make_probe_reply(pod_id)
+    async def _reply(
+        *,
+        subject: Any,
+        message: Any,
+        response_type: Any,
+        timeout: Any,
+    ) -> Any:
+        del message, timeout
+        pod_id = subject.path.rsplit(".", 1)[-1]
+        # the wrapper's request method returns the parsed
+        # :class:`response_type` instance; mirror that here so the
+        # registration handler receives a typed ProbeResponse.
+        return response_type(pod_id=pod_id, ready=True)
 
     nc = AsyncMock()
     nc.request = AsyncMock(side_effect=_reply)
@@ -86,20 +100,17 @@ def _make_manifest(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-) -> MagicMock:
-    """create mock NATS message.
+) -> IncomingMessage:
+    """build a wrapper :class:`IncomingMessage` envelope.
 
     :param data: raw message payload bytes
     :ptype data: bytes
-    :param reply: optional reply subject
+    :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
-    :return: mock NATS message
-    :rtype: MagicMock
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = data
-    msg.reply = reply
-    return msg
+    return IncomingMessage(data=data, reply_subject=reply)
 
 
 def _make_entry(
@@ -154,8 +165,10 @@ class TestRegistrationHandlerValidation:
         msg = _make_nats_msg(data=b"not json")
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is False
         assert "malformed" in response_data["error"]
 
@@ -171,8 +184,10 @@ class TestRegistrationHandlerValidation:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is False
         assert "pod_id" in response_data["error"]
 
@@ -190,8 +205,10 @@ class TestRegistrationHandlerValidation:
         )
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is False
         assert "tools" in response_data["error"]
 
@@ -217,8 +234,10 @@ class TestRegistrationHandlerMultiPod:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is True
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
 
@@ -237,8 +256,10 @@ class TestRegistrationHandlerMultiPod:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is True
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
 
@@ -283,8 +304,10 @@ class TestRegistrationHandlerSuccess:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is True
         assert response_data["pod_id"] == "pod-001"
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
@@ -323,7 +346,9 @@ class TestRegistrationHandlerSuccess:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        response_data = json.loads(nc.publish.call_args[0][1])
+        response_data = json.loads(
+            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        )
         assert response_data["success"] is True
         assert len(response_data["registered_tools"]) == 2
         assert catalog.get("threetears.calculator@1.0.0") is not None
@@ -344,7 +369,7 @@ class TestRegistrationHandlerSuccess:
         )
         await handler.handle_registration(msg)
 
-        nc.publish.assert_not_called()
+        nc.publish_reply.assert_not_called()
         assert catalog.get("threetears.calculator@1.0.0") is not None
 
 
@@ -357,25 +382,29 @@ class TestRegistrationHandlerLifecycle:
     @pytest.mark.asyncio
     async def test_start_subscribes_to_register_subject(self) -> None:
         """start subscribes to {namespace}.tools.register."""
+        set_default_namespace("myns")
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="myns")
         nc = _make_registry_nc()
         await handler.start(nc)
         nc.subscribe.assert_called_once()
-        call_args = nc.subscribe.call_args
-        assert call_args[0][0] == "myns.tools.register"
+        # wrapper subscribe is kw-only with typed Subject
+        subject_arg = nc.subscribe.call_args.kwargs["subject"]
+        assert subject_arg.path == "myns.tools.register"
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:
-        """stop unsubscribes from registration subject."""
+        """stop unsubscribes from registration subject through the wrapper."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test")
         nc = _make_registry_nc()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await handler.start(nc)
         await handler.stop()
-        mock_sub.unsubscribe.assert_called_once()
+        # wrapper exposes ``nc.unsubscribe(sub)``; the subscription
+        # handle itself is opaque (no public ``.unsubscribe`` method).
+        nc.unsubscribe.assert_called_once_with(mock_sub)
 
 
 # -- wire format tests --
