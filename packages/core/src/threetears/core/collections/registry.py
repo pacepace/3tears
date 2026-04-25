@@ -202,7 +202,7 @@ class CollectionRegistry:
                     extra={"extra_data": {"error": str(exc)}},
                 )
 
-        await nats_client.subscribe(INVALIDATION_SUBJECT, _on_invalidation)
+        await nats_client.subscribe(INVALIDATION_SUBJECT, cb=_on_invalidation)
 
     async def publish_invalidation(self, nats_client: Any, table_name: str, entity_id: Any) -> None:
         """publish cache invalidation signal for an entity.
