@@ -8,26 +8,52 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
 from uuid import uuid7
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.nats import Subject, set_default_namespace
 
 
 @dataclass
-class _FakeNats:
-    """minimal fake NATS client recording every publish call."""
+class _FakeWrapper:
+    """minimal fake :class:`threetears.nats.NatsClient` recording each publish.
 
-    publish_calls: list[tuple[str, bytes]] = field(default_factory=list)
+    matches the wrapper's :meth:`publish` shape (kw-only ``subject`` +
+    ``message``) so tests exercise the same call surface production
+    code uses. payload bytes are derived from the recorded
+    :class:`BaseModel` to keep round-trip assertions intact.
+    """
+
+    publish_calls: list[tuple[Subject, BaseModel]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
-    async def publish(self, subject: str, payload: bytes) -> None:
+    async def publish(
+        self,
+        *,
+        subject: Subject,
+        message: BaseModel,
+        reply_to: Subject | None = None,
+    ) -> None:
         """record the publish invocation or raise when configured to."""
-        self.publish_calls.append((subject, payload))
+        del reply_to  # unused in audit publish
+        self.publish_calls.append((subject, message))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace(request: pytest.FixtureRequest) -> None:
+    """bind a known default namespace for each test.
+
+    individual tests override via the ``namespace`` parameter on
+    :func:`publish_audit` (passed through for diagnostic logging) and
+    by calling :func:`set_default_namespace` directly to control the
+    subject that :class:`Subjects.audit_event` produces.
+    """
+    set_default_namespace("aibots")
 
 
 def _build_event(event_type: str = "workspace.fs_write") -> AuditEvent:
@@ -50,31 +76,36 @@ def _build_event(event_type: str = "workspace.fs_write") -> AuditEvent:
 
 async def test_publish_posts_to_namespace_dot_audit_dot_event_type() -> None:
     """subject is ``{namespace}.audit.{event_type}`` verbatim."""
-    nats = _FakeNats()
+    set_default_namespace("dev")
+    nats = _FakeWrapper()
     event = _build_event("workspace.fs_write")
 
     await publish_audit(event, nats_client=nats, namespace="dev")
 
     assert len(nats.publish_calls) == 1
     subject, _ = nats.publish_calls[0]
-    assert subject == "dev.audit.workspace.fs_write"
+    assert subject.path == "dev.audit.workspace.fs_write"
 
 
-async def test_publish_emits_json_payload_round_trippable() -> None:
-    """payload bytes decode back to the same envelope."""
-    nats = _FakeNats()
+async def test_publish_emits_typed_audit_event() -> None:
+    """recorded message is the same :class:`AuditEvent` instance round-trippable to JSON."""
+    set_default_namespace("staging")
+    nats = _FakeWrapper()
     event = _build_event("rbac.assignment.create")
 
     await publish_audit(event, nats_client=nats, namespace="staging")
 
-    _, payload = nats.publish_calls[0]
-    decoded = AuditEvent.model_validate_json(payload)
+    _, message = nats.publish_calls[0]
+    assert isinstance(message, AuditEvent)
+    assert message == event
+    # round-trip the wire form to confirm the typed payload survives serialization
+    decoded = AuditEvent.model_validate_json(message.model_dump_json())
     assert decoded == event
 
 
 async def test_publish_failure_is_swallowed_not_raised() -> None:
     """publish failure must NOT propagate -- audit is fire-and-forget."""
-    nats = _FakeNats(raise_on_publish=RuntimeError("nats down"))
+    nats = _FakeWrapper(raise_on_publish=RuntimeError("nats down"))
     event = _build_event()
 
     # must NOT raise; tool-call success never depends on audit health
@@ -105,24 +136,31 @@ async def test_publish_preserves_dotted_event_type_in_subject(
     event_type: str,
 ) -> None:
     """every dotted event_type appears verbatim in the subject."""
-    nats = _FakeNats()
+    set_default_namespace("prod")
+    nats = _FakeWrapper()
     event = _build_event(event_type)
 
     await publish_audit(event, nats_client=nats, namespace="prod")
 
     subject, _ = nats.publish_calls[0]
-    assert subject == f"prod.audit.{event_type}"
+    assert subject.path == f"prod.audit.{event_type}"
 
 
 async def test_publish_serialization_error_does_not_raise() -> None:
-    """a mid-publish serialization exception is caught and logged."""
+    """a mid-publish exception is caught and logged."""
 
-    class _BrokenNats:
-        async def publish(self, subject: str, payload: bytes) -> None:
-            del subject, payload
+    class _BrokenWrapper:
+        async def publish(
+            self,
+            *,
+            subject: Subject,
+            message: BaseModel,
+            reply_to: Subject | None = None,
+        ) -> None:
+            del subject, message, reply_to
             raise TimeoutError("publish timeout")
 
     event = _build_event()
 
     # must NOT raise
-    await publish_audit(event, nats_client=_BrokenNats(), namespace="dev")
+    await publish_audit(event, nats_client=_BrokenWrapper(), namespace="dev")
