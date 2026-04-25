@@ -21,8 +21,8 @@ log = get_logger(__name__)
 
 _CREATE_CONVERSATIONS_SQL = """
 CREATE TABLE IF NOT EXISTS conversations (
-    id UUID PRIMARY KEY,
     agent_id UUID NOT NULL,
+    id UUID NOT NULL,
     customer_id UUID NOT NULL,
     user_id UUID NOT NULL,
     channel_type VARCHAR(50) NOT NULL,
@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     date_created TIMESTAMP NOT NULL,
     date_updated TIMESTAMP NOT NULL,
     date_last_message TIMESTAMP,
-    metadata JSONB
+    metadata JSONB,
+    PRIMARY KEY (agent_id, id)
 )
 """
 

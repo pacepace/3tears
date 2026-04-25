@@ -58,7 +58,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
 
     async def _fetchrow(query: str, *args: object) -> dict[str, Any] | None:
         """
-        simulate ``SELECT * FROM conversations WHERE id = $1``.
+        simulate ``SELECT * FROM conversations WHERE agent_id = $1 AND id = $2``.
+
+        composite-pk fetch: arg[0] is agent_id, arg[1] is id.
 
         :param query: SQL text (ignored by the mock)
         :ptype query: str
@@ -67,12 +69,17 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
         :return: stored row dict or ``None``
         :rtype: dict[str, Any] | None
         """
-        entity_id = args[0] if args else None
+        entity_id = args[1] if len(args) > 1 else None
         return store.get(str(entity_id))
 
     async def _execute(query: str, *args: object) -> str:
         """
         simulate INSERT/UPDATE/DELETE against the in-memory store.
+
+        composite-pk schema column order (matches SchemaBackedCollection
+        generator): agent_id, id, customer_id, user_id, channel_type,
+        conversation_ref, status, summary, date_created, date_updated,
+        date_last_message, metadata.
 
         :param query: SQL text
         :ptype query: str
@@ -84,8 +91,8 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
         result: str
         if "INSERT" in query:
             keys = [
-                "id",
                 "agent_id",
+                "id",
                 "customer_id",
                 "user_id",
                 "channel_type",
@@ -102,20 +109,21 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             result = "INSERT 0 1"
             return result
         if "UPDATE" in query:
-            entity_id = str(args[0])
+            # CAS UPDATE pk-first: $1=agent_id, $2=id, then mutables, then CAS fence.
+            entity_id = str(args[1])
             existing = store.get(entity_id)
             if existing is None:
                 result = "UPDATE 0"
                 return result
-            existing["status"] = args[1]
-            existing["summary"] = args[2]
-            existing["date_updated"] = args[3]
-            existing["date_last_message"] = args[4]
-            existing["metadata"] = args[5]
+            existing["status"] = args[2]
+            existing["summary"] = args[3]
+            existing["date_updated"] = args[4]
+            existing["date_last_message"] = args[5]
+            existing["metadata"] = args[6]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:
-            entity_id = str(args[0])
+            entity_id = str(args[1])
             if entity_id in store:
                 del store[entity_id]
             result = "DELETE 1"
@@ -140,7 +148,7 @@ class TestFetchFromPostgres:
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        result = await collection.fetch_from_postgres(data["id"])
+        result = await collection.fetch_from_postgres((data["agent_id"], data["id"]))
 
         assert result == data
 
@@ -150,7 +158,7 @@ class TestFetchFromPostgres:
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        result = await collection.fetch_from_postgres(uuid7())
+        result = await collection.fetch_from_postgres((uuid7(), uuid7()))
 
         assert result is None
 
@@ -200,7 +208,7 @@ class TestDeleteFromPostgres:
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        await collection.delete_from_postgres(data["id"])
+        await collection.delete_from_postgres((data["agent_id"], data["id"]))
 
         assert str(data["id"]) not in l3
 

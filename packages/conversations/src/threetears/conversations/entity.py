@@ -54,11 +54,41 @@ class Conversation(BaseEntity):
     properties to associate their own per-conversation rows with the
     conversation's identity and scope.
 
-    :ivar primary_key_field: primary key column name on the table
+    composite primary key on ``(agent_id, id)`` so rows are
+    partitioned per agent; ``_id`` holds the
+    ``(agent_id, id)`` tuple after construction.
+
+    :ivar primary_key_field: name of the first pk column on the table
     :ptype primary_key_field: str
     """
 
-    primary_key_field: str = "id"
+    primary_key_field: str = "agent_id"
+
+    def __init__(
+        self,
+        data: dict[str, Any],
+        is_new: bool = True,
+        collection: Any = None,
+    ) -> None:
+        """initialize entity with tuple ``_id`` for composite-pk lookup.
+
+        :class:`BaseEntity.__init__` captures the first pk field by
+        name; composite-pk entities overwrite ``_id`` with the
+        declared-order tuple so :meth:`BaseCollection.normalize_pk`
+        and :meth:`BaseCollection.l2_key` address the row uniformly
+        across tiers.
+
+        :param data: row dict; must carry both ``agent_id`` and ``id``
+        :ptype data: dict[str, Any]
+        :param is_new: whether entity is unsaved
+        :ptype is_new: bool
+        :param collection: owning collection reference
+        :ptype collection: Any
+        :return: nothing
+        :rtype: None
+        """
+        super().__init__(data, is_new=is_new, collection=collection)
+        object.__setattr__(self, "_id", (data["agent_id"], data["id"]))
 
     @property
     def agent_id(self) -> UUID:

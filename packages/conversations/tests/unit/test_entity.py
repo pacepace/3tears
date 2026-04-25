@@ -165,11 +165,11 @@ class TestConversationIdentityProperties:
         assert isinstance(result, UUID)
 
     def test_id_returns_underlying_pk(self) -> None:
-        """id property surfaces the primary key value."""
+        """id property surfaces the composite primary key tuple."""
         data = _sample_data()
         entity = Conversation(data)
 
-        assert entity.id == data["id"]
+        assert entity.id == (data["agent_id"], data["id"])
 
 
 class TestConversationChannelProperties:
@@ -288,8 +288,9 @@ class TestConversationSetterWithCollection:
         entity.status = "closed"
 
         assert entity.status == "closed"
+        # composite-pk entity addresses cache via the (agent_id, id) tuple.
         coll.set_field_sync.assert_called_with(
-            data["id"], "status", "closed"
+            (data["agent_id"], data["id"]), "status", "closed"
         )
 
     def test_summary_setter_tracks_change(

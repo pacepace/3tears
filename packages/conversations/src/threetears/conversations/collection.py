@@ -70,13 +70,13 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     :ptype write_buffer: WriteBuffer | None
     """
 
-    primary_key_column: str = "id"
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
     schema = TableSchema(
         name="conversations",
-        primary_key="id",
+        primary_key=("agent_id", "id"),
         columns=[
+            Column("agent_id", UUID_TYPE, partition=True),
             Column("id", UUID_TYPE),
-            Column("agent_id", UUID_TYPE, immutable=True),
             Column("customer_id", UUID_TYPE, immutable=True),
             Column("user_id", UUID_TYPE, immutable=True),
             Column("channel_type", STRING_TYPE, immutable=True),
@@ -138,31 +138,40 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         return Conversation
 
     async def find_by_user(
-        self, user_id: UUID, include_closed: bool = False,
+        self, agent_id: UUID, user_id: UUID, include_closed: bool = False,
     ) -> list[Conversation]:
-        """fetch every conversation owned by the given user.
+        """fetch every conversation owned by the given user under one agent.
 
         results come from L3 (the source of truth for historical rows)
         and are promoted into L2 so subsequent reads hit the cache
-        tier. ordering is newest-first.
+        tier. ordering is newest-first. ``agent_id`` is the partition
+        column on the ``conversations`` table; the caller supplies it
+        explicitly so the lookup stays inside one agent's data slice
+        and the partition predicate is enforced at the SQL boundary.
 
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
         :param user_id: user whose conversations to fetch
         :ptype user_id: UUID
         :param include_closed: include closed / archived conversations
         :ptype include_closed: bool
-        :return: conversations owned by ``user_id``
+        :return: conversations owned by ``user_id`` under ``agent_id``
         :rtype: list[Conversation]
         """
         if include_closed:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM conversations WHERE user_id = $1 "
+                "SELECT * FROM conversations "
+                "WHERE agent_id = $1 AND user_id = $2 "
                 "ORDER BY date_created DESC",
+                agent_id,
                 user_id,
             )
         else:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM conversations WHERE user_id = $1 AND status != $2 "
+                "SELECT * FROM conversations "
+                "WHERE agent_id = $1 AND user_id = $2 AND status != $3 "
                 "ORDER BY date_created DESC",
+                agent_id,
                 user_id,
                 "closed",
             )
@@ -171,7 +180,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            entity_id = data["id"]
-            await self._save_to_l2(entity_id, data)
+            pk = (data["agent_id"], data["id"])
+            await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities

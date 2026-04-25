@@ -160,8 +160,9 @@ class TestRegisterConversationsMigrations:
         await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert re.search(r"CREATE TABLE IF NOT EXISTS conversations", joined)
-        assert "id UUID PRIMARY KEY" in joined
         assert re.search(r"agent_id UUID NOT NULL", joined)
+        assert re.search(r"id UUID NOT NULL", joined)
+        assert "PRIMARY KEY (agent_id, id)" in joined
         assert re.search(r"customer_id UUID NOT NULL", joined)
         assert re.search(r"user_id UUID NOT NULL", joined)
         assert "channel_type VARCHAR(50) NOT NULL" in joined
