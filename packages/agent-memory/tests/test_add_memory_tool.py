@@ -25,6 +25,45 @@ _TEST_AID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 _TEST_CUID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 
 
+class _StubContext:
+    """minimal stand-in for :class:`CallContext` in unit tests.
+
+    exposes ``conversation_id`` and ``correlation_id`` attributes
+    consumed by the per-call resolver in ``load_add_memory_tool``.
+
+    :param conversation_id: conversation UUID
+    :ptype conversation_id: UUID
+    :param correlation_id: correlation UUID
+    :ptype correlation_id: UUID
+    """
+
+    def __init__(
+        self, conversation_id: UUID, correlation_id: UUID,
+    ) -> None:
+        """capture identity dimensions.
+
+        :param conversation_id: conversation UUID
+        :ptype conversation_id: UUID
+        :param correlation_id: correlation UUID
+        :ptype correlation_id: UUID
+        :return: nothing
+        :rtype: None
+        """
+        self.conversation_id = conversation_id
+        self.correlation_id = correlation_id
+
+
+def _resolver():
+    """return a :class:`_StubContext` carrying the test ids.
+
+    :return: stub call context
+    :rtype: _StubContext
+    """
+    return _StubContext(
+        conversation_id=_TEST_CID, correlation_id=_TEST_MID,
+    )
+
+
 def _make_pool():
     """build a simple asyncpg-shape mock pool."""
     pool = AsyncMock()
@@ -85,13 +124,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
         assert len(tools) == 1
         assert tools[0].name == "add_memory"
@@ -105,13 +143,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
@@ -130,13 +167,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         result = await tools[0].ainvoke({"content": "something", "memory_type": "bogus"})
@@ -195,13 +231,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
@@ -230,13 +265,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
@@ -257,13 +291,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         result = await tools[0].ainvoke({"content": "something", "memory_type": "fact"})
@@ -280,13 +313,12 @@ class TestLoadAddMemoryTool:
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,
-            _TEST_CID,
-            _TEST_MID,
             provider,
             _TEST_AID,
             _TEST_CUID,
             permissive_memory_authorizer,
             memories,
+            context_resolver=_resolver,
         )
 
         for mt in ["preference", "fact", "decision", "topical_context", "relational_context"]:

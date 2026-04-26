@@ -69,8 +69,31 @@ def test_optional_identity_fields_default_none() -> None:
     assert envelope.customer_id is None
     assert envelope.resource_namespace_id is None
     assert envelope.resource_namespace_type is None
+    assert envelope.conversation_id is None
     assert envelope.outcome == "success"
     assert envelope.details == {}
+
+
+def test_conversation_id_field_round_trips() -> None:
+    """data-layer-task-01 sub-task 5: conversation_id propagates.
+
+    the ``audit_events`` table already carries the column; the
+    envelope now propagates it from CallContext into the persisted
+    row so admin queries can filter audit trails per conversation.
+    """
+    conv_id = uuid7()
+    envelope = AuditEvent(
+        id=uuid7(),
+        timestamp=datetime.now(UTC),
+        event_type="tool.call",
+        action="call",
+        correlation_id=uuid7(),
+        conversation_id=conv_id,
+    )
+    assert envelope.conversation_id == conv_id
+    wire = envelope.model_dump_json()
+    decoded = AuditEvent.model_validate_json(wire)
+    assert decoded.conversation_id == conv_id
 
 
 def test_naive_timestamp_rejected() -> None:

@@ -25,8 +25,9 @@ from threetears.conversations.authorize import (
     conversation_namespace_name,
     ensure_conversation_owner_assignment,
 )
+from threetears.conversations.buffer import ConversationWriteBuffer
 from threetears.conversations.collection import ConversationsCollection
-from threetears.conversations.entity import Conversation
+from threetears.conversations.entity import Conversation, ConversationStatus
 from threetears.conversations.migrations import register
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "Conversation",
     "ConversationAccessDenied",
     "ConversationAuthorizerDependencies",
+    "ConversationStatus",
+    "ConversationWriteBuffer",
     "ConversationsCollection",
     "authorize_conversation_access",
     "conversation_namespace_name",

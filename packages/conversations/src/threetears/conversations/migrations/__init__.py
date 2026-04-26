@@ -17,6 +17,9 @@ from __future__ import annotations
 from threetears.conversations.migrations.v001_create_conversations_table import (
     create_conversations_table,
 )
+from threetears.conversations.migrations.v002_add_message_count import (
+    add_message_count,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -44,12 +47,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         scope=MigrationScope.AGENT,
     )
     pkg.version(1)(create_conversations_table)
+    pkg.version(2)(add_message_count)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_message_count",
     "create_conversations_table",
     "register",
 ]

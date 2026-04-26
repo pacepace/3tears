@@ -18,14 +18,19 @@ known conversation is safe.
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
+
+if TYPE_CHECKING:
+    from threetears.conversations.buffer import ConversationWriteBuffer
 from threetears.core.collections.schema_backed import (
     DATETIME_TYPE,
+    INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
     UUID_TYPE,
@@ -70,6 +75,13 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     :ptype write_buffer: WriteBuffer | None
     """
 
+    # rationale: ``attach_write_buffer`` wires a back-reference to a
+    # pre-constructed ``ConversationWriteBuffer``; it neither reads
+    # nor writes table rows, so the partition-column gate has nothing
+    # to enforce.
+    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset(
+        {"attach_write_buffer"},
+    )
     primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
     schema = TableSchema(
         name="conversations",
@@ -87,6 +99,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("date_updated", DATETIME_TYPE),
             Column("date_last_message", DATETIME_TYPE, nullable=True),
             Column("metadata", JSONB_TYPE, nullable=True),
+            Column("message_count", INT_TYPE),
         ],
         cas_column="date_updated",
     )
@@ -118,6 +131,69 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         """
         super().__init__(registry, config, nats_client, write_buffer)
         self.l3_pool = postgres_pool
+        # ConversationWriteBuffer for cross-conversation pod-wide
+        # batched writes (data-layer-task-01 sub-task 3). attached
+        # lazily by callers via :meth:`attach_write_buffer`; remains
+        # ``None`` in pure-CRUD test harnesses that do not need
+        # batching. distinct from BaseCollection._write_buffer (the
+        # generic flush primitive); this attribute is the optional
+        # cross-conversation batcher.
+        self._conversation_write_buffer: ConversationWriteBuffer | None = None
+
+    def attach_write_buffer(
+        self, buffer: ConversationWriteBuffer,
+    ) -> None:
+        """attach a :class:`ConversationWriteBuffer` for delegated batching.
+
+        callers that constructed the collection then constructed the
+        buffer (because the buffer takes the collection in its
+        constructor) wire the back-reference here so
+        :meth:`enqueue_message_recorded` has a target. constructor
+        circular-init avoidance.
+
+        :param buffer: cross-conversation write buffer
+        :ptype buffer: ConversationWriteBuffer
+        :return: nothing
+        :rtype: None
+        """
+        self._conversation_write_buffer = buffer
+
+    async def enqueue_message_recorded(
+        self,
+        *,
+        agent_id: UUID,
+        conversation_id: UUID,
+        at: datetime,
+        role: str,
+    ) -> None:
+        """delegate one observed message to the attached write buffer.
+
+        no-op when no buffer is attached. the buffer accumulates
+        deltas across every conversation the pod is multiplexing and
+        flushes opportunistically (timer / threshold / shutdown);
+        callers that need an immediate write should construct the
+        entity, call :meth:`Conversation.record_message`, and call
+        :meth:`save_entity` directly.
+
+        :param agent_id: agent partition the conversation lives in
+        :ptype agent_id: UUID
+        :param conversation_id: conversation UUID
+        :ptype conversation_id: UUID
+        :param at: timestamp the message was observed at
+        :ptype at: datetime
+        :param role: short actor token (``user`` / ``assistant`` / ...)
+        :ptype role: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._conversation_write_buffer is None:
+            return
+        await self._conversation_write_buffer.enqueue(
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            at=at,
+            role=role,
+        )
 
     @property
     def table_name(self) -> str:

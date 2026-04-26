@@ -119,6 +119,17 @@ class AuditEvent(BaseModel):
         with ``event_type`` as the idempotency key for at-least-once
         NATS redelivery
     :ptype correlation_id: UUID
+    :param conversation_id: conversation UUID when the event was
+        emitted on behalf of a user-facing conversation (agent-tools
+        baseline emission, memory writes, context save). ``None`` for
+        platform-scoped events (rbac admin endpoints, scheduled
+        retention) and for hub-direct calls without a conversation.
+        added in data-layer-task-01 sub-task 5: the ``audit_events``
+        table already carries the column (added in v054 partition
+        primitive); the envelope now propagates it from
+        :class:`CallContext` into the persisted row so admin queries
+        can filter audit trails per conversation
+    :ptype conversation_id: UUID | None
     :param details: event-type-specific structured payload (sha/bytes/
         version for fs_write; added_member_id for group.member.add;
         etc.). admin queries must not depend on JSONB fields for hot
@@ -140,6 +151,7 @@ class AuditEvent(BaseModel):
     action: str
     outcome: str = "success"
     correlation_id: UUID
+    conversation_id: UUID | None = None
     details: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("timestamp")

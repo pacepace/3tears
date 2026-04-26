@@ -699,25 +699,30 @@ class AddMemoryInput(BaseModel):
 
 async def load_add_memory_tool(
     user_id: UUID,
-    conversation_id: UUID,
-    message_id: UUID,
     embedding_provider: EmbeddingProvider,
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
     memories_collection: MemoriesCollection,
     *,
+    context_resolver: Callable[[], Any],
     similarity_dedup_threshold: float = 0.90,
 ) -> list[BaseTool]:
     """create an add_memory tool for explicit memory storage.
 
+    data-layer-task-01 sub-task 4: ``conversation_id`` + ``message_id``
+    are resolved per-call via ``context_resolver`` rather than bound at
+    factory time. binding them at construction was the latent multi-
+    plex violation surfaced by Group D D4-2: an agent pod multiplexes
+    many conversations and a tool minted with one conversation's id
+    would attribute every subsequent call's memory to that frozen
+    conversation. the per-call resolver mirrors the
+    :class:`NatsToolWrapper._arun` shape that already reads identity
+    from :class:`CallContext` at invocation time.
+
     :param user_id: owning user's UUID (row filter + evaluator
         ``caller_user_id``)
     :ptype user_id: UUID
-    :param conversation_id: current conversation UUID
-    :ptype conversation_id: UUID
-    :param message_id: current message UUID (source attribution)
-    :ptype message_id: UUID
     :param embedding_provider: provider for embedding vectors
     :ptype embedding_provider: EmbeddingProvider
     :param agent_id: owning agent UUID (memory namespace owner)
@@ -729,6 +734,13 @@ async def load_add_memory_tool(
     :param memories_collection: three-tier memories collection; every
         dedup lookup + insert goes through this collection
     :ptype memories_collection: MemoriesCollection
+    :param context_resolver: callable returning the live
+        :class:`CallContext` (or any object exposing
+        ``conversation_id`` and ``correlation_id`` attributes); read
+        at every tool invocation so the tool attributes the memory
+        to the actively-running conversation, not the conversation
+        the factory was minted under
+    :ptype context_resolver: Callable[[], Any]
     :param similarity_dedup_threshold: if an existing memory
         exceeds this similarity score, the existing memory is
         updated instead of creating a duplicate. default 0.90
@@ -741,6 +753,32 @@ async def load_add_memory_tool(
     @tool("add_memory", args_schema=AddMemoryInput)
     async def add_memory(content: str, memory_type: str = "preference") -> str:
         """store a memory about the user for future conversations."""
+        # data-layer-task-01 sub-task 4: read live identity from
+        # CallContext via the resolver. binding these at factory
+        # construction would attribute every memory to whatever
+        # conversation the pod was first minted under -- a multiplex
+        # violation in any pod handling more than one conversation.
+        try:
+            live_ctx = context_resolver()
+        except Exception as exc:
+            return _tool_error(
+                "add_memory",
+                "context",
+                f"context_resolver raised {type(exc).__name__}: {exc}",
+            )
+        live_conversation_id = getattr(live_ctx, "conversation_id", None)
+        live_message_id = getattr(live_ctx, "correlation_id", None)
+        if live_conversation_id is None:
+            return _tool_error(
+                "add_memory",
+                "context",
+                "context_resolver returned no conversation_id",
+            )
+        if live_message_id is None:
+            # source attribution falls back to a fresh UUID when no
+            # correlation is available (smoke fixtures, hub-direct
+            # calls without an envelope)
+            live_message_id = uuid4()
         try:
             ns_entity = await authorizer.namespace_collection.get_by_owner_and_customer(
                 namespace_type=MEMORY_NAMESPACE_TYPE,
@@ -845,8 +883,8 @@ async def load_add_memory_tool(
                 "agent_id": agent_id,
                 "customer_id": customer_id,
                 "user_id": user_id,
-                "conversation_id": conversation_id,
-                "message_id_source": message_id,
+                "conversation_id": live_conversation_id,
+                "message_id_source": live_message_id,
                 "type_memory": mt,
                 "content": content,
                 "embedding": embedding,

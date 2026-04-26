@@ -40,6 +40,7 @@ def _sample_data() -> dict[str, Any]:
         "date_updated": now,
         "date_last_message": now,
         "metadata": {"source": "test"},
+        "message_count": 0,
     }
 
 
@@ -103,6 +104,7 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "date_updated",
                 "date_last_message",
                 "metadata",
+                "message_count",
             ]
             row = dict(zip(keys, args, strict=False))
             store[str(row["id"])] = row
@@ -120,6 +122,7 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             existing["date_updated"] = args[4]
             existing["date_last_message"] = args[5]
             existing["metadata"] = args[6]
+            existing["message_count"] = args[7]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:

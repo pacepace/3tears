@@ -1366,6 +1366,9 @@ class ToolServer:
             action="call",
             outcome=outcome,
             correlation_id=correlation_id,
+            conversation_id=(
+                context.conversation_id if context is not None else None
+            ),
             details=details,
         )
         try:

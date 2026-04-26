@@ -7,19 +7,45 @@ one value type every other package that keys off ``conversation_id``
 hydrates rows into: memory consumers call
 :meth:`ConversationsCollection.get_by_id` (or fetch from their own
 foreign-key joins) and then project fields off :class:`Conversation`.
+
+lifecycle hooks (:meth:`mark_active`, :meth:`record_message`,
+:meth:`close`, :meth:`summarize_into`) are mutation-only operations
+that update the entity's in-memory state; the caller is responsible
+for ``await entity.save()`` (immediate write) or for routing the
+delta through :class:`ConversationWriteBuffer` (cross-conversation
+batched write). data-layer-task-01 sub-task 3.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+
+from enum import StrEnum
 
 from threetears.core.entities.base import BaseEntity
 
 __all__ = [
     "Conversation",
+    "ConversationStatus",
 ]
+
+
+class ConversationStatus(StrEnum):
+    """canonical conversation lifecycle status values.
+
+    one-step lifecycle: ``ACTIVE`` (default after lazy-create) ->
+    ``CLOSED`` (terminal). archival is a separate orthogonal concern;
+    the platform does not promote archived conversations through this
+    enum.
+
+    :cvar ACTIVE: conversation is open and accepting messages
+    :cvar CLOSED: conversation has been closed; no further messages
+    """
+
+    ACTIVE = "active"
+    CLOSED = "closed"
 
 
 def _as_uuid(value: object) -> UUID:
@@ -330,3 +356,118 @@ class Conversation(BaseEntity):
         :ptype value: dict[str, Any] | None
         """
         BaseEntity.__setattr__(self, "metadata", value)
+
+    @property
+    def message_count(self) -> int:
+        """
+        return the running count of messages recorded on this conversation.
+
+        added in v002 of the conversations migration package
+        (data-layer-task-01 sub-task 3) so admin queries can render the
+        conversation list without a per-row COUNT(*) on a foreign-key
+        message table. defaults to ``0`` for rows predating the
+        backfill.
+
+        :return: message counter
+        :rtype: int
+        """
+        value: int | None = self._get_raw("message_count")
+        return value if value is not None else 0
+
+    @message_count.setter
+    def message_count(self, value: int) -> None:
+        """
+        set the running message counter.
+
+        :param value: new counter value
+        :ptype value: int
+        """
+        BaseEntity.__setattr__(self, "message_count", value)
+
+    # ------------------------------------------------------------------
+    # Lifecycle hooks
+    # ------------------------------------------------------------------
+
+    def mark_active(self) -> None:
+        """
+        flip ``status`` back to ``active`` and refresh ``date_updated``.
+
+        idempotent. used by channel adapters that re-open a previously
+        closed conversation when a user resumes the session. the
+        caller is responsible for persisting the change via
+        :meth:`save_entity` or by enqueueing the delta on
+        :class:`ConversationWriteBuffer`.
+
+        :return: nothing
+        :rtype: None
+        """
+        self.status = ConversationStatus.ACTIVE.value
+        self.date_updated = datetime.now(UTC).replace(tzinfo=None)
+
+    def record_message(self, at: datetime, role: str) -> None:
+        """
+        increment ``message_count`` and stamp ``date_last_message``.
+
+        intentionally does NOT mark the conversation active or change
+        status; reactivation is an explicit operation via
+        :meth:`mark_active`. ``role`` is recorded on the metadata blob
+        so downstream consumers (analytics, audit) can read which
+        actor triggered the increment without reaching into the
+        message table. ``at`` is normalized to a naive UTC datetime
+        because the underlying ``date_last_message`` column is
+        ``TIMESTAMP`` (no tz) on the canonical schema.
+
+        :param at: timestamp the message was observed at
+        :ptype at: datetime
+        :param role: short actor token, e.g. ``user`` / ``assistant``
+        :ptype role: str
+        :return: nothing
+        :rtype: None
+        """
+        normalized = at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo else at
+        self.message_count = self.message_count + 1
+        self.date_last_message = normalized
+        self.date_updated = normalized
+        meta = dict(self.metadata) if self.metadata is not None else {}
+        meta["last_role"] = role
+        self.metadata = meta
+
+    def close(self, reason: str) -> None:
+        """
+        flip ``status`` to ``closed`` and record the reason on metadata.
+
+        terminal lifecycle step; subsequent attempts to ``record_message``
+        succeed at the entity level (counter still increments) but the
+        admin surfaces filter ``status='closed'`` rows out of active-
+        conversation queries by default. ``reason`` is short free-form
+        text recorded on ``metadata['close_reason']``.
+
+        :param reason: short token describing why the conversation
+            closed (``user_request`` / ``timeout`` / ``error`` / ...)
+        :ptype reason: str
+        :return: nothing
+        :rtype: None
+        """
+        self.status = ConversationStatus.CLOSED.value
+        self.date_updated = datetime.now(UTC).replace(tzinfo=None)
+        meta = dict(self.metadata) if self.metadata is not None else {}
+        meta["close_reason"] = reason
+        self.metadata = meta
+
+    def summarize_into(self, text: str) -> None:
+        """
+        replace the rolling summary with ``text`` and refresh ``date_updated``.
+
+        invoked by memory-extraction passes once the rolling summary
+        is ready; idempotent at the value level (re-applying the same
+        text is a no-op aside from the timestamp bump). callers must
+        persist the change via :meth:`save_entity` or via
+        :class:`ConversationWriteBuffer`.
+
+        :param text: distilled summary text to replace the prior value
+        :ptype text: str
+        :return: nothing
+        :rtype: None
+        """
+        self.summary = text
+        self.date_updated = datetime.now(UTC).replace(tzinfo=None)

@@ -550,15 +550,18 @@ class TestMemoryToolsAgainstLiveSchema:
             memories, media_content, chunks = _build_memory_collections(
                 pool, permissive_memory_authorizer,
             )
+            class _StubCtx:
+                def __init__(self, c: uuid.UUID, m: uuid.UUID) -> None:
+                    self.conversation_id = c
+                    self.correlation_id = m
             tools = await load_add_memory_tool(
                 user_id,
-                conv_id,
-                msg_id,
                 _StubEmbedding(),
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
                 memories,
+                context_resolver=lambda: _StubCtx(conv_id, msg_id),
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke(
@@ -602,15 +605,18 @@ class TestMemoryToolsAgainstLiveSchema:
             memories, media_content, chunks = _build_memory_collections(
                 pool, permissive_memory_authorizer,
             )
+            class _StubCtx2:
+                def __init__(self, c: uuid.UUID, m: uuid.UUID) -> None:
+                    self.conversation_id = c
+                    self.correlation_id = m
             add_tools = await load_add_memory_tool(
                 user_id,
-                conv_id,
-                msg_id,
                 _StubEmbedding(),
                 agent_id,
                 customer_id,
                 permissive_memory_authorizer,
                 memories,
+                context_resolver=lambda: _StubCtx2(conv_id, msg_id),
             )
             await add_tools[0].ainvoke(
                 {"content": "User loves type hints", "memory_type": "preference"}

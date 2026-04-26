@@ -134,21 +134,21 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_version_one(self) -> None:
-        """register registers v001 as the only version."""
+    async def test_register_populates_versions_one_and_two(self) -> None:
+        """register wires v001 (create) and v002 (message_count add)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1}
+        assert set(pkg.versions.keys()) == {1, 2}
 
-    async def test_apply_runs_version_one_then_idempotent(self) -> None:
-        """apply records v1 and re-running is a no-op."""
+    async def test_apply_runs_two_versions_then_idempotent(self) -> None:
+        """apply records v1+v2 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 1
+        assert first_count == 2
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
