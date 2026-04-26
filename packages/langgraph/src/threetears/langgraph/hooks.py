@@ -54,6 +54,7 @@ __all__ = [
     "ToolNodeHook",
     "compose_agent_node_hooks",
     "compose_tool_node_hooks",
+    "summarize_args",
 ]
 
 log = get_logger(__name__)
@@ -746,3 +747,30 @@ def _memoize_bound_model(
         assert cached is not None  # noqa: S101 - guarded by should_bind_tools_fresh
         bound_model = cached.bound_model
     return bound_model, []
+
+
+def summarize_args(args: dict[str, Any], max_length: int = 100) -> str:
+    """build a truncated summary of tool-call arguments for observation.
+
+    publishes only the argument *keys* with elided values so a
+    downstream observer (tool-call-start envelope, audit event, log
+    line) sees the shape of the call without leaking sensitive
+    contents (SQL fragments, passwords, PII). caller-tunable
+    ``max_length`` clamps the summary length so a tool with many keys
+    cannot blow up the wire envelope.
+
+    :param args: tool-call arguments dict (typically the ``args`` key
+        on a LangChain tool_call dict)
+    :ptype args: dict[str, Any]
+    :param max_length: maximum returned summary length in characters
+    :ptype max_length: int
+    :return: truncated string representation
+    :rtype: str
+    """
+    keys = list(args.keys())
+    if not keys:
+        return "(no arguments)"
+    summary = ", ".join(f"{k}=..." for k in keys[:3])
+    if len(keys) > 3:
+        summary += f" (+{len(keys) - 3} more)"
+    return summary[:max_length]
