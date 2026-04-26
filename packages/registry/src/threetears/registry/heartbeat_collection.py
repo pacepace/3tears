@@ -161,7 +161,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
             result.original_date_updated = row.get("date_updated")
         return result
 
-    async def save_entity(self, entity: Any) -> None:
+    async def save_entity(self, entity: Any, *, conn: Any = None) -> None:
         """persist heartbeat entity to L1 + L2 (no L3).
 
         overrides the three-tier write path. the base-class
@@ -171,11 +171,19 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         publishes the cross-pod invalidation so peer registries
         refresh on next read.
 
+        signature mirrors :meth:`BaseCollection.save_entity` verbatim
+        (including the keyword-only ``conn`` parameter) for LSP
+        parity, even though the L1+L2-only path never threads a
+        connection through.
+
         :param entity: :class:`HeartbeatEntity` to persist
         :ptype entity: Any
+        :param conn: ignored; kept for LSP parity with base class
+        :ptype conn: Any
         :return: nothing
         :rtype: None
         """
+        del conn  # never threaded through the L1+L2-only path
         data = entity.to_dict()
         now = datetime.now(UTC)
         if entity.is_new:
