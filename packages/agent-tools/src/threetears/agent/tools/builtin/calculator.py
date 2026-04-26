@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -53,6 +54,47 @@ _SAFE_NAMES = {
 }
 
 
+# Postfix factorial in math notation (``n!``, ``(2+3)!``) is not valid
+# Python expression syntax and so simpleeval cannot parse it. Translate
+# the common math-notation forms into ``factorial(...)`` calls before
+# handing the expression to simpleeval. Two cases:
+#  - ``<digits>!``  -> ``factorial(<digits>)``
+#  - ``(<expr>)!``  -> ``factorial((<expr>))``
+# Both transforms are local rewrites of well-formed sub-expressions; they
+# do NOT attempt to chain (``5!!`` -> ``factorial(factorial(5))``) which
+# math notation reserves for double factorial anyway. Repeated use of the
+# regex would be needed for chaining; the LLM has not asked for it.
+_FACTORIAL_LITERAL_RE = re.compile(r"(\d+)!")
+_FACTORIAL_PAREN_RE = re.compile(r"(\([^()]*\))!")
+
+
+def _normalize_expression(expression: str) -> str:
+    """rewrite math-notation conveniences into simpleeval-friendly form.
+
+    two transforms:
+
+    1. ``^`` -> ``**`` so callers can write ``2^10`` instead of
+       ``2**10`` (LLMs frequently emit the math-notation form). xor
+       is not exposed by the calculator's safe-function set, so the
+       rewrite has no behavior conflict.
+    2. postfix factorial: ``5!`` -> ``factorial(5)`` and
+       ``(2+3)!`` -> ``factorial((2+3))``. two regex passes catch the
+       most common literal-and-paren cases. ``n!`` operating on a bare
+       identifier is intentionally not rewritten -- the calculator's
+       name table only exposes math constants and a chained-factorial
+       request would more often be a typo than intent.
+
+    :param expression: raw expression as written by the caller
+    :ptype expression: str
+    :return: expression with notation conveniences rewritten
+    :rtype: str
+    """
+    rewritten = expression.replace("^", "**")
+    rewritten = _FACTORIAL_PAREN_RE.sub(r"factorial(\1)", rewritten)
+    rewritten = _FACTORIAL_LITERAL_RE.sub(r"factorial(\1)", rewritten)
+    return rewritten
+
+
 class CalculatorInput(BaseModel):
     """Input for the calculator tool."""
 
@@ -63,8 +105,9 @@ def _evaluate(expression: str) -> str:
     if not _HAS_SIMPLEEVAL:
         return tool_error("calculator", "evaluate", "simpleeval package is not installed")
     try:
+        normalized = _normalize_expression(expression)
         result = simple_eval(
-            expression,
+            normalized,
             functions=_SAFE_FUNCTIONS,
             names=_SAFE_NAMES,
         )
