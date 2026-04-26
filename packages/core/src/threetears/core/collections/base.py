@@ -25,6 +25,8 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.nats import NatsClient, NatsKvBucket
+from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
 __all__ = ["BaseCollection", "EntityT"]
@@ -72,12 +74,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         self,
         registry: CollectionRegistry,
         config: CoreConfig,
-        nats_client: Any = None,
+        nats_client: NatsClient | None = None,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
         self._registry = registry
         self._config = config
-        self._nats_client = nats_client
+        self._nats_client: NatsClient | None = nats_client
+        self._kv: NatsKvBucket | None = None
         self._write_buffer = write_buffer
         self._flush_strategy = FlushStrategy(config.collection_flush)
         self._flush_tables = frozenset(t.strip() for t in config.collection_flush_tables.split(",") if t.strip())
@@ -375,24 +378,52 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     # --- L2 cache (NATS KV, async) ---
 
-    def _l2_bucket(self) -> str:
-        return self._nats_client.bucket_name("collections")  # type: ignore[no-any-return]
+    L2_BUCKET_SUFFIX = "collections"
+
+    async def _ensure_kv(self) -> NatsKvBucket | None:
+        """lazily resolve and cache the JetStream KV bucket for L2.
+
+        the new wrapper KV API lives on :class:`NatsKvBucket`, not on
+        the bare client, so the collection holds a bucket handle
+        rather than a raw client. resolution is lazy so collections
+        constructed without a connected client (unit tests, L1+L3
+        configurations) never touch JetStream.
+
+        :return: ready bucket handle, or ``None`` when no NATS client
+            was supplied
+        :rtype: NatsKvBucket | None
+        :raises KvError: when bucket binding fails (does NOT swallow
+            -- API drift / config errors must surface, not warn)
+        """
+        if self._nats_client is None:
+            return None
+        if self._kv is None:
+            self._kv = await self._nats_client.kv_bucket(name=self.L2_BUCKET_SUFFIX)
+        return self._kv
 
     def l2_key(self, entity_id: Any) -> str:
         """build NATS KV key for given pk.
 
         single-pk shape: ``{table_name}.{value}``. composite-pk shape:
-        ``{table_name}.{v1}:{v2}:...`` -- pk values stringified at the
+        ``{table_name}.{v1}_{v2}_...`` -- pk values stringified at the
         NATS boundary (per CLAUDE.md UUID/datetime border-conversion
-        rule) and joined with ``":"``.
+        rule) and joined with ``"_"``.
 
-        **edge case**: if a pk value naturally contains ``":"`` the
+        the separator is constrained by the JetStream KV grammar
+        (``^[-/_=.a-zA-Z0-9]+$`` per ``nats-server`` ``kv.go``):
+        any colon ``:`` in the key is rejected with
+        ``nats: JetStream.InvalidKeyError``. ``_`` is JetStream-safe,
+        unambiguous against the realistic pk types used in this
+        codebase (UUIDs use ``-``, integers/postgres oids are pure
+        digits, slug strings used as composite-pk components do not
+        contain ``_``), and visually distinct from the leading
+        table-name namespace dot.
+
+        **edge case**: if a pk value naturally contains ``"_"`` the
         composite form is ambiguous with a pk value that contains the
-        resulting joined substring. this is a theoretical concern only
-        for the realistic pk types in use (UUIDs, integers, slug
-        strings, postgres oids) -- none of which legitimately contain
-        ``":"``. callers that introduce colon-bearing pk values MUST
-        either escape them before passing or override this method.
+        resulting joined substring. callers that introduce
+        underscore-bearing pk values MUST either escape them before
+        passing or override this method.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
@@ -401,18 +432,23 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: str
         """
         pk_values = self.normalize_pk(entity_id)
-        joined = ":".join(str(v) for v in pk_values)
+        joined = "_".join(str(v) for v in pk_values)
         return f"{self.table_name}.{joined}"
 
     async def _get_from_l2(self, entity_id: Any) -> dict[str, Any] | None:
-        if self._nats_client is None:
+        """read entity payload from the L2 NATS KV bucket.
+
+        narrow exception scope: only :class:`KvError` (real transport
+        failure) degrades to ``None``. programming errors
+        (``AttributeError``, ``TypeError``, etc.) propagate so wrapper
+        API drift surfaces loudly instead of silently warning.
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
             return None
         try:
-            raw = await self._nats_client.get(self._l2_bucket(), self.l2_key(entity_id))
-            if raw is None:
-                return None
-            return self.deserialize(raw)
-        except Exception as exc:
+            raw = await kv.get(key=self.l2_key(entity_id))
+        except KvError as exc:
             log.warning(
                 "L2 cache read failed",
                 extra={
@@ -420,17 +456,26 @@ class BaseCollection(ABC, Generic[EntityT]):
                         "entity_id": str(entity_id),
                         "table": self.table_name,
                         "error": str(exc),
-                    }
+                    },
                 },
             )
             return None
+        if raw is None:
+            return None
+        return self.deserialize(raw)
 
     async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
-        if self._nats_client is None:
+        """write entity payload to the L2 NATS KV bucket.
+
+        narrow exception scope: only :class:`KvError` degrades to
+        ``False``. programming errors propagate.
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
             return False
         try:
-            return await self._nats_client.put(self._l2_bucket(), self.l2_key(entity_id), self.serialize(data))  # type: ignore[no-any-return]
-        except Exception as exc:
+            await kv.put(key=self.l2_key(entity_id), value=self.serialize(data))
+        except KvError as exc:
             log.warning(
                 "L2 cache write failed",
                 extra={
@@ -438,17 +483,24 @@ class BaseCollection(ABC, Generic[EntityT]):
                         "entity_id": str(entity_id),
                         "table": self.table_name,
                         "error": str(exc),
-                    }
+                    },
                 },
             )
             return False
+        return True
 
     async def _delete_from_l2(self, entity_id: Any) -> bool:
-        if self._nats_client is None:
+        """delete entity payload from the L2 NATS KV bucket.
+
+        narrow exception scope: only :class:`KvError` degrades to
+        ``False``. programming errors propagate.
+        """
+        kv = await self._ensure_kv()
+        if kv is None:
             return False
         try:
-            return await self._nats_client.delete(self._l2_bucket(), self.l2_key(entity_id))  # type: ignore[no-any-return]
-        except Exception as exc:
+            return await kv.delete(key=self.l2_key(entity_id))
+        except KvError as exc:
             log.warning(
                 "L2 cache delete failed",
                 extra={
@@ -456,7 +508,7 @@ class BaseCollection(ABC, Generic[EntityT]):
                         "entity_id": str(entity_id),
                         "table": self.table_name,
                         "error": str(exc),
-                    }
+                    },
                 },
             )
             return False

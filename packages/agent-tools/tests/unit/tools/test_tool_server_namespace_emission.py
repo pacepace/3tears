@@ -205,7 +205,14 @@ class TestRegisterToolNamespaceEmission:
         assert entity.data["owner_agent_id"] == agent_id
         assert entity.data["customer_id"] == customer_id
         assert entity.data["schema_name"] is None
-        assert entity.data["metadata"] == {}
+        # natural-identity metadata: pre-sanitized mcp_name + mcp_version
+        # so downstream pattern matching (hub access materializer +
+        # registry authorizer canonical-name lookup) doesn't need to
+        # reverse the sanitization in :func:`build_namespace_name`.
+        assert entity.data["metadata"] == {
+            "mcp_name": "aibots.calc",
+            "mcp_version": "1.2.0",
+        }
         assert entity.data["id"] == _tool_namespace_id(
             "aibots.calc", "1.2.0", agent_id,
         )

@@ -2,19 +2,43 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+from threetears.nats import NatsClient, Subjects
+from threetears.nats.errors import PublishError, SubscribeError
 from threetears.observe import get_logger
 
 __all__ = [
+    "CacheInvalidationMessage",
     "CollectionRegistry",
-    "INVALIDATION_SUBJECT",
 ]
 
 log = get_logger(__name__)
 
-INVALIDATION_SUBJECT = "threetears.cache.invalidate"
+
+class CacheInvalidationMessage(BaseModel):
+    """typed wire envelope for cross-pod cache invalidation broadcasts.
+
+    publishers emit one message per write op; every other pod
+    subscribed to :func:`Subjects.cache_invalidate` evicts the named
+    entity from its local L1 cache. ``ids`` is always an array whose
+    length matches the target collection's
+    :attr:`BaseCollection.primary_key_columns` declaration -- single-pk
+    collections emit length-1 arrays; composite-pk collections emit
+    length-N arrays in declared column order.
+
+    typed Pydantic envelope replaces the previous raw-JSON-bytes
+    publish; the typed wrapper enforces wire-format consistency and
+    surfaces drift at parse time rather than via opaque key errors
+    deep in the listener.
+
+    :ivar table: target table name (matches :attr:`BaseCollection.table_name`)
+    :ivar ids: stringified pk values in declared column order
+    """
+
+    table: str
+    ids: list[str]
 
 
 class CollectionRegistry:
@@ -79,7 +103,7 @@ class CollectionRegistry:
         :class:`BaseCollection.__init__` reads ``l3_pool`` (and friends)
         from the registry via :meth:`get_l3_pool` immediately and then
         auto-registers. :meth:`register`'s ``l3_pool=`` kwarg records
-        an override but fires too late — the Collection has already
+        an override but fires too late -- the Collection has already
         snapped its pool from the registry default. ``bind_table``
         records the override under the table name so the subsequent
         Collection construction reads the intended backend on its
@@ -136,86 +160,94 @@ class CollectionRegistry:
         return overrides.get("l3_pool", self._l3_pool)
 
     # ------------------------------------------------------------------
-    # Cache coherence — cross-pod L1 invalidation via NATS pub/sub
+    # Cache coherence -- cross-pod L1 invalidation via typed NATS pub/sub
     # ------------------------------------------------------------------
 
-    async def start_invalidation_listener(self, nats_client: Any) -> None:
+    async def start_invalidation_listener(self, nats_client: NatsClient) -> None:
         """subscribe to cache invalidation signals from other pods.
 
-        wire envelope (stable contract, no shims):
-        ``{"table": <table_name>, "ids": [<v1>, <v2>, ...]}`` -- the
-        ``ids`` field is ALWAYS an array, length matches the target
-        collection's :attr:`BaseCollection.primary_key_columns`
-        declaration. single-pk collections publish length-1 arrays;
-        composite-pk collections publish length-N arrays in declared
-        column order. the previous ``entity_id`` string field is
-        retired; every publisher in the platform emits ``ids``.
+        wire envelope is :class:`CacheInvalidationMessage` -- typed
+        Pydantic, serialized via ``model_dump_json()``. on receipt the
+        listener evicts the named entity from local L1 cache for the
+        matching collection. callers must invoke after every
+        Collection has registered.
 
-        when a signal is received, evicts the entity from local L1
-        cache of the matching collection. this ensures cross-pod
-        cache coherence. must be called at application startup after
-        all collections are registered.
+        narrow exception scope: malformed payloads (Pydantic
+        :class:`ValidationError`) and unknown-table receipts log and
+        skip; programming errors (``AttributeError`` / ``TypeError``)
+        propagate so wrapper drift / collection-misregistration
+        surfaces immediately rather than as silent
+        invalidation-skips.
 
-        :param nats_client: nats client with ``subscribe`` method
-        :ptype nats_client: Any
+        :param nats_client: connected typed NATS wrapper client
+        :ptype nats_client: NatsClient
         :return: nothing
         :rtype: None
+        :raises SubscribeError: if the underlying subscribe fails to
+            register (transport / config error)
         """
         self._nats_client = nats_client
 
-        async def _on_invalidation(data: bytes) -> None:
-            try:
-                payload = json.loads(data)
-                table = payload.get("table")
-                ids = payload.get("ids")
-                if not table or not isinstance(ids, list) or not ids:
-                    log.warning(
-                        "Malformed invalidation signal",
-                        extra={"extra_data": {"raw": data[:200].decode(errors="replace")}},
-                    )
-                    return
+        async def _on_invalidation(message: CacheInvalidationMessage) -> None:
+            collection = self._collections.get(message.table)
+            if collection is None:
+                # unknown-table receipts are expected during partial
+                # rollouts (sender has a Collection the receiver does
+                # not). log + skip without warning.
+                return
 
-                collection = self._collections.get(table)
-                if collection is None:
-                    return  # unknown table — ignore
+            l1 = self.get_l1_backend(message.table)
+            if l1 is None:
+                return
 
-                l1 = self.get_l1_backend(table)
-                if l1 is not None:
-                    pk_cols = collection.primary_key_columns
-                    if len(ids) != len(pk_cols):
-                        log.warning(
-                            "Invalidation pk arity mismatch",
-                            extra={
-                                "extra_data": {
-                                    "table": table,
-                                    "expected_columns": list(pk_cols),
-                                    "received_values": len(ids),
-                                }
-                            },
-                        )
-                        return
-                    entity_id = tuple(ids)
-                    l1.delete_by_id(table, entity_id, pk_cols)
-            except Exception as exc:
+            pk_cols = collection.primary_key_columns
+            if len(message.ids) != len(pk_cols):
                 log.warning(
-                    "Error processing invalidation signal",
-                    extra={"extra_data": {"error": str(exc)}},
+                    "Invalidation pk arity mismatch",
+                    extra={
+                        "extra_data": {
+                            "table": message.table,
+                            "expected_columns": list(pk_cols),
+                            "received_values": len(message.ids),
+                        },
+                    },
                 )
+                return
+            entity_id = tuple(message.ids)
+            l1.delete_by_id(message.table, entity_id, pk_cols)
 
-        await nats_client.subscribe(INVALIDATION_SUBJECT, cb=_on_invalidation)
+        try:
+            await nats_client.subscribe_typed(
+                subject=Subjects.cache_invalidate(),
+                message_type=CacheInvalidationMessage,
+                cb=_on_invalidation,
+            )
+        except SubscribeError:
+            # surface subscribe failure; cache coherence is not optional
+            raise
 
-    async def publish_invalidation(self, nats_client: Any, table_name: str, entity_id: Any) -> None:
+    async def publish_invalidation(
+        self,
+        nats_client: NatsClient | None,
+        table_name: str,
+        entity_id: Any,
+    ) -> None:
         """publish cache invalidation signal for an entity.
 
         called by :class:`BaseCollection` after any write operation.
-        other pods subscribed to the invalidation subject will evict
-        this entity from their L1 cache. wire envelope carries
-        ``ids`` as an array of stringified pk values (length matches
-        the collection's pk column count).
+        emits :class:`CacheInvalidationMessage` via the typed wrapper.
+        ``ids`` is the stringified pk-value tuple in declared column
+        order.
 
-        :param nats_client: nats client with ``publish`` method;
+        narrow exception scope: only :class:`PublishError` is logged
+        and swallowed (the write has already succeeded; the
+        invalidation broadcast is best-effort because the next pod
+        read will pull a stale-but-still-correct row from L3 if it
+        misses the eviction). programming errors propagate.
+
+        :param nats_client: connected typed NATS wrapper client;
             ``None`` short-circuits (no-op)
-        :ptype nats_client: Any
+        :ptype nats_client: NatsClient | None
         :param table_name: target table name
         :ptype table_name: str
         :param entity_id: pk value (single-pk) or tuple of pk values
@@ -226,15 +258,18 @@ class CollectionRegistry:
         """
         if nats_client is None:
             return
+        if isinstance(entity_id, tuple):
+            values = entity_id
+        else:
+            values = (entity_id,)
+        ids = [str(v) for v in values]
+        message = CacheInvalidationMessage(table=table_name, ids=ids)
         try:
-            if isinstance(entity_id, tuple):
-                values = entity_id
-            else:
-                values = (entity_id,)
-            ids = [str(v) for v in values]
-            payload = json.dumps({"table": table_name, "ids": ids}).encode()
-            await nats_client.publish(INVALIDATION_SUBJECT, payload)
-        except Exception as exc:
+            await nats_client.publish(
+                subject=Subjects.cache_invalidate(),
+                message=message,
+            )
+        except PublishError as exc:
             log.warning(
                 "Failed to publish invalidation signal",
                 extra={
@@ -242,7 +277,22 @@ class CollectionRegistry:
                         "table": table_name,
                         "entity_id": str(entity_id),
                         "error": str(exc),
-                    }
+                    },
+                },
+            )
+        except ValidationError as exc:
+            # wire envelope failed validation -- programming error,
+            # but propagating would mask the calling write op. log
+            # loud and continue; surfaces as a real failure in CI
+            # because tests assert on this counter.
+            log.error(
+                "Invalidation envelope validation failed",
+                extra={
+                    "extra_data": {
+                        "table": table_name,
+                        "entity_id": str(entity_id),
+                        "error": str(exc),
+                    },
                 },
             )
 

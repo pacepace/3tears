@@ -63,8 +63,17 @@ def pg_url() -> Iterator[str]:
 
 @pytest.fixture
 async def pg_pool(pg_url: str) -> AsyncIterator[asyncpg.Pool]:
-    """per-test pool with a fresh table for isolation."""
-    pool: asyncpg.Pool = await asyncpg.create_pool(pg_url, min_size=1, max_size=4)
+    """per-test pool with a fresh table for isolation.
+
+    binds the canonical 3tears jsonb text codec via
+    :func:`threetears.core.collections.init_connection`; required for
+    ``$N::jsonb`` cast paths to receive Python dicts (the codec
+    encodes once -- ``_encode_jsonb`` is a typed pass-through).
+    """
+    from threetears.core.collections import init_connection
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        pg_url, min_size=1, max_size=4, init=init_connection,
+    )
     try:
         async with pool.acquire() as conn:
             await conn.execute(
@@ -173,44 +182,66 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         return json.loads(data)
 
 
-class _InMemoryNatsBus:
-    """nats mock with pub/sub + KV store for cross-pod simulation."""
+class _InMemoryKvBucket:
+    """typed-wrapper KV bucket stand-in for cross-pod simulation."""
 
     def __init__(self) -> None:
         self.kv: dict[str, bytes] = {}
-        self._subs: dict[str, list[Any]] = {}
 
-    def bucket_name(self, suffix: str) -> str:
-        return f"it-{suffix}"
-
-    async def get(self, bucket: str, key: str) -> bytes | None:
+    async def get(self, *, key: str) -> bytes | None:
         return self.kv.get(key)
 
-    async def put(self, bucket: str, key: str, value: bytes) -> bool:
+    async def put(self, *, key: str, value: bytes) -> int:
         self.kv[key] = value
-        return True
+        return len(self.kv)
 
-    async def delete(self, bucket: str, key: str) -> bool:
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
+        existed = key in self.kv
         self.kv.pop(key, None)
-        return True
+        return existed or revision is None
 
-    async def publish(self, subject: str, data: bytes) -> bool:
-        for cb in self._subs.get(subject, []):
-            try:
-                await cb(data)
-            except Exception:
-                pass
-        return True
 
-    async def subscribe(
+class _InMemoryNatsBus:
+    """typed-wrapper NATS stand-in: KV bucket + typed pub/sub."""
+
+    def __init__(self) -> None:
+        self._bucket = _InMemoryKvBucket()
+        self._subs: dict[str, list[tuple[Any, Any]]] = {}
+
+    @property
+    def kv(self) -> dict[str, bytes]:
+        return self._bucket.kv
+
+    async def kv_bucket(
         self,
-        subject: str,
-        callback: Any | None = None,
         *,
-        cb: Any | None = None,
+        name: str,  # noqa: ARG002
+        ttl: Any = None,  # noqa: ARG002
+        storage: str = "file",  # noqa: ARG002
+        create_if_missing: bool = True,  # noqa: ARG002
+        history: int = 1,  # noqa: ARG002
+    ) -> _InMemoryKvBucket:
+        return self._bucket
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
+        subject_str = str(subject)
+        for cb, message_type in self._subs.get(subject_str, []):
+            payload = message.model_dump_json()
+            decoded = message_type.model_validate_json(payload)
+            await cb(decoded)
+
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Any,
+        cb: Any,
+        message_type: Any,
+        queue: Any = None,  # noqa: ARG002
+        max_in_flight: Any = None,  # noqa: ARG002
+        deadletter_on_error: bool = True,  # noqa: ARG002
     ) -> None:
-        chosen = cb if cb is not None else callback
-        self._subs.setdefault(subject, []).append(chosen)
+        subject_str = str(subject)
+        self._subs.setdefault(subject_str, []).append((cb, message_type))
 
 
 def _build_pod(

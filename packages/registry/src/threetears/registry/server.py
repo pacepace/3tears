@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from collections.abc import Awaitable, Callable
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -86,6 +87,9 @@ class RegistryServer:
         heartbeat_timeout: float | None = None,
         call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
+        rbac_authorizer_factory: (
+            "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None"
+        ) = None,
     ) -> None:
         """initialize registry server.
 
@@ -104,13 +108,27 @@ class RegistryServer:
         :ptype call_timeout: float | None
         :param kv_bucket: NATS KV bucket name for catalog persistence
         :ptype kv_bucket: str
-        :param authorizer: tool access authorizer for agent call
-            verification; REQUIRED. callers wire the production
-            :class:`RbacEvaluatorAuthorizer` (hub path) or one of the
-            deterministic stubs (:class:`AllowAllAuthorizer`,
-            :class:`DenyAllAuthorizer`) for dev/test paths; no
-            silent-bypass default remains
+        :param authorizer: initial tool access authorizer; REQUIRED.
+            for the standalone production path the caller passes a
+            :class:`DenyAllAuthorizer` placeholder + a
+            ``rbac_authorizer_factory``; the placeholder denies any
+            tool dispatch that races the rbac wiring (a millisecond
+            cold-start window) and the server swaps in the factory's
+            return value once NATS is connected. fixed-mode callers
+            (allow-all dev sandboxes, force-deny kill switches) pass
+            the deterministic stub directly with
+            ``rbac_authorizer_factory=None`` and the swap step is
+            skipped.
         :ptype authorizer: AgentToolAuthorizer
+        :param rbac_authorizer_factory: optional async factory taking
+            the connected :class:`NatsClient` and returning the
+            production authorizer. invoked from :meth:`serve` after
+            the NATS connection is up + before the catalog handlers
+            register their subscriptions, so by the time tool calls
+            arrive the authorizer slot already holds the rbac
+            implementation. ``None`` keeps the constructor-supplied
+            ``authorizer`` for the whole serve loop.
+        :ptype rbac_authorizer_factory: Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -129,6 +147,7 @@ class RegistryServer:
         self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
+        self._rbac_authorizer_factory = rbac_authorizer_factory
         self._nc: "NatsClient | None" = None
         self._catalog = ToolCatalog()
         self._collection_registry: CollectionRegistry | None = None
@@ -151,6 +170,19 @@ class RegistryServer:
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},
         )
+
+        # swap in the production rbac authorizer once NATS is up.
+        # the constructor receives a ``DenyAllAuthorizer`` placeholder
+        # while the rbac stack waits for a connected NATS client to
+        # back its proxy collections + invalidation subscriptions.
+        # the factory builds the stack and returns the live
+        # :class:`RbacEvaluatorAuthorizer`; assigning it onto
+        # ``self._authorizer`` BEFORE the call proxy starts means no
+        # tool dispatch ever observes the deny-all placeholder in
+        # production. fixed-mode authorizers (allow-all / forced
+        # deny-all) skip this step because their factory is None.
+        if self._rbac_authorizer_factory is not None:
+            self._authorizer = await self._rbac_authorizer_factory(self._nc)
 
         # the catalog KV bootstrap predates the wrapper's
         # :meth:`NatsClient.kv_bucket` cache; we still go through the
@@ -320,18 +352,35 @@ class RegistryServer:
 def _run_server() -> None:
     """create and run registry server in asyncio event loop.
 
-    reads FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS environment variable
-    to determine authorization mode. when set to "true", all tool calls
-    are permitted (development mode). otherwise the registry starts
-    with :class:`~threetears.registry.auth.DenyAllAuthorizer` as a
-    hard-deny placeholder — production deployments wire the real
-    :class:`~threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer`
-    programmatically (see the hub's registry startup in
-    :mod:`aibots.hub.app`) because it requires loaders that depend on
-    the hub's DB pool. running this module directly without
-    ``ALLOW_ALL_TOOLS`` will refuse every dispatch — intentional so
-    a mis-wired deployment surfaces as a hard failure rather than
-    silent allow-all.
+    authorization mode resolution:
+
+    1. ``FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true`` -> the
+       :class:`~threetears.registry.auth.AllowAllAuthorizer`. test
+       fixtures and dev sandboxes that intentionally bypass rbac.
+    2. otherwise -> the production
+       :class:`~threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer`
+       wired against a self-contained
+       :class:`~threetears.registry.rbac_stack.RegistryRbacStack`
+       (NATS-proxy backed Collections + ACL cache + invalidation
+       subscribers). the standalone registry no longer falls back
+       to ``DenyAllAuthorizer`` -- the previous fallback existed
+       only because the rbac wiring required hub-side loaders we
+       could not construct from the standalone entrypoint. now the
+       Collections snap a NATS-proxy L3 backend pinned to
+       :data:`PLATFORM_RBAC_READ_NAMESPACE` and read through the
+       hub broker's read-only carve-out, so the registry can
+       authorize tool calls in any deployment that has a reachable
+       hub broker (i.e. every real deployment).
+
+    note: the rbac-stack construction is synchronous; the
+    invalidation subscriptions are bound asynchronously after the
+    registry's NATS connection comes up (see
+    :meth:`RegistryServer._start_handlers` -- the rbac stack rides
+    the same client). returning ``DenyAllAuthorizer`` only happens
+    when the operator explicitly opts in via
+    ``FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true``, which exists
+    purely as a panic-button kill switch for misconfigured prod
+    deployments.
     """
     from threetears.observe import configure_logging
 
@@ -344,25 +393,80 @@ def _run_server() -> None:
         ).lower()
         == "true"
     )
+    force_deny = (
+        os.environ.get(
+            "FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL",
+            "",
+        ).lower()
+        == "true"
+    )
+
+    authorizer: AgentToolAuthorizer
+    rbac_authorizer_factory: "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None" = None
 
     if allow_all:
         from threetears.registry.auth import AllowAllAuthorizer
 
-        authorizer: AgentToolAuthorizer = AllowAllAuthorizer()
+        authorizer = AllowAllAuthorizer()
         _logger.warning(
             "registry running in allow-all mode (FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true)",
             extra={"extra_data": {"mode": "allow_all"}},
         )
-    else:
+    elif force_deny:
         from threetears.registry.auth import DenyAllAuthorizer
 
         authorizer = DenyAllAuthorizer()
         _logger.warning(
-            "registry standalone entry-point: no RbacEvaluatorAuthorizer wired, "
-            "running in deny-all mode. production deployments construct the "
-            "authorizer programmatically with hub-side loaders.",
-            extra={"extra_data": {"mode": "deny_all_placeholder"}},
+            "registry running in forced deny-all mode "
+            "(FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true). every tool "
+            "dispatch will be denied -- intentional kill-switch.",
+            extra={"extra_data": {"mode": "deny_all_forced"}},
         )
+    else:
+        # default production path: deny-all placeholder *until* the
+        # NATS connection comes up + the rbac stack is constructed
+        # against it. the placeholder denies any dispatch that races
+        # the wiring (a cold-start window of milliseconds); once the
+        # rbac stack is live the server swaps in the real authorizer.
+        from threetears.registry.auth import DenyAllAuthorizer
 
-    server = RegistryServer(authorizer=authorizer)
+        authorizer = DenyAllAuthorizer()
+
+        async def _rbac_factory(nc: NatsClient) -> AgentToolAuthorizer:
+            from threetears.registry.l1_cache import (
+                create_registry_l1_backend,
+            )
+            from threetears.registry.rbac_authorizer import (
+                RbacEvaluatorAuthorizer,
+            )
+            from threetears.registry.rbac_stack import (
+                build_registry_rbac_stack,
+            )
+
+            namespace = os.environ.get(
+                "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots",
+            )
+            l1_backend = create_registry_l1_backend()
+            stack = build_registry_rbac_stack(
+                nats_client=nc,
+                subject_namespace=namespace,
+                l1_backend=l1_backend,
+            )
+            await stack.subscribe_invalidations()
+            _logger.info(
+                "registry running with RbacEvaluatorAuthorizer "
+                "(rbac stack wired against system.platform.rbac proxy)",
+                extra={"extra_data": {"mode": "rbac"}},
+            )
+            return RbacEvaluatorAuthorizer(
+                acl_cache=stack.acl_cache,
+                namespace_collection=stack.namespace_collection,
+            )
+
+        rbac_authorizer_factory = _rbac_factory
+
+    server = RegistryServer(
+        authorizer=authorizer,
+        rbac_authorizer_factory=rbac_authorizer_factory,
+    )
     asyncio.run(server.serve())

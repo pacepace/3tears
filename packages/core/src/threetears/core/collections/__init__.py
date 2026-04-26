@@ -1,6 +1,13 @@
+from threetears.core.collections.asyncpg_init import (
+    init_connection,
+    register_jsonb_text_codec,
+)
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
-from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.registry import (
+    CacheInvalidationMessage,
+    CollectionRegistry,
+)
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
@@ -23,6 +30,7 @@ __all__ = [
     "BOOL_TYPE",
     "BYTES_TYPE",
     "BaseCollection",
+    "CacheInvalidationMessage",
     "CollectionRegistry",
     "Column",
     "DATETIME_TYPE",
@@ -39,6 +47,8 @@ __all__ = [
     "WriteBuffer",
     "deserialize_from_json",
     "flush_pending",
+    "init_connection",
+    "register_jsonb_text_codec",
     "serialize_to_json",
     "spans_partitions",
 ]

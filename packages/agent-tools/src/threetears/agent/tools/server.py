@@ -183,17 +183,33 @@ class ToolManifestEntry(BaseModel):
 class RegistrationManifest(BaseModel):
     """manifest sent on connect to register all tools.
 
+    ownership identity (``owner_agent_id`` / ``customer_id``) rides on
+    the manifest so downstream namespace materialization can stamp
+    the right scope on each ``platform.namespaces`` row without
+    re-resolving the pod's identity from a separate auth lookup.
+    agent-spun pods set both; platform-built-in pods (admin tools,
+    datasource tool pod) leave both ``None`` and the namespace rows
+    land with NULL owner columns.
+
     :param pod_id: unique identifier for this tool pod
     :ptype pod_id: str
     :param tools: list of tool definitions served by this pod
     :ptype tools: list[ToolManifestEntry]
     :param bootstrap_token: optional authentication token for registry verification
     :ptype bootstrap_token: str | None
+    :param owner_agent_id: owning-agent UUID for agent-spun pods;
+        ``None`` for platform-built-in pods
+    :ptype owner_agent_id: UUID | None
+    :param customer_id: owning-customer UUID for agent-spun pods;
+        ``None`` for platform-built-in pods
+    :ptype customer_id: UUID | None
     """
 
     pod_id: str
     tools: list[ToolManifestEntry]
     bootstrap_token: str | None = None
+    owner_agent_id: UUID | None = None
+    customer_id: UUID | None = None
 
 
 _LEGACY_FLAT_IDENTITY_FIELDS: frozenset[str] = frozenset(
@@ -987,6 +1003,17 @@ class ToolServer:
         namespace_id = _tool_namespace_id(
             schema.name, schema.version, self._agent_id,
         )
+        # natural-identity metadata: the canonical ``name`` column is
+        # sanitized (``tools.<sanitized-mcp>.<sanitized-version>``);
+        # operators write yaml ``access.tools`` patterns in the
+        # pre-sanitized form (``aibots.admin.*``) and downstream
+        # consumers (registry authorizer lookup, hub access
+        # materializer) match patterns against this metadata. keeping
+        # ``mcp_name`` / ``mcp_version`` on the row decouples the
+        # rbac surface from the sanitization rules and makes
+        # platform-wide pattern matching uniform across rows emitted
+        # by every code path (this server-side path, the hub-side
+        # ``ToolNamespaceEmitter``).
         entity = self._namespace_collection.entity_class(
             {
                 "id": namespace_id,
@@ -995,7 +1022,10 @@ class ToolServer:
                 "owner_agent_id": self._agent_id,
                 "customer_id": self._customer_id,
                 "schema_name": None,
-                "metadata": {},
+                "metadata": {
+                    "mcp_name": schema.name,
+                    "mcp_version": schema.version,
+                },
                 "date_created": now,
                 "date_updated": now,
             },
@@ -1107,6 +1137,8 @@ class ToolServer:
             pod_id=self._pod_id,
             tools=tools_list,
             bootstrap_token=self._bootstrap_token,
+            owner_agent_id=self._agent_id,
+            customer_id=self._customer_id,
         )
 
         subject = Subjects.tools_register()

@@ -104,130 +104,85 @@ async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     :return: pool ready for Collection use
     :rtype: asyncpg.Pool
     """
+    from threetears.core.collections import init_connection
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
         max_size=4,
         server_settings={"search_path": f"{schema}, public"},
+        init=init_connection,
     )
     return result
 
 
+class _InMemoryKvBucket:
+    """typed-wrapper KV bucket stand-in matching :class:`NatsKvBucket`."""
+
+    def __init__(self) -> None:
+        self.kv: dict[str, bytes] = {}
+
+    async def get(self, *, key: str) -> bytes | None:
+        return self.kv.get(key)
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        self.kv[key] = value
+        return len(self.kv)
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
+        existed = key in self.kv
+        self.kv.pop(key, None)
+        return existed or revision is None
+
+
 class _InMemoryNatsBus:
-    """minimal NATS bus stand-in with pub/sub + KV store for tests.
+    """typed-wrapper NATS stand-in with KV bucket + typed pub/sub.
 
     mirrors the stand-in used in
     :mod:`threetears.core.tests.integration.test_composite_pk_three_tier`.
-    the Collection touches :meth:`bucket_name`, :meth:`get` / :meth:`put`
-    / :meth:`delete`, and :meth:`publish` / :meth:`subscribe` when the
-    registry listens for invalidation.
+    the Collection touches :meth:`kv_bucket` for L2 and :meth:`publish`
+    / :meth:`subscribe_typed` for cross-pod invalidation.
     """
 
     def __init__(self) -> None:
-        """initialize empty KV and subscription stores.
+        self._bucket = _InMemoryKvBucket()
+        self._subs: dict[str, list[tuple[Any, Any]]] = {}
 
-        :return: nothing
-        :rtype: None
-        """
-        self.kv: dict[str, bytes] = {}
-        self._subs: dict[str, list[Any]] = {}
+    @property
+    def kv(self) -> dict[str, bytes]:
+        # backward-compat property: previously-used in assertions to
+        # peek at stored bytes. now exposes the bucket's internal dict.
+        return self._bucket.kv
 
-    def bucket_name(self, suffix: str) -> str:
-        """return bucket name, namespace-scoped for this integration test.
-
-        :param suffix: bucket suffix
-        :ptype suffix: str
-        :return: bucket name
-        :rtype: str
-        """
-        return f"it-{suffix}"
-
-    async def get(self, bucket: str, key: str) -> bytes | None:
-        """fetch bytes for key.
-
-        :param bucket: bucket name
-        :ptype bucket: str
-        :param key: KV key
-        :ptype key: str
-        :return: bytes or None
-        :rtype: bytes | None
-        """
-        _ = bucket
-        return self.kv.get(key)
-
-    async def put(self, bucket: str, key: str, value: bytes) -> bool:
-        """write bytes for key.
-
-        :param bucket: bucket name
-        :ptype bucket: str
-        :param key: KV key
-        :ptype key: str
-        :param value: payload
-        :ptype value: bytes
-        :return: always True
-        :rtype: bool
-        """
-        _ = bucket
-        self.kv[key] = value
-        return True
-
-    async def delete(self, bucket: str, key: str) -> bool:
-        """delete key.
-
-        :param bucket: bucket name
-        :ptype bucket: str
-        :param key: KV key
-        :ptype key: str
-        :return: always True
-        :rtype: bool
-        """
-        _ = bucket
-        self.kv.pop(key, None)
-        return True
-
-    async def publish(self, subject: str, data: bytes) -> bool:
-        """dispatch to subscribers for subject.
-
-        :param subject: NATS subject
-        :ptype subject: str
-        :param data: payload
-        :ptype data: bytes
-        :return: always True
-        :rtype: bool
-        """
-        for cb in self._subs.get(subject, []):
-            try:
-                await cb(data)
-            except Exception:
-                pass
-        return True
-
-    async def subscribe(
+    async def kv_bucket(
         self,
-        subject: str,
-        callback: Any | None = None,
         *,
-        cb: Any | None = None,
+        name: str,  # noqa: ARG002 -- single shared bucket suffices for tests
+        ttl: Any = None,  # noqa: ARG002
+        storage: str = "file",  # noqa: ARG002
+        create_if_missing: bool = True,  # noqa: ARG002
+        history: int = 1,  # noqa: ARG002
+    ) -> _InMemoryKvBucket:
+        return self._bucket
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
+        subject_str = str(subject)
+        for cb, message_type in self._subs.get(subject_str, []):
+            payload = message.model_dump_json()
+            decoded = message_type.model_validate_json(payload)
+            await cb(decoded)
+
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Any,
+        cb: Any,
+        message_type: Any,
+        queue: Any = None,  # noqa: ARG002
+        max_in_flight: Any = None,  # noqa: ARG002
+        deadletter_on_error: bool = True,  # noqa: ARG002
     ) -> None:
-        """register a subject subscriber.
-
-        accepts both legacy positional ``callback`` and the new
-        kw-only ``cb=`` shape used by
-        :meth:`CollectionRegistry.start_invalidation_listener`.
-
-        :param subject: NATS subject
-        :ptype subject: str
-        :param callback: async callback taking bytes (positional, legacy)
-        :ptype callback: Any | None
-        :param cb: async callback taking bytes (kw-only, current)
-        :ptype cb: Any | None
-        :return: nothing
-        :rtype: None
-        """
-        chosen = cb if cb is not None else callback
-        if chosen is None:
-            raise TypeError("subscribe requires either callback or cb")
-        self._subs.setdefault(subject, []).append(chosen)
+        subject_str = str(subject)
+        self._subs.setdefault(subject_str, []).append((cb, message_type))
 
 
 def _build_pod(

@@ -202,30 +202,36 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
 
 
 def _make_nats_mock() -> AsyncMock:
-    """Create a mock NATS KV client backed by an in-memory dict.
+    """typed-wrapper NATS mock with in-memory KV bucket.
 
-    :return: mock KV client
+    :return: mock matching :class:`threetears.nats.NatsClient` shape
     :rtype: AsyncMock
     """
     kv_store: dict[str, bytes] = {}
-    nats = AsyncMock()
-    nats.bucket_name = MagicMock(return_value="test_collections")
 
-    async def _get(bucket: str, key: str) -> bytes | None:
+    async def _get(*, key: str) -> bytes | None:
         return kv_store.get(key)
 
-    async def _put(bucket: str, key: str, value: bytes) -> bool:
+    async def _put(*, key: str, value: bytes) -> int:
         kv_store[key] = value
-        return True
+        return len(kv_store)
 
-    async def _delete(bucket: str, key: str) -> bool:
+    async def _delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
+        existed = key in kv_store
         kv_store.pop(key, None)
-        return True
+        return existed or revision is None
 
-    nats.get = AsyncMock(side_effect=_get)
-    nats.put = AsyncMock(side_effect=_put)
-    nats.delete = AsyncMock(side_effect=_delete)
+    bucket = AsyncMock()
+    bucket.get = AsyncMock(side_effect=_get)
+    bucket.put = AsyncMock(side_effect=_put)
+    bucket.delete = AsyncMock(side_effect=_delete)
+
+    nats = AsyncMock()
+    nats.kv_bucket = AsyncMock(return_value=bucket)
+    nats.publish = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
     nats.store = kv_store
+    nats.bucket = bucket
     return nats
 
 

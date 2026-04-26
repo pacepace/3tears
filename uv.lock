@@ -49,10 +49,12 @@ name = "3tears"
 version = "0.5.0"
 source = { editable = "packages/core" }
 dependencies = [
+    { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
     { name = "nats-py" },
+    { name = "pydantic" },
     { name = "sqlalchemy" },
 ]
 
@@ -66,12 +68,14 @@ tracing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiosqlite" },
     { name = "asyncpg" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.0" },
     { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
+    { name = "pydantic" },
     { name = "sqlalchemy" },
 ]
 provides-extras = ["tracing", "duckdb"]

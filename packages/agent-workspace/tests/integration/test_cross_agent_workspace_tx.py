@@ -634,7 +634,10 @@ async def seeded_env(pg_url: str) -> AsyncIterator[dict[str, Any]]:
     :return: mapping with pool, bus, broker, identifiers, schemas
     :rtype: AsyncIterator[dict[str, Any]]
     """
-    pool = await asyncpg.create_pool(pg_url, min_size=2, max_size=5)
+    from threetears.core.collections import init_connection
+    pool = await asyncpg.create_pool(
+        pg_url, min_size=2, max_size=5, init=init_connection,
+    )
     agent_a = uuid4()
     agent_b = uuid4()
     user_b = uuid4()

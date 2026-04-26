@@ -48,6 +48,10 @@ from threetears.agent.acl import (
     Namespace as AclNamespace,
     evaluate_decision,
 )
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_TOOL,
+    build_namespace_name,
+)
 from threetears.observe import get_logger
 
 __all__ = [
@@ -115,16 +119,21 @@ class RbacEvaluatorAuthorizer:
         agent_id: str,
         user_id: str | None,
         tool_name: str,
+        tool_version: str,
     ) -> bool:
         """resolve an authorization decision for a tool dispatch.
 
         the Registry's :class:`~threetears.registry.auth.AgentToolAuthorizer`
-        protocol was widened from the two-argument signature used by
-        :class:`KvAgentToolAuthorizer` to the three-argument shape
-        here: the unified rbac evaluator needs the invoking user
-        identity to resolve the user side of an intersection
-        decision. the proxy sources ``user_id`` from
-        ``ProxyCallRequest.context.user_id``.
+        protocol carries the calling user identity so the unified
+        rbac evaluator can resolve the user side of the
+        intersection decision, and the dispatch's
+        ``(tool_name, tool_version)`` tuple so this implementation
+        can construct the canonical
+        ``platform.namespaces.name`` shape
+        (``tools.<sanitized-mcp>.<sanitized-version>``) that the
+        emitter writes the row under. the proxy sources
+        ``user_id`` from ``ProxyCallRequest.context.user_id`` and
+        ``tool_name`` / ``tool_version`` from the request directly.
 
         :param agent_id: calling agent UUID in string form (border
             conversion happens here)
@@ -132,11 +141,13 @@ class RbacEvaluatorAuthorizer:
         :param user_id: invoking user UUID in string form, or
             ``None`` when the dispatch carries no user identity
         :ptype user_id: str | None
-        :param tool_name: fully qualified tool name (the
-            ``mcp_name`` from the proxy request); resolved against
-            the tool namespace Collection via
-            :meth:`NamespaceCollection.get_by_name`
+        :param tool_name: ``mcp_name`` from the proxy request;
+            sanitized + plural-prefixed via
+            :func:`build_namespace_name` before lookup
         :ptype tool_name: str
+        :param tool_version: ``mcp_version`` from the proxy
+            request; second segment of the canonical namespace name
+        :ptype tool_version: str
         :return: True iff the evaluator grants the ``tool.call``
             action on the resolved tool namespace
         :rtype: bool
@@ -183,7 +194,18 @@ class RbacEvaluatorAuthorizer:
             )
             return result
 
-        ns_entity = await self._namespace_collection.get_by_name(tool_name)
+        # canonicalize: the dispatch arrives as the natural
+        # ``(mcp_name, mcp_version)`` pair; the namespace ``name``
+        # column is the sanitized plural-prefix shape produced by
+        # :func:`build_namespace_name`. constructing the canonical
+        # form here keeps every consumer (this lookup, hub
+        # access materializer, namespace emitter) agreed on the
+        # ``platform.namespaces.name`` value without the call site
+        # needing to reverse the sanitization rules.
+        canonical_name = build_namespace_name(
+            PLURAL_PREFIX_TOOL, tool_name, tool_version,
+        )
+        ns_entity = await self._namespace_collection.get_by_name(canonical_name)
         if ns_entity is None:
             log.info(
                 "rbac authorizer: no tool namespace row, denying",
@@ -192,6 +214,8 @@ class RbacEvaluatorAuthorizer:
                         "agent_id": agent_id,
                         "user_id": user_id,
                         "tool_name": tool_name,
+                        "tool_version": tool_version,
+                        "canonical_name": canonical_name,
                     }
                 },
             )

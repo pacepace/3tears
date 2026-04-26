@@ -46,113 +46,70 @@ from threetears.registry.l1_cache import create_registry_l1_backend
 # ---------------------------------------------------------------------------
 
 
+class _InMemoryKvBucket:
+    """typed-wrapper KV bucket stand-in matching :class:`NatsKvBucket`."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, bytes] = {}
+
+    async def get(self, *, key: str) -> bytes | None:
+        return self._store.get(key)
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        self._store[key] = value
+        return len(self._store)
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:  # noqa: ARG002
+        existed = key in self._store
+        self._store.pop(key, None)
+        return existed or revision is None
+
+
 class InMemoryNatsBus:
-    """minimal NATS stand-in: KV (for L2) + pub/sub (for invalidation).
+    """typed-wrapper NATS stand-in: KV (for L2) + typed pub/sub.
 
     every :class:`HeartbeatCollection` instance wired against the same
-    bus shares the KV store and the invalidation subject, mirroring
-    two registry processes reading one NATS cluster. no persistence,
-    no JetStream, no queue groups -- just enough surface to exercise
-    the L1+L2 contract.
+    bus shares the bucket and the invalidation subject, mirroring two
+    registry processes reading one NATS cluster. no persistence, no
+    JetStream queue groups -- just enough surface to exercise the
+    L1+L2 contract.
     """
 
     def __init__(self) -> None:
-        self._kv_store: dict[str, bytes] = {}
-        self._subscribers: dict[str, list[Any]] = {}
+        self._bucket = _InMemoryKvBucket()
+        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
 
-    def bucket_name(self, suffix: str) -> str:
-        """produce a deterministic bucket name for a given suffix.
-
-        :param suffix: logical bucket suffix (e.g. ``"collections"``)
-        :ptype suffix: str
-        :return: bucket name string
-        :rtype: str
-        """
-        return f"test-{suffix}"
-
-    async def get(self, bucket: str, key: str) -> bytes | None:
-        """fetch bytes from the KV store.
-
-        :param bucket: bucket name (ignored in this stub)
-        :ptype bucket: str
-        :param key: key string
-        :ptype key: str
-        :return: stored bytes, or ``None`` on miss
-        :rtype: bytes | None
-        """
-        _ = bucket
-        return self._kv_store.get(key)
-
-    async def put(self, bucket: str, key: str, value: bytes) -> bool:
-        """write bytes to the KV store.
-
-        :param bucket: bucket name (ignored in this stub)
-        :ptype bucket: str
-        :param key: key string
-        :ptype key: str
-        :param value: bytes to store
-        :ptype value: bytes
-        :return: always ``True``
-        :rtype: bool
-        """
-        _ = bucket
-        self._kv_store[key] = value
-        return True
-
-    async def delete(self, bucket: str, key: str) -> bool:
-        """remove a key from the KV store.
-
-        :param bucket: bucket name (ignored)
-        :ptype bucket: str
-        :param key: key string
-        :ptype key: str
-        :return: always ``True``
-        :rtype: bool
-        """
-        _ = bucket
-        self._kv_store.pop(key, None)
-        return True
-
-    async def publish(self, subject: str, data: bytes) -> bool:
-        """dispatch a message to every subscriber on the subject.
-
-        :param subject: NATS subject
-        :ptype subject: str
-        :param data: message bytes
-        :ptype data: bytes
-        :return: always ``True``
-        :rtype: bool
-        """
-        for cb in self._subscribers.get(subject, []):
-            await cb(data)
-        return True
-
-    async def subscribe(
+    async def kv_bucket(
         self,
-        subject: str,
-        callback: Any | None = None,
         *,
-        cb: Any | None = None,
+        name: str,  # noqa: ARG002 -- single shared bucket suffices for tests
+        ttl: Any = None,  # noqa: ARG002
+        storage: str = "file",  # noqa: ARG002
+        create_if_missing: bool = True,  # noqa: ARG002
+        history: int = 1,  # noqa: ARG002
+    ) -> _InMemoryKvBucket:
+        return self._bucket
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
+        """typed publish: dispatch to every typed subscriber on ``subject``."""
+        subject_str = str(subject)
+        for cb, message_type in self._subscribers.get(subject_str, []):
+            payload = message.model_dump_json()
+            decoded = message_type.model_validate_json(payload)
+            await cb(decoded)
+
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Any,
+        cb: Any,
+        message_type: Any,
+        queue: Any = None,  # noqa: ARG002
+        max_in_flight: Any = None,  # noqa: ARG002
+        deadletter_on_error: bool = True,  # noqa: ARG002
     ) -> None:
-        """register a callback for a subject.
-
-        accepts both legacy positional ``callback`` and the new
-        kw-only ``cb=`` shape used by
-        :meth:`CollectionRegistry.start_invalidation_listener`.
-
-        :param subject: NATS subject
-        :ptype subject: str
-        :param callback: async callable (positional, legacy)
-        :ptype callback: Any | None
-        :param cb: async callable (kw-only, current)
-        :ptype cb: Any | None
-        :return: nothing
-        :rtype: None
-        """
-        chosen = cb if cb is not None else callback
-        if chosen is None:
-            raise TypeError("subscribe requires either callback or cb")
-        self._subscribers.setdefault(subject, []).append(chosen)
+        subject_str = str(subject)
+        self._subscribers.setdefault(subject_str, []).append((cb, message_type))
 
 
 def _make_pod(
@@ -447,16 +404,22 @@ class TestHeartbeatSubscriberFlow:
     @pytest.mark.asyncio
     async def test_invalidation_envelope_carries_pod_id(self) -> None:
         """the invalidation envelope on save uses the pod_id as ids[0]."""
+        from threetears.core.collections.registry import (
+            CacheInvalidationMessage,
+        )
+        from threetears.nats import Subjects
+
         nats = InMemoryNatsBus()
         collection, _ = _make_pod(nats)
-        captured: list[bytes] = []
+        captured: list[CacheInvalidationMessage] = []
 
-        async def _capture(data: bytes) -> None:
-            captured.append(data)
+        async def _capture(message: CacheInvalidationMessage) -> None:
+            captured.append(message)
 
-        await nats.subscribe(
-            "threetears.cache.invalidate",
-            _capture,
+        await nats.subscribe_typed(
+            subject=Subjects.cache_invalidate(),
+            cb=_capture,
+            message_type=CacheInvalidationMessage,
         )
 
         entity = collection.create(
@@ -472,6 +435,5 @@ class TestHeartbeatSubscriberFlow:
         await collection.save_entity(entity)
 
         assert len(captured) == 1
-        envelope = json.loads(captured[0])
-        assert envelope["table"] == "pod_heartbeats"
-        assert envelope["ids"] == ["pod-env"]
+        assert captured[0].table == "pod_heartbeats"
+        assert captured[0].ids == ["pod-env"]

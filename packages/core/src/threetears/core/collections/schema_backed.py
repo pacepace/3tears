@@ -500,25 +500,44 @@ def _decode_vector(value: Any) -> list[float] | None:
     return result
 
 
-def _encode_jsonb(value: Any) -> str | None:
-    """encode a JSONB column value for the ``::jsonb`` cast.
+def _encode_jsonb(value: Any) -> Any:
+    """validate / pass through a JSONB column value for asyncpg.
 
-    dict/list values become JSON strings; pre-encoded strings pass
-    through; ``None`` pass-through.
+    asyncpg is the canonical Python -> Postgres encoder via its
+    registered ``jsonb`` text codec (see consumer-side connection
+    initializer, e.g. ``aibots.hub.app._init_db_connection``). that
+    codec calls ``json.dumps`` exactly once on the parameter; running
+    a second ``json.dumps`` here produces a JSON-encoded string of a
+    JSON-encoded string, which casts to a jsonb *string* (not the
+    intended jsonb *object*) and silently breaks every JSONB read
+    path (e.g. ``auth_identity->>'username'`` returns ``NULL``).
 
-    :param value: dict, list, pre-encoded string, or ``None``
+    so this function is now a typed pass-through: dict/list/None
+    flow through to the codec; pre-encoded strings are decoded back
+    into structures so the codec receives a single Python value to
+    encode. anything else fails fast.
+
+    :param value: dict, list, pre-encoded JSON string, or ``None``
     :ptype value: Any
-    :return: JSON string or ``None``
-    :rtype: str | None
+    :return: dict / list / ``None`` ready for asyncpg's jsonb codec
+    :rtype: Any
+    :raises TypeError: when ``value`` is not dict / list / str / None
     """
     if value is None:
-        result: str | None = None
-    elif isinstance(value, str):
-        result = value
+        result: Any = None
     elif isinstance(value, (dict, list)):
-        result = json.dumps(value, default=_json_default)
+        result = value
+    elif isinstance(value, str):
+        # legacy callers (e.g. test fixtures) handing a pre-encoded
+        # JSON string; decode back to a structure so the codec applies
+        # exactly one encoding step. malformed input surfaces as a
+        # clean ValueError from json.loads rather than as silent
+        # double-encoding deep in the write path.
+        result = json.loads(value)
     else:
-        result = json.dumps(value, default=_json_default)
+        raise TypeError(
+            f"JSONB column requires dict / list / str / None; got {type(value).__name__}",
+        )
     return result
 
 

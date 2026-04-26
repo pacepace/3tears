@@ -1312,8 +1312,12 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
     from threetears.agent.workspace.tools.fs_read import FsReadTool
     from threetears.agent.workspace.tools.fs_write import FsWriteTool
 
+    from threetears.core.collections import init_connection
+
     # --- infra ---
-    pool = await asyncpg.create_pool(pg_url, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(
+        pg_url, min_size=1, max_size=4, init=init_connection,
+    )
     assert pool is not None
     try:
         async with pool.acquire() as conn:

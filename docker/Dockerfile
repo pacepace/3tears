@@ -60,13 +60,6 @@ RUN apt-get update \
 RUN groupadd --system --gid 1001 appuser \
     && useradd --system --uid 1001 --gid appuser --create-home --home-dir /home/appuser appuser
 
-# Build tooling on the runtime stage so downstream consumer Dockerfiles
-# (aibots-base, hub, admin, schema, future 3tears apps) can `pip install /app`
-# from a source tree without spinning their own builder stage. Cost is
-# ~30 MB; benefit is collapsing every consumer Dockerfile to ~11 lines.
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir hatchling build
-
 # Wheels live in two places: copied into the venv, and preserved on disk
 # under /threetears-wheels for downstream `COPY --from=...` access.
 COPY --from=wheels /wheels /threetears-wheels
@@ -76,6 +69,14 @@ COPY --from=wheels /wheels /threetears-wheels
 RUN python -m venv /opt/threetears/.venv
 ENV VIRTUAL_ENV=/opt/threetears/.venv
 ENV PATH="/opt/threetears/.venv/bin:${PATH}"
+
+# Build tooling INTO the venv so downstream consumer Dockerfiles
+# (aibots-base, hub, admin, schema, future 3tears apps) can `python -m build`
+# and `pip install /app` from a source tree without spinning their own
+# builder stage. Must be inside the venv because PATH puts venv-bin first;
+# system-pip-installed `build` would be invisible to `python -m build`.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir hatchling build
 
 RUN pip install --no-cache-dir /threetears-wheels/*.whl
 

@@ -173,26 +173,32 @@ class StubCollection(BaseCollection[StubEntity]):
 
 
 def _make_nats_mock() -> AsyncMock:
-    """Create a NATS client mock with in-memory KV store."""
+    """typed-wrapper NATS mock with in-memory KV bucket."""
     store: dict[str, bytes] = {}
-    nats = AsyncMock()
-    nats.bucket_name = MagicMock(return_value="test_collections")
 
-    async def _get(bucket: str, key: str) -> bytes | None:
+    async def _get(*, key: str) -> bytes | None:
         return store.get(key)
 
-    async def _put(bucket: str, key: str, value: bytes) -> bool:
+    async def _put(*, key: str, value: bytes) -> int:
         store[key] = value
-        return True
+        return len(store)
 
-    async def _delete(bucket: str, key: str) -> bool:
+    async def _delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
+        existed = key in store
         store.pop(key, None)
-        return True
+        return existed or revision is None
 
-    nats.get = AsyncMock(side_effect=_get)
-    nats.put = AsyncMock(side_effect=_put)
-    nats.delete = AsyncMock(side_effect=_delete)
+    bucket = AsyncMock()
+    bucket.get = AsyncMock(side_effect=_get)
+    bucket.put = AsyncMock(side_effect=_put)
+    bucket.delete = AsyncMock(side_effect=_delete)
+
+    nats = AsyncMock()
+    nats.kv_bucket = AsyncMock(return_value=bucket)
+    nats.publish = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
     nats.store = store
+    nats.bucket = bucket
     return nats
 
 

@@ -24,10 +24,12 @@ classifiers = [
 ]
 dependencies = [
     "3tears-observe",
+    "3tears-nats",
     "sqlalchemy",
     "asyncpg",
     "nats-py",
     "aiosqlite",
+    "pydantic",
 ]
 
 [project.optional-dependencies]
@@ -42,3 +44,4 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears-observe = { workspace = true }
+3tears-nats = { workspace = true }

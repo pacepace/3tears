@@ -6,11 +6,12 @@
 # four repos must live as siblings of 3tears under the same parent
 # directory (the layout used in development and CI).
 #
-# Invocation MUST be from the parent directory containing every repo so the
-# `../<repo>` relative paths resolve. A convenience symlink at the parent
-# (`<parent>/docker-bake.hcl -> 3tears/docker-bake.hcl`) lets `docker buildx
-# bake` resolve the file automatically when invoked from the parent. See
-# scripts/dev-build.sh in the hub repo for the canonical wrapper.
+# Invocation MUST be from THIS directory (the 3tears repo root) because
+# buildx resolves a target's `context` relative to the bake file's
+# directory. Running from anywhere else (or via a symlink at the parent)
+# breaks the `../<repo>` paths. The hub repo ships scripts/dev-build.sh
+# which handles the cd plus the `--allow=fs.read=..` flag buildx
+# requires for contexts that read from outside the bake-file directory.
 #
 # Targets and groups:
 #   docker buildx bake threetears-base   # just the framework base

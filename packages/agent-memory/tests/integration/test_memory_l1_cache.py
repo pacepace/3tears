@@ -140,12 +140,21 @@ async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
 
 
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
-    """build an asyncpg pool with search_path pre-bound to the test schema."""
+    """build an asyncpg pool with search_path pre-bound to the test schema.
+
+    registers the canonical 3tears jsonb text codec on every connection
+    via :func:`threetears.core.collections.init_connection` -- without
+    it, ``_encode_jsonb``'s typed pass-through hands a dict to asyncpg
+    which has no idea how to encode it for ``$N::jsonb``.
+    """
+    from threetears.core.collections import init_connection
+
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
         max_size=4,
         server_settings={"search_path": f"{schema}, public"},
+        init=init_connection,
     )
     return result
 

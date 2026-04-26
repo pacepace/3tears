@@ -212,14 +212,23 @@ def _config() -> DefaultCoreConfig:
 
 
 def _nats() -> AsyncMock:
-    """build a no-op NATS mock."""
+    """build a no-op NATS wrapper mock matching the typed-wrapper api.
+
+    schema-backed tests verify SQL generation + asyncpg parameter
+    coercion; they do NOT exercise the L2 KV path. but
+    :class:`BaseCollection` may call into the wrapper during
+    auto-registration; the mock returns sensible no-op values for
+    every method the wrapper exposes.
+    """
+    bucket = AsyncMock()
+    bucket.get = AsyncMock(return_value=None)
+    bucket.put = AsyncMock(return_value=1)
+    bucket.delete = AsyncMock(return_value=True)
+
     nats = AsyncMock()
-    nats.bucket_name = MagicMock(return_value="test")
-    nats.get = AsyncMock(return_value=None)
-    nats.put = AsyncMock(return_value=True)
-    nats.delete = AsyncMock(return_value=True)
+    nats.kv_bucket = AsyncMock(return_value=bucket)
     nats.publish = AsyncMock()
-    nats.subscribe = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
     return nats
 
 
@@ -818,16 +827,44 @@ class TestWriteCoercion:
         assert isinstance(args[0], uuid.UUID)
 
     @pytest.mark.asyncio
-    async def test_dict_payload_becomes_json_string(self) -> None:
-        """JSONB columns receive a JSON-encoded string for ``::jsonb`` cast."""
+    async def test_jsonb_dict_passes_through_to_asyncpg(self) -> None:
+        """JSONB columns hand the raw dict to asyncpg.
+
+        asyncpg's registered ``jsonb`` text codec is the canonical
+        Python -> Postgres encoder; ``_encode_jsonb`` must NOT
+        json.dumps the value or the codec runs a second encoding step
+        and the column ends up storing a JSON-encoded string of the
+        intended object (regression: bootstrap admin user persisted
+        ``auth_identity`` as a quoted string, breaking
+        ``->>'username'`` lookups during login).
+        """
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        data = _sample_item(payload={"k": "v"})
+        payload = {"k": "v"}
+        data = _sample_item(payload=payload)
         await coll.save_to_postgres(data)
         args = pool.calls[0][2]
         # payload is at column index 3 (id, owner_id, label, payload)
-        assert args[3] == json.dumps({"k": "v"})
+        assert args[3] == payload
+        assert isinstance(args[3], dict)
+
+    @pytest.mark.asyncio
+    async def test_jsonb_pre_encoded_string_is_decoded(self) -> None:
+        """legacy callers handing a JSON string get decoded before asyncpg.
+
+        a pre-encoded JSON string would also double-encode through the
+        codec; ``_encode_jsonb`` decodes it back to a structure so the
+        codec applies exactly one encoding step.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
+        data = _sample_item(payload=json.dumps({"k": "v"}))
+        await coll.save_to_postgres(data)
+        args = pool.calls[0][2]
+        assert args[3] == {"k": "v"}
+        assert isinstance(args[3], dict)
 
     @pytest.mark.asyncio
     async def test_list_vec_becomes_bracketed_string(self) -> None:

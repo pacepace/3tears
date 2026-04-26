@@ -105,16 +105,23 @@ class _FakeNamespaceCollection:
         :ptype entity: _StubToolNamespace | None
         """
         self._entity = entity
+        self.last_get_by_name: str | None = None
 
     async def get_by_name(self, name: str) -> _StubToolNamespace | None:
         """return the preconfigured stub (may be ``None``).
 
-        :param name: tool namespace name (unused)
+        records the name argument on ``self.last_get_by_name`` so
+        tests can assert the authorizer constructs the canonical
+        sanitized form (``tools.<sanitized-mcp>.<sanitized-version>``)
+        from the dispatch's ``(mcp_name, mcp_version)`` rather than
+        passing the raw ``mcp_name`` directly.
+
+        :param name: tool namespace name
         :ptype name: str
         :return: preconfigured stub or ``None``
         :rtype: _StubToolNamespace | None
         """
-        _ = name
+        self.last_get_by_name = name
         return self._entity
 
 
@@ -302,7 +309,7 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.calc",
+            str(agent_id), str(user_id), "aibots.calc", "1.0",
         )
         assert result is True
 
@@ -327,7 +334,7 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.calc",
+            str(agent_id), str(user_id), "aibots.calc", "1.0",
         )
         assert result is False
 
@@ -351,7 +358,7 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), None, "aibots.calc",
+            str(agent_id), None, "aibots.calc", "1.0",
         )
         assert result is False
 
@@ -367,7 +374,7 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.unknown",
+            str(agent_id), str(user_id), "aibots.unknown", "1.0",
         )
         assert result is False
 
@@ -392,7 +399,7 @@ class TestRbacEvaluatorAuthorizer:
 
         # no memberships => no assignments => deny, even on platform tool
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "platform.time.now",
+            str(agent_id), str(user_id), "platform.time.now", "1.0",
         )
         assert result is False
 
@@ -416,6 +423,45 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            "not-a-uuid", str(user_id), "aibots.calc",
+            "not-a-uuid", str(user_id), "aibots.calc", "1.0",
         )
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_lookup_uses_canonical_sanitized_name(self) -> None:
+        """authorizer constructs canonical name from (mcp_name, mcp_version).
+
+        the dispatch carries the natural ``mcp_name`` /
+        ``mcp_version`` shape (e.g. ``aibots.admin.customer_management`` /
+        ``1.0``); the namespace ``name`` column carries the sanitized
+        plural-prefix form (``tools.aibots-admin-customer_management.1-0``).
+        without this canonicalization step the lookup never resolves
+        the row and every dispatch denies even when a valid grant
+        exists.
+        """
+        from threetears.core.namespaces import (
+            PLURAL_PREFIX_TOOL,
+            build_namespace_name,
+        )
+
+        user_id = uuid4()
+        agent_id = uuid4()
+        ns_coll = _FakeNamespaceCollection(None)
+
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
+            namespace_collection=ns_coll,
+        )
+
+        await authorizer.is_authorized(
+            str(agent_id),
+            str(user_id),
+            "aibots.admin.customer_management",
+            "1.0",
+        )
+
+        assert ns_coll.last_get_by_name == build_namespace_name(
+            PLURAL_PREFIX_TOOL,
+            "aibots.admin.customer_management",
+            "1.0",
+        )

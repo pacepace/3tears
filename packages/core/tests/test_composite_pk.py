@@ -29,9 +29,13 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
-from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.registry import (
+    CacheInvalidationMessage,
+    CollectionRegistry,
+)
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.nats import Subjects
 
 
 # ---------------------------------------------------------------------------
@@ -299,25 +303,32 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
 
 
 def _nats_mock() -> AsyncMock:
+    """typed-wrapper NATS mock with in-memory KV bucket."""
     store: dict[str, bytes] = {}
-    nats = AsyncMock()
-    nats.bucket_name = MagicMock(return_value="test_collections")
 
-    async def _get(bucket: str, key: str) -> bytes | None:
+    async def _get(*, key: str) -> bytes | None:
         return store.get(key)
 
-    async def _put(bucket: str, key: str, value: bytes) -> bool:
+    async def _put(*, key: str, value: bytes) -> int:
         store[key] = value
-        return True
+        return len(store)
 
-    async def _delete(bucket: str, key: str) -> bool:
+    async def _delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
+        existed = key in store
         store.pop(key, None)
-        return True
+        return existed or revision is None
 
-    nats.get = AsyncMock(side_effect=_get)
-    nats.put = AsyncMock(side_effect=_put)
-    nats.delete = AsyncMock(side_effect=_delete)
+    bucket = AsyncMock()
+    bucket.get = AsyncMock(side_effect=_get)
+    bucket.put = AsyncMock(side_effect=_put)
+    bucket.delete = AsyncMock(side_effect=_delete)
+
+    nats = AsyncMock()
+    nats.kv_bucket = AsyncMock(return_value=bucket)
+    nats.publish = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
     nats.store = store
+    nats.bucket = bucket
     return nats
 
 
@@ -441,11 +452,50 @@ class TestL2Key:
         # tuple input also valid for single-pk
         assert coll.l2_key(("e1",)) == "single_pk_table.e1"
 
-    def test_composite_key_joins_with_colon(
+    def test_composite_key_joins_with_underscore(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
     ) -> None:
+        """composite-pk keys join components with ``_``.
+
+        the JetStream KV grammar (``^[-/_=.a-zA-Z0-9]+$`` per
+        ``nats-server`` ``kv.go``) rejects ``:`` with
+        ``nats: JetStream.InvalidKeyError`` -- using ``:`` here was
+        the cause of the every-conversation-write KV warning storm.
+        """
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
-        assert coll.l2_key(("conv-A", "item-1")) == "fake_refs.conv-A:item-1"
+        assert coll.l2_key(("conv-A", "item-1")) == "fake_refs.conv-A_item-1"
+
+    def test_composite_key_passes_jetstream_kv_grammar(
+        self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
+    ) -> None:
+        """composite-pk keys with realistic UUID + tuple shapes pass
+        the JetStream KV ``valid-key`` regex.
+
+        regression for the conversations.<agent_uuid>:<conv_uuid>
+        key shape that tripped ``nats: JetStream.InvalidKeyError`` on
+        every chat dispatch.
+        """
+        import re
+        from uuid import uuid4
+
+        # exact regex copied from nats-server cmd/nats-server/kv.go
+        jetstream_kv_valid_key = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
+
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=_nats_mock())
+
+        # UUID-pair PK (conversations / memories / media / etc.)
+        agent_id = uuid4()
+        conv_id = uuid4()
+        key_uuid_pair = coll.l2_key((str(agent_id), str(conv_id)))
+        assert jetstream_kv_valid_key.match(key_uuid_pair), (
+            f"l2_key {key_uuid_pair!r} violates JetStream KV grammar"
+        )
+
+        # slug-pair PK (existing FakeRef fixture)
+        key_slug_pair = coll.l2_key(("conv-A", "item-1"))
+        assert jetstream_kv_valid_key.match(key_slug_pair), (
+            f"l2_key {key_slug_pair!r} violates JetStream KV grammar"
+        )
 
 
 class TestCollectionOps:
@@ -471,8 +521,10 @@ class TestCollectionOps:
         l1_row = coll.get_row_sync(("conv-A", "item-1"))
         assert l1_row is not None
         assert l1_row["score"] == 10
-        # L2 key uses colon join
-        assert "fake_refs.conv-A:item-1" in nats.store
+        # L2 key joins composite pk components with ``_`` so the key
+        # passes the JetStream KV grammar (``:`` is rejected with
+        # ``InvalidKeyError`` -- see test_composite_key_passes_jetstream_kv_grammar).
+        assert "fake_refs.conv-A_item-1" in nats.store
 
         # subsequent get hits L1 (no L2 call)
         nats.get.reset_mock()
@@ -538,63 +590,55 @@ class TestInvalidationWireFormat:
 
     @pytest.mark.asyncio
     async def test_publish_emits_ids_field_single_pk(self) -> None:
-        """single-pk publisher emits ``ids`` array of length 1."""
-        captured_payloads: list[bytes] = []
+        """single-pk publisher emits a typed envelope with length-1 ``ids``."""
+        captured: list[CacheInvalidationMessage] = []
         nats = AsyncMock()
 
-        async def _publish(subject: str, payload: bytes) -> bool:
-            captured_payloads.append(payload)
-            return True
+        async def _publish(*, subject: Any, message: CacheInvalidationMessage, reply_to: Any = None) -> None:  # noqa: ARG001
+            captured.append(message)
 
         nats.publish = AsyncMock(side_effect=_publish)
 
         reg = CollectionRegistry()
         await reg.publish_invalidation(nats, "some_table", "the-id")
 
-        assert len(captured_payloads) == 1
-        env = json.loads(captured_payloads[0])
-        assert env == {"table": "some_table", "ids": ["the-id"]}
+        assert len(captured) == 1
+        assert captured[0].table == "some_table"
+        assert captured[0].ids == ["the-id"]
 
     @pytest.mark.asyncio
     async def test_publish_emits_ids_field_composite_pk(self) -> None:
-        """composite-pk publisher emits ``ids`` array matching pk arity."""
-        captured_payloads: list[bytes] = []
+        """composite-pk publisher emits a typed envelope matching pk arity."""
+        captured: list[CacheInvalidationMessage] = []
         nats = AsyncMock()
 
-        async def _publish(subject: str, payload: bytes) -> bool:
-            captured_payloads.append(payload)
-            return True
+        async def _publish(*, subject: Any, message: CacheInvalidationMessage, reply_to: Any = None) -> None:  # noqa: ARG001
+            captured.append(message)
 
         nats.publish = AsyncMock(side_effect=_publish)
 
         reg = CollectionRegistry()
         await reg.publish_invalidation(nats, "fake_refs", ("conv-A", "item-1"))
 
-        assert len(captured_payloads) == 1
-        env = json.loads(captured_payloads[0])
-        assert env == {"table": "fake_refs", "ids": ["conv-A", "item-1"]}
+        assert len(captured) == 1
+        assert captured[0].table == "fake_refs"
+        assert captured[0].ids == ["conv-A", "item-1"]
 
     @pytest.mark.asyncio
     async def test_subscriber_evicts_composite_row(
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
     ) -> None:
-        """subscriber receives ``ids`` array, decodes tuple, evicts L1."""
+        """subscriber receives a typed envelope, decodes tuple, evicts L1."""
         nats = _nats_mock()
         pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
 
         subscribers: list[Any] = []
 
-        async def _subscribe(
-            subject: str,
-            callback: Any | None = None,
-            *,
-            cb: Any | None = None,
-        ) -> None:
-            chosen = cb if cb is not None else callback
-            subscribers.append(chosen)
+        async def _subscribe_typed(*, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            subscribers.append(cb)
 
-        nats.subscribe = AsyncMock(side_effect=_subscribe)
+        nats.subscribe_typed = AsyncMock(side_effect=_subscribe_typed)
 
         # seed L1 with a composite-pk row
         coll.write_to_cache_sync(
@@ -606,9 +650,10 @@ class TestInvalidationWireFormat:
         await composite_registry.start_invalidation_listener(nats)
         assert len(subscribers) == 1
 
-        # dispatch an invalidation envelope with ``ids``
-        signal = json.dumps({"table": "fake_refs", "ids": ["conv-A", "item-1"]}).encode()
-        await subscribers[0](signal)
+        # dispatch a typed invalidation envelope
+        await subscribers[0](
+            CacheInvalidationMessage(table="fake_refs", ids=["conv-A", "item-1"]),
+        )
 
         after = coll.get_row_sync(("conv-A", "item-1"))
         assert after is None
@@ -624,53 +669,27 @@ class TestInvalidationWireFormat:
 
         subscribers: list[Any] = []
 
-        async def _subscribe(
-            subject: str,
-            callback: Any | None = None,
-            *,
-            cb: Any | None = None,
-        ) -> None:
-            chosen = cb if cb is not None else callback
-            subscribers.append(chosen)
+        async def _subscribe_typed(*, subject: Any, cb: Any, message_type: Any, **kwargs: Any) -> None:  # noqa: ARG001
+            subscribers.append(cb)
 
-        nats.subscribe = AsyncMock(side_effect=_subscribe)
+        nats.subscribe_typed = AsyncMock(side_effect=_subscribe_typed)
 
         coll.write_to_cache_sync(
             {"conversation_id": "conv-A", "item_id": "item-1", "score": 1, "note": "x"},
         )
         await composite_registry.start_invalidation_listener(nats)
 
-        # envelope carries a single id for a composite-pk collection — ignored
-        bad_signal = json.dumps({"table": "fake_refs", "ids": ["conv-A"]}).encode()
-        await subscribers[0](bad_signal)
+        # typed envelope but with single id for a composite-pk collection -- ignored
+        await subscribers[0](
+            CacheInvalidationMessage(table="fake_refs", ids=["conv-A"]),
+        )
 
         # row still in L1
         row = coll.get_row_sync(("conv-A", "item-1"))
         assert row is not None
 
-    @pytest.mark.asyncio
-    async def test_subscriber_ignores_malformed_payloads(self) -> None:
-        """missing ``ids`` field is logged and ignored, no crash."""
-        reg = CollectionRegistry()
-        nats = AsyncMock()
-        subscribers: list[Any] = []
-
-        async def _subscribe(
-            subject: str,
-            callback: Any | None = None,
-            *,
-            cb: Any | None = None,
-        ) -> None:
-            chosen = cb if cb is not None else callback
-            subscribers.append(chosen)
-
-        nats.subscribe = AsyncMock(side_effect=_subscribe)
-        await reg.start_invalidation_listener(nats)
-
-        # envelope using the retired ``entity_id`` field is rejected as malformed
-        legacy = json.dumps({"table": "t", "entity_id": "x"}).encode()
-        await subscribers[0](legacy)  # must not raise
-
-        # envelope with empty ``ids`` array is rejected
-        empty_ids = json.dumps({"table": "t", "ids": []}).encode()
-        await subscribers[0](empty_ids)  # must not raise
+    # NOTE: malformed-payload rejection is the typed wrapper's
+    # responsibility (``model_validate_json`` returns a
+    # :class:`pydantic.ValidationError` long before the message
+    # reaches the registry callback). that contract is tested
+    # directly against the wrapper in 3tears/packages/nats/tests.

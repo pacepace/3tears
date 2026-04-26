@@ -368,6 +368,7 @@ class CallProxy:
                 agent_id_log,
                 user_id_log,
                 request.tool_name,
+                request.tool_version,
             )
             if not authorized:
                 response = ProxyCallResponse(

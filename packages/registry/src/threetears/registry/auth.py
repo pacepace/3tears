@@ -79,6 +79,15 @@ class AgentToolAuthorizer(Protocol):
     without a user identity (fully-stateless tool dispatch) pass
     ``user_id=None``; implementations return ``False`` because tool
     grants are always two-sided.
+
+    Phase 26 widened the protocol again to carry ``tool_version`` so
+    rbac implementations can construct the canonical
+    ``platform.namespaces.name`` shape
+    (``tools.<sanitized-mcp>.<sanitized-version>``) from the
+    dispatch tuple. without the version on the protocol, the
+    canonical name is undefined and the namespace lookup is
+    inherently ambiguous between concurrent versions of the same
+    tool.
     """
 
     async def is_authorized(
@@ -86,6 +95,7 @@ class AgentToolAuthorizer(Protocol):
         agent_id: str,
         user_id: str | None,
         tool_name: str,
+        tool_version: str,
     ) -> bool:
         """check if agent + user pair is authorized to call named tool.
 
@@ -94,8 +104,12 @@ class AgentToolAuthorizer(Protocol):
         :param user_id: invoking user UUID in string form, or
             ``None`` when the dispatch carries no user identity
         :ptype user_id: str | None
-        :param tool_name: fully qualified tool name to check
+        :param tool_name: fully qualified ``mcp_name`` to check
         :ptype tool_name: str
+        :param tool_version: ``mcp_version`` of the tool dispatch;
+            paired with ``tool_name`` to build the canonical
+            namespace lookup key
+        :ptype tool_version: str
         :return: True if authorized, False if denied
         :rtype: bool
         """
@@ -115,6 +129,7 @@ class AllowAllAuthorizer:
         agent_id: str,
         user_id: str | None,
         tool_name: str,
+        tool_version: str,
     ) -> bool:
         """return True for any agent and tool combination.
 
@@ -124,6 +139,8 @@ class AllowAllAuthorizer:
         :ptype user_id: str | None
         :param tool_name: fully qualified tool name (ignored)
         :ptype tool_name: str
+        :param tool_version: tool version (ignored)
+        :ptype tool_version: str
         :return: always True
         :rtype: bool
         """
@@ -145,6 +162,7 @@ class DenyAllAuthorizer:
         agent_id: str,
         user_id: str | None,
         tool_name: str,
+        tool_version: str,
     ) -> bool:
         """return False for any agent and tool combination.
 
@@ -154,6 +172,8 @@ class DenyAllAuthorizer:
         :ptype user_id: str | None
         :param tool_name: fully qualified tool name (ignored)
         :ptype tool_name: str
+        :param tool_version: tool version (ignored)
+        :ptype tool_version: str
         :return: always False
         :rtype: bool
         """

@@ -229,11 +229,13 @@ async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     :return: ready pool
     :rtype: asyncpg.Pool
     """
+    from threetears.core.collections import init_connection
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
         max_size=4,
         server_settings={"search_path": f"{schema}, public"},
+        init=init_connection,
     )
     return result
 
