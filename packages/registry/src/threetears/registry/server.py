@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.nats import NatsClient
-from threetears.observe import get_logger
+from threetears.observe import HealthCheck, HealthServer, get_logger
 from threetears.observe.resilience import retry_with_backoff
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.discovery import DiscoveryHandler
@@ -156,6 +156,7 @@ class RegistryServer:
         self._heartbeat_subscriber: HeartbeatSubscriber | None = None
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
+        self._health_server: HealthServer | None = None
         self._shutdown_event = asyncio.Event()
 
     async def serve(self) -> None:
@@ -314,6 +315,36 @@ class RegistryServer:
             "registry.call_proxy.start",
         )
 
+        # canonical /healthz endpoint -- consumed by docker compose +
+        # k8s liveness probes + the aibots devx preflight. port 8000
+        # matches the inherited aibots-hub Dockerfile HEALTHCHECK so
+        # the same probe works whether the container runs as the hub,
+        # the registry, or any other consumer of that base.
+        health_server = HealthServer(
+            port=8000,
+            service_name="registry",
+            checks=[
+                HealthCheck(
+                    name="nats",
+                    probe=lambda: self._nc is not None and self._nc.is_connected,
+                ),
+                HealthCheck(
+                    name="catalog",
+                    probe=lambda: self._catalog is not None,
+                ),
+                HealthCheck(
+                    name="registration_handler",
+                    probe=lambda: self._registration_handler is not None,
+                ),
+                HealthCheck(
+                    name="call_proxy",
+                    probe=lambda: self._call_proxy is not None,
+                ),
+            ],
+        )
+        await health_server.start()
+        self._health_server = health_server
+
     def _install_signal_handlers(self) -> None:
         """install SIGINT and SIGTERM handlers for graceful shutdown."""
         loop = asyncio.get_running_loop()
@@ -333,6 +364,8 @@ class RegistryServer:
         """
         _logger.info("shutting down registry server")
 
+        if self._health_server is not None:
+            await self._health_server.stop()
         if self._call_proxy is not None:
             await self._call_proxy.stop()
         if self._discovery_handler is not None:

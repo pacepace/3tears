@@ -22,7 +22,13 @@ import signal
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from threetears.observe import configure_logging, get_logger, spawn_background
+from threetears.observe import (
+    HealthCheck,
+    HealthServer,
+    configure_logging,
+    get_logger,
+    spawn_background,
+)
 
 if TYPE_CHECKING:
     from threetears.agent.tools.server import ToolServer
@@ -89,12 +95,19 @@ class ToolServerBootstrap:
         already own the event loop. ``run`` is the sync convenience
         wrapper that drives this through ``asyncio.run``.
 
+        also starts a canonical :class:`HealthServer` on port 8000
+        so docker / k8s liveness probes can verify the pod is alive
+        + connected to NATS without a custom per-pod health
+        endpoint.
+
         :return: None
         :rtype: None
         """
         server = await self.build_server()
         await self.register_tools(server)
         self.install_signal_handlers(server)
+
+        health_server = await self._start_health_server(server)
 
         log.info(
             f"{self._service_name} starting",
@@ -106,10 +119,64 @@ class ToolServerBootstrap:
         try:
             await self.run_serve(server)
         finally:
+            if health_server is not None:
+                try:
+                    await health_server.stop()
+                except Exception as exc:
+                    log.warning(
+                        "health server stop failed",
+                        extra={"extra_data": {"error": str(exc)}},
+                    )
             log.info(
                 f"{self._service_name} stopped",
                 extra={"extra_data": {"service": self._service_name}},
             )
+
+    async def _start_health_server(self, server: "ToolServer") -> "HealthServer | None":
+        """start the canonical /healthz listener on port 8000.
+
+        port 8000 matches the inherited aibots-hub Dockerfile
+        HEALTHCHECK so docker / k8s liveness probes work for every
+        consumer of that base image without per-service compose
+        overrides. failures here are logged + swallowed -- the tool
+        pod's primary job is NATS request/reply, not health probing,
+        so a port-bind collision (multiple pods on the same docker
+        network competing for 8000) must not abort startup.
+
+        :param server: tool server whose state the checks read from
+        :ptype server: ToolServer
+        :return: started :class:`HealthServer`, or ``None`` if the
+            listener failed to bind
+        :rtype: HealthServer | None
+        """
+        health_server = HealthServer(
+            port=8000,
+            service_name=self._service_name,
+            checks=[
+                HealthCheck(
+                    name="nats",
+                    probe=lambda: server.is_connected,
+                ),
+                HealthCheck(
+                    name="tools_registered",
+                    probe=lambda: server.tools_count > 0,
+                ),
+            ],
+        )
+        try:
+            await health_server.start()
+        except Exception as exc:
+            log.warning(
+                "health server failed to start; tool pod will run without /healthz",
+                extra={
+                    "extra_data": {
+                        "service": self._service_name,
+                        "error": str(exc),
+                    }
+                },
+            )
+            return None
+        return health_server
 
     async def build_server(self) -> "ToolServer":
         """build the ``ToolServer`` instance.
