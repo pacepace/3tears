@@ -41,7 +41,7 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 
-from tests.unit._fake_loaders import FakeStore
+from tests.unit._fake_loaders import FakeStore, make_cache
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ class TestAgentOwnershipShortCircuit:
             namespace=namespace, action="read", agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.agent_owner_short_circuited is True
@@ -209,7 +209,7 @@ class TestAgentOwnershipShortCircuit:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -251,7 +251,7 @@ class TestAgentOwnershipShortCircuit:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert "write" in result.effective_actions
@@ -290,7 +290,7 @@ class TestSingleSideUser:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -313,7 +313,7 @@ class TestSingleSideUser:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -350,7 +350,7 @@ class TestSingleSideAgent:
             namespace=namespace, action="read", agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -410,7 +410,7 @@ class TestIntersection:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         # admin ∩ reader = {read}; write is denied
         assert result.decision is False
@@ -451,7 +451,7 @@ class TestIntersection:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -494,7 +494,7 @@ class TestIntersection:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -538,7 +538,7 @@ class TestIntersection:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.limiting_side == LimitingSide.EQUAL
@@ -583,7 +583,7 @@ class TestWildcardRole:
             namespace=namespace, action="write", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert "write" in result.effective_actions
@@ -622,7 +622,7 @@ class TestWildcardRole:
             namespace=namespace, action="write", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read", "write"})
@@ -663,7 +663,7 @@ class TestTypeCustomerScope:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
 
@@ -694,7 +694,7 @@ class TestTypeCustomerScope:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is False
 
@@ -730,7 +730,7 @@ class TestAllScope:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
 
@@ -771,7 +771,7 @@ class TestMixedMembership:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         # agent side empty -> deny
         assert result.decision is False
@@ -818,7 +818,7 @@ class TestCrossCustomerWall:
             namespace=namespace, action="read", user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         # filter cuts the membership row -> no eligible groups -> empty side
         assert result.decision is False
@@ -845,7 +845,7 @@ class TestEvaluateDecisionWrapper:
             namespace=namespace, action="read", user_id=user,
         )
         decision = await evaluate_decision(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert decision is False  # no grants
 
@@ -861,7 +861,7 @@ class TestEvaluateDecisionWrapper:
             agent_id=agent,
         )
         decision = await evaluate_decision(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert decision is True
 
@@ -884,7 +884,7 @@ class TestContextValidation:
         ctx = EvaluationContext(namespace=namespace, action="read")
         with pytest.raises(ValueError, match="at least one"):
             await evaluate_with_trail(
-                ctx, membership_loader=store, grant_loader=store,
+                ctx, cache=make_cache(store),
             )
 
 
@@ -939,7 +939,7 @@ class TestLimitingSide:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         # user_actions = {read}; agent_actions = {read, write, delete}

@@ -43,9 +43,8 @@ from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import (
+    AclCache,
     EvaluationContext,
-    GrantLoader,
-    MembershipLoader,
     Namespace as AclNamespace,
     evaluate_decision,
 )
@@ -80,49 +79,35 @@ class RbacEvaluatorAuthorizer:
     this matches the shared-workspace pattern (no implicit grants on
     shared-type rows).
 
-    :param acl_cache: shared :class:`threetears.agent.acl.AclCache`
-        instance. carried on the authorizer so future per-namespace
-        decision caching can slot in without widening the constructor;
-        not read by :meth:`is_authorized` today (the evaluator hits
-        loaders directly each call)
-    :ptype acl_cache: Any
-    :param membership_loader: actor -> memberships resolver
-    :ptype membership_loader: MembershipLoader
-    :param grant_loader: groups -> assignments + roles resolver
-    :ptype grant_loader: GrantLoader
+    :param acl_cache: shared :class:`AclCache` carrying loaders +
+        ttl-bounded layers; consulted on every authorize hit so the
+        bulk of decisions stay in process memory
+    :ptype acl_cache: AclCache
     :param namespace_collection: three-tier ``NamespaceCollection``
         whose ``get_by_name(name)`` method resolves tool namespaces
         by canonical name (``tool:<mcp_name>:<version>``). typed
-        ``Any`` because the concrete Collection class lives in
+        ``Any`` because concrete Collection class lives in
         :mod:`aibots.hub.broker.namespaces`, a layer above this
-        package in the dependency graph; the caller's wiring code
-        passes the real Collection instance
+        package in dependency graph; caller's wiring code
+        passes real Collection instance
     :ptype namespace_collection: Any
     """
 
     def __init__(
         self,
         *,
-        acl_cache: Any,
-        membership_loader: MembershipLoader,
-        grant_loader: GrantLoader,
+        acl_cache: AclCache,
         namespace_collection: Any,
     ) -> None:
-        """wire the authorizer to its loaders + namespace collection.
+        """wire authorizer to its cache + namespace collection.
 
-        :param acl_cache: shared :class:`threetears.agent.acl.AclCache`
-        :ptype acl_cache: Any
-        :param membership_loader: actor -> memberships resolver
-        :ptype membership_loader: MembershipLoader
-        :param grant_loader: groups -> assignments + roles resolver
-        :ptype grant_loader: GrantLoader
+        :param acl_cache: shared :class:`AclCache`
+        :ptype acl_cache: AclCache
         :param namespace_collection: three-tier ``NamespaceCollection``
-            whose :meth:`get_by_name` surfaces the tool namespace row
+            whose :meth:`get_by_name` surfaces tool namespace row
         :ptype namespace_collection: Any
         """
         self._acl_cache = acl_cache
-        self._membership_loader = membership_loader
-        self._grant_loader = grant_loader
         self._namespace_collection = namespace_collection
 
     async def is_authorized(
@@ -224,9 +209,5 @@ class RbacEvaluatorAuthorizer:
             user_id=user_uuid,
             agent_id=agent_uuid,
         )
-        result = await evaluate_decision(
-            ctx,
-            membership_loader=self._membership_loader,
-            grant_loader=self._grant_loader,
-        )
+        result = await evaluate_decision(ctx, cache=self._acl_cache)
         return result

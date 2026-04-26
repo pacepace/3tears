@@ -389,8 +389,7 @@ class TestEvaluatorDelegation:
             captured["action"] = ctx.action
             captured["user_id"] = ctx.user_id
             captured["agent_id"] = ctx.agent_id
-            captured["membership_loader"] = kwargs["membership_loader"]
-            captured["grant_loader"] = kwargs["grant_loader"]
+            captured["cache"] = kwargs["cache"]
             return True
 
         monkeypatch.setattr(_authorize_module, "evaluate_decision", fake_eval)
@@ -406,8 +405,7 @@ class TestEvaluatorDelegation:
         assert captured["action"] == "read"
         assert captured["user_id"] == caller_user
         assert captured["agent_id"] == caller_agent
-        assert captured["membership_loader"] is cache.membership_loader
-        assert captured["grant_loader"] is cache.grant_loader
+        assert captured["cache"] is cache
 
     @pytest.mark.asyncio
     async def test_write_forwards_write_action_verbatim(

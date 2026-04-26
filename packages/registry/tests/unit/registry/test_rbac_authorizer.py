@@ -29,6 +29,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.acl import (
+    AclCache,
     Group,
     GroupMembership,
     MemberType,
@@ -38,6 +39,26 @@ from threetears.agent.acl import (
     ScopeType,
 )
 from threetears.registry.rbac_authorizer import RbacEvaluatorAuthorizer
+
+
+def _cache(membership_loader: Any, grant_loader: Any) -> AclCache:
+    """build an :class:`AclCache` wrapping the supplied loaders.
+
+    test helper used in place of the per-test ``acl_cache=None`` +
+    loaders kwargs the authorizer used to accept. one cache is
+    created per test so ttl state never leaks between cases.
+
+    :param membership_loader: actor -> memberships resolver
+    :ptype membership_loader: Any
+    :param grant_loader: groups -> assignments resolver
+    :ptype grant_loader: Any
+    :return: fresh cache wrapping the loaders
+    :rtype: AclCache
+    """
+    return AclCache(
+        membership_loader=membership_loader,
+        grant_loader=grant_loader,
+    )
 
 
 class _StubToolNamespace:
@@ -259,15 +280,16 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(
-                users={user_id: (user_membership,)},
-                agents={agent_id: (agent_membership,)},
-            ),
-            grant_loader=_FakeGrantLoader(
-                assignments={group_id: (assignment,)},
-                roles={role_id: role},
-                groups={group_id: group},
+            acl_cache=_cache(
+                _FakeMembershipLoader(
+                    users={user_id: (user_membership,)},
+                    agents={agent_id: (agent_membership,)},
+                ),
+                _FakeGrantLoader(
+                    assignments={group_id: (assignment,)},
+                    roles={role_id: role},
+                    groups={group_id: group},
+                ),
             ),
             namespace_collection=_FakeNamespaceCollection(
                 _StubToolNamespace(
@@ -293,9 +315,7 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(),
-            grant_loader=_FakeGrantLoader(),
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
             namespace_collection=_FakeNamespaceCollection(
                 _StubToolNamespace(
                     id=namespace_id,
@@ -319,9 +339,7 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(),
-            grant_loader=_FakeGrantLoader(),
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
             namespace_collection=_FakeNamespaceCollection(
                 _StubToolNamespace(
                     id=namespace_id,
@@ -344,9 +362,7 @@ class TestRbacEvaluatorAuthorizer:
         user_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(),
-            grant_loader=_FakeGrantLoader(),
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
             namespace_collection=_FakeNamespaceCollection(None),
         )
 
@@ -363,9 +379,7 @@ class TestRbacEvaluatorAuthorizer:
         namespace_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(),
-            grant_loader=_FakeGrantLoader(),
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
             namespace_collection=_FakeNamespaceCollection(
                 _StubToolNamespace(
                     id=namespace_id,
@@ -390,9 +404,7 @@ class TestRbacEvaluatorAuthorizer:
         customer_id = uuid4()
 
         authorizer = RbacEvaluatorAuthorizer(
-            acl_cache=None,
-            membership_loader=_FakeMembershipLoader(),
-            grant_loader=_FakeGrantLoader(),
+            acl_cache=_cache(_FakeMembershipLoader(), _FakeGrantLoader()),
             namespace_collection=_FakeNamespaceCollection(
                 _StubToolNamespace(
                     id=namespace_id,

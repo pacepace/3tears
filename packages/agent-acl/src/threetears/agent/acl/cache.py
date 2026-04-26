@@ -44,7 +44,7 @@ from threading import RLock
 from uuid import UUID
 
 from threetears.agent.acl.loader import GrantLoader, MembershipLoader
-from threetears.agent.acl.types import Trail
+from threetears.agent.acl.types import GroupMembership, Trail
 from threetears.observe import get_logger
 
 __all__ = [
@@ -108,13 +108,21 @@ class GroupTypeCustomerKey:
 class ActorMembershipEntry:
     """value stored in the membership layer.
 
-    :ivar group_ids: tuple of group UUIDs the actor belongs to
-        (deterministically ordered by the loader)
+    stores the full membership rows, not just group ids, so the
+    evaluator's cross-customer + member-type filter can run against
+    cached state without a loader round-trip on the hot path. group
+    ids are derivable from the rows; the row carries the
+    ``customer_id`` discriminator the filter needs.
+
+    :ivar memberships: tuple of :class:`GroupMembership` rows for the
+        actor (deterministically ordered by the loader); on a cache
+        hit the evaluator filters this in process for the
+        namespace's customer + member type
     :ivar date_cached: utc moment the entry was minted; ttl is
         measured against this
     """
 
-    group_ids: tuple[UUID, ...]
+    memberships: tuple[GroupMembership, ...]
     date_cached: datetime
 
 
@@ -238,19 +246,20 @@ class AclCache:
     def put_membership(
         self,
         key: ActorMembershipKey,
-        group_ids: tuple[UUID, ...],
+        memberships: tuple[GroupMembership, ...],
     ) -> ActorMembershipEntry:
         """insert or replace a membership entry.
 
         :param key: actor identity tuple
         :ptype key: ActorMembershipKey
-        :param group_ids: tuple of group UUIDs the actor belongs to
-        :ptype group_ids: tuple[UUID, ...]
+        :param memberships: tuple of :class:`GroupMembership` rows
+            the actor belongs to
+        :ptype memberships: tuple[GroupMembership, ...]
         :return: stored entry (with freshly-stamped ``date_cached``)
         :rtype: ActorMembershipEntry
         """
         entry = ActorMembershipEntry(
-            group_ids=group_ids, date_cached=datetime.now(UTC),
+            memberships=memberships, date_cached=datetime.now(UTC),
         )
         with self._lock:
             self._membership[key] = entry

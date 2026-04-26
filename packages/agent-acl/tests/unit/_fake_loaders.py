@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from threetears.agent.acl.cache import AclCache
 from threetears.agent.acl.types import (
     Group,
     GroupMembership,
@@ -33,7 +34,28 @@ from threetears.agent.acl.types import (
     RoleAssignment,
 )
 
-__all__ = ["FakeStore"]
+__all__ = ["FakeStore", "make_cache"]
+
+
+def make_cache(store: "FakeStore", ttl_seconds: int = 60) -> AclCache:
+    """build an :class:`AclCache` whose loaders are backed by ``store``.
+
+    convenience used by every evaluator unit test that needs a
+    cache-shaped argument. ``store`` itself satisfies both loader
+    Protocols, so the cache constructs cleanly with a single handle.
+
+    :param store: in-memory fake fixture
+    :ptype store: FakeStore
+    :param ttl_seconds: cache ttl; defaults to sixty seconds
+    :ptype ttl_seconds: int
+    :return: cache wired against ``store``
+    :rtype: AclCache
+    """
+    return AclCache(
+        membership_loader=store,
+        grant_loader=store,
+        ttl_seconds=ttl_seconds,
+    )
 
 
 @dataclass

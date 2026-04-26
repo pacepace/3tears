@@ -41,7 +41,7 @@ from threetears.agent.acl import (
     evaluate_with_trail,
 )
 
-from tests.unit._fake_loaders import FakeStore
+from tests.unit._fake_loaders import FakeStore, make_cache
 
 
 def _ns(
@@ -169,7 +169,7 @@ class TestMultiplePathsSurfaceMultipleTrails:
             namespace=namespace, action="read", user_id=alice,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         # both trails surface; operator sees every grant path
@@ -227,7 +227,7 @@ class TestPerSideTrailIndependence:
             user_id=alice, agent_id=bot,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert len(result.user_trails) == 1
@@ -283,7 +283,7 @@ class TestEmptyContributionRecordsTrail:
             namespace=namespace, action="read", user_id=alice,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         # decision denies because no actions for workspace type
         assert result.decision is False
@@ -328,7 +328,7 @@ class TestOwnerShortcutNoAgentTrail:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.decision is True
         assert result.agent_owner_short_circuited is True
@@ -371,7 +371,7 @@ class TestLimitingSideRoundTrip:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.limiting_side == LimitingSide.USER
 
@@ -403,7 +403,7 @@ class TestLimitingSideRoundTrip:
             user_id=user, agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         assert result.limiting_side == LimitingSide.NEITHER
         assert result.decision is False
@@ -444,10 +444,10 @@ class TestTrailOrderingDeterministic:
             namespace=namespace, action="read", user_id=alice,
         )
         result1 = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         result2 = await evaluate_with_trail(
-            ctx, membership_loader=store, grant_loader=store,
+            ctx, cache=make_cache(store),
         )
         # same trail order both times
         ids1 = [t.assignment.id for t in result1.trails]

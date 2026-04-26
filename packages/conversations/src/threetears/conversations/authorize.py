@@ -425,11 +425,7 @@ async def authorize_conversation_access(
         user_id=caller_user_id,
         agent_id=caller_agent_id,
     )
-    decision = await evaluate_decision(
-        eval_ctx,
-        membership_loader=deps.membership_loader,
-        grant_loader=deps.grant_loader,
-    )
+    decision = await evaluate_decision(eval_ctx, cache=deps.acl_cache)
 
     if not decision:
         log.info(

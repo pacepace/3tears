@@ -146,14 +146,29 @@ class TestMembershipLayer:
 
     def test_put_then_get_returns_entry(self) -> None:
         """entry is round-tripped intact."""
+        from threetears.agent.acl import MemberType
         cache = _make_cache(ttl_seconds=60)
         user = uuid4()
-        groups = (uuid4(), uuid4())
+        customer = uuid4()
+        memberships = (
+            GroupMembership(
+                group_id=uuid4(),
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            ),
+            GroupMembership(
+                group_id=uuid4(),
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            ),
+        )
         key = ActorMembershipKey(actor_kind="user", actor_id=user)
-        cache.put_membership(key, groups)
+        cache.put_membership(key, memberships)
         entry = cache.get_membership(key)
         assert entry is not None
-        assert entry.group_ids == groups
+        assert entry.memberships == memberships
 
     def test_get_unknown_returns_none(self) -> None:
         """miss returns None without raising."""

@@ -180,11 +180,7 @@ async def authorize_workspace_access(
         user_id=ctx.user_id,
         agent_id=ctx.agent_id,
     )
-    decision = await evaluate_decision(
-        eval_ctx,
-        membership_loader=acl_cache.membership_loader,
-        grant_loader=acl_cache.grant_loader,
-    )
+    decision = await evaluate_decision(eval_ctx, cache=acl_cache)
 
     grant_error: Exception | None = None
     if not decision:
@@ -282,8 +278,7 @@ async def authorize_workspace_file_access(
         agent_id=ctx.agent_id,
         path=relative_path,
         direction=direction,
-        membership_loader=acl_cache.membership_loader,
-        grant_loader=acl_cache.grant_loader,
+        cache=acl_cache,
     )
     if not decision:
         _log_denial(

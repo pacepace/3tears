@@ -171,11 +171,7 @@ class MemoryAccessService:
                 action=ACTION_MEMORY_READ,
                 user_id=caller_user_id,
             )
-            allowed = await evaluate_decision(
-                ctx,
-                membership_loader=self.acl_cache.membership_loader,
-                grant_loader=self.acl_cache.grant_loader,
-            )
+            allowed = await evaluate_decision(ctx, cache=self.acl_cache)
             if allowed:
                 authorized.append(owner_agent_id)
 

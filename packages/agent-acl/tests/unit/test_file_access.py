@@ -26,7 +26,7 @@ from threetears.agent.acl import (
     evaluate_file_access,
 )
 
-from tests.unit._fake_loaders import FakeStore
+from tests.unit._fake_loaders import FakeStore, make_cache
 
 
 def _ns_workspace() -> Namespace:
@@ -113,8 +113,7 @@ class TestReadPermit:
             agent_id=None,
             path="docs/readme.md",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -137,8 +136,7 @@ class TestReadPermit:
             agent_id=None,
             path="sub/deep/foo.yaml",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -164,8 +162,7 @@ class TestReadPermit:
             agent_id=None,
             path="docs/guide/intro.md",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -192,8 +189,7 @@ class TestReadDeny:
             agent_id=None,
             path="foo.txt",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is False
 
@@ -216,8 +212,7 @@ class TestReadDeny:
             agent_id=None,
             path="foo.yaml",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is False
 
@@ -234,8 +229,7 @@ class TestReadDeny:
             agent_id=None,
             path="anything.yaml",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is False
 
@@ -262,8 +256,7 @@ class TestWrite:
             agent_id=None,
             path="out/foo.yaml",
             direction="write",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -286,8 +279,7 @@ class TestWrite:
             agent_id=None,
             path="foo.yaml",
             direction="write",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is False
 
@@ -313,8 +305,7 @@ class TestOwnerShortCircuit:
             agent_id=agent,
             path="anything/goes.txt",
             direction="read",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -336,8 +327,7 @@ class TestOwnerShortCircuit:
             agent_id=agent,
             path="path.md",
             direction="write",
-            membership_loader=store,
-            grant_loader=store,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -357,8 +347,7 @@ class TestValidation:
                 agent_id=None,
                 path="x",
                 direction="delete",  # type: ignore[arg-type]
-                membership_loader=store,
-                grant_loader=store,
+                cache=make_cache(store),
             )
 
     @pytest.mark.asyncio
@@ -373,6 +362,5 @@ class TestValidation:
                 agent_id=None,
                 path="x",
                 direction="read",
-                membership_loader=store,
-                grant_loader=store,
+                cache=make_cache(store),
             )

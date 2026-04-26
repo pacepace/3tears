@@ -300,10 +300,16 @@ def _build_deps(
                 if gid in (groups or {})
             }
 
+    from threetears.agent.acl import AclCache
+    membership_loader = _MembershipLoader()
+    grant_loader = _GrantLoader()
     return ConversationAuthorizerDependencies(
-        acl_cache=None,
-        membership_loader=_MembershipLoader(),
-        grant_loader=_GrantLoader(),
+        acl_cache=AclCache(
+            membership_loader=membership_loader,
+            grant_loader=grant_loader,
+        ),
+        membership_loader=membership_loader,
+        grant_loader=grant_loader,
         namespace_collection=namespace_collection,
         group_collection=object(),
         group_member_collection=object(),
