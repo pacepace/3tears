@@ -52,11 +52,8 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
     AccessDenied,
-    EvaluationContext,
-    GrantLoader,
-    MembershipLoader,
-    Namespace as AclNamespace,
-    evaluate_decision,
+    AclCache,
+    authorize_on_entity,
 )
 from threetears.core.namespaces import (
     PLURAL_PREFIX_CONVERSATION,
@@ -181,14 +178,15 @@ def conversation_namespace_schema_name(
 
 
 class ConversationAuthorizerDependencies:
-    """bundle of Collections + ACL loaders the authorizer uses at call time.
+    """bundle of Collections + ACL cache the authorizer uses at call time.
 
     mirrors :class:`threetears.agent.memory.authorize.MemoryAuthorizerDependencies`:
-    every former resolver / ensurer callable is a direct Collection
-    method on one of these handles. downstream call sites (admin
-    endpoint, runtime loader, user-facing tools) carry a single bundle
-    through their constructors so their signatures stay single-
-    parameter.
+    acl-evaluator-helpers-migration retired the standalone
+    ``membership_loader`` / ``grant_loader`` fields — the canonical
+    primitive consumes loaders via the :class:`AclCache`. downstream
+    call sites (admin endpoint, runtime loader, user-facing tools)
+    carry a single bundle through their constructors so their
+    signatures stay single-parameter.
 
     the Collections are typed ``Any`` at this layer because
     :class:`NamespaceCollection`, :class:`GroupCollection`,
@@ -198,14 +196,8 @@ class ConversationAuthorizerDependencies:
     wiring code constructs the bundle with concrete Collection
     instances; this module only uses their documented method surface.
 
-    :ivar acl_cache: shared :class:`threetears.agent.acl.AclCache`
-        instance. reserved for future per-namespace decision caching;
-        not read by :func:`authorize_conversation_access` today (the
-        evaluator hits loaders directly each call) but carried on the
-        bundle so downstream retries and Phase-E wiring have a single
-        handle
-    :ivar membership_loader: actor -> memberships resolver
-    :ivar grant_loader: groups -> assignments + roles resolver
+    :ivar acl_cache: shared :class:`AclCache` carrying loaders + ttl
+        layers
     :ivar namespace_collection: three-tier ``NamespaceCollection``
         used to resolve conversation namespaces by
         ``(namespace_type, owner_agent_id, customer_id)``
@@ -226,8 +218,6 @@ class ConversationAuthorizerDependencies:
 
     __slots__ = (
         "acl_cache",
-        "membership_loader",
-        "grant_loader",
         "namespace_collection",
         "group_collection",
         "group_member_collection",
@@ -238,9 +228,7 @@ class ConversationAuthorizerDependencies:
     def __init__(
         self,
         *,
-        acl_cache: Any,
-        membership_loader: MembershipLoader,
-        grant_loader: GrantLoader,
+        acl_cache: AclCache,
         namespace_collection: Any,
         group_collection: Any,
         group_member_collection: Any,
@@ -249,12 +237,8 @@ class ConversationAuthorizerDependencies:
     ) -> None:
         """initialize the dependency bundle.
 
-        :param acl_cache: shared :class:`threetears.agent.acl.AclCache`
-        :ptype acl_cache: Any
-        :param membership_loader: actor -> memberships resolver
-        :ptype membership_loader: MembershipLoader
-        :param grant_loader: groups -> assignments + roles resolver
-        :ptype grant_loader: GrantLoader
+        :param acl_cache: shared :class:`AclCache`
+        :ptype acl_cache: AclCache
         :param namespace_collection: three-tier ``NamespaceCollection``
         :ptype namespace_collection: Any
         :param group_collection: three-tier ``GroupCollection``
@@ -269,8 +253,6 @@ class ConversationAuthorizerDependencies:
         :ptype role_assignment_collection: Any
         """
         self.acl_cache = acl_cache
-        self.membership_loader = membership_loader
-        self.grant_loader = grant_loader
         self.namespace_collection = namespace_collection
         self.group_collection = group_collection
         self.group_member_collection = group_member_collection
@@ -413,44 +395,20 @@ async def authorize_conversation_access(
         customer_id=customer_id,
         namespace_collection=deps.namespace_collection,
     )
-
-    evaluator_namespace = AclNamespace(
-        id=ns_entity.id,
-        customer_id=ns_entity.customer_id,
-        namespace_type=ns_entity.namespace_type,
-        owner_agent_id=ns_entity.owner_agent_id,
-    )
-    eval_ctx = EvaluationContext(
-        namespace=evaluator_namespace,
-        action=action,
-        user_id=caller_user_id,
-        agent_id=caller_agent_id,
-    )
-    decision = await evaluate_decision(eval_ctx, cache=deps.acl_cache)
-
-    if not decision:
-        log.info(
-            "conversation access denied",
-            extra={
-                "extra_data": {
-                    "action": action,
-                    "namespace_id": str(ns_entity.id),
-                    "owner_agent_id": str(ns_entity.owner_agent_id),
-                    "customer_id": str(ns_entity.customer_id),
-                    "caller_user_id": (
-                        str(caller_user_id) if caller_user_id else None
-                    ),
-                    "caller_agent_id": (
-                        str(caller_agent_id) if caller_agent_id else None
-                    ),
-                }
-            },
+    try:
+        await authorize_on_entity(
+            ns_entity=ns_entity,
+            action=action,
+            user_id=caller_user_id,
+            agent_id=caller_agent_id,
+            cache=deps.acl_cache,
+            namespace_name=conversation_namespace_name(agent_id, customer_id),
         )
+    except AccessDenied as exc:
         raise ConversationAccessDenied(
             f"evaluator denied {action} on conversation namespace "
             f"{ns_entity.id}",
-        )
-
+        ) from exc
     return ns_entity
 
 
