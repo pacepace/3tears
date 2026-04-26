@@ -48,3 +48,29 @@ usage = result["messages"][0].usage_metadata["cache_usage"]
 ```
 
 See [`3tears/docs/prompt-caching.md`](../../docs/prompt-caching.md) for the full contract, summarization interaction, downstream wiring checklist, and a worked example.
+
+## Streaming
+
+The package ships `StreamingResponse`, a transport-agnostic primitive that owns the lifecycle of one streaming response: `start` -> any number of `emit_token` / `emit_tool_call_*` -> mutually-exclusive `end` (success) or `error` (failure) terminal. `run_graph(compiled_graph, state, config)` consumes a LangGraph `astream_events(version="v2")` loop with the start/end ordering managed; on graph exception it fires `error(code="AGENT_FAILED", ...)` and re-raises so the caller still sees the failure on the synchronous path.
+
+The wire vocabulary is fixed: `StreamStartEvent` / `StreamTokenEvent` / `StreamEndEvent` / `StreamErrorEvent` / `ToolCallStartEvent` / `ToolCallEndEvent` / `ToolCallProgressEvent`, dispatched via the `StreamEvent` discriminated union and the `parse_stream_event(payload)` adapter. The transport seam is the `StreamTransport` Protocol — one method, `async def publish(self, payload: bytes) -> None`. Any wire (NATS subject, websocket, chunked HTTP body) satisfies it.
+
+```python
+from threetears.langgraph import StreamingResponse, StreamTransport
+
+class WebSocketStreamTransport:
+    """example transport for a websocket consumer."""
+    def __init__(self, ws): self._ws = ws
+    async def publish(self, payload: bytes) -> None:
+        await self._ws.send_bytes(payload)
+
+stream = StreamingResponse(
+    transport=WebSocketStreamTransport(ws),
+    correlation_id=correlation_id,
+    conversation_id=conversation_id,
+    start_time_monotonic=request_start,
+)
+final_state = await stream.run_graph(compiled_graph, state, config)
+```
+
+The aibots SDK ships `aibots_agents.runtime.streaming_transport.NatsStreamTransport` as the reference adapter binding the primitive to the per-correlation-id hub-stream subject via `nc.publish_raw`. Tool-call observation envelopes flow through `ToolCallProgressHook` reading the active `StreamingResponse` from `config["configurable"]["streaming_response"]`.
