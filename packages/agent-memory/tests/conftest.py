@@ -496,8 +496,6 @@ def permissive_memory_authorizer() -> MemoryAuthorizerDependencies:
             membership_loader=membership_loader,
             grant_loader=grant_loader,
         ),
-        membership_loader=membership_loader,
-        grant_loader=grant_loader,
         namespace_collection=_PermissiveNamespaceCollection(),
         group_collection=_NoopGroupCollection(),
         group_member_collection=_NoopGroupMemberCollection(),
