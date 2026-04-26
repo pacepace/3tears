@@ -690,6 +690,22 @@ class ToolContextManager:
     # Context building
     # ------------------------------------------------------------------
 
+    def build_context_prompt(self) -> str:
+        """Return a non-None prompt suitable for system-prompt injection.
+
+        Compatibility shim for the canonical
+        :func:`threetears.langgraph.agent_node`, which expects a sync
+        ``build_context_prompt() -> str`` on the ``context_manager``
+        slot in ``configurable``. Returns the empty string when there
+        is no context, instead of ``None``, so callers can concatenate
+        the result into the system prompt unconditionally.
+
+        :return: formatted context string, or "" when no context exists
+        :rtype: str
+        """
+        raw = self.build_conversation_context()
+        return raw or ""
+
     def build_conversation_context(self) -> str | None:
         """Format variables and tool results into a prompt string.
 
