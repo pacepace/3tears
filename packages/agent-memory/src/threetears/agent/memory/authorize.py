@@ -45,6 +45,7 @@ from typing import Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
+    AccessDenied,
     EvaluationContext,
     GrantLoader,
     MembershipLoader,
@@ -105,7 +106,7 @@ MEMORY_OWNER_ROLE_NAME = "MemoryOwner"
 MEMORY_OWNER_GROUP_PREFIX = "memory-owner"
 
 
-class MemoryAccessDenied(Exception):
+class MemoryAccessDenied(AccessDenied):
     """raised when the evaluator denies a memory access.
 
     carries the action and the caller's identity dimensions so

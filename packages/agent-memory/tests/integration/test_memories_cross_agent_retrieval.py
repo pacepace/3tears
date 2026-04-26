@@ -334,24 +334,31 @@ class _SelectiveGrantLoader:
         }
 
 
-class _AclCacheStub:
-    """minimal stand-in for :class:`AclCache` exposing the two loaders."""
+def _AclCacheStub(  # noqa: N802
+    *,
+    membership_loader: _SelectiveMembershipLoader,
+    grant_loader: _SelectiveGrantLoader,
+) -> Any:
+    """factory returning a real :class:`AclCache` wrapping the loaders.
 
-    def __init__(
-        self,
-        *,
-        membership_loader: _SelectiveMembershipLoader,
-        grant_loader: _SelectiveGrantLoader,
-    ) -> None:
-        """store the loaders.
+    acl-evaluator-task-01 wired ``evaluate_decision`` through the
+    canonical :class:`AclCache` membership and per-namespace layers;
+    a hand-rolled stub no longer satisfies the contract. integration
+    tests use the real cache so the on-pod cache hit path is exercised
+    end-to-end.
 
-        :param membership_loader: configured membership loader
-        :ptype membership_loader: _SelectiveMembershipLoader
-        :param grant_loader: configured grant loader
-        :ptype grant_loader: _SelectiveGrantLoader
-        """
-        self.membership_loader = membership_loader
-        self.grant_loader = grant_loader
+    :param membership_loader: configured membership loader
+    :ptype membership_loader: _SelectiveMembershipLoader
+    :param grant_loader: configured grant loader
+    :ptype grant_loader: _SelectiveGrantLoader
+    :return: real :class:`AclCache` instance
+    :rtype: AclCache
+    """
+    from threetears.agent.acl import AclCache
+    return AclCache(
+        membership_loader=membership_loader,
+        grant_loader=grant_loader,
+    )
 
 
 def _seed_memory(

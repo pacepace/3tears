@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from threetears.agent.acl import (
+    AccessDenied,
     AclCache,
     EvaluationContext,
     Namespace as AclNamespace,
@@ -64,7 +65,7 @@ __all__ = [
 log = get_logger(__name__)
 
 
-class WorkspaceAccessDenied(Exception):
+class WorkspaceAccessDenied(AccessDenied):
     """raised when the current call is not allowed to touch the workspace.
 
     every tool's ``execute`` catches this (or lets it propagate as a

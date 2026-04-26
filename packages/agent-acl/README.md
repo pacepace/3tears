@@ -27,18 +27,40 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 
 ### Evaluation
 
-- `evaluate_decision(ctx) -> bool` — fast yes/no hot path;
-  cache-friendly when wired behind `AclCache`. Used on every
-  production call.
-- `evaluate_with_trail(ctx) -> EvaluationResult` — verbose, uncached
+- `evaluate_decision(ctx, *, cache: AclCache) -> bool` — fast yes/no
+  hot path. The cache is consulted for membership and per-namespace
+  contribution layers on every call, falling back to its loaders only
+  on cache miss; production hit rate against repeated authz checks
+  for the same `(actor, namespace)` is ~100% within the cache TTL.
+- `evaluate_with_trail(ctx, *, cache) -> EvaluationResult` —
   introspection path returning every
   `(group, assignment, role) → contributed_actions` chain plus
-  `limiting_side` for user×agent intersection queries.
+  `limiting_side` for user×agent intersection queries. Uses the same
+  cache layers as `evaluate_decision`; trails are stored alongside
+  the action set so successive decision-mode and trail-mode calls
+  for the same actor + namespace serve from cache.
+- `evaluate_file_access(*, namespace, user_id, agent_id, path,
+  direction, cache) -> bool` — workspace path-glob gate; same cache
+  semantics.
+- `authorize(*, namespace_collection, namespace_name, action,
+  user_id, agent_id, cache) -> EvaluationResult` — canonical
+  authorization primitive every 3tears app's resource-typed wrapper
+  is built on. Looks up the namespace by name, runs
+  `evaluate_with_trail` through the cache, raises generic
+  `AccessDenied` on deny / `NamespaceNotFound` on missing row.
+- `authorize_with_trail` — variant returning `(result, ns_entity)`
+  for wrappers needing the entity.
+- `AccessDenied` / `NamespaceNotFound` — generic + namespace-miss
+  exception classes; per-resource wrappers subclass `AccessDenied`
+  to carry typed catching at endpoint code (e.g.
+  `MemoryAccessDenied`, `DatasourceAccessDenied`).
 - `AclCache` — three-layer in-process TTL cache
-  (`actor → [group_id]`, `(group_id, namespace_id) → action_set`,
-  `(group_id, namespace_type, customer_id) → action_set`) with
-  fine-grained invalidation hooks fired on group-membership / role /
-  assignment change.
+  (`actor → [GroupMembership]`, `(group_id, namespace_id) → action_set
+  + trails`, `(group_id, namespace_type, customer_id) → action_set
+  + trails`) with fine-grained invalidation hooks fired on
+  group-membership / role / assignment change. The `ActorMembershipEntry`
+  carries the full memberships tuple so the evaluator's
+  cross-customer + member-type filter runs against cached state.
 
 ### Persistence
 

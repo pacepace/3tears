@@ -51,6 +51,7 @@ from typing import Any, Literal
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from threetears.agent.acl import (
+    AccessDenied,
     EvaluationContext,
     GrantLoader,
     MembershipLoader,
@@ -118,7 +119,7 @@ CONVERSATION_OWNER_ROLE_NAME = "ConversationOwner"
 CONVERSATION_OWNER_GROUP_PREFIX = "conversation-owner"
 
 
-class ConversationAccessDenied(Exception):
+class ConversationAccessDenied(AccessDenied):
     """raised when the evaluator denies a conversation access.
 
     carries the action and the caller's identity dimensions so

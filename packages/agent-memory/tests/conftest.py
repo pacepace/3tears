@@ -485,13 +485,19 @@ def permissive_memory_authorizer() -> MemoryAuthorizerDependencies:
     :return: permissive authorizer dependency bundle
     :rtype: MemoryAuthorizerDependencies
     """
+    from threetears.agent.acl import AclCache
     shared_group_id = uuid4()
     shared_role_id = uuid4()
     _ = datetime.now(UTC)  # touch the import so linters don't flag it
+    membership_loader = _PermissiveMembershipLoader(shared_group_id)
+    grant_loader = _PermissiveGrantLoader(shared_group_id, shared_role_id)
     return MemoryAuthorizerDependencies(
-        acl_cache=None,
-        membership_loader=_PermissiveMembershipLoader(shared_group_id),
-        grant_loader=_PermissiveGrantLoader(shared_group_id, shared_role_id),
+        acl_cache=AclCache(
+            membership_loader=membership_loader,
+            grant_loader=grant_loader,
+        ),
+        membership_loader=membership_loader,
+        grant_loader=grant_loader,
         namespace_collection=_PermissiveNamespaceCollection(),
         group_collection=_NoopGroupCollection(),
         group_member_collection=_NoopGroupMemberCollection(),
