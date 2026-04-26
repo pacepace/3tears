@@ -234,13 +234,22 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
     ) -> int:
         """unreachable on the L1+L2 Collection.
+
+        signature mirrors :meth:`BaseCollection.save_to_postgres`
+        verbatim (including the keyword-only ``conn`` parameter) so an
+        accidental framework invocation surfaces the documented
+        ``RuntimeError`` rather than a confusing ``TypeError``.
 
         :param data: ignored; kept for signature symmetry
         :ptype data: dict[str, Any]
         :param original_timestamp: ignored
         :ptype original_timestamp: datetime | None
+        :param conn: ignored; kept for LSP parity with base class
+        :ptype conn: Any
         :return: never returns
         :rtype: int
         :raises RuntimeError: always; L3 is not wired for heartbeats
