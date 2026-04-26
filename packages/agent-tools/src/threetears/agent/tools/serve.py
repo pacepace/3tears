@@ -207,7 +207,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
     bootstrap's responsibility when agent-owned tools spin up.
     """
 
-    async def _build_server(self) -> ToolServer:
+    async def build_server(self) -> ToolServer:
         """build standalone ``ToolServer`` from environment variables."""
         nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
         namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
@@ -217,7 +217,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
             namespace_collection=None,
         )
 
-    async def _register_tools(self, server: ToolServer) -> None:
+    async def register_tools(self, server: ToolServer) -> None:
         """register every built-in tool that has its dependencies wired."""
         _register_builtin_tools(server)
 

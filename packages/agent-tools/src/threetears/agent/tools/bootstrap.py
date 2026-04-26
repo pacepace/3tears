@@ -36,7 +36,7 @@ class ToolServerBootstrap:
     """canonical tool-pod lifecycle: logging, signals, serve loop.
 
     subclasses customize the build-and-serve pipeline by overriding
-    ``_build_server``, ``_register_tools``, and ``_run_serve``. the
+    ``build_server``, ``register_tools``, and ``run_serve``. the
     base ``run`` is the one-line entrypoint every tool-pod ``main()``
     calls.
 
@@ -44,8 +44,8 @@ class ToolServerBootstrap:
 
         class MyBootstrap(ToolServerBootstrap):
             def __init__(self, ...): ...
-            async def _build_server(self) -> ToolServer: ...
-            async def _register_tools(self, server: ToolServer) -> None: ...
+            async def build_server(self) -> ToolServer: ...
+            async def register_tools(self, server: ToolServer) -> None: ...
 
         def main() -> None:
             MyBootstrap(...).run()
@@ -80,17 +80,21 @@ class ToolServerBootstrap:
         :rtype: None
         """
         configure_logging(level=self._log_level)
-        asyncio.run(self._run_async())
+        asyncio.run(self.run_async())
 
-    async def _run_async(self) -> None:
+    async def run_async(self) -> None:
         """async driver: build server, register tools, install signals, serve.
+
+        public async entrypoint suitable for tests and callers that
+        already own the event loop. ``run`` is the sync convenience
+        wrapper that drives this through ``asyncio.run``.
 
         :return: None
         :rtype: None
         """
-        server = await self._build_server()
-        await self._register_tools(server)
-        self._install_signal_handlers(server)
+        server = await self.build_server()
+        await self.register_tools(server)
+        self.install_signal_handlers(server)
 
         log.info(
             f"{self._service_name} starting",
@@ -100,14 +104,14 @@ class ToolServerBootstrap:
             }},
         )
         try:
-            await self._run_serve(server)
+            await self.run_serve(server)
         finally:
             log.info(
                 f"{self._service_name} stopped",
                 extra={"extra_data": {"service": self._service_name}},
             )
 
-    async def _build_server(self) -> "ToolServer":
+    async def build_server(self) -> "ToolServer":
         """build the ``ToolServer`` instance.
 
         subclasses MUST override to construct the server with
@@ -118,23 +122,23 @@ class ToolServerBootstrap:
         :rtype: ToolServer
         :raises NotImplementedError: when subclass does not override
         """
-        raise NotImplementedError("subclasses must override _build_server")
+        raise NotImplementedError("subclasses must override build_server")
 
-    async def _register_tools(self, server: "ToolServer") -> None:
+    async def register_tools(self, server: "ToolServer") -> None:
         """register all tools on the server before serving.
 
         subclasses MUST override to call ``server.register(tool)`` for
         each tool the pod exposes.
 
-        :param server: tool server returned by ``_build_server``
+        :param server: tool server returned by ``build_server``
         :ptype server: ToolServer
         :return: None
         :rtype: None
         :raises NotImplementedError: when subclass does not override
         """
-        raise NotImplementedError("subclasses must override _register_tools")
+        raise NotImplementedError("subclasses must override register_tools")
 
-    async def _run_serve(self, server: "ToolServer") -> None:
+    async def run_serve(self, server: "ToolServer") -> None:
         """await ``server.serve()`` until shutdown completes.
 
         default implementation calls ``server.serve()`` directly.
@@ -148,7 +152,7 @@ class ToolServerBootstrap:
         """
         await server.serve()
 
-    def _install_signal_handlers(self, server: "ToolServer") -> None:
+    def install_signal_handlers(self, server: "ToolServer") -> None:
         """install SIGTERM and SIGINT handlers that schedule shutdown.
 
         each handler spawns ``server.shutdown()`` via ``spawn_background``
@@ -162,10 +166,10 @@ class ToolServerBootstrap:
         """
         loop = asyncio.get_running_loop()
         for sig, sig_label in ((signal.SIGTERM, "sigterm"), (signal.SIGINT, "sigint")):
-            handler = self._make_signal_handler(server, sig_label)
+            handler = self.make_signal_handler(server, sig_label)
             loop.add_signal_handler(sig, handler)
 
-    def _make_signal_handler(
+    def make_signal_handler(
         self, server: "ToolServer", sig_label: str,
     ) -> Callable[[], Awaitable[None] | None]:
         """build the signal-handler closure for ``sig_label``.
