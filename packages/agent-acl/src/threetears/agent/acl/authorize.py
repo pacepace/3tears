@@ -45,6 +45,7 @@ __all__ = [
     "AccessDenied",
     "NamespaceNotFound",
     "authorize",
+    "authorize_on_entity",
     "authorize_with_trail",
 ]
 
@@ -115,6 +116,95 @@ class NamespaceNotFound(AccessDenied):
 
 
 @traced
+async def authorize_on_entity(
+    *,
+    ns_entity: Any,
+    action: str,
+    user_id: UUID | None,
+    agent_id: UUID | None,
+    cache: AclCache,
+    namespace_name: str | None = None,
+) -> EvaluationResult:
+    """canonical rbac authorization primitive over a pre-resolved namespace.
+
+    every resource-typed helper that resolves its namespace through a
+    bespoke path (``get_by_owner_and_customer`` for memory + conversation,
+    pre-attached entity for workspace, ...) calls this primitive after
+    materializing the namespace entity. the surface complements
+    :func:`authorize` (lookup-by-name) and :func:`authorize_with_trail`
+    (lookup-by-name returning the entity for downstream audit envelopes)
+    by removing the lookup step entirely, so the full machinery is
+    callable from any helper regardless of how its namespace identity
+    was discovered.
+
+    :param ns_entity: pre-resolved namespace entity exposing ``id``,
+        ``customer_id``, ``namespace_type``, ``owner_agent_id``
+        attributes; typed ``Any`` because concrete Collection entity
+        class lives in consumer apps' layers (hub, agent pod) above
+        this package
+    :ptype ns_entity: Any
+    :param action: canonical action string (e.g. ``"memory.read"``,
+        ``"workspace.read"``)
+    :ptype action: str
+    :param user_id: invoking user UUID, or ``None`` for agent-only
+        evaluation
+    :ptype user_id: UUID | None
+    :param agent_id: invoking agent UUID, or ``None`` for user-only
+        evaluation
+    :ptype agent_id: UUID | None
+    :param cache: shared :class:`AclCache` carrying loaders + ttl
+        layers
+    :ptype cache: AclCache
+    :param namespace_name: canonical namespace name for log + denial
+        messages; helpers that have it threaded through pass it for
+        clearer diagnostics, helpers that build the namespace from
+        a workspace / memory pair pass ``None`` and the denial message
+        falls back to the entity id
+    :ptype namespace_name: str | None
+    :return: full evaluation result on allow (carries effective
+        actions, contributing trails, limiting side)
+    :rtype: EvaluationResult
+    :raises AccessDenied: when the evaluator denies the action
+    """
+    acl_namespace = AclNamespace(
+        id=ns_entity.id,
+        customer_id=ns_entity.customer_id,
+        namespace_type=ns_entity.namespace_type,
+        owner_agent_id=ns_entity.owner_agent_id,
+    )
+    eval_ctx = EvaluationContext(
+        namespace=acl_namespace,
+        action=action,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    result = await evaluate_with_trail(eval_ctx, cache=cache)
+    if not result.decision:
+        ns_label = namespace_name if namespace_name is not None else str(ns_entity.id)
+        log.info(
+            "authorize: denied",
+            extra={
+                "extra_data": {
+                    "action": action,
+                    "namespace_name": namespace_name,
+                    "namespace_id": str(ns_entity.id),
+                    "user_id": str(user_id) if user_id else None,
+                    "agent_id": str(agent_id) if agent_id else None,
+                },
+            },
+        )
+        raise AccessDenied(
+            f"access denied: {action} on namespace {ns_label}",
+            action=action,
+            namespace_name=namespace_name,
+            user_id=user_id,
+            agent_id=agent_id,
+            reason="evaluator_deny",
+        )
+    return result
+
+
+@traced
 async def authorize(
     *,
     namespace_collection: Any,
@@ -127,13 +217,12 @@ async def authorize(
     """canonical rbac authorization primitive.
 
     looks up namespace by name via ``namespace_collection.get_by_name``,
-    builds an :class:`EvaluationContext`, and runs the unified evaluator
-    via :func:`evaluate_decision` against the supplied :class:`AclCache`.
-    raises :class:`NamespaceNotFound` when the namespace row is absent
-    and :class:`AccessDenied` when the evaluator denies; returns the
-    full :class:`EvaluationResult` on allow so callers that need the
-    namespace entity, contributing trails, or the effective action set
-    do not pay for a second lookup.
+    then delegates to :func:`authorize_on_entity` for the evaluator
+    call + denial machinery. raises :class:`NamespaceNotFound` when
+    the namespace row is absent and :class:`AccessDenied` when the
+    evaluator denies; returns the full :class:`EvaluationResult` on
+    allow so callers that need the effective action set or contributing
+    trails do not pay for a second evaluation.
 
     :param namespace_collection: a Collection exposing
         ``async def get_by_name(name: str) -> entity | None``;
@@ -141,7 +230,7 @@ async def authorize(
         consumer apps' layers (hub, agent pod) above this package
     :ptype namespace_collection: Any
     :param namespace_name: canonical namespace name to evaluate
-        against (e.g. ``"datasource:my_warehouse"``,
+        against (e.g. ``"datasources.my_warehouse"``,
         ``"memories.<agent_id_hex>.<customer_id_hex>"``)
     :ptype namespace_name: str
     :param action: canonical action string (e.g. ``"memory.read"``,
@@ -156,12 +245,7 @@ async def authorize(
     :param cache: shared :class:`AclCache` carrying loaders + ttl
         layers
     :ptype cache: AclCache
-    :return: full evaluation result on allow (carries effective
-        actions, contributing trails, and the resolved namespace
-        entity via ``result.context.namespace`` is not surfaced;
-        callers that need the entity pass it back in via separate
-        lookup or use :func:`authorize_with_trail` and the included
-        result fields)
+    :return: full evaluation result on allow
     :rtype: EvaluationResult
     :raises NamespaceNotFound: when ``namespace_collection.get_by_name``
         returns None for ``namespace_name``
@@ -188,42 +272,14 @@ async def authorize(
             agent_id=agent_id,
             reason="namespace_not_found",
         )
-
-    acl_namespace = AclNamespace(
-        id=ns_entity.id,
-        customer_id=ns_entity.customer_id,
-        namespace_type=ns_entity.namespace_type,
-        owner_agent_id=ns_entity.owner_agent_id,
-    )
-    eval_ctx = EvaluationContext(
-        namespace=acl_namespace,
+    return await authorize_on_entity(
+        ns_entity=ns_entity,
         action=action,
         user_id=user_id,
         agent_id=agent_id,
+        cache=cache,
+        namespace_name=namespace_name,
     )
-    result = await evaluate_with_trail(eval_ctx, cache=cache)
-    if not result.decision:
-        log.info(
-            "authorize: denied",
-            extra={
-                "extra_data": {
-                    "action": action,
-                    "namespace_name": namespace_name,
-                    "namespace_id": str(ns_entity.id),
-                    "user_id": str(user_id) if user_id else None,
-                    "agent_id": str(agent_id) if agent_id else None,
-                },
-            },
-        )
-        raise AccessDenied(
-            f"access denied: {action} on namespace {namespace_name}",
-            action=action,
-            namespace_name=namespace_name,
-            user_id=user_id,
-            agent_id=agent_id,
-            reason="evaluator_deny",
-        )
-    return result
 
 
 @traced
@@ -284,41 +340,14 @@ async def authorize_with_trail(
             agent_id=agent_id,
             reason="namespace_not_found",
         )
-
-    acl_namespace = AclNamespace(
-        id=ns_entity.id,
-        customer_id=ns_entity.customer_id,
-        namespace_type=ns_entity.namespace_type,
-        owner_agent_id=ns_entity.owner_agent_id,
-    )
-    eval_ctx = EvaluationContext(
-        namespace=acl_namespace,
+    result = await authorize_on_entity(
+        ns_entity=ns_entity,
         action=action,
         user_id=user_id,
         agent_id=agent_id,
+        cache=cache,
+        namespace_name=namespace_name,
     )
-    result = await evaluate_with_trail(eval_ctx, cache=cache)
-    if not result.decision:
-        log.info(
-            "authorize_with_trail: denied",
-            extra={
-                "extra_data": {
-                    "action": action,
-                    "namespace_name": namespace_name,
-                    "namespace_id": str(ns_entity.id),
-                    "user_id": str(user_id) if user_id else None,
-                    "agent_id": str(agent_id) if agent_id else None,
-                },
-            },
-        )
-        raise AccessDenied(
-            f"access denied: {action} on namespace {namespace_name}",
-            action=action,
-            namespace_name=namespace_name,
-            user_id=user_id,
-            agent_id=agent_id,
-            reason="evaluator_deny",
-        )
     return result, ns_entity
 
 
