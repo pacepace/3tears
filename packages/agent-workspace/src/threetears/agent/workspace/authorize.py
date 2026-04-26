@@ -44,9 +44,8 @@ from uuid import UUID
 from threetears.agent.acl import (
     AccessDenied,
     AclCache,
-    EvaluationContext,
     Namespace as AclNamespace,
-    evaluate_decision,
+    authorize_on_entity,
     evaluate_file_access,
 )
 from threetears.agent.tools.call_scope import ToolCallScope
@@ -115,6 +114,34 @@ class WorkspaceLike(Protocol):
         """canonical namespace name."""
 
 
+class _WorkspaceNamespaceAdapter:
+    """tiny adapter exposing the four fields :func:`authorize_on_entity` reads.
+
+    workspace records carry ``id``, ``customer_id``, ``owner_agent_id``
+    directly but do not surface ``namespace_type`` (it is always
+    ``"workspace"``). this adapter pins the type so the canonical
+    primitive can read every field from one handle.
+
+    :ivar id: workspace UUID (also the namespace id)
+    :ivar customer_id: owning customer UUID
+    :ivar namespace_type: pinned to ``"workspace"``
+    :ivar owner_agent_id: UUID of the agent that owns the rows
+    """
+
+    __slots__ = ("id", "customer_id", "namespace_type", "owner_agent_id")
+
+    def __init__(self, workspace: WorkspaceLike) -> None:
+        """capture the four namespace fields from a workspace record.
+
+        :param workspace: workspace record
+        :ptype workspace: WorkspaceLike
+        """
+        self.id = workspace.id
+        self.customer_id = workspace.customer_id
+        self.namespace_type = "workspace"
+        self.owner_agent_id = workspace.owner_agent_id
+
+
 async def authorize_workspace_access(
     scope: ToolCallScope,
     workspace: WorkspaceLike,
@@ -124,9 +151,11 @@ async def authorize_workspace_access(
 ) -> None:
     """authorize the current tool call's identity against ``workspace``.
 
-    builds an :class:`EvaluationContext` from the scope + workspace and
-    calls :func:`~threetears.agent.acl.evaluate_decision` with the
-    loaders the caller's :class:`~threetears.agent.acl.AclCache` carries.
+    delegates to :func:`~threetears.agent.acl.authorize_on_entity` after
+    the cheap missing-customer + cross-customer guards fire. the
+    canonical primitive builds the :class:`EvaluationContext`, calls
+    the unified evaluator, and raises :class:`AccessDenied` on a deny;
+    this wrapper translates that to :class:`WorkspaceAccessDenied`.
 
     :param scope: live :class:`ToolCallScope` pushed by the tool
         server for this dispatch; ``scope.context`` carries
@@ -168,37 +197,26 @@ async def authorize_workspace_access(
             f"caller customer={ctx.customer_id}",
         )
 
-    # business logic: single return.
-    namespace = AclNamespace(
-        id=workspace.id,
-        customer_id=workspace.customer_id,
-        namespace_type="workspace",
-        owner_agent_id=workspace.owner_agent_id,
-    )
-    eval_ctx = EvaluationContext(
-        namespace=namespace,
-        action=operation,
-        user_id=ctx.user_id,
-        agent_id=ctx.agent_id,
-    )
-    decision = await evaluate_decision(eval_ctx, cache=acl_cache)
-
-    grant_error: Exception | None = None
-    if not decision:
-        grant_error = WorkspaceAccessDenied(
-            "evaluator denied access on namespace "
-            f"{workspace.namespace_name}",
+    try:
+        await authorize_on_entity(
+            ns_entity=_WorkspaceNamespaceAdapter(workspace),
+            action=operation,
+            user_id=ctx.user_id,
+            agent_id=ctx.agent_id,
+            cache=acl_cache,
+            namespace_name=workspace.namespace_name,
         )
-
-    if grant_error is not None:
+    except AccessDenied as exc:
+        reason = (
+            f"evaluator denied access on namespace {workspace.namespace_name}"
+        )
         _log_denial(
             workspace=workspace,
             operation=operation,
             ctx=ctx,
-            reason=str(grant_error),
+            reason=reason,
         )
-        raise grant_error
-
+        raise WorkspaceAccessDenied(reason) from exc
     return None
 
 

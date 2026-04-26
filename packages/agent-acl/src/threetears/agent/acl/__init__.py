@@ -63,6 +63,7 @@ from threetears.agent.acl.authorize import (
     AccessDenied,
     NamespaceNotFound,
     authorize,
+    authorize_on_entity,
     authorize_with_trail,
 )
 from threetears.agent.acl.cache import (
@@ -170,6 +171,7 @@ __all__ = [
     "WILDCARD_RESOURCE_TYPE",
     "WRITE_FILE_MATCHING_PREFIX",
     "authorize",
+    "authorize_on_entity",
     "authorize_with_trail",
     "evaluate_decision",
     "evaluate_file_access",

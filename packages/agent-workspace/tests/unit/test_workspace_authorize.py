@@ -221,25 +221,25 @@ def _make_cache() -> AclCache:
     )
 
 
-def _patch_evaluate_decision(
+def _patch_authorize_on_entity(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    returning: bool | None = None,
+    returning: object | None = None,
     raising: BaseException | None = None,
 ) -> AsyncMock:
-    """patch :func:`evaluate_decision` at the authorize import site.
+    """patch :func:`authorize_on_entity` at the authorize import site.
 
     tests control the evaluator's outcome by substituting an
     :class:`AsyncMock`; the helper calls the import from within the
     authorize module, so the patch target is
-    ``threetears.agent.workspace.authorize.evaluate_decision``.
+    ``threetears.agent.workspace.authorize.authorize_on_entity``.
 
     :param monkeypatch: pytest monkeypatch fixture
     :ptype monkeypatch: pytest.MonkeyPatch
-    :param returning: value the stub returns when called (None -> no
-        return_value set; ``raising`` takes precedence)
-    :ptype returning: bool | None
-    :param raising: exception the stub raises when called
+    :param returning: value the stub returns on allow (the canonical
+        primitive returns the EvaluationResult; tests pass a sentinel)
+    :ptype returning: object | None
+    :param raising: exception the stub raises on deny
     :ptype raising: BaseException | None
     :return: the installed mock so the test can assert on its calls
     :rtype: AsyncMock
@@ -249,7 +249,9 @@ def _patch_evaluate_decision(
         stub.side_effect = raising
     elif returning is not None:
         stub.return_value = returning
-    monkeypatch.setattr(_authorize_module, "evaluate_decision", stub)
+    else:
+        stub.return_value = object()
+    monkeypatch.setattr(_authorize_module, "authorize_on_entity", stub)
     return stub
 
 
@@ -273,7 +275,7 @@ class TestMissingCustomerId:
         )
         scope = _make_scope(agent_id=uuid7(), user_id=uuid7(), customer_id=None)
         cache = _make_cache()
-        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+        stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(WorkspaceAccessDenied, match="missing customer_id"):
             await authorize_workspace_access(
                 scope, workspace, "read", acl_cache=cache,
@@ -300,7 +302,7 @@ class TestCrossCustomerDenied:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_b,
         )
         cache = _make_cache()
-        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+        stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(WorkspaceAccessDenied, match="cross-customer"):
             await authorize_workspace_access(
                 scope, workspace, "read", acl_cache=cache,
@@ -331,7 +333,7 @@ class TestEvaluatorDelegation:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+        stub = _patch_authorize_on_entity(monkeypatch, returning=object())
 
         await authorize_workspace_access(
             scope, workspace, "read", acl_cache=cache,
@@ -342,7 +344,9 @@ class TestEvaluatorDelegation:
     async def test_deny_raises_workspace_access_denied(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """evaluator returning False surfaces as :class:`WorkspaceAccessDenied`."""
+        """evaluator denial surfaces as :class:`WorkspaceAccessDenied`."""
+        from threetears.agent.acl import AccessDenied
+
         customer_id = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
@@ -353,7 +357,15 @@ class TestEvaluatorDelegation:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        _patch_evaluate_decision(monkeypatch, returning=False)
+        _patch_authorize_on_entity(
+            monkeypatch,
+            raising=AccessDenied(
+                "access denied: read on namespace ws_abc",
+                action="read",
+                namespace_name="ws_abc",
+                reason="evaluator_deny",
+            ),
+        )
 
         with pytest.raises(WorkspaceAccessDenied, match="evaluator denied"):
             await authorize_workspace_access(
@@ -361,10 +373,10 @@ class TestEvaluatorDelegation:
             )
 
     @pytest.mark.asyncio
-    async def test_helper_builds_context_from_scope_and_workspace(
+    async def test_helper_forwards_namespace_fields_and_identity(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """helper forwards scope identity + workspace ns into the evaluator."""
+        """helper threads scope identity + workspace ns into the canonical primitive."""
         customer_id = uuid7()
         caller_agent = uuid7()
         caller_user = uuid7()
@@ -381,18 +393,20 @@ class TestEvaluatorDelegation:
         cache = _make_cache()
         captured: dict[str, Any] = {}
 
-        async def fake_eval(ctx: Any, **kwargs: Any) -> bool:
-            captured["namespace_id"] = ctx.namespace.id
-            captured["namespace_customer_id"] = ctx.namespace.customer_id
-            captured["namespace_type"] = ctx.namespace.namespace_type
-            captured["namespace_owner_agent_id"] = ctx.namespace.owner_agent_id
-            captured["action"] = ctx.action
-            captured["user_id"] = ctx.user_id
-            captured["agent_id"] = ctx.agent_id
+        async def fake_authorize(**kwargs: Any) -> Any:
+            ns_entity = kwargs["ns_entity"]
+            captured["namespace_id"] = ns_entity.id
+            captured["namespace_customer_id"] = ns_entity.customer_id
+            captured["namespace_type"] = ns_entity.namespace_type
+            captured["namespace_owner_agent_id"] = ns_entity.owner_agent_id
+            captured["action"] = kwargs["action"]
+            captured["user_id"] = kwargs["user_id"]
+            captured["agent_id"] = kwargs["agent_id"]
             captured["cache"] = kwargs["cache"]
-            return True
+            captured["namespace_name"] = kwargs["namespace_name"]
+            return object()
 
-        monkeypatch.setattr(_authorize_module, "evaluate_decision", fake_eval)
+        monkeypatch.setattr(_authorize_module, "authorize_on_entity", fake_authorize)
 
         await authorize_workspace_access(
             scope, workspace, "read", acl_cache=cache,
@@ -406,12 +420,13 @@ class TestEvaluatorDelegation:
         assert captured["user_id"] == caller_user
         assert captured["agent_id"] == caller_agent
         assert captured["cache"] is cache
+        assert captured["namespace_name"] == workspace.namespace_name
 
     @pytest.mark.asyncio
     async def test_write_forwards_write_action_verbatim(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``operation='write'`` lands on the evaluator context as ``'write'``."""
+        """``operation='write'`` lands on the canonical primitive as ``'write'``."""
         customer_id = uuid7()
         workspace = _make_workspace(
             customer_id=customer_id,
@@ -424,11 +439,11 @@ class TestEvaluatorDelegation:
         cache = _make_cache()
         captured_action: dict[str, str] = {}
 
-        async def fake_eval(ctx: Any, **kwargs: Any) -> bool:
-            captured_action["action"] = ctx.action
-            return True
+        async def fake_authorize(**kwargs: Any) -> Any:
+            captured_action["action"] = kwargs["action"]
+            return object()
 
-        monkeypatch.setattr(_authorize_module, "evaluate_decision", fake_eval)
+        monkeypatch.setattr(_authorize_module, "authorize_on_entity", fake_authorize)
 
         await authorize_workspace_access(
             scope, workspace, "write", acl_cache=cache,
@@ -459,7 +474,7 @@ class TestUnknownOperation:
             agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
         )
         cache = _make_cache()
-        stub = _patch_evaluate_decision(monkeypatch, returning=True)
+        stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(
             WorkspaceAccessDenied, match="unknown workspace operation",
         ):
