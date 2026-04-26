@@ -59,6 +59,12 @@ from threetears.agent.acl.audit_vocabulary import (
     RbacAuditResourceType,
     RbacEventType,
 )
+from threetears.agent.acl.authorize import (
+    AccessDenied,
+    NamespaceNotFound,
+    authorize,
+    authorize_with_trail,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -116,6 +122,7 @@ from threetears.agent.acl.types import (
 )
 
 __all__ = [
+    "AccessDenied",
     "AclCache",
     "ActorMembershipEntry",
     "ActorMembershipKey",
@@ -143,6 +150,7 @@ __all__ = [
     "Namespace",
     "NamespaceCollection",
     "NamespaceEntity",
+    "NamespaceNotFound",
     "READ_FILE_MATCHING_PREFIX",
     "RBAC_AUDIT_ACTIONS",
     "RBAC_AUDIT_EVENT_TYPES",
@@ -161,6 +169,8 @@ __all__ = [
     "Trail",
     "WILDCARD_RESOURCE_TYPE",
     "WRITE_FILE_MATCHING_PREFIX",
+    "authorize",
+    "authorize_with_trail",
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",
