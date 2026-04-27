@@ -174,6 +174,40 @@ class RegistryServer:
         self._health_server: HealthServer | None = None
         self._shutdown_event = asyncio.Event()
 
+    async def apply_rbac_factory(
+        self, nc: "NatsClient",
+    ) -> "AgentToolAuthorizer | None":
+        """swap the placeholder authorizer for the live rbac one.
+
+        the constructor receives a ``DenyAllAuthorizer`` placeholder
+        while the rbac stack waits for a connected NATS client to back
+        its proxy collections + invalidation subscriptions; the
+        ``rbac_authorizer_factory`` builds the stack against the live
+        connection and returns the live
+        :class:`RbacEvaluatorAuthorizer`. extracted from
+        :meth:`serve` so tests can exercise the swap without binding
+        to private state, and so any other caller assembling the
+        server out-of-band (e.g. an integration harness that
+        constructs its own NATS connection) can drive the same swap
+        through one canonical entry point.
+
+        no-op when the factory is None (fixed-mode authorizers like
+        ``AllowAllAuthorizer`` skip the swap because they have no
+        live-binding requirement).
+
+        :param nc: connected NATS client the factory needs to back its
+            proxy collections + invalidation subscriptions
+        :ptype nc: NatsClient
+        :return: the new authorizer (also stored on self) when a
+            factory was set, ``None`` when the placeholder was kept
+        :rtype: AgentToolAuthorizer | None
+        """
+        result: "AgentToolAuthorizer | None" = None
+        if self._rbac_authorizer_factory is not None:
+            result = await self._rbac_authorizer_factory(nc)
+            self._authorizer = result
+        return result
+
     async def serve(self) -> None:
         """start registry server and wait for shutdown signal.
 
@@ -187,18 +221,10 @@ class RegistryServer:
             extra={"extra_data": {"nats_url": self._nats_url}},
         )
 
-        # swap in the production rbac authorizer once NATS is up.
-        # the constructor receives a ``DenyAllAuthorizer`` placeholder
-        # while the rbac stack waits for a connected NATS client to
-        # back its proxy collections + invalidation subscriptions.
-        # the factory builds the stack and returns the live
-        # :class:`RbacEvaluatorAuthorizer`; assigning it onto
-        # ``self._authorizer`` BEFORE the call proxy starts means no
-        # tool dispatch ever observes the deny-all placeholder in
-        # production. fixed-mode authorizers (allow-all / forced
-        # deny-all) skip this step because their factory is None.
-        if self._rbac_authorizer_factory is not None:
-            self._authorizer = await self._rbac_authorizer_factory(self._nc)
+        # swap in the production rbac authorizer now that NATS is up.
+        # extracted to a method so tests can drive the same code path
+        # without binding to private state.
+        await self.apply_rbac_factory(self._nc)
 
         # the catalog KV bootstrap predates the wrapper's
         # :meth:`NatsClient.kv_bucket` cache; we still go through the

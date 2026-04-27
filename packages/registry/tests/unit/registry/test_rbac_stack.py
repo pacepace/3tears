@@ -239,33 +239,38 @@ class TestRegistryServerRbacFactoryConstructor:
     swap mutates).
     """
 
-    def test_constructor_stores_factory(self) -> None:
-        """factory persists on the instance so :meth:`serve` can call it."""
-        factory = AsyncMock(return_value=AllowAllAuthorizer())
+    @pytest.mark.asyncio
+    async def test_constructor_stores_factory(self) -> None:
+        """factory persists on the instance so :meth:`serve` can call it.
+
+        verified through the public :meth:`apply_rbac_factory` swap
+        path rather than reading ``_rbac_authorizer_factory`` directly
+        (per CLAUDE.md "Underscore is a stability contract").
+        """
+        nc = AsyncMock()
+        rbac_authorizer = AllowAllAuthorizer()
+        factory = AsyncMock(return_value=rbac_authorizer)
         server = RegistryServer(
             authorizer=DenyAllAuthorizer(),
             rbac_authorizer_factory=factory,
         )
-        assert server._rbac_authorizer_factory is factory
+        result = await server.apply_rbac_factory(nc)
+        factory.assert_awaited_once_with(nc)
+        assert result is rbac_authorizer
 
-    def test_constructor_stores_placeholder_authorizer(self) -> None:
-        """the constructor authorizer is the initial slot value before
-        the factory swap fires inside :meth:`serve`.
-        """
-        placeholder = DenyAllAuthorizer()
-        server = RegistryServer(
-            authorizer=placeholder,
-            rbac_authorizer_factory=AsyncMock(),
-        )
-        assert server._authorizer is placeholder
-
-    def test_no_factory_argument_defaults_to_none(self) -> None:
+    @pytest.mark.asyncio
+    async def test_no_factory_argument_defaults_to_none(self) -> None:
         """omitting the factory keeps the existing fixed-authorizer
         contract: callers that pass an :class:`AllowAllAuthorizer` or
         :class:`DenyAllAuthorizer` directly skip the swap step.
+
+        verified through :meth:`apply_rbac_factory` returning ``None``
+        when no factory was registered, rather than reading
+        ``_rbac_authorizer_factory`` directly.
         """
         server = RegistryServer(authorizer=AllowAllAuthorizer())
-        assert server._rbac_authorizer_factory is None
+        result = await server.apply_rbac_factory(AsyncMock())
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_swap_executes_factory_with_nats_client(self) -> None:
@@ -284,16 +289,18 @@ class TestRegistryServerRbacFactoryConstructor:
             authorizer=DenyAllAuthorizer(),
             rbac_authorizer_factory=factory,
         )
-        server._nc = nc
 
-        # production code path lives in serve(); this test invokes the
-        # exact two lines that perform the swap so a refactor that
-        # accidentally drops the swap fails the assertion.
-        if server._rbac_authorizer_factory is not None:
-            server._authorizer = await server._rbac_authorizer_factory(server._nc)
+        # production code path lives in ``serve()`` -- the swap step
+        # is now extracted to the public :meth:`apply_rbac_factory`
+        # so this test drives the same canonical path without binding
+        # to ``_authorizer`` / ``_nc`` / ``_rbac_authorizer_factory``
+        # internals (per CLAUDE.md "Underscore is a stability
+        # contract"). a refactor that drops the factory swap fails
+        # this assertion.
+        result = await server.apply_rbac_factory(nc)
 
         factory.assert_awaited_once_with(nc)
-        assert server._authorizer is rbac_authorizer
+        assert result is rbac_authorizer
 
 
 class TestRegistryRbacStackClose:
