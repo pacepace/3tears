@@ -37,7 +37,6 @@ from threetears.core.entities.base import BaseEntity
 # canonical testcontainer harness -- single ``pytest_plugins`` entry
 # pulls in ``db_container`` / ``db_image`` from
 # :mod:`threetears.core.testing.fixtures` (test-harness-task-01).
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 pytestmark = pytest.mark.integration
 
@@ -290,7 +289,7 @@ class TestCompositePkThreeTier:
             l1_row = coll.get_row_sync(("conv-i1", "item-i1"))
             assert l1_row is not None
 
-            assert "fake_refs.conv-i1:item-i1" in nats.kv
+            assert "fake_refs.conv-i1_item-i1" in nats.kv
         finally:
             l1.reset()
 

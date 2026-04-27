@@ -40,6 +40,10 @@ _ALLOWED_DEFAULT_FILES: set[str] = {
     "threetears/registry/config.py",
     # Agent-tools config -- ToolServer readiness timeout defaults live here
     "threetears/agent/tools/config.py",
+    # Testcontainer harness -- intentionally-short reachability probe
+    # timeouts so no-NATS / no-Docker test runs skip fast. test-only
+    # module, never imported by production code paths.
+    "threetears/core/testing/containers.py",
 }
 
 # Specific (file_relative, param_name, line) tuples for narrow exceptions.

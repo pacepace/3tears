@@ -70,7 +70,6 @@ _WORKSPACE_EDITOR_ROLE_ID = UUID("f3684adb-bc37-5e79-90b9-af9c814bb29e")
 
 # canonical testcontainer harness from threetears.core; provides
 # the ``db_container`` fixture this file's ``pg_url`` alias wraps.
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 
 pytestmark = pytest.mark.integration

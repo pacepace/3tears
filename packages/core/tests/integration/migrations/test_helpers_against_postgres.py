@@ -37,7 +37,6 @@ from threetears.core.data.migrations.helpers import (
 )
 
 # canonical testcontainer harness; see test-harness-task-01.
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 pytestmark = pytest.mark.integration
 

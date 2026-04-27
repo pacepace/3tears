@@ -26,7 +26,6 @@ import pytest
 # a single ``pytest_plugins`` line pulls in ``db_container`` /
 # ``db_image`` / ``nats_container`` / ``nats_jetstream`` -- this
 # package only uses ``db_container`` (via its ``pg_url`` alias).
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 
 @pytest.fixture(scope="session")

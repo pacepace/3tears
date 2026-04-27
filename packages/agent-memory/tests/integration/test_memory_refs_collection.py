@@ -257,7 +257,7 @@ class TestMemoryRefsCollectionThreeTier:
             assert l1_row is not None
 
             # L2 KV entry under composite-form key
-            assert f"conversation_memory_refs.{conv_id}:{item_id}" in nats.kv
+            assert f"conversation_memory_refs.{conv_id}_{item_id}" in nats.kv
         finally:
             await pool.close()
 

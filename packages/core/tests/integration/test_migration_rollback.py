@@ -48,7 +48,6 @@ from threetears.core.data.migrations import (
 # canonical testcontainer harness -- single ``pytest_plugins`` entry
 # pulls in ``db_container`` / ``db_image`` from
 # :mod:`threetears.core.testing.fixtures` (test-harness-task-01).
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 pytestmark = pytest.mark.integration
 

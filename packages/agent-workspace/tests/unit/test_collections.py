@@ -13,8 +13,11 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import CHAR, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text
 
+from pydantic import BaseModel
+
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.registry import INVALIDATION_SUBJECT, CollectionRegistry
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.nats import Subject, Subjects
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.agent.workspace.collections import (
@@ -130,16 +133,20 @@ def _make_workspace_file_version_row() -> dict[str, Any]:
 
 
 class _FakeNatsBus:
-    """in-process fake NATS client that honors publish and subscribe.
+    """in-process fake NATS client matching typed NatsClient surface.
 
-    mirrors the real registry pattern: publishers call .publish(subject,
-    payload); subscribers registered via .subscribe(subject, handler)
-    receive the same bytes. buckets are simple dict-backed KV storage.
+    supports the two methods the cache-invalidation path uses:
+    ``publish(subject=Subject, message=BaseModel)`` and
+    ``subscribe_typed(subject=Subject, message_type=BaseModel, cb=...)``.
+    each subscriber owns its own decoder, so multiple subscribers on the
+    same subject with different message_types coexist.
     """
 
     def __init__(self) -> None:
-        """initialize empty bus, subscribers, and KV store."""
-        self._subscribers: dict[str, list[Callable[[bytes], Awaitable[None]]]] = {}
+        """initialize empty subscriber registry and KV store."""
+        self._typed_subscribers: dict[
+            str, list[tuple[type[BaseModel], Callable[[Any], Awaitable[None]]]]
+        ] = {}
         self._kv: dict[str, dict[str, bytes]] = {}
 
     def bucket_name(self, suffix: str) -> str:
@@ -153,44 +160,57 @@ class _FakeNatsBus:
         """
         return f"test_{suffix}"
 
-    async def publish(self, subject: str, payload: bytes) -> None:
-        """
-        deliver payload synchronously to all subscribers of subject.
-
-        :param subject: NATS subject name
-        :ptype subject: str
-        :param payload: message bytes
-        :ptype payload: bytes
-        """
-        for handler in self._subscribers.get(subject, []):
-            await handler(payload)
-
-    async def subscribe(
+    async def publish(
         self,
-        subject: str,
-        handler: Callable[[bytes], Awaitable[None]] | None = None,
         *,
-        cb: Callable[[bytes], Awaitable[None]] | None = None,
+        subject: Subject,
+        message: BaseModel,
+        reply_to: Subject | None = None,
     ) -> None:
         """
-        register async handler for subject.
+        deliver typed message synchronously to all subject subscribers.
 
-        accepts both positional ``handler`` (legacy NatsKvClient shape)
-        and keyword-only ``cb=`` (used by
-        :meth:`CollectionRegistry.start_invalidation_listener`) so the
-        fake matches both call surfaces in the codebase.
-
-        :param subject: NATS subject name
-        :ptype subject: str
-        :param handler: async callback (positional, legacy shape)
-        :ptype handler: Callable[[bytes], Awaitable[None]] | None
-        :param cb: async callback (kw-only, invalidation listener shape)
-        :ptype cb: Callable[[bytes], Awaitable[None]] | None
+        :param subject: target subject
+        :ptype subject: Subject
+        :param message: typed pydantic message to dispatch
+        :ptype message: BaseModel
+        :param reply_to: ignored, present for api parity
+        :ptype reply_to: Subject | None
         """
-        chosen = cb if cb is not None else handler
-        if chosen is None:
-            raise TypeError("subscribe requires either handler or cb")
-        self._subscribers.setdefault(subject, []).append(chosen)
+        del reply_to
+        payload = message.model_dump_json().encode("utf-8")
+        for message_type, handler in self._typed_subscribers.get(subject.path, []):
+            decoded = message_type.model_validate_json(payload)
+            await handler(decoded)
+
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Subject,
+        cb: Callable[[Any], Awaitable[None]],
+        message_type: type[BaseModel],
+        queue: str | None = None,
+        max_in_flight: int | None = None,
+        deadletter_on_error: bool = True,
+    ) -> None:
+        """
+        register typed handler for subject.
+
+        :param subject: target subject
+        :ptype subject: Subject
+        :param cb: async callback receiving the decoded message
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param message_type: pydantic class to decode incoming bytes into
+        :ptype message_type: type[BaseModel]
+        :param queue: ignored, present for api parity
+        :ptype queue: str | None
+        :param max_in_flight: ignored, present for api parity
+        :ptype max_in_flight: int | None
+        :param deadletter_on_error: ignored, present for api parity
+        :ptype deadletter_on_error: bool
+        """
+        del queue, max_in_flight, deadletter_on_error
+        self._typed_subscribers.setdefault(subject.path, []).append((message_type, cb))
 
     async def get(self, bucket: str, key: str) -> bytes | None:
         """fetch bytes for key from bucket or None."""
@@ -546,12 +566,13 @@ class TestCollectionShapes:
 
 
 class TestInvalidationSubjectConstant:
-    """sanity check that the INVALIDATION_SUBJECT from registry is importable."""
+    """sanity check that the cache-invalidation subject from registry is importable."""
 
     def test_subject_constant_is_importable(self) -> None:
-        """confirm INVALIDATION_SUBJECT constant resolves to a non-empty string."""
-        assert isinstance(INVALIDATION_SUBJECT, str)
-        assert INVALIDATION_SUBJECT
+        """confirm cache-invalidate subject resolves to a non-empty string."""
+        subject = Subjects.cache_invalidate()
+        assert isinstance(subject.path, str)
+        assert subject.path
 
 
 class TestWorkspaceCollectionFindByAgent:

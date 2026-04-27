@@ -54,7 +54,6 @@ from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 
 # canonical testcontainer harness from threetears.core; provides
 # the ``db_container`` fixture this file's ``pg_url`` alias wraps.
-pytest_plugins = ["threetears.core.testing.fixtures"]
 
 
 pytestmark = pytest.mark.integration
