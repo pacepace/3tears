@@ -12,6 +12,12 @@ usage::
     async with handle:
         ...
 
+``nats_client`` is the canonical
+:class:`threetears.nats.NatsClient` wrapper. the lease opens its
+bucket via :meth:`NatsClient.kv_bucket` so all CAS / miss semantics
+flow through :class:`NatsKvBucket`'s typed return shape (``None`` on
+conflict instead of raising :class:`KeyWrongLastSequenceError`).
+
 all KV envelope payloads flow through
 :func:`threetears.core.serialization.serialize_to_json` /
 :func:`deserialize_from_json` so UUID, datetime, Decimal round-trip
@@ -25,17 +31,22 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid7
-
-from nats.js.errors import (
-    BucketNotFoundError,
-    KeyNotFoundError,
-    KeyWrongLastSequenceError,
-)
 
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.nats import NatsClient, NatsKvBucket
+
+__all__ = [
+    "KVLease",
+    "LeaseHandle",
+    "LeaseLost",
+    "LeaseTimeout",
+    "LeaseUnavailable",
+]
 
 log = get_logger(__name__)
 
@@ -183,7 +194,7 @@ class LeaseHandle:
         :rtype: None
         :raises LeaseLost: if ownership has changed or CAS failed
         """
-        await self._lease._refresh(self, ttl_seconds=ttl_seconds)
+        await self._lease.refresh_handle(self, ttl_seconds=ttl_seconds)
 
     async def release(self) -> None:
         """delete KV entry if still owned; no-op on repeat calls.
@@ -196,7 +207,7 @@ class LeaseHandle:
         :return: None
         :rtype: None
         """
-        await self._lease._release(self)
+        await self._lease.release_handle(self)
 
     async def __aenter__(self) -> LeaseHandle:
         """async-context-manager entry; returns self unchanged.
@@ -240,7 +251,7 @@ class KVLease:
 
     def __init__(
         self,
-        nats_client: Any,
+        nats_client: "NatsClient",
         bucket_name: str | None = None,
         pod_id: str | None = None,
     ) -> None:
@@ -252,8 +263,10 @@ class KVLease:
         ``pod_id`` is ``f"pod-{uuid7().hex[:12]}"`` — time-ordered and
         unique per factory instance.
 
-        :param nats_client: connected NATS client exposing ``jetstream()``
-        :ptype nats_client: Any
+        :param nats_client: connected canonical
+            :class:`threetears.nats.NatsClient` wrapper; the lease
+            opens its KV bucket through :meth:`NatsClient.kv_bucket`
+        :ptype nats_client: NatsClient
         :param bucket_name: explicit bucket name; None uses env-derived default
         :ptype bucket_name: str | None
         :param pod_id: explicit holder identifier; None auto-generates one
@@ -264,7 +277,7 @@ class KVLease:
         self._client = nats_client
         self._bucket_name = bucket_name if bucket_name is not None else self._default_bucket_name()
         self._pod_id = pod_id if pod_id is not None else f"pod-{uuid7().hex[:12]}"
-        self._bucket: Any | None = None
+        self._bucket: "NatsKvBucket | None" = None
         self._bucket_lock = asyncio.Lock()
 
     @property
@@ -299,25 +312,30 @@ class KVLease:
         result = f"{ns}_leases" if ns else "leases"
         return result
 
-    async def _ensure_bucket(self) -> Any:
+    async def _ensure_bucket(self) -> "NatsKvBucket":
         """open existing bucket or create it with history=1 on first call.
 
-        lazy, async-safe: an ``asyncio.Lock`` serializes first-call setup so
-        two concurrent acquires do not race to create the same bucket.
+        lazy, async-safe: an ``asyncio.Lock`` serializes first-call setup
+        so two concurrent acquires do not race to create the same
+        bucket. routes through :meth:`NatsClient.kv_bucket` which
+        idempotently creates-or-binds. the wrapper auto-prefixes the
+        bucket name with the connected client's namespace prefix; the
+        lease's ``bucket_name`` is treated as the bucket suffix the
+        wrapper layers on top of that prefix.
 
-        :return: backing KV bucket object (nats-py KeyValue instance)
-        :rtype: Any
+        :return: backing wrapper-typed KV bucket
+        :rtype: NatsKvBucket
         """
         if self._bucket is not None:
             return self._bucket
         async with self._bucket_lock:
             if self._bucket is None:
-                js = self._client.jetstream()
-                try:
-                    self._bucket = await js.key_value(self._bucket_name)
-                except BucketNotFoundError:
-                    self._bucket = await js.create_key_value(bucket=self._bucket_name, history=1)
-                    log.info("KVLease created bucket %s", self._bucket_name)
+                self._bucket = await self._client.kv_bucket(
+                    name=self._bucket_name,
+                    history=1,
+                    create_if_missing=True,
+                )
+                log.info("KVLease bound bucket %s", self._bucket_name)
         return self._bucket
 
     async def acquire(
@@ -372,15 +390,20 @@ class KVLease:
             raise LeaseTimeout(f"lease {key!r} not acquired within {max_wait_seconds}s")
         return handle
 
-    async def _try_once(self, bucket: Any, key: str, ttl_seconds: int) -> LeaseHandle | None:
+    async def _try_once(
+        self,
+        bucket: "NatsKvBucket",
+        key: str,
+        ttl_seconds: int,
+    ) -> LeaseHandle | None:
         """single pass of create-or-reclaim-stale against the KV bucket.
 
         returns :class:`LeaseHandle` when lease is ours; returns ``None``
         when key is currently held by a live holder and caller should wait
         or fail-fast.
 
-        :param bucket: backing KV bucket (from :meth:`_ensure_bucket`)
-        :ptype bucket: Any
+        :param bucket: backing wrapper KV bucket (from :meth:`_ensure_bucket`)
+        :ptype bucket: NatsKvBucket
         :param key: KV key under which lease entry lives
         :ptype key: str
         :param ttl_seconds: TTL to record in envelope when winning
@@ -392,8 +415,12 @@ class KVLease:
         date_expires = now + timedelta(seconds=ttl_seconds)
         payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
         result: LeaseHandle | None = None
-        try:
-            revision = await bucket.create(key, payload)
+        # NatsKvBucket.create returns the new revision on success or
+        # ``None`` on CAS conflict (key already exists). no exception
+        # to catch for the conflict path -- the wrapper hides
+        # KeyWrongLastSequenceError behind the typed ``None`` return.
+        revision = await bucket.create(key=key, value=payload)
+        if revision is not None:
             result = LeaseHandle(
                 lease=self,
                 key=key,
@@ -401,13 +428,13 @@ class KVLease:
                 revision=revision,
                 ttl_seconds=ttl_seconds,
             )
-        except KeyWrongLastSequenceError:
+        else:
             result = await self._maybe_reclaim_stale(bucket, key, ttl_seconds, now, date_expires)
         return result
 
     async def _maybe_reclaim_stale(
         self,
-        bucket: Any,
+        bucket: "NatsKvBucket",
         key: str,
         ttl_seconds: int,
         now: datetime,
@@ -415,8 +442,8 @@ class KVLease:
     ) -> LeaseHandle | None:
         """attempt CAS reclaim when existing entry is expired; else return None.
 
-        :param bucket: backing KV bucket
-        :ptype bucket: Any
+        :param bucket: backing wrapper KV bucket
+        :ptype bucket: NatsKvBucket
         :param key: KV key under which lease entry lives
         :ptype key: str
         :param ttl_seconds: TTL to record on successful reclaim
@@ -430,32 +457,41 @@ class KVLease:
         :rtype: LeaseHandle | None
         """
         result: LeaseHandle | None = None
-        try:
-            entry = await bucket.get(key)
-        except KeyNotFoundError:
-            # entry vanished between create-race and get; caller will retry
+        # NatsKvBucket.get_entry returns (value, revision) on hit or
+        # ``None`` on miss; the entry could vanish between the create
+        # race and this read so a None return means "caller will
+        # retry" same as if it had been a KeyNotFound raise.
+        entry = await bucket.get_entry(key=key)
+        if entry is None:
             return None
-        envelope = _decode_envelope(entry.value)
+        value, revision = entry
+        envelope = _decode_envelope(value)
         if envelope.date_expires > now:
             # still held by a live holder
             return None
         payload = _encode_envelope(holder=self._pod_id, date_expires=date_expires, date_acquired=now)
-        try:
-            revision = await bucket.update(key, payload, last=entry.revision)
-        except KeyWrongLastSequenceError:
-            # another pod reclaimed the stale entry first; caller will retry
+        # NatsKvBucket.update returns the new revision on success or
+        # ``None`` on CAS conflict; another pod may have reclaimed the
+        # stale entry between our get_entry and update.
+        new_revision = await bucket.update(key=key, value=payload, revision=revision)
+        if new_revision is None:
             return None
         result = LeaseHandle(
             lease=self,
             key=key,
             holder=self._pod_id,
-            revision=revision,
+            revision=new_revision,
             ttl_seconds=ttl_seconds,
         )
         return result
 
-    async def _refresh(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
+    async def refresh_handle(self, handle: LeaseHandle, ttl_seconds: int | None) -> None:
         """implementation of :meth:`LeaseHandle.refresh`.
+
+        public because :class:`LeaseHandle` lives in a sibling class and
+        forwards its :meth:`refresh` here. the refresh pipeline (fetch
+        entry, verify holder, CAS-update) is owned by the lease object
+        that holds the KV bucket; the handle is just the revision token.
 
         :param handle: handle requesting refresh
         :ptype handle: LeaseHandle
@@ -466,11 +502,11 @@ class KVLease:
         :raises LeaseLost: if ownership changed or CAS update failed
         """
         bucket = await self._ensure_bucket()
-        try:
-            entry = await bucket.get(handle.key)
-        except KeyNotFoundError as exc:
-            raise LeaseLost(f"lease {handle.key!r} entry missing during refresh") from exc
-        envelope = _decode_envelope(entry.value)
+        entry = await bucket.get_entry(key=handle.key)
+        if entry is None:
+            raise LeaseLost(f"lease {handle.key!r} entry missing during refresh")
+        value, _revision = entry
+        envelope = _decode_envelope(value)
         if envelope.holder != handle.holder:
             raise LeaseLost(
                 f"lease {handle.key!r} holder changed: expected {handle.holder!r}, found {envelope.holder!r}"
@@ -479,15 +515,21 @@ class KVLease:
         now = datetime.now(UTC)
         date_expires = now + timedelta(seconds=effective_ttl)
         payload = _encode_envelope(holder=handle.holder, date_expires=date_expires, date_acquired=now)
-        try:
-            new_revision = await bucket.update(handle.key, payload, last=handle.revision)
-        except KeyWrongLastSequenceError as exc:
-            raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh") from exc
+        # NatsKvBucket.update returns ``None`` on revision mismatch,
+        # mapping the previous KeyWrongLastSequenceError raise into a
+        # typed conflict signal we surface as LeaseLost.
+        new_revision = await bucket.update(key=handle.key, value=payload, revision=handle.revision)
+        if new_revision is None:
+            raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh")
         handle.revision = new_revision
         handle.ttl_seconds = effective_ttl
 
-    async def _release(self, handle: LeaseHandle) -> None:
+    async def release_handle(self, handle: LeaseHandle) -> None:
         """implementation of :meth:`LeaseHandle.release`; idempotent.
+
+        public for the same reason as :meth:`refresh_handle` -- the
+        handle forwards its :meth:`release` to the lease object so the
+        lease can verify ownership before deleting the KV entry.
 
         :param handle: handle requesting release
         :ptype handle: LeaseHandle
@@ -497,20 +539,23 @@ class KVLease:
         if handle.released:
             return
         bucket = await self._ensure_bucket()
-        try:
-            entry = await bucket.get(handle.key)
-        except KeyNotFoundError:
+        entry = await bucket.get_entry(key=handle.key)
+        if entry is None:
             handle.released = True
             return
-        envelope = _decode_envelope(entry.value)
+        value, _revision = entry
+        envelope = _decode_envelope(value)
         if envelope.holder != handle.holder:
             # someone else owns it now; not our entry to delete
             handle.released = True
             return
-        try:
-            await bucket.delete(handle.key, last=handle.revision)
-        except KeyWrongLastSequenceError:
-            # raced with another writer; entry effectively gone from our view
+        # CAS delete keyed on the handle's revision so a stale-after-
+        # check delete cannot evict a successor's freshly reclaimed
+        # entry. NatsKvBucket.delete returns False on revision mismatch
+        # which is treated as "raced with another writer; entry
+        # effectively gone from our view" -- diagnostic-only here.
+        deleted = await bucket.delete(key=handle.key, revision=handle.revision)
+        if not deleted:
             log.debug(
                 "KVLease release raced on %s; marking released anyway",
                 handle.key,

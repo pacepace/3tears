@@ -1,14 +1,27 @@
-"""Tests for memory retrieval -- ranking math, MMR, FTS, formatting."""
+"""Tests for memory retrieval -- ranking math, MMR, FTS, formatting.
+
+Collection-parameterised (namespace-task-01 phase 8.5b): the retriever
+takes the three memory-package Collections as required constructor
+parameters and no longer accepts a raw pool. tests build registry-bound
+Collections against a simple stub pool and pass them through.
+"""
 
 from __future__ import annotations
 
 import math
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
+from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
+from threetears.agent.memory.collections import (
+    MediaContentCollection,
+    MemoriesCollection,
+    MemoryChunkCollection,
+)
 from threetears.agent.memory.retrieval import (
     MemoryRetriever,
     _build_fts_query,
@@ -20,6 +33,8 @@ from threetears.agent.memory.retrieval import (
     _recency_decay,
 )
 from threetears.agent.memory.types import MemoryConfig
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 
 
 # -- _recency_decay -----------------------------------------------------------
@@ -149,14 +164,12 @@ class TestMmrRerank:
         assert len(result) == 2
 
     def test_selects_diverse_results(self) -> None:
-        # Three candidates: two very similar, one different
         candidates = [
             {"embedding": [1.0, 0.0], "hybrid_score": 0.95},
-            {"embedding": [0.99, 0.1], "hybrid_score": 0.90},  # near-duplicate of first
-            {"embedding": [0.0, 1.0], "hybrid_score": 0.85},  # very different
+            {"embedding": [0.99, 0.1], "hybrid_score": 0.90},
+            {"embedding": [0.0, 1.0], "hybrid_score": 0.85},
         ]
         result = _mmr_rerank([1.0, 0.0], candidates, k=2, lambda_mult=0.5)
-        # Should pick the top scorer and the diverse one, not the near-duplicate
         scores = {r["hybrid_score"] for r in result}
         assert 0.95 in scores
         assert 0.85 in scores
@@ -330,7 +343,6 @@ def _make_mock_pool(
 
     async def _fetch(sql: str, *args: object) -> list[dict]:
         sql_lower = sql.lower().strip()
-        # FTS queries return no results in this mock
         if "ts_rank_cd" in sql_lower:
             return []
         if "from memories" in sql_lower:
@@ -346,12 +358,50 @@ def _make_mock_pool(
     return pool
 
 
-class TestMemoryRetrieverE2E:
-    async def test_returns_formatted_string(self) -> None:
-        config = MemoryConfig()
-        provider = StubEmbeddingProvider([1.0, 0.0, 0.0])
-        retriever = MemoryRetriever(config, provider)
+def _make_retriever(
+    pool: Any,
+    authorizer: MemoryAuthorizerDependencies,
+    config: MemoryConfig | None = None,
+) -> MemoryRetriever:
+    """build a retriever with registry-bound Collections around the pool.
 
+    mirrors the production wiring shape: configure the registry with
+    the pool, then construct each Collection.
+    """
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    core_config = DefaultCoreConfig(
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
+    )
+    memories = MemoriesCollection(
+        registry=registry,
+        config=core_config,
+        authorizer=authorizer,
+    )
+    media_content = MediaContentCollection(
+        registry=registry,
+        config=core_config,
+    )
+    chunks = MemoryChunkCollection(
+        registry=registry,
+        config=core_config,
+    )
+    return MemoryRetriever(
+        config=config or MemoryConfig(),
+        embedding_provider=StubEmbeddingProvider(),
+        authorizer=authorizer,
+        memories_collection=memories,
+        media_content_collection=media_content,
+        memory_chunk_collection=chunks,
+    )
+
+
+class TestMemoryRetrieverE2E:
+    async def test_returns_formatted_string(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         mem_id = uuid.uuid7()
         pool = _make_mock_pool(
             memory_rows=[
@@ -366,24 +416,37 @@ class TestMemoryRetrieverE2E:
                 }
             ],
         )
+        retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(pool, uuid.uuid7(), "Tell me about Python")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "Tell me about Python",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is not None
         assert "User likes Python" in result
         assert "Things you remember" in result
 
-    async def test_empty_text_returns_none(self) -> None:
-        config = MemoryConfig()
-        provider = StubEmbeddingProvider()
-        retriever = MemoryRetriever(config, provider)
+    async def test_empty_text_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         pool = AsyncMock()
+        retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(pool, uuid.uuid7(), "  ")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "  ",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None
 
-    async def test_embedding_failure_returns_none(self) -> None:
-        config = MemoryConfig()
-
+    async def test_embedding_failure_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         class FailingProvider:
             async def embed_text(self, text: str) -> tuple[None, int]:
                 return None, 0
@@ -392,17 +455,54 @@ class TestMemoryRetrieverE2E:
             def dimensions(self) -> int:
                 return 3
 
-        retriever = MemoryRetriever(config, FailingProvider())
         pool = AsyncMock()
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        core_config = DefaultCoreConfig(
+            collection_flush="ALWAYS",
+            collection_flush_tables="",
+        )
+        memories = MemoriesCollection(
+            registry=registry,
+            config=core_config,
+            authorizer=permissive_memory_authorizer,
+        )
+        media_content = MediaContentCollection(
+            registry=registry,
+            config=core_config,
+        )
+        chunks = MemoryChunkCollection(
+            registry=registry,
+            config=core_config,
+        )
+        retriever = MemoryRetriever(
+            config=MemoryConfig(),
+            embedding_provider=FailingProvider(),
+            authorizer=permissive_memory_authorizer,
+            memories_collection=memories,
+            media_content_collection=media_content,
+            memory_chunk_collection=chunks,
+        )
 
-        result = await retriever.retrieve(pool, uuid.uuid7(), "hello world")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "hello world",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None
 
-    async def test_no_results_returns_none(self) -> None:
-        config = MemoryConfig()
-        provider = StubEmbeddingProvider()
-        retriever = MemoryRetriever(config, provider)
+    async def test_no_results_returns_none(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
         pool = _make_mock_pool()
+        retriever = _make_retriever(pool, permissive_memory_authorizer)
 
-        result = await retriever.retrieve(pool, uuid.uuid7(), "hello world")
+        result = await retriever.retrieve(
+            uuid.uuid7(),
+            "hello world",
+            agent_id=uuid.uuid7(),
+            customer_id=uuid.uuid7(),
+        )
         assert result is None

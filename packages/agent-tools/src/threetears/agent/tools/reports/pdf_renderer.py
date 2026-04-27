@@ -13,6 +13,11 @@ import tempfile
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "PandocNotFoundError",
+    "PdfRenderer",
+]
+
 log = get_logger(__name__)
 
 _LATEX_SPECIAL_RE = re.compile(r"([\\{}$&#%_^~])")
@@ -73,7 +78,7 @@ class PdfRenderer:
         :raises PandocNotFoundError: if pandoc is not installed
         :raises RuntimeError: if pandoc exits with non-zero code
         """
-        cmd = self._build_command(output_path, template_path, variables)
+        cmd = self.build_command(output_path, template_path, variables)
 
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -105,7 +110,7 @@ class PdfRenderer:
         finally:
             os.unlink(tmp.name)
 
-    def _build_command(
+    def build_command(
         self,
         output_path: str,
         template_path: str | None,

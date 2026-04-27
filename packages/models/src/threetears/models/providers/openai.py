@@ -14,6 +14,11 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult, EmbeddingResult
 
+__all__ = [
+    "OpenAIChatProvider",
+    "OpenAIEmbeddingProvider",
+]
+
 # default embedding dimensions for ada-002 compatibility
 _DEFAULT_EMBEDDING_DIMENSIONS = 1536
 
@@ -46,13 +51,13 @@ class OpenAIChatProvider:
         timeout: int = 120,
         max_retries: int = 2,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = base_url
-        self._timeout = timeout
+        self.base_url = base_url
+        self.timeout = timeout
         self._max_retries = max_retries
-        self._model: Any = None
-        self._tools: list[ToolDefinition] | None = None
+        self.model: Any = None
+        self.tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches ChatOpenAI instance.
@@ -64,29 +69,29 @@ class OpenAIChatProvider:
         :return: configured ChatOpenAI instance, optionally with tools bound
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_openai import ChatOpenAI
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
-            "timeout": self._timeout,
+            "timeout": self.timeout,
             "max_retries": self._max_retries,
             "stream_usage": True,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
 
         base_model: Any = ChatOpenAI(**kwargs)
 
-        if self._tools:
-            lc_tools = [tool_def_to_lc(t) for t in self._tools]
+        if self.tools:
+            lc_tools = [tool_def_to_lc(t) for t in self.tools]
             base_model = base_model.bind_tools(lc_tools)
 
-        self._model = base_model
-        return self._model
+        self.model = base_model
+        return self.model
 
     async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         """generates chat completion from message history.
@@ -132,8 +137,8 @@ class OpenAIChatProvider:
         :param tools: tool definitions available to model
         :ptype tools: list[ToolDefinition]
         """
-        self._tools = list(tools)
-        self._model = None
+        self.tools = list(tools)
+        self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """preprocesses messages before sending to OpenAI model.
@@ -152,7 +157,7 @@ class OpenAIChatProvider:
         from threetears.models.preprocessing import preprocess_messages
 
         capabilities = ModelCapabilities(
-            model_name=self._model_name,
+            model_name=self.model_name,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,
@@ -187,11 +192,11 @@ class OpenAIEmbeddingProvider:
         base_url: str | None = None,
         embedding_dimensions: int | None = None,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = base_url
+        self.base_url = base_url
         self._embedding_dimensions = embedding_dimensions
-        self._model: Any = None
+        self.model: Any = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches OpenAIEmbeddings instance.
@@ -202,22 +207,22 @@ class OpenAIEmbeddingProvider:
         :return: configured OpenAIEmbeddings instance
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_openai import OpenAIEmbeddings
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
         if self._embedding_dimensions is not None:
             kwargs["dimensions"] = self._embedding_dimensions
 
-        self._model = OpenAIEmbeddings(**kwargs)
-        return self._model
+        self.model = OpenAIEmbeddings(**kwargs)
+        return self.model
 
     @property
     def dimensions(self) -> int:
@@ -265,7 +270,7 @@ class OpenAIEmbeddingProvider:
                 EmbeddingResult(
                     vector=embedding,
                     dimensions=len(embedding),
-                    model=self._model_name,
+                    model=self.model_name,
                     token_count=len(text) // 4,
                 )
             )

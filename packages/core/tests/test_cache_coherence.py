@@ -24,9 +24,14 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
-from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.registry import (
+    CacheInvalidationMessage,
+    CollectionRegistry,
+)
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.nats import Subjects
+from threetears.nats.errors import PublishError
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +54,7 @@ def _make_metadata() -> MetaData:
 
 
 class StubEntity(BaseEntity):
-    _primary_key_field = "id"
+    primary_key_field = "id"
 
 
 class StubCollection(BaseCollection[StubEntity]):
@@ -74,10 +79,10 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def _fetch_from_postgres(self, entity_id: object) -> dict | None:
+    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
         return self._pg_store.get(str(entity_id))
 
-    async def _save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._pg_store.get(str(pk))
@@ -86,13 +91,13 @@ class StubCollection(BaseCollection[StubEntity]):
         self._pg_store[str(pk)] = dict(data)
         return 1
 
-    async def _delete_from_postgres(self, entity_id: object) -> None:
+    async def delete_from_postgres(self, entity_id: object) -> None:
         self._pg_store.pop(str(entity_id), None)
 
-    def _serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data: bytes) -> dict:
+    def deserialize(self, data: bytes) -> dict:
         raw = json.loads(data)
         for key in ("date_created", "date_updated"):
             if key in raw and isinstance(raw[key], str):
@@ -100,55 +105,87 @@ class StubCollection(BaseCollection[StubEntity]):
         return raw
 
 
-class InMemoryNatsBus:
-    """Mock NATS client that supports both KV operations AND pub/sub.
+class _InMemoryKvBucket:
+    """Test fake mimicking :class:`threetears.nats.NatsKvBucket`.
 
-    KV: in-memory dict store (same as existing test mocks).
-    Pub/sub: maintains subscriber callbacks, dispatches on publish.
-    Simulates cross-pod communication — all subscribers see all messages.
+    in-memory dict store; kw-only get/put/delete matching the wrapper
+    contract.
     """
 
     def __init__(self) -> None:
-        self._kv_store: dict[str, bytes] = {}
-        self._subscribers: dict[str, list[Any]] = {}  # subject -> [callbacks]
-        self._publish_count: int = 0
-        self._received_messages: list[tuple[str, bytes]] = []
+        self._store: dict[str, bytes] = {}
 
-    def bucket_name(self, suffix: str) -> str:
-        return f"test-{suffix}"
+    async def get(self, *, key: str) -> bytes | None:
+        return self._store.get(key)
 
-    # --- KV operations ---
+    async def put(self, *, key: str, value: bytes) -> int:
+        self._store[key] = value
+        return len(self._store)
 
-    async def get(self, bucket: str, key: str) -> bytes | None:
-        return self._kv_store.get(key)
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+        existed = key in self._store
+        self._store.pop(key, None)
+        return existed or revision is None
 
-    async def put(self, bucket: str, key: str, value: bytes) -> bool:
-        self._kv_store[key] = value
-        return True
 
-    async def delete(self, bucket: str, key: str) -> bool:
-        self._kv_store.pop(key, None)
-        return True
+class InMemoryNatsBus:
+    """Mock NATS wrapper that supports both KV operations AND typed pub/sub.
 
-    # --- Pub/sub operations ---
+    KV: in-memory bucket via :meth:`kv_bucket` returning an
+    :class:`_InMemoryKvBucket` (same instance reused for all callers
+    so cross-pod state is shared).
+    Pub/sub: typed via :meth:`publish` / :meth:`subscribe_typed`;
+    simulates cross-pod fan-out -- all subscribers on a subject see
+    every message.
+    """
 
-    async def publish(self, subject: str, data: bytes) -> bool:
-        """Publish a message. All subscribers on this subject receive it."""
-        self._publish_count += 1
-        self._received_messages.append((subject, data))
-        callbacks = self._subscribers.get(subject, [])
-        for cb in callbacks:
-            try:
-                await cb(data)
-            except Exception:
-                pass  # fail-open, like real NATS
-        return True
+    def __init__(self) -> None:
+        self._bucket = _InMemoryKvBucket()
+        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
+        self.publish_count: int = 0
+        self._received_messages: list[tuple[str, Any]] = []
 
-    async def subscribe(self, subject: str, callback: Any) -> None:
-        """Register a callback for a subject."""
-        if subject not in self._subscribers:
-            self._subscribers[subject] = []
-        self._subscribers[subject].append(callback)
+    # --- KV ---
+
+    async def kv_bucket(
+        self,
+        *,
+        name: str,  # noqa: ARG002 -- single shared bucket suffices for tests
+        ttl: Any = None,  # noqa: ARG002
+        storage: str = "file",  # noqa: ARG002
+        create_if_missing: bool = True,  # noqa: ARG002
+        history: int = 1,  # noqa: ARG002
+    ) -> _InMemoryKvBucket:
+        return self._bucket
+
+    # --- Pub/sub ---
+
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
+        """typed publish. dispatches to every subscriber on ``subject``."""
+        self.publish_count += 1
+        subject_str = str(subject)
+        self._received_messages.append((subject_str, message))
+        for cb, message_type in self._subscribers.get(subject_str, []):
+            # the real wrapper round-trips through model_dump_json /
+            # model_validate_json; reproduce that round-trip so tests
+            # exercise serialization the same way prod does.
+            payload = message.model_dump_json()
+            decoded = message_type.model_validate_json(payload)
+            await cb(decoded)
+
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Any,
+        cb: Any,
+        message_type: Any,
+        queue: Any = None,  # noqa: ARG002
+        max_in_flight: Any = None,  # noqa: ARG002
+        deadletter_on_error: bool = True,  # noqa: ARG002
+    ) -> None:
+        """typed subscribe matching wrapper kw-only api."""
+        subject_str = str(subject)
+        self._subscribers.setdefault(subject_str, []).append((cb, message_type))
 
 
 def _make_pod(
@@ -169,9 +206,9 @@ def _make_pod(
 def _wait_for_publish(nats: InMemoryNatsBus, target_count: int, timeout: float = 5.0) -> None:
     """Poll until the NATS bus has received at least target_count publishes."""
     deadline = time.monotonic() + timeout
-    while nats._publish_count < target_count:
+    while nats.publish_count < target_count:
         if time.monotonic() > deadline:
-            raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats._publish_count})")
+            raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats.publish_count})")
         time.sleep(0.02)
 
 
@@ -198,67 +235,12 @@ def shared_pg() -> dict[str, dict]:
     return {}
 
 
-# ---------------------------------------------------------------------------
-# NatsClient pub/sub tests
-# ---------------------------------------------------------------------------
-
-
-class TestNatsClientPubSub:
-    """Tests for publish/subscribe on the NATS client."""
-
-    @pytest.mark.asyncio
-    async def test_publish_and_subscribe_basic(self) -> None:
-        """Published message is received by subscriber."""
-        nats = InMemoryNatsBus()
-        received: list[bytes] = []
-
-        async def on_msg(data: bytes) -> None:
-            received.append(data)
-
-        await nats.subscribe("test.subject", on_msg)
-        await nats.publish("test.subject", b"hello")
-
-        assert len(received) == 1
-        assert received[0] == b"hello"
-
-    @pytest.mark.asyncio
-    async def test_multiple_subscribers(self) -> None:
-        """Multiple subscribers all receive the same message."""
-        nats = InMemoryNatsBus()
-        received_a: list[bytes] = []
-        received_b: list[bytes] = []
-
-        await nats.subscribe("test.subject", lambda d: received_a.append(d) or asyncio.sleep(0))
-        await nats.subscribe("test.subject", lambda d: received_b.append(d) or asyncio.sleep(0))
-        await nats.publish("test.subject", b"hello")
-
-        assert len(received_a) == 1
-        assert len(received_b) == 1
-
-    @pytest.mark.asyncio
-    async def test_publish_no_subscribers(self) -> None:
-        """Publishing with no subscribers does not error."""
-        nats = InMemoryNatsBus()
-        result = await nats.publish("nobody.listening", b"hello")
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_subscriber_error_does_not_break_other_subscribers(self) -> None:
-        """A failing subscriber does not prevent other subscribers from receiving."""
-        nats = InMemoryNatsBus()
-        received: list[bytes] = []
-
-        async def bad_subscriber(data: bytes) -> None:
-            raise RuntimeError("boom")
-
-        async def good_subscriber(data: bytes) -> None:
-            received.append(data)
-
-        await nats.subscribe("test.subject", bad_subscriber)
-        await nats.subscribe("test.subject", good_subscriber)
-        await nats.publish("test.subject", b"hello")
-
-        assert len(received) == 1
+# NOTE: bare-wrapper pub/sub semantics (typed publish, kw-only
+# subscribe_typed, model_validate_json round-trip, deadletter-on-error
+# delivery) are tested directly against the wrapper itself in
+# ``3tears/packages/nats/tests``; this file is the *core consumer*
+# side and exercises only the contract `BaseCollection` /
+# `CollectionRegistry` rely on.
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +274,11 @@ class TestInvalidationSignalContract:
         assert "e1" in pod_a
         assert "e1" in pod_b
 
-        # Manually publish an invalidation signal
-        signal = json.dumps({"table": "test_entities", "entity_id": "e1"}).encode()
-        await shared_nats.publish("threetears.cache.invalidate", signal)
+        # Manually publish an invalidation signal via the typed wrapper
+        await shared_nats.publish(
+            subject=Subjects.cache_invalidate(),
+            message=CacheInvalidationMessage(table="test_entities", ids=["e1"]),
+        )
 
         # Both pods' L1 should be evicted
         assert "e1" not in pod_a
@@ -312,8 +296,10 @@ class TestInvalidationSignalContract:
         await pod_a.ensure("e1")
 
         # Signal for a table that doesn't exist in this registry
-        signal = json.dumps({"table": "nonexistent_table", "entity_id": "e1"}).encode()
-        await shared_nats.publish("threetears.cache.invalidate", signal)
+        await shared_nats.publish(
+            subject=Subjects.cache_invalidate(),
+            message=CacheInvalidationMessage(table="nonexistent_table", ids=["e1"]),
+        )
 
         # Pod A's data should be untouched
         assert "e1" in pod_a
@@ -326,27 +312,18 @@ class TestInvalidationSignalContract:
         pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
         await reg_a.start_invalidation_listener(shared_nats)
 
-        signal = json.dumps({"table": "test_entities", "entity_id": "nonexistent"}).encode()
-        await shared_nats.publish("threetears.cache.invalidate", signal)
+        await shared_nats.publish(
+            subject=Subjects.cache_invalidate(),
+            message=CacheInvalidationMessage(table="test_entities", ids=["nonexistent"]),
+        )
 
         # No crash, no side effects
 
-    @pytest.mark.asyncio
-    async def test_malformed_signal_is_ignored(
-        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
-    ) -> None:
-        """Malformed signal payload is logged and ignored, not crashed."""
-        pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
-        await reg_a.start_invalidation_listener(shared_nats)
-
-        shared_pg["e1"] = {"id": "e1", "name": "Alice", "score": 42}
-        await pod_a.ensure("e1")
-
-        # Publish garbage
-        await shared_nats.publish("threetears.cache.invalidate", b"not json")
-
-        # Pod A's data should be untouched — no crash
-        assert "e1" in pod_a
+    # NOTE: malformed-payload handling is the wrapper's job. with
+    # typed pub/sub the wrapper round-trips
+    # ``model_dump_json`` / ``model_validate_json``; junk bytes never
+    # reach the listener. that contract is tested in
+    # ``3tears/packages/nats/tests`` rather than duplicated here.
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +350,7 @@ class TestSetterEmitsSignal:
         await pod_b.ensure("e1")
         assert "e1" in pod_b
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Bob"
@@ -403,7 +380,7 @@ class TestSetterEmitsSignal:
         shared_pg["e1"] = {"id": "e1", "name": "Alice", "score": 42}
         await pod_b.ensure("e1")
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # Pod A writes full dict
         pod_a["e1"] = {"id": "e1", "name": "Replaced", "score": 99}
@@ -426,13 +403,13 @@ class TestSaveEntityEmitsSignal:
         await reg_a.start_invalidation_listener(shared_nats)
         await reg_b.start_invalidation_listener(shared_nats)
 
-        initial_publish_count = shared_nats._publish_count
+        initial_publish_count = shared_nats.publish_count
 
         entity = pod_a.create({"id": "e1", "name": "New", "score": 0})
         await pod_a.save_entity(entity)
 
         # Signal was published
-        assert shared_nats._publish_count > initial_publish_count
+        assert shared_nats.publish_count > initial_publish_count
 
         # Pod B can read the new entity (via L2/L3)
         entity_b = await pod_b.get("e1")
@@ -595,7 +572,7 @@ class TestCacheConvergence:
         await pod_a.ensure("e1")
         await pod_b.ensure("e1")
 
-        initial_publish = shared_nats._publish_count
+        initial_publish = shared_nats.publish_count
 
         # 10 sequential save_entity calls (async, so signals are synchronous)
         for i in range(10):
@@ -604,7 +581,7 @@ class TestCacheConvergence:
             await pod_a.save_entity(entity)
 
         # All 10 saves produced signals (save_entity publishes synchronously)
-        assert shared_nats._publish_count >= initial_publish + 10
+        assert shared_nats.publish_count >= initial_publish + 10
 
         # Pod B's L1 should be evicted
         assert "e1" not in pod_b
@@ -689,9 +666,11 @@ class TestSignalFailureResilience:
         pg_store: dict[str, dict] = {}
         pod_a, reg_a = _make_pod(nats, pg_store, config_always)
 
-        # Sabotage publish
-        async def broken_publish(subject: str, data: bytes) -> bool:
-            raise ConnectionError("NATS down")
+        # Sabotage publish at the typed-wrapper boundary; the registry
+        # narrow-catches PublishError and continues, the write stays
+        # durable, and other pods' next read pulls fresh from L3.
+        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
+            raise PublishError("NATS down")
 
         nats.publish = broken_publish
 
@@ -709,18 +688,17 @@ class TestSignalFailureResilience:
         pg_store: dict[str, dict] = {}
         pod_a, reg_a = _make_pod(nats, pg_store, config_always)
 
-        pod_a._l1.upsert("test_entities", {"id": "e1", "name": "Alice", "score": 42})
+        pod_a.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
-        # Sabotage publish
-        async def broken_publish(subject: str, data: bytes) -> bool:
-            raise ConnectionError("NATS down")
+        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
+            raise PublishError("NATS down")
 
         nats.publish = broken_publish
 
         pod_a["e1", "name"] = "Bob"
 
         # L1 write succeeded
-        row = pod_a._l1.select_by_id("test_entities", "e1")
+        row = pod_a.get_row_sync("e1")
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -730,8 +708,8 @@ class TestSignalFailureResilience:
         pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
         pod_a, reg_a = _make_pod(nats, pg_store, config_always)
 
-        async def broken_publish(subject: str, data: bytes) -> bool:
-            raise ConnectionError("NATS down")
+        async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
+            raise PublishError("NATS down")
 
         nats.publish = broken_publish
 
@@ -777,9 +755,11 @@ class TestListenerLifecycle:
         await pod_a.ensure("e1")
         await pod_b.ensure("e1")
 
-        # Manually publish invalidation
-        signal = json.dumps({"table": "test_entities", "entity_id": "e1"}).encode()
-        await shared_nats.publish("threetears.cache.invalidate", signal)
+        # Manually publish invalidation via the typed wrapper
+        await shared_nats.publish(
+            subject=Subjects.cache_invalidate(),
+            message=CacheInvalidationMessage(table="test_entities", ids=["e1"]),
+        )
 
         # Pod B's L1 is NOT evicted (no listener)
         assert "e1" in pod_b

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +30,11 @@ class _FakeWorkspaceEntity:
     id: UUID
     name: str
     date_deleted: Any = None
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -79,12 +85,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 @dataclass
@@ -113,7 +119,7 @@ class _FakePool:
     def acquire(self) -> _FakeAcquireCM:
         return _FakeAcquireCM(conn=self)
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         relative_path = args[1]
         if len(args) == 2:
@@ -131,6 +137,7 @@ def _build_tool(
     *,
     workspace_entities: list[_FakeWorkspaceEntity],
     files: list[_FakeFileEntity],
+    acl_cache: Any,
     script: dict[tuple[str, Any], dict[str, Any] | None] | None = None,
     deny_writes: list[str] | None = None,
 ) -> tuple[
@@ -151,6 +158,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox, file_coll
 
@@ -177,6 +185,7 @@ def _install_atomic_recorder(
 @pytest.mark.asyncio
 async def test_rollback_whole_workspace_reverts_each_file(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """ref=1 across all head files -> _write_file_atomic called per file with action=revert."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -197,17 +206,16 @@ async def test_rollback_whole_workspace_reverts_each_file(
         },
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _files = _build_tool(workspace_entities=[ws], files=files, script=script)
+    tool, _pool, sandbox, _files = _build_tool(
+        workspace_entities=[ws], files=files, script=script, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(ref=1, workspace="ws")
     assert result.success is True, result.error
     assert "2 files" in result.content
     assert "ref 1" in result.content or "ref 1" in result.content
 
-    # enforce called once per file BEFORE any atomic write
-    assert sandbox.enforce_calls == [
-        ("write", "a.txt"),
-        ("write", "b.md"),
-    ]
+    # validate_syntax called once per file BEFORE any atomic write
+    assert sandbox.syntax_calls == ["a.txt", "b.md"]
     # one atomic write call per file
     assert len(recorded) == 2
     paths_written = {call["relative_path"] for call in recorded}
@@ -221,6 +229,7 @@ async def test_rollback_whole_workspace_reverts_each_file(
 @pytest.mark.asyncio
 async def test_rollback_single_file_narrows_set(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """relative_path narrows rollback to exactly one file."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -236,11 +245,13 @@ async def test_rollback_single_file_narrows_set(
         },
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _ = _build_tool(workspace_entities=[ws], files=files, script=script)
+    tool, _pool, sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=files, script=script, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(ref=2, relative_path="b.md", workspace="ws")
     assert result.success is True, result.error
-    # enforce only called for the one path
-    assert sandbox.enforce_calls == [("write", "b.md")]
+    # validate_syntax only called for the one path
+    assert sandbox.syntax_calls == ["b.md"]
     assert len(recorded) == 1
     assert recorded[0]["relative_path"] == "b.md"
     assert recorded[0]["action"] == "revert"
@@ -249,6 +260,7 @@ async def test_rollback_single_file_narrows_set(
 @pytest.mark.asyncio
 async def test_rollback_skips_files_absent_at_ref(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """files whose ref resolves to None are skipped; n_changed reflects it."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -266,16 +278,15 @@ async def test_rollback_skips_files_absent_at_ref(
         ("new.md", 1): None,
     }
     recorded = _install_atomic_recorder(monkeypatch)
-    tool, _pool, sandbox, _ = _build_tool(workspace_entities=[ws], files=files, script=script)
+    tool, _pool, sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=files, script=script, acl_cache=permissive_acl_cache
+    )
     result = await tool.execute(ref=1, workspace="ws")
     assert result.success is True, result.error
     # n_changed is 1 -- only the path that had a target row
     assert "1 files" in result.content
-    # but BOTH paths were enforced (sandbox-enforce precedes resolve)
-    assert sandbox.enforce_calls == [
-        ("write", "a.txt"),
-        ("write", "new.md"),
-    ]
+    # but BOTH paths were validated (syntactic sweep precedes resolve)
+    assert sandbox.syntax_calls == ["a.txt", "new.md"]
     # only one atomic write actually issued
     assert len(recorded) == 1
     assert recorded[0]["relative_path"] == "a.txt"
@@ -289,6 +300,7 @@ async def test_rollback_skips_files_absent_at_ref(
 @pytest.mark.asyncio
 async def test_rollback_sandbox_denied_aborts_before_any_write(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """a single denied path aborts the entire rollback; zero atomic writes occur."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -314,6 +326,7 @@ async def test_rollback_sandbox_denied_aborts_before_any_write(
         files=files,
         script=script,
         deny_writes=["secret.env"],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(ref=1, workspace="ws")
     assert result.success is False
@@ -322,15 +335,17 @@ async def test_rollback_sandbox_denied_aborts_before_any_write(
     assert recorded == []
     # no ref-resolve queries were issued (sandbox-pass sweep happens first)
     assert pool.fetchrows == []
-    # sandbox.enforce was called at least for the denied path
-    assert ("write", "secret.env") in sandbox.enforce_calls
+    # validate_syntax was called at least for the denied path
+    assert "secret.env" in sandbox.syntax_calls
 
 
 @pytest.mark.asyncio
-async def test_rollback_missing_ref_required_returns_error() -> None:
+async def test_rollback_missing_ref_required_returns_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """omitting ref returns clean error without mutations."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -338,9 +353,11 @@ async def test_rollback_missing_ref_required_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_unknown_workspace_returns_clean_error() -> None:
+async def test_rollback_unknown_workspace_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unknown workspace name -> clean error."""
-    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[], files=[])
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(ref=1, workspace="ghost")
     assert result.success is False
     assert result.error is not None
@@ -352,18 +369,24 @@ async def test_rollback_unknown_workspace_returns_clean_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_rollback_mcp_name_is_exact_string() -> None:
+def test_rollback_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         files=[],
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.rollback_to"
 
 
-def test_rollback_mcp_schema_shape() -> None:
+def test_rollback_mcp_schema_shape(
+    permissive_acl_cache: MagicMock,
+) -> None:
     tool, _, _, _ = _build_tool(
         workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
         files=[],
+        acl_cache=permissive_acl_cache,
     )
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)

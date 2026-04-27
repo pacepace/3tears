@@ -12,9 +12,12 @@ write-enforcement gates the call before any mutation.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -24,7 +27,9 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -40,8 +45,15 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     _resolve_workspace,
     _write_file_atomic,
+    authorize_workspace,
+    authorize_workspace_file,
+    workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
+
+__all__ = [
+    "FsWriteTool",
+]
 
 log = get_logger(__name__)
 
@@ -94,6 +106,7 @@ class FsWriteTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
@@ -122,6 +135,10 @@ class FsWriteTool(TearsTool):
         :param validators: per-pattern validator entries forwarded to
             :func:`_write_file_atomic` for every write; defaults to None
         :ptype validators: list[ValidatorEntry] | None
+        :param acl_cache: shared :class:`AclCache` wired with loaders
+            at bootstrap; authorization runs against this cache on
+            every dispatch
+        :ptype acl_cache: AclCache
         """
         self._workspaces = workspace_collection
         self._files = workspace_file_collection
@@ -133,6 +150,7 @@ class FsWriteTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -163,7 +181,20 @@ class FsWriteTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
-            self._sandbox.enforce("write", relative_path)
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "write",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             content_bytes: bytes
             if isinstance(raw_content, bytes):
                 content_bytes = raw_content
@@ -187,26 +218,40 @@ class FsWriteTool(TearsTool):
                 workspace_collection=self._workspaces,
                 validators=self._validators,
             )
-            # defense-in-depth audit publish
+            # defense-in-depth audit publish: additive per-tool event.
+            # the ToolServer baseline ``tool.call`` event is emitted by
+            # :class:`threetears.agent.tools.ToolServer.handle_call`;
+            # this event carries the workspace-specific detail that the
+            # baseline cannot (resource namespace id, sha/bytes/version).
             try:
                 if self._namespace is not None:
-                    await audit.publish_workspace_event(
-                        nats_client=self._nats_client,
-                        namespace=self._namespace,
+                    identity = workspace_audit_identity(workspace)
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
                         event_type="workspace.fs_write",
-                        actor_id=self._agent_id,
-                        agent_id=self._agent_id,
-                        resource_type="workspace_file",
-                        resource_id=f"{workspace.id}/{relative_path}",
+                        actor_user_id=identity.actor_user_id,
+                        calling_agent_id=identity.calling_agent_id,
+                        owner_agent_id=identity.owner_agent_id,
+                        customer_id=identity.customer_id,
+                        resource_namespace_id=identity.namespace_id,
+                        resource_namespace_type="workspace_file",
                         action="write",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": (f"{workspace.id}/{relative_path}"),
                             "bytes_before": len(old_bytes),
                             "bytes_after": len(content_bytes),
                             "sha256_before": old_sha,
                             "sha256_after": new_sha256,
                             "version": new_version,
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=self._nats_client,
+                        namespace=self._namespace,
                     )
             # NOSILENT: audit failure must never taint a successful write
             except Exception as audit_exc:
@@ -236,6 +281,8 @@ class FsWriteTool(TearsTool):
                 error=f"validation failed: {exc.pattern} -> {exc.reason}",
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -309,6 +356,7 @@ def _build(**kwargs: Any) -> FsWriteTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
+        acl_cache=kwargs["acl_cache"],
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),

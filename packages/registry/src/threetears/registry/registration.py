@@ -13,15 +13,32 @@ catalog but its NATS subscription has not yet propagated.
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from threetears.agent.tools.server import RegistrationManifest
+from threetears.nats import IncomingMessage, Subjects
 from threetears.observe import get_logger
 from threetears.registry.auth import ToolPodAuth, ToolPodAuthenticator
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+
+if TYPE_CHECKING:
+    from threetears.nats import NatsClient, Subscription
+
+__all__ = [
+    "ProbeRequest",
+    "ProbeResponse",
+    "RegistrationHandler",
+    "RegistrationResponse",
+]
+
+# NOTE: ``RegistrationHandler.handle_registration`` is a public method on the
+# class; classes exported through ``__all__`` publish their public methods
+# automatically. the rename from ``_handle_registration`` to ``handle_registration``
+# codifies the existing stability contract: tests drive this handler directly,
+# subclass authors may override it, so the leading underscore was wrong.
 
 log = get_logger(__name__)
 
@@ -103,43 +120,58 @@ class RegistrationHandler:
         self._namespace = namespace
         self._authenticator = authenticator
         self._probe_timeout = probe_timeout if probe_timeout is not None else get_probe_timeout()
-        self._nc: Any | None = None
-        self._sub: Any | None = None
+        self._nc: "NatsClient | None" = None
+        self._sub: "Subscription | None" = None
 
-    async def start(self, nc: Any) -> None:
+    async def start(self, nc: "NatsClient") -> None:
         """start listening for registration requests.
 
-        :param nc: connected NATS client
-        :ptype nc: Any
+        DQ-B7 queue-group note: registration is intentionally NOT in a
+        queue group -- every registry instance must observe every
+        tool-pod manifest so the catalog stays consistent across
+        replicas. de-duplication happens inside :class:`ToolCatalog`.
+
+        :param nc: connected canonical NATS wrapper client
+        :ptype nc: NatsClient
+        :return: nothing
+        :rtype: None
         """
         self._nc = nc
-        subject = f"{self._namespace}.tools.register"
-        self._sub = await nc.subscribe(subject, cb=self._handle_registration)
+        subject = Subjects.tools_register()
+        self._sub = await nc.subscribe(subject=subject, cb=self.handle_registration)
         log.info(
             "registration handler started",
-            extra={"extra_data": {"subject": subject}},
+            extra={"extra_data": {"subject": subject.path}},
         )
 
     async def stop(self) -> None:
         """stop listening for registration requests."""
-        if self._sub is not None:
-            await self._sub.unsubscribe()
+        if self._sub is not None and self._nc is not None:
+            await self._nc.unsubscribe(self._sub)
             self._sub = None
         log.info("registration handler stopped")
 
-    async def _handle_registration(self, msg: Any) -> None:
-        """handle incoming registration manifest.
+    async def handle_registration(self, msg: IncomingMessage) -> None:
+        """public NATS-subject handler for incoming registration manifest.
+
+        bound by :meth:`start` as the ``cb`` callback on
+        ``{namespace}.tools.register`` so every registering tool pod's
+        manifest arrives here. tests exercise this surface directly by
+        synthesizing a wrapper :class:`IncomingMessage` and awaiting the
+        handler; keeping the entry point public is a stability contract
+        -- subclasses and test doubles may rely on the name, the single
+        ``msg`` parameter, and the absence of return value.
 
         validates manifest, authenticates pod, and registers
         tools with additive endpoint merging. replies with
-        success or error response.
+        success or error response via :meth:`NatsClient.publish_reply`.
 
-        :param msg: incoming NATS message containing registration manifest
-        :ptype msg: Any
+        :param msg: incoming wrapper envelope containing registration manifest
+        :ptype msg: IncomingMessage
         :raises RuntimeError: when invoked before ``start`` connects NATS
         """
         if self._nc is None:
-            raise RuntimeError("_handle_registration invoked before NATS connected")
+            raise RuntimeError("handle_registration invoked before NATS connected")
         try:
             manifest = RegistrationManifest.model_validate_json(msg.data)
         except Exception as exc:
@@ -152,10 +184,10 @@ class RegistrationHandler:
                 pod_id="unknown",
                 error=f"malformed manifest: {exc}",
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             return
 
@@ -170,10 +202,10 @@ class RegistrationHandler:
                 pod_id=manifest.pod_id,
                 error=validation_error,
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             return
 
@@ -188,10 +220,10 @@ class RegistrationHandler:
                 pod_id=manifest.pod_id,
                 error=auth_error,
             )
-            if msg.reply:
-                await self._nc.publish(
-                    msg.reply,
-                    response.model_dump_json().encode("utf-8"),
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=response,
                 )
             return
 
@@ -202,10 +234,10 @@ class RegistrationHandler:
             pod_id=manifest.pod_id,
             registered_tools=registered,
         )
-        if msg.reply:
-            await self._nc.publish(
-                msg.reply,
-                response.model_dump_json().encode("utf-8"),
+        if msg.reply_subject is not None:
+            await self._nc.publish_reply(
+                reply_subject=msg.reply_subject,
+                message=response,
             )
         log.info(
             "registration completed",
@@ -385,37 +417,24 @@ class RegistrationHandler:
         """
         if self._nc is None:
             return
-        subject = f"{self._namespace}.tools.probe.{pod_id}"
-        payload = ProbeRequest(pod_id=pod_id).model_dump_json().encode("utf-8")
+        subject = Subjects.tools_probe(pod_id)
+        request = ProbeRequest(pod_id=pod_id)
         start = datetime.now(UTC)
         try:
-            reply = await self._nc.request(
-                subject,
-                payload,
-                timeout=self._probe_timeout,
+            ack = await self._nc.request(
+                subject=subject,
+                message=request,
+                response_type=ProbeResponse,
+                timeout=timedelta(seconds=self._probe_timeout),
             )
         except Exception as exc:
             log.warning(
-                "tool pod reachability probe failed; endpoints remain pending",
+                "tool pod reachability probe failed or reply was malformed; endpoints remain pending",
                 extra={
                     "extra_data": {
                         "pod_id": pod_id,
-                        "probe_subject": subject,
+                        "probe_subject": subject.path,
                         "probe_timeout": self._probe_timeout,
-                        "error": str(exc),
-                    }
-                },
-            )
-            return
-        try:
-            ack = ProbeResponse.model_validate_json(reply.data)
-        except Exception as exc:
-            log.warning(
-                "tool pod probe reply was malformed; endpoints remain pending",
-                extra={
-                    "extra_data": {
-                        "pod_id": pod_id,
-                        "probe_subject": subject,
                         "error": str(exc),
                     }
                 },
@@ -427,7 +446,7 @@ class RegistrationHandler:
                 extra={
                     "extra_data": {
                         "pod_id": pod_id,
-                        "probe_subject": subject,
+                        "probe_subject": subject.path,
                     }
                 },
             )

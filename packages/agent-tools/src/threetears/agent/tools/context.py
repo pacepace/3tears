@@ -6,16 +6,32 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
-from threetears.agent.memory.ledger import MemoryLedger
+from threetears.agent.memory.collections import MemoryRefsCollection
+from threetears.agent.memory.entities import MemoryRefEntity
 from threetears.agent.tools.collections import ContextItemCollection
+
+__all__ = [
+    "ToolContextManager",
+]
+
+_MEMORY_REF_FIFO_CAPACITY = 50
 
 
 class ToolContextManager:
     """Manages conversation context: variables, tool results, media slots, and workflows.
 
     Backed by a :class:`ContextItemCollection` for three-tier persistence
-    (L1 SQLite → L2 NATS KV → L3 PostgreSQL).  Workflow state is transient
-    (in-memory, single-turn only).
+    (L1 SQLite -> L2 NATS KV -> L3 PostgreSQL) and -- for memory-ref
+    surfacing tracking -- by a :class:`MemoryRefsCollection` on the
+    composite-pk ``conversation_memory_refs`` table. workflow state is
+    transient (in-memory, single-turn only).
+
+    the surfaced-items FIFO projection lives in memory (capped at 50)
+    and is backed by the collection: cold-start rehydrates via
+    :meth:`MemoryRefsCollection.find_by_conversation`; writes go through
+    :meth:`MemoryRefsCollection.save_entity` so L1 / L2 / L3 and cross-
+    pod invalidation all stay coherent. retires the bespoke
+    :class:`MemoryLedger` wrapper under namespace-task-01 phase 8.5l-2.
 
     Call :meth:`load_context` after construction to populate from storage.
     """
@@ -29,21 +45,52 @@ class ToolContextManager:
         var_limit: int = 50,
         var_max_chars: int = 50_000,
         result_limit: int | None = None,
-        ledger: MemoryLedger | None = None,
-        l3_pool: Any = None,
+        memory_refs_collection: MemoryRefsCollection | None = None,
     ) -> None:
+        """initialize context manager with required context collection.
+
+        :param collection: three-tier ContextItemCollection for variables
+            / tool results / media slots
+        :ptype collection: ContextItemCollection
+        :param conversation_id: conversation scope (first pk column of
+            memory refs)
+        :ptype conversation_id: UUID
+        :param user_id: invoking user UUID for ownership checks
+        :ptype user_id: UUID
+        :param var_limit: maximum variables before set rejects new keys
+        :ptype var_limit: int
+        :param var_max_chars: truncation cap for variable values
+        :ptype var_max_chars: int
+        :param result_limit: optional LRU cap for tool_result items
+        :ptype result_limit: int | None
+        :param memory_refs_collection: optional three-tier memory-refs
+            collection for cross-pod surfacing tracking. when absent,
+            surfacing writes through :meth:`add_ledger_ref` become
+            no-ops (tests + tool smoke fixtures without an agent pod
+            configured do not need surfacing persistence)
+        :ptype memory_refs_collection: MemoryRefsCollection | None
+        :return: nothing
+        :rtype: None
+        """
         self._collection = collection
         self.conversation_id = conversation_id
         self.user_id = user_id
         self._var_limit = var_limit
         self._var_max_chars = var_max_chars
         self._result_limit = result_limit
-        self._ledger = ledger or MemoryLedger()
-        self._l3_pool = l3_pool
+        self._memory_refs = memory_refs_collection
 
         # Local projection of collection data for this conversation.
         # Populated by load_context(), updated by write methods.
-        self._items: list[dict[str, Any]] = []
+        self.items: list[dict[str, Any]] = []
+
+        # Ordered projection of surfaced memory-ref rows (FIFO), mirror
+        # of the rows persisted via :class:`MemoryRefsCollection`. The
+        # list preserves insertion order so the prompt renders items
+        # chronologically and FIFO eviction drops the oldest first.
+        # Each entry is a dict with keys
+        # ``{item_id, item_type, short_desc, date_added}``.
+        self._memory_refs_projection: list[dict[str, Any]] = []
 
         # Workflow state (transient, single-turn, in-memory only)
         self._workflow: dict[str, Any] | None = None
@@ -53,13 +100,32 @@ class ToolContextManager:
     # ------------------------------------------------------------------
 
     async def load_context(self) -> None:
-        """Load all context items and ledger for this conversation from storage."""
+        """Load all context items and surfaced-refs projection for this conversation.
+
+        pulls the persisted ``conversation_memory_refs`` rows through
+        :meth:`MemoryRefsCollection.find_by_conversation` into the
+        in-memory FIFO projection (capped at 50, oldest first). when
+        no collection is wired (unit tests, smoke fixtures) the
+        projection stays empty and surfacing operations become no-ops.
+        """
         entities = await self._collection.find_by_conversation(self.conversation_id)
-        self._items = []
+        self.items = []
         for entity in entities:
-            self._items.append(entity.to_dict())
-        if self._l3_pool is not None:
-            await self._ledger.load(self._l3_pool, self.conversation_id)
+            self.items.append(entity.to_dict())
+        self._memory_refs_projection = []
+        if self._memory_refs is not None:
+            refs = await self._memory_refs.find_by_conversation(
+                self.conversation_id,
+            )
+            for ref in refs:
+                self._memory_refs_projection.append(
+                    {
+                        "item_id": str(ref.item_id),
+                        "item_type": ref.item_type,
+                        "short_desc": ref.short_desc,
+                        "date_added": ref.date_added.isoformat() if ref.date_added else "",
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Variables
@@ -67,9 +133,9 @@ class ToolContextManager:
 
     async def set_variable(self, key: str, value: str, value_type: str = "string") -> str:
         """Set or update a variable.  Returns the context_id."""
-        var_count = sum(1 for i in self._items if i["context_type"] == "variable")
+        var_count = sum(1 for i in self.items if i["context_type"] == "variable")
         existing = next(
-            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            (i for i in self.items if i["context_type"] == "variable" and i["key"] == key),
             None,
         )
         if existing is None and var_count >= self._var_limit:
@@ -94,19 +160,19 @@ class ToolContextManager:
             "date_updated": now,
         }
 
-        returned_id = await self._collection.upsert_variable(data)
+        returned_id = await self._collection.upsert_variable(self.conversation_id, data)
         context_id_str = str(returned_id)
 
         # Update local projection
-        self._items = [i for i in self._items if not (i["context_type"] == "variable" and i["key"] == key)]
+        self.items = [i for i in self.items if not (i["context_type"] == "variable" and i["key"] == key)]
         data["context_id"] = returned_id
-        self._items.append(data)
+        self.items.append(data)
 
         return context_id_str
 
     async def get_variable(self, key: str) -> dict[str, Any] | None:
         """Get a variable by key, or ``None`` if not found."""
-        for item in self._items:
+        for item in self.items:
             if item["context_type"] == "variable" and item["key"] == key:
                 vtype = (item.get("metadata") or {}).get("value_type", "string")
                 return {"value": item["content"], "value_type": vtype}
@@ -114,19 +180,19 @@ class ToolContextManager:
 
     async def get_all_variables(self) -> list[dict[str, Any]]:
         """Return all variables as a list of dicts."""
-        return [i for i in self._items if i["context_type"] == "variable"]
+        return [i for i in self.items if i["context_type"] == "variable"]
 
     async def delete_variable(self, key: str) -> bool:
         """Delete a variable by key.  Returns ``True`` if it existed."""
         target = next(
-            (i for i in self._items if i["context_type"] == "variable" and i["key"] == key),
+            (i for i in self.items if i["context_type"] == "variable" and i["key"] == key),
             None,
         )
         if target is None:
             return False
 
-        self._items = [i for i in self._items if i is not target]
-        await self._collection.delete(target["context_id"])
+        self.items = [i for i in self.items if i is not target]
+        await self._collection.delete((self.conversation_id, target["context_id"]))
         return True
 
     # ------------------------------------------------------------------
@@ -205,7 +271,7 @@ class ToolContextManager:
         await self._collection.save_entity(
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
-        self._items.append(data)
+        self.items.append(data)
 
         # LRU eviction
         if self._result_limit is not None:
@@ -214,12 +280,14 @@ class ToolContextManager:
                 # Refresh local projection to drop evicted items
                 evicted_ids = {
                     str(i["context_id"])
-                    for i in self._items
+                    for i in self.items
                     if i["context_type"] == "tool_result"
-                    and not self._collection._exists_in_cache_sync(i["context_id"])
+                    and not self._collection.exists_in_cache_sync(
+                        (self.conversation_id, i["context_id"]),
+                    )
                 }
                 if evicted_ids:
-                    self._items = [i for i in self._items if str(i["context_id"]) not in evicted_ids]
+                    self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
 
         return str(context_id)
 
@@ -231,9 +299,9 @@ class ToolContextManager:
         cid = str(context_id)
         if cid.startswith("ctx:"):
             cid = cid[4:]
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
-                await self._collection.touch(cid)
+                await self._collection.touch(self.conversation_id, cid)
                 item["date_accessed"] = datetime.now(UTC)
                 return item
         return None
@@ -250,7 +318,7 @@ class ToolContextManager:
         :rtype: str | None
         """
         cid = str(context_id)
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
                 val: str | None = item.get("long_desc", "")
                 return val
@@ -265,7 +333,7 @@ class ToolContextManager:
         :rtype: dict[str, Any] | None
         """
         cid = str(context_id)
-        for item in self._items:
+        for item in self.items:
             if str(item["context_id"]) == cid:
                 return item
         return None
@@ -294,7 +362,7 @@ class ToolContextManager:
         :rtype: dict[str, Any] | None
         """
         result: dict[str, Any] | None = None
-        for item in self._items:
+        for item in self.items:
             if item["context_type"] == context_type and item["key"] == key:
                 result = item
                 break
@@ -336,8 +404,10 @@ class ToolContextManager:
         # every storage tier (local projection, L1, L2, L3).
         existing = await self.get_item_by_type_and_key(context_type, key)
         if existing is not None:
-            self._items = [i for i in self._items if i is not existing]
-            await self._collection.delete(existing["context_id"])
+            self.items = [i for i in self.items if i is not existing]
+            await self._collection.delete(
+                (self.conversation_id, existing["context_id"]),
+            )
 
         now = datetime.now(UTC)
         context_id = uuid7()
@@ -361,7 +431,7 @@ class ToolContextManager:
                 collection=self._collection,
             )
         )
-        self._items.append(data)
+        self.items.append(data)
         return str(context_id)
 
     async def delete_item_by_type_and_key(
@@ -386,8 +456,10 @@ class ToolContextManager:
         if existing is None:
             result = False
         else:
-            self._items = [i for i in self._items if i is not existing]
-            await self._collection.delete(existing["context_id"])
+            self.items = [i for i in self.items if i is not existing]
+            await self._collection.delete(
+                (self.conversation_id, existing["context_id"]),
+            )
             result = True
         return result
 
@@ -416,16 +488,16 @@ class ToolContextManager:
         await self._collection.save_entity(
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
-        self._items.append(data)
+        self.items.append(data)
         return str(context_id)
 
     def get_slots(self) -> dict[str, dict[str, Any]]:
         """Return all registered media slots."""
-        return {i["key"]: i for i in self._items if i["context_type"] == "media_slot"}
+        return {i["key"]: i for i in self.items if i["context_type"] == "media_slot"}
 
     def build_media_context(self) -> str | None:
         """Format media slots into a prompt string, or ``None`` if empty."""
-        slots = [i for i in self._items if i["context_type"] == "media_slot"]
+        slots = [i for i in self.items if i["context_type"] == "media_slot"]
         if not slots:
             return None
         lines = ["[Active Media Slots]"]
@@ -502,60 +574,146 @@ class ToolContextManager:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Memory ledger (tracks surfaced items to prevent re-retrieval)
+    # Memory refs (tracks surfaced items to prevent re-retrieval)
     # ------------------------------------------------------------------
 
     @property
-    def ledger(self) -> MemoryLedger:
-        """Return the conversation's memory ledger.
+    def memory_refs_count(self) -> int:
+        """return the number of surfaced memory refs in the projection.
 
-        :return: memory ledger instance
-        :rtype: MemoryLedger
+        replaces ``len(self.ledger)`` — graph-node gating keeps its
+        shape (``memory_refs_count >= min_coverage``) without reaching
+        through an intermediate object.
+
+        :return: current surfaced-refs count
+        :rtype: int
         """
-        return self._ledger
+        return len(self._memory_refs_projection)
 
-    async def add_ledger_ref(self, item_id: str, item_type: str, short_desc: str) -> None:
-        """Track a surfaced item in the memory ledger.
+    @property
+    def surfaced_item_ids(self) -> set[str]:
+        """return the set of surfaced item IDs (as strings).
+
+        callers passing this to :meth:`MemoryRetriever.retrieve` as
+        ``surfaced_ids`` get dedup on already-shown items without
+        reaching into the internal projection.
+
+        :return: surfaced item IDs
+        :rtype: set[str]
+        """
+        return {ref["item_id"] for ref in self._memory_refs_projection}
+
+    async def add_ledger_ref(
+        self,
+        item_id: str,
+        item_type: str,
+        short_desc: str,
+    ) -> None:
+        """Track a surfaced item by persisting through MemoryRefsCollection.
+
+        FIFO eviction at capacity 50. truncates ``short_desc`` to 150
+        chars at the write boundary so the L1 / L3 rows satisfy the
+        migration-v002 VARCHAR(150) bound. when
+        ``memory_refs_collection`` was not wired, the projection still
+        updates (so in-conversation dedup works) but no cross-pod
+        persistence happens.
 
         :param item_id: UUID string of the surfaced item
         :ptype item_id: str
-        :param item_type: type of the item (memory, media, chunk, finding, scan)
+        :param item_type: type of the item (memory / media / chunk /
+            finding / scan)
         :ptype item_type: str
-        :param short_desc: short description (≤150 chars)
+        :param short_desc: short description (truncated to 150 chars)
         :ptype short_desc: str
+        :return: nothing
+        :rtype: None
         """
-        if self._l3_pool is not None:
-            await self._ledger.add_ref(self._l3_pool, self.conversation_id, item_id, item_type, short_desc)
+        if any(ref["item_id"] == item_id for ref in self._memory_refs_projection):
+            return
+
+        desc = short_desc[:150] if len(short_desc) > 150 else short_desc
+        now = datetime.now(UTC)
+
+        if len(self._memory_refs_projection) >= _MEMORY_REF_FIFO_CAPACITY:
+            oldest = self._memory_refs_projection.pop(0)
+            if self._memory_refs is not None:
+                await self._memory_refs.delete(
+                    (self.conversation_id, UUID(oldest["item_id"])),
+                )
+
+        self._memory_refs_projection.append(
+            {
+                "item_id": item_id,
+                "item_type": item_type,
+                "short_desc": desc,
+                "date_added": now.isoformat(),
+            },
+        )
+
+        if self._memory_refs is not None:
+            entity = self._memory_refs.create(
+                {
+                    "conversation_id": self.conversation_id,
+                    "item_id": UUID(item_id),
+                    "item_type": item_type,
+                    "short_desc": desc,
+                    "date_added": now,
+                },
+            )
+            await self._memory_refs.save_entity(entity)
 
     def is_known(self, item_id: str) -> bool:
-        """Check if an item is already tracked in the ledger.
+        """Check if an item is already tracked as surfaced.
 
         :param item_id: UUID string to check
         :ptype item_id: str
-        :return: True if already in ledger
+        :return: True if already surfaced this conversation
         :rtype: bool
         """
-        return item_id in self._ledger.ledgered_ids
+        return any(ref["item_id"] == item_id for ref in self._memory_refs_projection)
 
     def build_ledger_prompt(self) -> str:
-        """Format the memory ledger for inclusion in the system prompt.
+        """Format surfaced memory refs for inclusion in system prompt.
 
-        :return: formatted ledger section or empty string
+        :return: formatted section or empty string
         :rtype: str
         """
-        return self._ledger.build_context()
+        if not self._memory_refs_projection:
+            return ""
+        lines = ["Previously recalled in this conversation (use recall_memory with the ID and type shown):"]
+        for ref in self._memory_refs_projection:
+            itype = ref["item_type"]
+            tag = f"[{itype}:{ref['item_id']}]"
+            lines.append(f"- {tag} type: {itype} — {ref['short_desc']}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Context building
     # ------------------------------------------------------------------
+
+    def build_context_prompt(self) -> str:
+        """Return a non-None prompt suitable for system-prompt injection.
+
+        Compatibility shim for the canonical
+        :func:`threetears.langgraph.agent_node`, which expects a sync
+        ``build_context_prompt() -> str`` on the ``context_manager``
+        slot in ``configurable``. Returns the empty string when there
+        is no context, instead of ``None``, so callers can concatenate
+        the result into the system prompt unconditionally.
+
+        :return: formatted context string, or "" when no context exists
+        :rtype: str
+        """
+        raw = self.build_conversation_context()
+        return raw or ""
 
     def build_conversation_context(self) -> str | None:
         """Format variables and tool results into a prompt string.
 
         Returns ``None`` if there is no context to include.
         """
-        variables = [i for i in self._items if i["context_type"] == "variable"]
-        tool_results = [i for i in self._items if i["context_type"] == "tool_result"]
+        variables = [i for i in self.items if i["context_type"] == "variable"]
+        tool_results = [i for i in self.items if i["context_type"] == "tool_result"]
 
         if not variables and not tool_results:
             return None
@@ -580,4 +738,4 @@ class ToolContextManager:
     @property
     def has_context(self) -> bool:
         """Whether there is any context (variables, tool results, or media)."""
-        return bool(self._items)
+        return bool(self.items)

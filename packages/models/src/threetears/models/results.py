@@ -6,6 +6,16 @@ from dataclasses import dataclass
 
 from threetears.models.messages import ToolCallRequest
 
+__all__ = [
+    "ChatChunk",
+    "ChatResult",
+    "EmbeddingResult",
+    "RerankResult",
+    "SpeechResult",
+    "TranscriptionResult",
+    "TranscriptionSegment",
+]
+
 
 @dataclass
 class TranscriptionSegment:

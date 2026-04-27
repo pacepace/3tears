@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -25,6 +26,11 @@ class _FakeWorkspaceEntity:
     id: UUID
     name: str
     date_deleted: Any = None
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -47,12 +53,12 @@ class _FakeWorkspaceCollection:
 class _RecordingSandbox:
     def __init__(self, deny_reads: list[str] | None = None) -> None:
         self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_reads:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -85,7 +91,7 @@ class _FakeConnection:
     script: dict[tuple[str, Any], dict[str, Any] | None] = field(default_factory=dict)
     fetchrows: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         self.fetchrows.append((query, args))
         # selector: last positional matches the ref shape
         # for head: args = (ws_id, path)
@@ -137,6 +143,7 @@ def _journal_row(content: bytes, version: int = 1) -> dict[str, Any]:
 def _build_tool(
     *,
     workspace_entities: list[_FakeWorkspaceEntity],
+    acl_cache: Any,
     script: dict[tuple[str, Any], dict[str, Any] | None] | None = None,
     deny_reads: list[str] | None = None,
 ) -> tuple[WorkspaceDiffTool, _FakePool, _RecordingSandbox]:
@@ -151,6 +158,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=uuid4(),
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox
 
@@ -161,32 +169,36 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_diff_two_integer_versions_returns_unified_diff() -> None:
+async def test_diff_two_integer_versions_returns_unified_diff(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """from_ref=1, to_ref=3 emit plain unified diff between their content."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     script: dict[tuple[str, Any], dict[str, Any] | None] = {
         ("a.txt", 1): _journal_row(b"first\nsecond\nthird\n", version=1),
         ("a.txt", 3): _journal_row(b"first\nchanged\nthird\n", version=3),
     }
-    tool, _pool, sandbox = _build_tool(workspace_entities=[ws], script=script)
+    tool, _pool, sandbox = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref=1, to_ref=3, workspace="ws")
     assert result.success is True, result.error
     assert "--- a.txt@1" in result.content
     assert "+++ a.txt@3" in result.content
     assert "-second" in result.content
     assert "+changed" in result.content
-    assert sandbox.enforce_calls == [("read", "a.txt")]
+    assert sandbox.syntax_calls == ["a.txt"]
 
 
 @pytest.mark.asyncio
-async def test_diff_checkpoint_label_resolves_via_label_selector() -> None:
+async def test_diff_checkpoint_label_resolves_via_label_selector(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """string ref (non-digit, non-head) treated as checkpoint label."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     script = {
         ("m.txt", "v1"): _journal_row(b"alpha\n"),
         ("m.txt", "head"): _journal_row(b"alpha-plus\n"),
     }
-    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="m.txt", from_ref="v1", to_ref="head", workspace="ws")
     assert result.success is True
     assert "--- m.txt@v1" in result.content
@@ -199,14 +211,16 @@ async def test_diff_checkpoint_label_resolves_via_label_selector() -> None:
 
 
 @pytest.mark.asyncio
-async def test_diff_binary_content_returns_clean_error() -> None:
+async def test_diff_binary_content_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """non-UTF-8 content in either ref triggers clean error text."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     script = {
         ("bin.dat", 1): _journal_row(b"\xff\xfe\x00\x01"),
         ("bin.dat", 2): _journal_row(b"ok text\n"),
     }
-    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="bin.dat", from_ref=1, to_ref=2, workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -214,14 +228,16 @@ async def test_diff_binary_content_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_diff_missing_from_ref_returns_clean_error() -> None:
+async def test_diff_missing_from_ref_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """from_ref resolves to no row -> clean error naming the ref."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     script = {
         ("a.txt", 99): None,
         ("a.txt", "head"): _journal_row(b"x\n"),
     }
-    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref=99, to_ref="head", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -230,14 +246,16 @@ async def test_diff_missing_from_ref_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_diff_missing_to_ref_returns_clean_error() -> None:
+async def test_diff_missing_to_ref_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """to_ref resolves to no row -> clean error naming the ref."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     script = {
         ("a.txt", "head"): _journal_row(b"x\n"),
         ("a.txt", "never"): None,
     }
-    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script)
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref="head", to_ref="never", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -245,10 +263,17 @@ async def test_diff_missing_to_ref_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_diff_sandbox_denied_returns_clean_error() -> None:
+async def test_diff_sandbox_denied_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied surfaces as clean tool error; no ref queries issued."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, sandbox = _build_tool(workspace_entities=[ws], script={}, deny_reads=["private.env"])
+    tool, pool, sandbox = _build_tool(
+        workspace_entities=[ws],
+        script={},
+        deny_reads=["private.env"],
+        acl_cache=permissive_acl_cache,
+    )
     result = await tool.execute(
         relative_path="private.env",
         from_ref=1,
@@ -257,7 +282,7 @@ async def test_diff_sandbox_denied_returns_clean_error() -> None:
     )
     assert result.success is False
     assert result.error is not None
-    assert sandbox.enforce_calls == [("read", "private.env")]
+    assert sandbox.syntax_calls == ["private.env"]
     assert pool.conn.fetchrows == []
 
 
@@ -266,13 +291,23 @@ async def test_diff_sandbox_denied_returns_clean_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_diff_mcp_name_is_exact_string() -> None:
-    tool, _, _ = _build_tool(workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")])
+def test_diff_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _ = _build_tool(
+        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        acl_cache=permissive_acl_cache,
+    )
     assert tool.mcp_name() == "threetears.workspace.diff"
 
 
-def test_diff_mcp_schema_shape() -> None:
-    tool, _, _ = _build_tool(workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")])
+def test_diff_mcp_schema_shape(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _ = _build_tool(
+        workspace_entities=[_FakeWorkspaceEntity(id=uuid4(), name="ws")],
+        acl_cache=permissive_acl_cache,
+    )
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     schema = defn.input_schema

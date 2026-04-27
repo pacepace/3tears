@@ -12,7 +12,7 @@ generalizes the "check before act" pattern into a reusable ABC:
 future subclasses (``WorkspaceSandbox``, ``NetworkSandbox``,
 ``SubprocessSandbox``, ``QuerySandbox``) extend the same contract, each
 defining their own action vocabulary and deny-reason messages via
-:meth:`Sandbox._deny_reason`.
+:meth:`Sandbox.deny_reason`.
 
 design notes:
 
@@ -30,6 +30,13 @@ from abc import ABC, abstractmethod
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Literal
+
+__all__ = [
+    "PathSandbox",
+    "Sandbox",
+    "SandboxDecision",
+    "SandboxDenied",
+]
 
 
 class SandboxDecision(StrEnum):
@@ -81,7 +88,7 @@ class Sandbox(ABC):
     subclasses implement :meth:`check` returning a :class:`SandboxDecision`.
     :meth:`enforce` is concrete and calls :meth:`check`, raising
     :class:`SandboxDenied` on DENY. subclasses may override
-    :meth:`_deny_reason` to provide richer error messages without
+    :meth:`deny_reason` to provide richer error messages without
     overriding :meth:`check` or :meth:`enforce`.
     """
 
@@ -112,9 +119,9 @@ class Sandbox(ABC):
         :raises SandboxDenied: if policy denies requested action on target
         """
         if self.check(action, target) is SandboxDecision.DENY:
-            raise SandboxDenied(action, target, self._deny_reason(action, target))
+            raise SandboxDenied(action, target, self.deny_reason(action, target))
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return human-readable reason why policy denies this call.
 
         default implementation returns generic ``"policy denied"``.
@@ -148,11 +155,11 @@ class PathSandbox(Sandbox):
     action vocabulary is ``{"read", "write"}``; unknown actions deny by
     default.
 
-    :cvar _MAX_KEY_LEN: maximum accepted length for any relative key;
+    :cvar MAX_KEY_LEN: maximum accepted length for any relative key;
         keys longer than this are rejected before pattern matching
     """
 
-    _MAX_KEY_LEN = 512
+    MAX_KEY_LEN = 512
 
     def __init__(
         self,
@@ -208,7 +215,7 @@ class PathSandbox(Sandbox):
         validation sequence (first failing rule returns DENY):
 
         1. key is non-empty
-        2. ``len(key) <= _MAX_KEY_LEN``
+        2. ``len(key) <= MAX_KEY_LEN``
         3. no NUL byte nor control character (``ord(c) < 32``) except
            ``\\t`` and ``\\n``
         4. key is not absolute (no leading ``/``, no windows drive letter)
@@ -224,6 +231,51 @@ class PathSandbox(Sandbox):
         :rtype: SandboxDecision
         """
         return self._classify_relative_key(key, mode)[0]
+
+    def validate_syntax(self, key: str) -> None:
+        """enforce steps 1-5 of :meth:`check_relative_key` (no glob check).
+
+        surfaces the syntactic half of the validation sequence
+        (non-empty, length cap, no control chars, not absolute, no
+        parent-ref) as a standalone check — callers that route policy
+        through rbac (namespace-task-01 phase 7) still need the
+        path-traversal safety rules enforced. the glob matching step 6
+        is intentionally skipped; callers pair this method with their
+        own rbac gate.
+
+        :param key: relative key to validate
+        :ptype key: str
+        :return: None
+        :rtype: None
+        :raises SandboxDenied: if any syntactic rule fires. action is
+            reported as ``"access"`` since this check is direction-
+            agnostic (same rules apply for read and write); ``target``
+            is the offending key; ``reason`` is the short classifier
+            string.
+        """
+        if not key:
+            raise SandboxDenied("access", key, "key is empty")
+        if len(key) > self.MAX_KEY_LEN:
+            raise SandboxDenied(
+                "access",
+                key,
+                f"key length {len(key)} exceeds max {self.MAX_KEY_LEN}",
+            )
+        if self._contains_control_char(key):
+            raise SandboxDenied(
+                "access",
+                key,
+                "key contains NUL or control character",
+            )
+        if Path(key).is_absolute():
+            raise SandboxDenied("access", key, "absolute path not allowed")
+        if ".." in Path(key).parts:
+            raise SandboxDenied(
+                "access",
+                key,
+                "parent-ref (..) not allowed in key",
+            )
+        return None
 
     def resolve_fs_path(self, path: str | Path, root_name: str) -> Path:
         """resolve ``path`` under named root; reject escape via ``..`` or symlink.
@@ -266,7 +318,7 @@ class PathSandbox(Sandbox):
             raise SandboxDenied("access", str(path), "path escapes root") from exc
         return candidate
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return actionable reason by re-running :meth:`check_relative_key`.
 
         computed on demand rather than cached on a per-call mutable attr
@@ -292,7 +344,7 @@ class PathSandbox(Sandbox):
         """joint implementation of decision + reason for a relative key.
 
         single source of truth behind :meth:`check_relative_key` and
-        :meth:`_deny_reason`; returns ``(decision, reason)`` so callers
+        :meth:`deny_reason`; returns ``(decision, reason)`` so callers
         that only need the decision discard the reason.
 
         :param key: relative key to validate and match
@@ -306,10 +358,10 @@ class PathSandbox(Sandbox):
         result: tuple[SandboxDecision, str]
         if not key:
             result = (SandboxDecision.DENY, "key is empty")
-        elif len(key) > self._MAX_KEY_LEN:
+        elif len(key) > self.MAX_KEY_LEN:
             result = (
                 SandboxDecision.DENY,
-                f"key length {len(key)} exceeds max {self._MAX_KEY_LEN}",
+                f"key length {len(key)} exceeds max {self.MAX_KEY_LEN}",
             )
         elif self._contains_control_char(key):
             result = (

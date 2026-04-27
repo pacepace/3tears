@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,10 +25,16 @@ from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 class _FakeWorkspaceEntity:
     """minimal stand-in for :class:`Workspace` for reset-target lookups."""
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
     id: UUID
     name: str
     template_name: str | None
     current_version: int = 0
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
 
 
@@ -69,21 +76,21 @@ class _RecordingSandbox:
     def __init__(self, templates_root: Path) -> None:
         self._templates_root = templates_root
         self.resolve_calls: list[tuple[str, str]] = []
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         self.resolve_calls.append((path, root_name))
         return self._templates_root
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
 
 
 class _NoTemplateSandbox:
     def resolve_fs_path(self, path: str, root_name: str) -> Path:
         raise KeyError(root_name)
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 
@@ -110,7 +117,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         self.transaction_calls += 1
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
@@ -158,6 +165,7 @@ def _build_tool(
     workspace_file_collection: Any,
     sandbox: Any,
     db_pool: Any,
+    acl_cache: Any,
     agent_id: UUID | None = None,
     context_provider: Any = None,
 ) -> WorkspaceResetTool:
@@ -169,6 +177,7 @@ def _build_tool(
         context_provider=context_provider or (lambda: _FakeContext()),
         agent_id=agent_id or uuid4(),
         db_pool=db_pool,
+        acl_cache=acl_cache,
     )
 
 
@@ -180,6 +189,7 @@ def _build_tool(
 @pytest.mark.asyncio
 async def test_reset_happy_path_reverts_files_and_advances_version(
     tmp_path: Path,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """reset re-issues template content for paths in both, journals revert, advances version."""
     template_dir = tmp_path / "starter"
@@ -199,6 +209,7 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
         workspace_file_collection=_FakeFileCollection(current_files),
         sandbox=_RecordingSandbox(template_dir),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="seed")
@@ -234,7 +245,10 @@ async def test_reset_happy_path_reverts_files_and_advances_version(
 
 
 @pytest.mark.asyncio
-async def test_reset_drops_files_template_no_longer_has(tmp_path: Path) -> None:
+async def test_reset_drops_files_template_no_longer_has(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """files present in workspace but absent from template are DELETED with delete journal row."""
     template_dir = tmp_path / "starter"
     template_dir.mkdir()
@@ -252,6 +266,7 @@ async def test_reset_drops_files_template_no_longer_has(tmp_path: Path) -> None:
         workspace_file_collection=_FakeFileCollection(current_files),
         sandbox=_RecordingSandbox(template_dir),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="seed")
@@ -267,7 +282,10 @@ async def test_reset_drops_files_template_no_longer_has(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_creates_files_template_added(tmp_path: Path) -> None:
+async def test_reset_creates_files_template_added(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """files in template but absent from workspace get INSERTed with create journal row."""
     template_dir = tmp_path / "starter"
     template_dir.mkdir()
@@ -285,6 +303,7 @@ async def test_reset_creates_files_template_added(tmp_path: Path) -> None:
         workspace_file_collection=_FakeFileCollection(current_files),
         sandbox=_RecordingSandbox(template_dir),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="seed")
@@ -301,6 +320,7 @@ async def test_reset_creates_files_template_added(tmp_path: Path) -> None:
 async def test_reset_uses_pin_when_name_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """omitting name falls back to the pinned workspace via pin.get_pin."""
     template_dir = tmp_path / "starter"
@@ -321,6 +341,7 @@ async def test_reset_uses_pin_when_name_omitted(
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_RecordingSandbox(template_dir),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute()
@@ -336,6 +357,7 @@ async def test_reset_uses_pin_when_name_omitted(
 @pytest.mark.asyncio
 async def test_reset_no_name_and_no_pin_returns_error(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """omitting name with no pin returns clean error."""
 
@@ -350,6 +372,7 @@ async def test_reset_no_name_and_no_pin_returns_error(
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute()
     assert result.success is False
@@ -359,7 +382,9 @@ async def test_reset_no_name_and_no_pin_returns_error(
 
 
 @pytest.mark.asyncio
-async def test_reset_workspace_not_found_returns_error() -> None:
+async def test_reset_workspace_not_found_returns_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """missing workspace yields clean error and no writes."""
     pool = _FakePool()
     tool = _build_tool(
@@ -367,6 +392,7 @@ async def test_reset_workspace_not_found_returns_error() -> None:
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="ghost")
     assert result.success is False
@@ -375,7 +401,9 @@ async def test_reset_workspace_not_found_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_workspace_without_template_returns_error() -> None:
+async def test_reset_workspace_without_template_returns_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """workspace without template_name yields clean error and no writes."""
     workspace = _FakeWorkspaceEntity(id=uuid4(), name="empty", template_name=None, current_version=0)
     pool = _FakePool()
@@ -384,6 +412,7 @@ async def test_reset_workspace_without_template_returns_error() -> None:
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="empty")
     assert result.success is False
@@ -393,7 +422,9 @@ async def test_reset_workspace_without_template_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_traps_unexpected_exceptions_as_data() -> None:
+async def test_reset_traps_unexpected_exceptions_as_data(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unexpected runtime errors surface as ToolResult(success=False)."""
 
     class _Boom:
@@ -406,6 +437,7 @@ async def test_reset_traps_unexpected_exceptions_as_data() -> None:
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="x")
     assert result.success is False
@@ -418,35 +450,44 @@ async def test_reset_traps_unexpected_exceptions_as_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_name_is_exact_string() -> None:
+def test_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.reset"
 
 
-def test_mcp_version_is_semver_string() -> None:
+def test_mcp_version_is_semver_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_version() == "1.0"
 
 
-def test_mcp_schema_declares_optional_name() -> None:
+def test_mcp_schema_declares_optional_name(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         workspace_file_collection=_FakeFileCollection([]),
         sandbox=_NoTemplateSandbox(),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     definition = tool.mcp_schema()
     assert isinstance(definition, MCPToolDefinition)

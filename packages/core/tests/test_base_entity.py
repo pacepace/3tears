@@ -36,10 +36,10 @@ def mock_collection():
     def get_row(entity_id: object) -> dict[str, object] | None:
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
     coll.save_entity = AsyncMock()
     coll.reload_entity = AsyncMock()
 
@@ -66,7 +66,7 @@ class TestBaseEntity:
 
         entity = BaseEntity(data, is_new=True, collection=coll)
 
-        coll._write_to_cache_sync.assert_called_once_with(data)
+        coll.write_to_cache_sync.assert_called_once_with(data)
         assert cache["e1"]["name"] == "Bob"
         assert object.__getattribute__(entity, "_changes") == {}
         assert entity.name == "Bob"
@@ -91,7 +91,7 @@ class TestBaseEntity:
         )
 
         assert entity.role == "admin"
-        coll._get_field_sync.assert_called_with("e3", "role")
+        coll.get_field_sync.assert_called_with("e3", "role")
 
     def test_getattr_raises_attributeerror(
         self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]
@@ -112,7 +112,7 @@ class TestBaseEntity:
 
         entity.name = "Franklin"
 
-        coll._set_field_sync.assert_called_with("e5", "name", "Franklin")
+        coll.set_field_sync.assert_called_with("e5", "name", "Franklin")
         changes = object.__getattribute__(entity, "_changes")
         assert changes["name"] == "Franklin"
         assert cache["e5"]["name"] == "Franklin"
@@ -181,7 +181,7 @@ class TestBaseEntity:
         result = entity.to_dict()
 
         assert result == {"id": "e10", "name": "Kate", "active": True}
-        coll._get_row_sync.assert_called_with("e10")
+        coll.get_row_sync.assert_called_with("e10")
 
     def test_to_dict_without_collection(self) -> None:
         """Returns _changes when no collection."""
@@ -232,25 +232,25 @@ class TestBaseEntity:
         entity = BaseEntity({"id": "pk-123", "name": "Quinn"})
         assert entity.id == "pk-123"
 
-    def test_custom_primary_key_field(self) -> None:
+    def test_customprimary_key_field(self) -> None:
         """Subclass with different PK field works."""
 
         class UserEntity(BaseEntity):
-            _primary_key_field: str = "user_id"
+            primary_key_field: str = "user_id"
 
         entity = UserEntity({"user_id": "u-42", "name": "Rose"})
 
         assert entity.id == "u-42"
 
     def test_set_data_replaces_l1(self, mock_collection: tuple[MagicMock, dict[str, dict[str, object]]]) -> None:
-        """_set_data writes to L1 and clears changes."""
+        """set_data writes to L1 and clears changes."""
         coll, cache = mock_collection
         entity = BaseEntity({"id": "e16", "name": "Sam"}, is_new=True, collection=coll)
 
         entity.name = "Samuel"
         assert entity.is_dirty is True
 
-        entity._set_data({"id": "e16", "name": "Samwise", "level": 10})
+        entity.set_data({"id": "e16", "name": "Samwise", "level": 10})
 
         assert cache["e16"]["name"] == "Samwise"
         assert entity.is_dirty is False

@@ -9,6 +9,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "ComfyUIImageProvider",
+]
+
 
 # minimal default txt2img workflow for ComfyUI
 # KSampler -> VAEDecode -> SaveImage pipeline
@@ -98,8 +102,8 @@ class ComfyUIImageProvider:
         poll_interval: float = 2.0,
         max_polls: int = 60,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
         self._poll_interval = poll_interval
         self._max_polls = max_polls
 
@@ -136,9 +140,9 @@ class ComfyUIImageProvider:
 
         workflow = _build_workflow(effective_prompt)
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             submit_response = await client.post(
-                f"{self._base_url}/prompt",
+                f"{self.base_url}/prompt",
                 json={"prompt": workflow},
             )
             submit_response.raise_for_status()
@@ -147,7 +151,7 @@ class ComfyUIImageProvider:
             filename = await self._poll_for_result(client, prompt_id)
 
             image_response = await client.get(
-                f"{self._base_url}/view",
+                f"{self.base_url}/view",
                 params={"filename": filename},
             )
             image_response.raise_for_status()
@@ -177,7 +181,7 @@ class ComfyUIImageProvider:
             await asyncio.sleep(self._poll_interval)
 
             history_response = await client.get(
-                f"{self._base_url}/history/{prompt_id}",
+                f"{self.base_url}/history/{prompt_id}",
             )
             history_response.raise_for_status()
 

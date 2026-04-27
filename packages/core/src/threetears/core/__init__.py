@@ -22,6 +22,11 @@ from threetears.core.data.sql_builder import build_create_index_sql, build_creat
 from threetears.core.data.store import DataStore
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_BY_NAMESPACE_TYPE,
+    build_namespace_name,
+    sanitize_segment,
+)
 from threetears.core.security import (
     PathSandbox,
     Sandbox,
@@ -57,6 +62,7 @@ __all__ = [
     "LeaseTimeout",
     "LeaseUnavailable",
     "MigrationRunner",
+    "PLURAL_PREFIX_BY_NAMESPACE_TYPE",
     "PathSandbox",
     "Sandbox",
     "SandboxDecision",
@@ -66,9 +72,11 @@ __all__ = [
     "atomic_write",
     "build_create_index_sql",
     "build_create_table_sql",
+    "build_namespace_name",
     "create_dynamic_collection",
     "deserialize_from_json",
     "handler_for",
     "register_handler",
+    "sanitize_segment",
     "serialize_to_json",
 ]

@@ -22,6 +22,10 @@ from __future__ import annotations
 import sys
 import types
 
+__all__ = [
+    "apply_voyageai_compat",
+]
+
 
 def _needs_patch() -> bool:
     """checks whether the voyageai multimodal compat patch is needed.

@@ -13,6 +13,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import pytest
@@ -37,12 +38,19 @@ class _FakeWorkspaceEntity:
 
     :ivar id: workspace identifier
     :ivar name: workspace name
+    :ivar agent_id: owning agent (partition column on workspaces)
     :ivar date_deleted: soft-delete timestamp, None when live
     """
 
     id: UUID
     name: str
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -224,7 +232,7 @@ class _FakeConnection:
     transaction_open: bool = False
     journal_max_by_path: dict[str, int] = field(default_factory=dict)
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         """create a transaction wrapper.
 
         :return: transaction context manager
@@ -328,7 +336,10 @@ class _FakeContext:
 
 
 @pytest.mark.asyncio
-async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
+async def test_refresh_happy_path_imports_disk_files(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """files on disk not in L3 are imported as create at version 1.
 
     :param tmp_path: scratch root from pytest
@@ -360,6 +371,7 @@ async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")
@@ -379,6 +391,7 @@ async def test_refresh_happy_path_imports_disk_files(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_refresh_no_bind_root_returns_clean_error(
     tmp_path: Path,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """sandbox missing ``bind`` root yields ``success=False`` with useful message.
 
@@ -405,6 +418,7 @@ async def test_refresh_no_bind_root_returns_clean_error(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")
@@ -414,7 +428,10 @@ async def test_refresh_no_bind_root_returns_clean_error(
 
 
 @pytest.mark.asyncio
-async def test_refresh_idempotent_on_unchanged_files(tmp_path: Path) -> None:
+async def test_refresh_idempotent_on_unchanged_files(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """repeated refresh on unchanged files performs no writes.
 
     :param tmp_path: scratch root from pytest
@@ -451,6 +468,7 @@ async def test_refresh_idempotent_on_unchanged_files(tmp_path: Path) -> None:
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(workspace="ws_test")

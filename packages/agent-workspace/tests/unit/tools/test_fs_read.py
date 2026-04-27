@@ -6,6 +6,7 @@ import base64
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -71,21 +72,24 @@ class _FakeFileCollection:
 
 
 class _RecordingSandbox:
-    """records enforce calls; DENY when target matches a denylist."""
+    """records validate_syntax calls; raises on syntactically-invalid targets.
+
+    namespace-task-01 phase 7: the glob-driven enforce / check_relative_key
+    surface is retired from workspace tools. tests still need a stand-in
+    for the sandbox so they can assert the tool called validate_syntax
+    before reaching the rbac gate. denylist entries simulate the syntactic
+    rejection surface (empty, absolute, ``..``, control chars); the
+    path-level authorization decision lives in the injected acl_cache.
+    """
 
     def __init__(self, deny_reads: list[str] | None = None) -> None:
-        self._deny_reads = set(deny_reads or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self._deny_syntax = set(deny_reads or [])
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "read" and target in self._deny_reads:
-            raise SandboxDenied(action, target, "not in read globs")
-
-    def check_relative_key(self, key: str, mode: str) -> SandboxDecision:
-        if mode == "read" and key in self._deny_reads:
-            return SandboxDecision.DENY
-        return SandboxDecision.ALLOW
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_syntax:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -99,6 +103,7 @@ class _FakeContext:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     workspace_entities: list[_FakeWorkspaceEntity] | None = None,
     files: list[_FakeFileEntity] | None = None,
     deny_reads: list[str] | None = None,
@@ -114,6 +119,7 @@ def _build_tool(
         sandbox=sandbox,  # type: ignore[arg-type]
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
+        acl_cache=acl_cache,
     )
     return tool, file_coll, sandbox, agent_id
 
@@ -124,7 +130,9 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_fs_read_happy_returns_content_sha_version() -> None:
+async def test_fs_read_happy_returns_content_sha_version(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """explicit workspace + allowed read returns text + metadata."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -133,7 +141,7 @@ async def test_fs_read_happy_returns_content_sha_version() -> None:
         sha256="a" * 64,
         version=2,
     )
-    tool, files, sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, files, sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(relative_path="docs/readme.md", workspace="ws")
 
@@ -144,12 +152,14 @@ async def test_fs_read_happy_returns_content_sha_version() -> None:
         "version": 2,
         "is_binary": False,
     }
-    assert sandbox.enforce_calls == [("read", "docs/readme.md")]
+    assert sandbox.syntax_calls == ["docs/readme.md"]
     assert files.find_calls == [(ws.id, "docs/readme.md")]
 
 
 @pytest.mark.asyncio
-async def test_fs_read_binary_returns_base64_with_is_binary_true() -> None:
+async def test_fs_read_binary_returns_base64_with_is_binary_true(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """non-UTF-8 content returns base64 and is_binary=True."""
     raw = b"\x89PNG\r\n\x1a\n\xff\xfe"
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -159,7 +169,9 @@ async def test_fs_read_binary_returns_base64_with_is_binary_true() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, _files, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(relative_path="img/logo.png", workspace="ws")
 
@@ -175,10 +187,12 @@ async def test_fs_read_binary_returns_base64_with_is_binary_true() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_read_missing_file_returns_clean_error() -> None:
+async def test_fs_read_missing_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """file not in head-state returns ToolResult.success=False."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="missing.md", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -187,7 +201,9 @@ async def test_fs_read_missing_file_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_read_sandbox_denied_returns_clean_error() -> None:
+async def test_fs_read_sandbox_denied_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied becomes ToolResult with error text (no raise)."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     tool, files, sandbox, _ = _build_tool(
@@ -201,20 +217,23 @@ async def test_fs_read_sandbox_denied_returns_clean_error() -> None:
             )
         ],
         deny_reads=["secret.env"],
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="secret.env", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "secret.env" in result.error
     # enforce was called BEFORE any file lookup (gate-then-act)
-    assert sandbox.enforce_calls == [("read", "secret.env")]
+    assert sandbox.syntax_calls == ["secret.env"]
     assert files.find_calls == []
 
 
 @pytest.mark.asyncio
-async def test_fs_read_unknown_workspace_name_returns_clean_error() -> None:
+async def test_fs_read_unknown_workspace_name_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unknown workspace name returns ToolResult.success=False."""
-    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[])
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="x", workspace="ghost")
     assert result.success is False
     assert result.error is not None
@@ -224,14 +243,15 @@ async def test_fs_read_unknown_workspace_name_returns_clean_error() -> None:
 @pytest.mark.asyncio
 async def test_fs_read_no_workspace_and_no_pin_returns_clean_error(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """omitted workspace + no pin returns ToolResult.success=False."""
 
     async def _no_pin(context: Any) -> Any:
         return None
 
-    monkeypatch.setattr(helpers_module._pin, "get_pin", _no_pin)
-    tool, _files, _sandbox, _ = _build_tool()
+    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _no_pin)
+    tool, _files, _sandbox, _ = _build_tool(acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="x")
     assert result.success is False
     assert result.error is not None
@@ -243,13 +263,17 @@ async def test_fs_read_no_workspace_and_no_pin_returns_clean_error(
 # ---------------------------------------------------------------------------
 
 
-def test_fs_read_mcp_name_is_exact_string() -> None:
-    tool, _, _, _ = _build_tool()
+def test_fs_read_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.fs_read"
 
 
-def test_fs_read_mcp_schema_declares_required_relative_path() -> None:
-    tool, _, _, _ = _build_tool()
+def test_fs_read_mcp_schema_declares_required_relative_path(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == ["relative_path"]

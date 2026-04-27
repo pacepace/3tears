@@ -8,6 +8,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "A1111ImageProvider",
+]
+
 
 class A1111ImageProvider:
     """image generation provider for Automatic1111 Stable Diffusion WebUI API.
@@ -40,8 +44,8 @@ class A1111ImageProvider:
         sampler_name: str = "Euler",
         negative_prompt: str = "",
     ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
         self._steps = steps
         self._cfg_scale = cfg_scale
         self._sampler_name = sampler_name
@@ -88,13 +92,13 @@ class A1111ImageProvider:
         }
 
         if source_image is not None:
-            endpoint = f"{self._base_url}/sdapi/v1/img2img"
+            endpoint = f"{self.base_url}/sdapi/v1/img2img"
             b64_source = base64.b64encode(source_image).decode("ascii")
             payload["init_images"] = [b64_source]
         else:
-            endpoint = f"{self._base_url}/sdapi/v1/txt2img"
+            endpoint = f"{self.base_url}/sdapi/v1/txt2img"
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(endpoint, json=payload)
 
         response.raise_for_status()

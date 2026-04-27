@@ -12,6 +12,15 @@ import os
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "get_call_timeout",
+    "get_heartbeat_check_interval",
+    "get_heartbeat_timeout",
+    "get_mcp_timeout",
+    "get_nats_proxy_timeout_ms",
+    "get_probe_timeout",
+]
+
 log = get_logger(__name__)
 
 # platform default for tool call timeout (seconds)

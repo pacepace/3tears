@@ -49,7 +49,7 @@ def pool() -> FakePool:
 def collection(registry: CollectionRegistry, config: DefaultCoreConfig, pool: FakePool) -> ContextItemCollection:
     nats = make_nats_mock()
     coll = ContextItemCollection(registry, config, nats_client=nats)
-    coll._l3_pool = pool
+    coll.l3_pool = pool
     return coll
 
 
@@ -238,7 +238,7 @@ async def test_result_limit_evicts_lru(collection: ContextItemCollection) -> Non
         ids.append(cid)
 
     # Only 3 should remain in the local projection
-    tool_results = [i for i in ctx._items if i["context_type"] == "tool_result"]
+    tool_results = [i for i in ctx.items if i["context_type"] == "tool_result"]
     assert len(tool_results) == 3
 
     # Oldest two should be evicted
@@ -261,7 +261,7 @@ async def test_result_limit_does_not_evict_variables(collection: ContextItemColl
     assert var["value"] == "Alice"
 
     # Only 2 tool results should remain
-    tool_results = [i for i in ctx._items if i["context_type"] == "tool_result"]
+    tool_results = [i for i in ctx.items if i["context_type"] == "tool_result"]
     assert len(tool_results) == 2
 
 
@@ -304,13 +304,13 @@ async def test_load_context(ctx: ToolContextManager, pool: FakePool) -> None:
     await ctx.save_tool_result("calc", "42")
 
     # Clear local state
-    ctx._items = []
+    ctx.items = []
     assert ctx.has_context is False
 
     # Reload from collection
     await ctx.load_context()
     assert ctx.has_context is True
-    assert len(ctx._items) == 2
+    assert len(ctx.items) == 2
 
 
 # -- Arbitrary context item tests (save/get/delete by (context_type, key)) --
@@ -364,7 +364,7 @@ async def test_save_item_by_type_and_key_replaces_existing(
     assert item is not None
     assert item["content"] == "second"
     # only one item persists in the local projection
-    matching = [i for i in ctx._items if i["context_type"] == "workspace_pin" and i["key"] == "current"]
+    matching = [i for i in ctx.items if i["context_type"] == "workspace_pin" and i["key"] == "current"]
     assert len(matching) == 1
 
 

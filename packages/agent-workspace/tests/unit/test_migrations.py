@@ -8,9 +8,15 @@ from typing import Any
 import pytest
 
 from threetears.agent.workspace.migrations import (
+    PACKAGE_NAME,
     add_date_deleted_column,
     create_workspace_tables,
-    register_workspace_migrations,
+    register,
+)
+from threetears.core.data.migrations import (
+    DuplicateVersionError,
+    MigrationRunner,
+    MigrationScope,
 )
 
 
@@ -20,15 +26,16 @@ class _FakeDataStore:
 
     mirrors the DataStore.execute and DataStore.query surface used by
     MigrationRunner. state lives in three members: executed captures
-    every execute call's (sql, params); migrations table emulates the
-    _schema_migrations bookkeeping row set.
+    every execute call's (sql, params); migrations_rows emulates the
+    _schema_migrations bookkeeping row set; migrations_table_created
+    flips the first time the runner issues the CREATE TABLE.
     """
 
     def __init__(self) -> None:
         """initialize empty execution log and migrations tracker."""
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
-        self._migrations_rows: list[dict[str, Any]] = []
-        self._migrations_table_created = False
+        self.migrations_rows: list[dict[str, Any]] = []
+        self.migrations_table_created = False
 
     async def execute(self, sql: str, *params: Any) -> str:
         """
@@ -45,11 +52,17 @@ class _FakeDataStore:
         normalized = " ".join(sql.split()).upper()
         result: str
         if "CREATE TABLE IF NOT EXISTS _SCHEMA_MIGRATIONS" in normalized:
-            self._migrations_table_created = True
+            self.migrations_table_created = True
             result = "CREATE TABLE"
             return result
         if normalized.startswith("INSERT INTO _SCHEMA_MIGRATIONS"):
-            self._migrations_rows.append({"version": params[0], "description": params[1]})
+            self.migrations_rows.append(
+                {
+                    "version": params[0],
+                    "package": params[1],
+                    "description": params[2],
+                }
+            )
             result = "INSERT 0 1"
             return result
         # treat user migrations as no-op for capture purposes
@@ -69,11 +82,11 @@ class _FakeDataStore:
         """
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
-        if "SELECT VERSION FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [{"version": row["version"]} for row in self._migrations_rows]
+        if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
+            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
-            max_version = max((row["version"] for row in self._migrations_rows), default=0)
+            max_version = max((row["version"] for row in self.migrations_rows), default=0)
             result = [{"max_version": max_version}]
             return result
         result = []
@@ -93,48 +106,52 @@ def _joined_executed_sql(store: _FakeDataStore) -> str:
 
 
 class TestRegisterWorkspaceMigrations:
-    """tests for register_workspace_migrations factory and apply flow."""
+    """tests for the register factory and apply flow."""
 
-    async def test_register_returns_runner_with_versions_one_and_two(self) -> None:
-        """factory registers two migrations: v1 base schema and v2 date_deleted column."""
-        store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        pending = await runner.pending()
-        assert pending == [1, 2]
+    async def test_register_returns_package_with_versions_one_two_three(self) -> None:
+        """register populates the PackageMigrations with versions 1, 2, and 3."""
+        runner = MigrationRunner()
+        pkg = register(runner)
+        assert pkg.name == PACKAGE_NAME
+        assert pkg.scope == MigrationScope.AGENT
+        assert set(pkg.versions.keys()) == {1, 2, 3}
 
-    async def test_apply_runs_both_versions_then_idempotent(self) -> None:
-        """apply records v1 and v2 in _schema_migrations and runs no second time."""
+    async def test_apply_runs_all_versions_then_idempotent(self) -> None:
+        """apply records v1, v2, v3 in _schema_migrations and runs no second time."""
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        first_count = await runner.apply()
-        assert first_count == 2
-        assert store._migrations_table_created is True
-        assert [row["version"] for row in store._migrations_rows] == [1, 2]
-        second_count = await runner.apply()
+        first_count = await runner.apply_for_agent_schema(store)
+        assert first_count == 3
+        assert store.migrations_table_created is True
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
+        second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
     async def test_apply_emits_v2_add_date_deleted_column(self) -> None:
         """v2 migration emits ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted."""
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        await runner.apply()
+        await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert re.search(
             r"ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL",
             joined,
         )
 
-    async def test_register_keys_are_one_and_two(self) -> None:
-        """internal _migrations dict has exactly keys {1, 2} after registration."""
-        store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        assert set(runner._migrations.keys()) == {1, 2}
+    async def test_register_records_package_name(self) -> None:
+        """registered package is retrievable via the canonical name."""
+        runner = MigrationRunner()
+        pkg = register(runner)
+        assert pkg.name == "agent_workspace"
 
     async def test_apply_emits_workspaces_create_statement(self) -> None:
         """workspaces CREATE TABLE statement contains every required column and constraint."""
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        await runner.apply()
+        await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert re.search(r"CREATE TABLE IF NOT EXISTS workspaces", joined)
         assert "id UUID PRIMARY KEY" in joined
@@ -150,12 +167,16 @@ class TestRegisterWorkspaceMigrations:
 
     async def test_apply_emits_workspace_files_create_statement(self) -> None:
         """workspace_files CREATE TABLE statement has BYTEA content, FK, UNIQUE, and index."""
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        await runner.apply()
+        await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert re.search(r"CREATE TABLE IF NOT EXISTS workspace_files", joined)
-        assert re.search(r"workspace_id UUID NOT NULL REFERENCES workspaces\(id\) ON DELETE CASCADE", joined)
+        assert re.search(
+            r"workspace_id UUID NOT NULL REFERENCES workspaces\(id\) ON DELETE CASCADE",
+            joined,
+        )
         assert "relative_path VARCHAR(512) NOT NULL" in joined
         assert "content BYTEA NOT NULL" in joined
         assert "sha256 CHAR(64) NOT NULL" in joined
@@ -169,12 +190,16 @@ class TestRegisterWorkspaceMigrations:
 
     async def test_apply_emits_workspace_file_versions_create_statement(self) -> None:
         """workspace_file_versions CREATE TABLE has journal schema with triple UNIQUE and history index."""
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        await runner.apply()
+        await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert re.search(r"CREATE TABLE IF NOT EXISTS workspace_file_versions", joined)
-        assert re.search(r"workspace_id UUID NOT NULL REFERENCES workspaces\(id\) ON DELETE CASCADE", joined)
+        assert re.search(
+            r"workspace_id UUID NOT NULL REFERENCES workspaces\(id\) ON DELETE CASCADE",
+            joined,
+        )
         assert "relative_path VARCHAR(512) NOT NULL" in joined
         assert "version INTEGER NOT NULL" in joined
         assert "content BYTEA NOT NULL" in joined
@@ -199,9 +224,10 @@ class TestRegisterWorkspaceMigrations:
         ``agent_id`` and constraint names like ``uq_workspaces_agent_name``
         must not trigger.
         """
+        runner = MigrationRunner()
+        register(runner)
         store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        await runner.apply()
+        await runner.apply_for_agent_schema(store)
         joined = _joined_executed_sql(store)
         assert not re.search(r"agent_[0-9a-f]{32}\.", joined)
 
@@ -220,19 +246,19 @@ class TestDirectMigrationFunction:
         """direct invocation does not touch _schema_migrations bookkeeping."""
         store = _FakeDataStore()
         await create_workspace_tables(store)  # type: ignore[arg-type]
-        assert store._migrations_table_created is False
-        assert store._migrations_rows == []
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
 
 
 class TestDuplicateVersionGuard:
     """tests confirming the runner rejects duplicate version registration."""
 
     async def test_duplicate_version_registration_raises(self) -> None:
-        """registering a second migration at version 1 raises ValueError."""
-        store = _FakeDataStore()
-        runner = register_workspace_migrations(store)
-        with pytest.raises(ValueError, match="migration version 1 already registered"):
-            runner.version(1)(create_workspace_tables)
+        """registering a second migration at version 1 raises DuplicateVersionError."""
+        runner = MigrationRunner()
+        pkg = register(runner)
+        with pytest.raises(DuplicateVersionError):
+            pkg.version(1)(create_workspace_tables)
 
 
 class TestAddDateDeletedColumnDirect:

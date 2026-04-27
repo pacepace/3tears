@@ -9,7 +9,7 @@ recognized config["configurable"] keys across all builders:
     - chat_model: BaseChatModel instance (required)
     - system_prompt: system prompt string (optional override)
     - tools: list of tool instances (optional override)
-    - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+    - context_manager: ToolContextManager (optional)
     - data_store: DataStore or dict of BaseCollection instances (optional)
     - thread_id: conversation identifier for checkpoint persistence (optional)
 """
@@ -20,12 +20,15 @@ from typing import Any
 
 from langgraph.graph import END, START, MessagesState, StateGraph
 
-import logging
-
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
+from threetears.observe import get_logger
 
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
+__all__ = [
+    "build_chat_agent",
+    "build_tool_agent",
+]
+
+log = get_logger(__name__)
 
 _DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _DEFAULT_MAX_ITERATIONS = 10
@@ -47,7 +50,7 @@ def build_chat_agent(
     config["configurable"] recognized keys:
         - chat_model: BaseChatModel instance (required)
         - system_prompt: override prompt (optional)
-        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - context_manager: ToolContextManager (optional)
         - data_store: DataStore for three-tier entity access in custom nodes (optional)
         - thread_id: conversation ID for checkpoint persistence (optional)
 
@@ -87,7 +90,7 @@ def build_tool_agent(
         - chat_model: BaseChatModel instance (required)
         - tools: list of tool instances (optional, overrides constructor tools)
         - system_prompt: override prompt (optional)
-        - context_manager: ToolContextManager or ContextManagerRegistry (optional)
+        - context_manager: ToolContextManager (optional)
         - data_store: DataStore for three-tier entity access in custom nodes (optional)
         - thread_id: conversation ID for checkpoint persistence (optional)
 

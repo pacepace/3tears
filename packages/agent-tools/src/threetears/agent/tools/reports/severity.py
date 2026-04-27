@@ -10,6 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+__all__ = [
+    "DEFAULT_SEVERITY_CONFIG",
+    "SeverityConfig",
+    "severity_label",
+    "sort_by_severity",
+]
+
 
 @dataclass
 class SeverityConfig:

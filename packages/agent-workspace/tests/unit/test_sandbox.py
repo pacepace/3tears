@@ -1,19 +1,25 @@
 """unit tests for threetears.agent.workspace.sandbox.WorkspaceSandbox.
 
-covers ``from_config`` construction semantics and ``_deny_reason`` messaging
-against the inherited core ``PathSandbox`` contract.
+covers ``from_config`` construction semantics against the inherited core
+``PathSandbox`` contract. namespace-task-01 phase 7 retires the legacy
+glob-driven ``workspace.allow`` enforcement; these tests now assert that
+:meth:`WorkspaceSandbox.from_config` wires up named filesystem roots
+without threading the allow globs into the underlying :class:`PathSandbox`.
+the path-level rbac gate now lives in
+:func:`threetears.agent.acl.evaluate_file_access` and is exercised by
+:mod:`tests.unit.test_file_access` in ``packages/agent-acl`` and the
+workspace tool tests.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 
 from threetears.agent.workspace.config import AllowConfig, WorkspaceConfig
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
-from threetears.core.security import PathSandbox, SandboxDecision, SandboxDenied
+from threetears.core.security import PathSandbox, SandboxDenied
 
 
 class TestFromConfigRoots:
@@ -65,124 +71,80 @@ class TestFromConfigRoots:
             sandbox.resolve_fs_path("x", "bind")
 
 
-class TestFromConfigGlobs:
-    """``from_config`` forwards config.allow.read / write glob lists."""
+class TestFromConfigGlobsRetired:
+    """``from_config`` no longer threads allow globs into the sandbox.
 
-    def test_allow_read_and_write_propagated_to_path_sandbox(self) -> None:
-        """read and write globs are applied by the inherited check method."""
+    namespace-task-01 phase 7: the ``workspace.allow`` globs are read at
+    agent bootstrap by the access translator and materialized into rbac
+    role assignments; the sandbox itself is no longer the authority for
+    path-level access. the inherited glob allow-lists stay empty so a
+    stray caller that still invokes the glob-driven surface fails
+    closed.
+    """
+
+    def test_from_config_does_not_forward_allow_globs(self) -> None:
+        """``from_config`` does not thread allow.read / allow.write globs.
+
+        behavioral assertion: the inherited :meth:`PathSandbox.check`
+        fails closed for every input because neither the explicit
+        globs nor the defaults are applied. callers must use the new
+        rbac gate, not :meth:`check` / :meth:`enforce`, for path-level
+        decisions.
+        """
+        from threetears.core.security import SandboxDecision
+
         config = WorkspaceConfig(
             allow=AllowConfig(read=["docs/**"], write=["out/**/*.yaml"]),
         )
         sandbox = WorkspaceSandbox.from_config(config)
-        assert sandbox.check("read", "docs/readme.md") is SandboxDecision.ALLOW
-        assert sandbox.check("read", "other/readme.md") is SandboxDecision.DENY
-        assert sandbox.check("write", "out/a/b.yaml") is SandboxDecision.ALLOW
-        assert sandbox.check("write", "out/a/b.txt") is SandboxDecision.DENY
+        # a path that would have matched the explicit glob fails closed
+        # because the translator now owns the read/write glob decision.
+        assert sandbox.check("read", "docs/readme.md") is SandboxDecision.DENY
+        assert sandbox.check("write", "out/a.yaml") is SandboxDecision.DENY
 
-    def test_default_allow_read_matches_everything_and_write_denies(self) -> None:
-        """default AllowConfig reads everything, writes nothing (fail-closed)."""
+    def test_validate_syntax_permits_valid_relative_path(self) -> None:
+        """``validate_syntax`` passes a well-formed relative key."""
         sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
-        assert sandbox.check("read", "anything.md") is SandboxDecision.ALLOW
-        assert sandbox.check("write", "anything.md") is SandboxDecision.DENY
+        sandbox.validate_syntax("docs/readme.md")
 
-
-class TestDenyReasonMessaging:
-    """_deny_reason returns workspace-specific, actionable messages."""
-
-    def test_unknown_action_message_names_action_and_expected_actions(self) -> None:
-        """unknown action deny message names the offending action verb."""
+    def test_validate_syntax_rejects_absolute_path(self) -> None:
+        """``validate_syntax`` rejects absolute paths."""
         sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("delete", "foo.yaml")
-        reason = exc_info.value.reason
-        assert "'delete'" in reason
-        assert "read" in reason
-        assert "write" in reason
+        with pytest.raises(SandboxDenied):
+            sandbox.validate_syntax("/etc/passwd")
 
-    def test_empty_key_message_flags_invalid_relative_path(self) -> None:
-        """empty relative_path produces an invalid-relative_path reason."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("read", "")
-        reason = exc_info.value.reason
-        assert "invalid relative_path" in reason
-        assert "empty" in reason
+    def test_validate_syntax_rejects_parent_ref(self) -> None:
+        """``validate_syntax`` rejects ``..`` path segments."""
+        sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
+        with pytest.raises(SandboxDenied):
+            sandbox.validate_syntax("../etc/passwd")
 
-    def test_control_char_message_flags_invalid_relative_path(self) -> None:
-        """NUL or low-ASCII control char in key produces invalid reason."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("read", "bad\x00name")
-        reason = exc_info.value.reason
-        assert "invalid relative_path" in reason
-        assert "control" in reason or "NUL" in reason
+    def test_validate_syntax_rejects_empty(self) -> None:
+        """``validate_syntax`` rejects empty keys."""
+        sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
+        with pytest.raises(SandboxDenied):
+            sandbox.validate_syntax("")
 
-    def test_oversize_key_message_flags_invalid_relative_path(self) -> None:
-        """oversize key (> _MAX_KEY_LEN) produces an invalid-relative_path reason."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        oversize = "a" * (PathSandbox._MAX_KEY_LEN + 1)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("read", oversize)
-        reason = exc_info.value.reason
-        assert "invalid relative_path" in reason
-        assert "length" in reason
+    def test_validate_syntax_rejects_control_char(self) -> None:
+        """``validate_syntax`` rejects keys with NUL bytes."""
+        sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
+        with pytest.raises(SandboxDenied):
+            sandbox.validate_syntax("bad\x00name")
 
-    def test_absolute_path_message_forbids_absolute_and_parent_ref(self) -> None:
-        """absolute path produces the absolute-or-dotdot reason."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("read", "/etc/passwd")
-        reason = exc_info.value.reason
-        assert "relative_path must not be absolute or contain '..'" == reason
+    def test_validate_syntax_rejects_oversize_key(self) -> None:
+        """``validate_syntax`` rejects keys larger than ~512 bytes.
 
-    def test_parent_ref_message_forbids_absolute_and_parent_ref(self) -> None:
-        """parent-ref (..) in key produces the absolute-or-dotdot reason."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("read", "../etc/passwd")
-        reason = exc_info.value.reason
-        assert "relative_path must not be absolute or contain '..'" == reason
-
-    def test_no_glob_match_mentions_action_target_and_globs(self) -> None:
-        """no glob match in allow.write lists the configured write globs."""
-        config = WorkspaceConfig(
-            allow=AllowConfig(read=["**/*"], write=["out/**/*.yaml", "tmp/*.json"]),
-        )
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("write", "foo.txt")
-        reason = exc_info.value.reason
-        assert "workspace.allow.write" in reason
-        assert "'foo.txt'" in reason
-        assert re.search(r"out/\*\*/\*\.yaml", reason) is not None
-        assert re.search(r"tmp/\*\.json", reason) is not None
-
-    def test_no_glob_match_on_empty_write_list_still_lists_globs(self) -> None:
-        """fail-closed write path mentions the empty configured globs list."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"], write=[]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        with pytest.raises(SandboxDenied) as exc_info:
-            sandbox.enforce("write", "out/a.yaml")
-        reason = exc_info.value.reason
-        assert "workspace.allow.write" in reason
-        assert "'out/a.yaml'" in reason
-        assert "[]" in reason
-
-
-class TestAllowPath:
-    """matching globs produce ALLOW and enforce does not raise."""
-
-    def test_matching_write_glob_allows_enforce(self) -> None:
-        """a write key matching an allow.write glob returns ALLOW."""
-        config = WorkspaceConfig(allow=AllowConfig(read=["**/*"], write=["out/**/*.yaml"]))
-        sandbox = WorkspaceSandbox.from_config(config)
-        assert sandbox.check("write", "out/sub/foo.yaml") is SandboxDecision.ALLOW
-        sandbox.enforce("write", "out/sub/foo.yaml")
+        the cap lives on :class:`PathSandbox` as a module-private
+        constant (mirrored in
+        ``packages/core/tests/unit/security/test_path_sandbox.py``);
+        this test picks a hard-coded size well above the documented
+        default so the assertion does not couple to the private
+        attribute name.
+        """
+        sandbox = WorkspaceSandbox.from_config(WorkspaceConfig())
+        oversize = "a" * 2048
+        with pytest.raises(SandboxDenied):
+            sandbox.validate_syntax(oversize)
 
 
 class TestSubclass:

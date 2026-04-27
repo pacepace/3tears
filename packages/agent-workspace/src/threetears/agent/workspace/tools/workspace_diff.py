@@ -15,6 +15,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -24,6 +25,9 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -36,7 +40,13 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _resolve_ref,
     _resolve_workspace,
+    authorize_workspace,
+    authorize_workspace_file,
 )
+
+__all__ = [
+    "WorkspaceDiffTool",
+]
 
 log = get_logger(__name__)
 
@@ -85,6 +95,7 @@ class WorkspaceDiffTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
     ) -> None:
         """
         binds tool to collections, sandbox, context, agent, and pool.
@@ -113,6 +124,7 @@ class WorkspaceDiffTool(TearsTool):
         self._context_provider = context_provider
         self._agent_id = agent_id
         self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -148,10 +160,37 @@ class WorkspaceDiffTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
-            self._sandbox.enforce("read", relative_path)
+            await authorize_workspace(
+                workspace,
+                "read",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
+            # WS-ACL-06: thread namespace= so outside-tx reads resolve
+            # against the owner agent's schema on grantee diffs.
             async with self._db_pool.acquire() as conn:
-                from_row = await _resolve_ref(conn, workspace.id, relative_path, from_ref)
-                to_row = await _resolve_ref(conn, workspace.id, relative_path, to_ref)
+                from_row = await _resolve_ref(
+                    conn,
+                    workspace.id,
+                    relative_path,
+                    from_ref,
+                    namespace_name=workspace.namespace_name,
+                )
+                to_row = await _resolve_ref(
+                    conn,
+                    workspace.id,
+                    relative_path,
+                    to_ref,
+                    namespace_name=workspace.namespace_name,
+                )
             if from_row is None:
                 result = ToolResult(
                     success=False,
@@ -186,6 +225,8 @@ class WorkspaceDiffTool(TearsTool):
                     )
                     result = ToolResult(success=True, content=diff_text)
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -255,6 +296,7 @@ def _build(**kwargs: Any) -> WorkspaceDiffTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
+        acl_cache=kwargs["acl_cache"],
     )
 
 

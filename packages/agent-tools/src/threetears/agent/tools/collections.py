@@ -2,7 +2,10 @@
 
 Provides persistent, cross-pod storage for variables, tool results, and
 media slots via the standard L1 (SQLite) → L2 (NATS KV) → L3 (PostgreSQL)
-caching path.
+caching path. CRUD is handled by :class:`SchemaBackedCollection`; this
+module carries only the domain-specific queries (variable upsert, LRU
+eviction, conversation scan) and the SQLAlchemy metadata helper used
+by the L1 cache bootstrap.
 """
 
 from __future__ import annotations
@@ -12,101 +15,100 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, MetaData, Table, Text
+from sqlalchemy import Column as SAColumn
+from sqlalchemy import DateTime, MetaData, Table, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.schema_backed import (
+    DATETIME_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
 from threetears.observe import get_logger
-from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
 from threetears.agent.tools.entities import ContextItemEntity
+
+__all__ = [
+    "ContextItemCollection",
+    "context_items_table",
+    "migrate_context_items_schema",
+]
 
 log = get_logger(__name__)
 
 
-def _decode_metadata_in_row(row: dict[str, Any]) -> dict[str, Any]:
-    """ensure ``metadata`` on a row dict is a Python dict, not a JSON string.
-
-    asyncpg returns ``JSONB`` columns as strings unless the pool has a
-    json codec registered (the devx hub's pool does not, and neither
-    does the NATS proxy wire format after a JSON round-trip). callers
-    downstream expect a dict so the collection normalizes the shape
-    here. ``None``/missing values pass through unchanged so the
-    absent-metadata case still resolves to ``{}`` at the call site.
-
-    :param row: dict-shaped row from ``self._l3_pool.fetch(row)``
-    :ptype row: dict[str, Any]
-    :return: same dict with ``metadata`` coerced to ``dict`` when it
-        arrived as a JSON string
-    :rtype: dict[str, Any]
-    """
-    meta = row.get("metadata")
-    if isinstance(meta, str) and meta:
-        try:
-            row["metadata"] = json.loads(meta)
-        except ValueError, TypeError:
-            # malformed jsonb on the wire: leave as-is so callers
-            # surface the raw payload in their error path instead of
-            # swallowing the corruption silently.
-            pass
-    return row
-
-
-_FIELD_TYPES: dict[str, Any] = {
-    "context_id": UUID,
-    "conversation_id": UUID,
-    "context_type": str,
-    "key": str,
-    "short_desc": str,
-    "long_desc": str,
-    "content": str,
-    "metadata": dict,
-    "date_accessed": datetime,
-    "date_created": datetime,
-    "date_updated": datetime,
-}
-
-
 def context_items_table(metadata: MetaData) -> Table:
-    """Register the ``context_items`` table on the given SA metadata.
+    """register the ``context_items`` table on the given SA metadata.
 
-    Call this before ``SQLiteBackend.initialize(metadata)`` so the L1
-    cache gets the correct schema.  Safe to call multiple times — returns
-    the existing table if already registered.
+    call this before ``SQLiteBackend.initialize(metadata)`` so the L1
+    cache gets the correct schema. safe to call multiple times -- returns
+    the existing table if already registered. composite primary key on
+    ``(conversation_id, context_id)`` mirrors the L3 partition layout
+    so cache rows are isolated per partition.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``context_items`` :class:`Table`
+    :rtype: Table
     """
     if "context_items" in metadata.tables:
         return metadata.tables["context_items"]
     return Table(
         "context_items",
         metadata,
-        Column("context_id", PgUUID(as_uuid=True), primary_key=True),
-        Column("conversation_id", PgUUID(as_uuid=True), nullable=False),
-        Column("context_type", Text(), nullable=False),
-        Column("key", Text(), nullable=False),
-        Column("short_desc", Text(), nullable=False),
-        Column("long_desc", Text(), nullable=False, server_default=""),
-        Column("content", Text(), nullable=False),
-        Column("metadata", JSONB(), nullable=True),
-        Column("date_accessed", DateTime(timezone=True), nullable=False),
-        Column("date_created", DateTime(timezone=True), nullable=False),
-        Column("date_updated", DateTime(timezone=True), nullable=False),
+        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("context_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("context_type", Text(), nullable=False),
+        SAColumn("key", Text(), nullable=False),
+        SAColumn("short_desc", Text(), nullable=False),
+        SAColumn("long_desc", Text(), nullable=False, server_default=""),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("metadata", JSONB(), nullable=True),
+        SAColumn("date_accessed", DateTime(timezone=True), nullable=False),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
     )
 
 
-class ContextItemCollection(BaseCollection[ContextItemEntity]):
-    """Three-tier collection for conversation context items.
+class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
+    """three-tier collection for conversation context items.
 
-    Stores variables, tool results, and media slots in a single
-    ``context_items`` table.  Provides conversation-scoped queries
-    and LRU eviction for tool results.
+    stores variables, tool results, and media slots in a single
+    ``context_items`` table. CRUD comes from
+    :class:`SchemaBackedCollection`; domain methods
+    (``find_by_conversation``, ``upsert_variable``, ``touch``,
+    ``count_results``, ``evict_lru``) stay here because their query
+    shape is per-collection.
     """
 
-    _primary_key_column: str = "context_id"
+    primary_key_column: str | tuple[str, ...] = ("conversation_id", "context_id")
+    schema = TableSchema(
+        name="context_items",
+        primary_key=("conversation_id", "context_id"),
+        columns=[
+            Column("conversation_id", UUID_TYPE, partition=True),
+            Column("context_id", UUID_TYPE),
+            Column("context_type", STRING_TYPE, immutable=True),
+            Column("key", STRING_TYPE, immutable=True),
+            Column("short_desc", STRING_TYPE),
+            Column("long_desc", STRING_TYPE, nullable=True),
+            Column("content", STRING_TYPE),
+            Column("metadata", JSONB_TYPE, nullable=True),
+            Column("date_accessed", DATETIME_TYPE),
+            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_updated", DATETIME_TYPE),
+        ],
+        cas_column="date_updated",
+    )
 
     @property
     def table_name(self) -> str:
-        """Return the database table name.
+        """return the database table name.
 
         :return: table name
         :rtype: str
@@ -115,101 +117,25 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
     @property
     def entity_class(self) -> type[ContextItemEntity]:
-        """Return the entity class for this collection.
+        """return the entity class for this collection.
 
         :return: entity class
         :rtype: type[ContextItemEntity]
         """
         return ContextItemEntity
 
-    # -- Standard BaseCollection abstract methods --
-
-    async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        row = await self._l3_pool.fetchrow(
-            "SELECT * FROM context_items WHERE context_id = $1",
-            entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
-        )
-        if not row:
-            return None
-        return _decode_metadata_in_row(dict(row))
-
-    async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
-        context_id = data["context_id"]
-        if not isinstance(context_id, UUID):
-            context_id = UUID(str(context_id))
-        conversation_id = data["conversation_id"]
-        if not isinstance(conversation_id, UUID):
-            conversation_id = UUID(str(conversation_id))
-
-        metadata_val = data.get("metadata")
-        if isinstance(metadata_val, dict):
-            metadata_val = json.dumps(metadata_val)
-
-        if original_timestamp is None:
-            result = await self._l3_pool.execute(
-                """
-                INSERT INTO context_items (
-                    context_id, conversation_id, context_type, key,
-                    short_desc, long_desc, content, metadata,
-                    date_accessed, date_created, date_updated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-                ON CONFLICT (context_id) DO UPDATE SET
-                    short_desc = EXCLUDED.short_desc,
-                    long_desc = EXCLUDED.long_desc,
-                    content = EXCLUDED.content,
-                    metadata = EXCLUDED.metadata,
-                    date_accessed = EXCLUDED.date_accessed,
-                    date_updated = EXCLUDED.date_updated
-                """,
-                context_id,
-                conversation_id,
-                data["context_type"],
-                data["key"],
-                data["short_desc"],
-                data.get("long_desc", ""),
-                data["content"],
-                metadata_val,
-                data["date_accessed"],
-                data["date_created"],
-                data["date_updated"],
-            )
-        else:
-            result = await self._l3_pool.execute(
-                """
-                UPDATE context_items SET
-                    short_desc = $2, long_desc = $3, content = $4, metadata = $5::jsonb,
-                    date_accessed = $6, date_updated = $7
-                WHERE context_id = $1 AND date_updated = $8
-                """,
-                context_id,
-                data["short_desc"],
-                data.get("long_desc", ""),
-                data["content"],
-                metadata_val,
-                data["date_accessed"],
-                data["date_updated"],
-                original_timestamp,
-            )
-        return int(result.split()[-1])
-
-    async def _delete_from_postgres(self, entity_id: Any) -> None:
-        await self._l3_pool.execute(
-            "DELETE FROM context_items WHERE context_id = $1",
-            entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
-        )
-
-    def _serialize(self, data: dict[str, Any]) -> bytes:
-        return serialize_to_json(data)
-
-    def _deserialize(self, data: bytes) -> dict[str, Any]:
-        return deserialize_from_json(data, _FIELD_TYPES)
-
     # -- Conversation-scoped queries --
 
     async def find_by_conversation(self, conversation_id: str | UUID) -> list[ContextItemEntity]:
-        """Load all context items for a conversation from L3, populate L1."""
+        """load all context items for a conversation from L3, populate L1.
+
+        :param conversation_id: conversation UUID (accepts string or UUID)
+        :ptype conversation_id: str | UUID
+        :return: list of entities in chronological order
+        :rtype: list[ContextItemEntity]
+        """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
-        rows = await self._l3_pool.fetch(
+        rows = await self.l3_pool.fetch(
             """
             SELECT * FROM context_items
             WHERE conversation_id = $1
@@ -219,30 +145,43 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         )
         entities: list[ContextItemEntity] = []
         for row in rows:
-            data = _decode_metadata_in_row(dict(row))
+            data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
-            entity._original_date_updated = data.get("date_updated")
-            self._write_to_cache_sync(data)
+            entity.original_date_updated = data.get("date_updated")
+            self.write_to_cache_sync(data)
             entities.append(entity)
         return entities
 
-    async def upsert_variable(self, data: dict[str, Any]) -> UUID:
-        """Upsert a variable using the partial unique index.
+    async def upsert_variable(self, conversation_id: UUID, data: dict[str, Any]) -> UUID:
+        """upsert a variable using the partial unique index.
 
-        Returns the context_id (may differ from input on conflict).
+        returns the context_id (may differ from input on conflict). uses
+        the ``(conversation_id, key) WHERE context_type = 'variable'``
+        partial unique index so a name collision returns the existing
+        row's id rather than inserting a duplicate. ``conversation_id``
+        is the partition column and is also read from ``data`` for
+        backwards compatibility with existing callers; the explicit
+        positional argument satisfies the partition-column contract.
+
+        :param conversation_id: conversation partition the variable lives in
+        :ptype conversation_id: UUID
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: authoritative context_id (existing on conflict, new on insert)
+        :rtype: UUID
         """
         context_id = data["context_id"]
         if not isinstance(context_id, UUID):
             context_id = UUID(str(context_id))
-        conversation_id = data["conversation_id"]
-        if not isinstance(conversation_id, UUID):
-            conversation_id = UUID(str(conversation_id))
+        if data.get("conversation_id") != conversation_id:
+            data = dict(data)
+            data["conversation_id"] = conversation_id
 
         metadata_val = data.get("metadata")
         if isinstance(metadata_val, dict):
             metadata_val = json.dumps(metadata_val)
 
-        row = await self._l3_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             """
             INSERT INTO context_items (
                 context_id, conversation_id, context_type, key,
@@ -273,47 +212,81 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         )
         returned_id: UUID = row["context_id"]
 
-        # Update L1 cache
+        # Update L1 cache. composite pk on (conversation_id, context_id)
+        # so L2 / invalidation addressing must be the tuple form.
         cache_data = dict(data)
         cache_data["context_id"] = returned_id
-        self._write_to_cache_sync(cache_data)
-        await self._save_to_l2(returned_id, cache_data)
-        await self._publish_invalidation(returned_id)
+        cache_data["conversation_id"] = conversation_id
+        pk = (conversation_id, returned_id)
+        self.write_to_cache_sync(cache_data)
+        await self._save_to_l2(pk, cache_data)
+        await self._publish_invalidation(pk)
 
         return returned_id
 
-    async def touch(self, context_id: str | UUID) -> None:
-        """Update ``date_accessed`` for LRU tracking.
+    async def touch(self, conversation_id: UUID, context_id: str | UUID) -> None:
+        """update ``date_accessed`` for LRU tracking.
 
-        Writes to L1 synchronously, propagates to L2/L3 asynchronously.
+        writes to L1 synchronously, propagates to L3. L2 stays coherent
+        via the standard invalidation path on subsequent writes.
+        ``conversation_id`` is required because the table is partitioned
+        on it; cache-row addressing uses the composite ``(conversation_id,
+        context_id)`` tuple.
+
+        :param conversation_id: conversation partition the row lives in
+        :ptype conversation_id: UUID
+        :param context_id: entity identifier (accepts string or UUID)
+        :ptype context_id: str | UUID
+        :return: nothing
+        :rtype: None
         """
         cid = context_id if isinstance(context_id, UUID) else UUID(str(context_id))
         now = datetime.now(UTC)
 
-        # Update L1 immediately
+        # Update L1 immediately. composite-pk row keyed on
+        # (conversation_id, context_id) tuple per the partition layout.
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, str(cid), self._primary_key_column)
+            row = self._l1.select_by_id(
+                self.table_name,
+                (conversation_id, cid),
+                self.primary_key_columns,
+            )
             if row is not None:
                 row["date_accessed"] = now
-                self._l1.upsert(self.table_name, row, self._primary_key_column)
+                self._l1.upsert(self.table_name, row, self.primary_key_columns)
 
-        # Propagate to L3 (fire-and-forget via background)
+        # Propagate to L3. partition predicate on conversation_id keeps
+        # the UPDATE inside one partition and satisfies the SQL-level
+        # partition-column enforcement.
         try:
-            await self._l3_pool.execute(
-                "UPDATE context_items SET date_accessed = $2 WHERE context_id = $1",
+            await self.l3_pool.execute(
+                "UPDATE context_items SET date_accessed = $3 WHERE conversation_id = $1 AND context_id = $2",
+                conversation_id,
                 cid,
                 now,
             )
         except Exception as exc:
             log.warning(
                 "Failed to update date_accessed in L3",
-                extra={"extra_data": {"context_id": str(cid), "error": str(exc)}},
+                extra={
+                    "extra_data": {
+                        "conversation_id": str(conversation_id),
+                        "context_id": str(cid),
+                        "error": str(exc),
+                    },
+                },
             )
 
     async def count_results(self, conversation_id: str | UUID) -> int:
-        """Count tool_result items for a conversation."""
+        """count tool_result items for a conversation.
+
+        :param conversation_id: conversation UUID (accepts string or UUID)
+        :ptype conversation_id: str | UUID
+        :return: count of ``context_type = 'tool_result'`` rows
+        :rtype: int
+        """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
-        row = await self._l3_pool.fetchrow(
+        row = await self.l3_pool.fetchrow(
             """
             SELECT COUNT(*) AS cnt FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
@@ -323,10 +296,17 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         return int(row["cnt"]) if row else 0
 
     async def evict_lru(self, conversation_id: str | UUID, result_limit: int) -> int:
-        """Evict oldest tool_result items exceeding the limit.
+        """evict oldest tool_result items exceeding the limit.
 
-        Only evicts ``context_type = 'tool_result'``.  Variables and
-        media slots are never evicted.  Returns the number of items evicted.
+        only evicts ``context_type = 'tool_result'``. variables and
+        media slots are never evicted.
+
+        :param conversation_id: conversation UUID (accepts string or UUID)
+        :ptype conversation_id: str | UUID
+        :param result_limit: maximum tool_result rows to retain
+        :ptype result_limit: int
+        :return: number of items evicted
+        :rtype: int
         """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
 
@@ -335,7 +315,7 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
             return 0
 
         to_evict = count - result_limit
-        evict_rows = await self._l3_pool.fetch(
+        evict_rows = await self.l3_pool.fetch(
             """
             SELECT context_id FROM context_items
             WHERE conversation_id = $1 AND context_type = 'tool_result'
@@ -349,11 +329,12 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
         evicted = 0
         for row in evict_rows:
             eid = row["context_id"]
-            await self._delete_from_postgres(eid)
+            pk = (cid, eid)
+            await self.delete_from_postgres(pk)
             if self._l1 is not None:
-                self._l1.delete_by_id(self.table_name, str(eid), self._primary_key_column)
-            await self._delete_from_l2(eid)
-            await self._publish_invalidation(eid)
+                self._l1.delete_by_id(self.table_name, pk, self.primary_key_columns)
+            await self._delete_from_l2(pk)
+            await self._publish_invalidation(pk)
             evicted += 1
 
         if evicted:
@@ -372,19 +353,20 @@ class ContextItemCollection(BaseCollection[ContextItemEntity]):
 
 
 async def migrate_context_items_schema(pool: Any) -> bool:
-    """Migrate context_items table from legacy schema to v0.5.0 schema.
+    """migrate context_items table from legacy schema to v0.5.0 schema.
 
-    Detects old column names (``summary``, ``value``) and renames them
+    detects old column names (``summary``, ``value``) and renames them
     to the current schema (``short_desc``, ``long_desc``, ``content``).
-    Backfills ``long_desc`` from the first 1000 chars of ``content``.
+    backfills ``long_desc`` from the first 1000 chars of ``content``.
 
-    Safe to call on every startup — detects whether migration is needed
+    safe to call on every startup -- detects whether migration is needed
     by probing the column list, and is a no-op if already up to date.
-    Idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
+    idempotent: uses IF EXISTS / IF NOT EXISTS throughout.
 
-    :param pool: asyncpg connection pool.
+    :param pool: asyncpg connection pool
     :ptype pool: Any
-    :returns: True if columns were migrated, False if already current.
+    :returns: True if columns were migrated, False if already current
+    :rtype: bool
     """
     # Probe current columns
     cols = await pool.fetch(

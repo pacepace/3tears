@@ -6,6 +6,13 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+__all__ = [
+    "ChatMessage",
+    "MessageRole",
+    "ToolCallRequest",
+    "ToolDefinition",
+]
+
 
 class MessageRole(StrEnum):
     """role of participant in chat conversation.

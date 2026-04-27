@@ -13,9 +13,12 @@ matching the enforce-then-act ordering enforced by shard 18's AST test.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -26,7 +29,9 @@ from threetears.core.security import SandboxDenied
 from threetears.core.serialization import UnknownFormatError, handler_for
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -42,8 +47,15 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     _resolve_workspace,
     _write_file_atomic,
+    authorize_workspace,
+    authorize_workspace_file,
+    workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
+
+__all__ = [
+    "DocSetTool",
+]
 
 log = get_logger(__name__)
 
@@ -98,6 +110,7 @@ class DocSetTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
@@ -139,6 +152,7 @@ class DocSetTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -167,7 +181,20 @@ class DocSetTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
-            self._sandbox.enforce("write", relative_path)
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "write",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             try:
                 handler = handler_for(relative_path)
             except UnknownFormatError as exc:
@@ -215,19 +242,27 @@ class DocSetTool(TearsTool):
                             workspace_collection=self._workspaces,
                             validators=self._validators,
                         )
-                        # defense-in-depth audit publish
+                        # defense-in-depth audit publish: additive
+                        # per-tool event on top of the baseline
+                        # ``tool.call`` emitted by ToolServer.
                         try:
                             if self._namespace is not None:
-                                await audit.publish_workspace_event(
-                                    nats_client=self._nats_client,
-                                    namespace=self._namespace,
+                                identity = workspace_audit_identity(workspace)
+                                event = AuditEvent(
+                                    id=uuid7(),
+                                    timestamp=datetime.now(UTC),
                                     event_type="workspace.doc_set",
-                                    actor_id=self._agent_id,
-                                    agent_id=self._agent_id,
-                                    resource_type="workspace_file",
-                                    resource_id=(f"{workspace.id}/{relative_path}"),
+                                    actor_user_id=identity.actor_user_id,
+                                    calling_agent_id=identity.calling_agent_id,
+                                    owner_agent_id=identity.owner_agent_id,
+                                    customer_id=identity.customer_id,
+                                    resource_namespace_id=identity.namespace_id,
+                                    resource_namespace_type="workspace_file",
                                     action="set",
+                                    outcome="success",
+                                    correlation_id=correlation_id,
                                     details={
+                                        "workspace_resource_id": (f"{workspace.id}/{relative_path}"),
                                         "jsonpath": jsonpath,
                                         "value": value,
                                         "bytes_before": old_size,
@@ -236,7 +271,11 @@ class DocSetTool(TearsTool):
                                         "sha256_after": new_sha256,
                                         "version": new_version,
                                     },
-                                    correlation_id=correlation_id,
+                                )
+                                await publish_audit(
+                                    event,
+                                    nats_client=self._nats_client,
+                                    namespace=self._namespace,
                                 )
                         # NOSILENT: audit failure never taints doc_set
                         except Exception as audit_exc:
@@ -266,6 +305,8 @@ class DocSetTool(TearsTool):
                 error=f"validation failed: {exc.pattern} -> {exc.reason}",
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -340,6 +381,7 @@ def _build(**kwargs: Any) -> DocSetTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

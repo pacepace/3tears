@@ -23,6 +23,10 @@ from threetears.channels.protocol import (
     ChannelRouter,
 )
 
+__all__ = [
+    "DiscordAdapter",
+]
+
 
 class DiscordAdapter:
     """channel adapter bridging discord to platform via discord.py gateway.
@@ -55,9 +59,9 @@ class DiscordAdapter:
         :param config: optional adapter configuration overrides
         :ptype config: dict[str, Any] | None
         """
-        self._bot_token = bot_token
-        self._router = router
-        self._config: dict[str, Any] = config if config is not None else {}
+        self.bot_token = bot_token
+        self.router = router
+        self.config: dict[str, Any] = config if config is not None else {}
 
         intents = discord.Intents.default()
         intents.messages = True
@@ -73,7 +77,7 @@ class DiscordAdapter:
         uses client.start() which is a coroutine, NOT client.run()
         which would block and create its own event loop.
         """
-        await self._client.start(self._bot_token)
+        await self._client.start(self.bot_token)
 
     async def stop(self) -> None:
         """stop discord gateway connection.
@@ -92,16 +96,21 @@ class DiscordAdapter:
     async def _on_message(self, message: Any) -> None:
         """handle discord on_message event.
 
-        delegates to _handle_message for processing. registered as
-        discord.py event handler via client.event().
+        delegates to :meth:`handle_message` for processing.
+        registered as discord.py event handler via client.event().
 
         :param message: discord message object
         :ptype message: Any
         """
-        await self._handle_message(message)
+        await self.handle_message(message)
 
-    async def _handle_message(self, message: Any) -> None:
-        """process inbound discord message.
+    async def handle_message(self, message: Any) -> None:
+        """public discord-event handler for inbound messages.
+
+        invoked from :meth:`_on_message` (discord.py's raw event
+        callback) and by tests that synthesize a message object and
+        await the handler directly. the name + single-``message``
+        shape are part of the stability contract.
 
         filters self and bot messages, normalizes to ChannelMessage,
         routes through router, and delivers response.
@@ -117,7 +126,7 @@ class DiscordAdapter:
 
         channel_message = _build_channel_message(message)
 
-        response = await self._router.route_inbound(channel_message)
+        response = await self.router.route_inbound(channel_message)
 
         if response is None:
             return

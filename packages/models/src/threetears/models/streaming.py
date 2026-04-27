@@ -8,6 +8,12 @@ from typing import Any
 from threetears.models.messages import ToolCallRequest
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "merge_chunks",
+    "recover_invalid_tool_calls",
+    "recover_split_tool_calls",
+]
+
 
 def merge_chunks(chunks: list[ChatChunk]) -> ChatResult:
     """accumulates streaming chunks into single chat result.

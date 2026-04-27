@@ -22,16 +22,34 @@ from typing import Any
 from uuid import UUID, uuid7
 
 import asyncpg
+from pydantic import BaseModel
 
+# namespace-task-01 follow-up (post-emit re-materialization wave): the
+# paired ``platform.namespaces`` write for every workspace-create now
+# rides a NATS event published on
+# :meth:`threetears.nats.Subjects.workspaces_create`. the hub-side
+# :class:`aibots.hub.workspace.namespace_emitter
+# .WorkspaceNamespaceEmitter` subscribes (no queue group, every
+# replica observes) and upserts the row via
+# :class:`HubNamespaceCollection`. the agent-side L3 proxy routes
+# writes to the agent's own ``agent_<hex>`` schema, which has no
+# ``namespaces`` table -- the hub owns direct DB access and is the
+# SOLE writer of platform-scoped catalog rows. mirrors the tool-pod
+# registration path (``ToolNamespaceEmitter`` on
+# ``{ns}.tools.register``).
+
+from threetears.agent.audit import AuditEvent, publish_audit
+from threetears.core.namespaces import PLURAL_PREFIX_WORKSPACE, build_namespace_name
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
+from threetears.nats import Subjects
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace import pin
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -45,6 +63,59 @@ from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
     dispatch_validators,
 )
+
+__all__ = [
+    "WorkspaceCreateEvent",
+    "WorkspaceCreateTool",
+]
+
+
+class WorkspaceCreateEvent(BaseModel):
+    """payload published to ``{ns}.workspaces.create`` after a
+    successful agent-side workspace insert.
+
+    carries the minimum identity + naming shape the hub-side
+    :class:`aibots.hub.workspace.namespace_emitter
+    .WorkspaceNamespaceEmitter` needs to upsert one ``workspace``-type
+    row in ``platform.namespaces``. the field set mirrors the entity
+    payload the agent used to assemble locally; the emitter stamps
+    ``date_created`` / ``date_updated`` server-side from
+    :func:`datetime.now(UTC)` so the hub is the timestamp authority.
+
+    :param workspace_id: deterministic workspace UUID minted at insert
+        time; reused as the namespace row's primary key so the hub
+        upsert is idempotent under retry
+    :ptype workspace_id: UUID
+    :param namespace_name: pre-built canonical namespace name (e.g.
+        ``workspaces.<workspace_id>``) produced by
+        :func:`threetears.core.namespaces.build_namespace_name` on the
+        agent side; the hub respects the agent-supplied name verbatim
+    :ptype namespace_name: str
+    :param schema_name: per-agent schema where the workspace's tables
+        live (``agent_<hex>``); stamped on the namespace row so
+        broker-side authorization can resolve the right backing
+        schema for downstream tool calls
+    :ptype schema_name: str
+    :param owner_agent_id: owning agent UUID (the agent that created
+        the workspace); always set, since workspace_create runs under
+        an agent's tool-server
+    :ptype owner_agent_id: UUID
+    :param customer_id: owning customer UUID (resolved at create time
+        from the live ToolCallScope or the constructor fallback); MAY
+        be ``None`` when the create flow runs outside any conversation
+        scope and the constructor was supplied no fallback -- the
+        emitter still upserts the row but the hub authorize helper
+        treats ``NULL`` customer_id as unroutable, so downstream tool
+        calls deny until a backfill lands
+    :ptype customer_id: UUID | None
+    """
+
+    workspace_id: UUID
+    namespace_name: str
+    schema_name: str
+    owner_agent_id: UUID
+    customer_id: UUID | None = None
+
 
 log = get_logger(__name__)
 
@@ -114,9 +185,11 @@ class WorkspaceCreateTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
-        nats_client: Any = None,
-        namespace: str | None = None,
+        *,
+        nats_client: Any,
+        namespace: str,
         validators: list[ValidatorEntry] | None = None,
+        customer_id: UUID | None = None,
     ) -> None:
         """
         binds tool to collections, sandbox, conversation context, and pool.
@@ -138,11 +211,23 @@ class WorkspaceCreateTool(TearsTool):
         :ptype agent_id: UUID
         :param db_pool: asyncpg pool (or pool-like) supplying acquire+transaction
         :ptype db_pool: Any
-        :param nats_client: NATS client for audit publish; None in tests /
-            bootstrap to skip the audit step
+        :param nats_client: connected canonical NATS wrapper client.
+            REQUIRED. carries two distinct publishes per successful
+            create: (a) the per-tool ``workspace.create`` audit event
+            on ``{ns}.audit.workspace.>``, and (b) the
+            :class:`WorkspaceCreateEvent` on ``{ns}.workspaces.create``
+            consumed by the hub's
+            :class:`aibots.hub.workspace.namespace_emitter
+            .WorkspaceNamespaceEmitter` to upsert the paired
+            ``platform.namespaces`` row of type ``workspace``. the tool
+            will not degrade silently when it is omitted -- a
+            misconfigured wiring fails loudly.
         :ptype nats_client: Any
-        :param namespace: NATS subject namespace for audit subject
-        :ptype namespace: str | None
+        :param namespace: NATS subject namespace prefix. REQUIRED for
+            both the audit subject and the workspace-create event
+            subject; passed through to :class:`Subjects` for subject
+            construction
+        :ptype namespace: str
         :param validators: per-pattern validator entries; every seeded
             file (from template or source workspace) is validated before
             the batch INSERTs run. first failure aborts the create
@@ -159,6 +244,7 @@ class WorkspaceCreateTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._customer_id = customer_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -224,26 +310,68 @@ class WorkspaceCreateTool(TearsTool):
                     error=f"create succeeded but pin failed: {pin_exc}",
                 )
             else:
-                # defense-in-depth: publish_workspace_event swallows its own
-                # publish failures, but wrap again so any unforeseen error
-                # from the helper itself cannot taint a successful return.
+                # defense-in-depth: additive per-tool event on top of
+                # the baseline ``tool.call`` emitted by ToolServer.
+                #
+                # workspace_create is the one tool that publishes before a
+                # Workspace entity exists to hand to workspace_audit_identity
+                # (we're still INSIDE the creation flow). we read the call
+                # scope directly for actor/calling/customer, and source
+                # owner_agent_id + resource_namespace_id from the values we
+                # just inserted. any missing dimension is a wiring bug,
+                # raised by the guard below and surfaced by the outer
+                # swallow.
                 try:
                     if self._namespace is not None:
-                        await audit.publish_workspace_event(
-                            nats_client=self._nats_client,
-                            namespace=self._namespace,
+                        from threetears.agent.tools.call_scope import (
+                            current_scope as _current_scope,
+                        )
+
+                        _scope = _current_scope()
+                        if _scope is None:
+                            raise RuntimeError(
+                                "workspace_create audit: no ToolCallScope "
+                                "installed; every tool dispatch must run "
+                                "under enter_call_scope."
+                            )
+                        _ctx = _scope.context
+                        if _ctx.user_id is None or _ctx.agent_id is None:
+                            raise RuntimeError(
+                                "workspace_create audit: scope missing "
+                                "user_id or agent_id; cannot publish the "
+                                "identity tuple."
+                            )
+                        _audit_customer = _ctx.customer_id or self._customer_id
+                        if _audit_customer is None:
+                            raise RuntimeError(
+                                "workspace_create audit: no customer_id in "
+                                "scope or constructor; workspace was created "
+                                "without an owning customer."
+                            )
+                        event = AuditEvent(
+                            id=uuid7(),
+                            timestamp=datetime.now(UTC),
                             event_type="workspace.create",
-                            actor_id=self._agent_id,
-                            agent_id=self._agent_id,
-                            resource_type="workspace",
-                            resource_id=str(workspace_id),
+                            actor_user_id=_ctx.user_id,
+                            calling_agent_id=_ctx.agent_id,
+                            owner_agent_id=self._agent_id,
+                            customer_id=_audit_customer,
+                            resource_namespace_id=workspace_id,
+                            resource_namespace_type="workspace",
                             action="create",
+                            outcome="success",
+                            correlation_id=correlation_id,
                             details={
+                                "workspace_resource_id": str(workspace_id),
                                 "name": name,
                                 "template_name": effective_template,
                                 "files_changed": files_count,
                             },
-                            correlation_id=correlation_id,
+                        )
+                        await publish_audit(
+                            event,
+                            nats_client=self._nats_client,
+                            namespace=self._namespace,
                         )
                 # NOSILENT: audit failure must never taint a successful create
                 except Exception as audit_exc:
@@ -310,14 +438,20 @@ class WorkspaceCreateTool(TearsTool):
         template_name: str,
     ) -> list[tuple[str, bytes, str]]:
         """
-        walk the named template directory and gate every file via sandbox.
+        walk the named template directory and enforce syntactic sanity.
 
-        sandbox enforcement must run on the event loop (the sandbox is a
-        plain Python object and raising from a worker thread is fine, but
-        keeping enforce calls on the main loop keeps the failure path
-        cheap and allows future async-sandbox extension). blocking
-        filesystem walk + read_bytes is dispatched to :func:`asyncio.to_thread`
-        so the event loop stays responsive on large templates.
+        template files are rooted under ``templates_dir`` and were
+        validated at packaging time; the agent creating the workspace
+        is implicitly its owner. namespace-task-01 phase 7 retires the
+        per-path rbac glob check here because no workspace namespace
+        exists yet (the call SITE is ``create``). syntactic validation
+        (absolute-path, parent-ref, control char) still runs via
+        :meth:`WorkspaceSandbox.validate_syntax` so malformed template
+        keys cannot slip into the fresh workspace.
+
+        blocking filesystem walk + read_bytes is dispatched to
+        :func:`asyncio.to_thread` so the event loop stays responsive on
+        large templates.
 
         :param template_name: template directory name under the templates root
         :ptype template_name: str
@@ -325,15 +459,12 @@ class WorkspaceCreateTool(TearsTool):
         :rtype: list[tuple[str, bytes, str]]
         """
         templates_root = self._sandbox.resolve_fs_path(template_name, "templates")
-        # collect (relative, path) pairs in thread, then enforce sandbox
-        # on each relative key on the main loop (sandbox.enforce may raise
-        # and surface cleanly that way).
         candidates = await asyncio.to_thread(
             _collect_template_paths,
             templates_root,
         )
         for relative, _path in candidates:
-            self._sandbox.enforce("read", relative)
+            self._sandbox.validate_syntax(relative)
         triples = await asyncio.to_thread(
             _read_template_bytes,
             candidates,
@@ -404,6 +535,35 @@ class WorkspaceCreateTool(TearsTool):
             for relative, content, _sha in files:
                 dispatch_validators(self._validators, relative, content)
 
+        # customer_id source for the paired namespace row: prefer the
+        # live ToolCallScope (set by the runtime for real calls) over
+        # the constructor kwarg (supplied for tests and bootstrap).
+        # when neither is present we fall back to None -- the namespace
+        # row ends up with a NULL customer_id, which the authorize
+        # helper treats as unroutable, and downstream tool calls will
+        # deny until the migration backfill lands the right value.
+        from threetears.agent.tools.call_scope import current_scope
+
+        scope = current_scope()
+        customer_id: UUID | None = (
+            scope.context.customer_id
+            if scope is not None and scope.context.customer_id is not None
+            else self._customer_id
+        )
+        schema_name = f"agent_{self._agent_id.hex}"
+        namespace_name = build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(workspace_id))
+
+        # workspace_create is owner-only by construction: it owns the
+        # physical rows it is about to materialize. the workspace row
+        # + file rows land under one ``conn.transaction()`` on the
+        # dedicated ``db_pool``; the paired ``platform.namespaces``
+        # row rides the agent's main NATS-proxy pool via
+        # :meth:`NamespaceCollection.save_entity` (three-tier-task-01
+        # phase F). the two writes cannot share one transaction
+        # because the Collection proxies through a different broker
+        # path, but the idempotent ``ON CONFLICT (id) DO UPDATE``
+        # semantics on the namespace id (equal to ``workspace_id``)
+        # let any retry converge on the same row.
         async with self._db_pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -445,6 +605,26 @@ class WorkspaceCreateTool(TearsTool):
                         correlation_id,
                         now,
                     )
+
+        # workspace + files committed. publish the paired-namespace
+        # event for the hub-side emitter to upsert
+        # ``platform.namespaces``. customer_id may be None when the
+        # create runs outside any conversation scope and the
+        # constructor was supplied no fallback -- the emitter still
+        # upserts the row but the hub authorize helper treats NULL
+        # customer_id as unroutable, denying downstream tool calls
+        # until a backfill lands.
+        event = WorkspaceCreateEvent(
+            workspace_id=workspace_id,
+            namespace_name=namespace_name,
+            schema_name=schema_name,
+            owner_agent_id=self._agent_id,
+            customer_id=customer_id,
+        )
+        await self._nats_client.publish(
+            subject=Subjects.workspaces_create(),
+            message=event,
+        )
         return workspace_id
 
     def mcp_schema(self) -> MCPToolDefinition:
@@ -535,9 +715,17 @@ def _build(**kwargs: Any) -> WorkspaceCreateTool:
 
     consumes ``workspace_collection``, ``workspace_file_collection``,
     ``workspace_file_version_collection``, ``sandbox``,
-    ``context_provider``, ``agent_id``, and ``db_pool``; ignores the
-    rest. registered with :mod:`threetears.agent.workspace.factory` on
-    import so :func:`build_workspace_tools` emits this tool.
+    ``context_provider``, ``agent_id``, ``db_pool``, ``nats_client``,
+    and ``namespace``; ignores the rest. registered with
+    :mod:`threetears.agent.workspace.factory` on import so
+    :func:`build_workspace_tools` emits this tool.
+
+    ``nats_client`` and ``namespace`` are required keys -- the tool
+    publishes one :class:`WorkspaceCreateEvent` on
+    ``{ns}.workspaces.create`` per successful create so the hub-side
+    emitter can upsert the paired namespace row. dropping them would
+    leave the workspace catalog out of sync; the factory raises
+    :class:`KeyError` rather than silently degrading.
 
     :param kwargs: full factory dependency bundle
     :ptype kwargs: Any
@@ -552,9 +740,10 @@ def _build(**kwargs: Any) -> WorkspaceCreateTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
-        nats_client=kwargs.get("nats_client"),
-        namespace=kwargs.get("namespace"),
+        nats_client=kwargs["nats_client"],
+        namespace=kwargs["namespace"],
         validators=_resolve_validators(kwargs),
+        customer_id=kwargs.get("customer_id"),
     )
 
 

@@ -6,6 +6,10 @@ import httpx
 
 from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
 
+__all__ = [
+    "HuggingFaceImageProvider",
+]
+
 
 class HuggingFaceImageProvider:
     """image generation provider for HuggingFace Inference API via httpx.
@@ -34,8 +38,8 @@ class HuggingFaceImageProvider:
     ) -> None:
         self._api_key = api_key
         self._model_id = model_id
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
 
     async def generate(
         self,
@@ -70,9 +74,9 @@ class HuggingFaceImageProvider:
         headers = {"Authorization": f"Bearer {self._api_key}"}
         payload = {"inputs": effective_prompt}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
-                f"{self._base_url}/models/{self._model_id}",
+                f"{self.base_url}/models/{self._model_id}",
                 headers=headers,
                 json=payload,
             )

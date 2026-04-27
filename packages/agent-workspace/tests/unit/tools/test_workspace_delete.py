@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -24,8 +25,14 @@ from threetears.agent.workspace.tools.workspace_delete import WorkspaceDeleteToo
 class _FakeWorkspaceEntity:
     """minimal stand-in for :class:`Workspace` for delete-target lookups."""
 
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
+
     id: UUID
     name: str
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: Any = None
 
 
@@ -54,7 +61,7 @@ class _FakeSandbox:
     def resolve_fs_path(self, path: str, root_name: str) -> Any:
         raise KeyError(root_name)
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 
@@ -81,7 +88,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         self.transaction_calls += 1
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
@@ -127,6 +134,7 @@ def _build_tool(
     *,
     workspace_collection: Any,
     db_pool: Any,
+    acl_cache: Any,
     agent_id: UUID | None = None,
     context_provider: Any = None,
 ) -> WorkspaceDeleteTool:
@@ -138,6 +146,7 @@ def _build_tool(
         context_provider=context_provider or (lambda: _FakeContext()),
         agent_id=agent_id or uuid4(),
         db_pool=db_pool,
+        acl_cache=acl_cache,
     )
 
 
@@ -149,6 +158,7 @@ def _build_tool(
 @pytest.mark.asyncio
 async def test_delete_soft_deletes_workspace_in_transaction(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """delete sets date_deleted via UPDATE inside a single transaction."""
     ws_id = uuid4()
@@ -169,6 +179,7 @@ async def test_delete_soft_deletes_workspace_in_transaction(
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="bye")
@@ -200,6 +211,7 @@ async def test_delete_soft_deletes_workspace_in_transaction(
 @pytest.mark.asyncio
 async def test_delete_clears_pin_when_pinned_workspace_matches(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """pinned workspace's pin is cleared by the same delete call."""
     ws_id = uuid4()
@@ -223,6 +235,7 @@ async def test_delete_clears_pin_when_pinned_workspace_matches(
         workspace_collection=_FakeWorkspaceCollection([workspace]),
         db_pool=pool,
         context_provider=lambda: fake_ctx,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(name="seed")
@@ -233,6 +246,7 @@ async def test_delete_clears_pin_when_pinned_workspace_matches(
 @pytest.mark.asyncio
 async def test_delete_does_not_clear_pin_for_different_workspace(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """a different pinned workspace is left untouched when deleting another."""
     ws_id = uuid4()
@@ -254,6 +268,7 @@ async def test_delete_does_not_clear_pin_for_different_workspace(
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="bye")
     assert result.success is True
@@ -266,12 +281,15 @@ async def test_delete_does_not_clear_pin_for_different_workspace(
 
 
 @pytest.mark.asyncio
-async def test_delete_unknown_workspace_returns_error() -> None:
+async def test_delete_unknown_workspace_returns_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """missing workspace yields clean error and writes nothing."""
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="ghost")
     assert result.success is False
@@ -281,7 +299,9 @@ async def test_delete_unknown_workspace_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_already_deleted_returns_error_idempotently() -> None:
+async def test_delete_already_deleted_returns_error_idempotently(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """deleting an already-soft-deleted workspace surfaces same not-found error."""
     workspace = _FakeWorkspaceEntity(
         id=uuid4(),
@@ -292,6 +312,7 @@ async def test_delete_already_deleted_returns_error_idempotently() -> None:
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([workspace]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="ghost")
     assert result.success is False
@@ -301,7 +322,9 @@ async def test_delete_already_deleted_returns_error_idempotently() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_traps_unexpected_exceptions_as_data() -> None:
+async def test_delete_traps_unexpected_exceptions_as_data(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """unexpected runtime errors surface as ToolResult(success=False)."""
 
     class _Boom:
@@ -309,7 +332,7 @@ async def test_delete_traps_unexpected_exceptions_as_data() -> None:
             raise RuntimeError("storage offline")
 
     pool = _FakePool()
-    tool = _build_tool(workspace_collection=_Boom(), db_pool=pool)
+    tool = _build_tool(workspace_collection=_Boom(), db_pool=pool, acl_cache=permissive_acl_cache)
     result = await tool.execute(name="x")
     assert result.success is False
     assert result.error is not None
@@ -321,29 +344,38 @@ async def test_delete_traps_unexpected_exceptions_as_data() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_name_is_exact_string() -> None:
+def test_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_name() == "threetears.workspace.delete"
 
 
-def test_mcp_version_is_semver_string() -> None:
+def test_mcp_version_is_semver_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     assert tool.mcp_version() == "1.0"
 
 
-def test_mcp_schema_declares_required_name() -> None:
+def test_mcp_schema_declares_required_name(
+    permissive_acl_cache: MagicMock,
+) -> None:
     pool = _FakePool()
     tool = _build_tool(
         workspace_collection=_FakeWorkspaceCollection([]),
         db_pool=pool,
+        acl_cache=permissive_acl_cache,
     )
     definition = tool.mcp_schema()
     assert isinstance(definition, MCPToolDefinition)

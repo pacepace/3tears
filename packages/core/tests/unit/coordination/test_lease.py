@@ -1,7 +1,8 @@
 """tests for threetears.core.coordination.lease.KVLease.
 
-covers acquire/refresh/release/timeout/contention/async-with against fake
-NATS KV bucket. no real NATS process required.
+covers acquire/refresh/release/timeout/contention/async-with against
+fake NATS KV bucket (mirroring :class:`threetears.nats.NatsKvBucket`).
+no real NATS process required.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from threetears.core.coordination.lease import (
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 
-from ._fake_kv import FakeKV, FakeNatsClient
+from ._fake_kv import FakeKvBucket, FakeNatsClient
 
 
 async def _make_lease(
@@ -38,8 +39,13 @@ async def _make_lease(
     :rtype: tuple[KVLease, FakeNatsClient]
     """
     client = FakeNatsClient()
-    lease = KVLease(nats_client=client, bucket_name=bucket_name, pod_id=pod_id)
+    lease = KVLease(nats_client=client, bucket_name=bucket_name, pod_id=pod_id)  # type: ignore[arg-type]
     return lease, client
+
+
+async def _bucket_for(client: FakeNatsClient, bucket_name: str) -> FakeKvBucket:
+    """resolve fake bucket by name (test-side helper)."""
+    return await client.kv_bucket(name=bucket_name)
 
 
 def _decode_envelope(value: bytes) -> dict[str, Any]:
@@ -57,7 +63,7 @@ class TestAcquireEmpty:
     """acquire on an empty bucket succeeds and records ownership."""
 
     async def test_acquire_returns_handle_on_empty_key(self) -> None:
-        lease, client = await _make_lease()
+        lease, _client = await _make_lease()
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         assert isinstance(handle, LeaseHandle)
         assert handle.holder == "pod-alpha"
@@ -67,9 +73,10 @@ class TestAcquireEmpty:
         lease, client = await _make_lease()
         before = datetime.now(UTC)
         await lease.acquire("lock/a", ttl_seconds=30)
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        entry = await bucket.get("lock/a")
-        envelope = _decode_envelope(entry.value)
+        bucket = await _bucket_for(client, "test_leases")
+        value = await bucket.get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-alpha"
         expires_at = datetime.fromisoformat(envelope["expires_at"])
         acquired_at = datetime.fromisoformat(envelope["acquired_at"])
@@ -85,7 +92,7 @@ class TestAcquireFailFast:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
 
@@ -101,7 +108,7 @@ class TestAcquireFailFast:
             await original_sleep(0)
 
         monkeypatch.setattr("threetears.core.coordination.lease.asyncio.sleep", _spy_sleep)
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
         with pytest.raises(LeaseUnavailable):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert sleeps == []
@@ -118,7 +125,7 @@ class TestAcquireWaitThenSucceeds:
             await asyncio.sleep(0.1)
             await handle.release()
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
         release_task = asyncio.create_task(_release_after_delay())
         try:
             second_handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=5)
@@ -134,7 +141,7 @@ class TestAcquireTimeout:
         holder_lease, client = await _make_lease(pod_id="pod-first")
         await holder_lease.acquire("lock/a", ttl_seconds=60)
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
         with pytest.raises(LeaseTimeout):
             await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=1)
 
@@ -146,17 +153,19 @@ class TestRefresh:
         lease, client = await _make_lease()
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         original_revision = handle.revision
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        entry_before = await bucket.get("lock/a")
-        envelope_before = _decode_envelope(entry_before.value)
+        bucket = await _bucket_for(client, "test_leases")
+        value_before = await bucket.get(key="lock/a")
+        assert value_before is not None
+        envelope_before = _decode_envelope(value_before)
         expires_before = datetime.fromisoformat(envelope_before["expires_at"])
 
         await asyncio.sleep(0.01)
         await handle.refresh(ttl_seconds=120)
 
         assert handle.revision != original_revision
-        entry_after = await bucket.get("lock/a")
-        envelope_after = _decode_envelope(entry_after.value)
+        value_after = await bucket.get(key="lock/a")
+        assert value_after is not None
+        envelope_after = _decode_envelope(value_after)
         expires_after = datetime.fromisoformat(envelope_after["expires_at"])
         assert expires_after > expires_before
 
@@ -165,8 +174,9 @@ class TestRefresh:
         handle = await first_lease.acquire("lock/a", ttl_seconds=30)
 
         # another pod steals the lease by deleting and recreating it
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        await bucket.delete("lock/a", last=handle.revision)
+        bucket = await _bucket_for(client, "test_leases")
+        deleted = await bucket.delete(key="lock/a", revision=handle.revision)
+        assert deleted is True
         now = datetime.now(UTC)
         thief_envelope = serialize_to_json(
             {
@@ -175,7 +185,7 @@ class TestRefresh:
                 "acquired_at": now.isoformat(),
             }
         )
-        await bucket.create("lock/a", thief_envelope)
+        await bucket.create(key="lock/a", value=thief_envelope)
 
         with pytest.raises(LeaseLost):
             await handle.refresh()
@@ -185,7 +195,7 @@ class TestRefresh:
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         # holder line stays the same but a concurrent writer (same pod_id)
         # advances the revision underneath us, simulating a successor write.
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
+        bucket = await _bucket_for(client, "test_leases")
         now = datetime.now(UTC)
         sneak = serialize_to_json(
             {
@@ -194,7 +204,8 @@ class TestRefresh:
                 "acquired_at": now.isoformat(),
             }
         )
-        await bucket.update("lock/a", sneak, last=handle.revision)
+        new_revision = await bucket.update(key="lock/a", value=sneak, revision=handle.revision)
+        assert new_revision is not None
         # handle.revision is now stale; refresh CAS must fail -> LeaseLost
         with pytest.raises(LeaseLost):
             await handle.refresh()
@@ -207,14 +218,11 @@ class TestRelease:
         lease, client = await _make_lease()
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         await handle.release()
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        from nats.js.errors import KeyNotFoundError
-
-        with pytest.raises(KeyNotFoundError):
-            await bucket.get("lock/a")
+        bucket = await _bucket_for(client, "test_leases")
+        assert await bucket.get(key="lock/a") is None
 
     async def test_release_is_idempotent(self) -> None:
-        lease, client = await _make_lease()
+        lease, _client = await _make_lease()
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         await handle.release()
         # second call must not raise
@@ -223,9 +231,9 @@ class TestRelease:
     async def test_release_after_theft_is_noop(self) -> None:
         lease, client = await _make_lease(pod_id="pod-first")
         handle = await lease.acquire("lock/a", ttl_seconds=30)
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
+        bucket = await _bucket_for(client, "test_leases")
         # simulate another pod replacing the entry
-        await bucket.delete("lock/a", last=handle.revision)
+        await bucket.delete(key="lock/a", revision=handle.revision)
         now = datetime.now(UTC)
         thief = serialize_to_json(
             {
@@ -234,11 +242,12 @@ class TestRelease:
                 "acquired_at": now.isoformat(),
             }
         )
-        await bucket.create("lock/a", thief)
+        await bucket.create(key="lock/a", value=thief)
         # release must not raise; thief's entry must remain.
         await handle.release()
-        entry = await bucket.get("lock/a")
-        envelope = _decode_envelope(entry.value)
+        value = await bucket.get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-thief"
 
 
@@ -250,11 +259,8 @@ class TestAsyncWith:
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         async with handle:
             pass
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        from nats.js.errors import KeyNotFoundError
-
-        with pytest.raises(KeyNotFoundError):
-            await bucket.get("lock/a")
+        bucket = await _bucket_for(client, "test_leases")
+        assert await bucket.get(key="lock/a") is None
 
     async def test_async_with_releases_on_exception(self) -> None:
         lease, client = await _make_lease()
@@ -267,11 +273,8 @@ class TestAsyncWith:
             async with handle:
                 raise _Boom("oops")
 
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
-        from nats.js.errors import KeyNotFoundError
-
-        with pytest.raises(KeyNotFoundError):
-            await bucket.get("lock/a")
+        bucket = await _bucket_for(client, "test_leases")
+        assert await bucket.get(key="lock/a") is None
 
 
 class TestStaleLease:
@@ -282,7 +285,7 @@ class TestStaleLease:
         first_handle = await first_lease.acquire("lock/a", ttl_seconds=30)
 
         # rewrite entry with already-expired expires_at (preserve revision chain)
-        bucket: FakeKV = await client.jetstream().key_value("test_leases")
+        bucket = await _bucket_for(client, "test_leases")
         past = datetime.now(UTC) - timedelta(seconds=120)
         expired = serialize_to_json(
             {
@@ -291,13 +294,15 @@ class TestStaleLease:
                 "acquired_at": (past - timedelta(seconds=30)).isoformat(),
             }
         )
-        await bucket.update("lock/a", expired, last=first_handle.revision)
+        new_revision = await bucket.update(key="lock/a", value=expired, revision=first_handle.revision)
+        assert new_revision is not None
 
-        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")
+        second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
         handle = await second.acquire("lock/a", ttl_seconds=30, max_wait_seconds=0)
         assert handle.holder == "pod-second"
-        entry = await bucket.get("lock/a")
-        envelope = _decode_envelope(entry.value)
+        value = await bucket.get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-second"
 
 
@@ -307,27 +312,29 @@ class TestBucketDefaults:
     async def test_default_bucket_uses_namespace_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "prod14")
         client = FakeNatsClient()
-        lease = KVLease(nats_client=client, pod_id="pod-alpha")
+        lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
         await lease.acquire("lock/a", ttl_seconds=30)
         # bucket should exist under "prod14_leases"
-        bucket = await client.jetstream().key_value("prod14_leases")
-        entry = await bucket.get("lock/a")
-        envelope = _decode_envelope(entry.value)
+        bucket = await _bucket_for(client, "prod14_leases")
+        value = await bucket.get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-alpha"
 
     async def test_default_bucket_fallback_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
-        lease = KVLease(nats_client=client, pod_id="pod-alpha")
+        lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]
         await lease.acquire("lock/a", ttl_seconds=30)
-        bucket = await client.jetstream().key_value("leases")
-        entry = await bucket.get("lock/a")
-        envelope = _decode_envelope(entry.value)
+        bucket = await _bucket_for(client, "leases")
+        value = await bucket.get(key="lock/a")
+        assert value is not None
+        envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-alpha"
 
     async def test_default_pod_id_is_generated_when_omitted(self) -> None:
         client = FakeNatsClient()
-        lease = KVLease(nats_client=client, bucket_name="test_leases")
+        lease = KVLease(nats_client=client, bucket_name="test_leases")  # type: ignore[arg-type]
         handle = await lease.acquire("lock/a", ttl_seconds=30)
         assert handle.holder.startswith("pod-")
         assert len(handle.holder) == len("pod-") + 12

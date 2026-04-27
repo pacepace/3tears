@@ -31,6 +31,155 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+
+__all__ = [
+    "NoWorkspacePinned",
+    "Sha256Mismatch",
+    "WorkspaceNotFound",
+    "WorkspaceAuditIdentity",
+    "authorize_workspace",
+    "authorize_workspace_file",
+    "enrich_workspace_identity",
+    "workspace_audit_identity",
+]
+
+
+class WorkspaceAuditIdentity:
+    """resolved identity fields needed to publish a workspace audit event.
+
+    audit-task-01 Phase 3: fields map onto
+    :class:`threetears.agent.audit.AuditEvent` as follows:
+    ``actor_user_id`` -> ``actor_user_id``, ``calling_agent_id`` ->
+    ``calling_agent_id``, ``owner_agent_id`` -> ``owner_agent_id``,
+    ``customer_id`` -> ``customer_id``, ``namespace_id`` ->
+    ``resource_namespace_id``. this plain value class carries the five
+    UUIDs every tool's additive audit-publish block pulls from one
+    place; the per-tool ``resource_namespace_type`` + domain-specific
+    details are stamped at the call site.
+
+    construction goes through :func:`workspace_audit_identity`, which
+    reads the current :class:`ToolCallScope` and the resolved
+    :class:`Workspace`; passing the value around keeps the publish call
+    sites terse and uniform.
+
+    :ivar actor_user_id: invoking user identifier (from
+        ``scope.context.user_id``)
+    :ivar calling_agent_id: agent whose process ran the tool (from
+        ``scope.context.agent_id``)
+    :ivar owner_agent_id: workspace owner agent (from
+        ``workspace.owner_agent_id``)
+    :ivar customer_id: owning customer (from ``scope.context.customer_id``)
+    :ivar namespace_id: workspace id (shared PK with the
+        ``platform.namespaces`` row); maps onto the
+        :attr:`AuditEvent.resource_namespace_id` column at publish
+        time
+    """
+
+    __slots__ = (
+        "actor_user_id",
+        "calling_agent_id",
+        "owner_agent_id",
+        "customer_id",
+        "namespace_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        actor_user_id: UUID,
+        calling_agent_id: UUID,
+        owner_agent_id: UUID,
+        customer_id: UUID,
+        namespace_id: UUID,
+    ) -> None:
+        """
+        bind the five audit-identity UUIDs as attributes.
+
+        :param actor_user_id: invoking user's UUID
+        :ptype actor_user_id: UUID
+        :param calling_agent_id: calling agent's UUID
+        :ptype calling_agent_id: UUID
+        :param owner_agent_id: owning agent's UUID
+        :ptype owner_agent_id: UUID
+        :param customer_id: owning customer's UUID
+        :ptype customer_id: UUID
+        :param namespace_id: workspace/namespace UUID
+        :ptype namespace_id: UUID
+        :return: None
+        :rtype: None
+        """
+        self.actor_user_id = actor_user_id
+        self.calling_agent_id = calling_agent_id
+        self.owner_agent_id = owner_agent_id
+        self.customer_id = customer_id
+        self.namespace_id = namespace_id
+
+
+def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
+    """build a :class:`WorkspaceAuditIdentity` from the current scope + workspace.
+
+    WS-ACL-10: every workspace-mutating tool's audit publish carries the
+    full five-UUID identity tuple. this helper pulls scope + workspace
+    into the value object the :func:`publish_audit` caller forwards as
+    :class:`AuditEvent` fields. every required dimension is mandatory;
+    missing any field raises so the call site cannot silently publish
+    a partial envelope under ``extra='forbid'``.
+
+    :param workspace: resolved workspace entity (must have
+        :attr:`owner_agent_id` populated and :attr:`customer_id` stamped
+        via :func:`enrich_workspace_identity`)
+    :ptype workspace: Workspace
+    :return: audit-identity value for forwarding to publish helpers
+    :rtype: WorkspaceAuditIdentity
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed,
+        or when ``workspace.customer_id`` is None (the scope did not
+        enrich), or when ``scope.context`` lacks user_id / agent_id /
+        customer_id
+    """
+    from threetears.agent.tools.call_scope import current_scope
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "workspace_audit_identity called outside a ToolCallScope; "
+            "every tool dispatch must run under enter_call_scope so the "
+            "invoking user / calling agent / customer identities are "
+            "available to the audit envelope."
+        )
+    ctx = scope.context
+    if ctx.user_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.user_id is None; "
+            "the tool dispatch envelope omitted the invoking user."
+        )
+    if ctx.agent_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.agent_id is None; "
+            "the tool dispatch envelope omitted the calling agent."
+        )
+    if ctx.customer_id is None:
+        raise RuntimeError(
+            "workspace_audit_identity: scope.context.customer_id is "
+            "None; the tool dispatch envelope omitted the owning "
+            "customer (WS-ACL-08 threading required)."
+        )
+    ws_customer = workspace.customer_id
+    if ws_customer is None:
+        raise RuntimeError(
+            "workspace_audit_identity: workspace.customer_id is None; "
+            "call enrich_workspace_identity before publishing the "
+            "audit envelope."
+        )
+    return WorkspaceAuditIdentity(
+        actor_user_id=ctx.user_id,
+        calling_agent_id=ctx.agent_id,
+        owner_agent_id=workspace.owner_agent_id,
+        customer_id=ws_customer,
+        namespace_id=workspace.id,
+    )
+
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 
@@ -42,7 +191,7 @@ if TYPE_CHECKING:
     from threetears.agent.workspace.config import ValidatorEntry
     from threetears.agent.workspace.entities import Workspace
 
-from threetears.agent.workspace import pin as _pin
+from threetears.agent.workspace import pin as pin_module
 from threetears.agent.workspace.validators import dispatch_validators
 
 
@@ -131,6 +280,180 @@ class Sha256Mismatch(RuntimeError):
         super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
 
 
+_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM platform.namespaces WHERE id = $1"
+
+
+async def authorize_workspace(
+    workspace: Workspace,
+    operation: Literal["read", "write"],
+    *,
+    db_pool: Any,
+    acl_cache: AclCache,
+) -> None:
+    """convenience wrapper: enrich identity then authorize via shared cache.
+
+    every workspace tool's ``execute`` calls this once per dispatch,
+    immediately after :func:`_resolve_workspace`. both ``acl_cache``
+    and an installed :class:`ToolCallScope` are REQUIRED -- there is
+    no "skip authorization" path (WS-ACL-05 is a hard requirement).
+    tests must inject a real :class:`AclCache` wired with loader
+    stubs and wrap the dispatch in :func:`enter_call_scope`;
+    production wiring always supplies both. ``db_pool`` may be None
+    to skip the identity-enrichment fetch -- the cache then sees a
+    ``customer_id`` of ``None`` and rejects the call as unroutable,
+    which is the desired behavior for tools called from harnesses
+    that pre-stamped the entity.
+
+    :param workspace: resolved workspace entity
+    :ptype workspace: Workspace
+    :param operation: ``"read"`` or ``"write"``; passed verbatim to
+        :func:`authorize_workspace_access`
+    :ptype operation: Literal["read", "write"]
+    :param db_pool: asyncpg-like pool for the platform.namespaces
+        lookup; may be ``None`` to skip enrichment
+    :ptype db_pool: Any
+    :param acl_cache: shared :class:`AclCache` wired with membership
+        + grant loaders; REQUIRED
+    :ptype acl_cache: AclCache
+    :return: None
+    :rtype: None
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed
+        (the tool was dispatched outside a call-scope context)
+    :raises WorkspaceAccessDenied: on any denial path
+    """
+    # local imports keep this module cheap when tools only need
+    # _resolve_workspace or _write_file_atomic.
+    from threetears.agent.tools.call_scope import current_scope
+
+    from threetears.agent.workspace.authorize import authorize_workspace_access
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "authorize_workspace called outside a ToolCallScope; every tool "
+            "dispatch must enter_call_scope before executing. tests should "
+            "wrap the tool invocation in enter_call_scope(ToolCallScope(...))."
+        )
+    if db_pool is not None:
+        await enrich_workspace_identity(workspace, db_pool)
+    await authorize_workspace_access(
+        scope,
+        workspace,
+        operation,
+        acl_cache=acl_cache,
+    )
+    return None
+
+
+async def authorize_workspace_file(
+    workspace: Workspace,
+    relative_path: str,
+    direction: Literal["read", "write"],
+    *,
+    db_pool: Any,
+    acl_cache: AclCache,
+) -> None:
+    """per-file rbac gate replacing the retired ``sandbox.enforce`` call.
+
+    namespace-task-01 phase 7 wrapper: the workspace file-access
+    enforcement path is now (1) :meth:`WorkspaceSandbox.validate_syntax`
+    for syntactic sanity, (2) this helper for the path-glob rbac
+    decision. see
+    :func:`threetears.agent.workspace.authorize.authorize_workspace_file_access`
+    for the underlying evaluator wiring; this helper performs the
+    identity-enrichment round-trip and installs the call-scope guard
+    so each tool's execute path reads as a one-liner.
+
+    tests must wrap the dispatch in
+    :func:`threetears.agent.tools.call_scope.enter_call_scope`;
+    production wiring always supplies both ``acl_cache`` and the
+    call-scope. ``db_pool`` may be ``None`` when the caller has
+    pre-stamped ``workspace.customer_id`` (harness tests).
+
+    :param workspace: resolved workspace entity
+    :ptype workspace: Workspace
+    :param relative_path: workspace-relative path being authorized
+    :ptype relative_path: str
+    :param direction: ``"read"`` for a read call, ``"write"`` for a
+        mutation (must map to the corresponding
+        ``read_file_matching:`` / ``write_file_matching:`` action
+        prefix in the evaluator)
+    :ptype direction: Literal["read", "write"]
+    :param db_pool: asyncpg-like pool for the platform.namespaces
+        lookup; may be ``None`` to skip enrichment
+    :ptype db_pool: Any
+    :param acl_cache: shared :class:`AclCache` wired with membership +
+        grant loaders; REQUIRED
+    :ptype acl_cache: AclCache
+    :return: None
+    :rtype: None
+    :raises RuntimeError: when no :class:`ToolCallScope` is installed
+    :raises WorkspaceAccessDenied: on any denial path (missing
+        customer, cross-customer, no matching glob)
+    """
+    from threetears.agent.tools.call_scope import current_scope
+
+    from threetears.agent.workspace.authorize import (
+        authorize_workspace_file_access,
+    )
+
+    scope = current_scope()
+    if scope is None:
+        raise RuntimeError(
+            "authorize_workspace_file called outside a ToolCallScope; every "
+            "tool dispatch must enter_call_scope before executing. tests "
+            "should wrap the tool invocation in "
+            "enter_call_scope(ToolCallScope(...)).",
+        )
+    if db_pool is not None:
+        await enrich_workspace_identity(workspace, db_pool)
+    await authorize_workspace_file_access(
+        scope,
+        workspace,
+        relative_path,
+        direction,
+        acl_cache=acl_cache,
+    )
+    return None
+
+
+async def enrich_workspace_identity(
+    workspace: Workspace,
+    db_pool: Any,
+) -> Workspace:
+    """stamp ``workspace.customer_id`` from platform.namespaces in-place.
+
+    workspace-task-19 (WS-ACL-03) keeps the customer dimension on
+    :class:`platform.namespaces` rather than duplicating it onto every
+    agent-schema ``workspaces`` row. resolving the customer requires a
+    single platform-level fetch; this helper performs that lookup and
+    stamps the result onto the in-memory entity via the
+    :attr:`Workspace.customer_id` setter so the authorize helper can
+    read it back on the next statement.
+
+    the query uses ``namespace=`` so it lands on the platform pool
+    regardless of the caller's default agent schema: the L3 proxy
+    recognizes ``namespace="platform"`` (or any platform-typed
+    namespace) and binds ``search_path`` accordingly. pools that lack
+    ``namespace=`` support (tests, direct asyncpg) fall back to the
+    fully-qualified ``platform.namespaces`` table reference.
+
+    :param workspace: workspace entity to enrich
+    :ptype workspace: Workspace
+    :param db_pool: asyncpg pool (or pool-like) that can reach the
+        platform schema; the v014 migration places namespaces on
+        every agent's reachable path
+    :ptype db_pool: Any
+    :return: the same ``workspace`` instance (returned for chaining)
+    :rtype: Workspace
+    """
+    row = await db_pool.fetchrow(_SELECT_NAMESPACE_CUSTOMER_SQL, workspace.id)
+    if row is not None:
+        raw = row["customer_id"] if isinstance(row, dict) else row["customer_id"]
+        workspace.customer_id = UUID(str(raw)) if raw is not None else None
+    return workspace
+
+
 async def _resolve_workspace(
     workspace_arg: str | None,
     context: ToolContextManager,
@@ -172,7 +495,7 @@ async def _resolve_workspace(
         if result is None:
             raise WorkspaceNotFound(f"workspace {workspace_arg!r} not found")
     else:
-        snapshot = await _pin.get_pin(context)
+        snapshot = await pin_module.get_pin(context)
         if snapshot is None:
             raise NoWorkspacePinned("no workspace pinned; call workspace.use(name) first")
         result = await workspace_collection.find_by_id_and_agent(snapshot.workspace_id, agent_id)
@@ -242,7 +565,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -340,8 +663,16 @@ async def _write_file_atomic(
     new_sha256 = hashlib.sha256(content).hexdigest()
     now = datetime.now(UTC)
 
+    # WS-ACL-06: bind the tx session to the workspace's namespace so
+    # the broker resolves ``SET search_path`` to the OWNER agent's
+    # schema on every statement below. owner and grantee paths run
+    # the same SQL against the same physical storage; only the ACL
+    # check at authorize time differentiates them. pools lacking the
+    # ``namespace=`` kwarg (test fakes, direct asyncpg) ignore the
+    # keyword because they bind search_path elsewhere; the production
+    # NatsProxyL3Backend honors it.
     async with db_pool.acquire() as conn:
-        async with conn.transaction():
+        async with conn.transaction(namespace=workspace.namespace_name):
             head = await conn.fetchrow(_SELECT_HEAD_SQL, workspace.id, relative_path)
             current_sha: str | None = None if head is None else head["sha256"]
             if expected_sha256 is not None and current_sha != expected_sha256:
@@ -383,6 +714,7 @@ async def _write_file_atomic(
                 new_version,
                 now,
                 workspace.id,
+                workspace.agent_id,
             )
     return new_version, new_sha256
 
@@ -417,6 +749,8 @@ async def _resolve_ref(
     workspace_id: UUID,
     relative_path: str,
     ref: str | int,
+    *,
+    namespace_name: str | None = None,
 ) -> dict[str, Any] | None:
     """resolve a history-tool ``ref`` against the journal for a single path.
 
@@ -440,6 +774,14 @@ async def _resolve_ref(
     ``_write_file_atomic`` call awkward when the row comes from a
     checkpoint that never touched the head cache).
 
+    WS-ACL-06: ``namespace_name`` routes the outside-tx lookups to the
+    owner agent's schema. when the connection is already pinned to a
+    tx (``conn.tx_id`` set), per-statement ``namespace=`` is rejected
+    by the proxy; the helper detects that case and omits the kwarg so
+    the tx session's already-bound namespace applies. outside a tx the
+    kwarg rides on every fetchrow so grantee rollback / diff queries
+    land in the owner's schema.
+
     :param conn: live asyncpg-like connection already enrolled in the
         caller's transaction (or a raw acquired connection for read-only
         callers)
@@ -451,24 +793,52 @@ async def _resolve_ref(
     :param ref: ``"head"``, integer version, digit-only string, or
         checkpoint label
     :ptype ref: str | int
+    :param namespace_name: canonical workspace namespace
+        (``workspace.<uuid>``) passed as ``namespace=`` to the
+        outside-tx fetchrow calls so grantee reads route correctly
+    :ptype namespace_name: str | None
     :return: journal row as dict, or None when no row matches
     :rtype: dict[str, Any] | None
     """
+    # inside-tx callers must not pass namespace= on per-statement calls
+    # (the proxy rejects it). detect the pinned state by reading
+    # ``tx_id``; connections without that attribute (raw asyncpg) are
+    # always outside-tx so the kwarg flows through.
+    inside_tx = getattr(conn, "tx_id", None) is not None
+    kwargs: dict[str, Any] = {} if inside_tx or namespace_name is None else {"namespace": namespace_name}
     result: dict[str, Any] | None
     row: Any
     if isinstance(ref, int):
-        row = await conn.fetchrow(_SELECT_VERSION_BY_NUMBER_SQL, workspace_id, relative_path, ref)
+        row = await conn.fetchrow(
+            _SELECT_VERSION_BY_NUMBER_SQL,
+            workspace_id,
+            relative_path,
+            ref,
+            **kwargs,
+        )
     elif ref == "head":
-        row = await conn.fetchrow(_SELECT_LATEST_VERSION_ROW_SQL, workspace_id, relative_path)
+        row = await conn.fetchrow(
+            _SELECT_LATEST_VERSION_ROW_SQL,
+            workspace_id,
+            relative_path,
+            **kwargs,
+        )
     elif ref.isdigit():
         row = await conn.fetchrow(
             _SELECT_VERSION_BY_NUMBER_SQL,
             workspace_id,
             relative_path,
             int(ref),
+            **kwargs,
         )
     else:
-        row = await conn.fetchrow(_SELECT_CHECKPOINT_ROW_SQL, workspace_id, relative_path, ref)
+        row = await conn.fetchrow(
+            _SELECT_CHECKPOINT_ROW_SQL,
+            workspace_id,
+            relative_path,
+            ref,
+            **kwargs,
+        )
     if row is None:
         result = None
     else:

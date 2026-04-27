@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+__all__ = [
+    "EmbeddingProvider",
+]
+
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):

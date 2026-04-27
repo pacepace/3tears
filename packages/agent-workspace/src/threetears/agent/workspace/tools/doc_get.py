@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -29,6 +30,9 @@ from threetears.core.security import SandboxDenied
 from threetears.core.serialization import UnknownFormatError, handler_for
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -39,7 +43,13 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _resolve_workspace,
+    authorize_workspace,
+    authorize_workspace_file,
 )
+
+__all__ = [
+    "DocGetTool",
+]
 
 log = get_logger(__name__)
 
@@ -86,6 +96,8 @@ class DocGetTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        acl_cache: AclCache,
+        db_pool: Any = None,
     ) -> None:
         """
         binds tool to workspace + file collections, sandbox, context, agent.
@@ -107,6 +119,8 @@ class DocGetTool(TearsTool):
         self._sandbox = sandbox
         self._context_provider = context_provider
         self._agent_id = agent_id
+        self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -133,7 +147,20 @@ class DocGetTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
-            self._sandbox.enforce("read", relative_path)
+            await authorize_workspace(
+                workspace,
+                "read",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
+            self._sandbox.validate_syntax(relative_path)
+            await authorize_workspace_file(
+                workspace,
+                relative_path,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
             try:
                 handler = handler_for(relative_path)
             except UnknownFormatError:
@@ -190,6 +217,8 @@ class DocGetTool(TearsTool):
                                 },
                             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -259,6 +288,8 @@ def _build(**kwargs: Any) -> DocGetTool:
         sandbox=kwargs["sandbox"],
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
+        db_pool=kwargs.get("db_pool"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

@@ -239,10 +239,10 @@ class TestMermaidPieChart:
 class TestPdfRenderer:
     """Tests for PdfRenderer command building and error handling."""
 
-    def test_build_command_basic(self) -> None:
+    def testbuild_command_basic(self) -> None:
         """Basic command includes pandoc, output, and pdf engine."""
         renderer = PdfRenderer()
-        cmd = renderer._build_command("/tmp/out.pdf", None, None)
+        cmd = renderer.build_command("/tmp/out.pdf", None, None)
 
         assert cmd[0] == "pandoc"
         assert "-o" in cmd
@@ -250,18 +250,18 @@ class TestPdfRenderer:
         assert "pdflatex" in cmd
         assert "mermaid-filter" in cmd
 
-    def test_build_command_with_template(self) -> None:
+    def testbuild_command_with_template(self) -> None:
         """Template path is appended to command."""
         renderer = PdfRenderer()
-        cmd = renderer._build_command("/tmp/out.pdf", "/tpl/report.tex", None)
+        cmd = renderer.build_command("/tmp/out.pdf", "/tpl/report.tex", None)
 
         assert "--template" in cmd
         assert "/tpl/report.tex" in cmd
 
-    def test_build_command_with_variables(self) -> None:
+    def testbuild_command_with_variables(self) -> None:
         """Variables are escaped and added as -V flags."""
         renderer = PdfRenderer()
-        cmd = renderer._build_command("/tmp/out.pdf", None, {"author": "John & Jane"})
+        cmd = renderer.build_command("/tmp/out.pdf", None, {"author": "John & Jane"})
 
         # Find the variable argument
         v_indices = [i for i, arg in enumerate(cmd) if arg == "-V"]

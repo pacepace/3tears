@@ -61,7 +61,10 @@ class TestConstructor:
             allow_read=[],
             allow_write=[],
         )
-        assert sb._fs_roots["templates"] == sub.resolve()
+        # verify resolved-root invariant through the public API: the
+        # resolver must join ``<resolved_root>/<key>`` -- any un-resolved
+        # root would produce a different absolute path.
+        assert sb.resolve_fs_path("x.txt", "templates") == sub.resolve() / "x.txt"
 
     def test_allow_lists_copied(self, tmp_path: Path) -> None:
         read_allow: list[str] = ["*.yaml"]
@@ -70,8 +73,12 @@ class TestConstructor:
             allow_read=read_allow,
             allow_write=[],
         )
+        # mutate the original input after construction; defensive-copy
+        # invariant means the sandbox must still match ``*.yaml`` (the
+        # appended ``*.json`` must not leak into the sandbox's list).
         read_allow.append("*.json")
-        assert sb._allow_read == ["*.yaml"]
+        assert sb.check_relative_key("foo.yaml", "read") == SandboxDecision.ALLOW
+        assert sb.check_relative_key("foo.json", "read") == SandboxDecision.DENY
 
     def test_keyword_only_arguments(self, tmp_path: Path) -> None:
         with pytest.raises(TypeError):
@@ -87,12 +94,12 @@ class TestCheckRelativeKey:
 
     def test_oversize_denied(self, tmp_path: Path) -> None:
         sb = _make(tmp_path=tmp_path, allow_read=["**/*"])
-        oversize = "a" * (PathSandbox._MAX_KEY_LEN + 1)
+        oversize = "a" * (PathSandbox.MAX_KEY_LEN + 1)
         assert sb.check_relative_key(oversize, "read") == SandboxDecision.DENY
 
     def test_max_len_allowed(self, tmp_path: Path) -> None:
         sb = _make(tmp_path=tmp_path, allow_read=["**/*"])
-        at_limit = "a" * PathSandbox._MAX_KEY_LEN
+        at_limit = "a" * PathSandbox.MAX_KEY_LEN
         assert sb.check_relative_key(at_limit, "read") == SandboxDecision.ALLOW
 
     def test_absolute_path_denied(self, tmp_path: Path) -> None:
@@ -222,7 +229,7 @@ class TestEnforce:
 
     def test_enforce_oversize_reason(self, tmp_path: Path) -> None:
         sb = _make(tmp_path=tmp_path, allow_read=["**/*"])
-        oversize = "a" * (PathSandbox._MAX_KEY_LEN + 1)
+        oversize = "a" * (PathSandbox.MAX_KEY_LEN + 1)
         with pytest.raises(SandboxDenied) as info:
             sb.enforce("read", oversize)
         assert "length" in info.value.reason or "long" in info.value.reason
@@ -299,3 +306,55 @@ class TestResolveFsPath:
         )
         result = sb.resolve_fs_path("link", "root")
         assert result == target.resolve()
+
+
+class TestValidateSyntax:
+    """``validate_syntax`` enforces steps 1-5 without glob matching."""
+
+    def test_empty_key_raises(self, tmp_path: Path) -> None:
+        """empty key -> SandboxDenied with ``key is empty`` reason."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("")
+        assert "empty" in info.value.reason
+
+    def test_oversize_key_raises(self, tmp_path: Path) -> None:
+        """key longer than ``MAX_KEY_LEN`` -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        oversize = "a" * (PathSandbox.MAX_KEY_LEN + 1)
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax(oversize)
+        assert "length" in info.value.reason
+
+    def test_control_char_raises(self, tmp_path: Path) -> None:
+        """key containing NUL byte -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied):
+            sb.validate_syntax("bad\x00key")
+
+    def test_absolute_path_raises(self, tmp_path: Path) -> None:
+        """absolute path -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("/etc/passwd")
+        assert "absolute" in info.value.reason
+
+    def test_parent_ref_raises(self, tmp_path: Path) -> None:
+        """parent-ref (..) segment in key -> denied."""
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        with pytest.raises(SandboxDenied) as info:
+            sb.validate_syntax("../etc/passwd")
+        assert "parent" in info.value.reason
+
+    def test_valid_relative_passes_even_with_empty_globs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """syntactically valid key passes regardless of glob allow-lists.
+
+        the rbac path-level gate takes over glob matching in
+        namespace-task-01 phase 7; the sandbox's syntactic check runs
+        whether or not any glob is configured.
+        """
+        sb = _make(tmp_path=tmp_path, allow_read=[], allow_write=[])
+        sb.validate_syntax("docs/readme.md")

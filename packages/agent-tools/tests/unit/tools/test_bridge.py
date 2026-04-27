@@ -109,7 +109,9 @@ class TestTearsToolToLangchain:
         """_arun delegates to execute and returns content on success."""
         tool = DummyTool(succeed=True)
         wrapped = tears_tool_to_langchain(tool)
-        result = asyncio.run(wrapped._arun(message="hello"))
+        # _arun is LangChain BaseTool's documented override hook; see
+        # tests/enforcement/_underscore_exemptions.txt for rationale.
+        result = asyncio.run(wrapped._arun(message="hello"))  # noqa: SLF001
         assert "ok:" in result
         assert "hello" in result
 
@@ -117,7 +119,9 @@ class TestTearsToolToLangchain:
         """_arun returns 'Error: ...' message on failure."""
         tool = DummyTool(succeed=False)
         wrapped = tears_tool_to_langchain(tool)
-        result = asyncio.run(wrapped._arun(message="hello"))
+        # _arun is LangChain BaseTool's documented override hook; see
+        # tests/enforcement/_underscore_exemptions.txt for rationale.
+        result = asyncio.run(wrapped._arun(message="hello"))  # noqa: SLF001
         assert result.startswith("Error:")
         assert "something went wrong" in result
 
@@ -153,7 +157,9 @@ class TestTearsToolToLangchain:
         wrapped = tears_tool_to_langchain(tool)
         raised = False
         try:
-            wrapped._run(message="hello")
+            # _run is LangChain BaseTool's documented sync-run override hook;
+            # see tests/enforcement/_underscore_exemptions.txt for rationale.
+            wrapped._run(message="hello")  # noqa: SLF001
         except NotImplementedError:
             raised = True
         assert raised is True
@@ -166,7 +172,9 @@ class TestTearsToolToLangchain:
         wrapped = tears_tool_to_langchain(calc)
         assert isinstance(wrapped, BaseTool)
         assert wrapped.name == "calculator"
-        result = asyncio.run(wrapped._arun(expression="1 + 1"))
+        # _arun is LangChain BaseTool's documented override hook; see
+        # tests/enforcement/_underscore_exemptions.txt for rationale.
+        result = asyncio.run(wrapped._arun(expression="1 + 1"))  # noqa: SLF001
         assert result == "2"
 
     def test_error_result_without_error_field(self) -> None:
@@ -218,5 +226,7 @@ class TestTearsToolToLangchain:
 
         tool = FailNoErrorTool()
         wrapped = tears_tool_to_langchain(tool)
-        result = asyncio.run(wrapped._arun())
+        # _arun is LangChain BaseTool's documented override hook; see
+        # tests/enforcement/_underscore_exemptions.txt for rationale.
+        result = asyncio.run(wrapped._arun())  # noqa: SLF001
         assert result == "Error: bad things happened"

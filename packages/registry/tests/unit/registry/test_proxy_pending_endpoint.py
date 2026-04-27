@@ -13,20 +13,34 @@ from __future__ import annotations
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
+from threetears.agent.tools.context_envelope import CallContext
 
+from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
+from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.proxy import CallProxy, ProxyCallRequest
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("test")
 
 
 # -- helpers --
 
 
+_DEFAULT_CORRELATION_ID = UUID("01948a00-3333-7000-8000-00000000beef")
+_DEFAULT_AGENT_ID = UUID("01948a00-3333-7000-8000-000000a9e999")
+
+
 def _make_call_request(
     tool_name: str = "threetears.calculator",
     tool_version: str = "1.0.0",
-    correlation_id: str = "corr-pending-001",
+    correlation_id: UUID | None = None,
 ) -> ProxyCallRequest:
     """create proxy call request for testing.
 
@@ -34,17 +48,21 @@ def _make_call_request(
     :ptype tool_name: str
     :param tool_version: semver version string
     :ptype tool_version: str
-    :param correlation_id: request correlation identifier
-    :ptype correlation_id: str
+    :param correlation_id: request correlation identifier stamped on
+        the carried :class:`CallContext`; defaults to stable UUID
+    :ptype correlation_id: UUID | None
     :return: test proxy call request
     :rtype: ProxyCallRequest
     """
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
     result = ProxyCallRequest(
-        agent_id="agent-test",
         tool_name=tool_name,
         tool_version=tool_version,
         arguments={"expression": "1+1"},
-        correlation_id=correlation_id,
+        context=CallContext(
+            correlation_id=effective_correlation_id,
+            agent_id=_DEFAULT_AGENT_ID,
+        ),
     )
     return result
 
@@ -52,20 +70,17 @@ def _make_call_request(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-) -> MagicMock:
-    """create mock NATS message.
+) -> IncomingMessage:
+    """build a wrapper :class:`IncomingMessage` envelope.
 
     :param data: raw message payload bytes
     :ptype data: bytes
-    :param reply: optional reply subject
+    :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
-    :return: mock NATS message
-    :rtype: MagicMock
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = data
-    msg.reply = reply
-    return msg
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.call")
 
 
 def _make_entry_with_pending_endpoint(
@@ -109,17 +124,17 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error_code"] == "TOOL_NOT_READY"
 
@@ -130,36 +145,39 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint(pod_id="pod-not-ready")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
-        nc.request = AsyncMock()
+        nc.request_raw = AsyncMock()
         await proxy.start(nc)
 
         request = _make_call_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.request.assert_not_called()
+        nc.request_raw.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tool_not_ready_preserves_correlation_id(self) -> None:
         """TOOL_NOT_READY response carries the original correlation_id."""
+        correlation_id = UUID("01948a00-4444-7000-8000-0000000010ad")
+
         catalog = ToolCatalog()
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-preserve-xyz")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        response_data = json.loads(nc.publish.call_args[0][1])
-        assert response_data["correlation_id"] == "corr-preserve-xyz"
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
+        # ProxyCallResponse echoes correlation_id on context, not top-level
+        assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
     async def test_mixed_pending_and_available_routes_to_available(self) -> None:
@@ -178,22 +196,30 @@ class TestCallProxyRefusesPendingEndpoints:
         )
         await catalog.register(entry)
 
-        reply = MagicMock()
-        reply.data = b'{"success": true, "content": "ok", "correlation_id": "corr-mixed"}'
+        correlation_id = UUID("01948a00-5555-7000-8000-00000000fa11")
+        # responder echoes correlation_id inside the CallContext
+        # envelope since context-task-01 removed the top-level flat
+        # field from ProxyCallResponse. the wrapper's request_raw
+        # returns raw bytes, so the fake just hands those bytes back.
+        reply_bytes = (
+            b'{"success": true, "content": "ok", "context": '
+            b'{"correlation_id": "' + str(correlation_id).encode("ascii") + b'"}}'
+        )
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=reply)
+        nc.request_raw = AsyncMock(return_value=reply_bytes)
         await proxy.start(nc)
 
-        request = _make_call_request(correlation_id="corr-mixed")
+        request = _make_call_request(correlation_id=correlation_id)
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await proxy._handle_call(msg)
+        await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        nc.request.assert_called_once()
-        call_args = nc.request.call_args
-        assert call_args[0][0] == "test.tools.internal.pod-ready"
+        nc.request_raw.assert_called_once()
+        call_args = nc.request_raw.call_args
+        # wrapper request_raw is kw-only with typed Subject
+        assert call_args.kwargs["subject"].path == "test.tools.internal.pod-ready"
 
     @pytest.mark.asyncio
     async def test_tool_not_ready_distinct_from_tool_unavailable(self) -> None:
@@ -215,7 +241,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await catalog.register(entry_unavail)
         await catalog.register(entry_pending)
 
-        proxy = CallProxy(catalog, namespace="test")
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -227,9 +253,9 @@ class TestCallProxyRefusesPendingEndpoints:
         msg_pending = _make_nats_msg(
             data=req_pending.model_dump_json().encode("utf-8"),
         )
-        await proxy._handle_call(msg_pending)
+        await proxy.handle_call(msg_pending)
         await asyncio.sleep(0)
-        resp_pending = json.loads(nc.publish.call_args_list[-1][0][1])
+        resp_pending = json.loads(nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json())
         assert resp_pending["error_code"] == "TOOL_NOT_READY"
 
         # unavailable endpoint: TOOL_UNAVAILABLE
@@ -240,7 +266,7 @@ class TestCallProxyRefusesPendingEndpoints:
         msg_unavail = _make_nats_msg(
             data=req_unavail.model_dump_json().encode("utf-8"),
         )
-        await proxy._handle_call(msg_unavail)
+        await proxy.handle_call(msg_unavail)
         await asyncio.sleep(0)
-        resp_unavail = json.loads(nc.publish.call_args_list[-1][0][1])
+        resp_unavail = json.loads(nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json())
         assert resp_unavail["error_code"] == "TOOL_UNAVAILABLE"

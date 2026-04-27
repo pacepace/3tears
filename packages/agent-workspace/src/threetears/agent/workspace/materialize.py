@@ -76,12 +76,18 @@ from uuid import UUID, uuid7
 
 from watchfiles import Change, awatch
 
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.tools.helpers import _next_journal_version
+
+__all__ = [
+    "bind",
+    "materialize",
+    "recover",
+]
 
 if TYPE_CHECKING:
     from threetears.agent.workspace.collections import (
@@ -123,7 +129,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -242,7 +248,7 @@ def _snapshot_disk_sync(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     return out
 
 
-async def _snapshot_disk(disk_root: Path) -> dict[str, tuple[bytes, str]]:
+async def snapshot_disk(disk_root: Path) -> dict[str, tuple[bytes, str]]:
     """async wrapper around :func:`_snapshot_disk_sync` via :func:`asyncio.to_thread`.
 
     :param disk_root: absolute path to sandboxed root directory
@@ -319,7 +325,7 @@ async def _seed_l3_from_disk(
             workspace.id,
         )
         if not existing:
-            disk = await _snapshot_disk(disk_root)
+            disk = await snapshot_disk(disk_root)
             if disk:
                 n_touched = await _seed_l3_import_all(
                     workspace=workspace,
@@ -337,7 +343,7 @@ async def _seed_l3_from_disk(
                     },
                 )
     else:
-        disk = await _snapshot_disk(disk_root)
+        disk = await snapshot_disk(disk_root)
         existing_rows = await workspace_file_collection.find_by_workspace(
             workspace.id,
         )
@@ -396,7 +402,7 @@ async def _seed_l3_import_all(
     action_create: Literal["create"] = "create"
     max_version = 0
     async with db_pool.acquire() as conn:
-        async with conn.transaction():
+        async with conn.transaction(namespace=workspace.namespace_name):
             for rel, (content, sha) in disk.items():
                 new_version = await _next_journal_version(
                     conn,
@@ -434,6 +440,7 @@ async def _seed_l3_import_all(
                 max_version,
                 now,
                 workspace.id,
+                workspace.agent_id,
             )
     return len(disk)
 
@@ -467,7 +474,7 @@ async def _seed_l3_disk_wins(
     :param workspace: target workspace entity
     :ptype workspace: Any
     :param disk: mapping of ``relative_path`` to ``(content, sha256)``
-        produced by :func:`_snapshot_disk`
+        produced by :func:`snapshot_disk`
     :ptype disk: dict[str, tuple[bytes, str]]
     :param existing_by_path: existing head-state indexed by relative
         path, mapping to ``(sha256, version)``
@@ -502,7 +509,7 @@ async def _seed_l3_disk_wins(
         action_delete: Literal["delete"] = "delete"
         max_version = 0
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     new_version = await _next_journal_version(
                         conn,
@@ -599,6 +606,7 @@ async def _seed_l3_disk_wins(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
         n_touched = len(creates) + len(updates) + len(deletes)
     return n_touched
@@ -752,7 +760,7 @@ async def _handle_watch_batch(
     if coalesced:
         now = datetime.now(UTC)
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 max_version = 0
                 for rel, change in coalesced.items():
                     if change is Change.deleted:
@@ -905,6 +913,7 @@ async def _handle_watch_batch(
                         max_version,
                         now,
                         workspace.id,
+                        workspace.agent_id,
                     )
     return changed
 
@@ -1058,7 +1067,7 @@ async def _capture_back(
     del workspace_file_version_collection
     del workspace_collection
 
-    disk = await _snapshot_disk(disk_root)
+    disk = await snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
     updates: list[tuple[str, bytes, str]] = []
@@ -1084,7 +1093,7 @@ async def _capture_back(
         action_update: Literal["update"] = "update"
         action_delete: Literal["delete"] = "delete"
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     # derive version from journal so re-creating a path
                     # that was previously bind-deleted does not collide
@@ -1194,36 +1203,71 @@ async def _capture_back(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
-        # defense-in-depth: publish one audit event per changed file.
+        # defense-in-depth: publish one additive audit event per
+        # changed file on top of the baseline ``tool.call`` emitted
+        # by ToolServer when the caller is inside a tool dispatch.
         # outside the transaction; audit is best-effort and must not
         # undo committed capture-back on transient NATS failure.
+        #
+        # WS-ACL-10: the envelope carries the identity tuple. the
+        # scope is the authoritative source for actor_user_id /
+        # calling_agent_id / customer_id; bind() is called inside a
+        # dispatch so scope is set. owner_agent_id + resource
+        # namespace id come from the workspace entity. when scope is
+        # unavailable (e.g. unit tests invoking _capture_back
+        # directly), the helper RuntimeError propagates into the
+        # outer swallow.
         try:
-            if namespace is not None and nats_client is not None:
+            if namespace is not None and nats_client is not None and changed:
+                from threetears.agent.tools.call_scope import (
+                    current_scope as _current_scope,
+                )
+
+                _scope = _current_scope()
+                if _scope is None:
+                    raise RuntimeError(
+                        "workspace.materialize audit: no ToolCallScope installed; bind must run under enter_call_scope."
+                    )
+                _ctx = _scope.context
+                if _ctx.user_id is None or _ctx.agent_id is None or _ctx.customer_id is None:
+                    raise RuntimeError(
+                        "workspace.materialize audit: scope missing identity dimension; cannot publish envelope."
+                    )
                 for rel in changed:
-                    await audit.publish_workspace_event(
-                        nats_client=nats_client,
-                        namespace=namespace,
-                        event_type="workspace.bind",
-                        actor_id=actor_id,
-                        agent_id=actor_id,
-                        resource_type="workspace_file",
-                        resource_id=f"{workspace.id}/{rel}",
-                        action="bind",
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
+                        event_type="workspace.materialize",
+                        actor_user_id=_ctx.user_id,
+                        calling_agent_id=_ctx.agent_id,
+                        owner_agent_id=workspace.owner_agent_id,
+                        customer_id=_ctx.customer_id,
+                        resource_namespace_id=workspace.id,
+                        resource_namespace_type="workspace_file",
+                        action="materialize",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": f"{workspace.id}/{rel}",
                             "root_name": root_name,
                             "change_kind": change_kinds.get(rel, "update"),
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=nats_client,
+                        namespace=namespace,
                     )
         # NOSILENT: audit failure must never taint the successful
         # capture-back commit above. log at exception-level so SRE
         # still sees programmer-error regressions (AttributeError,
-        # NameError) — only NATS-publish failure is already swallowed
-        # inside publish_workspace_event at WARN.
+        # NameError) — only NATS-publish failure is already
+        # swallowed inside publish_audit at WARN.
         except Exception as audit_exc:
             log.exception(
-                "workspace.bind audit publish swallow caught: %s",
+                "workspace.materialize audit publish swallow caught: %s",
                 audit_exc,
             )
     return changed
@@ -1232,6 +1276,7 @@ async def _capture_back(
 @asynccontextmanager
 async def bind(
     *,
+    agent_id: UUID,
     workspace_id: UUID,
     sandbox: WorkspaceSandbox,
     lease: WorkspaceFileLease,
@@ -1308,7 +1353,7 @@ async def bind(
     :raises KeyError: if ``root_name`` is not configured on sandbox
     :raises SandboxDenied: if ``workspace.name`` escapes the named root
     """
-    workspace = await workspace_collection.find_by_id(workspace_id)
+    workspace = await workspace_collection.find_by_id(agent_id, workspace_id)
     if workspace is None:
         raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
@@ -1442,6 +1487,7 @@ async def bind(
 
 async def recover(
     *,
+    agent_id: UUID,
     workspace_id: UUID,
     sandbox: WorkspaceSandbox,
     workspace_collection: WorkspaceCollection,
@@ -1493,7 +1539,7 @@ async def recover(
     :raises KeyError: if ``root_name`` is not configured on sandbox
     :raises SandboxDenied: if ``workspace.name`` escapes the named root
     """
-    workspace = await workspace_collection.find_by_id(workspace_id)
+    workspace = await workspace_collection.find_by_id(agent_id, workspace_id)
     if workspace is None:
         raise ValueError(f"workspace {workspace_id} not found or is soft-deleted")
     disk_root = sandbox.resolve_fs_path(workspace.name, root_name)
@@ -1501,7 +1547,7 @@ async def recover(
     head_rows = await workspace_file_collection.find_by_workspace(workspace_id)
     head_by_path: dict[str, tuple[str, int]] = {row.relative_path: (row.sha256, row.version) for row in head_rows}
 
-    disk = await _snapshot_disk(disk_root)
+    disk = await snapshot_disk(disk_root)
 
     creates: list[tuple[str, bytes, str]] = []
     updates: list[tuple[str, bytes, str]] = []
@@ -1520,7 +1566,7 @@ async def recover(
         action_create: Literal["create"] = "create"
         action_update: Literal["update"] = "update"
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
                     # derive version from journal, not the head cache,
                     # so re-created paths never collide with deleted
@@ -1596,6 +1642,7 @@ async def recover(
                     max_version,
                     now,
                     workspace.id,
+                    workspace.agent_id,
                 )
     log.info(
         "workspace.recover.done",

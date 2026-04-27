@@ -21,15 +21,19 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.core.security import SandboxDecision, SandboxDenied
+from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -41,7 +45,13 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _resolve_workspace,
+    authorize_workspace,
+    authorize_workspace_file,
 )
+
+__all__ = [
+    "WorkspaceHistoryTool",
+]
 
 log = get_logger(__name__)
 
@@ -92,6 +102,8 @@ class WorkspaceHistoryTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        acl_cache: AclCache,
+        db_pool: Any = None,
     ) -> None:
         """
         binds tool to collections, sandbox, context, and owning agent.
@@ -118,6 +130,8 @@ class WorkspaceHistoryTool(TearsTool):
         self._sandbox = sandbox
         self._context_provider = context_provider
         self._agent_id = agent_id
+        self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -148,17 +162,48 @@ class WorkspaceHistoryTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
+            await authorize_workspace(
+                workspace,
+                "read",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
             rows: list[Any]
             if relative_path is not None and relative_path != "":
-                self._sandbox.enforce("read", relative_path)
+                self._sandbox.validate_syntax(relative_path)
+                await authorize_workspace_file(
+                    workspace,
+                    relative_path,
+                    "read",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
                 rows = await self._versions.find_by_workspace_and_path(workspace.id, relative_path, limit)
             else:
                 fetched = await self._versions.find_by_workspace(workspace.id, limit)
-                rows = [
-                    row
-                    for row in fetched
-                    if self._sandbox.check_relative_key(row.relative_path, "read") is SandboxDecision.ALLOW
-                ]
+                rows = []
+                for row in fetched:
+                    # filter rows whose relative_path either fails syntactic
+                    # validation or lacks a read-file glob matching the caller's
+                    # rbac grants. namespace-task-01 phase 7 replaces the
+                    # legacy ``sandbox.check_relative_key(...) is ALLOW``
+                    # filter with the unified rbac gate; denied rows are
+                    # silently dropped (matches the legacy filter's
+                    # fail-quietly semantics, which this surface has always
+                    # preserved because a partial result is better than
+                    # failing the whole history call on one weird row).
+                    try:
+                        self._sandbox.validate_syntax(row.relative_path)
+                        await authorize_workspace_file(
+                            workspace,
+                            row.relative_path,
+                            "read",
+                            db_pool=None,
+                            acl_cache=self._acl_cache,
+                        )
+                    except SandboxDenied, WorkspaceAccessDenied:
+                        continue
+                    rows.append(row)
             entries = [self._serialize_row(row) for row in rows]
             result = ToolResult(
                 success=True,
@@ -166,6 +211,8 @@ class WorkspaceHistoryTool(TearsTool):
                 metadata={"count": len(entries)},
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -279,6 +326,8 @@ def _build(**kwargs: Any) -> WorkspaceHistoryTool:
         sandbox=kwargs["sandbox"],
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
+        db_pool=kwargs.get("db_pool"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

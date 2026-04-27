@@ -7,6 +7,13 @@ from typing import Any, cast
 from threetears.models.messages import ChatMessage, MessageRole, ToolCallRequest, ToolDefinition
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "ai_chunk_to_chat_chunk",
+    "ai_message_to_result",
+    "messages_to_lc",
+    "tool_def_to_lc",
+]
+
 
 def messages_to_lc(messages: list[ChatMessage]) -> list[Any]:
     """converts threetears ChatMessage list to LangChain message list.

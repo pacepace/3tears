@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -36,6 +37,9 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -48,7 +52,12 @@ from threetears.agent.workspace.tools.helpers import (
     WorkspaceNotFound,
     _next_journal_version,
     _resolve_workspace,
+    authorize_workspace,
 )
+
+__all__ = [
+    "WorkspaceRefreshTool",
+]
 
 log = get_logger(__name__)
 
@@ -88,7 +97,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3
+WHERE id = $3 AND agent_id = $4
 """
 
 
@@ -112,6 +121,7 @@ class WorkspaceRefreshTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
     ) -> None:
         """binds tool to collections, sandbox, context, and pool.
 
@@ -139,6 +149,7 @@ class WorkspaceRefreshTool(TearsTool):
         self._context_provider = context_provider
         self._agent_id = agent_id
         self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """walk the bind root and pull adds / diffs into L3.
@@ -161,6 +172,12 @@ class WorkspaceRefreshTool(TearsTool):
                 self._context_provider(),
                 self._workspaces,
                 self._agent_id,
+            )
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
             )
             try:
                 disk_root = self._sandbox.resolve_fs_path(
@@ -193,6 +210,8 @@ class WorkspaceRefreshTool(TearsTool):
                     metadata={"imported_count": n_imported},
                 )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("workspace_refresh failed: %s", exc)
@@ -245,8 +264,11 @@ class WorkspaceRefreshTool(TearsTool):
             action_create: Literal["create"] = "create"
             action_update: Literal["update"] = "update"
             max_version = 0
+            # WS-ACL-06: bind the tx to the workspace's namespace so
+            # refresh writes land in the OWNER agent's schema on
+            # grantee refreshes of shared workspaces.
             async with self._db_pool.acquire() as conn:
-                async with conn.transaction():
+                async with conn.transaction(namespace=workspace.namespace_name):
                     for rel, content, sha in creates:
                         new_version = await _next_journal_version(
                             conn,
@@ -290,6 +312,7 @@ class WorkspaceRefreshTool(TearsTool):
                         max_version,
                         now,
                         workspace.id,
+                        workspace.agent_id,
                     )
             n_imported = len(creates) + len(updates)
         return n_imported
@@ -450,6 +473,7 @@ def _build(**kwargs: Any) -> WorkspaceRefreshTool:
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
         db_pool=kwargs["db_pool"],
+        acl_cache=kwargs["acl_cache"],
     )
 
 

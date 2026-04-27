@@ -22,6 +22,13 @@ if TYPE_CHECKING:
     from opentelemetry.sdk._logs import LoggerProvider
     from opentelemetry.sdk.trace import TracerProvider
 
+__all__ = [
+    "TelemetryConfig",
+    "init_telemetry",
+    "reset_telemetry",
+    "shutdown_telemetry",
+]
+
 logger = get_logger(__name__)
 
 

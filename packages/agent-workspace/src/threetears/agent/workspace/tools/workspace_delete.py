@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -23,7 +25,10 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace import pin
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -31,6 +36,14 @@ from threetears.agent.workspace.collections import (
 )
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
+from threetears.agent.workspace.tools.helpers import (
+    authorize_workspace,
+    workspace_audit_identity,
+)
+
+__all__ = [
+    "WorkspaceDeleteTool",
+]
 
 log = get_logger(__name__)
 
@@ -48,7 +61,9 @@ _INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
-_SOFT_DELETE_WORKSPACE_SQL = "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2"
+_SOFT_DELETE_WORKSPACE_SQL = (
+    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2 AND agent_id = $3"
+)
 
 
 class WorkspaceDeleteTool(TearsTool):
@@ -68,6 +83,7 @@ class WorkspaceDeleteTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
     ) -> None:
@@ -103,6 +119,7 @@ class WorkspaceDeleteTool(TearsTool):
         self._db_pool = db_pool
         self._nats_client = nats_client
         self._namespace = namespace
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -131,30 +148,61 @@ class WorkspaceDeleteTool(TearsTool):
                     error=f"workspace {name!r} not found",
                 )
             else:
+                await authorize_workspace(
+                    workspace,
+                    "write",
+                    db_pool=self._db_pool,
+                    acl_cache=self._acl_cache,
+                )
                 now = datetime.now(UTC)
+                # WS-ACL-06: bind the tx to the workspace's namespace
+                # so grantee-agent deletes of shared workspaces would
+                # land in the owner's schema. today owner-only callers
+                # are the production path (delete is owner-capability),
+                # but routing through the namespace keeps the code
+                # uniform and lets cross-agent tooling evolve without
+                # a branch.
                 async with self._db_pool.acquire() as conn:
-                    async with conn.transaction():
-                        await conn.execute(_SOFT_DELETE_WORKSPACE_SQL, now, workspace.id)
+                    async with conn.transaction(namespace=workspace.namespace_name):
+                        await conn.execute(
+                            _SOFT_DELETE_WORKSPACE_SQL,
+                            now,
+                            workspace.id,
+                            workspace.agent_id,
+                        )
 
                 ctx = self._context_provider()
                 snapshot = await pin.get_pin(ctx)
                 if snapshot is not None and snapshot.workspace_id == workspace.id:
                     await pin.clear_pin(ctx)
 
-                # defense-in-depth: isolate audit from success path
+                # defense-in-depth: additive per-tool event on top of
+                # the baseline ``tool.call`` emitted by ToolServer.
                 try:
                     if self._namespace is not None:
-                        await audit.publish_workspace_event(
+                        identity = workspace_audit_identity(workspace)
+                        event = AuditEvent(
+                            id=uuid7(),
+                            timestamp=datetime.now(UTC),
+                            event_type="workspace.delete",
+                            actor_user_id=identity.actor_user_id,
+                            calling_agent_id=identity.calling_agent_id,
+                            owner_agent_id=identity.owner_agent_id,
+                            customer_id=identity.customer_id,
+                            resource_namespace_id=identity.namespace_id,
+                            resource_namespace_type="workspace",
+                            action="delete",
+                            outcome="success",
+                            correlation_id=correlation_id,
+                            details={
+                                "workspace_resource_id": str(workspace.id),
+                                "name": name,
+                            },
+                        )
+                        await publish_audit(
+                            event,
                             nats_client=self._nats_client,
                             namespace=self._namespace,
-                            event_type="workspace.delete",
-                            actor_id=self._agent_id,
-                            agent_id=self._agent_id,
-                            resource_type="workspace",
-                            resource_id=str(workspace.id),
-                            action="delete",
-                            details={"name": name},
-                            correlation_id=correlation_id,
                         )
                 # NOSILENT: audit failure never taints delete
                 except Exception as audit_exc:
@@ -167,6 +215,8 @@ class WorkspaceDeleteTool(TearsTool):
                     success=True,
                     content=f"deleted workspace {name!r}",
                 )
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("workspace_delete failed: %s", exc)
             result = ToolResult(
@@ -234,6 +284,7 @@ def _build(**kwargs: Any) -> WorkspaceDeleteTool:
         db_pool=kwargs["db_pool"],
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

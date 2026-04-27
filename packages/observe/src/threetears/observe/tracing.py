@@ -13,6 +13,8 @@ import inspect
 import time
 from typing import Any, Callable, TypeVar, overload
 
+__all__ = ["traced"]
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 _SENSITIVE_PARAMS = frozenset(

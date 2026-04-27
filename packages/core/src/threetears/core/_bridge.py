@@ -13,6 +13,14 @@ import asyncio
 import threading
 from typing import Any, Coroutine, TypeVar
 
+__all__ = [
+    "T",
+    "drain",
+    "fire_and_forget",
+    "shutdown",
+    "sync_await",
+]
+
 T = TypeVar("T")
 
 _lock = threading.Lock()

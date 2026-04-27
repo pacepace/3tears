@@ -4,8 +4,8 @@ the design problem: workspace tools and any other conversation-aware
 tool need a :class:`ToolContextManager` scoped to the caller's
 conversation. that manager carries the conversation id, the user id,
 and the pointer into the per-agent ``context_items`` table, so it must
-be constructed from per-call metadata (conversation_id, user_id)
-arriving in the NATS envelope of each tool invocation.
+be constructed from per-call metadata arriving in the NATS envelope of
+each tool invocation.
 
 the tool instance itself is long-lived inside the pod, so the context
 cannot be baked into the tool at registration time. this module
@@ -13,10 +13,11 @@ provides a :class:`contextvars.ContextVar` the tool server sets before
 each dispatch and clears after, plus a zero-arg provider callable tools
 wire as their ``context_provider``.
 
-the same pattern extends cleanly to any other per-call concern
-(correlation id, invoking user, propagated trace span) by adding fields
-to :class:`ToolCallScope`; callers that only need the
-:class:`ToolContextManager` keep using :func:`get_current_context`.
+per-call identity dimensions (conversation_id, user_id, customer_id,
+correlation_id, agent_id, trace) ride as a single
+:class:`~threetears.agent.tools.context_envelope.CallContext` value on
+:attr:`ToolCallScope.context`. new dimensions land by adding a field
+to :class:`CallContext` once; scope consumers read through ``scope.context``.
 
 usage from the tool server::
 
@@ -24,14 +25,13 @@ usage from the tool server::
         ToolCallScope,
         enter_call_scope,
     )
+    from threetears.agent.tools.context_envelope import CallContext
 
-    async def _handle_call(request):
-        ctx = await factory(request.conversation_id, request.user_id)
+    async def handle_call(request):
+        ctx = await factory(request.context.conversation_id, request.context.user_id)
         scope = ToolCallScope(
+            context=request.context or CallContext(),
             context_manager=ctx,
-            conversation_id=request.conversation_id,
-            user_id=request.user_id,
-            correlation_id=request.correlation_id,
         )
         async with enter_call_scope(scope):
             await tool.run(**request.arguments)
@@ -47,9 +47,18 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator
-from uuid import UUID
+
+from threetears.agent.tools.context_envelope import CallContext
+
+__all__ = [
+    "ToolCallScope",
+    "current_scope",
+    "enter_call_scope",
+    "get_current_context",
+    "tool_context_provider",
+]
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
@@ -62,26 +71,21 @@ class ToolCallScope:
     the scope is constructed by the tool server from the incoming
     :class:`CallRequest` envelope, pushed onto the current asyncio task
     for the duration of :meth:`TearsTool.run`, and popped on exit. tools
-    observe the scope through :func:`get_current_context` or any of the
-    narrower accessors below.
+    observe the scope through :func:`get_current_context` or by reading
+    ``scope.context.<field>`` directly for identity dimensions.
 
-    :param context_manager: conversation-scoped context manager; ``None``
-        when the server has no factory wired or when the envelope did
-        not carry conversation/user identifiers
+    :param context: unified identity + trace envelope resolved from the
+        wire; defaults to an empty :class:`CallContext` when the server
+        was called without identity fields (stateless tools)
+    :ptype context: CallContext
+    :param context_manager: conversation-scoped context manager;
+        ``None`` when the server has no factory wired or when the
+        envelope did not carry conversation/user identifiers
     :ptype context_manager: ToolContextManager | None
-    :param conversation_id: conversation identifier from the envelope
-    :ptype conversation_id: UUID | None
-    :param user_id: invoking user identifier from the envelope
-    :ptype user_id: UUID | None
-    :param correlation_id: correlation identifier threaded through logs
-        and downstream NATS calls
-    :ptype correlation_id: UUID | None
     """
 
-    context_manager: ToolContextManager | None = None
-    conversation_id: UUID | None = None
-    user_id: UUID | None = None
-    correlation_id: UUID | None = None
+    context: CallContext = field(default_factory=CallContext)
+    context_manager: "ToolContextManager | None" = None
 
 
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(

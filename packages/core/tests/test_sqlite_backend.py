@@ -59,8 +59,14 @@ class TestThreadLocalConnections:
         t2.join()
 
         assert len(connections) == 2
-        # The _PooledConnection proxies wrap different underlying connections
-        assert connections[0]._conn is not connections[1]._conn
+        # distinct pooled proxies, each wrapping a different thread-local
+        # sqlite3.Connection; the proxy's ``__getattr__`` delegates
+        # ``execute`` to the underlying connection's builtin bound method,
+        # whose ``__self__`` is the underlying Connection instance.
+        # comparing ``execute.__self__`` across proxies proves the
+        # thread-local distinctness without reaching into the proxy's
+        # private wrapped-connection slot.
+        assert connections[0].execute.__self__ is not connections[1].execute.__self__
 
 
 class TestGetConnectionBeforeInitialize:

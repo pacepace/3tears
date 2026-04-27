@@ -5,7 +5,7 @@ collection's structure. Since 3tears is a library (no Alembic), this
 tests:
 1. _FIELD_TYPES keys must include the primary key
 2. Primary key consistency between entity and collection
-3. _FIELD_TYPES keys in MemoriesCollection match its _save_to_postgres SQL
+3. _FIELD_TYPES keys in MemoriesCollection match its save_to_postgres SQL
 
 Uses AST analysis for SQL inspection and runtime imports only for
 collection metadata that is safe to import.
@@ -37,13 +37,13 @@ def _try_import_field_types(module_path: str) -> dict[str, Any] | None:
 
 
 def _try_get_collection_pk(module_path: str) -> str | None:
-    """Try to find _primary_key_column from a collection class."""
+    """Try to find primary_key_column from a collection class."""
     try:
         mod = importlib.import_module(module_path)
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
-            if isinstance(obj, type) and hasattr(obj, "_primary_key_column") and attr_name not in ("BaseCollection",):
-                pk = getattr(obj, "_primary_key_column", None)
+            if isinstance(obj, type) and hasattr(obj, "primary_key_column") and attr_name not in ("BaseCollection",):
+                pk = getattr(obj, "primary_key_column", None)
                 if pk:
                     return pk
     except ImportError:
@@ -52,13 +52,13 @@ def _try_get_collection_pk(module_path: str) -> str | None:
 
 
 def _try_get_entity_pk(module_path: str) -> str | None:
-    """Try to find _primary_key_field from an entity class in the same package."""
+    """Try to find primary_key_field from an entity class in the same package."""
     try:
         mod = importlib.import_module(module_path)
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
-            if isinstance(obj, type) and hasattr(obj, "_primary_key_field") and attr_name not in ("BaseEntity",):
-                pk = getattr(obj, "_primary_key_field", None)
+            if isinstance(obj, type) and hasattr(obj, "primary_key_field") and attr_name not in ("BaseEntity",):
+                pk = getattr(obj, "primary_key_field", None)
                 if pk:
                     return pk
     except ImportError:
@@ -101,16 +101,16 @@ class TestFieldTypesConsistency:
         assert field_types is not None
 
         collection_pk = _try_get_collection_pk(col_module)
-        assert collection_pk is not None, f"{label}: could not find _primary_key_column in {col_module}"
+        assert collection_pk is not None, f"{label}: could not find primary_key_column in {col_module}"
 
         assert collection_pk in field_types, (
-            f"{label}: _primary_key_column {collection_pk!r} is not in _FIELD_TYPES. "
+            f"{label}: primary_key_column {collection_pk!r} is not in _FIELD_TYPES. "
             f"Available keys: {sorted(field_types.keys())}"
         )
 
 
 class TestPrimaryKeyConsistency:
-    """Entity _primary_key_field must match collection _primary_key_column."""
+    """Entity primary_key_field must match collection primary_key_column."""
 
     @pytest.mark.parametrize(
         "label,col_module,ent_module",
@@ -131,12 +131,12 @@ class TestPrimaryKeyConsistency:
             pytest.skip(f"Could not resolve PKs for {label}")
 
         assert collection_pk == entity_pk, (
-            f"{label}: collection _primary_key_column={collection_pk!r} but entity _primary_key_field={entity_pk!r}"
+            f"{label}: collection primary_key_column={collection_pk!r} but entity primary_key_field={entity_pk!r}"
         )
 
 
 class TestSaveToPostgresConsistency:
-    """SQL in _save_to_postgres must reference columns consistent with _FIELD_TYPES."""
+    """SQL in save_to_postgres must reference columns consistent with _FIELD_TYPES."""
 
     @pytest.mark.parametrize(
         "label,col_module,ent_module",
@@ -149,7 +149,7 @@ class TestSaveToPostgresConsistency:
         col_module: str,
         ent_module: str,
     ) -> None:
-        """INSERT column names in _save_to_postgres must all be in _FIELD_TYPES."""
+        """INSERT column names in save_to_postgres must all be in _FIELD_TYPES."""
         field_types = _try_import_field_types(col_module)
         assert field_types is not None
 
@@ -159,7 +159,7 @@ class TestSaveToPostgresConsistency:
 
         sql = self._extract_save_to_postgres_sql(source_file)
         if not sql:
-            pytest.skip(f"No _save_to_postgres found in {col_module}")
+            pytest.skip(f"No save_to_postgres found in {col_module}")
 
         insert_cols = self._parse_insert_columns(sql)
         if not insert_cols:
@@ -168,20 +168,20 @@ class TestSaveToPostgresConsistency:
         field_type_keys = set(field_types.keys())
         missing = insert_cols - field_type_keys
         assert not missing, (
-            f"{label}: _save_to_postgres INSERT references "
+            f"{label}: save_to_postgres INSERT references "
             f"{len(missing)} column(s) not in _FIELD_TYPES: {sorted(missing)}"
         )
 
     @staticmethod
     def _extract_save_to_postgres_sql(collection_file: Path) -> str:
-        """Extract SQL strings from _save_to_postgres via AST."""
+        """Extract SQL strings from save_to_postgres via AST."""
         tree = ast.parse(collection_file.read_text(encoding="utf-8"))
         sql_parts: list[str] = []
 
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if node.name != "_save_to_postgres":
+            if node.name != "save_to_postgres":
                 continue
             for child in ast.walk(node):
                 if isinstance(child, ast.Constant) and isinstance(child.value, str):

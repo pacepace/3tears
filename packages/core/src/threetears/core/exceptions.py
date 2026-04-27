@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = [
+    "ConcurrentModificationError",
+    "DataLayerUnavailableError",
+]
+
 
 class ConcurrentModificationError(Exception):
     """Raised when optimistic locking detects a concurrent modification."""

@@ -6,6 +6,10 @@ from typing import Any
 
 from threetears.models.results import EmbeddingResult
 
+__all__ = [
+    "VoyageAIEmbeddingProvider",
+]
+
 # default embedding dimensions for voyage-3 / voyage-3-lite
 _DEFAULT_EMBEDDING_DIMENSIONS = 1024
 
@@ -35,11 +39,11 @@ class VoyageAIEmbeddingProvider:
         base_url: str | None = None,
         embedding_dimensions: int | None = None,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = base_url
+        self.base_url = base_url
         self._embedding_dimensions = embedding_dimensions
-        self._model: Any = None
+        self.model: Any = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches VoyageAIEmbeddings instance.
@@ -51,8 +55,8 @@ class VoyageAIEmbeddingProvider:
         :return: configured VoyageAIEmbeddings instance
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
@@ -61,16 +65,16 @@ class VoyageAIEmbeddingProvider:
         from langchain_voyageai import VoyageAIEmbeddings
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
         if self._embedding_dimensions is not None:
             kwargs["output_dimension"] = self._embedding_dimensions
 
-        self._model = VoyageAIEmbeddings(**kwargs)
-        return self._model
+        self.model = VoyageAIEmbeddings(**kwargs)
+        return self.model
 
     @property
     def dimensions(self) -> int:
@@ -118,7 +122,7 @@ class VoyageAIEmbeddingProvider:
                 EmbeddingResult(
                     vector=embedding,
                     dimensions=len(embedding),
-                    model=self._model_name,
+                    model=self.model_name,
                     token_count=len(text) // 4,
                 )
             )

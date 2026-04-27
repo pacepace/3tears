@@ -8,8 +8,8 @@ from uuid import UUID
 import pytest
 from uuid import uuid7
 
+from threetears.agent.memory.collections import _build_user_scope_clause
 from threetears.agent.memory.entities import MemoryEntity
-from threetears.agent.memory.retrieval import _build_scope_clause
 from threetears.core.cache import MISSING
 
 
@@ -38,10 +38,10 @@ def mock_collection():
     def get_row(entity_id: object) -> dict[str, object] | None:
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
 
     return coll, cache
 
@@ -106,8 +106,11 @@ class TestMemoryEntityAgentId:
         entity.agent_id = new_agent
 
         assert entity.agent_id == new_agent
-        coll._set_field_sync.assert_called_with(
-            data["memory_id"],
+        # collections-task-04: entity._id is now the composite tuple
+        # ``(agent_id, memory_id)`` so set_field_sync receives that
+        # tuple rather than the bare memory_id.
+        coll.set_field_sync.assert_called_with(
+            (data["agent_id"], data["memory_id"]),
             "agent_id",
             new_agent,
         )
@@ -163,8 +166,10 @@ class TestMemoryEntityCustomerId:
         entity.customer_id = new_customer
 
         assert entity.customer_id == new_customer
-        coll._set_field_sync.assert_called_with(
-            data["memory_id"],
+        # collections-task-04: entity._id is now the composite tuple
+        # ``(agent_id, memory_id)``.
+        coll.set_field_sync.assert_called_with(
+            (data["agent_id"], data["memory_id"]),
             "customer_id",
             new_customer,
         )
@@ -221,37 +226,20 @@ class TestMemoryEntityScopingCoexistence:
 
 
 class TestBuildScopeClause:
-    """Verify _build_scope_clause generates correct SQL fragments."""
+    """Verify _build_user_scope_clause generates correct SQL fragments.
 
-    def test_user_id_only(self) -> None:
-        user_id = uuid7()
+    collections-task-04 made ``agent_id`` (partition column) and
+    ``customer_id`` (sub-scope) mandatory; the helper no longer admits
+    optional / agent-only / customer-only call shapes.
+    """
 
-        conditions, params, last_idx = _build_scope_clause(user_id)
-
-        assert conditions == "user_id = $2"
-        assert params == [user_id]
-        assert last_idx == 2
-
-    def test_agent_and_user(self) -> None:
-        user_id = uuid7()
-        agent_id = uuid7()
-
-        conditions, params, last_idx = _build_scope_clause(
-            user_id,
-            agent_id=agent_id,
-        )
-
-        assert "agent_id = $2" in conditions
-        assert "user_id = $3" in conditions
-        assert params == [agent_id, user_id]
-        assert last_idx == 3
-
-    def test_all_three_scopes(self) -> None:
+    def test_required_triple(self) -> None:
+        """all three IDs always emit predicates in (agent, customer, user) order."""
         user_id = uuid7()
         agent_id = uuid7()
         customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
             customer_id=customer_id,
@@ -264,45 +252,60 @@ class TestBuildScopeClause:
         assert last_idx == 4
 
     def test_with_table_prefix(self) -> None:
+        """table prefix applies to every scope predicate uniformly."""
         user_id = uuid7()
         agent_id = uuid7()
+        customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
+            customer_id=customer_id,
             table_prefix="mc",
         )
 
         assert "mc.agent_id = $2" in conditions
-        assert "mc.user_id = $3" in conditions
-        assert params == [agent_id, user_id]
-        assert last_idx == 3
+        assert "mc.customer_id = $3" in conditions
+        assert "mc.user_id = $4" in conditions
+        assert params == [agent_id, customer_id, user_id]
+        assert last_idx == 4
 
     def test_custom_start_param(self) -> None:
+        """``start_param`` shifts every parameter index in declared order."""
         user_id = uuid7()
         agent_id = uuid7()
+        customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
+        conditions, params, last_idx = _build_user_scope_clause(
             user_id,
             agent_id=agent_id,
+            customer_id=customer_id,
             start_param=5,
         )
 
         assert "agent_id = $5" in conditions
-        assert "user_id = $6" in conditions
-        assert last_idx == 6
+        assert "customer_id = $6" in conditions
+        assert "user_id = $7" in conditions
+        assert last_idx == 7
 
-    def test_customer_without_agent(self) -> None:
+    def test_agent_id_required(self) -> None:
+        """omitting ``agent_id`` raises (no longer optional)."""
         user_id = uuid7()
         customer_id = uuid7()
 
-        conditions, params, last_idx = _build_scope_clause(
-            user_id,
-            customer_id=customer_id,
-        )
+        with pytest.raises(TypeError):
+            _build_user_scope_clause(
+                user_id,
+                customer_id=customer_id,  # type: ignore[call-arg]
+            )
 
-        assert "customer_id = $2" in conditions
-        assert "user_id = $3" in conditions
-        assert "agent_id" not in conditions
-        assert params == [customer_id, user_id]
-        assert last_idx == 3
+    def test_customer_id_required(self) -> None:
+        """omitting ``customer_id`` raises (no longer optional)."""
+        user_id = uuid7()
+        agent_id = uuid7()
+
+        with pytest.raises(TypeError):
+            _build_user_scope_clause(
+                user_id,
+                agent_id=agent_id,  # type: ignore[call-arg]
+            )

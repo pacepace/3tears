@@ -70,7 +70,7 @@ class TestVoyageAIEmbeddingProvider:
     def test_default_model_name(self) -> None:
         """default model_name is voyage-3-lite."""
         provider = VoyageAIEmbeddingProvider("pa-test-key")
-        assert provider._model_name == "voyage-3-lite"
+        assert provider.model_name == "voyage-3-lite"
 
     def test_custom_model_name(self) -> None:
         """custom model_name is stored correctly."""
@@ -78,14 +78,14 @@ class TestVoyageAIEmbeddingProvider:
             "pa-test-key",
             model_name="voyage-3",
         )
-        assert provider._model_name == "voyage-3"
+        assert provider.model_name == "voyage-3"
 
     async def test_embed_returns_single_result(self) -> None:
         """embed returns single EmbeddingResult from aembed_documents."""
         provider = VoyageAIEmbeddingProvider("pa-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         result = await provider.embed("test text")
 
@@ -99,7 +99,7 @@ class TestVoyageAIEmbeddingProvider:
         provider = VoyageAIEmbeddingProvider("pa-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         results = await provider.embed_batch(["text one", "text two"])
 
@@ -114,7 +114,7 @@ class TestVoyageAIEmbeddingProvider:
         provider = VoyageAIEmbeddingProvider("pa-test-key")
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         # 20 characters -> 20 // 4 = 5 estimated tokens
         results = await provider.embed_batch(["twelve chars plus 8x"])
@@ -129,7 +129,7 @@ class TestVoyageAIEmbeddingProvider:
         )
         mock_model = MagicMock()
         mock_model.aembed_documents = AsyncMock(return_value=[[0.1, 0.2, 0.3, 0.4, 0.5]])
-        provider._model = mock_model
+        provider.model = mock_model
 
         results = await provider.embed_batch(["some text"])
 
@@ -142,4 +142,4 @@ class TestVoyageAIEmbeddingProvider:
             "pa-test-key",
             base_url="https://custom.voyageai.com/v1",
         )
-        assert provider._base_url == "https://custom.voyageai.com/v1"
+        assert provider.base_url == "https://custom.voyageai.com/v1"

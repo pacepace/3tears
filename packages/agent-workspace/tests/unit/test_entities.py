@@ -48,10 +48,10 @@ def mock_collection() -> tuple[MagicMock, dict[str, dict[str, Any]]]:
         """fetch full row dict from cache."""
         return cache.get(str(entity_id))
 
-    coll._write_to_cache_sync = MagicMock(side_effect=write_to_cache)
-    coll._get_field_sync = MagicMock(side_effect=get_field)
-    coll._set_field_sync = MagicMock(side_effect=set_field)
-    coll._get_row_sync = MagicMock(side_effect=get_row)
+    coll.write_to_cache_sync = MagicMock(side_effect=write_to_cache)
+    coll.get_field_sync = MagicMock(side_effect=get_field)
+    coll.set_field_sync = MagicMock(side_effect=set_field)
+    coll.get_row_sync = MagicMock(side_effect=get_row)
     coll.save_entity = AsyncMock()
     coll.reload_entity = AsyncMock()
     return coll, cache
@@ -105,9 +105,9 @@ def _workspace_file_version_data() -> dict[str, Any]:
 class TestWorkspaceEntity:
     """tests for Workspace entity without a collection."""
 
-    def test_primary_key_field_is_id(self) -> None:
+    def testprimary_key_field_is_id(self) -> None:
         """primary key field is id per shard."""
-        assert Workspace._primary_key_field == "id"
+        assert Workspace.primary_key_field == "id"
 
     def test_create_sets_id_and_flags(self) -> None:
         """factory construction populates id and is_new flag."""
@@ -184,9 +184,9 @@ class TestWorkspaceEntity:
 class TestWorkspaceFileEntity:
     """tests for WorkspaceFile entity without a collection."""
 
-    def test_primary_key_field_is_id(self) -> None:
+    def testprimary_key_field_is_id(self) -> None:
         """primary key field is id per shard."""
-        assert WorkspaceFile._primary_key_field == "id"
+        assert WorkspaceFile.primary_key_field == "id"
 
     def test_all_properties_round_trip(self) -> None:
         """each declared property reads back the value given at construction."""
@@ -210,9 +210,9 @@ class TestWorkspaceFileEntity:
 class TestWorkspaceFileVersionEntity:
     """tests for WorkspaceFileVersion entity without a collection."""
 
-    def test_primary_key_field_is_id(self) -> None:
+    def testprimary_key_field_is_id(self) -> None:
         """primary key field is id per shard."""
-        assert WorkspaceFileVersion._primary_key_field == "id"
+        assert WorkspaceFileVersion.primary_key_field == "id"
 
     def test_all_properties_round_trip(self) -> None:
         """each declared property reads back the value given at construction."""

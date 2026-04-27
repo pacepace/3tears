@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -28,7 +30,10 @@ from threetears.agent.tools.base_tool import (
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit, pin
+from threetears.agent.workspace import pin
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -37,11 +42,20 @@ from threetears.agent.workspace.collections import (
 from threetears.agent.workspace.config import ValidatorEntry
 from threetears.agent.workspace.factory import register_tool_builder
 from threetears.agent.workspace.sandbox import WorkspaceSandbox
-from threetears.agent.workspace.tools.helpers import _resolve_validators
+from threetears.agent.workspace.tools.helpers import (
+    _resolve_validators,
+    authorize_workspace,
+    authorize_workspace_file,
+    workspace_audit_identity,
+)
 from threetears.agent.workspace.validators import (
     WorkspaceValidationError,
     dispatch_validators,
 )
+
+__all__ = [
+    "WorkspaceResetTool",
+]
 
 log = get_logger(__name__)
 
@@ -79,7 +93,9 @@ INSERT INTO workspace_file_versions (
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
-_UPDATE_WORKSPACE_VERSION_SQL = "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3"
+_UPDATE_WORKSPACE_VERSION_SQL = (
+    "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3 AND agent_id = $4"
+)
 
 
 class WorkspaceResetTool(TearsTool):
@@ -100,6 +116,7 @@ class WorkspaceResetTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
@@ -142,6 +159,7 @@ class WorkspaceResetTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -180,37 +198,57 @@ class WorkspaceResetTool(TearsTool):
                     ),
                 )
             else:
+                await authorize_workspace(
+                    workspace,
+                    "write",
+                    db_pool=self._db_pool,
+                    acl_cache=self._acl_cache,
+                )
                 template_files = await self._read_template_files(
                     workspace.template_name,
+                    workspace=workspace,
                 )
                 current_files = await self._files.find_by_workspace(
                     workspace.id,
                 )
                 n_changed = await self._apply_reset(
                     workspace_id=workspace.id,
+                    namespace_name=workspace.namespace_name,
                     current_version=workspace.current_version,
                     template_files=template_files,
                     current_files=[(f.relative_path, f.content, f.sha256) for f in current_files],
                     correlation_id=correlation_id,
                 )
-                # defense-in-depth: swallow audit-side exceptions so a
-                # hiccup there cannot corrupt the successful reset return.
+                # defense-in-depth: additive per-tool event on top of
+                # the baseline ``tool.call`` emitted by ToolServer.
+                # swallow audit-side exceptions so a hiccup there cannot
+                # corrupt the successful reset return.
                 try:
                     if self._namespace is not None:
-                        await audit.publish_workspace_event(
-                            nats_client=self._nats_client,
-                            namespace=self._namespace,
+                        identity = workspace_audit_identity(workspace)
+                        event = AuditEvent(
+                            id=uuid7(),
+                            timestamp=datetime.now(UTC),
                             event_type="workspace.reset",
-                            actor_id=self._agent_id,
-                            agent_id=self._agent_id,
-                            resource_type="workspace",
-                            resource_id=str(workspace.id),
+                            actor_user_id=identity.actor_user_id,
+                            calling_agent_id=identity.calling_agent_id,
+                            owner_agent_id=identity.owner_agent_id,
+                            customer_id=identity.customer_id,
+                            resource_namespace_id=identity.namespace_id,
+                            resource_namespace_type="workspace",
                             action="reset",
+                            outcome="success",
+                            correlation_id=correlation_id,
                             details={
+                                "workspace_resource_id": str(workspace.id),
                                 "template_name": workspace.template_name,
                                 "files_changed": n_changed,
                             },
-                            correlation_id=correlation_id,
+                        )
+                        await publish_audit(
+                            event,
+                            nats_client=self._nats_client,
+                            namespace=self._namespace,
                         )
                 # NOSILENT: audit failure must never taint a successful reset
                 except Exception as audit_exc:
@@ -225,6 +263,8 @@ class WorkspaceResetTool(TearsTool):
                     ),
                 )
         except _ResetError as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except WorkspaceValidationError as exc:
             result = ToolResult(
@@ -261,16 +301,29 @@ class WorkspaceResetTool(TearsTool):
     async def _read_template_files(
         self,
         template_name: str,
+        *,
+        workspace: Any,
     ) -> list[tuple[str, bytes, str]]:
         """
-        walk the named template directory and gate every file via sandbox.
+        walk the named template directory and gate every file via rbac.
 
         blocking filesystem walk + ``read_bytes`` is dispatched via
         :func:`asyncio.to_thread` so the event loop stays responsive on
-        large templates. sandbox enforcement stays on the main loop.
+        large templates. syntactic validation + per-file rbac gating
+        stay on the main loop.
+
+        namespace-task-01 phase 7 replaces the retired
+        ``sandbox.enforce("read", path)`` glob check with
+        :meth:`WorkspaceSandbox.validate_syntax` +
+        :func:`authorize_workspace_file` (direction ``"read"``) so the
+        read-glob decision routes through the unified rbac evaluator
+        scoped to the target workspace's namespace.
 
         :param template_name: template directory name under templates root
         :ptype template_name: str
+        :param workspace: target workspace whose namespace carries the
+            rbac grants for read_file_matching globs
+        :ptype workspace: Any
         :return: list of (relative_path, content_bytes, sha256_hex) triples
         :rtype: list[tuple[str, bytes, str]]
         """
@@ -280,13 +333,21 @@ class WorkspaceResetTool(TearsTool):
             templates_root,
         )
         for relative, _path in candidates:
-            self._sandbox.enforce("read", relative)
+            self._sandbox.validate_syntax(relative)
+            await authorize_workspace_file(
+                workspace,
+                relative,
+                "read",
+                db_pool=None,
+                acl_cache=self._acl_cache,
+            )
         return await asyncio.to_thread(_read_template_bytes, candidates)
 
     async def _apply_reset(
         self,
         *,
         workspace_id: UUID,
+        namespace_name: str,
         current_version: int,
         template_files: list[tuple[str, bytes, str]],
         current_files: list[tuple[str, bytes, str]],
@@ -297,6 +358,11 @@ class WorkspaceResetTool(TearsTool):
 
         :param workspace_id: identifier of workspace being reset
         :ptype workspace_id: UUID
+        :param namespace_name: canonical workspace namespace name
+            (``workspace.<uuid>``); threaded onto the tx via
+            ``conn.transaction(namespace=...)`` so every statement
+            lands in the owner agent's schema on grantee resets
+        :ptype namespace_name: str
         :param current_version: workspace's current head version pointer
         :ptype current_version: int
         :param template_files: triples loaded from the template directory
@@ -325,8 +391,10 @@ class WorkspaceResetTool(TearsTool):
                 content, _sha = template_by_path[relative]
                 dispatch_validators(self._validators, relative, content)
 
+        # WS-ACL-06: bind the tx to the workspace's namespace so reset
+        # writes land in the OWNER agent's schema on grantee resets.
         async with self._db_pool.acquire() as conn:
-            async with conn.transaction():
+            async with conn.transaction(namespace=namespace_name):
                 for relative in sorted(revert_paths):
                     content, sha = template_by_path[relative]
                     await self._upsert_file(conn, workspace_id, relative, content, sha, new_version, now)
@@ -368,7 +436,13 @@ class WorkspaceResetTool(TearsTool):
                         now,
                         correlation_id,
                     )
-                await conn.execute(_UPDATE_WORKSPACE_VERSION_SQL, new_version, now, workspace_id)
+                await conn.execute(
+                    _UPDATE_WORKSPACE_VERSION_SQL,
+                    new_version,
+                    now,
+                    workspace_id,
+                    self._agent_id,
+                )
         return n_changed
 
     async def _upsert_file(
@@ -565,6 +639,7 @@ def _build(**kwargs: Any) -> WorkspaceResetTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

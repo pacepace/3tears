@@ -13,8 +13,11 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import CHAR, Column, DateTime, Integer, LargeBinary, MetaData, String, Table, Text
 
+from pydantic import BaseModel
+
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.collections.registry import INVALIDATION_SUBJECT, CollectionRegistry
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.nats import Subject, Subjects
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.agent.workspace.collections import (
@@ -130,16 +133,18 @@ def _make_workspace_file_version_row() -> dict[str, Any]:
 
 
 class _FakeNatsBus:
-    """in-process fake NATS client that honors publish and subscribe.
+    """in-process fake NATS client matching typed NatsClient surface.
 
-    mirrors the real registry pattern: publishers call .publish(subject,
-    payload); subscribers registered via .subscribe(subject, handler)
-    receive the same bytes. buckets are simple dict-backed KV storage.
+    supports the two methods the cache-invalidation path uses:
+    ``publish(subject=Subject, message=BaseModel)`` and
+    ``subscribe_typed(subject=Subject, message_type=BaseModel, cb=...)``.
+    each subscriber owns its own decoder, so multiple subscribers on the
+    same subject with different message_types coexist.
     """
 
     def __init__(self) -> None:
-        """initialize empty bus, subscribers, and KV store."""
-        self._subscribers: dict[str, list[Callable[[bytes], Awaitable[None]]]] = {}
+        """initialize empty subscriber registry and KV store."""
+        self._typed_subscribers: dict[str, list[tuple[type[BaseModel], Callable[[Any], Awaitable[None]]]]] = {}
         self._kv: dict[str, dict[str, bytes]] = {}
 
     def bucket_name(self, suffix: str) -> str:
@@ -153,28 +158,57 @@ class _FakeNatsBus:
         """
         return f"test_{suffix}"
 
-    async def publish(self, subject: str, payload: bytes) -> None:
+    async def publish(
+        self,
+        *,
+        subject: Subject,
+        message: BaseModel,
+        reply_to: Subject | None = None,
+    ) -> None:
         """
-        deliver payload synchronously to all subscribers of subject.
+        deliver typed message synchronously to all subject subscribers.
 
-        :param subject: NATS subject name
-        :ptype subject: str
-        :param payload: message bytes
-        :ptype payload: bytes
+        :param subject: target subject
+        :ptype subject: Subject
+        :param message: typed pydantic message to dispatch
+        :ptype message: BaseModel
+        :param reply_to: ignored, present for api parity
+        :ptype reply_to: Subject | None
         """
-        for handler in self._subscribers.get(subject, []):
-            await handler(payload)
+        del reply_to
+        payload = message.model_dump_json().encode("utf-8")
+        for message_type, handler in self._typed_subscribers.get(subject.path, []):
+            decoded = message_type.model_validate_json(payload)
+            await handler(decoded)
 
-    async def subscribe(self, subject: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+    async def subscribe_typed(
+        self,
+        *,
+        subject: Subject,
+        cb: Callable[[Any], Awaitable[None]],
+        message_type: type[BaseModel],
+        queue: str | None = None,
+        max_in_flight: int | None = None,
+        deadletter_on_error: bool = True,
+    ) -> None:
         """
-        register async handler for subject.
+        register typed handler for subject.
 
-        :param subject: NATS subject name
-        :ptype subject: str
-        :param handler: async callback receiving raw message bytes
-        :ptype handler: Callable[[bytes], Awaitable[None]]
+        :param subject: target subject
+        :ptype subject: Subject
+        :param cb: async callback receiving the decoded message
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param message_type: pydantic class to decode incoming bytes into
+        :ptype message_type: type[BaseModel]
+        :param queue: ignored, present for api parity
+        :ptype queue: str | None
+        :param max_in_flight: ignored, present for api parity
+        :ptype max_in_flight: int | None
+        :param deadletter_on_error: ignored, present for api parity
+        :ptype deadletter_on_error: bool
         """
-        self._subscribers.setdefault(subject, []).append(handler)
+        del queue, max_in_flight, deadletter_on_error
+        self._typed_subscribers.setdefault(subject.path, []).append((message_type, cb))
 
     async def get(self, bucket: str, key: str) -> bytes | None:
         """fetch bytes for key from bucket or None."""
@@ -224,8 +258,8 @@ def _make_pool_mock() -> AsyncMock:
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.execute = AsyncMock(side_effect=_execute)
     pool.fetch = AsyncMock(side_effect=_fetch)
-    pool._store = store
-    pool._executed = executed
+    pool.store = store
+    pool.executed = executed
     return pool
 
 
@@ -278,9 +312,9 @@ class TestWorkspaceCollectionSerialization:
         row = _make_workspace_row()
         row["date_created"] = datetime(2026, 1, 1, tzinfo=UTC)
         row["date_updated"] = datetime(2026, 1, 2, tzinfo=UTC)
-        payload = coll._serialize(row)
+        payload = coll.serialize(row)
         assert isinstance(payload, bytes)
-        restored = coll._deserialize(payload)
+        restored = coll.deserialize(payload)
         assert restored["id"] == row["id"]
         assert restored["agent_id"] == row["agent_id"]
         assert restored["created_by"] == row["created_by"]
@@ -304,9 +338,9 @@ class TestWorkspaceCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspaces" in issued_sql
         assert "ON CONFLICT (id) DO UPDATE" in issued_sql
 
@@ -315,14 +349,14 @@ class TestWorkspaceCollectionSave:
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """_delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll._delete_from_postgres(target_id)
-        issued_sql = pool._executed[0][0]
+        await coll.delete_from_postgres(target_id)
+        issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspaces" in issued_sql
         assert "WHERE id = $1" in issued_sql
 
@@ -341,9 +375,9 @@ class TestWorkspaceFileCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_files" in issued_sql
         assert "ON CONFLICT (id) DO UPDATE" in issued_sql
 
@@ -352,14 +386,14 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """_delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll._delete_from_postgres(target_id)
-        issued_sql = pool._executed[0][0]
+        await coll.delete_from_postgres(target_id)
+        issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspace_files" in issued_sql
 
     def test_bytes_content_roundtrip(
@@ -374,12 +408,12 @@ class TestWorkspaceFileCollectionSave:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_row()
         row["content"] = b"\x00\x01\x02\xff payload bytes"
-        payload = coll._serialize(row)
+        payload = coll.serialize(row)
         # confirm wire format base64-encoded the bytes
         parsed = json.loads(payload)
         assert isinstance(parsed["content"], str)
         assert base64.b64decode(parsed["content"]) == row["content"]
-        restored = coll._deserialize(payload)
+        restored = coll.deserialize(payload)
         assert restored["content"] == row["content"]
         assert isinstance(restored["content"], bytes)
 
@@ -398,9 +432,9 @@ class TestWorkspaceFileVersionCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
-        rows_affected = await coll._save_to_postgres(row)
+        rows_affected = await coll.save_to_postgres(row)
         assert rows_affected == 1
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_file_versions" in issued_sql
         assert "ON CONFLICT" not in issued_sql.upper()
 
@@ -428,7 +462,7 @@ class TestWorkspaceFileVersionCollectionSave:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
         with pytest.raises(_UniqueViolation):
-            await coll._save_to_postgres(row)
+            await coll.save_to_postgres(row)
 
 
 class TestCrossPodInvalidation:
@@ -498,7 +532,7 @@ class TestCollectionShapes:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspaces"
         assert coll.entity_class is Workspace
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
     def test_workspace_file_collection_identity(
         self,
@@ -512,7 +546,7 @@ class TestCollectionShapes:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_files"
         assert coll.entity_class is WorkspaceFile
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
     def test_workspace_file_version_collection_identity(
         self,
@@ -526,16 +560,17 @@ class TestCollectionShapes:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_file_versions"
         assert coll.entity_class is WorkspaceFileVersion
-        assert coll._primary_key_column == "id"
+        assert coll.primary_key_column == "id"
 
 
 class TestInvalidationSubjectConstant:
-    """sanity check that the INVALIDATION_SUBJECT from registry is importable."""
+    """sanity check that the cache-invalidation subject from registry is importable."""
 
     def test_subject_constant_is_importable(self) -> None:
-        """confirm INVALIDATION_SUBJECT constant resolves to a non-empty string."""
-        assert isinstance(INVALIDATION_SUBJECT, str)
-        assert INVALIDATION_SUBJECT
+        """confirm cache-invalidate subject resolves to a non-empty string."""
+        subject = Subjects.cache_invalidate()
+        assert isinstance(subject.path, str)
+        assert subject.path
 
 
 class TestWorkspaceCollectionFindByAgent:
@@ -572,7 +607,7 @@ class TestWorkspaceCollectionFindByAgent:
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-        pool._executed = executed
+        pool.executed = executed
         return pool
 
     async def test_find_by_agent_returns_entities_for_agent(
@@ -608,7 +643,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert {e.name for e in entities} == {"alpha", "beta"}
         for e in entities:
             assert e.agent_id == agent_id
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "SELECT * FROM workspaces" in issued_sql
         assert "WHERE agent_id = $1" in issued_sql
         assert "date_deleted IS NULL" in issued_sql
@@ -645,7 +680,7 @@ class TestWorkspaceCollectionFindByAgent:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        pool._executed = executed
+        pool.executed = executed
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
 
         live_only = await coll.find_by_agent(agent_id)
@@ -700,7 +735,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert isinstance(found, Workspace)
         assert found.name == "main"
         assert found.agent_id == agent_id
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "SELECT * FROM workspaces" in issued_sql
         assert "WHERE agent_id = $1 AND name = $2" in issued_sql
 
@@ -743,7 +778,7 @@ class TestWorkspaceCollectionFindByAgent:
         assert found is not None
         assert found.date_deleted is not None
         # confirm SQL shape lacks the date_deleted filter
-        issued_sql = pool._executed[0][0]
+        issued_sql = pool.executed[0][0]
         assert "date_deleted" not in issued_sql
 
 
@@ -762,14 +797,17 @@ class TestWorkspaceCollectionSaveIncludesDateDeleted:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
         row["date_deleted"] = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
-        await coll._save_to_postgres(row)
-        issued_sql = pool._executed[0][0]
+        await coll.save_to_postgres(row)
+        issued_sql = pool.executed[0][0]
         assert "date_deleted" in issued_sql
         # ON CONFLICT clause also wires the column
         assert "date_deleted = EXCLUDED.date_deleted" in issued_sql
-        # confirm the row's date_deleted value got bound (last positional arg)
-        bound_args = pool._executed[0][1]
-        assert row["date_deleted"] in bound_args
+        # confirm the row's date_deleted value got bound as naive UTC
+        # (SchemaBackedCollection converts aware datetimes at the WRITE
+        # boundary per CLAUDE.md's "YugabyteDB WRITE: Convert aware ->
+        # naive for TIMESTAMP columns" rule)
+        bound_args = pool.executed[0][1]
+        assert row["date_deleted"].replace(tzinfo=None) in bound_args
 
 
 class TestWorkspaceFileCollectionFindByWorkspace:
@@ -805,7 +843,7 @@ class TestWorkspaceFileCollectionFindByWorkspace:
 
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=_fetch)
-        pool._executed = executed
+        pool.executed = executed
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
 
         entities = await coll.find_by_workspace(workspace_id)

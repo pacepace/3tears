@@ -16,6 +16,15 @@ from threetears.models.results import (
     TranscriptionResult,
 )
 
+__all__ = [
+    "ChatProvider",
+    "EmbeddingProvider",
+    "ImageGenerationProvider",
+    "RerankingProvider",
+    "SpeechProvider",
+    "TranscriptionProvider",
+]
+
 
 @runtime_checkable
 class ChatProvider(Protocol):

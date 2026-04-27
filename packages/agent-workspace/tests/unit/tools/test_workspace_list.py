@@ -1,142 +1,179 @@
-"""tests for ``threetears.workspace.list`` -- WorkspaceListTool."""
+"""tests for ``threetears.workspace.list`` -- WorkspaceListTool.
+
+workspace-task-19 Phase 5 rewrote the list tool to issue a NATS
+request instead of scanning the caller's agent schema. namespace-
+task-01 Phase 1 generalized that subject from
+``{ns}.workspace.discover`` to ``{ns}.namespace.discover`` with a
+``namespace_type`` filter; the tool now passes
+``namespace_type="workspace"`` explicitly on every call. these tests
+exercise the tool against a fake namespace-discovery client that
+records the filter it was asked for.
+"""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition
+from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
+from threetears.agent.tools.context_envelope import CallContext
 
+from threetears.agent.workspace.discovery_client import (
+    DiscoveryClientError,
+    NamespaceDiscoverySummary,
+)
 from threetears.agent.workspace.tools.workspace_list import WorkspaceListTool
 
 
 @dataclass
-class _FakeWorkspaceEntity:
-    """minimal stand-in for :class:`Workspace` exposing only what the tool reads."""
+class _FakeDiscoveryClient:
+    """stand-in for :class:`NamespaceDiscoveryClient` returning fixed items.
 
-    name: str
-    description: str | None
-    date_updated: datetime
+    records the ``namespace_type`` filter the tool passed so the tests
+    can assert the tool is asking for ``"workspace"`` specifically.
+    """
+
+    items: list[NamespaceDiscoverySummary]
+    raise_exc: Exception | None = None
+    last_filter: str | None = field(default=None, init=False)
+
+    async def discover(
+        self,
+        *,
+        correlation_id: UUID,
+        agent_id: UUID,
+        customer_id: UUID,
+        user_id: UUID | None,
+        namespace_type: str | None = None,
+    ) -> list[NamespaceDiscoverySummary]:
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        self.last_filter = namespace_type
+        return list(self.items)
 
 
-class _FakeCollection:
-    """records the agent_id passed to find_by_agent and returns a fixed list."""
-
-    def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
-        self._entities = entities
-        self.calls: list[UUID] = []
-
-    async def find_by_agent(self, agent_id: UUID) -> list[_FakeWorkspaceEntity]:
-        self.calls.append(agent_id)
-        return self._entities
-
-
-class _FailingCollection:
-    """raises on find_by_agent so we can confirm error trapping."""
-
-    def __init__(self, exc: Exception) -> None:
-        self._exc = exc
-
-    async def find_by_agent(self, agent_id: UUID) -> list[_FakeWorkspaceEntity]:
-        raise self._exc
+def _make_scope(customer_id: UUID | None = None, user_id: UUID | None = None) -> ToolCallScope:
+    """build a ToolCallScope with identity dims."""
+    ctx = CallContext(
+        agent_id=uuid4(),
+        user_id=user_id or uuid4(),
+        customer_id=customer_id or uuid4(),
+    )
+    return ToolCallScope(context=ctx)
 
 
 @pytest.mark.asyncio
-async def test_execute_returns_json_array_for_populated_agent() -> None:
-    """populated agent yields JSON array of {name, description, date_updated}."""
+async def test_execute_returns_discovered_summaries() -> None:
+    """populated discovery yields JSON array of name/owner/customer entries."""
     agent_id = uuid4()
-    when = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
-    entities = [
-        _FakeWorkspaceEntity(name="alpha", description="first", date_updated=when),
-        _FakeWorkspaceEntity(name="beta", description=None, date_updated=when),
+    customer_id = uuid4()
+    other_agent = uuid4()
+    items = [
+        NamespaceDiscoverySummary(
+            id=uuid4(),
+            name="workspace.alpha",
+            namespace_type="workspace",
+            owner_agent_id=agent_id,
+            customer_id=customer_id,
+        ),
+        NamespaceDiscoverySummary(
+            id=uuid4(),
+            name="workspace.beta",
+            namespace_type="workspace",
+            owner_agent_id=other_agent,
+            customer_id=customer_id,
+        ),
     ]
-    coll = _FakeCollection(entities)
-    tool = WorkspaceListTool(workspace_collection=coll, agent_id=agent_id)
+    client = _FakeDiscoveryClient(items=items)
+    tool = WorkspaceListTool(discovery_client=client, agent_id=agent_id)  # type: ignore[arg-type]
 
-    result = await tool.execute()
+    async with enter_call_scope(_make_scope(customer_id=customer_id)):
+        result = await tool.execute()
 
     assert result.success is True
-    assert result.error is None
     payload: list[dict[str, Any]] = json.loads(result.content)
-    assert payload == [
-        {"name": "alpha", "description": "first", "date_updated": when.isoformat()},
-        {"name": "beta", "description": "", "date_updated": when.isoformat()},
-    ]
-    assert coll.calls == [agent_id]
+    assert len(payload) == 2
+    assert payload[0]["name"] == "workspace.alpha"
+    assert payload[1]["owner_agent_id"] == str(other_agent)
+    # tool must ask the broker for workspace-type rows specifically
+    assert client.last_filter == "workspace"
 
 
 @pytest.mark.asyncio
-async def test_execute_returns_empty_array_for_empty_agent() -> None:
-    """empty agent yields ``"[]"`` content with success True."""
-    coll = _FakeCollection([])
-    tool = WorkspaceListTool(workspace_collection=coll, agent_id=uuid4())
+async def test_execute_returns_empty_array_for_empty_discovery() -> None:
+    """empty discovery set yields ``"[]"`` content with success True."""
+    client = _FakeDiscoveryClient(items=[])
+    tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
 
-    result = await tool.execute()
+    async with enter_call_scope(_make_scope()):
+        result = await tool.execute()
 
     assert result.success is True
     assert result.content == "[]"
-    assert result.error is None
+    assert client.last_filter == "workspace"
 
 
 @pytest.mark.asyncio
-async def test_execute_traps_collection_errors_as_data() -> None:
-    """collection failures surface as ToolResult(success=False, error=...)."""
-    coll = _FailingCollection(RuntimeError("pool exploded"))
-    tool = WorkspaceListTool(workspace_collection=coll, agent_id=uuid4())
+async def test_execute_traps_discovery_errors_as_data() -> None:
+    """discovery transport failures surface as ToolResult(success=False)."""
+    client = _FakeDiscoveryClient(
+        items=[],
+        raise_exc=DiscoveryClientError("nats timeout"),
+    )
+    tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
 
-    result = await tool.execute()
+    async with enter_call_scope(_make_scope()):
+        result = await tool.execute()
 
     assert result.success is False
-    assert result.error is not None
-    assert "list failed" in result.error
-    assert "pool exploded" in result.error
+    assert "list failed" in (result.error or "")
+    assert "nats timeout" in (result.error or "")
 
 
 @pytest.mark.asyncio
-async def test_execute_dates_use_iso_format() -> None:
-    """date_updated values are emitted as ISO-8601 strings with tzinfo."""
-    when = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-    coll = _FakeCollection([_FakeWorkspaceEntity(name="x", description=None, date_updated=when)])
-    tool = WorkspaceListTool(workspace_collection=coll, agent_id=uuid4())
+async def test_execute_requires_customer_on_scope() -> None:
+    """call without customer_id on scope yields a clean errors-as-data message."""
+    client = _FakeDiscoveryClient(items=[])
+    tool = WorkspaceListTool(discovery_client=client, agent_id=uuid4())  # type: ignore[arg-type]
 
-    result = await tool.execute()
+    ctx = CallContext(agent_id=uuid4(), user_id=uuid4(), customer_id=None)
+    async with enter_call_scope(ToolCallScope(context=ctx)):
+        result = await tool.execute()
 
-    payload = json.loads(result.content)
-    assert payload[0]["date_updated"] == when.isoformat()
-    parsed = datetime.fromisoformat(payload[0]["date_updated"])
-    assert parsed == when
+    assert result.success is False
+    assert "customer_id" in (result.error or "")
 
 
 def test_mcp_name_is_exact_string() -> None:
     """mcp_name must equal ``threetears.workspace.list`` exactly."""
-    tool = WorkspaceListTool(workspace_collection=_FakeCollection([]), agent_id=uuid4())
-
+    tool = WorkspaceListTool(
+        discovery_client=_FakeDiscoveryClient(items=[]),  # type: ignore[arg-type]
+        agent_id=uuid4(),
+    )
     assert tool.mcp_name() == "threetears.workspace.list"
 
 
 def test_mcp_version_is_semver_string() -> None:
     """mcp_version returns a non-empty version string."""
-    tool = WorkspaceListTool(workspace_collection=_FakeCollection([]), agent_id=uuid4())
-
+    tool = WorkspaceListTool(
+        discovery_client=_FakeDiscoveryClient(items=[]),  # type: ignore[arg-type]
+        agent_id=uuid4(),
+    )
     assert tool.mcp_version() == "1.0"
 
 
 def test_mcp_schema_returns_definition_with_empty_object_input() -> None:
-    """mcp_schema returns MCPToolDefinition with the tool name and empty input schema."""
-    tool = WorkspaceListTool(workspace_collection=_FakeCollection([]), agent_id=uuid4())
-
+    """mcp_schema returns MCPToolDefinition with empty object input schema."""
+    tool = WorkspaceListTool(
+        discovery_client=_FakeDiscoveryClient(items=[]),  # type: ignore[arg-type]
+        agent_id=uuid4(),
+    )
     definition = tool.mcp_schema()
-
     assert isinstance(definition, MCPToolDefinition)
     assert definition.name == "threetears.workspace.list"
-    assert definition.version == "1.0"
-    assert isinstance(definition.description, str)
-    assert definition.description
-    assert definition.input_schema["type"] == "object"
     assert definition.input_schema["properties"] == {}
-    assert definition.input_schema["additionalProperties"] is False

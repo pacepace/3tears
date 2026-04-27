@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -15,8 +16,16 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import pin
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import WorkspaceCollection
 from threetears.agent.workspace.factory import register_tool_builder
+from threetears.agent.workspace.tools.helpers import authorize_workspace
+
+__all__ = [
+    "WorkspaceUseTool",
+]
 
 log = get_logger(__name__)
 
@@ -48,6 +57,8 @@ class WorkspaceUseTool(TearsTool):
         workspace_collection: WorkspaceCollection,
         agent_id: UUID,
         context_provider: Callable[[], ToolContextManager],
+        acl_cache: AclCache,
+        db_pool: Any = None,
     ) -> None:
         """
         binds tool to a workspace collection and per-conversation context.
@@ -64,6 +75,8 @@ class WorkspaceUseTool(TearsTool):
         self._workspaces = workspace_collection
         self._agent_id = agent_id
         self._context_provider = context_provider
+        self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -95,6 +108,12 @@ class WorkspaceUseTool(TearsTool):
                     error=f"workspace {name!r} not found; available: {names}",
                 )
             else:
+                await authorize_workspace(
+                    found,
+                    "read",
+                    db_pool=self._db_pool,
+                    acl_cache=self._acl_cache,
+                )
                 await pin.set_pin(
                     self._context_provider(),
                     workspace_id=found.id,
@@ -105,6 +124,8 @@ class WorkspaceUseTool(TearsTool):
                     success=True,
                     content=f"pinned workspace {name!r}",
                 )
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("workspace_use failed: %s", exc)
             result = ToolResult(
@@ -167,6 +188,8 @@ def _build(**kwargs: Any) -> WorkspaceUseTool:
         workspace_collection=kwargs["workspace_collection"],
         agent_id=kwargs["agent_id"],
         context_provider=kwargs["context_provider"],
+        db_pool=kwargs.get("db_pool"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

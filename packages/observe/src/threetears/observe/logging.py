@@ -27,6 +27,19 @@ from datetime import UTC, datetime
 from types import FrameType
 from typing import Any
 
+__all__ = [
+    "ContextFormatter",
+    "ThreeTearsLogger",
+    "add_filter",
+    "clear_context",
+    "configure_logging",
+    "configure_third_party_logging",
+    "get_context",
+    "get_logger",
+    "path_strip_prefixes",
+    "set_context",
+]
+
 # ---------------------------------------------------------------------------
 # Generic context -- apps set whatever keys they need
 # ---------------------------------------------------------------------------
@@ -298,10 +311,12 @@ def configure_logging(
 
     # Configure root logger so ALL loggers get output (not just threetears.*)
     py_root = logging.getLogger()
-    if not any(isinstance(h, logging.StreamHandler) and getattr(h, "_threetears", False) for h in py_root.handlers):
+    if not any(
+        isinstance(h, logging.StreamHandler) and getattr(h, "threetears_owned", False) for h in py_root.handlers
+    ):
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(ContextFormatter(use_color=use_color))
-        handler._threetears = True  # type: ignore[attr-defined]
+        handler.threetears_owned = True  # type: ignore[attr-defined]
         py_root.addHandler(handler)
     py_root.setLevel(level_val)
 

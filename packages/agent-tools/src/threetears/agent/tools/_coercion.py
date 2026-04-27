@@ -18,6 +18,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+__all__ = [
+    "coerce_value",
+    "normalize_kwargs",
+]
+
 
 def coerce_value(value: Any, declared_type: str | None) -> Any:
     """coerce single MCP input value toward its declared JSON schema type.

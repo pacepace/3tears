@@ -57,7 +57,7 @@ class _DenySandbox(Sandbox):
 
 
 class _DenyWithReasonSandbox(Sandbox):
-    """sandbox subclass with rich ``_deny_reason`` override.
+    """sandbox subclass with rich ``deny_reason`` override.
 
     verifies subclass extension point for actionable error text.
     """
@@ -74,7 +74,7 @@ class _DenyWithReasonSandbox(Sandbox):
         """
         return SandboxDecision.DENY
 
-    def _deny_reason(self, action: str, target: str) -> str:
+    def deny_reason(self, action: str, target: str) -> str:
         """return rich reason referencing both action and target.
 
         :param action: action verb being evaluated
@@ -155,6 +155,6 @@ class TestSandboxEnforce:
             sb.enforce("write", "foo.yaml")
         assert info.value.reason == "denied write on foo.yaml by test policy"
 
-    def test_default_deny_reason_on_base(self) -> None:
+    def test_defaultdeny_reason_on_base(self) -> None:
         sb = _DenySandbox()
-        assert sb._deny_reason("x", "y") == "policy denied"
+        assert sb.deny_reason("x", "y") == "policy denied"

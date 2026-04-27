@@ -1,37 +1,34 @@
 """integration tests for ToolServer with real NATS at localhost:4222.
 
-requires NATS server running at nats://localhost:4222.
+requires NATS server running at nats://localhost:4222. skipif gate
+uses the canonical :func:`threetears.core.testing.containers
+.skip_without_nats_marker` (test-harness-task-01); replaces the
+hand-rolled ``_nats_reachable`` socket probe each integration test
+file used to ship.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import socket
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from nats.aio.client import Client as NatsClient
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
+from threetears.core.testing.containers import skip_without_nats_marker
+from threetears.nats import (
+    IncomingMessage,
+    NatsClient,
+    Subject,
+    Subjects,
+    set_default_namespace,
+)
 
-
-def _nats_reachable() -> bool:
-    """check whether NATS is listening on localhost:4222.
-
-    :return: True when a TCP connect succeeds within one second
-    :rtype: bool
-    """
-    try:
-        with socket.create_connection(("localhost", 4222), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _nats_reachable(), reason="NATS not running on localhost:4222")
+pytestmark = skip_without_nats_marker()
 
 _NATS_URL = "nats://localhost:4222"
 
@@ -109,6 +106,7 @@ class TestToolServerNatsIntegration:
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=60.0,
+            namespace_collection=None,
         )
         tool = IntegrationStubTool()
         server.register(tool)
@@ -117,29 +115,40 @@ class TestToolServerNatsIntegration:
         await asyncio.sleep(0.2)
 
         try:
-            nc = NatsClient()
-            await nc.connect(_NATS_URL)
+            set_default_namespace(namespace)
+            nc = await NatsClient.connect(
+                nats_url=_NATS_URL,
+                nats_subject_namespace=namespace,
+                client_name="tool-server-itest",
+            )
 
-            call_subject = f"{namespace}.tools.internal.{pod_id}"
+            call_subject = Subjects.tools_internal(pod_id)
             correlation_id = str(uuid4())
+            # the CallRequest envelope moved correlation_id into the
+            # nested CallContext. top-level ``correlation_id`` on the
+            # request is explicitly rejected (extra="forbid").
             request_data = json.dumps(
                 {
                     "tool_name": "integration.stub",
                     "tool_version": "1.0",
                     "arguments": {"message": "hello"},
-                    "correlation_id": correlation_id,
+                    "context": {"correlation_id": correlation_id},
                 }
             ).encode("utf-8")
 
-            response = await nc.request(call_subject, request_data, timeout=5.0)
-            response_data = json.loads(response.data)
+            response_bytes = await nc.request_raw(
+                subject=call_subject,
+                payload=request_data,
+                timeout=timedelta(seconds=5),
+            )
+            response_data = json.loads(response_bytes)
 
-            assert response_data["success"] is True
-            assert response_data["correlation_id"] == correlation_id
+            assert response_data["success"] is True, response_data.get("error")
+            assert response_data["context"]["correlation_id"] == correlation_id
             content = json.loads(response_data["content"])
             assert content == {"message": "hello"}
 
-            await nc.close()
+            await nc.shutdown()
         finally:
             await server.shutdown()
             await asyncio.sleep(0.1)
@@ -160,22 +169,27 @@ class TestToolServerNatsIntegration:
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=0.1,
+            namespace_collection=None,
         )
         tool = IntegrationStubTool()
         server.register(tool)
 
         heartbeats: list[dict[str, Any]] = []
 
-        nc = NatsClient()
-        await nc.connect(_NATS_URL)
+        set_default_namespace(namespace)
+        nc = await NatsClient.connect(
+            nats_url=_NATS_URL,
+            nats_subject_namespace=namespace,
+            client_name="tool-heartbeat-itest",
+        )
 
-        heartbeat_subject = f"{namespace}.tools.heartbeat.{pod_id}"
+        heartbeat_subject = Subjects.tools_heartbeat(pod_id)
 
-        async def _on_heartbeat(msg: Any) -> None:
+        async def _on_heartbeat(msg: IncomingMessage) -> None:
             """collect heartbeat messages."""
             heartbeats.append(json.loads(msg.data))
 
-        await nc.subscribe(heartbeat_subject, cb=_on_heartbeat)
+        await nc.subscribe(subject=heartbeat_subject, cb=_on_heartbeat)
 
         serve_task = asyncio.create_task(server.serve())
         await asyncio.sleep(0.5)
@@ -193,4 +207,4 @@ class TestToolServerNatsIntegration:
                 await serve_task
             except asyncio.CancelledError:
                 pass
-            await nc.close()
+            await nc.shutdown()

@@ -62,6 +62,7 @@ async def _run_policy_scenario(
     fx: Any,
     tmp_path: Path,
     on_conflict: BindConflictPolicy,
+    acl_cache: Any,
 ) -> tuple[str, bytes]:
     """drive the shared "external modify during bind" scenario.
 
@@ -105,6 +106,7 @@ async def _run_policy_scenario(
     result_content: str = ""
     in_window_l3_bytes: bytes = b""
     async with bind(
+        agent_id=fx.agent_id,
         workspace_id=fx.workspace_id,
         sandbox=sandbox,
         lease=lease,
@@ -125,7 +127,10 @@ async def _run_policy_scenario(
         target.write_bytes(_EXTERNAL_PAYLOAD)
 
         # synthesize the awatch batch the OS would deliver.
-        workspace = await fx.workspace_collection.find_by_id(fx.workspace_id)
+        workspace = await fx.workspace_collection.find_by_id(
+            fx.agent_id,
+            fx.workspace_id,
+        )
         assert workspace is not None
         just_wrote: deque[tuple[str, str]] = deque(maxlen=256)
         await _handle_watch_batch(
@@ -155,6 +160,7 @@ async def _run_policy_scenario(
             sandbox=sandbox,
             context_provider=lambda: fx.context,
             agent_id=fx.agent_id,
+            acl_cache=acl_cache,
         )
         read_result = await fs_read.execute(relative_path=_TARGET_REL)
         assert read_result.success is True, read_result.error
@@ -167,6 +173,7 @@ async def _run_policy_scenario(
 async def test_l3_wins_ignores_external_modify(
     tmp_path: Path,
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """L3_WINS policy: external disk modify is discarded; fs_read returns L3.
 
@@ -184,6 +191,7 @@ async def test_l3_wins_ignores_external_modify(
         fx,
         tmp_path,
         BindConflictPolicy.L3_WINS,
+        acl_cache=permissive_acl_cache,
     )
 
     # fs_read returned the L3 (original) content, not the disk overwrite.
@@ -197,6 +205,7 @@ async def test_l3_wins_ignores_external_modify(
 async def test_disk_wins_imports_external_modify(
     tmp_path: Path,
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """DISK_WINS policy: external disk modify is imported; fs_read returns disk.
 
@@ -213,6 +222,7 @@ async def test_disk_wins_imports_external_modify(
         fx,
         tmp_path,
         BindConflictPolicy.DISK_WINS,
+        acl_cache=permissive_acl_cache,
     )
 
     # fs_read returned the externally-rewritten content the watcher

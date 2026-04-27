@@ -1,4 +1,12 @@
-"""tests for HeartbeatMonitor."""
+"""tests for HeartbeatSubscriber + HeartbeatCollection.
+
+namespace-task-01 phase 8.5l-3 retired :class:`HeartbeatMonitor` in
+favour of a :class:`BaseCollection`-backed persistent-state surface
+(:class:`HeartbeatCollection`) plus a focused orchestration class
+(:class:`HeartbeatSubscriber`). these tests exercise both sides: the
+subscriber's NATS + sweep behaviour and the Collection's L1-only
+pull-through (L2 is exercised in the integration suite).
+"""
 
 from __future__ import annotations
 
@@ -8,8 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.server import HeartbeatMessage
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.health import HeartbeatMonitor, PodStatus
+from threetears.registry.heartbeat_collection import HeartbeatCollection
+from threetears.registry.health import HeartbeatSubscriber
+from threetears.registry.l1_cache import create_registry_l1_backend
 
 
 # -- helpers --
@@ -66,113 +78,153 @@ def _make_entry(
     return result
 
 
-# -- PodStatus tests --
+def _make_collection() -> HeartbeatCollection:
+    """create a HeartbeatCollection wired to an in-memory L1 tier, no L2.
+
+    :return: freshly-initialized collection
+    :rtype: HeartbeatCollection
+    """
+    l1 = create_registry_l1_backend()
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1)
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    result = HeartbeatCollection(registry, config)
+    return result
 
 
-class TestPodStatus:
-    """tests for PodStatus dataclass."""
+def _make_subscriber(
+    catalog: ToolCatalog | None = None,
+    *,
+    timeout: float = 30.0,
+    check_interval: float = 5.0,
+    namespace: str = "test",
+) -> tuple[HeartbeatSubscriber, HeartbeatCollection]:
+    """build subscriber + collection pair for tests.
 
-    def test_pod_status_creation(self) -> None:
-        """PodStatus stores all fields correctly."""
-        status = PodStatus(pod_id="pod-001")
-        assert status.pod_id == "pod-001"
-        assert status.consecutive_misses == 0
-        assert status.tools == []
-
-    def test_pod_status_with_tools(self) -> None:
-        """PodStatus tracks associated tool full_names."""
-        status = PodStatus(
-            pod_id="pod-001",
-            tools=["tool.a@1.0", "tool.b@2.0"],
-        )
-        assert len(status.tools) == 2
+    :param catalog: optional pre-built catalog; a fresh one is
+        created when ``None``
+    :ptype catalog: ToolCatalog | None
+    :param timeout: liveness timeout
+    :ptype timeout: float
+    :param check_interval: sweep interval
+    :ptype check_interval: float
+    :param namespace: NATS subject namespace for heartbeat subscription
+    :ptype namespace: str
+    :return: (subscriber, collection) pair
+    :rtype: tuple[HeartbeatSubscriber, HeartbeatCollection]
+    """
+    cat = catalog if catalog is not None else ToolCatalog()
+    collection = _make_collection()
+    subscriber = HeartbeatSubscriber(
+        cat,
+        collection,
+        namespace=namespace,
+        check_interval=check_interval,
+        timeout=timeout,
+    )
+    return subscriber, collection
 
 
 # -- heartbeat handling tests --
 
 
-class TestHeartbeatMonitorHandling:
+class TestHeartbeatSubscriberHandling:
     """tests for heartbeat message handling."""
 
     @pytest.mark.asyncio
     async def test_tracks_new_pod_on_first_heartbeat(self) -> None:
-        """monitor creates PodStatus on first heartbeat from pod."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        """subscriber creates HeartbeatEntity on first heartbeat from pod."""
+        subscriber, collection = _make_subscriber()
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
 
         msg = _make_heartbeat_msg(pod_id="pod-new")
-        await monitor._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
-        assert "pod-new" in monitor.pods
-        assert monitor.pods["pod-new"].pod_id == "pod-new"
-        await monitor.stop()
+        assert "pod-new" in subscriber.known_pod_ids
+        entity = await collection.get("pod-new")
+        assert entity is not None
+        assert entity.pod_id == "pod-new"
+        assert entity.status == "healthy"
+        await subscriber.stop()
 
     @pytest.mark.asyncio
     async def test_updates_timestamp_on_subsequent_heartbeat(self) -> None:
-        """monitor updates last_heartbeat on subsequent heartbeats."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        """subscriber updates date_last_heartbeat on subsequent heartbeats."""
+        subscriber, collection = _make_subscriber()
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
 
         msg1 = _make_heartbeat_msg(pod_id="pod-001")
-        await monitor._handle_heartbeat(msg1)
-        first_hb = monitor.pods["pod-001"].date_last_heartbeat
+        await subscriber.handle_heartbeat(msg1)
+        first_entity = await collection.get("pod-001")
+        assert first_entity is not None
+        first_hb = first_entity.date_last_heartbeat
 
         msg2 = _make_heartbeat_msg(pod_id="pod-001")
-        await monitor._handle_heartbeat(msg2)
-        second_hb = monitor.pods["pod-001"].date_last_heartbeat
+        await subscriber.handle_heartbeat(msg2)
+        second_entity = await collection.get("pod-001")
+        assert second_entity is not None
+        second_hb = second_entity.date_last_heartbeat
 
         assert second_hb >= first_hb
-        await monitor.stop()
+        await subscriber.stop()
 
     @pytest.mark.asyncio
     async def test_resets_consecutive_misses_on_heartbeat(self) -> None:
-        """monitor resets consecutive_misses to zero on heartbeat."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        """subscriber resets consecutive_misses to zero on heartbeat."""
+        subscriber, collection = _make_subscriber()
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
 
-        monitor._pods["pod-001"] = PodStatus(
-            pod_id="pod-001",
-            consecutive_misses=5,
+        # Seed a pre-existing row with non-zero misses
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-001",
+                "date_last_heartbeat": datetime.now(UTC),
+                "tools": [],
+                "tools_count": 0,
+                "status": "unresponsive",
+                "consecutive_misses": 5,
+            }
         )
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-001")
 
         msg = _make_heartbeat_msg(pod_id="pod-001")
-        await monitor._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
-        assert monitor.pods["pod-001"].consecutive_misses == 0
-        await monitor.stop()
+        reloaded = await collection.get("pod-001")
+        assert reloaded is not None
+        assert reloaded.consecutive_misses == 0
+        assert reloaded.status == "healthy"
+        await subscriber.stop()
 
     @pytest.mark.asyncio
     async def test_ignores_malformed_heartbeat(self) -> None:
-        """monitor ignores messages with invalid payload."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        """subscriber ignores messages with invalid payload."""
+        subscriber, collection = _make_subscriber()
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
 
         msg = MagicMock()
         msg.data = b"not json"
-        await monitor._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
-        assert len(monitor.pods) == 0
-        await monitor.stop()
+        assert subscriber.known_pod_ids == set()
+        await subscriber.stop()
 
     @pytest.mark.asyncio
     async def test_marks_pod_tools_available_on_heartbeat(self) -> None:
-        """monitor marks all endpoints from pod as available on heartbeat."""
+        """subscriber marks endpoints available and records tools on entity."""
         catalog = ToolCatalog()
         endpoint = ToolEndpoint(pod_id="pod-001", status="unavailable")
         entry = CatalogEntry(
@@ -185,26 +237,28 @@ class TestHeartbeatMonitorHandling:
         )
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        subscriber, collection = _make_subscriber(catalog=catalog)
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
 
         msg = _make_heartbeat_msg(pod_id="pod-001")
-        await monitor._handle_heartbeat(msg)
+        await subscriber.handle_heartbeat(msg)
 
         registered = catalog.get("threetears.calculator@1.0.0")
         assert registered is not None
         assert registered.endpoints[0].status == "available"
-        assert "threetears.calculator@1.0.0" in monitor.pods["pod-001"].tools
-        await monitor.stop()
+        entity = await collection.get("pod-001")
+        assert entity is not None
+        assert "threetears.calculator@1.0.0" in entity.tools
+        await subscriber.stop()
 
 
 # -- health check tests --
 
 
-class TestHeartbeatMonitorHealthCheck:
+class TestHeartbeatSubscriberHealthCheck:
     """tests for periodic health check sweep."""
 
     @pytest.mark.asyncio
@@ -214,22 +268,26 @@ class TestHeartbeatMonitorHealthCheck:
         entry = _make_entry(pod_id="pod-stale")
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _make_subscriber(catalog=catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
-        monitor._pods["pod-stale"] = PodStatus(
-            pod_id="pod-stale",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-stale",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
         )
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-stale")
 
-        await monitor._run_health_check()
+        await subscriber.run_health_check()
 
-        assert "pod-stale" not in monitor.pods
+        assert "pod-stale" not in subscriber.known_pod_ids
+        assert await collection.get("pod-stale") is None
         assert catalog.get("threetears.calculator@1.0.0") is None
 
     @pytest.mark.asyncio
@@ -239,22 +297,25 @@ class TestHeartbeatMonitorHealthCheck:
         entry = _make_entry(pod_id="pod-healthy")
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _make_subscriber(catalog=catalog, timeout=30.0)
 
         recent_time = datetime.now(UTC) - timedelta(seconds=5)
-        monitor._pods["pod-healthy"] = PodStatus(
-            pod_id="pod-healthy",
-            date_last_heartbeat=recent_time,
-            tools=["threetears.calculator@1.0.0"],
+        healthy_entity = collection.create(
+            {
+                "pod_id": "pod-healthy",
+                "date_last_heartbeat": recent_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
         )
+        await collection.save_entity(healthy_entity)
+        subscriber.track_pod("pod-healthy")
 
-        await monitor._run_health_check()
+        await subscriber.run_health_check()
 
-        assert "pod-healthy" in monitor.pods
+        assert "pod-healthy" in subscriber.known_pod_ids
         assert catalog.get("threetears.calculator@1.0.0") is not None
 
     @pytest.mark.asyncio
@@ -273,29 +334,39 @@ class TestHeartbeatMonitorHealthCheck:
         )
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _make_subscriber(catalog=catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
-        monitor._pods["pod-stale"] = PodStatus(
-            pod_id="pod-stale",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
-        )
         recent_time = datetime.now(UTC) - timedelta(seconds=5)
-        monitor._pods["pod-healthy"] = PodStatus(
-            pod_id="pod-healthy",
-            date_last_heartbeat=recent_time,
-            tools=["threetears.calculator@1.0.0"],
+
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-stale",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
         )
+        healthy_entity = collection.create(
+            {
+                "pod_id": "pod-healthy",
+                "date_last_heartbeat": recent_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(stale_entity)
+        await collection.save_entity(healthy_entity)
+        subscriber.track_pods({"pod-stale", "pod-healthy"})
 
-        await monitor._run_health_check()
+        await subscriber.run_health_check()
 
-        assert "pod-stale" not in monitor.pods
-        assert "pod-healthy" in monitor.pods
+        assert "pod-stale" not in subscriber.known_pod_ids
+        assert "pod-healthy" in subscriber.known_pod_ids
         surviving = catalog.get("threetears.calculator@1.0.0")
         assert surviving is not None
         assert len(surviving.endpoints) == 1
@@ -318,102 +389,197 @@ class TestHeartbeatMonitorHealthCheck:
         await catalog.register(entry_a)
         await catalog.register(entry_b)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _make_subscriber(catalog=catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
-        monitor._pods["pod-stale-1"] = PodStatus(
-            pod_id="pod-stale-1",
-            date_last_heartbeat=stale_time,
-            tools=["tool.alpha@1.0"],
-        )
-        monitor._pods["pod-stale-2"] = PodStatus(
-            pod_id="pod-stale-2",
-            date_last_heartbeat=stale_time,
-            tools=["tool.beta@1.0"],
-        )
+        for pod_id, tool in (
+            ("pod-stale-1", "tool.alpha@1.0"),
+            ("pod-stale-2", "tool.beta@1.0"),
+        ):
+            entity = collection.create(
+                {
+                    "pod_id": pod_id,
+                    "date_last_heartbeat": stale_time,
+                    "tools": [tool],
+                    "tools_count": 1,
+                    "status": "healthy",
+                    "consecutive_misses": 0,
+                }
+            )
+            await collection.save_entity(entity)
+            subscriber.track_pod(pod_id)
 
-        await monitor._run_health_check()
+        await subscriber.run_health_check()
 
-        assert len(monitor.pods) == 0
+        assert subscriber.known_pod_ids == set()
         assert catalog.get("tool.alpha@1.0") is None
         assert catalog.get("tool.beta@1.0") is None
 
     @pytest.mark.asyncio
     async def test_increments_consecutive_misses(self) -> None:
-        """health check increments consecutive_misses before deregistration."""
+        """stale pod records consecutive_misses increment before eviction."""
         catalog = ToolCatalog()
         entry = _make_entry(pod_id="pod-miss")
         await catalog.register(entry)
 
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            timeout=30.0,
-        )
+        subscriber, collection = _make_subscriber(catalog=catalog, timeout=30.0)
 
         stale_time = datetime.now(UTC) - timedelta(seconds=60)
-        pod_status = PodStatus(
-            pod_id="pod-miss",
-            date_last_heartbeat=stale_time,
-            tools=["threetears.calculator@1.0.0"],
-            consecutive_misses=2,
+        stale_entity = collection.create(
+            {
+                "pod_id": "pod-miss",
+                "date_last_heartbeat": stale_time,
+                "tools": ["threetears.calculator@1.0.0"],
+                "tools_count": 1,
+                "status": "healthy",
+                "consecutive_misses": 2,
+            }
         )
-        monitor._pods["pod-miss"] = pod_status
+        await collection.save_entity(stale_entity)
+        subscriber.track_pod("pod-miss")
 
-        await monitor._run_health_check()
+        await subscriber.run_health_check()
 
-        assert "pod-miss" not in monitor.pods
+        assert "pod-miss" not in subscriber.known_pod_ids
 
 
 # -- lifecycle tests --
 
 
-class TestHeartbeatMonitorLifecycle:
-    """tests for monitor start/stop lifecycle."""
+class TestHeartbeatSubscriberLifecycle:
+    """tests for subscriber start/stop lifecycle."""
 
     @pytest.mark.asyncio
     async def test_start_subscribes_to_heartbeat_wildcard(self) -> None:
         """start subscribes to {namespace}.tools.heartbeat.>."""
+        from threetears.nats import set_default_namespace
+
+        set_default_namespace("myns")
         catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="myns")
+        subscriber, _ = _make_subscriber(catalog=catalog, namespace="myns")
         nc = AsyncMock()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
+        await subscriber.start(nc)
         nc.subscribe.assert_called_once()
         call_args = nc.subscribe.call_args
-        assert call_args[0][0] == "myns.tools.heartbeat.>"
-        await monitor.stop()
+        # wrapper subscribe is kw-only with typed Subject (wildcard pattern)
+        assert call_args.kwargs["subject"].path == "myns.tools.heartbeat.>"
+        await subscriber.stop()
 
     @pytest.mark.asyncio
     async def test_stop_cancels_check_task(self) -> None:
         """stop cancels health check task."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(
-            catalog,
-            namespace="test",
-            check_interval=100.0,
-        )
+        subscriber, _ = _make_subscriber(check_interval=100.0)
         nc = AsyncMock()
         mock_sub = AsyncMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
-        assert monitor._check_task is not None
-        await monitor.stop()
-        assert monitor._check_task is None
+        await subscriber.start(nc)
+        assert subscriber.has_active_check_task is True
+        await subscriber.stop()
+        assert subscriber.has_active_check_task is False
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:
-        """stop unsubscribes from heartbeat subject."""
-        catalog = ToolCatalog()
-        monitor = HeartbeatMonitor(catalog, namespace="test")
+        """stop unsubscribes from heartbeat subject through the wrapper."""
+        subscriber, _ = _make_subscriber()
         nc = AsyncMock()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
-        await monitor.start(nc)
-        await monitor.stop()
-        mock_sub.unsubscribe.assert_called_once()
+        await subscriber.start(nc)
+        await subscriber.stop()
+        nc.unsubscribe.assert_called_once_with(mock_sub)
+
+
+# -- HeartbeatCollection-only tests --
+
+
+class TestHeartbeatCollectionL1:
+    """L1-only behaviour tests for HeartbeatCollection (no NATS)."""
+
+    @pytest.mark.asyncio
+    async def test_save_then_get_roundtrips(self) -> None:
+        """save_entity populates L1; get returns hydrated entity."""
+        collection = _make_collection()
+        now = datetime.now(UTC)
+        entity = collection.create(
+            {
+                "pod_id": "pod-abc",
+                "date_last_heartbeat": now,
+                "tools": ["t.a@1.0", "t.b@2.0"],
+                "tools_count": 2,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(entity)
+
+        hit = await collection.get("pod-abc")
+        assert hit is not None
+        assert hit.pod_id == "pod-abc"
+        assert hit.tools == ["t.a@1.0", "t.b@2.0"]
+        assert hit.status == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_get_returns_none_on_miss(self) -> None:
+        """get returns None for unknown pod_id without hitting L3."""
+        collection = _make_collection()
+        result = await collection.get("pod-never-seen")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_postgres_raises(self) -> None:
+        """the L3 hop is unreachable and raises on direct invocation."""
+        collection = _make_collection()
+        with pytest.raises(RuntimeError):
+            await collection.fetch_from_postgres("pod-x")
+
+    @pytest.mark.asyncio
+    async def test_save_to_postgres_raises(self) -> None:
+        """L3 write hop raises on direct invocation."""
+        collection = _make_collection()
+        with pytest.raises(RuntimeError):
+            await collection.save_to_postgres({"pod_id": "p"})
+
+    @pytest.mark.asyncio
+    async def test_delete_from_postgres_raises(self) -> None:
+        """L3 delete hop raises on direct invocation."""
+        collection = _make_collection()
+        with pytest.raises(RuntimeError):
+            await collection.delete_from_postgres("pod-x")
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_row_from_l1(self) -> None:
+        """delete evicts the row from L1."""
+        collection = _make_collection()
+        entity = collection.create(
+            {
+                "pod_id": "pod-x",
+                "date_last_heartbeat": datetime.now(UTC),
+                "tools": [],
+                "tools_count": 0,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(entity)
+        await collection.delete("pod-x")
+        assert await collection.get("pod-x") is None
+
+    @pytest.mark.asyncio
+    async def test_get_pods_returns_only_known_hits(self) -> None:
+        """get_pods hydrates many ids; missing ids are omitted."""
+        collection = _make_collection()
+        entity = collection.create(
+            {
+                "pod_id": "pod-present",
+                "date_last_heartbeat": datetime.now(UTC),
+                "tools": [],
+                "tools_count": 0,
+                "status": "healthy",
+                "consecutive_misses": 0,
+            }
+        )
+        await collection.save_entity(entity)
+        result = await collection.get_pods(["pod-present", "pod-missing"])
+        assert [e.pod_id for e in result] == ["pod-present"]

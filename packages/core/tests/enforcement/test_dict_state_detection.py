@@ -59,15 +59,27 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "registry of collection instances, IS the infrastructure",
     ),
     (
-        "core/data/migrations.py",
+        "core/data/migrations/runner.py",
         "MigrationRunner",
-        "_migrations",
-        "static config, migration functions registered once at startup",
+        "_packages",
+        "static config, PackageMigrations registered once at startup",
+    ),
+    (
+        "core/data/migrations/registry.py",
+        "PackageMigrations",
+        "_versions",
+        "static config, migration callables registered once at startup",
+    ),
+    (
+        "core/data/migrations/registry.py",
+        "PackageMigrations",
+        "_downgrades",
+        "static config, downgrade callables registered once at startup",
     ),
     # -- core: L1/L2 cache backends (non-serializable connection state) --
     (
-        "core/cache/nats.py",
-        "NatsClient",
+        "core/cache/kv.py",
+        "NatsKvClient",
         "_buckets",
         "live NATS KV connection references, non-serializable",
     ),
@@ -109,19 +121,6 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_entries",
         "synced from NATS KV on load, not a local-only cache",
     ),
-    (
-        "registry/auth.py",
-        "KvAgentToolAuthorizer",
-        "_cache",
-        "TTL cache with explicit eviction, ephemeral pod-local state to avoid repeated KV reads",
-    ),
-    # -- langgraph: context manager registry --
-    (
-        "langgraph/context_registry.py",
-        "ContextManagerRegistry",
-        "_managers",
-        "live context manager objects, non-serializable",
-    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -134,18 +133,6 @@ KNOWN_VIOLATIONS: list[tuple[str, str, str, str]] = [
         "WriteBuffer",
         "_buf",
         "pending write buffer in raw dict, migrate to SQLiteBackend L1",
-    ),
-    (
-        "registry/health.py",
-        "HeartbeatMonitor",
-        "_pods",
-        "pod health state tracking, migrate to SQLiteBackend L1",
-    ),
-    (
-        "agent-memory/ledger.py",
-        "MemoryLedger",
-        "_refs",
-        "memory references, migrate to SQLiteBackend L1",
     ),
 ]
 
@@ -249,11 +236,17 @@ def _is_bad_value(node: ast.expr) -> bool:
 
 
 def _get_self_attr_name(target: ast.expr) -> str | None:
-    """extract attribute name from ``self._xxx`` target, or None.
+    """extract attribute name from ``self.xxx`` or ``self._xxx`` target, or None.
+
+    the walker accepts both public and private attribute names because
+    the Collection-primitive rule applies regardless of python name
+    privacy: a bespoke in-memory dict of domain state on a class that
+    also has cache-style public api is a cache wrapper and belongs in
+    a BaseCollection, whether the dict is named ``_cache`` or ``cache``.
 
     :param target: AST expression node representing assignment target
     :ptype target: ast.expr
-    :return: attribute name if target is self._xxx, else None
+    :return: attribute name if target is self.xxx, else None
     :rtype: str | None
     """
     if not isinstance(target, ast.Attribute):
@@ -261,8 +254,6 @@ def _get_self_attr_name(target: ast.expr) -> str | None:
     if not isinstance(target.value, ast.Name):
         return None
     if target.value.id != "self":
-        return None
-    if not target.attr.startswith("_"):
         return None
     result = target.attr
     return result

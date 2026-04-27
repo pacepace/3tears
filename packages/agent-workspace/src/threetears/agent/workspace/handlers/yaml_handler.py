@@ -23,6 +23,10 @@ from ruamel.yaml.comments import CommentedMap
 
 from threetears.core.serialization import register_handler
 
+__all__ = [
+    "YamlHandler",
+]
+
 
 class YamlHandler:
     """round-trip YAML handler using ruamel.yaml.

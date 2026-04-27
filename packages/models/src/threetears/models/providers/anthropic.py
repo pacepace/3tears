@@ -14,6 +14,10 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "AnthropicChatProvider",
+]
+
 # backward-compatible aliases for existing imports of private names
 _messages_to_lc = messages_to_lc
 _ai_message_to_result = ai_message_to_result
@@ -48,13 +52,13 @@ class AnthropicChatProvider:
         timeout: int = 120,
         max_retries: int = 2,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._base_url = _strip_v1_suffix(base_url) if base_url else None
-        self._timeout = timeout
+        self.base_url = _strip_v1_suffix(base_url) if base_url else None
+        self.timeout = timeout
         self._max_retries = max_retries
-        self._model: Any = None
-        self._tools: list[ToolDefinition] | None = None
+        self.model: Any = None
+        self.tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches ChatAnthropic instance.
@@ -65,28 +69,28 @@ class AnthropicChatProvider:
         :return: configured ChatAnthropic instance, optionally with tools bound
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_anthropic import ChatAnthropic
 
         kwargs: dict[str, Any] = {
-            "model_name": self._model_name,
+            "model_name": self.model_name,
             "api_key": self._api_key,
-            "timeout": self._timeout,
+            "timeout": self.timeout,
             "max_retries": self._max_retries,
         }
-        if self._base_url is not None:
-            kwargs["base_url"] = self._base_url
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
 
         base_model: Any = ChatAnthropic(**kwargs)
 
-        if self._tools:
-            lc_tools = [_tool_def_to_lc(t) for t in self._tools]
+        if self.tools:
+            lc_tools = [_tool_def_to_lc(t) for t in self.tools]
             base_model = base_model.bind_tools(lc_tools)
 
-        self._model = base_model
-        return self._model
+        self.model = base_model
+        return self.model
 
     async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         """generates chat completion from message history.
@@ -132,8 +136,8 @@ class AnthropicChatProvider:
         :param tools: tool definitions available to model
         :ptype tools: list[ToolDefinition]
         """
-        self._tools = list(tools)
-        self._model = None
+        self.tools = list(tools)
+        self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """preprocesses messages before sending to Anthropic model.
@@ -152,7 +156,7 @@ class AnthropicChatProvider:
         from threetears.models.preprocessing import preprocess_messages
 
         capabilities = ModelCapabilities(
-            model_name=self._model_name,
+            model_name=self.model_name,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,

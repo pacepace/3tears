@@ -14,7 +14,10 @@ from typing import Any
 from uuid import UUID, uuid7
 
 from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.namespaces import PLURAL_PREFIX_AGENT, build_namespace_name
 from threetears.observe import get_logger
+
+__all__ = ["NatsProxyL3Backend"]
 
 _logger = get_logger(__name__)
 
@@ -165,6 +168,17 @@ class NatsProxyL3Backend:
     drop-in replacement for direct asyncpg pool. collections use
     this without knowing queries are proxied through Hub.
 
+    :ivar ns: NATS subject namespace prefix; collaborator proxies
+        (``_ProxyConnection``, ``_ProxyTransaction``) read this to
+        compose tx subject names
+    :ivar agent_id: agent UUID string used for ACL validation on the
+        broker side; collaborator proxies include it in every tx
+        envelope
+    :ivar default_namespace: default logical namespace applied to
+        queries that did not supply one
+    :ivar timeout_ms: query-side timeout threaded into outgoing
+        envelopes and used to compute the NATS-level response timeout
+
     :param nats_client: connected NATS client
     :ptype nats_client: Any
     :param namespace_prefix: NATS subject namespace prefix
@@ -200,16 +214,16 @@ class NatsProxyL3Backend:
         :ptype timeout_ms: int | None
         """
         self._nc = nats_client
-        self._ns = namespace_prefix
-        self._agent_id = agent_id
-        self._default_namespace = default_namespace or f"agent.{agent_id}"
+        self.ns = namespace_prefix
+        self.agent_id = agent_id
+        self.default_namespace = default_namespace or build_namespace_name(PLURAL_PREFIX_AGENT, agent_id)
         if timeout_ms is not None:
-            self._timeout_ms = timeout_ms
+            self.timeout_ms = timeout_ms
         else:
             import os
 
             raw = os.environ.get("THREETEARS_NATS_PROXY_TIMEOUT_MS")
-            self._timeout_ms = int(raw) if raw is not None else 5000
+            self.timeout_ms = int(raw) if raw is not None else 5000
 
     async def fetch(
         self,
@@ -309,10 +323,10 @@ class NatsProxyL3Backend:
         :rtype: list[Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        ns = namespace or self._default_namespace
+        ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._agent_id,
+            "agent_id": self.agent_id,
             "namespace": ns,
             "queries": [
                 {
@@ -324,8 +338,8 @@ class NatsProxyL3Backend:
             ],
             "transaction": transaction,
         }
-        subject = f"{self._ns}.l3.batch"
-        response = await self._nats_request(subject, payload)
+        subject = f"{self.ns}.l3.batch"
+        response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
             raise DataLayerUnavailableError(
@@ -357,18 +371,18 @@ class NatsProxyL3Backend:
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        ns = namespace or self._default_namespace
+        ns = namespace or self.default_namespace
         payload = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._agent_id,
+            "agent_id": self.agent_id,
             "namespace": ns,
             "operation": operation,
             "query": query,
             "params": [_serialize_param(p) for p in params],
-            "timeout_ms": self._timeout_ms,
+            "timeout_ms": self.timeout_ms,
         }
-        subject = f"{self._ns}.l3.query"
-        response = await self._nats_request(subject, payload)
+        subject = f"{self.ns}.l3.query"
+        response = await self.nats_request(subject, payload)
 
         if not response.get("success", False):
             raise DataLayerUnavailableError(
@@ -378,23 +392,30 @@ class NatsProxyL3Backend:
 
         return response
 
-    async def _nats_request(
+    async def nats_request(
         self,
         subject: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """send NATS request and parse JSON response.
+        """send raw NATS request and parse JSON response.
 
-        :param subject: NATS subject
+        public entry point for the backend's collaborator proxy objects
+        (:class:`_ProxyConnection`, :class:`_ProxyTransaction`) so they
+        do not have to reach for the underlying ``_nc`` client. owns
+        envelope serialization, timeout computation, and error wrapping.
+
+        :param subject: NATS subject on which to publish the request
         :ptype subject: str
-        :param payload: request payload dict
+        :param payload: request payload dict, will be JSON-encoded with
+            ``default=str`` so UUID, datetime, Decimal values serialize
         :ptype payload: dict[str, Any]
-        :return: parsed response dict
+        :return: parsed JSON response dict from broker
         :rtype: dict[str, Any]
-        :raises DataLayerUnavailableError: if NATS request fails
+        :raises DataLayerUnavailableError: if NATS request times out,
+            the broker returns malformed JSON, or the client is closed
         """
         payload_bytes = json.dumps(payload, default=str).encode("utf-8")
-        nats_timeout = (self._timeout_ms / 1000) + 2
+        nats_timeout = (self.timeout_ms / 1000) + 2
 
         try:
             reply = await self._nc.request(subject, payload_bytes, timeout=nats_timeout)
@@ -430,6 +451,42 @@ class NatsProxyL3Backend:
         :rtype: _ProxyAcquireCM
         """
         return _ProxyAcquireCM(self)
+
+    def transaction(self, namespace: str | None = None) -> "_ProxyPoolTransactionCM":
+        """return a pool-level transaction context manager (WS-ACL-06).
+
+        combines :meth:`acquire` + ``conn.transaction(namespace=...)``
+        into a single ``async with`` so workspace tools can write::
+
+            async with pool.transaction(namespace=workspace.namespace_name):
+                await pool.execute(...)
+
+        without the two-level ``acquire()`` + ``conn.transaction()``
+        dance. the yielded object is a :class:`_ProxyConnection` pinned
+        to the broker-minted ``tx_id``; inside the ``async with`` every
+        ``execute`` / ``fetch`` / ``fetchrow`` call the caller issues
+        against THIS returned connection routes through the session.
+
+        ``namespace`` is declared once at begin and bound to the session
+        on the broker; statement-level ``namespace=`` overrides are
+        rejected (:meth:`_ProxyConnection.execute` etc. raise
+        ``ValueError`` when called with a non-None ``namespace`` inside
+        a tx). this is intentional: the namespace is a property of the
+        transaction, not of any single statement, and silently ignoring
+        a mid-tx override would let a bug in a tool quietly land writes
+        on the wrong schema.
+
+        ``namespace=None`` (default) preserves today's behavior: the
+        session binds to the caller's default agent namespace. explicit
+        ``namespace=<str>`` is the WS-ACL-06 cross-agent path.
+
+        :param namespace: logical namespace name the session binds to;
+            ``None`` means use the caller's default agent namespace
+        :ptype namespace: str | None
+        :return: async context manager yielding the pinned proxy connection
+        :rtype: _ProxyPoolTransactionCM
+        """
+        return _ProxyPoolTransactionCM(self, namespace)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +565,7 @@ class _ProxyAcquireCM:
         del exc_type, exc_val, exc_tb
         if self._connection is not None and self._connection.tx_id is not None:
             try:
-                await self._connection._abort_tx()
+                await self._connection.abort_tx()
             except Exception as abort_exc:
                 _logger.warning(
                     "proxy connection close: dangling tx rollback failed: %s",
@@ -543,7 +600,10 @@ class _ProxyConnection:
         # reset to None on commit or rollback.
         self.tx_id: UUID | None = None
 
-    def transaction(self) -> "_ProxyTransaction":
+    def transaction(
+        self,
+        namespace: str | None = None,
+    ) -> "_ProxyTransaction":
         """return a ``conn.transaction()``-shaped context manager.
 
         mirrors :meth:`asyncpg.Connection.transaction`. nested calls
@@ -551,10 +611,24 @@ class _ProxyConnection:
         open two transactions on one connection fail loudly instead
         of silently sharing tx state.
 
+        WS-ACL-06: ``namespace=<str>`` threads a logical namespace
+        through to the broker's ``tx.begin`` payload. the broker
+        resolves the namespace once and binds ``SET search_path`` for
+        the session. every subsequent ``tx.execute`` / ``tx.fetch`` /
+        ``tx.fetchrow`` on this connection implicitly honors the
+        session's namespace -- per-statement ``namespace=`` overrides
+        inside an open tx are REJECTED (see
+        :meth:`_ProxyConnection.execute` and siblings). ``namespace=None``
+        preserves today's behavior: the session binds to the caller's
+        default agent namespace.
+
+        :param namespace: logical namespace name the session binds to;
+            ``None`` means use the caller's default agent namespace
+        :ptype namespace: str | None
         :return: transaction context manager
         :rtype: _ProxyTransaction
         """
-        return _ProxyTransaction(self, self._backend)
+        return _ProxyTransaction(self, self._backend, namespace)
 
     async def execute(
         self,
@@ -575,12 +649,15 @@ class _ProxyConnection:
         :ptype query: str
         :param params: query parameters
         :ptype params: Any
-        :param namespace: override namespace for outside-tx calls
-            (ignored inside a tx since the session is bound at begin)
+        :param namespace: override namespace for outside-tx calls;
+            inside an open transaction a non-None value is REJECTED
+            (the session's namespace is bound once at tx.begin)
         :ptype namespace: str | None
         :return: asyncpg-shape status tag
         :rtype: str
         :raises DataLayerUnavailableError: on broker error
+        :raises ValueError: when called with ``namespace`` inside an
+            open transaction
         """
         if self.tx_id is None:
             return await self._backend.execute(
@@ -588,15 +665,22 @@ class _ProxyConnection:
                 *params,
                 namespace=namespace,
             )
+        if namespace is not None:
+            raise ValueError(
+                "per-statement namespace= is not allowed inside an open "
+                "transaction; the namespace is declared at "
+                "conn.transaction(namespace=...) and bound on the broker "
+                "for the lifetime of the session",
+            )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.execute"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.execute"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.execute failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -619,10 +703,14 @@ class _ProxyConnection:
         :ptype query: str
         :param params: query parameters
         :ptype params: Any
-        :param namespace: override namespace for outside-tx calls
+        :param namespace: override namespace for outside-tx calls;
+            inside an open transaction a non-None value is REJECTED
+            (the session's namespace is bound once at tx.begin)
         :ptype namespace: str | None
         :return: first row dict or None
         :rtype: dict[str, Any] | None
+        :raises ValueError: when called with ``namespace`` inside an
+            open transaction
         """
         if self.tx_id is None:
             outside_row = await self._backend.fetchrow(
@@ -631,15 +719,22 @@ class _ProxyConnection:
                 namespace=namespace,
             )
             return outside_row
+        if namespace is not None:
+            raise ValueError(
+                "per-statement namespace= is not allowed inside an open "
+                "transaction; the namespace is declared at "
+                "conn.transaction(namespace=...) and bound on the broker "
+                "for the lifetime of the session",
+            )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.fetchrow"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.fetchrow"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.fetchrow failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -662,10 +757,14 @@ class _ProxyConnection:
         :ptype query: str
         :param params: query parameters
         :ptype params: Any
-        :param namespace: override namespace for outside-tx calls
+        :param namespace: override namespace for outside-tx calls;
+            inside an open transaction a non-None value is REJECTED
+            (the session's namespace is bound once at tx.begin)
         :ptype namespace: str | None
         :return: row dicts
         :rtype: list[dict[str, Any]]
+        :raises ValueError: when called with ``namespace`` inside an
+            open transaction
         """
         if self.tx_id is None:
             outside_rows = await self._backend.fetch(
@@ -674,15 +773,22 @@ class _ProxyConnection:
                 namespace=namespace,
             )
             return outside_rows
+        if namespace is not None:
+            raise ValueError(
+                "per-statement namespace= is not allowed inside an open "
+                "transaction; the namespace is declared at "
+                "conn.transaction(namespace=...) and bound on the broker "
+                "for the lifetime of the session",
+            )
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(self.tx_id),
             "query": query,
             "params": [_serialize_param(p) for p in params],
         }
-        subject = f"{self._backend._ns}.l3.tx.fetch"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.fetch"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.fetch failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -691,14 +797,16 @@ class _ProxyConnection:
         raw_rows: list[dict[str, Any]] = response.get("rows", [])
         return [_deserialize_row(r) for r in raw_rows]
 
-    async def _abort_tx(self) -> None:
+    async def abort_tx(self) -> None:
         """send ``tx.rollback`` and clear the local tx_id.
 
         invoked by :class:`_ProxyTransaction.__aexit__` on an exception
         path and by :class:`_ProxyAcquireCM.__aexit__` as a safety net
         when a caller forgets to end the transaction. idempotent on
         double-call so the two exit hooks can both fire without
-        hitting the broker twice.
+        hitting the broker twice. name is public because the safety-net
+        exit hook lives in a sibling class and must call this method
+        without crossing the private-boundary contract.
 
         :return: None
         :rtype: None
@@ -708,12 +816,12 @@ class _ProxyConnection:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(tx_id),
         }
-        subject = f"{self._backend._ns}.l3.tx.rollback"
+        subject = f"{self._backend.ns}.l3.tx.rollback"
         try:
-            await self._backend._nats_request(subject, payload)
+            await self._backend.nats_request(subject, payload)
         finally:
             # clear the tx_id even on network failure so subsequent
             # ops on this connection route through the outside-tx
@@ -734,12 +842,21 @@ class _ProxyTransaction:
     :ptype connection: _ProxyConnection
     :param backend: backend instance for NATS routing
     :ptype backend: NatsProxyL3Backend
+    :param namespace: optional logical namespace name; when supplied
+        the tx.begin payload carries this value verbatim so the broker
+        binds ``SET search_path`` to the namespace's (possibly remote)
+        schema, enabling cross-agent workspace operations per WS-ACL-06.
+        when ``None`` (today's default) the backend's default namespace
+        is used, preserving pre-WS-ACL-06 behavior for non-workspace
+        callers.
+    :ptype namespace: str | None
     """
 
     def __init__(
         self,
         connection: "_ProxyConnection",
         backend: "NatsProxyL3Backend",
+        namespace: str | None = None,
     ) -> None:
         """capture the owning connection and backend.
 
@@ -747,11 +864,15 @@ class _ProxyTransaction:
         :ptype connection: _ProxyConnection
         :param backend: backend instance
         :ptype backend: NatsProxyL3Backend
+        :param namespace: logical namespace the session binds to, or
+            ``None`` for the backend default
+        :ptype namespace: str | None
         :return: None
         :rtype: None
         """
         self._connection = connection
         self._backend = backend
+        self._namespace = namespace
 
     async def __aenter__(self) -> "_ProxyTransaction":
         """send ``l3.tx.begin`` and pin the returned tx_id on the connection.
@@ -766,14 +887,21 @@ class _ProxyTransaction:
                 "NatsProxyL3Backend does not support nested transactions; "
                 "commit or rollback the outer tx before starting another",
             )
+        # WS-ACL-06: when the caller specified namespace= on
+        # .transaction(), ship that value so the broker binds the
+        # session's search_path to the namespace's schema (possibly a
+        # remote agent's schema under a grant). absent an explicit
+        # value we preserve today's behavior and bind to the caller's
+        # default agent namespace.
+        effective_namespace = self._namespace if self._namespace is not None else self._backend.default_namespace
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
-            "namespace": self._backend._default_namespace,
-            "statement_timeout_ms": self._backend._timeout_ms,
+            "agent_id": self._backend.agent_id,
+            "namespace": effective_namespace,
+            "statement_timeout_ms": self._backend.timeout_ms,
         }
-        subject = f"{self._backend._ns}.l3.tx.begin"
-        response = await self._backend._nats_request(subject, payload)
+        subject = f"{self._backend.ns}.l3.tx.begin"
+        response = await self._backend.nats_request(subject, payload)
         if not response.get("success", False):
             raise DataLayerUnavailableError(
                 f"tx.begin failed: {response.get('error_code', 'UNKNOWN')}: "
@@ -813,13 +941,13 @@ class _ProxyTransaction:
             return
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
-            "agent_id": self._backend._agent_id,
+            "agent_id": self._backend.agent_id,
             "tx_id": str(tx_id),
         }
         action = "rollback" if exc_type is not None else "commit"
-        subject = f"{self._backend._ns}.l3.tx.{action}"
+        subject = f"{self._backend.ns}.l3.tx.{action}"
         try:
-            response = await self._backend._nats_request(subject, payload)
+            response = await self._backend.nats_request(subject, payload)
             if not response.get("success", False):
                 # swallow the failure on the rollback path (we already
                 # have an exception in flight) but surface it on the
@@ -837,3 +965,92 @@ class _ProxyTransaction:
                 )
         finally:
             self._connection.tx_id = None
+
+
+class _ProxyPoolTransactionCM:
+    """pool-level ``async with`` wrapper combining acquire + transaction.
+
+    returned by :meth:`NatsProxyL3Backend.transaction`. compresses the
+    two-level ``async with pool.acquire() as conn: async with
+    conn.transaction(namespace=...):`` dance into a single
+    ``async with pool.transaction(namespace=...) as conn:`` so
+    workspace tools can express a cross-agent transactional write in
+    one step.
+
+    the yielded value is the :class:`_ProxyConnection` pinned to the
+    broker-minted ``tx_id``; every ``execute`` / ``fetch`` /
+    ``fetchrow`` call the caller issues against THIS connection routes
+    through the session.
+
+    cleanup on exit:
+
+    1. if the transaction body raised, the inner
+       :class:`_ProxyTransaction` sends rollback on its own
+       ``__aexit__``; this wrapper then runs the outer
+       :class:`_ProxyAcquireCM` exit which is a no-op because
+       ``tx_id`` has already been cleared.
+    2. if the body ran cleanly the inner commit fires, the acquire
+       wrapper exits cleanly, and the connection is considered
+       released.
+
+    :param backend: backend instance for NATS routing
+    :ptype backend: NatsProxyL3Backend
+    :param namespace: logical namespace the session binds to
+    :ptype namespace: str | None
+    """
+
+    def __init__(
+        self,
+        backend: "NatsProxyL3Backend",
+        namespace: str | None,
+    ) -> None:
+        """capture the backend + namespace for deferred acquire at enter.
+
+        :param backend: backend instance
+        :ptype backend: NatsProxyL3Backend
+        :param namespace: logical namespace the session binds to
+        :ptype namespace: str | None
+        :return: None
+        :rtype: None
+        """
+        self._backend = backend
+        self._namespace = namespace
+        self._acquire_cm: _ProxyAcquireCM | None = None
+        self._tx_cm: _ProxyTransaction | None = None
+
+    async def __aenter__(self) -> "_ProxyConnection":
+        """acquire a connection, begin a tx, and return the pinned conn.
+
+        :return: proxy connection with ``tx_id`` set
+        :rtype: _ProxyConnection
+        :raises DataLayerUnavailableError: on broker error
+        """
+        self._acquire_cm = _ProxyAcquireCM(self._backend)
+        conn = await self._acquire_cm.__aenter__()
+        self._tx_cm = conn.transaction(namespace=self._namespace)
+        await self._tx_cm.__aenter__()
+        return conn
+
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
+    ) -> None:
+        """commit/rollback the tx, then run the acquire safety-net.
+
+        :param exc_type: exception type or None
+        :ptype exc_type: Any
+        :param exc_val: exception value or None
+        :ptype exc_val: Any
+        :param exc_tb: exception traceback or None
+        :ptype exc_tb: Any
+        :return: None
+        :rtype: None
+        """
+        try:
+            if self._tx_cm is not None:
+                await self._tx_cm.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            if self._acquire_cm is not None:
+                await self._acquire_cm.__aexit__(exc_type, exc_val, exc_tb)

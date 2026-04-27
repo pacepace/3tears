@@ -15,12 +15,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from threetears.agent.tools.server import RegistrationManifest, ToolManifestEntry
+from threetears.nats import IncomingMessage, RequestError, set_default_namespace
 from threetears.registry.catalog import ToolCatalog
 from threetears.registry.registration import (
     ProbeRequest,
     ProbeResponse,
     RegistrationHandler,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("test")
 
 
 # -- helpers --
@@ -56,20 +63,17 @@ def _make_manifest(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-) -> MagicMock:
-    """create mock NATS message.
+) -> IncomingMessage:
+    """build a wrapper :class:`IncomingMessage` envelope.
 
     :param data: raw message payload bytes
     :ptype data: bytes
-    :param reply: optional reply subject
+    :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
-    :return: mock NATS message
-    :rtype: MagicMock
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = data
-    msg.reply = reply
-    return msg
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.register")
 
 
 # -- state machine tests --
@@ -88,12 +92,12 @@ class TestRegistrationBarrierStateMachine:
             probe_timeout=1.0,
         )
         nc = AsyncMock()
-        nc.request = AsyncMock(side_effect=TimeoutError("probe timeout"))
+        nc.request = AsyncMock(side_effect=RequestError("request timed out"))
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -106,21 +110,16 @@ class TestRegistrationBarrierStateMachine:
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
         nc = AsyncMock()
-        probe_reply = MagicMock()
-        probe_reply.data = (
-            ProbeResponse(
-                pod_id="pod-probe-001",
-                ready=True,
-            )
-            .model_dump_json()
-            .encode("utf-8")
+        # the wrapper's request() returns the parsed response_type
+        # instance directly, not a raw nats message with .data
+        nc.request = AsyncMock(
+            return_value=ProbeResponse(pod_id="pod-probe-001", ready=True),
         )
-        nc.request = AsyncMock(return_value=probe_reply)
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -132,12 +131,12 @@ class TestRegistrationBarrierStateMachine:
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
         nc = AsyncMock()
-        nc.request = AsyncMock(side_effect=TimeoutError("probe timed out"))
+        nc.request = AsyncMock(side_effect=RequestError("request timed out"))
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -145,21 +144,25 @@ class TestRegistrationBarrierStateMachine:
 
     @pytest.mark.asyncio
     async def test_probe_malformed_reply_leaves_endpoint_pending(self) -> None:
-        """malformed probe reply (not a ProbeResponse) leaves endpoint pending.
+        """malformed probe reply leaves endpoint pending.
 
-        a pod that returns non-ProbeResponse bytes on the probe subject
-        (e.g. a bare '{}') must not be promoted; endpoints stay pending
-        so the next heartbeat-driven registration can retry.
+        the wrapper's :meth:`request` already validates the reply
+        bytes against ``response_type=ProbeResponse`` and raises
+        :class:`RequestError` on validation failure. simulate that by
+        having the AsyncMock raise; the handler catches Exception so
+        endpoints stay pending.
         """
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        nc.request = AsyncMock(
+            side_effect=RequestError("response decode failed: subject=test.tools.probe.pod-probe-001"),
+        )
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -176,14 +179,15 @@ class TestRegistrationBarrierStateMachine:
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
         nc = AsyncMock()
-        not_ready_reply = MagicMock()
-        not_ready_reply.data = ProbeResponse(pod_id="pod-001", ready=False).model_dump_json().encode("utf-8")
-        nc.request = AsyncMock(return_value=not_ready_reply)
+        # the wrapper returns the parsed ProbeResponse directly
+        nc.request = AsyncMock(
+            return_value=ProbeResponse(pod_id="pod-001", ready=False),
+        )
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -192,53 +196,66 @@ class TestRegistrationBarrierStateMachine:
     @pytest.mark.asyncio
     async def test_probe_issued_to_pod_specific_subject(self) -> None:
         """probe is issued to {namespace}.tools.probe.{pod_id} subject."""
+        set_default_namespace("custom-ns")
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="custom-ns", probe_timeout=1.0)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        # any side_effect that prevents promotion is fine; this test
+        # only inspects which subject the wrapper got called on.
+        nc.request = AsyncMock(
+            side_effect=RequestError("not interested in success path here"),
+        )
         await handler.start(nc)
 
         manifest = _make_manifest(pod_id="pod-subject-check")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         nc.request.assert_called_once()
+        # wrapper request is kw-only with typed Subject
         call_args = nc.request.call_args
-        assert call_args[0][0] == "custom-ns.tools.probe.pod-subject-check"
+        assert call_args.kwargs["subject"].path == "custom-ns.tools.probe.pod-subject-check"
 
     @pytest.mark.asyncio
     async def test_probe_payload_carries_pod_id(self) -> None:
-        """probe payload is a ProbeRequest serialized to JSON carrying pod_id."""
+        """probe message is a ProbeRequest carrying pod_id."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=1.0)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        nc.request = AsyncMock(
+            side_effect=RequestError("not interested in success path here"),
+        )
         await handler.start(nc)
 
         manifest = _make_manifest(pod_id="pod-payload-001")
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
-        call_args = nc.request.call_args
-        payload_bytes = call_args[0][1]
-        payload = ProbeRequest.model_validate_json(payload_bytes)
-        assert payload.pod_id == "pod-payload-001"
+        # wrapper request is kw-only typed; the message kwarg is the
+        # raw ProbeRequest instance the handler built
+        message = nc.request.call_args.kwargs["message"]
+        assert isinstance(message, ProbeRequest)
+        assert message.pod_id == "pod-payload-001"
 
     @pytest.mark.asyncio
     async def test_probe_timeout_applied_to_nats_request(self) -> None:
-        """probe timeout from config is passed as NATS request timeout kwarg."""
+        """probe timeout from config is passed as a timedelta to the wrapper."""
         catalog = ToolCatalog()
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=2.5)
         nc = AsyncMock()
-        nc.request = AsyncMock(return_value=MagicMock(data=b"{}"))
+        nc.request = AsyncMock(
+            side_effect=RequestError("not interested in success path here"),
+        )
         await handler.start(nc)
 
         manifest = _make_manifest()
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         call_args = nc.request.call_args
-        assert call_args[1]["timeout"] == 2.5
+        # wrapper takes a timedelta; the handler converts the
+        # configured float seconds to timedelta(seconds=2.5).
+        assert call_args.kwargs["timeout"].total_seconds() == 2.5
 
 
 # -- multi-tool and multi-pod tests --
@@ -276,7 +293,7 @@ class TestRegistrationBarrierMultipleTools:
             ],
         )
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg)
+        await handler.handle_registration(msg)
 
         calc_entry = catalog.get("threetears.calculator@1.0.0")
         dict_entry = catalog.get("threetears.dictionary@1.0.0")
@@ -297,7 +314,7 @@ class TestRegistrationBarrierMultipleTools:
         await handler.start(nc_a)
         manifest_a = _make_manifest(pod_id="pod-A")
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_a)
+        await handler.handle_registration(msg_a)
 
         entry = catalog.get("threetears.calculator@1.0.0")
         assert entry is not None
@@ -313,7 +330,7 @@ class TestRegistrationBarrierMultipleTools:
         await handler.start(nc_b)
         manifest_b = _make_manifest(pod_id="pod-B")
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
-        await handler._handle_registration(msg_b)
+        await handler.handle_registration(msg_b)
 
         entry_after = catalog.get("threetears.calculator@1.0.0")
         assert entry_after is not None

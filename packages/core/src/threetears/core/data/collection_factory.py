@@ -16,6 +16,10 @@ from threetears.observe import get_logger
 
 from threetears.core.data.schema import TableDef
 
+__all__ = [
+    "create_dynamic_collection",
+]
+
 log = get_logger(__name__)
 
 _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
@@ -173,11 +177,11 @@ def create_dynamic_collection(
     """create a BaseCollection subclass dynamically from a TableDef.
 
     generates the required abstract method implementations:
-    - _fetch_from_postgres: SELECT * WHERE pk = $1
-    - _save_to_postgres: INSERT ... ON CONFLICT DO UPDATE
-    - _delete_from_postgres: DELETE WHERE pk = $1
-    - _serialize: serialize_to_json
-    - _deserialize: deserialize_from_json with field_types from TableDef
+    - fetch_from_postgres: SELECT * WHERE pk = $1
+    - save_to_postgres: INSERT ... ON CONFLICT DO UPDATE
+    - delete_from_postgres: DELETE WHERE pk = $1
+    - serialize: serialize_to_json
+    - deserialize: deserialize_from_json with field_types from TableDef
 
     initializes the L1 backend with SQLAlchemy metadata derived from
     the TableDef if an L1 backend is configured in the registry.
@@ -212,12 +216,12 @@ def create_dynamic_collection(
     class DynamicEntity(BaseEntity):
         """dynamically generated entity for table."""
 
-        _primary_key_field: str = pk_column
+        primary_key_field: str = pk_column
 
     class DynamicCollection(BaseCollection[DynamicEntity]):
         """dynamically generated collection for table."""
 
-        _primary_key_column: str = pk_column
+        primary_key_column: str = pk_column
 
         @property
         def table_name(self) -> str:
@@ -229,7 +233,7 @@ def create_dynamic_collection(
             """return entity class for this collection."""
             return DynamicEntity
 
-        async def _fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
             """fetch single entity from L3 by primary key.
 
             :param entity_id: primary key value
@@ -237,14 +241,20 @@ def create_dynamic_collection(
             :return: entity data as dict, or None if not found
             :rtype: dict[str, Any] | None
             """
-            pool = self._l3_pool
+            pool = self.l3_pool
             if pool is None:
                 return None
             rows = await pool.fetch(fetch_sql, entity_id)
             result = rows[0] if rows else None
             return result
 
-        async def _save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+        async def save_to_postgres(
+            self,
+            data: dict[str, Any],
+            original_timestamp: datetime | None = None,
+            *,
+            conn: Any = None,
+        ) -> int:
             """persist entity data to L3 via upsert.
 
             when original_timestamp is provided, performs optimistic
@@ -254,29 +264,33 @@ def create_dynamic_collection(
             :ptype data: dict[str, Any]
             :param original_timestamp: expected date_updated for concurrency check
             :ptype original_timestamp: datetime | None
+            :param conn: optional asyncpg-compatible connection that
+                overrides :attr:`l3_pool` for this single write so the
+                INSERT binds to the caller's transaction
+            :ptype conn: Any
             :return: number of rows affected
             :rtype: int
             """
-            pool = self._l3_pool
-            if pool is None:
+            executor: Any = conn if conn is not None else self.l3_pool
+            if executor is None:
                 return 0
             values = [data.get(col, None) for col in column_names]
-            result_str = await pool.execute(upsert_sql, *values)
+            result_str = await executor.execute(upsert_sql, *values)
             result = 1 if result_str else 0
             return result
 
-        async def _delete_from_postgres(self, entity_id: Any) -> None:
+        async def delete_from_postgres(self, entity_id: Any) -> None:
             """delete entity from L3 by primary key.
 
             :param entity_id: primary key value
             :ptype entity_id: Any
             """
-            pool = self._l3_pool
+            pool = self.l3_pool
             if pool is None:
                 return
             await pool.execute(delete_sql, entity_id)
 
-        def _serialize(self, data: dict[str, Any]) -> bytes:
+        def serialize(self, data: dict[str, Any]) -> bytes:
             """serialize entity data to JSON bytes for L2 cache.
 
             :param data: entity data dictionary
@@ -287,7 +301,7 @@ def create_dynamic_collection(
             result = serialize_to_json(data)
             return result
 
-        def _deserialize(self, data: bytes) -> dict[str, Any]:
+        def deserialize(self, data: bytes) -> dict[str, Any]:
             """deserialize JSON bytes from L2 cache to entity data.
 
             :param data: JSON-encoded bytes

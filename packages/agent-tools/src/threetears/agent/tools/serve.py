@@ -6,12 +6,15 @@ and serves them via NATS. intended for use as tool pod main process.
 
 from __future__ import annotations
 
-import asyncio
 import os
-import signal
 
+from threetears.agent.tools.bootstrap import ToolServerBootstrap
 from threetears.agent.tools.server import ToolServer
 from threetears.observe import get_logger
+
+__all__ = [
+    "main",
+]
 
 _logger = get_logger(__name__)
 
@@ -191,40 +194,47 @@ def _register_builtin_tools(server: ToolServer) -> None:
     )
 
 
+class _BuiltinToolBootstrap(ToolServerBootstrap):
+    """``ToolServerBootstrap`` subclass that hosts built-in TearsTool pods.
+
+    standalone platform-only pod (no host-application HubClient
+    lifecycle). reads NATS connection details from
+    ``FOURTEENAIBOTS_NATS_URL`` and ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``
+    environment variables. ``namespace_collection`` is suppressed because
+    this entrypoint serves calculator / dictionary / current-date / etc.
+    from a standalone process and does not participate in the agent-side
+    three-tier stack -- :class:`NamespaceCollection` wiring is the agent
+    bootstrap's responsibility when agent-owned tools spin up.
+    """
+
+    async def build_server(self) -> ToolServer:
+        """build standalone ``ToolServer`` from environment variables."""
+        nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
+        namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
+        return ToolServer(
+            nats_url=nats_url,
+            namespace=namespace,
+            namespace_collection=None,
+        )
+
+    async def register_tools(self, server: ToolServer) -> None:
+        """register every built-in tool that has its dependencies wired."""
+        _register_builtin_tools(server)
+
+
 def main() -> None:
     """run built-in tool server.
 
-    reads NATS connection URL from FOURTEENAIBOTS_NATS_URL environment
-    variable (defaults to nats://localhost:4222). registers all available
-    built-in tools and serves them until interrupted.
+    reads NATS connection URL from ``FOURTEENAIBOTS_NATS_URL`` env var
+    (defaults to ``nats://localhost:4222``). registers all available
+    built-in tools and serves them until interrupted. the lifecycle
+    plumbing (logging configuration, signal handlers, serve loop) is
+    owned by :class:`ToolServerBootstrap`.
+
+    :return: None
+    :rtype: None
     """
-    nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
-    namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
-
-    server = ToolServer(nats_url=nats_url, namespace=namespace)
-    _register_builtin_tools(server)
-
-    loop = asyncio.new_event_loop()
-
-    def _signal_handler() -> None:
-        """schedule graceful shutdown on signal."""
-        loop.create_task(server.shutdown())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
-
-    _logger.info(
-        "starting built-in tool server",
-        extra={
-            "extra_data": {
-                "nats_url": nats_url,
-                "namespace": namespace,
-            }
-        },
-    )
-
-    loop.run_until_complete(server.serve())
-    loop.close()
+    _BuiltinToolBootstrap("builtin-tool-server").run()
 
 
 if __name__ == "__main__":

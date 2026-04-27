@@ -17,6 +17,10 @@ from threetears.agent.tools.reports.severity import (
     sort_by_severity,
 )
 
+__all__ = [
+    "MermaidGenerator",
+]
+
 
 class MermaidGenerator:
     """Static methods producing Mermaid diagram blocks.

@@ -51,6 +51,11 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+__all__ = [
+    "WorkspaceValidationError",
+    "dispatch_validators",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.workspace.config import ValidatorEntry
 

@@ -1,0 +1,471 @@
+"""unit tests for :class:`threetears.nats.NatsClient`.
+
+these tests substitute fakes for the underlying nats-py client so the
+wrapper logic (typed publish, kw-only subscribe, deadletter, error
+mapping) can be exercised without a live broker. integration tests
+against a real NATS testcontainer live in tests/integration/.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import timedelta
+from typing import Any
+
+import pytest
+from pydantic import BaseModel
+
+from threetears.nats import (
+    DEFAULT_NAMESPACE,
+    IncomingMessage,
+    NatsClient,
+    PublishError,
+    RequestError,
+    Subject,
+    Subjects,
+    SubscribeError,
+    Subscription,
+    set_default_namespace,
+)
+
+
+# ---------------------------------------------------------------------------
+# fakes
+# ---------------------------------------------------------------------------
+
+
+class _FakeSubscription:
+    """fake nats-py subscription with an asyncio.Queue-backed message stream."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Any] = asyncio.Queue()
+        self.unsubscribed = False
+
+    async def unsubscribe(self) -> None:
+        self.unsubscribed = True
+
+    @property
+    def messages(self) -> Any:
+        async def _gen() -> Any:
+            while True:
+                msg = await self.queue.get()
+                if msg is None:
+                    return
+                yield msg
+
+        return _gen()
+
+
+class _FakeMsg:
+    """tiny stand-in for nats.aio.msg.Msg with .data, .reply, and .subject."""
+
+    def __init__(self, *, data: bytes, reply: str = "", subject: str = "aibots.tools.call") -> None:
+        self.data = data
+        self.reply = reply
+        self.subject = subject
+
+
+class _FakeNatsPyClient:
+    """minimal fake of nats.aio.client.Client used by tests."""
+
+    def __init__(self) -> None:
+        self.is_closed = False
+        self.is_connected = True
+        self.published: list[tuple[str, bytes, str | None]] = []
+        self.subscribed: list[tuple[str, str | None, _FakeSubscription]] = []
+        self.request_response: bytes = b"{}"
+        self.request_calls: list[tuple[str, bytes, float]] = []
+
+    async def publish(self, subject: str, payload: bytes, reply: str | None = None) -> None:
+        self.published.append((subject, payload, reply))
+
+    async def subscribe(self, subject: str, queue: str = "") -> _FakeSubscription:
+        sub = _FakeSubscription()
+        self.subscribed.append((subject, queue or None, sub))
+        return sub
+
+    async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+        self.request_calls.append((subject, payload, timeout))
+        return _FakeMsg(data=self.request_response)
+
+    async def drain(self) -> None:
+        self.is_closed = True
+
+    async def close(self) -> None:
+        self.is_closed = True
+
+
+class _Hello(BaseModel):
+    """sample message type for typed publish/subscribe tests."""
+
+    greeting: str
+    count: int
+
+
+class _Reply(BaseModel):
+    """sample response type for request/reply tests."""
+
+    ok: bool
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """ensure each test starts from a known namespace."""
+    set_default_namespace(DEFAULT_NAMESPACE)
+
+
+def _make_client() -> tuple[NatsClient, _FakeNatsPyClient]:
+    """construct a NatsClient backed by a fake nats-py client."""
+    fake = _FakeNatsPyClient()
+    client = NatsClient(raw=fake, namespace="aibots", client_name="test")  # type: ignore[arg-type]
+    return client, fake
+
+
+@pytest.mark.asyncio
+async def test_publish_serializes_pydantic() -> None:
+    """publish encodes BaseModel via model_dump_json."""
+    client, fake = _make_client()
+    subject = Subjects.tools_call()
+    msg = _Hello(greeting="hi", count=3)
+    await client.publish(subject=subject, message=msg)
+    assert len(fake.published) == 1
+    sub_path, payload, reply_to = fake.published[0]
+    assert sub_path == "aibots.tools.call"
+    assert json.loads(payload) == {"greeting": "hi", "count": 3}
+    assert reply_to is None
+
+
+@pytest.mark.asyncio
+async def test_publish_with_reply_to() -> None:
+    """publish forwards reply_to to underlying client."""
+    client, fake = _make_client()
+    await client.publish(
+        subject=Subjects.tools_call(),
+        message=_Hello(greeting="x", count=1),
+        reply_to=Subject.raw("aibots.reply.inbox"),
+    )
+    assert fake.published[0][2] == "aibots.reply.inbox"
+
+
+@pytest.mark.asyncio
+async def test_publish_raw_passes_bytes_unchanged() -> None:
+    """publish_raw does not re-serialize payload."""
+    client, fake = _make_client()
+    await client.publish_raw(subject=Subjects.l3_query(), payload=b"raw-bytes")
+    assert fake.published[0][1] == b"raw-bytes"
+
+
+@pytest.mark.asyncio
+async def test_publish_reply_validates_subject() -> None:
+    """publish_reply rejects empty reply_subject."""
+    client, _ = _make_client()
+    with pytest.raises(PublishError):
+        await client.publish_reply(reply_subject="", message=_Hello(greeting="x", count=1))
+
+
+@pytest.mark.asyncio
+async def test_publish_wraps_underlying_error() -> None:
+    """publish errors raise PublishError, not the underlying exception."""
+
+    class _Boom(_FakeNatsPyClient):
+        async def publish(self, subject: str, payload: bytes, reply: str | None = None) -> None:
+            raise RuntimeError("transport down")
+
+    fake = _Boom()
+    client = NatsClient(raw=fake, namespace="aibots", client_name="test")  # type: ignore[arg-type]
+    with pytest.raises(PublishError):
+        await client.publish_raw(subject=Subjects.l3_query(), payload=b"x")
+
+
+@pytest.mark.asyncio
+async def test_subscribe_is_kw_only() -> None:
+    """positional subscribe args raise TypeError — the cb-as-positional footgun is impossible."""
+    client, _ = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        pass
+
+    with pytest.raises(TypeError):
+        await client.subscribe(Subjects.tools_call(), handler)  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_subscribe_typed_decodes_pydantic() -> None:
+    """subscribe_typed parses incoming bytes into the declared BaseModel."""
+    client, fake = _make_client()
+    received: list[_Hello] = []
+
+    async def on_msg(msg: _Hello) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe_typed(
+        subject=Subjects.tools_call(),
+        cb=on_msg,
+        message_type=_Hello,
+    )
+    assert isinstance(sub, Subscription)
+    fake_sub = fake.subscribed[0][2]
+    payload = _Hello(greeting="hello", count=7).model_dump_json().encode("utf-8")
+    await fake_sub.queue.put(_FakeMsg(data=payload))
+    # let the dispatch task run
+    await asyncio.sleep(0.05)
+    assert received == [_Hello(greeting="hello", count=7)]
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_typed_validation_failure_deadletters() -> None:
+    """validation failure publishes to deadletter when deadletter_on_error=True (default)."""
+    client, fake = _make_client()
+
+    async def on_msg(_msg: _Hello) -> None:
+        pytest.fail("callback should not run on invalid payload")
+
+    sub = await client.subscribe_typed(
+        subject=Subjects.tools_call(),
+        cb=on_msg,
+        message_type=_Hello,
+    )
+    fake_sub = fake.subscribed[0][2]
+    bad = b'{"not_the_right_field": true}'
+    await fake_sub.queue.put(_FakeMsg(data=bad))
+    await asyncio.sleep(0.05)
+    # validate that the bad message landed on deadletter subject
+    dl_publishes = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    assert len(dl_publishes) == 1
+    assert dl_publishes[0][0] == "aibots.deadletter.aibots.tools.call"
+    envelope = json.loads(dl_publishes[0][1])
+    assert envelope["original_subject"] == "aibots.tools.call"
+    assert envelope["error_type"] == "ValidationError"
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_exception_deadletters() -> None:
+    """callback exceptions deadletter when deadletter_on_error=True."""
+    client, fake = _make_client()
+
+    async def on_msg(_msg: _Hello) -> None:
+        raise RuntimeError("kaboom")
+
+    sub = await client.subscribe_typed(
+        subject=Subjects.tools_call(),
+        cb=on_msg,
+        message_type=_Hello,
+    )
+    fake_sub = fake.subscribed[0][2]
+    payload = _Hello(greeting="x", count=1).model_dump_json().encode("utf-8")
+    await fake_sub.queue.put(_FakeMsg(data=payload))
+    await asyncio.sleep(0.05)
+    dl = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    assert len(dl) == 1
+    envelope = json.loads(dl[0][1])
+    assert envelope["error_type"] == "RuntimeError"
+    assert envelope["error_message"] == "kaboom"
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_exception_no_deadletter_when_disabled() -> None:
+    """deadletter_on_error=False — callback exceptions log only, no republish."""
+    client, fake = _make_client()
+
+    async def on_msg(_msg: _Hello) -> None:
+        raise RuntimeError("kaboom")
+
+    sub = await client.subscribe_typed(
+        subject=Subjects.tools_call(),
+        cb=on_msg,
+        message_type=_Hello,
+        deadletter_on_error=False,
+    )
+    fake_sub = fake.subscribed[0][2]
+    payload = _Hello(greeting="x", count=1).model_dump_json().encode("utf-8")
+    await fake_sub.queue.put(_FakeMsg(data=payload))
+    await asyncio.sleep(0.05)
+    dl = [p for p in fake.published if p[0].startswith("aibots.deadletter.")]
+    assert len(dl) == 0
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_with_queue_group() -> None:
+    """queue group is forwarded to underlying subscribe."""
+    client, fake = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        pass
+
+    await client.subscribe(
+        subject=Subjects.audit_wildcard(),
+        cb=handler,
+        queue="audit-consumer",
+    )
+    assert fake.subscribed[0][1] == "audit-consumer"
+
+
+@pytest.mark.asyncio
+async def test_subscribe_max_in_flight_invalid() -> None:
+    """max_in_flight=0 is rejected."""
+    client, _ = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        pass
+
+    with pytest.raises(SubscribeError):
+        await client.subscribe(
+            subject=Subjects.tools_call(),
+            cb=handler,
+            max_in_flight=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_typed_round_trip() -> None:
+    """request encodes message, decodes response into declared type."""
+    client, fake = _make_client()
+    fake.request_response = _Reply(ok=True).model_dump_json().encode("utf-8")
+    response = await client.request(
+        subject=Subjects.tools_call(),
+        message=_Hello(greeting="ping", count=1),
+        response_type=_Reply,
+        timeout=timedelta(seconds=2),
+    )
+    assert response == _Reply(ok=True)
+    assert fake.request_calls[0][2] == 2.0  # timeout converted to seconds
+
+
+@pytest.mark.asyncio
+async def test_request_decode_failure_raises_request_error() -> None:
+    """response that fails to decode raises RequestError."""
+    client, fake = _make_client()
+    fake.request_response = b'{"not_a_valid_reply": 1}'
+    with pytest.raises(RequestError):
+        await client.request(
+            subject=Subjects.tools_call(),
+            message=_Hello(greeting="x", count=1),
+            response_type=_Reply,
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_maps_to_request_error() -> None:
+    """nats-py TimeoutError maps to RequestError."""
+    from nats.errors import TimeoutError as NatsTimeout
+
+    class _TimeoutClient(_FakeNatsPyClient):
+        async def request(self, subject: str, payload: bytes, timeout: float) -> _FakeMsg:
+            raise NatsTimeout()
+
+    fake = _TimeoutClient()
+    client = NatsClient(raw=fake, namespace="aibots", client_name="t")  # type: ignore[arg-type]
+    with pytest.raises(RequestError) as exc_info:
+        await client.request_raw(
+            subject=Subjects.tools_call(),
+            payload=b"x",
+            timeout=timedelta(seconds=1),
+        )
+    assert "timed out" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_marks_closed_and_drops_underlying() -> None:
+    """unsubscribe is idempotent and unsubscribes underlying."""
+    client, fake = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        pass
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    assert sub.is_closed is False
+    await client.unsubscribe(sub)
+    assert sub.is_closed is True
+    fake_sub = fake.subscribed[0][2]
+    assert fake_sub.unsubscribed is True
+    # second call is a no-op
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_subscriptions() -> None:
+    """shutdown unsubscribes everything and drains underlying client."""
+    client, fake = _make_client()
+
+    async def handler(_msg: IncomingMessage) -> None:
+        pass
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    await client.shutdown(drain_timeout=timedelta(seconds=1))
+    assert sub.is_closed is True
+    assert fake.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_receives_incoming_message_envelope() -> None:
+    """raw subscribe callback receives :class:`IncomingMessage` carrying data + reply_subject."""
+    client, fake = _make_client()
+    received: list[IncomingMessage] = []
+
+    async def handler(msg: IncomingMessage) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    fake_sub = fake.subscribed[0][2]
+    await fake_sub.queue.put(_FakeMsg(data=b"payload-bytes", reply="aibots._INBOX.42"))
+    await asyncio.sleep(0.05)
+    assert len(received) == 1
+    assert received[0].data == b"payload-bytes"
+    assert received[0].reply_subject == "aibots._INBOX.42"
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_callback_reply_subject_none_for_pubsub() -> None:
+    """raw subscribe callback receives ``reply_subject=None`` when producer skipped reply-to."""
+    client, fake = _make_client()
+    received: list[IncomingMessage] = []
+
+    async def handler(msg: IncomingMessage) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe(subject=Subjects.tools_call(), cb=handler)
+    fake_sub = fake.subscribed[0][2]
+    # _FakeMsg.reply defaults to "" — the wrapper coerces empty to None
+    await fake_sub.queue.put(_FakeMsg(data=b"pubsub"))
+    await asyncio.sleep(0.05)
+    assert received == [
+        IncomingMessage(data=b"pubsub", reply_subject=None, subject="aibots.tools.call"),
+    ]
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_connect_validates_url() -> None:
+    """connect rejects empty nats_url."""
+    from threetears.nats import NatsClientError
+
+    with pytest.raises(NatsClientError):
+        await NatsClient.connect(nats_url="", client_name="x")
+
+
+@pytest.mark.asyncio
+async def test_connect_validates_client_name() -> None:
+    """connect rejects empty client_name."""
+    from threetears.nats import NatsClientError
+
+    with pytest.raises(NatsClientError):
+        await NatsClient.connect(nats_url="nats://x", client_name="")
+
+
+@pytest.mark.asyncio
+async def test_connect_validates_namespace() -> None:
+    """connect rejects empty subject namespace."""
+    from threetears.nats import NatsClientError
+
+    with pytest.raises(NatsClientError):
+        await NatsClient.connect(
+            nats_url="nats://x",
+            client_name="x",
+            nats_subject_namespace="",
+        )

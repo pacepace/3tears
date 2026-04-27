@@ -126,9 +126,9 @@ def test_configure_logging_adds_handler():
     py_root = logging.getLogger()
     original_handlers = list(py_root.handlers)
     try:
-        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
+        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "threetears_owned", False)]
         configure_logging("DEBUG")
-        tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+        tt_handlers = [h for h in py_root.handlers if getattr(h, "threetears_owned", False)]
         assert len(tt_handlers) == 1
         assert isinstance(tt_handlers[0], logging.StreamHandler)
     finally:
@@ -139,10 +139,10 @@ def test_configure_logging_idempotent():
     py_root = logging.getLogger()
     original_handlers = list(py_root.handlers)
     try:
-        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "_threetears", False)]
+        py_root.handlers = [h for h in py_root.handlers if not getattr(h, "threetears_owned", False)]
         configure_logging("INFO")
         configure_logging("INFO")  # second call should be no-op
-        tt_handlers = [h for h in py_root.handlers if getattr(h, "_threetears", False)]
+        tt_handlers = [h for h in py_root.handlers if getattr(h, "threetears_owned", False)]
         assert len(tt_handlers) == 1
     finally:
         py_root.handlers = original_handlers

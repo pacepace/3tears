@@ -1,7 +1,23 @@
 # langgraph-task-01: Prompt Caching in the 3tears LangGraph Layer
 
-**Status:** Ready for implementation
+**Status:** 3tears + SDK hook DONE (2026-04-24). Gateway wire protocol tracked as a follow-up shard (`14-eng-ai-bot/docs/gateway-task-01-prompt-caching-wire.md`).
 **Scope:** primarily `3tears/packages/langgraph`; touches `3tears/packages/agent-tools` (wire protocol) and the downstream consumers in `14-eng-ai-bot-agents` / `14-eng-ai-bot` (Gateway service) where noted (`(3tears)` label).
+
+## Closeout
+
+Design pivot after consolidation-task-01 landed: caching lives on a dedicated `PromptCachingHook` (implementing `AgentNodeHook`) rather than inline in `agent_node`. The node body stays small and cache-agnostic; callers that want caching install the hook. The canonical `agent_node` was extended to re-read `chat_model` / `tools` from the post-hook configurable so the hook can swap in a memoized pre-bound model.
+
+Landed commits:
+
+- 3tears `4eb76da` — `threetears.langgraph.caching` (`ChatModelCapabilities`, `detect_capabilities`, `annotate_system_prompt`, `extract_cache_usage`, `compute_tool_key`, `should_bind_tools_fresh`) + 22 unit tests.
+- 3tears `1e3ccad` — `PromptCachingHook` in `hooks.py` + `nodes.py` re-reads post-hook configurable + 9 integration tests + 3 AST enforcement guards (`tests/enforcement/test_prompt_caching_ast_guards.py`).
+- aibots-agents `9aeba22` — SDK `agent_node` wrapper installs `PromptCachingHook` (gated by `_prompt_caching_enabled` flag + capability detection) + 5 integration tests (summarization/caching compose, second-call cache_read, explicit-disable).
+
+Landed docs: `3tears/docs/prompt-caching.md` (contract, summarization interaction, downstream wiring checklist, worked example, capability map, enforcement guards, known limitations).
+
+Gateway wire protocol (request-side `cache_control_enabled` + response-side `cache_read_input_tokens` / `cache_creation_input_tokens` + hub usage schema columns + cost-accounting discount math) is follow-up work in `14-eng-ai-bot/docs/gateway-task-01-prompt-caching-wire.md`.
+
+Success criteria below still reflect the original inline-in-agent_node plan; the hook-based implementation satisfies every P0 requirement (CACHE-01 through CACHE-04) while keeping the node body single-responsibility.
 
 ---
 

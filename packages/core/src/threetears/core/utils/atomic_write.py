@@ -17,6 +17,10 @@ import os
 from pathlib import Path
 from uuid import uuid7
 
+__all__ = [
+    "atomic_write",
+]
+
 
 def _write_atomically(path: Path, payload: bytes) -> None:
     """perform synchronous atomic write of payload to path.

@@ -6,6 +6,16 @@ from datetime import datetime
 from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_WORKSPACE,
+    build_namespace_name,
+)
+
+__all__ = [
+    "Workspace",
+    "WorkspaceFile",
+    "WorkspaceFileVersion",
+]
 
 
 def _as_uuid(value: object) -> UUID:
@@ -39,9 +49,35 @@ def _as_uuid_or_none(value: object) -> UUID | None:
 
 
 class Workspace(BaseEntity):
-    """cache-proxy entity for workspaces table."""
+    """cache-proxy entity for workspaces table.
 
-    _primary_key_field: str = "id"
+    workspace-task-19 (WS-ACL-03) makes every workspace a platform-level
+    namespace: the row in ``agent_<owner>.workspaces`` shares its primary
+    key with a row in ``platform.namespaces`` and the latter carries the
+    ``customer_id`` the authorization helper gates on. the
+    :attr:`customer_id`, :attr:`owner_agent_id`, :attr:`created_by_user_id`
+    and :attr:`namespace_name` properties expose these authorization
+    dimensions so the entity directly satisfies
+    :class:`~threetears.agent.workspace.authorize.WorkspaceLike`.
+
+    :attr:`owner_agent_id` aliases the physical :attr:`agent_id` (the
+    workspace lives in that agent's schema). :attr:`created_by_user_id`
+    aliases the existing :attr:`created_by` column. :attr:`namespace_name`
+    is deterministically derived from :attr:`id` as
+    ``"workspaces.<uuid>"`` via :func:`build_namespace_name` against the
+    ``workspaces`` plural prefix; the format matches the canonical
+    platform namespace naming contract (CLAUDE.md "Namespace Names")
+    so every consumer (agent-side authorize cache lookup, L3 proxy
+    routing, hub-side
+    :class:`aibots.hub.workspace.namespace_emitter
+    .WorkspaceNamespaceEmitter`) computes the same key without a
+    network round trip. :attr:`customer_id` is the one field that must
+    be loaded from :class:`platform.namespaces` at resolve-time; the
+    ``_resolve_workspace`` helper stamps it onto the entity via the
+    ``customer_id`` setter after a single platform lookup.
+    """
+
+    primary_key_field: str = "id"
 
     @property
     def agent_id(self) -> UUID:
@@ -234,11 +270,102 @@ class Workspace(BaseEntity):
         """
         BaseEntity.__setattr__(self, "date_deleted", value)
 
+    @property
+    def owner_agent_id(self) -> UUID:
+        """
+        returns owning-agent UUID (alias of :attr:`agent_id`).
+
+        exposed so the entity satisfies
+        :class:`~threetears.agent.workspace.authorize.WorkspaceLike`
+        without requiring a separate adapter; the physical storage home
+        for a workspace IS its owner agent's schema.
+
+        :return: owning agent UUID
+        :rtype: UUID
+        """
+        return self.agent_id
+
+    @property
+    def created_by_user_id(self) -> UUID:
+        """
+        returns creating-user UUID (alias of :attr:`created_by`).
+
+        workspaces-task-19 standardizes on ``created_by_user_id`` as the
+        authorization-visible identity of the workspace creator; the
+        underlying column name remains ``created_by`` for backwards
+        compatibility with the v001 schema. this alias is the attribute
+        the authorize helper's :class:`WorkspaceLike` protocol requires.
+
+        :return: creating user UUID
+        :rtype: UUID
+        """
+        return self.created_by
+
+    @property
+    def namespace_name(self) -> str:
+        """
+        returns canonical namespace name for this workspace.
+
+        derived deterministically from :attr:`id` via
+        :func:`build_namespace_name` against the
+        :data:`PLURAL_PREFIX_WORKSPACE` (``workspaces``) prefix; the
+        result is ``"workspaces.<uuid>"`` and matches the canonical
+        platform-wide namespace naming contract documented in
+        ``CLAUDE.md`` ("Namespace Names" section: every
+        ``platform.namespaces.name`` follows
+        ``{plural_prefix}.<segment1>...``). every consumer
+        (authorize cache lookup, L3 proxy routing, discovery
+        queries, hub-side
+        :class:`aibots.hub.workspace.namespace_emitter
+        .WorkspaceNamespaceEmitter` upsert) computes the same key
+        without a network round trip.
+
+        :return: namespace name in canonical ``workspaces.<uuid>`` form
+        :rtype: str
+        """
+        return build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(self.id))
+
+    @property
+    def customer_id(self) -> UUID | None:
+        """
+        returns owning-customer UUID once resolved from platform.namespaces.
+
+        unlike :attr:`owner_agent_id` and :attr:`created_by_user_id`
+        which alias columns already on the agent-schema row, the customer
+        dimension lives on the paired :class:`platform.namespaces` row.
+        ``_resolve_workspace`` stamps the value via the :attr:`customer_id`
+        setter after a single platform lookup before returning the
+        entity to a tool's ``execute``. returns ``None`` when the entity
+        was hydrated without a platform lookup (tests, direct L1 reads);
+        the authorize helper treats that as an unroutable call and rejects.
+
+        :return: customer UUID when resolved, else None
+        :rtype: UUID | None
+        """
+        value = self._get_raw("customer_id")
+        return _as_uuid_or_none(value)
+
+    @customer_id.setter
+    def customer_id(self, value: UUID | None) -> None:
+        """
+        stamps the resolved customer UUID onto the entity.
+
+        invoked by ``_resolve_workspace`` once the platform.namespaces
+        row for this workspace id has been fetched. the value is NOT
+        persisted back to the agent schema (the column does not exist
+        there); it lives only on the in-memory entity for the duration
+        of the current tool call.
+
+        :param value: customer UUID or None
+        :ptype value: UUID | None
+        """
+        BaseEntity.__setattr__(self, "customer_id", value)
+
 
 class WorkspaceFile(BaseEntity):
     """cache-proxy entity for workspace_files head-state table."""
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def workspace_id(self) -> UUID:
@@ -369,7 +496,7 @@ class WorkspaceFile(BaseEntity):
 class WorkspaceFileVersion(BaseEntity):
     """cache-proxy entity for workspace_file_versions append-only journal table."""
 
-    _primary_key_field: str = "id"
+    primary_key_field: str = "id"
 
     @property
     def workspace_id(self) -> UUID:

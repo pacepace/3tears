@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
+__all__ = [
+    "UnitConverterInput",
+    "UnitConverterTool",
+    "create_unit_converter_tool",
+]
+
 _ureg: Any = None
 try:
     import pint

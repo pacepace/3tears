@@ -42,8 +42,10 @@ deferred to the aibots-repo integration suite
   unit-test fake pool pattern-matches the SQL the production code runs;
   round-tripping through real YB adds confidence that nothing depends
   on behaviours the fake doesn't model. see tests/integration/README.md.
-- Hub-side :class:`WorkspaceAuditConsumer` landing rows in the real
-  ``platform_audit.audit_events`` table. that consumer lives in the
+- Hub-side :class:`UnifiedAuditConsumer` landing rows in the real
+  ``platform_audit.audit_events`` table (audit-task-01 Phase 3 retired
+  the per-domain ``WorkspaceAuditConsumer``; the unified consumer owns
+  the whole ``{ns}.audit.>`` subtree). that consumer lives in the
   aibots repo; here we assert the agent side publishes the canonical
   envelope and an in-process stub consumer lands it into a stub
   :class:`AuditEventCollection`.
@@ -55,12 +57,19 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4, uuid7
 
 import pytest
 
 from _fake_kv import FakeNatsClient as _FakeNatsKVClient  # type: ignore[import-not-found]
+
+from threetears.agent.tools.call_scope import (
+    ToolCallScope,
+    enter_call_scope,
+)
+from threetears.agent.tools.context_envelope import CallContext
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +121,20 @@ class _StoredWorkspace:
     date_created: datetime
     date_updated: datetime
     date_deleted: datetime | None
+    # WS-ACL-10 audit identity: customer_id mirrors the stamped value
+    # from platform.namespaces for integration tests that need the
+    # audit envelope's five-UUID tuple.
+    customer_id: UUID | None = None
+
+    @property
+    def owner_agent_id(self) -> UUID:
+        """return owning agent UUID (alias of :attr:`agent_id`)."""
+        return self.agent_id
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeStore:
@@ -280,9 +303,9 @@ class _FakeStore:
             )
 
     def _handle_update_workspace(self, args: tuple[Any, ...]) -> None:
-        new_version, date_updated, workspace_id = args
+        new_version, date_updated, workspace_id, agent_id = args
         ws = self.workspaces.get(workspace_id)
-        if ws is not None:
+        if ws is not None and ws.agent_id == agent_id:
             ws.current_version = max(ws.current_version, new_version)
             ws.date_updated = date_updated
 
@@ -362,7 +385,7 @@ class _FakeConnection:
     store: _FakeStore
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         return _FakeTransaction(parent=self)
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -432,8 +455,15 @@ class _StoreBackedWorkspaceCollection:
             return None
         return ws
 
-    async def find_by_id(self, workspace_id: UUID) -> _StoredWorkspace | None:
-        return self._store.workspaces.get(workspace_id)
+    async def find_by_id(
+        self,
+        agent_id: UUID,
+        workspace_id: UUID,
+    ) -> _StoredWorkspace | None:
+        ws = self._store.workspaces.get(workspace_id)
+        if ws is None or ws.agent_id != agent_id:
+            return None
+        return ws
 
 
 class _StoreBackedFileCollection:
@@ -485,14 +515,16 @@ class _StoreBackedVersionCollection:
 
 class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
     """
-    fake NATS client with publish recording on top of the core fake KV.
+    fake NATS wrapper with publish recording on top of the core fake KV.
 
-    the core fake covers the JetStream + KV surface :class:`KVLease`
-    depends on; this subclass adds :meth:`publish` so audit envelopes
-    emitted by :func:`audit.publish_workspace_event` are captured for
-    assertion. subscriptions are handled in-process: :meth:`subscribe`
-    registers a coroutine that :meth:`publish` awaits for any matching
-    subject prefix.
+    the core fake covers :meth:`kv_bucket` + :class:`FakeKvBucket`
+    surface :class:`KVLease` depends on; this subclass adds
+    :meth:`publish` matching the canonical
+    :class:`threetears.nats.NatsClient` wrapper shape so audit
+    envelopes emitted by :func:`threetears.agent.audit.publish_audit`
+    are captured for assertion. subscriptions are handled in-process:
+    :meth:`register_subscription` registers a coroutine that
+    :meth:`publish` awaits for any matching subject prefix.
     """
 
     def __init__(self) -> None:
@@ -500,20 +532,37 @@ class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
         self.published: list[tuple[str, bytes]] = []
         self._subscriptions: list[tuple[str, Any]] = []
 
-    async def publish(self, subject: str, payload: bytes) -> None:
+    async def publish(
+        self,
+        *,
+        subject: Any,
+        message: Any,
+        reply_to: Any | None = None,
+    ) -> None:
         """record publish, dispatch to any matching in-process subscriber.
 
-        :param subject: NATS subject string
-        :ptype subject: str
-        :param payload: payload bytes
-        :ptype payload: bytes
+        matches the canonical wrapper signature: kw-only ``subject``
+        (a :class:`Subject`) + ``message`` (a Pydantic model). the
+        recorded ``(subject_path, payload_bytes)`` tuple lets existing
+        assertions stay unchanged: we serialize the typed message here
+        so consumers see bytes the same way they would on the wire.
+
+        :param subject: typed :class:`Subject` carrying the dotted path
+        :ptype subject: Any
+        :param message: typed Pydantic message
+        :ptype message: Any
+        :param reply_to: optional reply subject; ignored by recorder
+        :ptype reply_to: Any | None
         :return: None
         :rtype: None
         """
-        self.published.append((subject, payload))
+        del reply_to
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        payload = message.model_dump_json().encode("utf-8")
+        self.published.append((subject_path, payload))
         for prefix, handler in self._subscriptions:
-            if _subject_matches(subject, prefix):
-                await handler(_FakeMsg(subject=subject, data=payload))
+            if _subject_matches(subject_path, prefix):
+                await handler(_FakeMsg(subject=subject_path, data=payload))
 
     def register_subscription(self, subject_prefix: str, handler: Any) -> None:
         """
@@ -776,9 +825,20 @@ def _seed_workspace(
     store: _FakeStore,
     agent_id: UUID,
     name: str,
+    *,
+    customer_id: UUID | None = None,
 ) -> UUID:
     """
     insert a live workspace row into the store; return its id.
+
+    namespace-task-01 phase 7 plumbed the path-level rbac gate into
+    every write-class tool; the gate hard-denies cross-customer
+    access, so fixtures that drive those tools must stamp the
+    workspace with the SAME ``customer_id`` the calling
+    :class:`ToolCallScope` carries. callers pass the scope's
+    customer_id explicitly; ``None`` falls back to an independent
+    ``uuid7()`` for fixtures that deliberately test cross-customer
+    denial.
 
     :param store: shared in-memory store
     :ptype store: _FakeStore
@@ -786,11 +846,15 @@ def _seed_workspace(
     :ptype agent_id: UUID
     :param name: workspace name
     :ptype name: str
+    :param customer_id: customer the workspace belongs to; aligns
+        with the scope's ``customer_id`` for same-customer fixtures
+    :ptype customer_id: UUID | None
     :return: new workspace id
     :rtype: UUID
     """
     ws_id = uuid7()
     now = datetime.now(UTC)
+    ws_customer_id = customer_id if customer_id is not None else uuid7()
     store.workspaces[ws_id] = _StoredWorkspace(
         id=ws_id,
         agent_id=agent_id,
@@ -802,6 +866,7 @@ def _seed_workspace(
         date_created=now,
         date_updated=now,
         date_deleted=None,
+        customer_id=ws_customer_id,
     )
     return ws_id
 
@@ -866,6 +931,7 @@ def workspace_with_audience_fixture(
     fake_file_collection: _StoreBackedFileCollection,
     fake_version_collection: _StoreBackedVersionCollection,
     fake_tool_context: _FakeToolContextManager,
+    integration_tool_scope_context: CallContext,
 ) -> WorkspaceFixture:
     """
     seed a workspace with the three audience_test YAML fixtures.
@@ -873,6 +939,9 @@ def workspace_with_audience_fixture(
     inserts each fixture file as a version-1 head row and a matching
     create-action journal row so subsequent writes observe them as
     existing files (and fs_write goes down the ``update`` branch).
+    the workspace's ``customer_id`` aligns with the autouse
+    :class:`ToolCallScope`'s ``customer_id`` so the phase-7
+    cross-customer write gate permits same-customer writes.
 
     :return: fixture bag
     :rtype: WorkspaceFixture
@@ -881,7 +950,12 @@ def workspace_with_audience_fixture(
 
     agent_id = uuid4()
     workspace_name = "audience_test"
-    workspace_id = _seed_workspace(fake_store, agent_id, workspace_name)
+    workspace_id = _seed_workspace(
+        fake_store,
+        agent_id,
+        workspace_name,
+        customer_id=integration_tool_scope_context.customer_id,
+    )
 
     fixture_dir = Path(__file__).resolve().parent / "fixtures" / "audience_test"
     assert fixture_dir.is_dir(), f"fixture directory missing: {fixture_dir}"
@@ -913,3 +987,169 @@ def workspace_with_audience_fixture(
         version_collection=fake_version_collection,
         fixture_path=fixture_dir,
     )
+
+
+# ---------------------------------------------------------------------------
+# scope + acl_cache fixtures (post WS-ACL-05 hard-fail)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def integration_tool_scope_context() -> CallContext:
+    """test-scoped CallContext with non-None identity dims for integration tests.
+
+    integration tests that exercise tool dispatch outside an explicit
+    :func:`enter_call_scope` block rely on the :func:`integration_tool_call_scope`
+    autouse fixture below; this builder lets a test override identity by
+    overriding this fixture.
+
+    :return: call context with all identity fields populated
+    :rtype: CallContext
+    """
+    return CallContext(
+        agent_id=uuid7(),
+        customer_id=uuid7(),
+        user_id=uuid7(),
+        conversation_id=uuid7(),
+        correlation_id=uuid7(),
+    )
+
+
+@pytest.fixture(autouse=True)
+async def integration_tool_call_scope(
+    integration_tool_scope_context: CallContext,
+) -> AsyncIterator[ToolCallScope]:
+    """install a default :class:`ToolCallScope` for every integration test.
+
+    autouse so tests that drive tool dispatch directly do not have to
+    opt in. tests that need bespoke identity (e.g. cross-customer
+    matrix) wrap their own :func:`enter_call_scope` blocks; nested
+    scopes shadow the autouse one for the duration of the inner block.
+
+    :param integration_tool_scope_context: identity envelope for the scope
+    :ptype integration_tool_scope_context: CallContext
+    :return: async iterator yielding the installed scope
+    :rtype: AsyncIterator[ToolCallScope]
+    """
+    scope = ToolCallScope(context=integration_tool_scope_context)
+    async with enter_call_scope(scope):
+        yield scope
+
+
+@pytest.fixture
+def permissive_acl_cache() -> MagicMock:
+    """AclCache-shaped mock returning ``"write"`` on every access check.
+
+    integration tests that don't explicitly exercise the RBAC grant
+    decision pass this cache to tool constructors so the post-WS-ACL-05
+    hard-fail in :func:`authorize_workspace` doesn't reject the
+    construction. tests that DO exercise the cache (cross-customer,
+    grant matrix) build their own cache with the desired behavior.
+
+    :return: mock with an :class:`AsyncMock` ``check_access`` returning
+        ``"write"``
+    :rtype: MagicMock
+    """
+    cache = MagicMock()
+    cache.check_access = AsyncMock(return_value="write")
+    return cache
+
+
+def _is_real_authorize_test(request: pytest.FixtureRequest) -> bool:
+    """return True when the requesting test wants the real authorize path.
+
+    the cross-agent integration test exercises the real ACL grant
+    decision end-to-end against a live PostgreSQL container, so the
+    autouse stubs in this conftest must not patch it out for that
+    file.
+
+    :param request: pytest fixture request from the autouse fixture
+    :ptype request: pytest.FixtureRequest
+    :return: True when this test runs against the real authorize path
+    :rtype: bool
+    """
+    nodeid = getattr(request.node, "nodeid", "") or ""
+    return "test_cross_agent_workspace" in nodeid
+
+
+@pytest.fixture(autouse=True)
+def integration_stub_authorize_workspace_access(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock | None:
+    """no-op stub for :func:`authorize_workspace_access` in integration tests.
+
+    integration tests use lightweight workspace entities that do not
+    expose the full :class:`WorkspaceLike` protocol surface
+    (``namespace_name`` / ``owner_agent_id`` / ``created_by_user_id``).
+    the workspace-shape-dependent grant decision is exercised end-to-end
+    in ``tests/integration/test_cross_agent_workspace.py``; here we mock
+    the inner call so other integration tests focus on tool behavior.
+    the outer :func:`authorize_workspace` helper still enforces both
+    preconditions (scope installed, ``acl_cache`` injected).
+
+    namespace-task-01 phase 7 added a sibling
+    :func:`authorize_workspace_file_access` that runs the path-glob
+    RBAC gate on every write-class tool; it hits
+    ``evaluate_file_access`` which in turn reaches for
+    ``acl_cache.membership_loader.load_for_user`` — not available on
+    the lightweight permissive mock. stub the same way so integration
+    tests focus on tool behavior; the real path is exercised in
+    ``tests/integration/test_cross_agent_workspace.py``.
+
+    skipped for ``test_cross_agent_workspace`` so its real-PostgreSQL
+    authorize matrix runs unaltered.
+
+    :param request: pytest fixture request used to opt out per file
+    :ptype request: pytest.FixtureRequest
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the installed mock, or ``None`` when the stub is skipped
+    :rtype: AsyncMock | None
+    """
+    if _is_real_authorize_test(request):
+        return None
+    from threetears.agent.workspace import authorize as _authorize_module
+
+    stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(_authorize_module, "authorize_workspace_access", stub)
+    file_stub = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        _authorize_module,
+        "authorize_workspace_file_access",
+        file_stub,
+    )
+    return stub
+
+
+@pytest.fixture(autouse=True)
+def integration_stub_enrich_workspace_identity(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock | None:
+    """no-op stub for :func:`enrich_workspace_identity` in integration tests.
+
+    the production helper does a ``SELECT customer_id FROM
+    platform.namespaces`` lookup; the integration fake pool does not
+    serve that statement and the fake workspace entities do not expose
+    a ``customer_id`` setter, so the real enrichment cannot run. patch
+    it out for these tests; identity enrichment + cross-customer denial
+    are exercised in ``tests/integration/test_cross_agent_workspace.py``.
+
+    :param request: pytest fixture request used to opt out per file
+    :ptype request: pytest.FixtureRequest
+    :param monkeypatch: pytest monkeypatch fixture
+    :ptype monkeypatch: pytest.MonkeyPatch
+    :return: the installed mock, or ``None`` when the stub is skipped
+    :rtype: AsyncMock | None
+    """
+    if _is_real_authorize_test(request):
+        return None
+    from threetears.agent.workspace.tools import helpers as _helpers_module
+
+    async def _passthrough(workspace, db_pool):  # type: ignore[no-untyped-def]
+        return workspace
+
+    stub = AsyncMock(side_effect=_passthrough)
+    monkeypatch.setattr(_helpers_module, "enrich_workspace_identity", stub)
+    return stub

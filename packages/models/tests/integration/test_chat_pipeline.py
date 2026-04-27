@@ -33,7 +33,7 @@ class TestChatCompletionPipeline:
         mock_response.usage_metadata = {"input_tokens": 10, "output_tokens": 5}
         mock_response.response_metadata = {"model": "claude-sonnet-4-20250514"}
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         # 2. store in cache
         cache = ModelCache()
@@ -80,7 +80,7 @@ class TestChatCompletionPipeline:
         """chat pipeline with tool binding and tool call result."""
         provider = AnthropicChatProvider("claude-sonnet-4-20250514", "sk-test")
 
-        # bind tools first, then inject mock (bind_tools clears _model)
+        # bind tools first, then inject mock (bind_tools clears model cache)
         tools = [
             ToolDefinition(
                 name="get_weather",
@@ -103,7 +103,7 @@ class TestChatCompletionPipeline:
         mock_response.usage_metadata = {"input_tokens": 20, "output_tokens": 12}
         mock_response.response_metadata = {"model": "claude-sonnet-4-20250514"}
         mock_model.ainvoke = AsyncMock(return_value=mock_response)
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [
             ChatMessage(role=MessageRole.USER, content="What is the weather in Seattle?"),
@@ -139,7 +139,7 @@ class TestChatCompletionPipeline:
 
         mock_model = MagicMock()
         mock_model.astream = mock_astream
-        provider._model = mock_model
+        provider.model = mock_model
 
         messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
         chunks: list[ChatChunk] = []

@@ -50,6 +50,7 @@ def _build_sandbox() -> WorkspaceSandbox:
 
 async def test_doc_set_on_audience_settings_preserves_structure(
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """mutate one scalar via doc_set; verify key order + anchor values intact.
 
@@ -78,6 +79,7 @@ async def test_doc_set_on_audience_settings_preserves_structure(
         db_pool=fx.pool,
         nats_client=fx.nats,
         namespace="threetears-test",
+        acl_cache=permissive_acl_cache,
     )
     fs_read = FsReadTool(
         workspace_collection=fx.workspace_collection,
@@ -85,6 +87,7 @@ async def test_doc_set_on_audience_settings_preserves_structure(
         sandbox=sandbox,
         context_provider=lambda: fx.context,
         agent_id=fx.agent_id,
+        acl_cache=permissive_acl_cache,
     )
 
     # original text carries the section markers we expect to survive
@@ -124,6 +127,7 @@ async def test_doc_set_on_audience_settings_preserves_structure(
 
 async def test_doc_set_bumps_version_and_updates_head(
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """
     after doc_set the head row for the file advances one version and the
@@ -151,6 +155,7 @@ async def test_doc_set_bumps_version_and_updates_head(
         context_provider=lambda: fx.context,
         agent_id=fx.agent_id,
         db_pool=fx.pool,
+        acl_cache=permissive_acl_cache,
     )
 
     initial_head = fx.store.files[(fx.workspace_id, "audience_settings.yaml")]

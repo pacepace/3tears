@@ -42,7 +42,13 @@ class _FakeWorkspaceEntity:
 
     id: UUID
     name: str
+    agent_id: UUID = field(default_factory=uuid4)
     date_deleted: datetime | None = None
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -118,7 +124,7 @@ async def test_resolve_workspace_no_arg_no_pin_raises(
     async def _stub_get_pin(context: Any) -> Any:
         return None
 
-    monkeypatch.setattr(helpers_module._pin, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
     workspaces = _FakeWorkspaceCollection([])
     with pytest.raises(NoWorkspacePinned):
         await _resolve_workspace(None, _FakeContext(), workspaces, uuid4())
@@ -136,7 +142,7 @@ async def test_resolve_workspace_pin_fallback_hits(
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=pinned.id, workspace_name=pinned.name)
 
-    monkeypatch.setattr(helpers_module._pin, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
 
     result = await _resolve_workspace(None, _FakeContext(), workspaces, agent_id)
 
@@ -155,7 +161,7 @@ async def test_resolve_workspace_pin_stale_raises(
     async def _stub_get_pin(context: Any) -> _FakePin:
         return _FakePin(workspace_id=uuid4(), workspace_name="gone")
 
-    monkeypatch.setattr(helpers_module._pin, "get_pin", _stub_get_pin)
+    monkeypatch.setattr(helpers_module.pin_module, "get_pin", _stub_get_pin)
 
     with pytest.raises(WorkspaceNotFound) as excinfo:
         await _resolve_workspace(None, _FakeContext(), workspaces, uuid4())
@@ -205,7 +211,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx

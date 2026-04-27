@@ -8,11 +8,12 @@ integer, or checkpoint label).
 design commitments:
 
 - **sandbox-first fail-wholesale.** every file in the rollback set is
-  passed through ``sandbox.enforce("write", path)`` BEFORE any call to
-  ``_write_file_atomic``. if any file is denied, no writes occur --
-  rollback is cleanly aborted via a ToolResult error. this pattern is
-  load-bearing for the shard-18 AST test that asserts enforce-before-
-  write ordering.
+  passed through :meth:`WorkspaceSandbox.validate_syntax` +
+  :func:`authorize_workspace_file` (direction ``"write"``) BEFORE any
+  call to ``_write_file_atomic``. if any file fails either gate, no
+  writes occur -- rollback is cleanly aborted via a ToolResult error.
+  this pattern is load-bearing for the shard-18 AST test that asserts
+  the full validation sweep runs before any mutation.
 - **per-file transaction.** each file's rollback is delegated to
   :func:`_write_file_atomic`, which opens its own connection +
   transaction. the shard explicitly allows this: fail-wholesale is
@@ -33,9 +34,12 @@ design commitments:
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
 
+from threetears.agent.acl import AclCache
+from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
@@ -45,7 +49,9 @@ from threetears.agent.tools.context import ToolContextManager
 from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
-from threetears.agent.workspace import audit
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -61,8 +67,15 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_validators,
     _resolve_workspace,
     _write_file_atomic,
+    authorize_workspace,
+    authorize_workspace_file,
+    workspace_audit_identity,
 )
 from threetears.agent.workspace.validators import WorkspaceValidationError
+
+__all__ = [
+    "WorkspaceRollbackTool",
+]
 
 log = get_logger(__name__)
 
@@ -94,7 +107,8 @@ class WorkspaceRollbackTool(TearsTool):
     """revert workspace files to a prior ref via revert-action journal rows.
 
     rollback is a write-class operation: every file in the rollback set
-    must pass ``sandbox.enforce("write", path)`` BEFORE any mutation
+    must pass :meth:`WorkspaceSandbox.validate_syntax` +
+    :func:`authorize_workspace_file` (direction ``"write"``) BEFORE any mutation
     happens. the two-phase pattern (enforce all, then write all) keeps
     a single denied path from leaving the workspace in a half-rolled-
     back state.
@@ -109,6 +123,7 @@ class WorkspaceRollbackTool(TearsTool):
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
         db_pool: Any,
+        acl_cache: AclCache,
         nats_client: Any = None,
         namespace: str | None = None,
         validators: list[ValidatorEntry] | None = None,
@@ -153,6 +168,7 @@ class WorkspaceRollbackTool(TearsTool):
         self._nats_client = nats_client
         self._namespace = namespace
         self._validators = validators
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -193,15 +209,37 @@ class WorkspaceRollbackTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
+            await authorize_workspace(
+                workspace,
+                "write",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
             rollback_set = await self._collect_rollback_set(workspace.id, relative_path)
             # phase 2: enforce write on every path BEFORE any mutation.
             # shard-18 AST test relies on this ordering.
             for path in rollback_set:
-                self._sandbox.enforce("write", path)
+                self._sandbox.validate_syntax(path)
+                await authorize_workspace_file(
+                    workspace,
+                    path,
+                    "write",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
             # phase 3: per-file resolve + atomic write.
             async with self._db_pool.acquire() as conn:
                 for path in rollback_set:
-                    target = await _resolve_ref(conn, workspace.id, path, ref)
+                    # WS-ACL-06: thread namespace= so outside-tx reads
+                    # resolve against the owner agent's schema when
+                    # the calling agent is a grantee.
+                    target = await _resolve_ref(
+                        conn,
+                        workspace.id,
+                        path,
+                        ref,
+                        namespace_name=workspace.namespace_name,
+                    )
                     if target is None:
                         continue
                     await _write_file_atomic(
@@ -219,23 +257,35 @@ class WorkspaceRollbackTool(TearsTool):
                         validators=self._validators,
                     )
                     n_changed += 1
-            # defense-in-depth audit publish: one event per rollback call
+            # defense-in-depth audit publish: one additive event per
+            # rollback call, on top of the baseline ``tool.call``
+            # emitted by ToolServer.
             try:
                 if self._namespace is not None:
-                    await audit.publish_workspace_event(
-                        nats_client=self._nats_client,
-                        namespace=self._namespace,
-                        event_type="workspace.rollback_to",
-                        actor_id=self._agent_id,
-                        agent_id=self._agent_id,
-                        resource_type="workspace",
-                        resource_id=str(workspace.id),
-                        action="rollback_to",
+                    identity = workspace_audit_identity(workspace)
+                    event = AuditEvent(
+                        id=uuid7(),
+                        timestamp=datetime.now(UTC),
+                        event_type="workspace.rollback",
+                        actor_user_id=identity.actor_user_id,
+                        calling_agent_id=identity.calling_agent_id,
+                        owner_agent_id=identity.owner_agent_id,
+                        customer_id=identity.customer_id,
+                        resource_namespace_id=identity.namespace_id,
+                        resource_namespace_type="workspace",
+                        action="rollback",
+                        outcome="success",
+                        correlation_id=correlation_id,
                         details={
+                            "workspace_resource_id": str(workspace.id),
                             "ref": str(ref),
                             "files_changed": n_changed,
                         },
-                        correlation_id=correlation_id,
+                    )
+                    await publish_audit(
+                        event,
+                        nats_client=self._nats_client,
+                        namespace=self._namespace,
                     )
             # NOSILENT: audit failure never taints rollback
             except Exception as audit_exc:
@@ -255,6 +305,8 @@ class WorkspaceRollbackTool(TearsTool):
                 error=f"validation failed: {exc.pattern} -> {exc.reason}",
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
         except SandboxDenied as exc:
             result = ToolResult(success=False, content="", error=str(exc))
@@ -353,6 +405,7 @@ def _build(**kwargs: Any) -> WorkspaceRollbackTool:
         nats_client=kwargs.get("nats_client"),
         namespace=kwargs.get("namespace"),
         validators=_resolve_validators(kwargs),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

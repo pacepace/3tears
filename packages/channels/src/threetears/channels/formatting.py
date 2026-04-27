@@ -12,6 +12,14 @@ from typing import Any
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "build_discord_embed",
+    "build_discord_payload",
+    "build_slack_blocks",
+    "build_slack_payload",
+    "should_use_rich_formatting",
+]
+
 log = get_logger(__name__)
 
 _SLACK_BLOCK_TEXT_LIMIT = 3000

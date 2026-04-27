@@ -7,12 +7,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.discovery import (
     DiscoverRequest,
     DiscoverToolEntry,
     DiscoveryHandler,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bind_namespace() -> None:
+    """default namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("test")
 
 
 # -- helpers --
@@ -53,20 +60,17 @@ def _make_entry(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-) -> MagicMock:
-    """create mock NATS message.
+) -> IncomingMessage:
+    """build a wrapper :class:`IncomingMessage` envelope.
 
     :param data: raw message payload bytes
     :ptype data: bytes
-    :param reply: optional reply subject
+    :param reply: optional reply subject; ``None`` for fire-and-forget
     :ptype reply: str | None
-    :return: mock NATS message
-    :rtype: MagicMock
+    :return: wrapper-shaped envelope
+    :rtype: IncomingMessage
     """
-    msg = MagicMock()
-    msg.data = data
-    msg.reply = reply
-    return msg
+    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.discover")
 
 
 def _make_discover_request(
@@ -108,10 +112,10 @@ class TestDiscoveryAvailable:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["agent_id"] == "agent-001"
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
@@ -148,10 +152,10 @@ class TestDiscoveryUnavailable:
             tools=[{"name": "threetears.nonexistent", "version": "1.0.0"}],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.nonexistent"
@@ -172,10 +176,10 @@ class TestDiscoveryUnavailable:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         assert response_data["tools"][0]["status"] == "unavailable"
         assert response_data["tools"][0]["endpoint_count"] == 0
@@ -209,10 +213,10 @@ class TestDiscoveryMixed:
             ],
         )
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 2
 
         by_name = {t["name"]: t for t in response_data["tools"]}
@@ -238,10 +242,10 @@ class TestDiscoveryEmpty:
 
         request = _make_discover_request(tools=[])
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["tools"] == []
 
 
@@ -276,10 +280,10 @@ class TestDiscoveryMultiEndpoint:
 
         request = _make_discover_request()
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["status"] == "available"
@@ -309,10 +313,10 @@ class TestDiscoveryMultiEndpoint:
 
         request = _make_discover_request(tools=[])
         msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
-        await handler._handle_discover(msg)
+        await handler.handle_discover(msg)
 
-        nc.publish.assert_called_once()
-        response_data = json.loads(nc.publish.call_args[0][1])
+        nc.publish_reply.assert_called_once()
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.calculator"
@@ -330,23 +334,25 @@ class TestDiscoveryLifecycle:
     @pytest.mark.asyncio
     async def test_start_subscribes_with_queue_group(self) -> None:
         """start subscribes to {namespace}.tools.discover with queue group."""
+        set_default_namespace("myns")
         catalog = ToolCatalog()
         handler = DiscoveryHandler(catalog, namespace="myns")
         nc = AsyncMock()
         await handler.start(nc)
         nc.subscribe.assert_called_once()
         call_args = nc.subscribe.call_args
-        assert call_args[0][0] == "myns.tools.discover"
-        assert call_args[1]["queue"] == "registry"
+        # wrapper subscribe is kw-only with typed Subject
+        assert call_args.kwargs["subject"].path == "myns.tools.discover"
+        assert call_args.kwargs["queue"] == "registry"
 
     @pytest.mark.asyncio
     async def test_stop_unsubscribes(self) -> None:
-        """stop unsubscribes from discovery subject."""
+        """stop unsubscribes from discovery subject through the wrapper."""
         catalog = ToolCatalog()
         handler = DiscoveryHandler(catalog, namespace="test")
         nc = AsyncMock()
-        mock_sub = AsyncMock()
+        mock_sub = MagicMock()
         nc.subscribe = AsyncMock(return_value=mock_sub)
         await handler.start(nc)
         await handler.stop()
-        mock_sub.unsubscribe.assert_called_once()
+        nc.unsubscribe.assert_called_once_with(mock_sub)

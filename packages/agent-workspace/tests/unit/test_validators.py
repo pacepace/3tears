@@ -37,6 +37,12 @@ from threetears.agent.workspace import validators as validators_module
 class _FakeWorkspaceEntity:
     id: UUID
     name: str = "ws"
+    agent_id: UUID = field(default_factory=uuid4)
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 @dataclass
@@ -64,7 +70,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx

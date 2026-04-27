@@ -1,21 +1,46 @@
-"""``threetears.workspace.current`` -- report the conversation's pinned workspace."""
+"""``threetears.workspace.current`` -- report the conversation's pinned workspace.
+
+workspace-task-19 Phase 5 added discovery-backed pin-visibility checks so
+a conversation pinned to a workspace owned by a different agent (same
+customer, grant in place) resolves cleanly. when the pin's
+workspace_id is NOT in the caller's agent-owned set, the tool issues a
+namespace-discovery request (filtered to ``workspace`` type) to verify
+the caller can see it under a grant; if the grant is absent, the tool
+raises :class:`~threetears.agent.workspace.authorize.WorkspaceAccessDenied`
+so the conversation surfaces a clear recovery message.
+
+namespace-task-01 Phase 1 swapped the workspace-specific discovery
+subject for the generalized ``{ns}.namespace.discover``; this tool now
+passes ``namespace_type="workspace"`` explicitly.
+"""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
 from typing import Any
+from uuid import UUID, uuid7
 
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
     ToolResult,
 )
+from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.context import ToolContextManager
 from threetears.observe import get_logger
 
 from threetears.agent.workspace import pin
+from threetears.agent.workspace.authorize import WorkspaceAccessDenied
+from threetears.agent.workspace.discovery_client import (
+    DiscoveryClientError,
+    NamespaceDiscoveryClient,
+)
 from threetears.agent.workspace.factory import register_tool_builder
+
+__all__ = [
+    "WorkspaceCurrentTool",
+]
 
 log = get_logger(__name__)
 
@@ -30,32 +55,37 @@ _INPUT_SCHEMA: dict[str, Any] = {
 class WorkspaceCurrentTool(TearsTool):
     """report which workspace is pinned to the current conversation.
 
-    pin-only operation: reads :func:`pin.get_pin` and serializes the
-    snapshot to JSON. when no pin is set, returns a structured response
-    that includes a recovery hint pointing to ``workspace.use``.
+    reads :func:`pin.get_pin` and serializes the snapshot. when the
+    pinned workspace is not owned by the calling agent, verifies
+    visibility via the discovery subject; a missing grant surfaces as
+    :class:`WorkspaceAccessDenied` so the pin stays in the conversation
+    state but the LLM sees a clear denial.
     """
 
     def __init__(
         self,
         context_provider: Callable[[], ToolContextManager],
+        discovery_client: NamespaceDiscoveryClient,
+        agent_id: UUID,
     ) -> None:
         """
-        binds tool to a per-conversation context provider.
+        binds tool to per-conversation context, discovery client, and agent.
 
         :param context_provider: zero-arg callable returning the current
             conversation's ToolContextManager
         :ptype context_provider: Callable[[], ToolContextManager]
+        :param discovery_client: NATS client for ``namespace.discover``
+        :ptype discovery_client: NamespaceDiscoveryClient
+        :param agent_id: identifier of calling agent
+        :ptype agent_id: UUID
         """
         self._context_provider = context_provider
+        self._discovery = discovery_client
+        self._agent_id = agent_id
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
         returns the conversation's pin snapshot or a null-pin response.
-
-        on hit: ``{"workspace_id", "workspace_name", "date_pinned"}``
-        encoded as JSON. on miss: ``{"pin": null, "message": "..."}``
-        with a hint to call ``workspace.use``. all failures arrive as
-        :class:`ToolResult` with ``success=False`` and never raise.
 
         :param kwargs: ignored, schema declares no inputs
         :ptype kwargs: Any
@@ -72,12 +102,25 @@ class WorkspaceCurrentTool(TearsTool):
                 }
                 result = ToolResult(success=True, content=json.dumps(payload))
             else:
+                await self._verify_visibility(snapshot.workspace_id)
                 payload = {
                     "workspace_id": str(snapshot.workspace_id),
                     "workspace_name": snapshot.workspace_name,
                     "date_pinned": snapshot.date_pinned.isoformat(),
                 }
                 result = ToolResult(success=True, content=json.dumps(payload))
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"pinned workspace not visible: {exc}",
+            )
+        except DiscoveryClientError as exc:
+            result = ToolResult(
+                success=False,
+                content="",
+                error=f"current failed: {exc}",
+            )
         except Exception as exc:
             log.exception("workspace_current failed: %s", exc)
             result = ToolResult(
@@ -86,6 +129,46 @@ class WorkspaceCurrentTool(TearsTool):
                 error=f"current failed: {exc}",
             )
         return result
+
+    async def _verify_visibility(self, workspace_id: UUID) -> None:
+        """confirm the caller can see ``workspace_id`` under their scope.
+
+        owner-path short-circuits: when discovery returns the workspace
+        with ``owner_agent_id == self._agent_id``, access is fine. when
+        a non-owner workspace appears in the discovery set, a grant is
+        in place. when the workspace is NOT in the discovery set, no
+        grant exists and the caller must not leak its existence --
+        raise :class:`WorkspaceAccessDenied`.
+
+        :param workspace_id: pinned workspace identifier
+        :ptype workspace_id: UUID
+        :return: nothing
+        :rtype: None
+        :raises WorkspaceAccessDenied: on missing customer or missing grant
+        :raises DiscoveryClientError: on broker failure
+        """
+        scope = current_scope()
+        customer_id: UUID | None = None if scope is None else scope.context.customer_id
+        user_id: UUID | None = None if scope is None else scope.context.user_id
+        correlation_id: UUID = (
+            scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
+        )
+        if customer_id is None:
+            raise WorkspaceAccessDenied(
+                "workspace.current requires a customer_id on the call scope",
+            )
+        items = await self._discovery.discover(
+            correlation_id=correlation_id,
+            agent_id=self._agent_id,
+            customer_id=customer_id,
+            user_id=user_id,
+            namespace_type="workspace",
+        )
+        visible = any(item.id == workspace_id for item in items)
+        if not visible:
+            raise WorkspaceAccessDenied(
+                f"pinned workspace {workspace_id} not in discovery set for calling agent + user + customer",
+            )
 
     def mcp_schema(self) -> MCPToolDefinition:
         """
@@ -126,17 +209,24 @@ def _build(**kwargs: Any) -> WorkspaceCurrentTool:
     """
     constructs a :class:`WorkspaceCurrentTool` from the factory dep bundle.
 
-    consumes only ``context_provider`` and ignores the rest. registered
-    with :mod:`threetears.agent.workspace.factory` on import so
-    :func:`build_workspace_tools` emits this tool.
+    consumes ``context_provider``, ``nats_client``, ``namespace``, and
+    ``agent_id`` to build a :class:`NamespaceDiscoveryClient`. ignores
+    the rest. registered with :mod:`threetears.agent.workspace.factory`
+    on import so :func:`build_workspace_tools` emits this tool.
 
     :param kwargs: full factory dependency bundle
     :ptype kwargs: Any
     :return: constructed tool
     :rtype: WorkspaceCurrentTool
     """
+    client = NamespaceDiscoveryClient(
+        nats_client=kwargs.get("nats_client"),
+        namespace=kwargs.get("namespace") or "",
+    )
     return WorkspaceCurrentTool(
         context_provider=kwargs["context_provider"],
+        discovery_client=client,
+        agent_id=kwargs["agent_id"],
     )
 
 

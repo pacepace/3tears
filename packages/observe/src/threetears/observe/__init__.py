@@ -12,6 +12,8 @@ Provides three modules:
 
 __version__ = "0.5.0"
 
+from threetears.observe.background import spawn_background
+from threetears.observe.health import HealthCheck, HealthServer
 from threetears.observe.logging import (
     ContextFormatter,
     ThreeTearsLogger,
@@ -27,6 +29,8 @@ from threetears.observe.tracing import traced
 
 __all__ = [
     "ContextFormatter",
+    "HealthCheck",
+    "HealthServer",
     "ThreeTearsLogger",
     "clear_context",
     "configure_logging",
@@ -35,5 +39,6 @@ __all__ = [
     "get_logger",
     "set_context",
     "retry_with_backoff",
+    "spawn_background",
     "traced",
 ]

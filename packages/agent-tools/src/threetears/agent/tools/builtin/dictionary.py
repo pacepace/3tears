@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.utils import tool_error
 
+__all__ = [
+    "DictionaryInput",
+    "DictionaryTool",
+    "create_dictionary_tool",
+]
+
 _MAX_CHARS = 3000
 
 

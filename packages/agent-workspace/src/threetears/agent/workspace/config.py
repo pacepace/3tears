@@ -8,6 +8,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 
+__all__ = [
+    "AllowConfig",
+    "BindConfig",
+    "ValidatorEntry",
+    "WorkspaceConfig",
+]
+
 
 class BindConfig(BaseModel):
     """

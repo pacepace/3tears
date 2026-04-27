@@ -22,21 +22,21 @@ _SAMPLE_WORKSPACE_ID = UUID("019470a8-b5c3-7def-8123-456789abcdef")
 
 
 class TestMakeKey:
-    """_make_key constructs namespaced keys and sha256-bounds long paths."""
+    """make_key constructs namespaced keys and sha256-bounds long paths."""
 
     def test_short_path_produces_raw_key(self) -> None:
-        """key under _MAX_KEY_LEN is returned verbatim under workspace: prefix."""
+        """key under MAX_KEY_LEN is returned verbatim under workspace: prefix."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns")
-        result = lease._make_key(_SAMPLE_WORKSPACE_ID, "foo.yaml")
+        result = lease.make_key(_SAMPLE_WORKSPACE_ID, "foo.yaml")
         assert result == f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:foo.yaml"
 
     def test_long_path_produces_sha256_bounded_key(self) -> None:
-        """path pushing raw key over _MAX_KEY_LEN produces sha256 form."""
+        """path pushing raw key over MAX_KEY_LEN produces sha256 form."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns")
         long_path = "A" * 500
-        result = lease._make_key(_SAMPLE_WORKSPACE_ID, long_path)
+        result = lease.make_key(_SAMPLE_WORKSPACE_ID, long_path)
         expected_digest = hashlib.sha256(long_path.encode("utf-8")).hexdigest()
         assert result == (f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:sha256:{expected_digest}")
         assert re.match(r"^workspace:[0-9a-f]{32}:sha256:[0-9a-f]{64}$", result) is not None
@@ -46,21 +46,21 @@ class TestMakeKey:
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns")
         huge_path = "x" * 10000
-        result = lease._make_key(_SAMPLE_WORKSPACE_ID, huge_path)
+        result = lease.make_key(_SAMPLE_WORKSPACE_ID, huge_path)
         # workspace:{32}:sha256:{64} = 10 + 32 + 8 + 64 = 114
         assert len(result) < 200
         assert result.startswith(f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:sha256:")
 
     def test_threshold_boundary_raw_form_still_used(self) -> None:
-        """key exactly at _MAX_KEY_LEN still takes the raw branch."""
+        """key exactly at MAX_KEY_LEN still takes the raw branch."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns")
         # raw = "workspace:{hex}:{relative}" — len(prefix) = 10 + 32 + 1 = 43
         prefix_len = len(f"workspace:{_SAMPLE_WORKSPACE_ID.hex}:")
-        filler_len = WorkspaceFileLease._MAX_KEY_LEN - prefix_len
+        filler_len = WorkspaceFileLease.MAX_KEY_LEN - prefix_len
         relative = "a" * filler_len
-        result = lease._make_key(_SAMPLE_WORKSPACE_ID, relative)
-        assert len(result) == WorkspaceFileLease._MAX_KEY_LEN
+        result = lease.make_key(_SAMPLE_WORKSPACE_ID, relative)
+        assert len(result) == WorkspaceFileLease.MAX_KEY_LEN
         assert "sha256" not in result
 
 
@@ -103,13 +103,13 @@ class TestAcquireRoundTrip:
         await handle.release()
 
     async def test_acquire_uses_namespaced_bucket_in_jetstream(self) -> None:
-        """acquire opens the '{namespace}_workspace_locks' bucket on fake JS."""
+        """acquire opens the '{namespace}_workspace_locks' bucket on fake wrapper."""
         fake = FakeNatsClient()
         lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
-        bucket = await fake.jetstream().key_value("ns_workspace_locks")
-        entry = await bucket.get(handle.key)
-        assert entry is not None
+        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        value = await bucket.get(key=handle.key)
+        assert value is not None
         await handle.release()
 
     async def test_release_removes_entry_from_bucket(self) -> None:
@@ -118,11 +118,11 @@ class TestAcquireRoundTrip:
         lease = WorkspaceFileLease(fake, namespace="ns", pod_id="pod-test")
         handle = await lease.acquire(_SAMPLE_WORKSPACE_ID, "a.yaml")
         await handle.release()
-        bucket = await fake.jetstream().key_value("ns_workspace_locks")
-        from nats.js.errors import KeyNotFoundError
-
-        with pytest.raises(KeyNotFoundError):
-            await bucket.get(handle.key)
+        bucket = await fake.kv_bucket(name="ns_workspace_locks")
+        # the wrapper bucket returns ``None`` on miss instead of raising
+        # KeyNotFoundError; the lease's release path leaves the entry
+        # gone so ``get`` should yield ``None``.
+        assert await bucket.get(key=handle.key) is None
 
     async def test_async_context_manager_releases_on_exit(self) -> None:
         """async with handle releases lease cleanly on context exit."""

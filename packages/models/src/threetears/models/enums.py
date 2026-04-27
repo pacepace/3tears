@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+__all__ = [
+    "ModelStatus",
+    "ModelTier",
+    "ModelType",
+]
+
 
 class ModelType(StrEnum):
     """classification of AI model by primary capability.

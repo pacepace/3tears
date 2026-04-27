@@ -9,6 +9,12 @@ import httpx
 
 from threetears.observe import get_logger, traced
 
+__all__ = [
+    "McpClient",
+    "McpTool",
+    "McpToolResult",
+]
+
 log = get_logger(__name__)
 
 
@@ -56,10 +62,34 @@ class McpClient:
     endpoints.
     """
 
-    def __init__(self, base_url: str, timeout: int | None = None) -> None:
-        self._base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int | None = None,
+        *,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        """construct mcp client.
+
+        :param base_url: mcp server base url (trailing slash stripped)
+        :ptype base_url: str
+        :param timeout: request timeout in seconds, or ``None`` to fall back to
+            ``THREETEARS_MCP_TIMEOUT`` env var / platform default
+        :ptype timeout: int | None
+        :param http_client: optional pre-built async http client; when supplied,
+            caller owns lifecycle and the client bypasses the internal
+            ``httpx.AsyncClient`` construction. primarily for tests that inject
+            a mock transport.
+        :ptype http_client: httpx.AsyncClient | None
+        :return: nothing
+        :rtype: None
+        """
+        self.base_url = base_url.rstrip("/")
         self._timeout = timeout if timeout is not None else _get_mcp_timeout()
-        self._http = httpx.AsyncClient(timeout=self._timeout)
+        if http_client is not None:
+            self._http = http_client
+        else:
+            self._http = httpx.AsyncClient(timeout=self._timeout)
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -69,7 +99,7 @@ class McpClient:
     async def list_tools(self) -> list[McpTool]:
         """Discover available tools from the MCP server."""
         try:
-            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
+            resp = await self._http.post(f"{self.base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             data = resp.json()
             return [
@@ -83,7 +113,7 @@ class McpClient:
         except Exception as exc:
             log.error(
                 "Failed to list MCP tools",
-                extra={"extra_data": {"error": str(exc), "url": self._base_url}},
+                extra={"extra_data": {"error": str(exc), "url": self.base_url}},
             )
             return []
 
@@ -92,7 +122,7 @@ class McpClient:
         """Invoke a tool on the MCP server."""
         try:
             resp = await self._http.post(
-                f"{self._base_url}/mcp/v1/tools/call",
+                f"{self.base_url}/mcp/v1/tools/call",
                 json={"name": tool_name, "arguments": arguments},
             )
             resp.raise_for_status()
@@ -108,7 +138,7 @@ class McpClient:
     async def test_connection(self) -> bool:
         """Test whether the MCP server is reachable."""
         try:
-            resp = await self._http.post(f"{self._base_url}/mcp/v1/tools/list", json={})
+            resp = await self._http.post(f"{self.base_url}/mcp/v1/tools/list", json={})
             resp.raise_for_status()
             return True
         except Exception:

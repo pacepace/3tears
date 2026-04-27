@@ -14,6 +14,10 @@ from threetears.models.providers._conversions import (
 )
 from threetears.models.results import ChatChunk, ChatResult
 
+__all__ = [
+    "OpenRouterChatProvider",
+]
+
 
 class OpenRouterChatProvider:
     """chat provider adapter for OpenRouter models via langchain-openrouter.
@@ -41,12 +45,12 @@ class OpenRouterChatProvider:
         timeout: int = 120,
         max_retries: int = 2,
     ) -> None:
-        self._model_name = model_name
+        self.model_name = model_name
         self._api_key = api_key
-        self._timeout = timeout
+        self.timeout = timeout
         self._max_retries = max_retries
-        self._model: Any = None
-        self._tools: list[ToolDefinition] | None = None
+        self.model: Any = None
+        self.tools: list[ToolDefinition] | None = None
 
     def _get_model(self) -> Any:
         """lazily creates and caches ChatOpenRouter instance.
@@ -58,26 +62,26 @@ class OpenRouterChatProvider:
         :return: configured ChatOpenRouter instance, optionally with tools bound
         :rtype: Any
         """
-        if self._model is not None:
-            return self._model
+        if self.model is not None:
+            return self.model
 
         from langchain_openrouter import ChatOpenRouter
 
         kwargs: dict[str, Any] = {
-            "model": self._model_name,
+            "model": self.model_name,
             "api_key": self._api_key,
-            "timeout": self._timeout * 1000,
+            "timeout": self.timeout * 1000,
             "max_retries": self._max_retries,
         }
 
         base_model: Any = ChatOpenRouter(**kwargs)
 
-        if self._tools:
-            lc_tools = [tool_def_to_lc(t) for t in self._tools]
+        if self.tools:
+            lc_tools = [tool_def_to_lc(t) for t in self.tools]
             base_model = base_model.bind_tools(lc_tools)
 
-        self._model = base_model
-        return self._model
+        self.model = base_model
+        return self.model
 
     async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
         """generates chat completion from message history.
@@ -123,8 +127,8 @@ class OpenRouterChatProvider:
         :param tools: tool definitions available to model
         :ptype tools: list[ToolDefinition]
         """
-        self._tools = list(tools)
-        self._model = None
+        self.tools = list(tools)
+        self.model = None
 
     def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """preprocesses messages before sending to OpenRouter model.
@@ -143,7 +147,7 @@ class OpenRouterChatProvider:
         from threetears.models.preprocessing import preprocess_messages
 
         capabilities = ModelCapabilities(
-            model_name=self._model_name,
+            model_name=self.model_name,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,

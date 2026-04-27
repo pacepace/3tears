@@ -4,6 +4,20 @@ Tool framework for LLM agents. Provides tool routing, execution, context managem
 
 Part of the [3tears](https://github.com/pacepace/3tears) framework.
 
+## ToolServer baseline audit (audit-task-01 Phase 3)
+
+`ToolServer.handle_call` stamps every dispatch with a unified `AuditEvent` envelope (`event_type='tool.call'`) via `threetears.agent.audit.publish_audit`. The baseline emission fires in a `finally` block so success, failure (tool returned `success=False`), and error (tool raised) outcomes all produce a row. Identity axes carry from the active `ToolCallScope` (`actor_user_id`, `calling_agent_id`, `owner_agent_id`, `customer_id`, `correlation_id`); `resource_namespace_id` / `resource_namespace_type` stay `None` at the baseline layer since the tool resolves its target inside `execute`. Per-tool additive events (e.g. `workspace.fs_write`) still publish via `publish_audit` and ride alongside the baseline row under the same `correlation_id` — the `(correlation_id, event_type)` partial unique index on `platform_audit.audit_events` keeps them distinct. Emission is fire-and-forget: NATS publish failures log WARN and never taint the tool's response.
+
+## Tool-as-namespace emission (namespace-task-01 Phase 2, three-tier-task-01 Phase F)
+
+Tool namespace materialization is hub-owned. `ToolServer.publish_registration` writes the `RegistrationManifest` (carrying `pod_id` + `tools` + the new `owner_agent_id` / `customer_id` envelope fields), and the hub-side `ToolNamespaceEmitter` (in `aibots.hub.tools.namespace_emitter`) subscribes to `{ns}.tools.register` and upserts one `platform.namespaces` row of type `tool` per tool — this is the SOLE writer in the platform.
+
+Agent-spun ToolServers stamp `agent_id` + `customer_id` on the `RegistrationManifest` so the hub emitter lands rows with the right owner scope; platform-built-in pods (admin tool server, datasource tool pod) leave both `None` and the row lands with NULL owner columns (admitted under v061's widened `namespaces_row_scope_customer_ck` carve-out for `tool` type alongside `system` / `model`).
+
+The canonical `name` shape is `tools.<sanitized-mcp>.<sanitized-version>` (per `build_namespace_name`); `metadata` carries the pre-sanitized natural-identity fields `mcp_name` / `mcp_version` / `pod_id` so downstream pattern matching (hub access materializer agent.yaml `access.tools` patterns + registry authorizer canonical-name lookup) does not need to reverse the sanitization rules. Deterministic `uuid5` derived from `(mcp_name, version, owner_agent_id_hex)` keeps concurrent emitters race-safe via `ON CONFLICT (id) DO UPDATE`.
+
+The legacy `ToolServer.register_tool` / `deregister_tool` helpers still emit through an injected `namespace_collection` for callers that wire one explicitly, but in production deployments the hub-side emitter is the source of truth and the in-process emission is redundant.
+
 ## Installation
 
 ```bash

@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,6 +27,12 @@ class _FakeWorkspaceEntity:
     id: UUID
     name: str
     date_deleted: datetime | None = None
+    agent_id: UUID = field(default_factory=uuid4)
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -74,12 +81,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -111,7 +118,7 @@ class _FakeConnection:
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx
@@ -159,6 +166,7 @@ class _FakePool:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     workspace_entities: list[_FakeWorkspaceEntity] | None = None,
     files: list[_FakeFileEntity] | None = None,
     head_row: dict[str, Any] | None = None,
@@ -180,6 +188,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox, agent_id
 
@@ -190,9 +199,11 @@ def _build_tool(
 
 
 @pytest.mark.asyncio
-async def test_fs_write_create_new_file_at_version_one() -> None:
+async def test_fs_write_create_new_file_at_version_one(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no existing head -> action=create, version=1, sha matches content."""
-    tool, pool, sandbox, _ = _build_tool()
+    tool, pool, sandbox, _ = _build_tool(acl_cache=permissive_acl_cache)
     result = await tool.execute(
         relative_path="notes/hello.md",
         content="hello",
@@ -200,7 +211,7 @@ async def test_fs_write_create_new_file_at_version_one() -> None:
     )
     assert result.success is True, result.error
     # enforce happened and was a write
-    assert sandbox.enforce_calls == [("write", "notes/hello.md")]
+    assert sandbox.syntax_calls == ["notes/hello.md"]
     # three executes in tx; two fetchrows (head + journal-max) in tx
     assert len(pool.conn.executions) == 3
     for _sql, _args, in_tx in pool.conn.executions:
@@ -222,9 +233,11 @@ async def test_fs_write_create_new_file_at_version_one() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_writes_inside_single_transaction() -> None:
+async def test_fs_write_writes_inside_single_transaction(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """every execute statement occurs while transaction_open is True."""
-    tool, pool, _sandbox, _ = _build_tool()
+    tool, pool, _sandbox, _ = _build_tool(acl_cache=permissive_acl_cache)
     await tool.execute(relative_path="a.md", content="x", workspace="ws")
     assert len(pool.conn.transactions) == 1
     assert pool.conn.transactions[0].entered is True
@@ -238,7 +251,9 @@ async def test_fs_write_writes_inside_single_transaction() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_update_existing_file_bumps_version_and_sha() -> None:
+async def test_fs_write_update_existing_file_bumps_version_and_sha(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """existing head -> action=update, version incremented, sha changes."""
     existing = _FakeFileEntity(
         relative_path="a.md",
@@ -247,7 +262,7 @@ async def test_fs_write_update_existing_file_bumps_version_and_sha() -> None:
         version=5,
     )
     head = {"content": b"old", "sha256": "old" * 21 + "o", "version": 5}
-    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
     pool.conn.journal_max_version = 5
 
     result = await tool.execute(relative_path="a.md", content="fresh", workspace="ws")
@@ -269,7 +284,9 @@ async def test_fs_write_update_existing_file_bumps_version_and_sha() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_stale_expected_sha_returns_mismatch_error() -> None:
+async def test_fs_write_stale_expected_sha_returns_mismatch_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """expected_sha256 != current sha -> error names current sha and advises retry."""
     existing = _FakeFileEntity(
         relative_path="a.md",
@@ -278,7 +295,7 @@ async def test_fs_write_stale_expected_sha_returns_mismatch_error() -> None:
         version=2,
     )
     head = {"content": b"old", "sha256": "c" * 64, "version": 2}
-    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="a.md",
@@ -302,15 +319,17 @@ async def test_fs_write_stale_expected_sha_returns_mismatch_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_sandbox_denied_returns_clean_error_no_writes() -> None:
+async def test_fs_write_sandbox_denied_returns_clean_error_no_writes(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied on write -> clean error, no pool acquire."""
-    tool, pool, sandbox, _ = _build_tool(deny_writes=["secret.env"])
+    tool, pool, sandbox, _ = _build_tool(deny_writes=["secret.env"], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="secret.env", content="x", workspace="ws")
     assert result.success is False
     assert result.error is not None
     assert "secret.env" in result.error
     # enforce invoked once for write
-    assert sandbox.enforce_calls == [("write", "secret.env")]
+    assert sandbox.syntax_calls == ["secret.env"]
     # no fetchrow, no execute -- gate-then-act held
     assert pool.conn.fetchrows == []
     assert pool.conn.executions == []
@@ -322,10 +341,12 @@ async def test_fs_write_sandbox_denied_returns_clean_error_no_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_journal_row_captures_actor_and_correlation() -> None:
+async def test_fs_write_journal_row_captures_actor_and_correlation(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """journal row carries agent_id as actor_id; correlation_id is a UUID."""
     agent_id = uuid4()
-    tool, pool, _sandbox, _ = _build_tool(agent_id=agent_id)
+    tool, pool, _sandbox, _ = _build_tool(agent_id=agent_id, acl_cache=permissive_acl_cache)
     await tool.execute(relative_path="a.md", content="x", workspace="ws")
     journal_args = pool.conn.executions[0][1]
     # args positions per SQL in helpers:
@@ -340,13 +361,17 @@ async def test_fs_write_journal_row_captures_actor_and_correlation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fs_write_mcp_name_is_exact_string() -> None:
-    tool, _, _, _ = _build_tool()
+def test_fs_write_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.fs_write"
 
 
-def test_fs_write_mcp_schema_requires_path_and_content() -> None:
-    tool, _, _, _ = _build_tool()
+def test_fs_write_mcp_schema_requires_path_and_content(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == ["relative_path", "content"]

@@ -73,7 +73,7 @@ def collection(
 ) -> ContextItemCollection:
     nats = make_nats_mock()
     coll = ContextItemCollection(registry, config, nats_client=nats)
-    coll._l3_pool = pool
+    coll.l3_pool = pool
     return coll
 
 
@@ -140,7 +140,7 @@ async def test_set_pin_replaces_existing_pin(ctx: ToolContextManager) -> None:
     await set_pin(ctx, second_workspace, "second", actor_id)
 
     pin = await get_pin(ctx)
-    pin_items = [item for item in ctx._items if item["context_type"] == "workspace_pin" and item["key"] == "current"]
+    pin_items = [item for item in ctx.items if item["context_type"] == "workspace_pin" and item["key"] == "current"]
 
     assert pin is not None
     assert pin.workspace_id == second_workspace
@@ -163,7 +163,7 @@ async def test_clear_pin_removes_pin(ctx: ToolContextManager) -> None:
     await clear_pin(ctx)
 
     assert await get_pin(ctx) is None
-    assert not any(item["context_type"] == "workspace_pin" for item in ctx._items)
+    assert not any(item["context_type"] == "workspace_pin" for item in ctx.items)
 
 
 @pytest.mark.asyncio
@@ -230,7 +230,7 @@ async def test_stored_content_is_string_at_border(ctx: ToolContextManager) -> No
     actor_id = UUID("22222222-2222-2222-2222-222222222222")
 
     await set_pin(ctx, workspace_id, "ws", actor_id)
-    item = next(i for i in ctx._items if i["context_type"] == "workspace_pin" and i["key"] == "current")
+    item = next(i for i in ctx.items if i["context_type"] == "workspace_pin" and i["key"] == "current")
 
     assert isinstance(item["content"], str)
     assert item["content"] == str(workspace_id)
@@ -268,7 +268,7 @@ async def test_cross_pod_survival_via_shared_collection(
 
     # pod B: fresh manager with empty _items; hydrates via load_context
     ctx_b = ToolContextManager(collection, conversation_id, user_id)
-    assert ctx_b._items == []
+    assert ctx_b.items == []
 
     await ctx_b.load_context()
     pin = await get_pin(ctx_b)

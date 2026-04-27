@@ -17,15 +17,19 @@ from pathlib import PurePosixPath
 from typing import Any
 from uuid import UUID
 
+from threetears.agent.acl import AclCache
 from threetears.agent.tools.base_tool import (
     MCPToolDefinition,
     TearsTool,
     ToolResult,
 )
 from threetears.agent.tools.context import ToolContextManager
-from threetears.core.security import SandboxDecision
+from threetears.core.security import SandboxDenied
 from threetears.observe import get_logger
 
+from threetears.agent.workspace.authorize import (
+    WorkspaceAccessDenied,
+)
 from threetears.agent.workspace.collections import (
     WorkspaceCollection,
     WorkspaceFileCollection,
@@ -36,7 +40,13 @@ from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
     _resolve_workspace,
+    authorize_workspace,
+    authorize_workspace_file,
 )
+
+__all__ = [
+    "FsListTool",
+]
 
 log = get_logger(__name__)
 
@@ -75,6 +85,8 @@ class FsListTool(TearsTool):
         sandbox: WorkspaceSandbox,
         context_provider: Callable[[], ToolContextManager],
         agent_id: UUID,
+        acl_cache: AclCache,
+        db_pool: Any = None,
     ) -> None:
         """
         binds tool to collections, sandbox, conversation context, and agent.
@@ -96,6 +108,8 @@ class FsListTool(TearsTool):
         self._sandbox = sandbox
         self._context_provider = context_provider
         self._agent_id = agent_id
+        self._db_pool = db_pool
+        self._acl_cache = acl_cache
 
     async def execute(self, **kwargs: Any) -> ToolResult:
         """
@@ -120,8 +134,14 @@ class FsListTool(TearsTool):
                 self._workspaces,
                 self._agent_id,
             )
+            await authorize_workspace(
+                workspace,
+                "read",
+                db_pool=self._db_pool,
+                acl_cache=self._acl_cache,
+            )
             rows = await self._files.find_by_workspace(workspace.id)
-            filtered = self._filter(rows, glob_pattern)
+            filtered = await self._filter(rows, glob_pattern, workspace)
             entries = [
                 {
                     "relative_path": f.relative_path,
@@ -138,6 +158,8 @@ class FsListTool(TearsTool):
             )
         except (WorkspaceNotFound, NoWorkspacePinned) as exc:
             result = ToolResult(success=False, content="", error=str(exc))
+        except WorkspaceAccessDenied as exc:
+            result = ToolResult(success=False, content="", error=str(exc))
         except Exception as exc:
             log.exception("fs_list failed: %s", exc)
             result = ToolResult(
@@ -147,20 +169,30 @@ class FsListTool(TearsTool):
             )
         return result
 
-    def _filter(self, rows: list[Any], glob_pattern: str | None) -> list[Any]:
+    async def _filter(
+        self,
+        rows: list[Any],
+        glob_pattern: str | None,
+        workspace: Any,
+    ) -> list[Any]:
         """
-        apply optional glob and sandbox read check to head-state rows.
+        apply optional glob and rbac read check to head-state rows.
 
-        sandbox filtering uses :meth:`check_relative_key` rather than
-        :meth:`enforce` so a denied entry silently drops from the list
-        instead of raising (the agent expectation is that ``list`` shows
-        what it is allowed to see, not that ``list`` errors on first
-        inaccessible entry).
+        namespace-task-01 phase 7 replaces the retired
+        ``sandbox.check_relative_key(...) is ALLOW`` filter with a
+        per-row rbac path-level gate via
+        :func:`authorize_workspace_file` (direction ``"read"``). denied
+        rows drop silently from the list rather than raising (the agent
+        expectation is that ``list`` shows what it is allowed to see,
+        not that ``list`` errors on first inaccessible entry).
 
         :param rows: head-state file entities from the collection
         :ptype rows: list[Any]
         :param glob_pattern: optional posix glob applied via full_match
         :ptype glob_pattern: str | None
+        :param workspace: target workspace whose namespace carries the
+            rbac grants for read_file_matching globs
+        :ptype workspace: Any
         :return: filtered file list
         :rtype: list[Any]
         """
@@ -169,8 +201,16 @@ class FsListTool(TearsTool):
             posix_path = PurePosixPath(row.relative_path)
             if glob_pattern is not None and not posix_path.full_match(glob_pattern):
                 continue
-            decision = self._sandbox.check_relative_key(row.relative_path, "read")
-            if decision is SandboxDecision.DENY:
+            try:
+                self._sandbox.validate_syntax(row.relative_path)
+                await authorize_workspace_file(
+                    workspace,
+                    row.relative_path,
+                    "read",
+                    db_pool=None,
+                    acl_cache=self._acl_cache,
+                )
+            except SandboxDenied, WorkspaceAccessDenied:
                 continue
             result.append(row)
         return result
@@ -231,6 +271,8 @@ def _build(**kwargs: Any) -> FsListTool:
         sandbox=kwargs["sandbox"],
         context_provider=kwargs["context_provider"],
         agent_id=kwargs["agent_id"],
+        db_pool=kwargs.get("db_pool"),
+        acl_cache=kwargs["acl_cache"],
     )
 
 

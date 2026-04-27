@@ -24,15 +24,28 @@ classifiers = [
 ]
 dependencies = [
     "3tears-observe",
+    "3tears-nats",
     "sqlalchemy",
     "asyncpg",
     "nats-py",
     "aiosqlite",
+    "pydantic",
 ]
 
 [project.optional-dependencies]
 tracing = ["opentelemetry-api>=1.20"]
 duckdb = ["duckdb>=1.0"]
+# pulled by anything importing :mod:`threetears.core.testing.fixtures`
+# (the centralized testcontainer harness for downstream integration
+# tests). lazy-imported inside fixture bodies so the rest of
+# threetears.core stays free of these deps; the optional-extras
+# declaration just gives consumers a one-line dep request:
+# ``3tears[testing]`` in their dev / test extras.
+testing = [
+    "testcontainers[nats,postgres]>=4.0",
+    "docker>=7.0",
+    "pytest>=8.0",
+]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -42,3 +55,4 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears-observe = { workspace = true }
+3tears-nats = { workspace = true }

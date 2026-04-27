@@ -10,6 +10,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
+__all__ = [
+    "Attachment",
+    "ChannelMessage",
+    "ChannelResponse",
+    "ChannelRouter",
+]
+
 
 @dataclass
 class Attachment:

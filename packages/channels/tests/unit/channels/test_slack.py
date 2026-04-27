@@ -111,7 +111,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._app_token == "xapp-test-token"
+        assert adapter.app_token == "xapp-test-token"
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_stores_router(self, mock_app_cls: MagicMock) -> None:
@@ -124,7 +124,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._router is router
+        assert adapter.router is router
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_stores_config(self, mock_app_cls: MagicMock) -> None:
@@ -139,7 +139,7 @@ class TestSlackAdapterConstructor:
             router=router,
             config=config,
         )
-        assert adapter._config == config
+        assert adapter.config == config
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_config_defaults_to_empty_dict(self, mock_app_cls: MagicMock) -> None:
@@ -152,7 +152,7 @@ class TestSlackAdapterConstructor:
             app_token="xapp-test-token",
             router=router,
         )
-        assert adapter._config == {}
+        assert adapter.config == {}
 
     @patch("threetears.channels.slack.AsyncApp")
     def test_registers_message_event_handler(self, mock_app_cls: MagicMock) -> None:
@@ -282,7 +282,7 @@ class TestSlackAdapterBotFiltering:
             "ts": "1234567890.123456",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         assert router.last_message is None
         say.assert_not_awaited()
 
@@ -309,7 +309,7 @@ class TestSlackAdapterBotFiltering:
             "ts": "1234567890.123456",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         assert router.last_message is None
         say.assert_not_awaited()
 
@@ -347,7 +347,7 @@ class TestSlackAdapterInboundNormalization:
             "team": "T00001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -383,7 +383,7 @@ class TestSlackAdapterInboundNormalization:
             "team": "T00001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -414,7 +414,7 @@ class TestSlackAdapterInboundNormalization:
             "team": "T00001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -446,7 +446,7 @@ class TestSlackAdapterInboundNormalization:
             "team": "T00001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -476,7 +476,7 @@ class TestSlackAdapterInboundNormalization:
             "ts": "1234567890.123456",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -517,7 +517,7 @@ class TestSlackAdapterInboundNormalization:
             ],
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -554,7 +554,7 @@ class TestSlackAdapterInboundNormalization:
             "ts": "1234567890.123456",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -588,7 +588,7 @@ class TestSlackAdapterInboundNormalization:
             "client_msg_id": "unique-msg-id",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -630,7 +630,7 @@ class TestSlackAdapterThreading:
             "thread_ts": "1234567890.000001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once_with(text="threaded reply", thread_ts="1234567890.000001")
 
     @patch("threetears.channels.slack.AsyncApp")
@@ -658,7 +658,7 @@ class TestSlackAdapterThreading:
             "channel_type": "channel",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once_with(text="new thread reply", thread_ts="1234567890.123456")
 
     @patch("threetears.channels.slack.AsyncApp")
@@ -686,7 +686,7 @@ class TestSlackAdapterThreading:
             "channel_type": "im",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once_with(text="dm reply")
 
 
@@ -723,7 +723,7 @@ class TestSlackAdapterResponseRouting:
             "team": "T00001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         msg = router.last_message
         assert msg is not None
@@ -757,7 +757,7 @@ class TestSlackAdapterResponseRouting:
             "ts": "1234567890.123456",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
         say.assert_not_awaited()
 
     @patch("threetears.channels.slack.AsyncApp")
@@ -796,7 +796,7 @@ class TestSlackAdapterResponseRouting:
             "thread_ts": "1234567890.000001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         mock_client.files_upload_v2.assert_awaited_once_with(
             channel="C98765",
@@ -869,7 +869,7 @@ class TestSlackAdapterRichFormatting:
             "thread_ts": "1234567890.000001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
         call_kwargs = say.await_args.kwargs
@@ -902,7 +902,7 @@ class TestSlackAdapterRichFormatting:
             "thread_ts": "1234567890.000001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
         call_kwargs = say.await_args.kwargs
@@ -937,7 +937,7 @@ class TestSlackAdapterRichFormatting:
             "thread_ts": "1234567890.000001",
         }
         say = AsyncMock()
-        await adapter._handle_message_event(event=event, say=say)
+        await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
         call_kwargs = say.await_args.kwargs

@@ -25,6 +25,10 @@ from threetears.channels.protocol import (
     ChannelRouter,
 )
 
+__all__ = [
+    "SlackAdapter",
+]
+
 
 class SlackAdapter:
     """channel adapter bridging slack to platform via socket mode.
@@ -61,19 +65,19 @@ class SlackAdapter:
         :ptype config: dict[str, Any] | None
         """
         self._app = AsyncApp(token=bot_token)
-        self._app_token = app_token
-        self._router = router
-        self._config: dict[str, Any] = config if config is not None else {}
+        self.app_token = app_token
+        self.router = router
+        self.config: dict[str, Any] = config if config is not None else {}
         self._handler: AsyncSocketModeHandler | None = None
 
-        self._app.event("message")(self._handle_message_event)
+        self._app.event("message")(self.handle_message_event)
 
     async def start(self) -> None:
         """start socket mode connection to slack.
 
         creates AsyncSocketModeHandler and initiates websocket connection.
         """
-        self._handler = AsyncSocketModeHandler(self._app, self._app_token)
+        self._handler = AsyncSocketModeHandler(self._app, self.app_token)
         await self._handler.start_async()
 
     async def stop(self) -> None:
@@ -85,12 +89,17 @@ class SlackAdapter:
         if self._handler is not None:
             await self._handler.close_async()
 
-    async def _handle_message_event(
+    async def handle_message_event(
         self,
         event: dict[str, Any],
         say: Any,
     ) -> None:
-        """handle inbound slack message event.
+        """public slack-event handler for inbound messages.
+
+        registered as the slack-bolt ``message`` event callback in
+        :meth:`__init__`. tests exercise this surface directly; the
+        name + ``(event, say)`` shape are part of the stability
+        contract.
 
         filters bot messages, normalizes event to ChannelMessage,
         routes through router, and delivers response back to slack.
@@ -134,7 +143,7 @@ class SlackAdapter:
             timestamp=datetime.now(UTC),
         )
 
-        response = await self._router.route_inbound(channel_message)
+        response = await self.router.route_inbound(channel_message)
 
         if response is None:
             return

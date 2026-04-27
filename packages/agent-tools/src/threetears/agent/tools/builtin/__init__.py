@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING
 
 from threetears.observe import get_logger
 
+__all__ = [
+    "register_builtins",
+]
+
 if TYPE_CHECKING:
     from threetears.agent.tools.registry import ToolRegistry
 

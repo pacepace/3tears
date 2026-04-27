@@ -66,6 +66,7 @@ async def test_bind_captures_back_stub_builder_edit(
     new_payload = b"audience_units:\n  - audience_unit: test_override\n"
 
     async with bind(
+        agent_id=fx.agent_id,
         workspace_id=fx.workspace_id,
         sandbox=sandbox,
         lease=lease,

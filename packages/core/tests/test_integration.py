@@ -125,7 +125,7 @@ def _make_metadata() -> MetaData:
 
 
 class StubEntity(BaseEntity):
-    _primary_key_field = "id"
+    primary_key_field = "id"
 
 
 class StubCollection(BaseCollection[StubEntity]):
@@ -150,10 +150,10 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def _fetch_from_postgres(self, entity_id: object) -> dict | None:
+    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
         return self._pg_store.get(str(entity_id))
 
-    async def _save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._pg_store.get(str(pk))
@@ -162,37 +162,43 @@ class StubCollection(BaseCollection[StubEntity]):
         self._pg_store[str(pk)] = dict(data)
         return 1
 
-    async def _delete_from_postgres(self, entity_id: object) -> None:
+    async def delete_from_postgres(self, entity_id: object) -> None:
         self._pg_store.pop(str(entity_id), None)
 
-    def _serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def _deserialize(self, data: bytes) -> dict:
+    def deserialize(self, data: bytes) -> dict:
         return json.loads(data)
 
 
 def _make_nats_mock() -> AsyncMock:
-    """Create a NATS client mock with in-memory KV store."""
+    """typed-wrapper NATS mock with in-memory KV bucket."""
     store: dict[str, bytes] = {}
-    nats = AsyncMock()
-    nats.bucket_name = MagicMock(return_value="test_collections")
 
-    async def _get(bucket: str, key: str) -> bytes | None:
+    async def _get(*, key: str) -> bytes | None:
         return store.get(key)
 
-    async def _put(bucket: str, key: str, value: bytes) -> bool:
+    async def _put(*, key: str, value: bytes) -> int:
         store[key] = value
-        return True
+        return len(store)
 
-    async def _delete(bucket: str, key: str) -> bool:
+    async def _delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
+        existed = key in store
         store.pop(key, None)
-        return True
+        return existed or revision is None
 
-    nats.get = AsyncMock(side_effect=_get)
-    nats.put = AsyncMock(side_effect=_put)
-    nats.delete = AsyncMock(side_effect=_delete)
-    nats._store = store
+    bucket = AsyncMock()
+    bucket.get = AsyncMock(side_effect=_get)
+    bucket.put = AsyncMock(side_effect=_put)
+    bucket.delete = AsyncMock(side_effect=_delete)
+
+    nats = AsyncMock()
+    nats.kv_bucket = AsyncMock(return_value=bucket)
+    nats.publish = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
+    nats.store = store
+    nats.bucket = bucket
     return nats
 
 
@@ -254,11 +260,11 @@ class TestThreeTierIntegration:
         assert "item-1" in pg_store
         assert pg_store["item-1"]["name"] == "Widget"
         # L1 populated
-        l1_row = coll._l1.select_by_id("stub_items", "item-1")
+        l1_row = coll.get_row_sync("item-1")
         assert l1_row is not None
         assert l1_row["name"] == "Widget"
         # L2 populated
-        assert "stub_items.item-1" in nats._store
+        assert "stub_items.item-1" in nats.store
 
         # 3. Get — should hit L1
         nats.get.reset_mock()
@@ -270,18 +276,18 @@ class TestThreeTierIntegration:
 
         # 4. Invalidate L1 + L2 caches
         await coll.invalidate_cache("item-1")
-        assert coll._l1.select_by_id("stub_items", "item-1") is None
-        assert "stub_items.item-1" not in nats._store
+        assert coll.get_row_sync("item-1") is None
+        assert "stub_items.item-1" not in nats.store
 
         # 5. Get again — L1 miss, L2 miss, L3 hit -> re-promotes to L1 + L2
         fetched2 = await coll.get("item-1")
         assert fetched2 is not None
         assert fetched2.name == "Widget"
         # Re-promoted to L1
-        l1_after = coll._l1.select_by_id("stub_items", "item-1")
+        l1_after = coll.get_row_sync("item-1")
         assert l1_after is not None
         # Re-promoted to L2
-        assert "stub_items.item-1" in nats._store
+        assert "stub_items.item-1" in nats.store
 
         # 6. Modify and save
         fetched2.name = "Gadget"
@@ -300,7 +306,7 @@ class TestThreeTierIntegration:
         assert fetched2.score == 7
         assert fetched2.is_dirty is False
         # L1 updated
-        l1_reloaded = coll._l1.select_by_id("stub_items", "item-1")
+        l1_reloaded = coll.get_row_sync("item-1")
         assert l1_reloaded is not None
         assert l1_reloaded["name"] == "Thingamajig"
 
@@ -308,8 +314,8 @@ class TestThreeTierIntegration:
         result = await coll.delete("item-1")
         assert result is True
         assert "item-1" not in pg_store
-        assert coll._l1.select_by_id("stub_items", "item-1") is None
-        assert "stub_items.item-1" not in nats._store
+        assert coll.get_row_sync("item-1") is None
+        assert "stub_items.item-1" not in nats.store
 
         # Verify get returns None after delete
         gone = await coll.get("item-1")
@@ -328,9 +334,9 @@ class TestThreeTierIntegration:
         await entity.save()
 
         # Manually remove from L1 only (simulate L1 eviction), leave L2 intact
-        coll._l1.delete_by_id("stub_items", "item-2")
-        assert coll._l1.select_by_id("stub_items", "item-2") is None
-        assert "stub_items.item-2" in nats._store  # L2 still has it
+        coll.evict_from_cache_sync("item-2")
+        assert coll.get_row_sync("item-2") is None
+        assert "stub_items.item-2" in nats.store  # L2 still has it
 
         # Get should hit L2 and re-promote to L1
         fetched = await coll.get("item-2")
@@ -338,7 +344,7 @@ class TestThreeTierIntegration:
         assert fetched.name == "Sprocket"
 
         # L1 re-promoted
-        l1_row = coll._l1.select_by_id("stub_items", "item-2")
+        l1_row = coll.get_row_sync("item-2")
         assert l1_row is not None
         assert l1_row["name"] == "Sprocket"
 
@@ -363,7 +369,7 @@ class TestThreeTierIntegration:
         # Load entity (L3 -> L1 promotion)
         entity = await coll.get("item-3")
         assert entity is not None
-        assert entity._original_date_updated == ts_v1
+        assert entity.original_date_updated == ts_v1
 
         # Simulate another process updating L3 behind our back
         pg_store["item-3"]["date_updated"] = ts_v2

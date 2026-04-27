@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field, create_model
 
 from threetears.agent.tools.base_tool import TearsTool
 
+__all__ = [
+    "tears_tool_to_langchain",
+]
+
 
 def tears_tool_to_langchain(tool: TearsTool) -> BaseTool:
     """wrap TearsTool instance as LangChain BaseTool.

@@ -88,7 +88,7 @@ class TestCircuitBreaker:
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
-            cb._last_failure_time = 1000.0
+            cb.last_failure_time = 1000.0
             cb.check()
 
         assert cb.state == CircuitState.HALF_OPEN
@@ -121,7 +121,7 @@ class TestCircuitBreaker:
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
-            cb._last_failure_time = 1000.0
+            cb.last_failure_time = 1000.0
             cb.check()
 
         assert cb.state == CircuitState.HALF_OPEN
@@ -151,7 +151,7 @@ class TestCircuitBreaker:
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
-            cb._last_failure_time = 1000.0
+            cb.last_failure_time = 1000.0
             cb.check()
 
         assert cb.state == CircuitState.HALF_OPEN
@@ -170,7 +170,7 @@ class TestCircuitBreaker:
 
         with patch("threetears.models.circuit_breaker.time") as mock_time:
             mock_time.monotonic.return_value = 1000.0 + 11.0
-            cb._last_failure_time = 1000.0
+            cb.last_failure_time = 1000.0
             cb.check()
 
         assert cb.state == CircuitState.HALF_OPEN
@@ -202,7 +202,7 @@ class TestCircuitBreaker:
         for t in threads:
             t.join()
 
-        assert cb._failure_count == 100
+        assert cb.failure_count == 100
         assert cb.state == CircuitState.OPEN
 
 

@@ -177,7 +177,7 @@ class TestWebSearchTool:
     def test_trailing_slash_stripped(self) -> None:
         """WebSearchTool strips trailing slash from base_url."""
         tool = WebSearchTool(base_url="http://localhost:8888/")
-        assert tool._base_url == "http://localhost:8888"
+        assert tool.base_url == "http://localhost:8888"
 
 
 # -- WebFetchTool --

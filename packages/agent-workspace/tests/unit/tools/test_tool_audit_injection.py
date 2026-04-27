@@ -1,13 +1,22 @@
-"""tests confirming every write-class workspace tool publishes an audit
-envelope on its success path and tolerates audit-publish failure.
+"""tests confirming every write-class workspace tool publishes an additive
+audit event on its success path and tolerates audit-publish failure.
+
+audit-task-01 Phase 3: workspace tools now publish unified
+:class:`threetears.agent.audit.AuditEvent` envelopes via
+:func:`threetears.agent.audit.publish_audit`. the subject for the
+unified helper is ``{namespace}.audit.{event_type}`` verbatim, so e.g.
+``workspace.doc_set`` rides on ``{namespace}.audit.workspace.doc_set``.
+each tool emission is **additive** on top of the baseline
+``tool.call`` envelope that :class:`ToolServer.handle_call` emits;
+the baseline is exercised in the agent-tools test suite.
 
 the mainline tests for each tool live in their own ``test_*.py`` module
 and run with ``namespace=None`` so the audit block is a deliberate no-op
 there (keeping those tests focused on SQL / sandbox behavior). this
 module supplies ``namespace="ns"`` + a recording NATS fake to prove the
-injection fires with the correct subject, event_type, resource_type,
-action, and details shape, and that a raising NATS client does NOT
-break the tool's success return.
+injection fires with the correct subject, event_type,
+``resource_namespace_type``, action, and details shape, and that a
+raising NATS client does NOT break the tool's success return.
 """
 
 from __future__ import annotations
@@ -16,6 +25,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,11 +49,16 @@ from threetears.agent.workspace.tools.workspace_rollback import WorkspaceRollbac
 
 @dataclass
 class _FakeNats:
+    """records canonical wrapper-shaped publishes for audit assertions."""
+
     published: list[tuple[str, bytes]] = field(default_factory=list)
     raise_on_publish: BaseException | None = None
 
-    async def publish(self, subject: str, payload: bytes) -> None:
-        self.published.append((subject, payload))
+    async def publish(self, *, subject: Any, message: Any, reply_to: Any | None = None) -> None:
+        del reply_to
+        subject_path = subject.path if hasattr(subject, "path") else str(subject)
+        payload = message.model_dump_json().encode("utf-8")
+        self.published.append((subject_path, payload))
         if self.raise_on_publish is not None:
             raise self.raise_on_publish
 
@@ -55,6 +70,20 @@ class _FakeWorkspaceEntity:
     template_name: str | None = None
     date_deleted: Any = None
     current_version: int = 0
+    # WS-ACL-10 audit envelope inputs: workspace_audit_identity reads
+    # these directly off the workspace to fill owner_agent_id and
+    # customer_id on the envelope. fixture defaults to fresh UUIDs so
+    # tests do not depend on the specific identity values.
+    owner_agent_id: UUID = field(default_factory=uuid4)
+    customer_id: UUID | None = field(default_factory=uuid4)
+    # collections-task-02 partition column on workspaces; helpers and
+    # tools thread workspace.agent_id into UPDATE workspaces SQL.
+    agent_id: UUID = field(default_factory=uuid4)
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -114,7 +143,7 @@ class _RecordingSandbox:
             raise KeyError(root_name)
         return self._templates_root
 
-    def enforce(self, action: str, target: str) -> None:
+    def validate_syntax(self, target: str) -> None:
         return None
 
 
@@ -147,16 +176,16 @@ class _FakeConnection:
     head_row: dict[str, Any] | None = None
     journal_max_version: int = 0
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx
 
-    async def execute(self, query: str, *args: Any) -> str:
+    async def execute(self, query: str, *args: Any, namespace: Any = None) -> str:
         self.executions.append((query, args, self.transaction_open))
         return "INSERT 0 1"
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+    async def fetchrow(self, query: str, *args: Any, namespace: Any = None) -> dict[str, Any] | None:
         """dispatch by SQL shape: journal-max SELECT returns a row with
         ``max_version``; head SELECT (and any fallback) returns ``head_row``.
         """
@@ -215,7 +244,9 @@ def _subject(nats: _FakeNats) -> str:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_publishes_audit_on_success() -> None:
+async def test_fs_write_publishes_audit_on_success(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """fs_write success path emits one workspace.fs_write audit event."""
     agent_id = uuid4()
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
@@ -231,18 +262,24 @@ async def test_fs_write_publishes_audit_on_success() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.write"
+    assert _subject(nats) == "ns.audit.workspace.fs_write"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.fs_write"
-    assert envelope["actor_type"] == "agent"
-    assert envelope["actor_id"] == str(agent_id)
-    assert envelope["agent_id"] == str(agent_id)
-    assert envelope["resource_type"] == "workspace_file"
-    assert envelope["resource_id"] == f"{ws.id}/a.md"
+    # WS-ACL-10: actor_user_id + calling_agent_id + owner_agent_id +
+    # customer_id + resource_namespace_id ride on every envelope.
+    assert UUID(envelope["actor_user_id"])
+    assert UUID(envelope["calling_agent_id"])
+    assert envelope["owner_agent_id"] == str(ws.owner_agent_id)
+    assert UUID(envelope["customer_id"])
+    assert envelope["resource_namespace_id"] == str(ws.id)
+    assert envelope["resource_namespace_type"] == "workspace_file"
     assert envelope["action"] == "write"
+    assert envelope["outcome"] == "success"
+    assert envelope["details"]["workspace_resource_id"] == f"{ws.id}/a.md"
     assert envelope["details"]["bytes_after"] == 5
     assert envelope["details"]["sha256_before"] is None
     assert envelope["details"]["sha256_after"] is not None
@@ -250,7 +287,9 @@ async def test_fs_write_publishes_audit_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_write_success_preserved_when_publish_raises() -> None:
+async def test_fs_write_success_preserved_when_publish_raises(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """raising NATS publish does not break the tool's success return."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     nats = _FakeNats(raise_on_publish=RuntimeError("nats offline"))
@@ -265,6 +304,7 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", content="hello", workspace="ws")
     assert result.success is True, result.error
@@ -276,7 +316,9 @@ async def test_fs_write_success_preserved_when_publish_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
+async def test_fs_edit_publishes_audit_with_occurrence_count(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """fs_edit audit details include occurrences, bytes, and sha pair."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(relative_path="a.md", content=b"foo bar foo", sha256="b" * 64, version=1)
@@ -295,13 +337,15 @@ async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(relative_path="a.md", find="foo", replace="qux", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.edit"
+    assert _subject(nats) == "ns.audit.workspace.fs_edit"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.fs_edit"
     assert envelope["action"] == "edit"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["occurrences"] == 2
     assert envelope["details"]["bytes_before"] == 11
     assert envelope["details"]["sha256_before"] == "b" * 64
@@ -313,7 +357,9 @@ async def test_fs_edit_publishes_audit_with_occurrence_count() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
+async def test_doc_set_publishes_audit_with_jsonpath_and_value(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """doc_set audit details carry jsonpath + value + sha pair."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(
@@ -337,6 +383,7 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(
         relative_path="config.yaml",
@@ -345,10 +392,11 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
         workspace="ws",
     )
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.set"
+    assert _subject(nats) == "ns.audit.workspace.doc_set"
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.doc_set"
     assert envelope["action"] == "set"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["jsonpath"] == "$.k"
     assert envelope["details"]["value"] == 42
     assert envelope["details"]["sha256_before"] == "e" * 64
@@ -360,7 +408,9 @@ async def test_doc_set_publishes_audit_with_jsonpath_and_value() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_merge_publishes_audit_with_partial_keys() -> None:
+async def test_doc_merge_publishes_audit_with_partial_keys(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """doc_merge audit details list merged top-level keys."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     existing = _FakeFileEntity(
@@ -384,6 +434,7 @@ async def test_doc_merge_publishes_audit_with_partial_keys() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(
         relative_path="config.yaml",
@@ -391,9 +442,10 @@ async def test_doc_merge_publishes_audit_with_partial_keys() -> None:
         workspace="ws",
     )
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.merge"
+    assert _subject(nats) == "ns.audit.workspace.doc_merge"
     envelope = _only_envelope(nats)
     assert envelope["action"] == "merge"
+    assert envelope["outcome"] == "success"
     assert sorted(envelope["details"]["partial_keys"]) == ["c", "d"]
 
 
@@ -415,6 +467,7 @@ async def test_workspace_create_publishes_audit(
     nats = _FakeNats()
     pool = _FakePool()
     agent_id = uuid4()
+
     tool = WorkspaceCreateTool(
         workspace_collection=_FakeWorkspaceCollection([]),  # type: ignore[arg-type]
         workspace_file_collection=_FakeFileCollection(),  # type: ignore[arg-type]
@@ -428,14 +481,30 @@ async def test_workspace_create_publishes_audit(
     )
     result = await tool.execute(name="new_ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.create"
-    envelope = _only_envelope(nats)
+    # workspace_create publishes TWO events on success:
+    # 1. WorkspaceCreateEvent on aibots.workspaces.create (consumed by
+    #    the hub-side ``WorkspaceNamespaceEmitter`` to upsert the
+    #    paired ``platform.namespaces`` row of type ``workspace``)
+    # 2. AuditEvent on ns.audit.workspace.create (this test's subject)
+    audit_publishes = [(subj, payload) for subj, payload in nats.published if subj == "ns.audit.workspace.create"]
+    assert len(audit_publishes) == 1, nats.published
+    envelope = json.loads(audit_publishes[0][1].decode("utf-8"))
     assert envelope["event_type"] == "workspace.create"
-    assert envelope["resource_type"] == "workspace"
+    assert envelope["resource_namespace_type"] == "workspace"
     assert envelope["action"] == "create"
+    assert envelope["outcome"] == "success"
     assert envelope["details"]["name"] == "new_ws"
     assert envelope["details"]["files_changed"] == 0
     assert envelope["details"]["template_name"] is None
+
+    # workspace.create event published exactly once with the matching
+    # owner_agent_id, namespace_name shape, and schema_name
+    workspace_publishes = [(subj, payload) for subj, payload in nats.published if subj == "aibots.workspaces.create"]
+    assert len(workspace_publishes) == 1, nats.published
+    workspace_event = json.loads(workspace_publishes[0][1].decode("utf-8"))
+    assert workspace_event["owner_agent_id"] == str(agent_id)
+    assert workspace_event["namespace_name"].startswith("workspaces.")
+    assert workspace_event["schema_name"] == f"agent_{agent_id.hex}"
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +513,10 @@ async def test_workspace_create_publishes_audit(
 
 
 @pytest.mark.asyncio
-async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
+async def test_workspace_reset_publishes_audit(
+    tmp_path: Path,
+    permissive_acl_cache: MagicMock,
+) -> None:
     """reset emits workspace.reset with template_name and files_changed."""
     template_dir = tmp_path / "starter"
     template_dir.mkdir()
@@ -463,6 +535,7 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="seed")
     assert result.success is True, result.error
@@ -470,8 +543,9 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.reset"
     assert envelope["action"] == "reset"
-    assert envelope["resource_type"] == "workspace"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["resource_namespace_type"] == "workspace"
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["template_name"] == "starter"
     assert envelope["details"]["files_changed"] == 1
 
@@ -484,6 +558,7 @@ async def test_workspace_reset_publishes_audit(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_workspace_delete_publishes_audit(
     monkeypatch: pytest.MonkeyPatch,
+    permissive_acl_cache: MagicMock,
 ) -> None:
     """soft-delete emits workspace.delete audit."""
     ws_id = uuid4()
@@ -510,6 +585,7 @@ async def test_workspace_delete_publishes_audit(
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(name="bye")
     assert result.success is True, result.error
@@ -517,18 +593,21 @@ async def test_workspace_delete_publishes_audit(
     envelope = _only_envelope(nats)
     assert envelope["event_type"] == "workspace.delete"
     assert envelope["action"] == "delete"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["name"] == "bye"
 
 
 # ---------------------------------------------------------------------------
-# workspace.rollback_to
+# workspace.rollback
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_workspace_rollback_publishes_single_audit_event() -> None:
-    """rollback_to emits exactly one audit event with files_changed count."""
+async def test_workspace_rollback_publishes_single_audit_event(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    """rollback emits exactly one audit event with files_changed count."""
     ws_id = uuid4()
     ws = _FakeWorkspaceEntity(id=ws_id, name="ws", current_version=5)
     nats = _FakeNats()
@@ -556,14 +635,16 @@ async def test_workspace_rollback_publishes_single_audit_event() -> None:
         db_pool=pool,
         nats_client=nats,
         namespace="ns",
+        acl_cache=permissive_acl_cache,
     )
     result = await tool.execute(ref="head", workspace="ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.rollback_to"
+    assert _subject(nats) == "ns.audit.workspace.rollback"
     envelope = _only_envelope(nats)
-    assert envelope["event_type"] == "workspace.rollback_to"
-    assert envelope["action"] == "rollback_to"
-    assert envelope["resource_type"] == "workspace"
-    assert envelope["resource_id"] == str(ws_id)
+    assert envelope["event_type"] == "workspace.rollback"
+    assert envelope["action"] == "rollback"
+    assert envelope["resource_namespace_type"] == "workspace"
+    assert envelope["resource_namespace_id"] == str(ws_id)
+    assert envelope["details"]["workspace_resource_id"] == str(ws_id)
     assert envelope["details"]["ref"] == "head"
     assert envelope["details"]["files_changed"] == 0

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -35,6 +36,12 @@ class _FakeWorkspaceEntity:
     id: UUID
     name: str
     date_deleted: datetime | None = None
+    agent_id: UUID = field(default_factory=uuid4)
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical workspace namespace name (WS-ACL-06)."""
+        return f"workspace.{self.id}"
 
 
 class _FakeWorkspaceCollection:
@@ -83,12 +90,12 @@ class _FakeVersionCollection:
 class _RecordingSandbox:
     def __init__(self, deny_writes: list[str] | None = None) -> None:
         self._deny_writes = set(deny_writes or [])
-        self.enforce_calls: list[tuple[str, str]] = []
+        self.syntax_calls: list[str] = []
 
-    def enforce(self, action: str, target: str) -> None:
-        self.enforce_calls.append((action, target))
-        if action == "write" and target in self._deny_writes:
-            raise SandboxDenied(action, target, "not in write globs")
+    def validate_syntax(self, target: str) -> None:
+        self.syntax_calls.append(target)
+        if target in self._deny_writes:
+            raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
 class _FakeContext:
@@ -121,7 +128,7 @@ class _FakeConnection:
     transaction_open: bool = False
     captured_writes: list[bytes] = field(default_factory=list)
 
-    def transaction(self) -> _FakeTransaction:
+    def transaction(self, namespace: Any = None) -> _FakeTransaction:
         tx = _FakeTransaction(parent=self)
         self.transactions.append(tx)
         return tx
@@ -172,6 +179,7 @@ class _FakePool:
 
 def _build_tool(
     *,
+    acl_cache: Any,
     workspace_entities: list[_FakeWorkspaceEntity] | None = None,
     files: list[_FakeFileEntity] | None = None,
     head_row: dict[str, Any] | None = None,
@@ -195,6 +203,7 @@ def _build_tool(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
+        acl_cache=acl_cache,
     )
     return tool, pool, sandbox, agent_id
 
@@ -209,7 +218,9 @@ def _audience_yaml_bytes() -> bytes:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_mutates_scalar_preserves_key_order() -> None:
+async def test_doc_set_mutates_scalar_preserves_key_order(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """scalar mutation preserves YAML key order in the written bytes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -221,7 +232,9 @@ async def test_doc_set_mutates_scalar_preserves_key_order() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -248,7 +261,9 @@ async def test_doc_set_mutates_scalar_preserves_key_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_preserves_comments_round_trip() -> None:
+async def test_doc_set_preserves_comments_round_trip(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """comments survive a doc_set mutation through the round-trip handler.
 
     the repository fixture has no inline comments, so this test synthesizes
@@ -276,7 +291,9 @@ async def test_doc_set_preserves_comments_round_trip() -> None:
         "sha256": sha_initial,
         "version": 1,
     }
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -300,7 +317,9 @@ async def test_doc_set_preserves_comments_round_trip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_sandbox_denied_returns_clean_error_no_writes() -> None:
+async def test_doc_set_sandbox_denied_returns_clean_error_no_writes(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """SandboxDenied -> clean error; no DB reads or writes happened."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -313,6 +332,7 @@ async def test_doc_set_sandbox_denied_returns_clean_error_no_writes() -> None:
         workspace_entities=[ws],
         files=[file_entity],
         deny_writes=["secret.yaml"],
+        acl_cache=permissive_acl_cache,
     )
 
     result = await tool.execute(
@@ -325,7 +345,7 @@ async def test_doc_set_sandbox_denied_returns_clean_error_no_writes() -> None:
     assert result.success is False
     assert result.error is not None
     assert "secret.yaml" in result.error
-    assert sandbox.enforce_calls == [("write", "secret.yaml")]
+    assert sandbox.syntax_calls == ["secret.yaml"]
     # no DB activity -- gate-then-act held
     assert pool.conn.executions == []
     assert pool.conn.fetchrows == []
@@ -337,7 +357,9 @@ async def test_doc_set_sandbox_denied_returns_clean_error_no_writes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_stale_expected_sha_returns_mismatch_error() -> None:
+async def test_doc_set_stale_expected_sha_returns_mismatch_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """expected_sha256 != current sha -> clean error naming current sha."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -349,7 +371,9 @@ async def test_doc_set_stale_expected_sha_returns_mismatch_error() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_current, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -375,7 +399,9 @@ async def test_doc_set_stale_expected_sha_returns_mismatch_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_unknown_format_returns_clean_error() -> None:
+async def test_doc_set_unknown_format_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """file with unregistered suffix -> clean error naming path."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     file_entity = _FakeFileEntity(
@@ -384,7 +410,7 @@ async def test_doc_set_unknown_format_returns_clean_error() -> None:
         sha256="b" * 64,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity])
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="notes.txt",
@@ -408,10 +434,12 @@ async def test_doc_set_unknown_format_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_missing_file_returns_clean_error() -> None:
+async def test_doc_set_missing_file_returns_clean_error(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """no head row -> clean error naming file and workspace, no writes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[])
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",
@@ -433,7 +461,9 @@ async def test_doc_set_missing_file_returns_clean_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_doc_set_writes_inside_single_transaction() -> None:
+async def test_doc_set_writes_inside_single_transaction(
+    permissive_acl_cache: MagicMock,
+) -> None:
     """every execute + fetchrow happens inside one transaction."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
     initial = _audience_yaml_bytes()
@@ -445,7 +475,9 @@ async def test_doc_set_writes_inside_single_transaction() -> None:
         version=1,
     )
     head = {"content": initial, "sha256": sha_initial, "version": 1}
-    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], head_row=head)
+    tool, pool, _sandbox, _ = _build_tool(
+        workspace_entities=[ws], files=[file_entity], head_row=head, acl_cache=permissive_acl_cache
+    )
 
     await tool.execute(
         relative_path="audience_settings.yaml",
@@ -466,13 +498,17 @@ async def test_doc_set_writes_inside_single_transaction() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_doc_set_mcp_name_is_exact_string() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_set_mcp_name_is_exact_string(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     assert tool.mcp_name() == "threetears.workspace.doc_set"
 
 
-def test_doc_set_mcp_schema_requires_path_jsonpath_value() -> None:
-    tool, _, _, _ = _build_tool()
+def test_doc_set_mcp_schema_requires_path_jsonpath_value(
+    permissive_acl_cache: MagicMock,
+) -> None:
+    tool, _, _, _ = _build_tool(acl_cache=permissive_acl_cache)
     defn = tool.mcp_schema()
     assert isinstance(defn, MCPToolDefinition)
     assert defn.input_schema["required"] == [

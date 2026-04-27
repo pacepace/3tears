@@ -3,8 +3,8 @@
 REALISM / SCOPING LIMIT
 -----------------------
 
-- **real :func:`audit.publish_workspace_event`** from the agent side;
-  :class:`DocSetTool` invokes it on every successful write.
+- **real :func:`threetears.agent.audit.publish_audit`** from the agent
+  side; :class:`DocSetTool` invokes it on every successful write.
 - **fake NATS client** with in-process subject dispatch: a subscription
   registered on ``{namespace}.audit.workspace.`` invokes the stub
   consumer handler synchronously within :meth:`publish`, so publish
@@ -12,7 +12,7 @@ REALISM / SCOPING LIMIT
 - **stub :class:`AuditEventCollection`**: records ``save_entity``
   calls; the real implementation in the aibots repo writes to
   ``platform_audit.audit_events``. the shard explicitly permits this
-  scoping trade-off ("If WorkspaceAuditConsumer lives in aibots, [...]
+  scoping trade-off ("If UnifiedAuditConsumer lives in aibots, [...]
   verify the fake NATS bus captured the published envelope with
   correct subject + shape"). we go one step further: wire an in-
   process stub consumer that mirrors the real consumer's persist
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -53,11 +54,14 @@ class _StubAuditEventCollection:
 
 
 class _InProcessAuditConsumer:
-    """in-process stand-in for the Hub-side ``WorkspaceAuditConsumer``.
+    """in-process stand-in for the Hub-side ``UnifiedAuditConsumer``.
 
-    decodes each incoming NATS envelope and forwards it to the injected
-    :class:`_StubAuditEventCollection`. no timer, retries, or DLQ here;
-    the real consumer adds those.
+    audit-task-01 Phase 3 retired the per-domain
+    ``WorkspaceAuditConsumer``; the unified consumer now subscribes on
+    ``{ns}.audit.>`` and handles workspace envelopes alongside every
+    other domain. this stub decodes each incoming NATS envelope and
+    forwards it to the injected :class:`_StubAuditEventCollection`. no
+    timer, retries, or DLQ here; the real consumer adds those.
     """
 
     def __init__(self, collection: _StubAuditEventCollection) -> None:
@@ -78,6 +82,7 @@ class _InProcessAuditConsumer:
 
 async def test_doc_set_publishes_audit_envelope_to_consumer(
     workspace_with_audience_fixture: Any,
+    permissive_acl_cache: Any,
 ) -> None:
     """doc_set fires one envelope with canonical shape onto the bus.
 
@@ -121,6 +126,7 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
         db_pool=fx.pool,
         nats_client=fx.nats,
         namespace=namespace,
+        acl_cache=permissive_acl_cache,
     )
 
     result = await doc_set.execute(
@@ -130,22 +136,36 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
     )
     assert result.success is True, result.error
 
-    # the fake NATS bus captured exactly one publish on the expected subject.
+    # the fake NATS bus captured exactly one publish on the expected
+    # subject (audit-task-01 Phase 3: subject derives directly from
+    # event_type via the unified publish helper, so ``doc_set`` rides
+    # on ``workspace.doc_set`` verbatim).
     audit_publishes = [(s, p) for s, p in fx.nats.published if s.startswith(f"{namespace}.audit.workspace.")]
     assert len(audit_publishes) == 1, audit_publishes
     subject, payload = audit_publishes[0]
-    assert subject == f"{namespace}.audit.workspace.set"
+    assert subject == f"{namespace}.audit.workspace.doc_set"
     envelope = json.loads(payload.decode("utf-8"))
     assert envelope["event_type"] == "workspace.doc_set"
-    assert envelope["actor_type"] == "agent"
-    assert envelope["actor_id"] == str(fx.agent_id)
-    assert envelope["agent_id"] == str(fx.agent_id)
-    assert envelope["resource_type"] == "workspace_file"
+    # unified AuditEvent carries the five-UUID identity tuple; the
+    # derived ``actor_type`` column is computed consumer-side from
+    # these axes (see UnifiedAuditConsumer) and is not on the wire.
+    assert UUID(envelope["actor_user_id"])  # present + parseable
+    assert envelope["calling_agent_id"]
+    assert envelope["owner_agent_id"] == str(fx.agent_id)
+    assert envelope["customer_id"]
+    assert UUID(envelope["resource_namespace_id"])
+    assert envelope["resource_namespace_type"] == "workspace_file"
     assert envelope["action"] == "set"
+    assert envelope["outcome"] == "success"
+    assert envelope["details"]["workspace_resource_id"].endswith(
+        "/audience_settings.yaml",
+    )
 
     # the in-process consumer forwarded the envelope into the stub
     # collection exactly once.
     assert len(collection.saved) == 1
     persisted = collection.saved[0]
     assert persisted["event_type"] == "workspace.doc_set"
-    assert persisted["resource_id"].endswith("/audience_settings.yaml")
+    assert persisted["details"]["workspace_resource_id"].endswith(
+        "/audience_settings.yaml",
+    )

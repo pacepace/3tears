@@ -7,7 +7,7 @@ from types import ModuleType
 
 import pytest
 
-from threetears.models.registry import ProviderRegistry, _BUILTIN_PROVIDERS
+from threetears.models.registry import ProviderRegistry, BUILTIN_PROVIDERS
 
 
 class TestProviderRegistry:
@@ -19,7 +19,7 @@ class TestProviderRegistry:
         """new registry includes all builtin providers."""
         registry = ProviderRegistry()
         providers = registry.list_providers()
-        for name in _BUILTIN_PROVIDERS:
+        for name in BUILTIN_PROVIDERS:
             assert name in providers
 
     def test_builtin_provider_count(self) -> None:
@@ -91,15 +91,15 @@ class TestProviderRegistry:
         # inject a fake builtin that cannot be imported to test hint message
         from threetears.models import registry as registry_mod
 
-        original = registry_mod._BUILTIN_PROVIDERS.copy()
-        registry_mod._BUILTIN_PROVIDERS["fake-builtin"] = "totally.nonexistent.module"
+        original = registry_mod.BUILTIN_PROVIDERS.copy()
+        registry_mod.BUILTIN_PROVIDERS["fake-builtin"] = "totally.nonexistent.module"
         try:
             fresh = ProviderRegistry()
             with pytest.raises(ImportError, match=r"3tears-models\[fake-builtin\]"):
                 fresh.get_provider("fake-builtin")
         finally:
-            registry_mod._BUILTIN_PROVIDERS.clear()
-            registry_mod._BUILTIN_PROVIDERS.update(original)
+            registry_mod.BUILTIN_PROVIDERS.clear()
+            registry_mod.BUILTIN_PROVIDERS.update(original)
 
     def test_get_provider_real_module(self) -> None:
         """registered real stdlib module loads successfully."""
