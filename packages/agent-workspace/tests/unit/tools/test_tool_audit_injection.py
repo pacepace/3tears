@@ -467,28 +467,6 @@ async def test_workspace_create_publishes_audit(
     nats = _FakeNats()
     pool = _FakePool()
     agent_id = uuid4()
-    class _FakeNamespaceEntity:
-        """mimic :class:`NamespaceEntity` for the create-path audit test."""
-
-        def __init__(
-            self,
-            data: dict[str, Any],
-            *,
-            is_new: bool,
-            collection: Any,
-        ) -> None:
-            self.data = data
-            self.is_new = is_new
-            self.collection = collection
-
-    class _FakeNamespaceCollection:
-        """no-op namespace Collection stand-in for audit injection tests."""
-
-        entity_class = _FakeNamespaceEntity
-
-        async def save_entity(self, entity: Any) -> None:
-            """accept and discard the entity; this test asserts on audit only."""
-            del entity
 
     tool = WorkspaceCreateTool(
         workspace_collection=_FakeWorkspaceCollection([]),  # type: ignore[arg-type]
@@ -498,14 +476,23 @@ async def test_workspace_create_publishes_audit(
         context_provider=lambda: _FakeContext(),
         agent_id=agent_id,
         db_pool=pool,
-        namespace_collection=_FakeNamespaceCollection(),
         nats_client=nats,
         namespace="ns",
     )
     result = await tool.execute(name="new_ws")
     assert result.success is True, result.error
-    assert _subject(nats) == "ns.audit.workspace.create"
-    envelope = _only_envelope(nats)
+    # workspace_create publishes TWO events on success:
+    # 1. WorkspaceCreateEvent on aibots.workspaces.create (consumed by
+    #    the hub-side ``WorkspaceNamespaceEmitter`` to upsert the
+    #    paired ``platform.namespaces`` row of type ``workspace``)
+    # 2. AuditEvent on ns.audit.workspace.create (this test's subject)
+    audit_publishes = [
+        (subj, payload)
+        for subj, payload in nats.published
+        if subj == "ns.audit.workspace.create"
+    ]
+    assert len(audit_publishes) == 1, nats.published
+    envelope = json.loads(audit_publishes[0][1].decode("utf-8"))
     assert envelope["event_type"] == "workspace.create"
     assert envelope["resource_namespace_type"] == "workspace"
     assert envelope["action"] == "create"
@@ -513,6 +500,21 @@ async def test_workspace_create_publishes_audit(
     assert envelope["details"]["name"] == "new_ws"
     assert envelope["details"]["files_changed"] == 0
     assert envelope["details"]["template_name"] is None
+
+    # workspace.create event published exactly once with the matching
+    # owner_agent_id, namespace_name shape, and schema_name
+    workspace_publishes = [
+        (subj, payload)
+        for subj, payload in nats.published
+        if subj == "aibots.workspaces.create"
+    ]
+    assert len(workspace_publishes) == 1, nats.published
+    workspace_event = json.loads(
+        workspace_publishes[0][1].decode("utf-8")
+    )
+    assert workspace_event["owner_agent_id"] == str(agent_id)
+    assert workspace_event["namespace_name"].startswith("workspaces.")
+    assert workspace_event["schema_name"] == f"agent_{agent_id.hex}"
 
 
 # ---------------------------------------------------------------------------

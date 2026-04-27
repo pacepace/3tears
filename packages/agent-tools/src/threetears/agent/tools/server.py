@@ -902,26 +902,26 @@ class ToolServer:
         will include it. safe to call multiple times with the same
         tool; duplicate ``name@version`` keys overwrite.
 
-        namespace-task-01 phase 2 / three-tier-task-01 phase F: after
-        the in-memory registration and manifest publish,
-        :meth:`_emit_tool_namespace` persists a
-        :class:`NamespaceEntity` of type ``tool`` through
-        :meth:`NamespaceCollection.save_entity` so the rbac evaluator
-        has a first-class namespace id to evaluate against. emission
-        failures raise rather than silently drop so callers see the
-        wiring gap immediately.
+        The tool's ``platform.namespaces`` row is materialized by the
+        HUB-side ``ToolNamespaceEmitter`` listening on
+        ``{ns}.tools.register`` -- the manifest publish above is the
+        canonical handoff. The hub owns this write because it has
+        direct access to ``platform.*`` tables; the previous
+        agent-side direct write through ``NamespaceCollection.save_entity``
+        on the L3 NATS proxy (namespace-task-01 phase 2 /
+        three-tier-task-01 phase F) hit
+        ``relation "namespaces" does not exist`` because the broker
+        resolves the agent's default namespace to the per-agent
+        schema (``agent_<hex>``), which has no ``namespaces`` table.
+        The agent now performs no direct namespace write; the manifest
+        publish is the only path.
 
         :param tool: TearsTool instance to register
         :ptype tool: TearsTool
-        :raises Exception: when namespace emission fails; the tool
-            registration has already mutated in-memory state + the
-            manifest, so callers should treat the raise as a
-            hard-fatal wiring error rather than retry material
         """
         self.register(tool)
         if self._nc is not None:
             await self.publish_registration()
-        await self._emit_tool_namespace(tool)
 
     @traced()
     async def deregister_tool(self, tool_name: str) -> bool:

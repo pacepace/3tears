@@ -204,41 +204,27 @@ class _FakeContext:
     """sentinel context returned by the context_provider closure."""
 
 
-class _FakeNamespaceEntity:
-    """mimic :class:`NamespaceEntity` for create-path assertions."""
+class _RecordingNatsClient:
+    """records every ``publish`` call made by :class:`WorkspaceCreateTool`.
 
-    def __init__(
-        self,
-        data: dict[str, Any],
-        *,
-        is_new: bool,
-        collection: Any,
-    ) -> None:
-        """capture the data dict for test assertions.
-
-        :param data: entity field dict produced by the tool
-        :ptype data: dict[str, Any]
-        :param is_new: ``True`` for insert path; forwarded to save_entity
-        :ptype is_new: bool
-        :param collection: owning Collection reference (unused here)
-        :ptype collection: Any
-        """
-        self.data = data
-        self.is_new = is_new
-        self.collection = collection
-
-
-class _FakeNamespaceCollection:
-    """records save_entity calls from :class:`WorkspaceCreateTool`."""
-
-    entity_class = _FakeNamespaceEntity
+    the tool publishes one ``WorkspaceCreateEvent`` on
+    ``{ns}.workspaces.create`` per successful create (post-emit
+    re-materialization wave); this fake captures the subject + the
+    typed Pydantic message so tests can assert the published shape.
+    mirrors the canonical
+    :meth:`threetears.nats.NatsClient.publish` signature
+    (``subject=`` + ``message=``).
+    """
 
     def __init__(self) -> None:
-        self.saved: list[_FakeNamespaceEntity] = []
+        self.published: list[tuple[Any, Any]] = []
 
-    async def save_entity(self, entity: _FakeNamespaceEntity) -> None:
-        """record the entity persisted by the tool."""
-        self.saved.append(entity)
+    async def publish(
+        self, *, subject: Any, message: Any, reply_to: Any | None = None,
+    ) -> None:
+        """record the publish call and return without dispatching."""
+        del reply_to
+        self.published.append((subject, message))
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +249,8 @@ def _build_tool(
     context_provider: Any = None,
     agent_id: UUID | None = None,
     db_pool: Any = None,
-    namespace_collection: Any = None,
+    nats_client: Any = None,
+    namespace: str = "aibots",
     customer_id: UUID | None = None,
 ) -> WorkspaceCreateTool:
     """assemble a tool with sensible default fakes for every dep."""
@@ -275,7 +262,8 @@ def _build_tool(
         context_provider=context_provider or (lambda: _FakeContext()),
         agent_id=agent_id or uuid4(),
         db_pool=db_pool or _FakePool(),
-        namespace_collection=namespace_collection or _FakeNamespaceCollection(),
+        nats_client=nats_client or _RecordingNatsClient(),
+        namespace=namespace,
         customer_id=customer_id,
     )
 

@@ -489,6 +489,34 @@ class Subjects:
         return result
 
     # ------------------------------------------------------------------
+    # workspaces
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def workspaces_create(cls) -> Subject:
+        """publish subject for workspace-create namespace emission.
+
+        every successful agent-side ``threetears.workspace.create``
+        publishes one event on this subject after the workspace + file
+        rows commit in the per-agent schema. the hub-side
+        :class:`aibots.hub.workspace.namespace_emitter
+        .WorkspaceNamespaceEmitter` subscribes (no queue group, every
+        replica observes) and upserts the paired ``platform.namespaces``
+        row of type ``workspace``.
+
+        decoupling the namespace upsert from the agent is the canonical
+        platform pattern -- the agent-side L3 proxy routes writes to
+        the agent's own ``agent_<hex>`` schema, which has no
+        ``namespaces`` table; the hub owns direct DB access via
+        :class:`HubNamespaceCollection` and is the SOLE writer of
+        platform-scoped catalog rows. mirrors :meth:`tools_register`.
+
+        :return: subject ``{ns}.workspaces.create``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.workspaces.create", kind="point")
+
+    # ------------------------------------------------------------------
     # l3 broker
     # ------------------------------------------------------------------
 

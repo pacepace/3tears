@@ -6,6 +6,10 @@ from datetime import datetime
 from uuid import UUID
 
 from threetears.core.entities.base import BaseEntity
+from threetears.core.namespaces import (
+    PLURAL_PREFIX_WORKSPACE,
+    build_namespace_name,
+)
 
 __all__ = [
     "Workspace",
@@ -60,8 +64,14 @@ class Workspace(BaseEntity):
     workspace lives in that agent's schema). :attr:`created_by_user_id`
     aliases the existing :attr:`created_by` column. :attr:`namespace_name`
     is deterministically derived from :attr:`id` as
-    ``f"workspace.{id}"`` (matches v003 migration + broker discovery
-    subject convention). :attr:`customer_id` is the one field that must
+    ``"workspaces.<uuid>"`` via :func:`build_namespace_name` against the
+    ``workspaces`` plural prefix; the format matches the canonical
+    platform namespace naming contract (CLAUDE.md "Namespace Names")
+    so every consumer (agent-side authorize cache lookup, L3 proxy
+    routing, hub-side
+    :class:`aibots.hub.workspace.namespace_emitter
+    .WorkspaceNamespaceEmitter`) computes the same key without a
+    network round trip. :attr:`customer_id` is the one field that must
     be loaded from :class:`platform.namespaces` at resolve-time; the
     ``_resolve_workspace`` helper stamps it onto the entity via the
     ``customer_id`` setter after a single platform lookup.
@@ -296,16 +306,24 @@ class Workspace(BaseEntity):
         """
         returns canonical namespace name for this workspace.
 
-        derived deterministically from :attr:`id` as
-        ``"workspace.{id}"``; this is the form the v003 backfill
-        migration + broker discovery subject uses, so every consumer
-        (authorize cache lookup, L3 proxy routing, discovery queries)
-        agrees on the key without a network round trip.
+        derived deterministically from :attr:`id` via
+        :func:`build_namespace_name` against the
+        :data:`PLURAL_PREFIX_WORKSPACE` (``workspaces``) prefix; the
+        result is ``"workspaces.<uuid>"`` and matches the canonical
+        platform-wide namespace naming contract documented in
+        ``CLAUDE.md`` ("Namespace Names" section: every
+        ``platform.namespaces.name`` follows
+        ``{plural_prefix}.<segment1>...``). every consumer
+        (authorize cache lookup, L3 proxy routing, discovery
+        queries, hub-side
+        :class:`aibots.hub.workspace.namespace_emitter
+        .WorkspaceNamespaceEmitter` upsert) computes the same key
+        without a network round trip.
 
-        :return: namespace name in the canonical ``workspace.<uuid>`` form
+        :return: namespace name in canonical ``workspaces.<uuid>`` form
         :rtype: str
         """
-        return f"workspace.{self.id}"
+        return build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(self.id))
 
     @property
     def customer_id(self) -> UUID | None:
