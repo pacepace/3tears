@@ -1,53 +1,66 @@
 """integration-test fixtures for agent-memory reconciliation.
 
-spin up a pgvector-enabled Postgres via testcontainers once per module
-and give each test a clean schema. schemas are dropped on teardown so
-tests do not share state. the image matches
-:mod:`threetears.core.tests.integration.test_migration_rollback` so the
-two suites exercise identical container semantics.
+post-test-harness-task-01 the bare testcontainer setup
+(``PostgresContainer`` lifecycle + docker-skip + asyncpg URL
+normalisation) lives in :mod:`threetears.core.testing.fixtures`
+as the canonical ``db_container`` fixture. this module's
+``pytest_plugins`` line below pulls it in; the local ``pg_url``
+fixture is just a per-package alias that pins ``pgvector/pgvector
+:pg16`` (instead of the canonical default ``postgres:16``) via the
+``db_image`` parametrize hook.
+
+per-test ``pg_schema`` fixture stays here because it is
+agent-memory-specific (creates the ``vector`` extension + a fresh
+schema per test, drops on teardown).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
 import pytest
 
+# canonical testcontainer fixtures from the central harness;
+# a single ``pytest_plugins`` line pulls in ``db_container`` /
+# ``db_image`` / ``nats_container`` / ``nats_jetstream`` -- this
+# package only uses ``db_container`` (via its ``pg_url`` alias).
+pytest_plugins = ["threetears.core.testing.fixtures"]
 
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
+
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """override the canonical ``db_image`` to pin pgvector/pg16.
+
+    agent-memory exercises the ``vector`` extension; the canonical
+    default ``postgres:16`` does not ship pgvector. overriding
+    here at session scope means every test in the package picks
+    up the pgvector image without per-test indirect parametrize
+    boilerplate.
+
+    :return: docker image reference
+    :rtype: str
+    """
+    return "pgvector/pgvector:pg16"
 
 
 @pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
-    """
-    spin up a pgvector/pg16 container and yield an asyncpg-compatible URL.
+def pg_url(db_container: str) -> str:
+    """alias for :func:`threetears.core.testing.fixtures.db_container`.
 
-    the container lives for the module's lifetime; the per-test schema
-    fixture creates a fresh schema inside it so tests do not share
-    state.
+    every existing agent-memory integration test takes ``pg_url``
+    as the testcontainer URL. this one-line alias keeps those
+    sites working without renaming each call site to
+    ``db_container``. new tests should pull ``db_container``
+    directly.
 
-    :return: asyncpg URL string
+    :param db_container: canonical session-scoped DB URL
+    :ptype db_container: str
+    :return: asyncpg-compatible PostgreSQL connection URL
     :rtype: str
     """
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+    return db_container
 
 
 class AsyncpgStore:

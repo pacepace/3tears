@@ -22,7 +22,7 @@ unavailable.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
@@ -36,31 +36,22 @@ from threetears.core.data.migrations.helpers import (
     replace_primary_key,
 )
 
+# canonical testcontainer harness; see test-harness-task-01.
+pytest_plugins = ["threetears.core.testing.fixtures"]
+
 pytestmark = pytest.mark.integration
 
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
+
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """pin pgvector/pg16 to match the rest of the core integration suite."""
+    return "pgvector/pgvector:pg16"
 
 
 @pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
-    """spin up a postgres container and yield an asyncpg-compatible URL."""
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+def pg_url(db_container: str) -> str:
+    """alias for :func:`threetears.core.testing.fixtures.db_container`."""
+    return db_container
 
 
 class _AsyncpgStore:

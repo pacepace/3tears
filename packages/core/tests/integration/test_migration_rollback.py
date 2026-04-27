@@ -32,7 +32,7 @@ Docker is unavailable.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
@@ -45,45 +45,34 @@ from threetears.core.data.migrations import (
 )
 
 
+# canonical testcontainer harness -- single ``pytest_plugins`` entry
+# pulls in ``db_container`` / ``db_image`` from
+# :mod:`threetears.core.testing.fixtures` (test-harness-task-01).
+pytest_plugins = ["threetears.core.testing.fixtures"]
+
 pytestmark = pytest.mark.integration
 
-# pgvector needed: the agent-memory package's migration declares a
-# vector column for embeddings; running the composed runner against a
-# plain postgres image trips on that statement. pgvector/pgvector:pg16
-# is the image 14-eng-ai-bot already uses for its migration_db
-# fixture, so we match it here for parity.
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
+
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """pin pgvector/pg16.
+
+    the agent-memory package's migration declares a vector column for
+    embeddings; running the composed runner against a plain postgres
+    image trips on that statement. pgvector/pgvector:pg16 matches
+    the image 14-eng-ai-bot uses for its migration_db fixture.
+    """
+    return "pgvector/pgvector:pg16"
 
 
 @pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
+def pg_url(db_container: str) -> str:
+    """alias for :func:`threetears.core.testing.fixtures.db_container`.
+
+    legacy name retained so existing fixture wiring (``pg_conn``)
+    keeps working without per-test renames.
     """
-    spin up a fresh postgres container and yield an asyncpg-compatible URL.
-
-    the container lives for the module's lifetime; the per-test
-    ``pg_conn`` fixture creates a fresh schema inside it so tests do
-    not share state.
-
-    :return: asyncpg URL string
-    :rtype: str
-    """
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+    return db_container
 
 
 class _AsyncpgStore:

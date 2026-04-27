@@ -1,13 +1,16 @@
 """integration tests for ToolServer with real NATS at localhost:4222.
 
-requires NATS server running at nats://localhost:4222.
+requires NATS server running at nats://localhost:4222. skipif gate
+uses the canonical :func:`threetears.core.testing.containers
+.skip_without_nats_marker` (test-harness-task-01); replaces the
+hand-rolled ``_nats_reachable`` socket probe each integration test
+file used to ship.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import socket
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
@@ -16,6 +19,7 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
+from threetears.core.testing.containers import skip_without_nats_marker
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -24,21 +28,7 @@ from threetears.nats import (
     set_default_namespace,
 )
 
-
-def _nats_reachable() -> bool:
-    """check whether NATS is listening on localhost:4222.
-
-    :return: True when a TCP connect succeeds within one second
-    :rtype: bool
-    """
-    try:
-        with socket.create_connection(("localhost", 4222), timeout=1):
-            return True
-    except OSError:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _nats_reachable(), reason="NATS not running on localhost:4222")
+pytestmark = skip_without_nats_marker()
 
 _NATS_URL = "nats://localhost:4222"
 

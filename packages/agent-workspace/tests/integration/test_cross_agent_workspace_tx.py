@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -52,15 +52,18 @@ import pytest_asyncio
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 
 
-__all__ = [
-    "POSTGRES_IMAGE",
-]
+# canonical testcontainer harness from threetears.core; provides
+# the ``db_container`` fixture this file's ``pg_url`` alias wraps.
+pytest_plugins = ["threetears.core.testing.fixtures"]
 
 
 pytestmark = pytest.mark.integration
 
 
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """pin pgvector/pg16; this suite exercises the ``vector`` codec path."""
+    return "pgvector/pgvector:pg16"
 _SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -522,29 +525,22 @@ def _to_json_row(row: Any) -> dict[str, Any]:
 
 
 @pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
-    """start a fresh Postgres testcontainer and yield its URL.
+def pg_url(db_container: str) -> str:
+    """alias for the canonical :func:`threetears.core.testing
+    .fixtures.db_container` fixture (test-harness-task-01).
 
-    :return: asyncpg-compatible URL
-    :rtype: Iterator[str]
+    pulled in via the file-level ``pytest_plugins`` declaration.
+    cross-agent workspace tests use ``pg_url`` everywhere; this
+    one-line alias keeps every site working while the testcontainer
+    lifecycle / docker-skip / asyncpg-URL normalisation lives once
+    in the central harness.
+
+    :param db_container: canonical session-scoped DB URL
+    :ptype db_container: str
+    :return: asyncpg-compatible PostgreSQL connection URL
+    :rtype: str
     """
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+    return db_container
 
 
 def _schema_name(agent_id: UUID) -> str:

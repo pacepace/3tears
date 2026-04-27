@@ -37,7 +37,6 @@ what to whose data".
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -69,10 +68,12 @@ from threetears.agent.workspace.authorize import (
 # assignments from this test's singleton groups.
 _WORKSPACE_EDITOR_ROLE_ID = UUID("f3684adb-bc37-5e79-90b9-af9c814bb29e")
 
+# canonical testcontainer harness from threetears.core; provides
+# the ``db_container`` fixture this file's ``pg_url`` alias wraps.
+pytest_plugins = ["threetears.core.testing.fixtures"]
+
+
 pytestmark = pytest.mark.integration
-
-
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
 
 
 # ---------------------------------------------------------------------------
@@ -80,31 +81,23 @@ POSTGRES_IMAGE = "pgvector/pgvector:pg16"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
-    """
-    spin up a fresh Postgres container with pgvector.
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """pin pgvector/pg16; this suite exercises the ``vector`` codec path."""
+    return "pgvector/pgvector:pg16"
 
+
+@pytest.fixture(scope="module")
+def pg_url(db_container: str) -> str:
+    """alias for the canonical ``db_container`` fixture from
+    :mod:`threetears.core.testing.fixtures` (test-harness-task-01).
+
+    :param db_container: canonical session-scoped DB URL
+    :ptype db_container: str
     :return: asyncpg-compatible URL
     :rtype: str
     """
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+    return db_container
 
 
 def _schema_name(agent_id: UUID) -> str:

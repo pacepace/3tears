@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
@@ -34,31 +34,28 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 
 
+# canonical testcontainer harness -- single ``pytest_plugins`` entry
+# pulls in ``db_container`` / ``db_image`` from
+# :mod:`threetears.core.testing.fixtures` (test-harness-task-01).
+pytest_plugins = ["threetears.core.testing.fixtures"]
+
 pytestmark = pytest.mark.integration
 
-POSTGRES_IMAGE = "pgvector/pgvector:pg16"
+
+@pytest.fixture(scope="session")
+def db_image() -> str:
+    """pin pgvector/pg16; this suite exercises the ``vector`` codec path."""
+    return "pgvector/pgvector:pg16"
 
 
 @pytest.fixture(scope="module")
-def pg_url() -> Iterator[str]:
-    """spin up a postgres container and yield an asyncpg URL."""
-    try:
-        from testcontainers.postgres import PostgresContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
+def pg_url(db_container: str) -> str:
+    """alias for :func:`threetears.core.testing.fixtures.db_container`.
 
-    container = PostgresContainer(POSTGRES_IMAGE)
-    try:
-        container.start()
-    except Exception as exc:
-        pytest.skip(f"docker unavailable: {exc}")
-    try:
-        url = container.get_connection_url()
-        if url.startswith("postgresql+psycopg2://"):
-            url = url.replace("postgresql+psycopg2://", "postgresql://", 1)
-        yield url
-    finally:
-        container.stop()
+    legacy name retained so existing fixture wiring (``pg_pool`` etc.)
+    keeps working without touching every test body.
+    """
+    return db_container
 
 
 @pytest.fixture
