@@ -231,8 +231,11 @@ class RegistryRbacStack:
                 len(msg.data),
             )
             return
-        self.acl_cache.invalidate_memberships(
-            actor_type=payload.actor_type,
+        # MembershipInvalidatePayload uses ``actor_type``; the cache
+        # method takes ``actor_kind`` for the same dimension. map at
+        # the boundary -- both forms mean "user" or "agent".
+        self.acl_cache.invalidate_membership_for_actor(
+            actor_kind=payload.actor_type,
             actor_id=payload.actor_id,
         )
 
@@ -252,7 +255,7 @@ class RegistryRbacStack:
                 len(msg.data),
             )
             return
-        self.acl_cache.invalidate_grants(group_id=payload.group_id)
+        self.acl_cache.invalidate_group(payload.group_id)
 
     async def _handle_role_invalidation(self, msg: IncomingMessage) -> None:
         """drop the entire grant cache when role permissions mutate.
