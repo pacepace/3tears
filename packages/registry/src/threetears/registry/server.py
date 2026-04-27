@@ -90,6 +90,7 @@ class RegistryServer:
         rbac_authorizer_factory: (
             "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None"
         ) = None,
+        health_port: int | None = None,
     ) -> None:
         """initialize registry server.
 
@@ -129,6 +130,15 @@ class RegistryServer:
             implementation. ``None`` keeps the constructor-supplied
             ``authorizer`` for the whole serve loop.
         :ptype rbac_authorizer_factory: Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None
+        :param health_port: port the readiness HealthServer binds to;
+            defaults to THREETEARS_REGISTRY_HEALTH_PORT env var,
+            falling back to 8000. each container in the platform's
+            docker stack owns its own port namespace so 8000 is fine
+            there; honcho-driven dev runs every Procfile entry in the
+            host namespace and the hub uvicorn already binds host:8000,
+            so honcho callers MUST set THREETEARS_REGISTRY_HEALTH_PORT
+            to a distinct port.
+        :ptype health_port: int | None
         """
         from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
 
@@ -148,6 +158,11 @@ class RegistryServer:
         self._kv_bucket = kv_bucket
         self._authorizer = authorizer
         self._rbac_authorizer_factory = rbac_authorizer_factory
+        if health_port is not None:
+            self._health_port = health_port
+        else:
+            env_port = os.environ.get("THREETEARS_REGISTRY_HEALTH_PORT")
+            self._health_port = int(env_port) if env_port else 8000
         self._nc: "NatsClient | None" = None
         self._catalog = ToolCatalog()
         self._collection_registry: CollectionRegistry | None = None
@@ -321,7 +336,7 @@ class RegistryServer:
         # the same probe works whether the container runs as the hub,
         # the registry, or any other consumer of that base.
         health_server = HealthServer(
-            port=8000,
+            port=self._health_port,
             service_name="registry",
             checks=[
                 HealthCheck(

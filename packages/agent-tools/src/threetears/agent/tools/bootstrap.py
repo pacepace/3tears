@@ -18,6 +18,7 @@ not host-specific.
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
@@ -64,16 +65,38 @@ class ToolServerBootstrap:
     :ptype log_level: str
     """
 
-    def __init__(self, service_name: str, *, log_level: str = "INFO") -> None:
+    def __init__(
+        self,
+        service_name: str,
+        *,
+        log_level: str = "INFO",
+        health_port: int | None = None,
+    ) -> None:
         """initialize bootstrap with service identity and log level.
 
         :param service_name: short identifier for log messages
         :ptype service_name: str
         :param log_level: log level name (e.g. ``"INFO"``, ``"DEBUG"``)
         :ptype log_level: str
+        :param health_port: port the readiness HealthServer binds to;
+            defaults to THREETEARS_TOOL_SERVER_HEALTH_PORT env var,
+            falling back to 8000. each container in the platform's
+            docker stack owns its own port namespace so 8000 is fine
+            there; honcho-driven dev runs every Procfile entry in the
+            host namespace and the hub uvicorn already binds host:8000,
+            so honcho callers MUST set THREETEARS_TOOL_SERVER_HEALTH_PORT
+            to a distinct port. bind failures are swallowed at startup
+            (the tool pod's primary job is NATS, not health probing),
+            so a collision degrades to "no /healthz" rather than aborting.
+        :ptype health_port: int | None
         """
         self._service_name = service_name
         self._log_level = log_level
+        if health_port is not None:
+            self._health_port = health_port
+        else:
+            env_port = os.environ.get("THREETEARS_TOOL_SERVER_HEALTH_PORT")
+            self._health_port = int(env_port) if env_port else 8000
 
     def run(self) -> None:
         """entrypoint: configure logging then drive the async serve loop.
@@ -150,7 +173,7 @@ class ToolServerBootstrap:
         :rtype: HealthServer | None
         """
         health_server = HealthServer(
-            port=8000,
+            port=self._health_port,
             service_name=self._service_name,
             checks=[
                 HealthCheck(
