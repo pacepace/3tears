@@ -366,7 +366,10 @@ class HealthServer:
             )
             try:
                 self._write_response(
-                    writer, 500, "internal error\n", "text/plain; charset=utf-8",
+                    writer,
+                    500,
+                    "internal error\n",
+                    "text/plain; charset=utf-8",
                 )
                 await writer.drain()
             except Exception:

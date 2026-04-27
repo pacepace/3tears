@@ -189,9 +189,7 @@ def _collect_column_decls(src_root: Path) -> list[ColumnDecl]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            if not (
-                isinstance(node.func, ast.Name) and node.func.id == "TableSchema"
-            ):
+            if not (isinstance(node.func, ast.Name) and node.func.id == "TableSchema"):
                 continue
             table = _extract_table_name_from_schema(node)
             if table is None:
@@ -288,7 +286,9 @@ def _split_top_level_commas(block: str) -> list[str]:
 
 
 def _collect_sql_types_from_literal(
-    literal: str, source: Path, lineno: int,
+    literal: str,
+    source: Path,
+    lineno: int,
 ) -> list[SqlColumnType]:
     """extract column-type assignments from one SQL string literal.
 
@@ -402,13 +402,12 @@ def _collect_sql_column_types(
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 literal = node.value
-                if (
-                    "TIMESTAMP" not in literal.upper()
-                    and "TIMESTAMPTZ" not in literal.upper()
-                ):
+                if "TIMESTAMP" not in literal.upper() and "TIMESTAMPTZ" not in literal.upper():
                     continue
                 for hit in _collect_sql_types_from_literal(
-                    literal, path, node.lineno,
+                    literal,
+                    path,
+                    node.lineno,
                 ):
                     latest[(hit.table, hit.column)] = hit
             elif isinstance(node, ast.JoinedStr):
@@ -422,13 +421,12 @@ def _collect_sql_column_types(
                     else:
                         parts.append("__PLACEHOLDER__")
                 literal = "".join(parts)
-                if (
-                    "TIMESTAMP" not in literal.upper()
-                    and "TIMESTAMPTZ" not in literal.upper()
-                ):
+                if "TIMESTAMP" not in literal.upper() and "TIMESTAMPTZ" not in literal.upper():
                     continue
                 for hit in _collect_sql_types_from_literal(
-                    literal, path, node.lineno,
+                    literal,
+                    path,
+                    node.lineno,
                 ):
                     latest[(hit.table, hit.column)] = hit
     return latest
@@ -474,7 +472,7 @@ def parse_column_exemptions(path: Path) -> list[ColumnExemption]:
         if not line:
             continue
         if line.startswith("# rationale:"):
-            text = line[len("# rationale:"):].strip()
+            text = line[len("# rationale:") :].strip()
             if not text:
                 raise ValueError(
                     f"{path}: blank rationale (write '# rationale: <reason>')",
@@ -505,10 +503,7 @@ def parse_column_exemptions(path: Path) -> list[ColumnExemption]:
     return out
 
 
-_EXEMPTION_FILE = (
-    Path(__file__).resolve().parent
-    / "_column_type_alignment_exemptions.txt"
-)
+_EXEMPTION_FILE = Path(__file__).resolve().parent / "_column_type_alignment_exemptions.txt"
 
 
 def test_column_type_alignment() -> None:
@@ -532,9 +527,7 @@ def test_column_type_alignment() -> None:
         for k, v in _collect_sql_column_types(migration_root).items():
             sql_types[k] = v
 
-    exemptions = {
-        (e.table, e.column) for e in parse_column_exemptions(_EXEMPTION_FILE)
-    }
+    exemptions = {(e.table, e.column) for e in parse_column_exemptions(_EXEMPTION_FILE)}
 
     violations: list[str] = []
     for decl in column_decls:
@@ -569,8 +562,7 @@ def test_column_type_alignment() -> None:
     if violations:
         formatted = "\n".join(violations)
         raise AssertionError(
-            f"column-type alignment: {len(violations)} mismatch(es)\n"
-            f"{formatted}",
+            f"column-type alignment: {len(violations)} mismatch(es)\n{formatted}",
         )
 
 
@@ -604,8 +596,7 @@ def test_column_type_alignment_finds_at_least_one_sql_type() -> None:
         for k, v in _collect_sql_column_types(migration_root).items():
             sql_types[k] = v
     assert len(sql_types) > 0, (
-        "no datetime SQL columns discovered across any migration "
-        "tree -- the alignment walker is silently a no-op"
+        "no datetime SQL columns discovered across any migration tree -- the alignment walker is silently a no-op"
     )
 
 
@@ -660,10 +651,7 @@ class TestColumnTypeAlignmentWalker:
         mig = tmp_path / "mig"
         mig.mkdir()
         (mig / "v001_create.py").write_text(
-            "SQL = '''CREATE TABLE items (\n"
-            "    id UUID PRIMARY KEY,\n"
-            "    date_created TIMESTAMP NOT NULL\n"
-            ")'''\n",
+            "SQL = '''CREATE TABLE items (\n    id UUID PRIMARY KEY,\n    date_created TIMESTAMP NOT NULL\n)'''\n",
             encoding="utf-8",
         )
         decls = _collect_column_decls(tmp_path / "src")
@@ -671,10 +659,7 @@ class TestColumnTypeAlignmentWalker:
         # the walker would emit a mismatch; exercise the pieces.
         assert decls[0].column_type_name == "DATETIMETZ_TYPE"
         assert sql_types[("items", "date_created")].sql_type == "TIMESTAMP"
-        assert (
-            _EXPECTED_SQL_TYPE[decls[0].column_type_name]
-            != sql_types[("items", "date_created")].sql_type
-        )
+        assert _EXPECTED_SQL_TYPE[decls[0].column_type_name] != sql_types[("items", "date_created")].sql_type
 
     def test_alter_type_supersedes_create(self, tmp_path: Path) -> None:
         """``ALTER TABLE ALTER COLUMN TYPE`` overrides the CREATE TABLE form."""
@@ -685,8 +670,7 @@ class TestColumnTypeAlignmentWalker:
             encoding="utf-8",
         )
         (mig / "v002_alter.py").write_text(
-            "SQL = '''ALTER TABLE x ALTER COLUMN t TYPE TIMESTAMPTZ "
-            "USING t AT TIME ZONE 'UTC' '''\n",
+            "SQL = '''ALTER TABLE x ALTER COLUMN t TYPE TIMESTAMPTZ USING t AT TIME ZONE 'UTC' '''\n",
             encoding="utf-8",
         )
         sql_types = _collect_sql_column_types(mig)
@@ -706,8 +690,7 @@ class TestColumnTypeAlignmentWalker:
             ColumnExemption(
                 table="side_table",
                 column="date_legacy",
-                rationale="tracked via a custom helper that inlines "
-                "the SQL outside any migration",
+                rationale="tracked via a custom helper that inlines the SQL outside any migration",
             ),
         ]
 
@@ -722,7 +705,8 @@ class TestColumnTypeAlignmentWalker:
             parse_column_exemptions(path)
 
     def test_exemption_file_rejects_entry_without_rationale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """entry line not preceded by a rationale is a parser error."""
         path = tmp_path / "ex.txt"

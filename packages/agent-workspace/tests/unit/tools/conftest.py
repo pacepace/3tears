@@ -59,7 +59,8 @@ class _EmptyMembershipLoader:
     """membership loader stub yielding no memberships for any actor."""
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """
         return empty tuple for every user id.
@@ -73,7 +74,8 @@ class _EmptyMembershipLoader:
         return ()
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """
         return empty tuple for every agent id.
@@ -110,7 +112,8 @@ class _EmptyGrantLoader:
         return ()
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """
         return empty mapping for every role set.
@@ -124,7 +127,8 @@ class _EmptyGrantLoader:
         return {}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """
         return empty mapping for every group set.
@@ -309,4 +313,3 @@ def stub_enrich_workspace_identity(
         stub,
     )
     return stub
-

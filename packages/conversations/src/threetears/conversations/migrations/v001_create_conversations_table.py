@@ -37,19 +37,13 @@ CREATE TABLE IF NOT EXISTS conversations (
 )
 """
 
-_CREATE_CONV_USER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_conv_user "
-    "ON conversations (user_id, date_created)"
-)
+_CREATE_CONV_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations (user_id, date_created)"
 
 _CREATE_CONV_CUSTOMER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_conv_customer "
-    "ON conversations (customer_id, date_created)"
+    "CREATE INDEX IF NOT EXISTS idx_conv_customer ON conversations (customer_id, date_created)"
 )
 
-_CREATE_CONV_STATUS_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (status)"
-)
+_CREATE_CONV_STATUS_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (status)"
 
 
 async def create_conversations_table(store: DataStore) -> None:

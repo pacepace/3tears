@@ -64,19 +64,16 @@ async def _http_get(host: str, port: int, path: str) -> tuple[int, str]:
 
 
 async def _http_request(
-    host: str, port: int, method: str, path: str,
+    host: str,
+    port: int,
+    method: str,
+    path: str,
     extra_headers: str = "",
 ) -> tuple[int, str]:
     """tiny request helper supporting non-GET methods + extra headers."""
     reader, writer = await asyncio.open_connection(host, port)
     writer.write(
-        (
-            f"{method} {path} HTTP/1.1\r\n"
-            f"Host: {host}\r\n"
-            f"Connection: close\r\n"
-            f"{extra_headers}"
-            f"\r\n"
-        ).encode(),
+        (f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n{extra_headers}\r\n").encode(),
     )
     await writer.drain()
     raw = await reader.read()
@@ -148,6 +145,7 @@ class TestHealthServerHealthz:
         listener. the failure surfaces via 503 + the crashed check's
         name in the body.
         """
+
         def _crash() -> bool:
             raise RuntimeError("simulated probe crash")
 
@@ -182,6 +180,7 @@ class TestHealthServerHealthz:
             def _check() -> bool:
                 invoked.append(name)
                 return ok
+
             return _check
 
         port = _free_port()
@@ -268,7 +267,10 @@ class TestHealthServerErrorPaths:
         await server.start()
         try:
             status, _body = await _http_request(
-                "127.0.0.1", port, "POST", "/healthz",
+                "127.0.0.1",
+                port,
+                "POST",
+                "/healthz",
             )
         finally:
             await server.stop()
@@ -294,7 +296,9 @@ class TestHealthServerJsonResponse:
         await server.start()
         try:
             status, body = await _http_get(
-                "127.0.0.1", port, "/healthz?format=json",
+                "127.0.0.1",
+                port,
+                "/healthz?format=json",
             )
         finally:
             await server.stop()
@@ -318,7 +322,10 @@ class TestHealthServerJsonResponse:
         await server.start()
         try:
             status, body = await _http_request(
-                "127.0.0.1", port, "GET", "/healthz",
+                "127.0.0.1",
+                port,
+                "GET",
+                "/healthz",
                 extra_headers="Accept: application/json\r\n",
             )
         finally:
@@ -351,7 +358,9 @@ class TestHealthServerJsonResponse:
         await server.start()
         try:
             status, body = await _http_get(
-                "127.0.0.1", port, "/healthz?format=json",
+                "127.0.0.1",
+                port,
+                "/healthz?format=json",
             )
         finally:
             await server.stop()
@@ -366,6 +375,7 @@ class TestHealthServerJsonResponse:
         """a probe that raises -> the exception message lands in
         ``component.detail``.
         """
+
         def _crash() -> bool:
             raise RuntimeError("simulated probe crash")
 
@@ -379,7 +389,9 @@ class TestHealthServerJsonResponse:
         await server.start()
         try:
             status, body = await _http_get(
-                "127.0.0.1", port, "/healthz?format=json",
+                "127.0.0.1",
+                port,
+                "/healthz?format=json",
             )
         finally:
             await server.stop()

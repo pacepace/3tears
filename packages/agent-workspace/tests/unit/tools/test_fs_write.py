@@ -262,9 +262,7 @@ async def test_fs_write_update_existing_file_bumps_version_and_sha(
         version=5,
     )
     head = {"content": b"old", "sha256": "old" * 21 + "o", "version": 5}
-    tool, pool, _sandbox, _ = _build_tool(
-        files=[existing], head_row=head, acl_cache=permissive_acl_cache
-    )
+    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
     pool.conn.journal_max_version = 5
 
     result = await tool.execute(relative_path="a.md", content="fresh", workspace="ws")
@@ -297,9 +295,7 @@ async def test_fs_write_stale_expected_sha_returns_mismatch_error(
         version=2,
     )
     head = {"content": b"old", "sha256": "c" * 64, "version": 2}
-    tool, pool, _sandbox, _ = _build_tool(
-        files=[existing], head_row=head, acl_cache=permissive_acl_cache
-    )
+    tool, pool, _sandbox, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="a.md",
@@ -327,9 +323,7 @@ async def test_fs_write_sandbox_denied_returns_clean_error_no_writes(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """SandboxDenied on write -> clean error, no pool acquire."""
-    tool, pool, sandbox, _ = _build_tool(
-        deny_writes=["secret.env"], acl_cache=permissive_acl_cache
-    )
+    tool, pool, sandbox, _ = _build_tool(deny_writes=["secret.env"], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="secret.env", content="x", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -352,9 +346,7 @@ async def test_fs_write_journal_row_captures_actor_and_correlation(
 ) -> None:
     """journal row carries agent_id as actor_id; correlation_id is a UUID."""
     agent_id = uuid4()
-    tool, pool, _sandbox, _ = _build_tool(
-        agent_id=agent_id, acl_cache=permissive_acl_cache
-    )
+    tool, pool, _sandbox, _ = _build_tool(agent_id=agent_id, acl_cache=permissive_acl_cache)
     await tool.execute(relative_path="a.md", content="x", workspace="ws")
     journal_args = pool.conn.executions[0][1]
     # args positions per SQL in helpers:

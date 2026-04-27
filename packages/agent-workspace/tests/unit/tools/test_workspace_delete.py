@@ -332,9 +332,7 @@ async def test_delete_traps_unexpected_exceptions_as_data(
             raise RuntimeError("storage offline")
 
     pool = _FakePool()
-    tool = _build_tool(
-        workspace_collection=_Boom(), db_pool=pool, acl_cache=permissive_acl_cache
-    )
+    tool = _build_tool(workspace_collection=_Boom(), db_pool=pool, acl_cache=permissive_acl_cache)
     result = await tool.execute(name="x")
     assert result.success is False
     assert result.error is not None

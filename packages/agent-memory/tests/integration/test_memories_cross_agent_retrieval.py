@@ -76,6 +76,7 @@ async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
 async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     """build an asyncpg pool with search_path pre-bound to the test schema."""
     from threetears.core.collections import init_connection
+
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
@@ -201,7 +202,8 @@ class _SelectiveMembershipLoader:
         self._group_ids = group_ids
 
     async def load_for_user(
-        self, user_id: uuid.UUID,
+        self,
+        user_id: uuid.UUID,
     ) -> tuple[GroupMembership, ...]:
         """return one membership per configured group.
 
@@ -223,7 +225,8 @@ class _SelectiveMembershipLoader:
         )
 
     async def load_for_agent(
-        self, agent_id: uuid.UUID,
+        self,
+        agent_id: uuid.UUID,
     ) -> tuple[GroupMembership, ...]:
         """no agent-side memberships in this test fixture.
 
@@ -302,7 +305,8 @@ class _SelectiveGrantLoader:
         )
 
     async def load_roles(
-        self, role_ids: tuple[uuid.UUID, ...],
+        self,
+        role_ids: tuple[uuid.UUID, ...],
     ) -> dict[uuid.UUID, Role]:
         """return the synthetic role for every requested id this loader owns.
 
@@ -314,7 +318,8 @@ class _SelectiveGrantLoader:
         return {rid: self._role for rid in role_ids if rid == self._role_id}
 
     async def load_groups(
-        self, group_ids: tuple[uuid.UUID, ...],
+        self,
+        group_ids: tuple[uuid.UUID, ...],
     ) -> dict[uuid.UUID, Any]:
         """resolve every group id to a platform-scoped group.
 
@@ -357,6 +362,7 @@ def _AclCacheStub(  # noqa: N802
     :rtype: AclCache
     """
     from threetears.agent.acl import AclCache
+
     return AclCache(
         membership_loader=membership_loader,
         grant_loader=grant_loader,
@@ -479,7 +485,8 @@ class TestCrossAgentRetrieval:
             )
             namespace_collection = _NamespaceCollectionStub([ns_a, ns_b])
             memories = _build_memories_collection(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             service = MemoryAccessService(
@@ -572,7 +579,8 @@ class TestCrossAgentRetrieval:
             )
             namespace_collection = _NamespaceCollectionStub([ns_a, ns_b])
             memories = _build_memories_collection(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             service = MemoryAccessService(
@@ -646,7 +654,8 @@ class TestCrossAgentRetrieval:
             )
             namespace_collection = _NamespaceCollectionStub([ns_a])
             memories = _build_memories_collection(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             service = MemoryAccessService(

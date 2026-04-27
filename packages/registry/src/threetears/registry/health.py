@@ -105,11 +105,7 @@ class HeartbeatSubscriber:
         self._catalog = catalog
         self._collection = collection
         self._namespace = namespace
-        self._check_interval = (
-            check_interval
-            if check_interval is not None
-            else get_heartbeat_check_interval()
-        )
+        self._check_interval = check_interval if check_interval is not None else get_heartbeat_check_interval()
         self._timeout = timeout if timeout is not None else get_heartbeat_timeout()
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None

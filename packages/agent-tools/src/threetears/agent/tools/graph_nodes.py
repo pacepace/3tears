@@ -99,10 +99,7 @@ def create_context_enrichment_node(
                 logger.debug("Enrichment skipped: no matching keywords")
                 return {"messages": []}
 
-        if (
-            context_manager is not None
-            and context_manager.memory_refs_count >= min_ledger_coverage
-        ):
+        if context_manager is not None and context_manager.memory_refs_count >= min_ledger_coverage:
             logger.debug("Enrichment skipped: surfaced-refs projection has sufficient coverage")
             return {"messages": []}
 

@@ -67,8 +67,12 @@ async def pg_pool(pg_url: str) -> AsyncIterator[asyncpg.Pool]:
     encodes once -- ``_encode_jsonb`` is a typed pass-through).
     """
     from threetears.core.collections import init_connection
+
     pool: asyncpg.Pool = await asyncpg.create_pool(
-        pg_url, min_size=1, max_size=4, init=init_connection,
+        pg_url,
+        min_size=1,
+        max_size=4,
+        init=init_connection,
     )
     try:
         async with pool.acquire() as conn:
@@ -260,9 +264,7 @@ def cfg_always() -> DefaultCoreConfig:
 
 
 class TestCompositePkThreeTier:
-    async def test_save_populates_all_tiers(
-        self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig
-    ) -> None:
+    async def test_save_populates_all_tiers(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """save via composite-pk collection persists to L3, L1, L2."""
         nats = _InMemoryNatsBus()
         coll, _reg, l1 = _build_pod(pg_pool, nats, cfg_always)
@@ -293,9 +295,7 @@ class TestCompositePkThreeTier:
         finally:
             l1.reset()
 
-    async def test_cold_start_l3_pull_through(
-        self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig
-    ) -> None:
+    async def test_cold_start_l3_pull_through(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """pod restart: fresh L1 + existing L3 row resolves via get."""
         nats = _InMemoryNatsBus()
         # pod 1 writes
@@ -328,9 +328,7 @@ class TestCompositePkThreeTier:
         finally:
             l1_b.reset()
 
-    async def test_cross_pod_invalidation_composite(
-        self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig
-    ) -> None:
+    async def test_cross_pod_invalidation_composite(self, pg_pool: asyncpg.Pool, cfg_always: DefaultCoreConfig) -> None:
         """pod A save emits ``ids`` envelope; pod B evicts composite L1 row."""
         nats = _InMemoryNatsBus()
         coll_a, _reg_a, l1_a = _build_pod(pg_pool, nats, cfg_always)

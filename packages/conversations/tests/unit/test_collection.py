@@ -192,9 +192,7 @@ class TestSaveToPostgres:
 
         updated = dict(data)
         updated["status"] = "closed"
-        affected = await collection.save_to_postgres(
-            updated, original_timestamp=data["date_updated"]
-        )
+        affected = await collection.save_to_postgres(updated, original_timestamp=data["date_updated"])
 
         assert affected == 1
         assert l3[str(data["id"])]["status"] == "closed"

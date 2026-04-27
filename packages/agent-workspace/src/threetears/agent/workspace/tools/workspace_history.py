@@ -201,7 +201,7 @@ class WorkspaceHistoryTool(TearsTool):
                             db_pool=None,
                             acl_cache=self._acl_cache,
                         )
-                    except (SandboxDenied, WorkspaceAccessDenied):
+                    except SandboxDenied, WorkspaceAccessDenied:
                         continue
                     rows.append(row)
             entries = [self._serialize_row(row) for row in rows]

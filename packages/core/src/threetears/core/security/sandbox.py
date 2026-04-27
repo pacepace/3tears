@@ -263,13 +263,17 @@ class PathSandbox(Sandbox):
             )
         if self._contains_control_char(key):
             raise SandboxDenied(
-                "access", key, "key contains NUL or control character",
+                "access",
+                key,
+                "key contains NUL or control character",
             )
         if Path(key).is_absolute():
             raise SandboxDenied("access", key, "absolute path not allowed")
         if ".." in Path(key).parts:
             raise SandboxDenied(
-                "access", key, "parent-ref (..) not allowed in key",
+                "access",
+                key,
+                "parent-ref (..) not allowed in key",
             )
         return None
 

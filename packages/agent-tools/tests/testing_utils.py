@@ -105,16 +105,18 @@ class FakePool:
             return {"context_id": context_id}
 
         # composite-pk fetch: WHERE conversation_id = $1 AND context_id = $2
-        if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower and "and context_id" in sql_lower:
+        if (
+            "select * from context_items" in sql_lower
+            and "where conversation_id" in sql_lower
+            and "and context_id" in sql_lower
+        ):
             cid = str(args[1])
             return self.rows.get(cid)
 
         if "select count" in sql_lower:
             cid = str(args[0])
             cnt = sum(
-                1
-                for r in self.rows.values()
-                if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
+                1 for r in self.rows.values() if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
             )
             return {"cnt": cnt}
 
@@ -133,9 +135,7 @@ class FakePool:
             cid = str(args[0])
             limit = int(args[1])
             tool_results = [
-                r
-                for r in self.rows.values()
-                if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
+                r for r in self.rows.values() if str(r["conversation_id"]) == cid and r["context_type"] == "tool_result"
             ]
             tool_results.sort(key=lambda r: _naive(r.get("date_accessed", datetime.min)))
             return [{"context_id": r["context_id"]} for r in tool_results[:limit]]

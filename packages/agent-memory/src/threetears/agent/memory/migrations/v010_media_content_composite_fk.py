@@ -45,9 +45,7 @@ log = get_logger(__name__)
 
 _TRUNCATE_MEDIA_CONTENT_SQL = "TRUNCATE TABLE media_content CASCADE"
 
-_SET_AGENT_ID_NOT_NULL_SQL = (
-    "ALTER TABLE media_content ALTER COLUMN agent_id SET NOT NULL"
-)
+_SET_AGENT_ID_NOT_NULL_SQL = "ALTER TABLE media_content ALTER COLUMN agent_id SET NOT NULL"
 
 
 _ADD_COMPOSITE_FK_SQL = """

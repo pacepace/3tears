@@ -115,9 +115,7 @@ class TestDiscoveryAvailable:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["agent_id"] == "agent-001"
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
@@ -157,9 +155,7 @@ class TestDiscoveryUnavailable:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.nonexistent"
@@ -183,9 +179,7 @@ class TestDiscoveryUnavailable:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         assert response_data["tools"][0]["status"] == "unavailable"
         assert response_data["tools"][0]["endpoint_count"] == 0
@@ -222,9 +216,7 @@ class TestDiscoveryMixed:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 2
 
         by_name = {t["name"]: t for t in response_data["tools"]}
@@ -253,9 +245,7 @@ class TestDiscoveryEmpty:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["tools"] == []
 
 
@@ -293,9 +283,7 @@ class TestDiscoveryMultiEndpoint:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["status"] == "available"
@@ -328,9 +316,7 @@ class TestDiscoveryMultiEndpoint:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.calculator"

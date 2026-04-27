@@ -100,9 +100,7 @@ class TestConnect:
 
 class TestGet:
     @pytest.mark.asyncio
-    async def test_get_returns_value(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_get_returns_value(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.get = AsyncMock(return_value=b"hello")
 
@@ -111,9 +109,7 @@ class TestGet:
         mock_bucket.get.assert_awaited_once_with(key="key1")
 
     @pytest.mark.asyncio
-    async def test_get_returns_none_on_miss(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_get_returns_none_on_miss(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.get = AsyncMock(return_value=None)
 
@@ -121,9 +117,7 @@ class TestGet:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_returns_none_on_error(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_get_returns_none_on_error(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.get = AsyncMock(side_effect=RuntimeError("connection lost"))
 
@@ -143,9 +137,7 @@ class TestGet:
 
 class TestPut:
     @pytest.mark.asyncio
-    async def test_put_success(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_put_success(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.put = AsyncMock(return_value=42)
 
@@ -154,9 +146,7 @@ class TestPut:
         mock_bucket.put.assert_awaited_once_with(key="key1", value=b"value")
 
     @pytest.mark.asyncio
-    async def test_put_returns_false_on_error(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_put_returns_false_on_error(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.put = AsyncMock(side_effect=RuntimeError("write failed"))
 
@@ -171,9 +161,7 @@ class TestPut:
 
 class TestDelete:
     @pytest.mark.asyncio
-    async def test_delete_success(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_delete_success(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.delete = AsyncMock(return_value=True)
 
@@ -181,9 +169,7 @@ class TestDelete:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_delete_returns_false_on_error(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_delete_returns_false_on_error(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.delete = AsyncMock(side_effect=RuntimeError("delete failed"))
 
@@ -198,9 +184,7 @@ class TestDelete:
 
 class TestCreate:
     @pytest.mark.asyncio
-    async def test_create_success(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_create_success(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.create = AsyncMock(return_value=1)
 
@@ -220,9 +204,7 @@ class TestCreate:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_create_returns_false_on_error(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_create_returns_false_on_error(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.create = AsyncMock(side_effect=RuntimeError("create failed"))
 
@@ -237,17 +219,13 @@ class TestCreate:
 
 class TestUpdate:
     @pytest.mark.asyncio
-    async def test_update_success(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_update_success(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.update = AsyncMock(return_value=42)
 
         result = await c.update(bucket, "key1", b"new_value", 41)
         assert result == 42
-        mock_bucket.update.assert_awaited_once_with(
-            key="key1", value=b"new_value", revision=41
-        )
+        mock_bucket.update.assert_awaited_once_with(key="key1", value=b"new_value", revision=41)
 
     @pytest.mark.asyncio
     async def test_update_returns_none_on_revision_mismatch(
@@ -267,9 +245,7 @@ class TestUpdate:
 
 class TestGetEntry:
     @pytest.mark.asyncio
-    async def test_get_entry_success(
-        self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]
-    ) -> None:
+    async def test_get_entry_success(self, client_with_bucket: tuple[NatsKvClient, AsyncMock, str]) -> None:
         c, mock_bucket, bucket = client_with_bucket
         mock_bucket.get_entry = AsyncMock(return_value=(b"data", 5))
 

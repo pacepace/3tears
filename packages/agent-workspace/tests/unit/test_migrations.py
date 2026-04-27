@@ -83,15 +83,10 @@ class _FakeDataStore:
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
         if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [
-                {"version": row["version"], "package": row["package"]}
-                for row in self.migrations_rows
-            ]
+            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
             return result
         if "COALESCE(MAX(VERSION)" in normalized:
-            max_version = max(
-                (row["version"] for row in self.migrations_rows), default=0
-            )
+            max_version = max((row["version"] for row in self.migrations_rows), default=0)
             result = [{"max_version": max_version}]
             return result
         result = []

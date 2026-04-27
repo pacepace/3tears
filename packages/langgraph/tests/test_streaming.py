@@ -231,9 +231,14 @@ class TestParseStreamEvent:
         """``type=stream_start`` payload returns :class:`StreamStartEvent`."""
         cid = _new_uuid()
         conv = _new_uuid()
-        payload = StreamStartEvent(
-            correlation_id=cid, conversation_id=conv,
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            StreamStartEvent(
+                correlation_id=cid,
+                conversation_id=conv,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, StreamStartEvent)
         assert evt.correlation_id == cid
@@ -242,9 +247,14 @@ class TestParseStreamEvent:
     def test_parses_stream_token(self) -> None:
         """``type=stream_token`` payload returns :class:`StreamTokenEvent`."""
         cid = _new_uuid()
-        payload = StreamTokenEvent(
-            correlation_id=cid, token="hi",
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            StreamTokenEvent(
+                correlation_id=cid,
+                token="hi",
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, StreamTokenEvent)
         assert evt.token == "hi"
@@ -252,9 +262,14 @@ class TestParseStreamEvent:
     def test_parses_stream_end(self) -> None:
         """``type=stream_end`` payload returns :class:`StreamEndEvent`."""
         cid = _new_uuid()
-        payload = StreamEndEvent(
-            correlation_id=cid, content="done",
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            StreamEndEvent(
+                correlation_id=cid,
+                content="done",
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, StreamEndEvent)
         assert evt.content == "done"
@@ -262,9 +277,15 @@ class TestParseStreamEvent:
     def test_parses_stream_error(self) -> None:
         """``type=stream_error`` payload returns :class:`StreamErrorEvent`."""
         cid = _new_uuid()
-        payload = StreamErrorEvent(
-            correlation_id=cid, code="X", message="boom",
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            StreamErrorEvent(
+                correlation_id=cid,
+                code="X",
+                message="boom",
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, StreamErrorEvent)
         assert evt.code == "X"
@@ -272,23 +293,31 @@ class TestParseStreamEvent:
 
     def test_parses_tool_call_start(self) -> None:
         """``type=tool_call_start`` payload returns :class:`ToolCallStartEvent`."""
-        payload = ToolCallStartEvent(
-            correlation_id=_new_uuid(),
-            tool_name="search",
-            arguments_summary="q=...",
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            ToolCallStartEvent(
+                correlation_id=_new_uuid(),
+                tool_name="search",
+                arguments_summary="q=...",
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, ToolCallStartEvent)
         assert evt.tool_name == "search"
 
     def test_parses_tool_call_end(self) -> None:
         """``type=tool_call_end`` payload returns :class:`ToolCallEndEvent`."""
-        payload = ToolCallEndEvent(
-            correlation_id=_new_uuid(),
-            tool_name="search",
-            success=True,
-            elapsed_ms=12,
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            ToolCallEndEvent(
+                correlation_id=_new_uuid(),
+                tool_name="search",
+                success=True,
+                elapsed_ms=12,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, ToolCallEndEvent)
         assert evt.success is True
@@ -296,12 +325,16 @@ class TestParseStreamEvent:
 
     def test_parses_tool_call_progress(self) -> None:
         """``type=tool_call_progress`` payload returns :class:`ToolCallProgressEvent`."""
-        payload = ToolCallProgressEvent(
-            correlation_id=_new_uuid(),
-            tool_name="slow",
-            elapsed_ms=2000,
-            sequence=2,
-        ).model_dump_json().encode("utf-8")
+        payload = (
+            ToolCallProgressEvent(
+                correlation_id=_new_uuid(),
+                tool_name="slow",
+                elapsed_ms=2000,
+                sequence=2,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
         evt = parse_stream_event(payload)
         assert isinstance(evt, ToolCallProgressEvent)
         assert evt.sequence == 2
@@ -309,6 +342,7 @@ class TestParseStreamEvent:
     def test_rejects_unknown_type(self) -> None:
         """unknown ``type`` raises :class:`pydantic.ValidationError`."""
         from pydantic import ValidationError
+
         with pytest.raises(ValidationError):
             parse_stream_event(b'{"type": "unknown", "correlation_id": "x"}')
 
@@ -328,7 +362,9 @@ class TestStreamingResponseLifecycle:
         cid = _new_uuid()
         conv = _new_uuid()
         stream = StreamingResponse(
-            transport=transport, correlation_id=cid, conversation_id=conv,
+            transport=transport,
+            correlation_id=cid,
+            conversation_id=conv,
         )
         await stream.start()
         await stream.start()  # idempotent
@@ -560,11 +596,13 @@ class TestStreamingResponseRunGraph:
             correlation_id=_new_uuid(),
             conversation_id=_new_uuid(),
         )
-        graph = _StubGraph([
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("Hi")}},
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk(" there")}},
-            {"event": "on_chain_end", "data": {"output": {"summary": "ok"}}},
-        ])
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("Hi")}},
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk(" there")}},
+                {"event": "on_chain_end", "data": {"output": {"summary": "ok"}}},
+            ]
+        )
         result = await stream.run_graph(graph, {"messages": []}, {})
 
         kinds = [type(e).__name__ for e in transport.events]
@@ -592,10 +630,12 @@ class TestStreamingResponseRunGraph:
             correlation_id=_new_uuid(),
             conversation_id=_new_uuid(),
         )
-        graph = _StubGraph([
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("partial")}},
-            RuntimeError("LLM exploded"),
-        ])
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("partial")}},
+                RuntimeError("LLM exploded"),
+            ]
+        )
 
         with pytest.raises(RuntimeError, match="LLM exploded"):
             await stream.run_graph(graph, {"messages": []}, {})
@@ -632,10 +672,12 @@ class TestStreamingResponseRunGraph:
             correlation_id=_new_uuid(),
             conversation_id=_new_uuid(),
         )
-        graph = _StubGraph([
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("partial")}},
-            asyncio.CancelledError(),
-        ])
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("partial")}},
+                asyncio.CancelledError(),
+            ]
+        )
 
         with pytest.raises(asyncio.CancelledError):
             await stream.run_graph(graph, {}, {})
@@ -652,10 +694,12 @@ class TestStreamingResponseRunGraph:
             correlation_id=_new_uuid(),
             conversation_id=_new_uuid(),
         )
-        graph = _StubGraph([
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("a")}},
-            {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("b")}},
-        ])
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("a")}},
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("b")}},
+            ]
+        )
         await stream.run_graph(graph, {}, {})
         end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
         assert end_evt.content == "ab"
@@ -668,9 +712,11 @@ class TestStreamingResponseRunGraph:
             correlation_id=_new_uuid(),
             conversation_id=_new_uuid(),
         )
-        graph = _StubGraph([
-            {"event": "on_chat_model_stream", "data": _MockChunk("legacy")},
-        ])
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": _MockChunk("legacy")},
+            ]
+        )
         await stream.run_graph(graph, {}, {})
         end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
         assert end_evt.content == "legacy"

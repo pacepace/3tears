@@ -63,6 +63,8 @@ pytestmark = pytest.mark.integration
 def db_image() -> str:
     """pin pgvector/pg16; this suite exercises the ``vector`` codec path."""
     return "pgvector/pgvector:pg16"
+
+
 _SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -298,10 +300,7 @@ class _TxBroker:
                     {
                         "success": False,
                         "error_code": "TX_NAMESPACE_UNAUTHORIZED",
-                        "error_message": (
-                            f"agent {agent_id} has no write grant "
-                            f"on {namespace}"
-                        ),
+                        "error_message": (f"agent {agent_id} has no write grant on {namespace}"),
                     }
                 ).encode(),
             )
@@ -318,7 +317,10 @@ class _TxBroker:
         await tx.start()
         tx_id = uuid7()
         self._sessions[tx_id] = _TxSessionState(
-            conn=conn, tx=tx, agent_id=agent_id, schema=schema,
+            conn=conn,
+            tx=tx,
+            agent_id=agent_id,
+            schema=schema,
         )
         await msg.respond(
             json.dumps({"success": True, "tx_id": str(tx_id)}).encode(),
@@ -346,15 +348,11 @@ class _TxBroker:
                 ).encode(),
             )
             return
-        params = [
-            _coerce(p) for p in req.get("params", [])
-        ]
+        params = [_coerce(p) for p in req.get("params", [])]
         tag = await session.conn.execute(req["query"], *params)
         row_count = int(tag.split()[-1]) if tag and tag.split() else 0
         await msg.respond(
-            json.dumps(
-                {"success": True, "row_count": row_count}
-            ).encode(),
+            json.dumps({"success": True, "row_count": row_count}).encode(),
         )
 
     async def _handle_fetchrow(self, msg: Any) -> None:
@@ -384,7 +382,8 @@ class _TxBroker:
         row_payload = _to_json_row(row) if row is not None else None
         await msg.respond(
             json.dumps(
-                {"success": True, "row": row_payload}, default=str,
+                {"success": True, "row": row_payload},
+                default=str,
             ).encode(),
         )
 
@@ -507,11 +506,7 @@ def _to_json_row(row: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in dict(row).items():
         if isinstance(value, (bytes, bytearray, memoryview)):
-            raw = (
-                bytes(value)
-                if isinstance(value, (memoryview, bytearray))
-                else value
-            )
+            raw = bytes(value) if isinstance(value, (memoryview, bytearray)) else value
             result[key] = "\\x" + raw.hex()
         else:
             result[key] = value
@@ -630,8 +625,12 @@ async def seeded_env(pg_url: str) -> AsyncIterator[dict[str, Any]]:
     :rtype: AsyncIterator[dict[str, Any]]
     """
     from threetears.core.collections import init_connection
+
     pool = await asyncpg.create_pool(
-        pg_url, min_size=2, max_size=5, init=init_connection,
+        pg_url,
+        min_size=2,
+        max_size=5,
+        init=init_connection,
     )
     agent_a = uuid4()
     agent_b = uuid4()
@@ -802,12 +801,8 @@ async def test_grantee_tx_writes_land_in_owner_schema(
         rows_b = await conn.fetch(
             f'SELECT * FROM "{schema_b}".workspace_file_versions',
         )
-    assert len(rows_a) == 1, (
-        "journal row should have landed in agent A's schema"
-    )
-    assert len(rows_b) == 0, (
-        "journal row should NOT have landed in agent B's (caller) schema"
-    )
+    assert len(rows_a) == 1, "journal row should have landed in agent A's schema"
+    assert len(rows_b) == 0, "journal row should NOT have landed in agent B's (caller) schema"
     # assertion 2: actor_id is agent B's user (the invoking user), not
     # agent A; the cross-agent audit trail is preserved.
     assert rows_a[0]["actor_id"] == user_b

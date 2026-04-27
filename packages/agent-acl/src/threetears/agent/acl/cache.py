@@ -214,7 +214,8 @@ class AclCache:
         self._membership: dict[ActorMembershipKey, ActorMembershipEntry] = {}
         self._group_namespace: dict[GroupNamespaceKey, GroupNamespaceEntry] = {}
         self._group_type_customer: dict[
-            GroupTypeCustomerKey, GroupTypeCustomerEntry,
+            GroupTypeCustomerKey,
+            GroupTypeCustomerEntry,
         ] = {}
         self._lock = RLock()
 
@@ -223,7 +224,8 @@ class AclCache:
     # -----------------------------------------------------------------
 
     def get_membership(
-        self, key: ActorMembershipKey,
+        self,
+        key: ActorMembershipKey,
     ) -> ActorMembershipEntry | None:
         """lookup an actor's group ids; returns None on miss or expiry.
 
@@ -259,7 +261,8 @@ class AclCache:
         :rtype: ActorMembershipEntry
         """
         entry = ActorMembershipEntry(
-            memberships=memberships, date_cached=datetime.now(UTC),
+            memberships=memberships,
+            date_cached=datetime.now(UTC),
         )
         with self._lock:
             self._membership[key] = entry
@@ -282,7 +285,9 @@ class AclCache:
             self._membership.pop(key, None)
 
     def invalidate_membership_for_actor(
-        self, actor_kind: str, actor_id: UUID,
+        self,
+        actor_kind: str,
+        actor_id: UUID,
     ) -> None:
         """drop every membership entry for an ``(actor_kind, actor_id)`` pair.
 
@@ -306,7 +311,8 @@ class AclCache:
     # -----------------------------------------------------------------
 
     def get_group_namespace(
-        self, key: GroupNamespaceKey,
+        self,
+        key: GroupNamespaceKey,
     ) -> GroupNamespaceEntry | None:
         """lookup a per-namespace contribution; returns None on miss / expiry.
 
@@ -344,7 +350,9 @@ class AclCache:
         :rtype: GroupNamespaceEntry
         """
         entry = GroupNamespaceEntry(
-            actions=actions, trails=trails, date_cached=datetime.now(UTC),
+            actions=actions,
+            trails=trails,
+            date_cached=datetime.now(UTC),
         )
         with self._lock:
             self._group_namespace[key] = entry
@@ -374,10 +382,7 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
-            doomed = [
-                key for key in self._group_namespace
-                if key.namespace_id == namespace_id
-            ]
+            doomed = [key for key in self._group_namespace if key.namespace_id == namespace_id]
             for key in doomed:
                 del self._group_namespace[key]
 
@@ -399,16 +404,10 @@ class AclCache:
         :rtype: None
         """
         with self._lock:
-            ns_doomed = [
-                ns_key for ns_key in self._group_namespace
-                if ns_key.group_id == group_id
-            ]
+            ns_doomed = [ns_key for ns_key in self._group_namespace if ns_key.group_id == group_id]
             for ns_key in ns_doomed:
                 del self._group_namespace[ns_key]
-            tc_doomed = [
-                tc_key for tc_key in self._group_type_customer
-                if tc_key.group_id == group_id
-            ]
+            tc_doomed = [tc_key for tc_key in self._group_type_customer if tc_key.group_id == group_id]
             for tc_key in tc_doomed:
                 del self._group_type_customer[tc_key]
 
@@ -417,7 +416,8 @@ class AclCache:
     # -----------------------------------------------------------------
 
     def get_group_type_customer(
-        self, key: GroupTypeCustomerKey,
+        self,
+        key: GroupTypeCustomerKey,
     ) -> GroupTypeCustomerEntry | None:
         """lookup a type+customer contribution; returns None on miss / expiry.
 
@@ -456,14 +456,17 @@ class AclCache:
         :rtype: GroupTypeCustomerEntry
         """
         entry = GroupTypeCustomerEntry(
-            actions=actions, trails=trails, date_cached=datetime.now(UTC),
+            actions=actions,
+            trails=trails,
+            date_cached=datetime.now(UTC),
         )
         with self._lock:
             self._group_type_customer[key] = entry
         return entry
 
     def invalidate_group_type_customer(
-        self, key: GroupTypeCustomerKey,
+        self,
+        key: GroupTypeCustomerKey,
     ) -> None:
         """drop a single type+customer entry.
 
@@ -503,11 +506,7 @@ class AclCache:
         :rtype: int
         """
         with self._lock:
-            result = (
-                len(self._membership)
-                + len(self._group_namespace)
-                + len(self._group_type_customer)
-            )
+            result = len(self._membership) + len(self._group_namespace) + len(self._group_type_customer)
         return result
 
     @property

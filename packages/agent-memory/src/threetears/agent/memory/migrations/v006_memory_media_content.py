@@ -47,13 +47,9 @@ CREATE TABLE IF NOT EXISTS media (
 )
 """
 
-_CREATE_MEDIA_USER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_media_user ON media (user_id)"
-)
+_CREATE_MEDIA_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_media_user ON media (user_id)"
 
-_CREATE_MEDIA_AGENT_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_media_agent ON media (agent_id)"
-)
+_CREATE_MEDIA_AGENT_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_media_agent ON media (agent_id)"
 
 _CREATE_MEDIA_CONTENT_SQL = """
 CREATE TABLE IF NOT EXISTS media_content (
@@ -71,13 +67,9 @@ CREATE TABLE IF NOT EXISTS media_content (
 )
 """
 
-_CREATE_MC_USER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mc_user ON media_content (user_id)"
-)
+_CREATE_MC_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mc_user ON media_content (user_id)"
 
-_CREATE_MC_MEDIA_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mc_media ON media_content (media_id)"
-)
+_CREATE_MC_MEDIA_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mc_media ON media_content (media_id)"
 
 _CREATE_MC_EMBEDDING_IDX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_mc_embedding "
@@ -86,8 +78,7 @@ _CREATE_MC_EMBEDDING_IDX_SQL = (
 )
 
 _CREATE_MC_SEARCH_VECTOR_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mc_search_vector "
-    "ON media_content USING GIN (search_vector)"
+    "CREATE INDEX IF NOT EXISTS idx_mc_search_vector ON media_content USING GIN (search_vector)"
 )
 
 _CREATE_MC_TRIGGER_FUNC_SQL = """
@@ -102,9 +93,7 @@ END
 $$ LANGUAGE plpgsql
 """
 
-_DROP_MC_TRIGGER_SQL = (
-    "DROP TRIGGER IF EXISTS media_content_search_vector_trigger ON media_content"
-)
+_DROP_MC_TRIGGER_SQL = "DROP TRIGGER IF EXISTS media_content_search_vector_trigger ON media_content"
 
 _CREATE_MC_TRIGGER_SQL = """
 CREATE TRIGGER media_content_search_vector_trigger

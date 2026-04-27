@@ -238,12 +238,7 @@ def _violations_in_file(path: Path) -> tuple[list[str], list[str]]:
         if not any(upper_stripped.startswith(tok) for tok in _SQL_LEADING_TOKENS):
             continue
         upper = literal.upper()
-        if (
-            "FROM " not in upper
-            and "INTO " not in upper
-            and "UPDATE " not in upper
-            and "JOIN " not in upper
-        ):
+        if "FROM " not in upper and "INTO " not in upper and "UPDATE " not in upper and "JOIN " not in upper:
             continue
         if _is_exempt(literal):
             continue
@@ -326,8 +321,7 @@ def test_partition_column_enforcement_across_packages() -> None:
         all_violations = strict_violations + deferred_violations
         formatted = "\n".join(all_violations)
         pytest.skip(
-            f"partition-column enforcement: {len(all_violations)} "
-            f"violation(s) (mode=report)\n{formatted}",
+            f"partition-column enforcement: {len(all_violations)} violation(s) (mode=report)\n{formatted}",
         )
         return
 
@@ -336,8 +330,7 @@ def test_partition_column_enforcement_across_packages() -> None:
     if strict_violations:
         formatted = "\n".join(strict_violations)
         raise AssertionError(
-            f"partition-column enforcement: {len(strict_violations)} "
-            f"strict violation(s) (mode=strict)\n{formatted}",
+            f"partition-column enforcement: {len(strict_violations)} strict violation(s) (mode=strict)\n{formatted}",
         )
     if deferred_violations:
         formatted = "\n".join(deferred_violations)
@@ -357,6 +350,4 @@ def test_partitioned_tables_map_is_non_empty() -> None:
     :return: nothing
     :rtype: None
     """
-    assert len(_PARTITIONED_TABLES) > 0, (
-        "_PARTITIONED_TABLES is empty -- partition enforcement is a no-op"
-    )
+    assert len(_PARTITIONED_TABLES) > 0, "_PARTITIONED_TABLES is empty -- partition enforcement is a no-op"

@@ -192,7 +192,9 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
     # because list is invariant, even though ToolCall is structurally
     # a dict[str, Any]
     tool_calls, config = await hooks.before_dispatch(
-        [dict(tc) for tc in last_message.tool_calls], config, state_view,
+        [dict(tc) for tc in last_message.tool_calls],
+        config,
+        state_view,
     )
 
     for tool_call in tool_calls:
@@ -233,7 +235,12 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
 
         elapsed_ms = round((time.monotonic() - started_monotonic) * 1000)
         await hooks.on_tool_end(
-            tool_call, tool_result, success, elapsed_ms, config, state_view,
+            tool_call,
+            tool_result,
+            success,
+            elapsed_ms,
+            config,
+            state_view,
         )
         tool_messages.append(
             ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]),

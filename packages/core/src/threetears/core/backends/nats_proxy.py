@@ -216,9 +216,7 @@ class NatsProxyL3Backend:
         self._nc = nats_client
         self.ns = namespace_prefix
         self.agent_id = agent_id
-        self.default_namespace = default_namespace or build_namespace_name(
-            PLURAL_PREFIX_AGENT, agent_id
-        )
+        self.default_namespace = default_namespace or build_namespace_name(PLURAL_PREFIX_AGENT, agent_id)
         if timeout_ms is not None:
             self.timeout_ms = timeout_ms
         else:
@@ -895,11 +893,7 @@ class _ProxyTransaction:
         # remote agent's schema under a grant). absent an explicit
         # value we preserve today's behavior and bind to the caller's
         # default agent namespace.
-        effective_namespace = (
-            self._namespace
-            if self._namespace is not None
-            else self._backend.default_namespace
-        )
+        effective_namespace = self._namespace if self._namespace is not None else self._backend.default_namespace
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
             "agent_id": self._backend.agent_id,

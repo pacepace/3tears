@@ -98,9 +98,7 @@ class WorkspaceListTool(TearsTool):
         customer_id: UUID | None = None if scope is None else scope.context.customer_id
         user_id: UUID | None = None if scope is None else scope.context.user_id
         correlation_id: UUID = (
-            scope.context.correlation_id
-            if scope is not None and scope.context.correlation_id is not None
-            else uuid7()
+            scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
         )
         try:
             if customer_id is None:

@@ -203,9 +203,7 @@ async def test_fs_edit_happy_replaces_all_occurrences_and_writes(
         version=1,
     )
     head = {"content": text.encode("utf-8"), "sha256": "a" * 64, "version": 1}
-    tool, pool, sandbox = _build_tool(
-        files=[existing], head_row=head, acl_cache=permissive_acl_cache
-    )
+    tool, pool, sandbox = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
     pool.conn.journal_max_version = 1
 
     result = await tool.execute(
@@ -315,9 +313,7 @@ async def test_fs_edit_stale_sha256_returns_mismatch_error(
         version=1,
     )
     head = {"content": text.encode("utf-8"), "sha256": "c" * 64, "version": 1}
-    tool, pool, _ = _build_tool(
-        files=[existing], head_row=head, acl_cache=permissive_acl_cache
-    )
+    tool, pool, _ = _build_tool(files=[existing], head_row=head, acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="a.md",
@@ -345,9 +341,7 @@ async def test_fs_edit_sandbox_denied_never_reads_or_writes(
         sha256="a" * 64,
         version=1,
     )
-    tool, pool, sandbox = _build_tool(
-        files=[existing], deny_writes=["secret.env"], acl_cache=permissive_acl_cache
-    )
+    tool, pool, sandbox = _build_tool(files=[existing], deny_writes=["secret.env"], acl_cache=permissive_acl_cache)
     result = await tool.execute(
         relative_path="secret.env",
         find="TOKEN=",

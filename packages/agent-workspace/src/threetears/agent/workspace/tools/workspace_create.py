@@ -116,6 +116,7 @@ class WorkspaceCreateEvent(BaseModel):
     owner_agent_id: UUID
     customer_id: UUID | None = None
 
+
 log = get_logger(__name__)
 
 
@@ -550,9 +551,7 @@ class WorkspaceCreateTool(TearsTool):
             else self._customer_id
         )
         schema_name = f"agent_{self._agent_id.hex}"
-        namespace_name = build_namespace_name(
-            PLURAL_PREFIX_WORKSPACE, str(workspace_id)
-        )
+        namespace_name = build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(workspace_id))
 
         # workspace_create is owner-only by construction: it owns the
         # physical rows it is about to materialize. the workspace row

@@ -223,7 +223,8 @@ def _build_deps(
         """in-memory membership loader."""
 
         async def load_for_user(
-            self, user_id: UUID,
+            self,
+            user_id: UUID,
         ) -> tuple[GroupMembership, ...]:
             """return configured user memberships.
 
@@ -236,7 +237,8 @@ def _build_deps(
             return memberships_for_user
 
         async def load_for_agent(
-            self, agent_id: UUID,
+            self,
+            agent_id: UUID,
         ) -> tuple[GroupMembership, ...]:
             """return configured agent memberships.
 
@@ -269,7 +271,8 @@ def _build_deps(
             return assignments
 
         async def load_roles(
-            self, role_ids: tuple[UUID, ...],
+            self,
+            role_ids: tuple[UUID, ...],
         ) -> dict[UUID, Role]:
             """return role subset.
 
@@ -278,14 +281,11 @@ def _build_deps(
             :return: role mapping subset
             :rtype: dict[UUID, Role]
             """
-            return {
-                rid: (roles or {})[rid]
-                for rid in role_ids
-                if rid in (roles or {})
-            }
+            return {rid: (roles or {})[rid] for rid in role_ids if rid in (roles or {})}
 
         async def load_groups(
-            self, group_ids: tuple[UUID, ...],
+            self,
+            group_ids: tuple[UUID, ...],
         ) -> dict[UUID, Any]:
             """return group subset.
 
@@ -294,13 +294,10 @@ def _build_deps(
             :return: group mapping subset
             :rtype: dict[UUID, Any]
             """
-            return {
-                gid: (groups or {})[gid]
-                for gid in group_ids
-                if gid in (groups or {})
-            }
+            return {gid: (groups or {})[gid] for gid in group_ids if gid in (groups or {})}
 
     from threetears.agent.acl import AclCache
+
     membership_loader = _MembershipLoader()
     grant_loader = _GrantLoader()
     return ConversationAuthorizerDependencies(
@@ -365,7 +362,8 @@ class TestAuthorizeConversationAccess:
         namespace_collection = _NamespaceCollectionRaisingFake(None)
         deps = _build_deps(namespace_collection=namespace_collection)
         with pytest.raises(
-            ConversationAccessDenied, match="could not be created",
+            ConversationAccessDenied,
+            match="could not be created",
         ):
             await authorize_conversation_access(
                 action=ACTION_CONVERSATION_READ,
@@ -402,7 +400,8 @@ class TestAuthorizeConversationAccess:
             namespace_collection=_NamespaceCollectionFake(ns),
         )
         with pytest.raises(
-            ConversationAccessDenied, match="evaluator denied",
+            ConversationAccessDenied,
+            match="evaluator denied",
         ):
             await authorize_conversation_access(
                 action=ACTION_CONVERSATION_READ,

@@ -84,11 +84,7 @@ class _FakeWorkspaceCollection:
     async def find_by_id(self, agent_id: UUID, workspace_id: UUID) -> _FakeWorkspace | None:
         self.find_by_id_calls.append((agent_id, workspace_id))
         for ws in self.workspaces:
-            if (
-                ws.id == workspace_id
-                and ws.agent_id == agent_id
-                and ws.date_deleted is None
-            ):
+            if ws.id == workspace_id and ws.agent_id == agent_id and ws.date_deleted is None:
                 return ws
         return None
 

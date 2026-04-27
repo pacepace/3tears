@@ -178,9 +178,7 @@ async def test_diff_two_integer_versions_returns_unified_diff(
         ("a.txt", 1): _journal_row(b"first\nsecond\nthird\n", version=1),
         ("a.txt", 3): _journal_row(b"first\nchanged\nthird\n", version=3),
     }
-    tool, _pool, sandbox = _build_tool(
-        workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache
-    )
+    tool, _pool, sandbox = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref=1, to_ref=3, workspace="ws")
     assert result.success is True, result.error
     assert "--- a.txt@1" in result.content
@@ -200,9 +198,7 @@ async def test_diff_checkpoint_label_resolves_via_label_selector(
         ("m.txt", "v1"): _journal_row(b"alpha\n"),
         ("m.txt", "head"): _journal_row(b"alpha-plus\n"),
     }
-    tool, _pool, _ = _build_tool(
-        workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="m.txt", from_ref="v1", to_ref="head", workspace="ws")
     assert result.success is True
     assert "--- m.txt@v1" in result.content
@@ -224,9 +220,7 @@ async def test_diff_binary_content_returns_clean_error(
         ("bin.dat", 1): _journal_row(b"\xff\xfe\x00\x01"),
         ("bin.dat", 2): _journal_row(b"ok text\n"),
     }
-    tool, _pool, _ = _build_tool(
-        workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="bin.dat", from_ref=1, to_ref=2, workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -243,9 +237,7 @@ async def test_diff_missing_from_ref_returns_clean_error(
         ("a.txt", 99): None,
         ("a.txt", "head"): _journal_row(b"x\n"),
     }
-    tool, _pool, _ = _build_tool(
-        workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref=99, to_ref="head", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -263,9 +255,7 @@ async def test_diff_missing_to_ref_returns_clean_error(
         ("a.txt", "head"): _journal_row(b"x\n"),
         ("a.txt", "never"): None,
     }
-    tool, _pool, _ = _build_tool(
-        workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _ = _build_tool(workspace_entities=[ws], script=script, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", from_ref="head", to_ref="never", workspace="ws")
     assert result.success is False
     assert result.error is not None

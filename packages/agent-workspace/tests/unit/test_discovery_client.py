@@ -58,7 +58,10 @@ class _FakeNatsClient:
         self.calls: list[tuple[str, bytes, float]] = []
 
     async def request(
-        self, subject: str, payload: bytes, timeout: float,
+        self,
+        subject: str,
+        payload: bytes,
+        timeout: float,
     ) -> _Reply:
         """record the call and return a canned reply.
 

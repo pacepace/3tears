@@ -42,9 +42,7 @@ def _build_runner() -> MigrationRunner:
     return runner
 
 
-async def _columns(
-    conn: asyncpg.Connection, schema: str, table: str
-) -> dict[str, str]:
+async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, str]:
     """
     return column_name -> data_type for the given table.
 
@@ -58,8 +56,7 @@ async def _columns(
     :rtype: dict[str, str]
     """
     rows = await conn.fetch(
-        "SELECT column_name, data_type FROM information_schema.columns "
-        "WHERE table_schema = $1 AND table_name = $2",
+        "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
         schema,
         table,
     )
@@ -67,9 +64,7 @@ async def _columns(
     return result
 
 
-async def _table_exists(
-    conn: asyncpg.Connection, schema: str, table: str
-) -> bool:
+async def _table_exists(conn: asyncpg.Connection, schema: str, table: str) -> bool:
     """
     return whether ``schema.table`` exists in information_schema.
 
@@ -83,8 +78,7 @@ async def _table_exists(
     :rtype: bool
     """
     row = await conn.fetchrow(
-        "SELECT 1 FROM information_schema.tables "
-        "WHERE table_schema = $1 AND table_name = $2",
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2",
         schema,
         table,
     )
@@ -92,9 +86,7 @@ async def _table_exists(
     return result
 
 
-async def _index_exists(
-    conn: asyncpg.Connection, schema: str, index_name: str
-) -> bool:
+async def _index_exists(conn: asyncpg.Connection, schema: str, index_name: str) -> bool:
     """
     return whether ``schema.index_name`` exists in pg_indexes.
 
@@ -117,7 +109,9 @@ async def _index_exists(
 
 
 async def _constraint_exists(
-    conn: asyncpg.Connection, schema: str, constraint_name: str,
+    conn: asyncpg.Connection,
+    schema: str,
+    constraint_name: str,
 ) -> bool:
     """
     return whether ``schema.constraint_name`` exists in pg_constraint.
@@ -148,9 +142,7 @@ async def _constraint_exists(
 class TestFullChainApplies:
     """v001-v007 apply cleanly producing the expected schema."""
 
-    async def test_chain_applies_and_produces_expected_schema(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_chain_applies_and_produces_expected_schema(self, pg_schema: tuple[str, str]) -> None:
         """
         applying v001-v007 yields every column + table + index the code
         expects. re-applying is a no-op.
@@ -213,7 +205,9 @@ class TestFullChainApplies:
 
             # v012 composite FK from memories to media on (agent_id, media_id)
             assert await _constraint_exists(
-                conn, schema, "memories_media_composite_fk",
+                conn,
+                schema,
+                "memories_media_composite_fk",
             )
 
             # re-apply is a no-op
@@ -227,7 +221,8 @@ class TestV012MemoriesMediaCompositeFK:
     """v012 composite FK semantics: SET NULL on media delete + reject orphans."""
 
     async def test_v012_fk_declares_on_delete_set_null(
-        self, pg_schema: tuple[str, str],
+        self,
+        pg_schema: tuple[str, str],
     ) -> None:
         """v012 FK metadata declares ``ON DELETE SET NULL`` semantics.
 
@@ -265,15 +260,13 @@ class TestV012MemoriesMediaCompositeFK:
                 schema,
             )
             assert row is not None
-            assert row["confdeltype"] == b"n", (
-                f"expected SET NULL (b'n') ON DELETE; got "
-                f"{row['confdeltype']!r}"
-            )
+            assert row["confdeltype"] == b"n", f"expected SET NULL (b'n') ON DELETE; got {row['confdeltype']!r}"
         finally:
             await conn.close()
 
     async def test_media_delete_nulls_referencing_memory(
-        self, pg_schema: tuple[str, str],
+        self,
+        pg_schema: tuple[str, str],
     ) -> None:
         """deleting a media row flips referencing ``memories.media_id`` to NULL.
 
@@ -344,8 +337,7 @@ class TestV012MemoriesMediaCompositeFK:
 
             # confirm the link is present before the delete
             pre_row = await conn.fetchrow(
-                "SELECT media_id FROM memories "
-                "WHERE agent_id = $1 AND memory_id = $2",
+                "SELECT media_id FROM memories WHERE agent_id = $1 AND memory_id = $2",
                 agent_id,
                 memory_id,
             )
@@ -362,8 +354,7 @@ class TestV012MemoriesMediaCompositeFK:
             )
 
             row = await conn.fetchrow(
-                "SELECT agent_id, media_id FROM memories "
-                "WHERE agent_id = $1 AND memory_id = $2",
+                "SELECT agent_id, media_id FROM memories WHERE agent_id = $1 AND memory_id = $2",
                 agent_id,
                 memory_id,
             )
@@ -374,7 +365,8 @@ class TestV012MemoriesMediaCompositeFK:
             await conn.close()
 
     async def test_orphan_media_id_rejected(
-        self, pg_schema: tuple[str, str],
+        self,
+        pg_schema: tuple[str, str],
     ) -> None:
         """inserting a memory with non-existent ``(agent_id, media_id)`` fails.
 
@@ -431,9 +423,7 @@ class TestV012MemoriesMediaCompositeFK:
 class TestFtsTriggerPopulatesVector:
     """the memory FTS trigger populates ``search_vector`` on INSERT / UPDATE."""
 
-    async def test_insert_populates_search_vector(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_insert_populates_search_vector(self, pg_schema: tuple[str, str]) -> None:
         """
         inserting a row into memories fills search_vector automatically.
 
@@ -480,8 +470,7 @@ class TestFtsTriggerPopulatesVector:
 
             # FTS query should find it
             match = await conn.fetchval(
-                "SELECT count(*) FROM memories "
-                "WHERE search_vector @@ websearch_to_tsquery('english', 'fox')"
+                "SELECT count(*) FROM memories WHERE search_vector @@ websearch_to_tsquery('english', 'fox')"
             )
             assert match == 1
         finally:

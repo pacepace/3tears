@@ -515,9 +515,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         await self.save_entity(entity)
 
-        is_owner_shortcut = (
-            caller_agent_id is not None and caller_agent_id == agent_id
-        )
+        is_owner_shortcut = caller_agent_id is not None and caller_agent_id == agent_id
         if caller_user_id is not None and not is_owner_shortcut:
             await ensure_memory_owner_assignment(
                 user_id=caller_user_id,
@@ -561,8 +559,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # L1 row cache would not help. method on Collection preserves
         # single entry point.
         value = await self.l3_pool.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM memories "
-            "WHERE agent_id = $1 AND user_id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM memories WHERE agent_id = $1 AND user_id = $2)",
             agent_id,
             user_id,
         )
@@ -717,13 +714,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = (
-                _build_user_scope_clause(
-                    user_id,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    start_param=2,
-                )
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
             )
             fts_where = f"WHERE {fts_scope_conditions} AND is_deleted = false"
             fts_limit_param = f"${fts_param_offset + 1}"
@@ -1295,14 +1290,12 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = (
-                _build_user_scope_clause(
-                    user_id,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    start_param=2,
-                    table_prefix="mc",
-                )
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
+                table_prefix="mc",
             )
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query joining media_content ->
@@ -1338,9 +1331,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             if isinstance(meta, str):
                 meta = json.loads(meta)
             title = (
-                (meta or {}).get("document_title")
-                or (meta or {}).get("original_filename")
-                or (meta or {}).get("title")
+                (meta or {}).get("document_title") or (meta or {}).get("original_filename") or (meta or {}).get("title")
             )
             emb = row["embedding"]
             if isinstance(emb, str):
@@ -1604,8 +1595,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM media_content "
-            "WHERE agent_id = $1 AND content_id = $2 AND user_id = $3",
+            "SELECT content FROM media_content WHERE agent_id = $1 AND content_id = $2 AND user_id = $3",
             agent_id,
             content_id,
             user_id,
@@ -1748,14 +1738,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
         if fts_text:
-            fts_scope_conditions, fts_scope_params, fts_param_offset = (
-                _build_user_scope_clause(
-                    user_id,
-                    agent_id=agent_id,
-                    customer_id=customer_id,
-                    start_param=2,
-                    table_prefix="mc",
-                )
+            fts_scope_conditions, fts_scope_params, fts_param_offset = _build_user_scope_clause(
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                start_param=2,
+                table_prefix="mc",
             )
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query joining memory_chunks -> media.
@@ -1842,8 +1830,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
 
         for c in candidates:
             c["hybrid_score"] = round(
-                chunk_signal_weights["semantic"] * c["similarity"]
-                + chunk_signal_weights["keyword"] * c["fts_rank"],
+                chunk_signal_weights["semantic"] * c["similarity"] + chunk_signal_weights["keyword"] * c["fts_rank"],
                 4,
             )
 
@@ -1980,8 +1967,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM memory_chunks "
-            "WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
+            "SELECT content FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
             agent_id,
             chunk_id,
             user_id,
@@ -2094,7 +2080,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         return await super().save_to_postgres(data, original_timestamp, conn=conn)
 
     async def find_by_conversation(
-        self, conversation_id: UUID,
+        self,
+        conversation_id: UUID,
     ) -> list[MemoryRefEntity]:
         """fetch every ref for a conversation, ordered by ``date_added`` asc.
 

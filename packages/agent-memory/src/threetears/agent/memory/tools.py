@@ -182,7 +182,8 @@ async def _ensure_first_write_owner_assignment(
     :rtype: None
     """
     has_rows = await memories_collection.count_by_user(
-        user_id, agent_id=ns_entity.owner_agent_id,
+        user_id,
+        agent_id=ns_entity.owner_agent_id,
     )
     if has_rows:
         return None
@@ -238,13 +239,19 @@ async def _search_by_ids(
     try:
         mem_rows, mc_rows, chunk_rows = await asyncio.gather(
             memories_collection.search_by_ids(
-                valid_uuids, user_id, agent_id=agent_id,
+                valid_uuids,
+                user_id,
+                agent_id=agent_id,
             ),
             media_content_collection.search_by_ids(
-                valid_uuids, user_id, agent_id=agent_id,
+                valid_uuids,
+                user_id,
+                agent_id=agent_id,
             ),
             memory_chunk_collection.search_by_ids(
-                valid_uuids, user_id, agent_id=agent_id,
+                valid_uuids,
+                user_id,
+                agent_id=agent_id,
             ),
         )
     except Exception as exc:
@@ -635,7 +642,9 @@ async def load_recall_memory_tool(
 
         if item_type == "memory":
             content = await memories_collection.fetch_content_for_recall(
-                memory_id=item_uuid, user_id=user_id, agent_id=agent_id,
+                memory_id=item_uuid,
+                user_id=user_id,
+                agent_id=agent_id,
             )
             if content is None:
                 return "Memory not found or access denied."
@@ -643,7 +652,9 @@ async def load_recall_memory_tool(
 
         elif item_type == "media":
             content = await media_content_collection.fetch_content_for_recall(
-                content_id=item_uuid, user_id=user_id, agent_id=agent_id,
+                content_id=item_uuid,
+                user_id=user_id,
+                agent_id=agent_id,
             )
             if content is None:
                 return "Media content not found or access denied."
@@ -653,7 +664,9 @@ async def load_recall_memory_tool(
 
         elif item_type == "chunk":
             content = await memory_chunk_collection.fetch_content_for_recall(
-                chunk_id=item_uuid, user_id=user_id, agent_id=agent_id,
+                chunk_id=item_uuid,
+                user_id=user_id,
+                agent_id=agent_id,
             )
             if content is None:
                 return "Document chunk not found or access denied."
@@ -789,15 +802,13 @@ async def load_add_memory_tool(
             return _tool_error(
                 "add_memory",
                 "authorize",
-                f"memory namespace lookup for agent={agent_id} "
-                f"customer={customer_id} failed: {exc}",
+                f"memory namespace lookup for agent={agent_id} customer={customer_id} failed: {exc}",
             )
         if ns_entity is None:
             return _tool_error(
                 "add_memory",
                 "authorize",
-                f"memory namespace for agent={agent_id} "
-                f"customer={customer_id} could not be resolved",
+                f"memory namespace for agent={agent_id} customer={customer_id} could not be resolved",
             )
         try:
             await _ensure_first_write_owner_assignment(

@@ -67,7 +67,7 @@ def _scan_file(path: Path) -> list[str]:
     violations: list[str] = []
     try:
         source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return violations
 
     try:
@@ -80,8 +80,7 @@ def _scan_file(path: Path) -> list[str]:
             for alias in node.names:
                 if alias.name == "nats" or alias.name.startswith("nats."):
                     violations.append(
-                        f"{path}:{node.lineno}: `import {alias.name}` — "
-                        f"use `from threetears.nats import NatsClient`"
+                        f"{path}:{node.lineno}: `import {alias.name}` — use `from threetears.nats import NatsClient`"
                     )
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
@@ -162,15 +161,11 @@ def _load_exemptions(path: Path) -> set[str]:
                     "same-file colocation",
                 }
                 if rationale.lower() in blanket:
-                    raise ValueError(
-                        f"exemption rationale rejected (blanket phrase): {rationale!r} in {path}"
-                    )
+                    raise ValueError(f"exemption rationale rejected (blanket phrase): {rationale!r} in {path}")
                 last_was_rationale = True
             continue
         if not last_was_rationale:
-            raise ValueError(
-                f"exemption {line!r} in {path} missing preceding `# rationale: <reason>` line"
-            )
+            raise ValueError(f"exemption {line!r} in {path} missing preceding `# rationale: <reason>` line")
         exemptions.add(line)
         last_was_rationale = False
     return exemptions
@@ -184,11 +179,7 @@ def src_roots() -> list[Path]:
     :rtype: list[Path]
     """
     pkgs = REPO_ROOT / "packages"
-    return [
-        pkg / "src"
-        for pkg in pkgs.iterdir()
-        if pkg.is_dir() and (pkg / "src").exists()
-    ]
+    return [pkg / "src" for pkg in pkgs.iterdir() if pkg.is_dir() and (pkg / "src").exists()]
 
 
 @pytest.fixture(scope="module")

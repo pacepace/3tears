@@ -239,7 +239,8 @@ def _build_deps(
         """in-memory membership loader."""
 
         async def load_for_user(
-            self, user_id: UUID,
+            self,
+            user_id: UUID,
         ) -> tuple[GroupMembership, ...]:
             """return configured user memberships.
 
@@ -252,7 +253,8 @@ def _build_deps(
             return memberships_for_user
 
         async def load_for_agent(
-            self, agent_id: UUID,
+            self,
+            agent_id: UUID,
         ) -> tuple[GroupMembership, ...]:
             """return configured agent memberships.
 
@@ -285,7 +287,8 @@ def _build_deps(
             return assignments
 
         async def load_roles(
-            self, role_ids: tuple[UUID, ...],
+            self,
+            role_ids: tuple[UUID, ...],
         ) -> dict[UUID, Role]:
             """return role subset.
 
@@ -297,7 +300,8 @@ def _build_deps(
             return {rid: (roles or {})[rid] for rid in role_ids if rid in (roles or {})}
 
         async def load_groups(
-            self, group_ids: tuple[UUID, ...],
+            self,
+            group_ids: tuple[UUID, ...],
         ) -> dict[UUID, Any]:
             """return group subset.
 
@@ -309,6 +313,7 @@ def _build_deps(
             return {gid: (groups or {})[gid] for gid in group_ids if gid in (groups or {})}
 
     from threetears.agent.acl import AclCache
+
     membership_loader = _MembershipLoader()
     grant_loader = _GrantLoader()
     return MemoryAuthorizerDependencies(

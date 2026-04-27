@@ -153,15 +153,17 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "id")
-    _partition_exempt_methods = frozenset({
-        "list_by_customer",
-        "list_all",
-        "get_many",
-        "delete_from_postgres",
-        "save_entity",
-        "create",
-        "find_by_id",
-    })
+    _partition_exempt_methods = frozenset(
+        {
+            "list_by_customer",
+            "list_all",
+            "get_many",
+            "delete_from_postgres",
+            "save_entity",
+            "create",
+            "find_by_id",
+        }
+    )
     schema = TableSchema(
         name="groups",
         primary_key=("row_scope", "id"),
@@ -222,7 +224,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         return super().create(data)
 
     async def find_by_id(
-        self, group_id: UUID,
+        self,
+        group_id: UUID,
     ) -> GroupEntity | None:
         """resolve group by ``id`` alone via the ``UNIQUE (id)`` constraint.
 
@@ -249,7 +252,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         return result
 
     async def list_by_customer(
-        self, customer_id: UUID,
+        self,
+        customer_id: UUID,
     ) -> list[GroupEntity]:
         """list every ``groups`` row owned by ``customer_id``.
 
@@ -283,7 +287,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         return result
 
     async def get_many(
-        self, group_ids: Sequence[UUID],
+        self,
+        group_ids: Sequence[UUID],
     ) -> list[GroupEntity]:
         """fetch every group row whose id is in ``group_ids``.
 
@@ -327,7 +332,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         return result
 
     async def list_all(
-        self, customer_id: UUID | None = None,
+        self,
+        customer_id: UUID | None = None,
     ) -> list[GroupEntity]:
         """list every ``groups`` row, optionally filtered by customer.
 
@@ -387,12 +393,14 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("group_id", "id")
-    _partition_exempt_methods = frozenset({
-        "load_for_user",
-        "load_for_agent",
-        "delete_from_postgres",
-        "save_entity",
-    })
+    _partition_exempt_methods = frozenset(
+        {
+            "load_for_user",
+            "load_for_agent",
+            "delete_from_postgres",
+            "save_entity",
+        }
+    )
     schema = TableSchema(
         name="group_members",
         primary_key=("group_id", "id"),
@@ -425,7 +433,8 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         return GroupMemberEntity
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> list[GroupMembership]:
         """resolve ``user_id`` to its :class:`GroupMembership` rows.
 
@@ -467,7 +476,8 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         return result
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> list[GroupMembership]:
         """resolve ``agent_id`` to its :class:`GroupMembership` rows.
 
@@ -503,7 +513,8 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         return result
 
     async def list_by_group(
-        self, group_id: UUID,
+        self,
+        group_id: UUID,
     ) -> list[GroupMemberEntity]:
         """list every membership row for ``group_id`` ordered by ``date_added``.
 
@@ -535,7 +546,9 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         return result
 
     async def find_by_group_and_id(
-        self, group_id: UUID, member_row_id: UUID,
+        self,
+        group_id: UUID,
+        member_row_id: UUID,
     ) -> GroupMemberEntity | None:
         """fetch a membership by PK and assert it belongs to ``group_id``.
 
@@ -664,7 +677,8 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         return result
 
     async def get_many(
-        self, role_ids: Sequence[UUID],
+        self,
+        role_ids: Sequence[UUID],
     ) -> list[Role]:
         """resolve ``role_ids`` to :class:`Role` rows.
 
@@ -721,15 +735,17 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "id")
-    _partition_exempt_methods = frozenset({
-        "load_for_groups",
-        "ensure_group_role_assignment",
-        "delete_by_group_and_scope",
-        "delete_from_postgres",
-        "save_entity",
-        "create",
-        "find_by_id",
-    })
+    _partition_exempt_methods = frozenset(
+        {
+            "load_for_groups",
+            "ensure_group_role_assignment",
+            "delete_by_group_and_scope",
+            "delete_from_postgres",
+            "save_entity",
+            "create",
+            "find_by_id",
+        }
+    )
     schema = TableSchema(
         name="role_assignments",
         primary_key=("row_scope", "id"),
@@ -770,7 +786,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return RoleAssignmentEntity
 
     def create(
-        self, data: dict[str, Any],
+        self,
+        data: dict[str, Any],
     ) -> RoleAssignmentEntity:
         """construct new assignment entity, auto-deriving ``row_scope``.
 
@@ -803,7 +820,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return super().create(data)
 
     async def find_by_id(
-        self, assignment_id: UUID,
+        self,
+        assignment_id: UUID,
     ) -> RoleAssignmentEntity | None:
         """resolve assignment by ``id`` alone via the ``UNIQUE (id)`` constraint.
 
@@ -830,7 +848,8 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         return result
 
     async def load_for_groups(
-        self, group_ids: Sequence[UUID],
+        self,
+        group_ids: Sequence[UUID],
     ) -> list[RoleAssignment]:
         """resolve ``group_ids`` to every assignment they hold.
 
@@ -942,8 +961,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         """
         if scope_type not in ("namespace", "all"):
             raise ValueError(
-                f"unsupported scope_type for idempotent ensure: {scope_type}; "
-                "use save_entity for type_customer scope",
+                f"unsupported scope_type for idempotent ensure: {scope_type}; use save_entity for type_customer scope",
             )
         if scope_type == "namespace" and scope_id is None:
             raise ValueError(
@@ -955,8 +973,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
         if self.l3_pool is None:
             raise RuntimeError(
-                "RoleAssignmentCollection.ensure_group_role_assignment "
-                "requires an L3 pool",
+                "RoleAssignmentCollection.ensure_group_role_assignment requires an L3 pool",
             )
 
         row_scope = "platform" if scope_type == "all" else "customer"
@@ -1116,18 +1133,20 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "id")
-    _partition_exempt_methods = frozenset({
-        "delete_from_postgres",
-        "save_entity",
-        "create",
-        "find_by_type_and_customer",
-        "list_ids_by_customer_and_type",
-        "list_all_ids",
-        "get_by_name",
-        "get_by_agent_id",
-        "get_by_owner_and_customer",
-        "find_by_id",
-    })
+    _partition_exempt_methods = frozenset(
+        {
+            "delete_from_postgres",
+            "save_entity",
+            "create",
+            "find_by_type_and_customer",
+            "list_ids_by_customer_and_type",
+            "list_all_ids",
+            "get_by_name",
+            "get_by_agent_id",
+            "get_by_owner_and_customer",
+            "find_by_id",
+        }
+    )
     schema = TableSchema(
         name="namespaces",
         primary_key=("row_scope", "id"),
@@ -1190,7 +1209,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         return super().create(data)
 
     async def find_by_id(
-        self, namespace_id: UUID,
+        self,
+        namespace_id: UUID,
     ) -> NamespaceEntity | None:
         """resolve namespace by ``id`` alone via the ``UNIQUE (id)`` constraint.
 
@@ -1241,7 +1261,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         return result
 
     async def get_by_agent_id(
-        self, agent_id: UUID, namespace_type: str = "agent",
+        self,
+        agent_id: UUID,
+        namespace_type: str = "agent",
     ) -> NamespaceEntity | None:
         """look up agent-private namespace by owning agent.
 
@@ -1363,9 +1385,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[NamespaceEntity] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM namespaces "
-                "WHERE row_scope = 'customer' "
-                "  AND namespace_type = $1 AND customer_id = $2",
+                "SELECT * FROM namespaces WHERE row_scope = 'customer'   AND namespace_type = $1 AND customer_id = $2",
                 namespace_type,
                 customer_id,
             )
@@ -1380,7 +1400,9 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         return result
 
     async def list_ids_by_customer_and_type(
-        self, customer_id: UUID, namespace_type: str,
+        self,
+        customer_id: UUID,
+        namespace_type: str,
     ) -> list[UUID]:
         """return every namespace id for ``(customer_id, namespace_type)``.
 
@@ -1398,9 +1420,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[UUID] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
-                "SELECT id FROM namespaces "
-                "WHERE row_scope = 'customer' "
-                "  AND customer_id = $1 AND namespace_type = $2",
+                "SELECT id FROM namespaces WHERE row_scope = 'customer'   AND customer_id = $1 AND namespace_type = $2",
                 customer_id,
                 namespace_type,
             )
@@ -1420,8 +1440,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[UUID] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
-                "SELECT id FROM namespaces "
-                "WHERE row_scope IN ('platform', 'customer')",
+                "SELECT id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
             )
             result = [row["id"] for row in rows if row["id"] is not None]
         return result

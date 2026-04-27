@@ -172,9 +172,7 @@ role_assignments_table = Table(
 )
 
 
-REGISTRY_L1_TABLE_NAMES: frozenset[str] = frozenset(
-    table.name for table in REGISTRY_L1_METADATA.tables.values()
-)
+REGISTRY_L1_TABLE_NAMES: frozenset[str] = frozenset(table.name for table in REGISTRY_L1_METADATA.tables.values())
 
 
 def create_registry_l1_backend() -> SQLiteBackend:

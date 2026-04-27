@@ -128,7 +128,8 @@ async def _run_policy_scenario(
 
         # synthesize the awatch batch the OS would deliver.
         workspace = await fx.workspace_collection.find_by_id(
-            fx.agent_id, fx.workspace_id,
+            fx.agent_id,
+            fx.workspace_id,
         )
         assert workspace is not None
         just_wrote: deque[tuple[str, str]] = deque(maxlen=256)

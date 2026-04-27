@@ -154,7 +154,8 @@ def conversation_namespace_name(agent_id: UUID, customer_id: UUID) -> str:
 
 
 def conversation_namespace_schema_name(
-    agent_id: UUID, customer_id: UUID,
+    agent_id: UUID,
+    customer_id: UUID,
 ) -> str:
     """build the schema_name persisted on ``platform.namespaces`` rows.
 
@@ -318,7 +319,8 @@ async def _resolve_or_create_conversation_namespace(
             "owner_agent_id": agent_id,
             "customer_id": customer_id,
             "schema_name": conversation_namespace_schema_name(
-                agent_id, customer_id,
+                agent_id,
+                customer_id,
             ),
             "metadata": {},
             "date_created": now,
@@ -331,8 +333,7 @@ async def _resolve_or_create_conversation_namespace(
         await namespace_collection.save_entity(entity)
     except Exception as exc:
         raise ConversationAccessDenied(
-            f"conversation namespace for agent={agent_id} "
-            f"customer={customer_id} could not be created: {exc}",
+            f"conversation namespace for agent={agent_id} customer={customer_id} could not be created: {exc}",
         ) from exc
 
     # re-read to return the authoritative Collection-managed entity.
@@ -351,7 +352,9 @@ async def _resolve_or_create_conversation_namespace(
 async def authorize_conversation_access(
     *,
     action: Literal[
-        "conversation.read", "conversation.write", "conversation.delete",
+        "conversation.read",
+        "conversation.write",
+        "conversation.delete",
     ],
     agent_id: UUID,
     customer_id: UUID,
@@ -406,8 +409,7 @@ async def authorize_conversation_access(
         )
     except AccessDenied as exc:
         raise ConversationAccessDenied(
-            f"evaluator denied {action} on conversation namespace "
-            f"{ns_entity.id}",
+            f"evaluator denied {action} on conversation namespace {ns_entity.id}",
         ) from exc
     return ns_entity
 
@@ -466,8 +468,7 @@ async def ensure_conversation_owner_assignment(
             break
     if owner_role_id is None:
         log.warning(
-            "conversation owner assignment ensure skipped: role %s not "
-            "present in builtin role catalog",
+            "conversation owner assignment ensure skipped: role %s not present in builtin role catalog",
             CONVERSATION_OWNER_ROLE_NAME,
         )
         return None
@@ -475,8 +476,7 @@ async def ensure_conversation_owner_assignment(
     customer_id = namespace.customer_id
     group_id = uuid5(
         NAMESPACE_DNS,
-        f"threetears.groups.{CONVERSATION_OWNER_GROUP_PREFIX}."
-        f"{customer_id.hex}.{user_id.hex}",
+        f"threetears.groups.{CONVERSATION_OWNER_GROUP_PREFIX}.{customer_id.hex}.{user_id.hex}",
     )
     group_name = f"{CONVERSATION_OWNER_GROUP_PREFIX}:{user_id.hex}"
     now = datetime.now(UTC).replace(tzinfo=None)

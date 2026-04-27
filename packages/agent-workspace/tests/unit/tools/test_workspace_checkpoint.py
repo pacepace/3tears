@@ -198,9 +198,7 @@ async def test_checkpoint_inserts_one_journal_row_per_current_file(
             version=1,
         ),
     ]
-    tool, pool, aid = _build_tool(
-        workspace_entities=[ws], files=files, acl_cache=permissive_acl_cache
-    )
+    tool, pool, aid = _build_tool(workspace_entities=[ws], files=files, acl_cache=permissive_acl_cache)
     result = await tool.execute(label="v1.0", workspace="ws")
     assert result.success is True, result.error
     assert "2 files" in result.content
@@ -234,9 +232,7 @@ async def test_checkpoint_empty_workspace_reports_zero_files(
 ) -> None:
     """no head files -> zero journal rows, success=True with zero-count text."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, pool, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(label="empty", workspace="ws")
     assert result.success is True, result.error
     assert "0 files" in result.content
@@ -257,9 +253,7 @@ async def test_checkpoint_rejects_empty_label(
 ) -> None:
     """empty label returns clean error; no pool activity."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, pool, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(label="", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -272,9 +266,7 @@ async def test_checkpoint_unknown_workspace_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """unknown workspace name -> clean error."""
-    tool, _pool, _ = _build_tool(
-        workspace_entities=[], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _ = _build_tool(workspace_entities=[], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(label="v1", workspace="ghost")
     assert result.success is False
     assert result.error is not None

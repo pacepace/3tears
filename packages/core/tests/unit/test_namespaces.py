@@ -44,31 +44,19 @@ class TestBuildNamespaceName:
         assert build_namespace_name("datasources", "my_db") == "datasources.my_db"
 
     def test_two_segments(self) -> None:
-        assert (
-            build_namespace_name("memories", "aaaaaaaa", "bbbbbbbb")
-            == "memories.aaaaaaaa.bbbbbbbb"
-        )
+        assert build_namespace_name("memories", "aaaaaaaa", "bbbbbbbb") == "memories.aaaaaaaa.bbbbbbbb"
 
     def test_three_segments(self) -> None:
-        assert (
-            build_namespace_name("channels", "slack", "12345678", "extra")
-            == "channels.slack.12345678.extra"
-        )
+        assert build_namespace_name("channels", "slack", "12345678", "extra") == "channels.slack.12345678.extra"
 
     def test_no_segments_yields_prefix_only(self) -> None:
         assert build_namespace_name("system") == "system"
 
     def test_sanitizes_segment_with_dot(self) -> None:
-        assert (
-            build_namespace_name("models", "anthropic", "claude-sonnet-4.5")
-            == "models.anthropic.claude-sonnet-4-5"
-        )
+        assert build_namespace_name("models", "anthropic", "claude-sonnet-4.5") == "models.anthropic.claude-sonnet-4-5"
 
     def test_sanitizes_every_segment_independently(self) -> None:
-        assert (
-            build_namespace_name("models", "v1.0", "model.2.3")
-            == "models.v1-0.model-2-3"
-        )
+        assert build_namespace_name("models", "v1.0", "model.2.3") == "models.v1-0.model-2-3"
 
     def test_prefix_with_dots_is_not_sanitized(self) -> None:
         # the prefix argument is supplied by the caller from the
@@ -100,9 +88,7 @@ class TestPluralPrefixMapping:
             ("workspace", "workspaces"),
         ],
     )
-    def test_namespace_type_maps_to_plural_prefix(
-        self, namespace_type: str, expected: str
-    ) -> None:
+    def test_namespace_type_maps_to_plural_prefix(self, namespace_type: str, expected: str) -> None:
         assert PLURAL_PREFIX_BY_NAMESPACE_TYPE[namespace_type] == expected
 
     def test_mapping_closed_set_size(self) -> None:

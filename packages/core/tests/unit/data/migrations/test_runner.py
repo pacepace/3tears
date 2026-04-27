@@ -221,9 +221,7 @@ class TestScopeSeparation:
 
     async def test_agent_apply_ignores_platform_packages(self) -> None:
         """apply_for_agent_schema does not run platform-scoped packages."""
-        platform_pkg = PackageMigrations(
-            name="hub_platform", scope=MigrationScope.PLATFORM
-        )
+        platform_pkg = PackageMigrations(name="hub_platform", scope=MigrationScope.PLATFORM)
         agent_pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
         applied: list[str] = []
 
@@ -248,9 +246,7 @@ class TestScopeSeparation:
 
     async def test_platform_apply_ignores_agent_packages(self) -> None:
         """apply_for_platform_schema does not run agent-scoped packages."""
-        platform_pkg = PackageMigrations(
-            name="hub_platform", scope=MigrationScope.PLATFORM
-        )
+        platform_pkg = PackageMigrations(name="hub_platform", scope=MigrationScope.PLATFORM)
         agent_pkg = PackageMigrations(name="memory", scope=MigrationScope.AGENT)
         applied: list[str] = []
 

@@ -441,9 +441,7 @@ class StreamingResponse:
             return
         self._started = True
         self._effective_start_monotonic = (
-            self._explicit_start_monotonic
-            if self._explicit_start_monotonic is not None
-            else time.monotonic()
+            self._explicit_start_monotonic if self._explicit_start_monotonic is not None else time.monotonic()
         )
         event = StreamStartEvent(
             correlation_id=self._correlation_id,
@@ -655,7 +653,9 @@ class StreamingResponse:
         final_state: dict[str, Any] = dict(state)
         try:
             async for event in compiled_graph.astream_events(
-                state, config=config, version="v2",
+                state,
+                config=config,
+                version="v2",
             ):
                 event_kind = event.get("event")
                 if event_kind == "on_chat_model_stream":
@@ -678,11 +678,13 @@ class StreamingResponse:
         except Exception as exc:
             log.error(
                 "streaming graph execution failed",
-                extra={"extra_data": {
-                    "correlation_id": str(self._correlation_id),
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "correlation_id": str(self._correlation_id),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                },
                 exc_info=True,
             )
             await self.error(code="AGENT_FAILED", message=str(exc))
@@ -725,12 +727,14 @@ class StreamingResponse:
         except Exception as exc:
             log.warning(
                 "stream transport publish failed",
-                extra={"extra_data": {
-                    "correlation_id": str(self._correlation_id),
-                    "event_type": getattr(event, "type", type(event).__name__),
-                    "error_type": type(exc).__name__,
-                    "error_message": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "correlation_id": str(self._correlation_id),
+                        "event_type": getattr(event, "type", type(event).__name__),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                },
                 exc_info=True,
             )
 

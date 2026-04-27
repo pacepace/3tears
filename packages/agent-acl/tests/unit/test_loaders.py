@@ -95,7 +95,8 @@ class TestCollectionGrantLoaderAssignmentsForGroups:
             group_collection=MagicMock(),
         )
         result = await loader.load_assignments_for_groups(
-            (), namespace=_ns(),
+            (),
+            namespace=_ns(),
         )
         assert result == ()
 
@@ -131,7 +132,8 @@ class TestCollectionGrantLoaderAssignmentsForGroups:
             group_collection=MagicMock(),
         )
         result = await loader.load_assignments_for_groups(
-            (matching.group_id,), namespace=ns,
+            (matching.group_id,),
+            namespace=ns,
         )
         assert isinstance(result, tuple)
         assert result == (matching,)

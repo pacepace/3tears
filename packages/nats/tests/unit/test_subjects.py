@@ -72,9 +72,7 @@ def test_agent_subjects_namespace_prefix() -> None:
     assert Subjects.agent_heartbeat(pod_id).path == "aibots.agents.heartbeat.pod-abc"
     assert Subjects.agent_heartbeat_wildcard().path == "aibots.agents.heartbeat.>"
     assert Subjects.agent_heartbeat_wildcard().kind == "pattern"
-    assert Subjects.agent_route(agent_id).path == (
-        "aibots.agents.route.019470a8-b5c3-7def-8123-456789abcdef"
-    )
+    assert Subjects.agent_route(agent_id).path == ("aibots.agents.route.019470a8-b5c3-7def-8123-456789abcdef")
     assert Subjects.agent_route_wildcard().path == "aibots.agents.route.>"
     assert Subjects.agent_internal(agent_id, pod_id).path == (
         "aibots.agents.internal.019470a8-b5c3-7def-8123-456789abcdef.pod-abc"
@@ -99,9 +97,7 @@ def test_gateway_subjects() -> None:
     assert Subjects.gateway_completion().path == "aibots.gateway.completion"
     assert Subjects.gateway_embedding().path == "aibots.gateway.embedding"
     assert Subjects.gateway_health().path == "aibots.gateway.health"
-    assert Subjects.gateway_stream(correlation_id).path == (
-        "aibots.gateway.stream.corr-1"
-    )
+    assert Subjects.gateway_stream(correlation_id).path == ("aibots.gateway.stream.corr-1")
 
 
 def test_hub_subjects() -> None:
@@ -116,9 +112,7 @@ def test_hub_subjects() -> None:
 
 def test_audit_subjects() -> None:
     """audit subject builders preserve event-type dots (subscribe hierarchy)."""
-    assert Subjects.audit_event("workspace.doc_set").path == (
-        "aibots.audit.workspace.doc_set"
-    )
+    assert Subjects.audit_event("workspace.doc_set").path == ("aibots.audit.workspace.doc_set")
     assert Subjects.audit_wildcard().path == "aibots.audit.>"
     assert Subjects.audit_wildcard(area="workspace").path == "aibots.audit.workspace.>"
 
@@ -148,12 +142,8 @@ def test_l3_subjects() -> None:
 
 def test_acl_subjects() -> None:
     """acl invalidation subjects."""
-    assert Subjects.acl_invalidate("membership").path == (
-        "aibots.acl.membership.invalidate"
-    )
-    assert Subjects.acl_invalidate("assignment").path == (
-        "aibots.acl.assignment.invalidate"
-    )
+    assert Subjects.acl_invalidate("membership").path == ("aibots.acl.membership.invalidate")
+    assert Subjects.acl_invalidate("assignment").path == ("aibots.acl.assignment.invalidate")
     assert Subjects.acl_invalidate("role").path == "aibots.acl.role.invalidate"
 
 
@@ -164,9 +154,7 @@ def test_namespace_discover() -> None:
 
 def test_datasource_query() -> None:
     """datasource query subject."""
-    assert Subjects.datasource_query("redshift_prod").path == (
-        "aibots.datasource.redshift_prod.query"
-    )
+    assert Subjects.datasource_query("redshift_prod").path == ("aibots.datasource.redshift_prod.query")
 
 
 def test_datasource_query_rejects_empty() -> None:
@@ -184,9 +172,7 @@ def test_cache_invalidate_is_namespace_independent() -> None:
 
 def test_deadletter_uses_namespace() -> None:
     """deadletter subject is namespace-prefixed."""
-    assert Subjects.deadletter("aibots.tools.call").path == (
-        "aibots.deadletter.aibots.tools.call"
-    )
+    assert Subjects.deadletter("aibots.tools.call").path == ("aibots.deadletter.aibots.tools.call")
 
 
 def test_dot_in_segment_is_sanitized() -> None:

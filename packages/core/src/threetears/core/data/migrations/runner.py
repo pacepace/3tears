@@ -51,27 +51,17 @@ _CREATE_MIGRATIONS_TABLE_SQL = (
     ")"
 )
 
-_SELECT_APPLIED_VERSIONS_SQL = (
-    "SELECT version, package FROM _schema_migrations ORDER BY version"
-)
+_SELECT_APPLIED_VERSIONS_SQL = "SELECT version, package FROM _schema_migrations ORDER BY version"
 
 _SELECT_APPLIED_HISTORY_SQL = (
-    "SELECT version, package, description, date_applied "
-    "FROM _schema_migrations ORDER BY date_applied, version, package"
+    "SELECT version, package, description, date_applied FROM _schema_migrations ORDER BY date_applied, version, package"
 )
 
-_SELECT_MAX_VERSION_SQL = (
-    "SELECT COALESCE(MAX(version), 0) AS max_version FROM _schema_migrations"
-)
+_SELECT_MAX_VERSION_SQL = "SELECT COALESCE(MAX(version), 0) AS max_version FROM _schema_migrations"
 
-_INSERT_VERSION_SQL = (
-    "INSERT INTO _schema_migrations (version, package, description) "
-    "VALUES ($1, $2, $3)"
-)
+_INSERT_VERSION_SQL = "INSERT INTO _schema_migrations (version, package, description) VALUES ($1, $2, $3)"
 
-_DELETE_VERSION_SQL = (
-    "DELETE FROM _schema_migrations WHERE version = $1 AND package = $2"
-)
+_DELETE_VERSION_SQL = "DELETE FROM _schema_migrations WHERE version = $1 AND package = $2"
 
 
 class MigrationRunner:
@@ -134,9 +124,7 @@ class MigrationRunner:
         self._packages[package.name] = package
 
     @traced
-    async def apply_for_platform_schema(
-        self, store: DataStore, target: int | None = None
-    ) -> int:
+    async def apply_for_platform_schema(self, store: DataStore, target: int | None = None) -> int:
         """
         apply all pending PLATFORM-scope migrations against store's schema.
 
@@ -159,9 +147,7 @@ class MigrationRunner:
         return result
 
     @traced
-    async def apply_for_agent_schema(
-        self, store: DataStore, target: int | None = None
-    ) -> int:
+    async def apply_for_agent_schema(self, store: DataStore, target: int | None = None) -> int:
         """
         apply all pending AGENT-scope migrations against store's schema.
 
@@ -296,9 +282,7 @@ class MigrationRunner:
         return count
 
     @traced
-    async def get_applied_history(
-        self, store: DataStore
-    ) -> list[dict[str, Any]]:
+    async def get_applied_history(self, store: DataStore) -> list[dict[str, Any]]:
         """
         return the applied-migration history as ordered dict rows.
 
@@ -371,9 +355,7 @@ class MigrationRunner:
         :ptype description: str
         """
         await self._ensure_migrations_table(store)
-        await store.execute(
-            _INSERT_VERSION_SQL, version_num, package_name, description
-        )
+        await store.execute(_INSERT_VERSION_SQL, version_num, package_name, description)
 
     @traced
     async def apply_package(self, store: DataStore, package_name: str) -> int:
@@ -458,9 +440,7 @@ class MigrationRunner:
         applied = await self._get_applied_versions(store)
         count = 0
         for package in ordered:
-            applied_count = await self._apply_package_pending(
-                store, package, applied, target
-            )
+            applied_count = await self._apply_package_pending(store, package, applied, target)
             count += applied_count
         return count
 
@@ -534,9 +514,7 @@ class MigrationRunner:
         )
         try:
             await func(store)
-            await store.execute(
-                _INSERT_VERSION_SQL, version_num, package_name, description
-            )
+            await store.execute(_INSERT_VERSION_SQL, version_num, package_name, description)
         except Exception as exc:
             # best-effort revert of the version row in case the migration
             # body partially inserted the bookkeeping (it should not, but
@@ -550,9 +528,7 @@ class MigrationRunner:
                     version_num,
                     revert_exc,
                 )
-            msg = (
-                f"migration {package_name}:{version_num} ({description}) failed: {exc}"
-            )
+            msg = f"migration {package_name}:{version_num} ({description}) failed: {exc}"
             raise MigrationFailedError(msg) from exc
         log.info(
             "migration applied package=%s version=%d description=%s",
@@ -615,9 +591,7 @@ class MigrationRunner:
         )
         return 1
 
-    async def _get_history(
-        self, store: DataStore
-    ) -> list[dict[str, Any]]:
+    async def _get_history(self, store: DataStore) -> list[dict[str, Any]]:
         """
         read the chronological apply-history from ``_schema_migrations``.
 
@@ -639,9 +613,7 @@ class MigrationRunner:
         """
         await store.execute(_CREATE_MIGRATIONS_TABLE_SQL)
 
-    async def _get_applied_versions(
-        self, store: DataStore
-    ) -> set[tuple[int, str]]:
+    async def _get_applied_versions(self, store: DataStore) -> set[tuple[int, str]]:
         """
         query ``_schema_migrations`` for (version, package) tuples.
 
@@ -654,9 +626,7 @@ class MigrationRunner:
         result = {(row["version"], row["package"]) for row in rows}
         return result
 
-    def _topological_sort(
-        self, scope: MigrationScope
-    ) -> list[PackageMigrations]:
+    def _topological_sort(self, scope: MigrationScope) -> list[PackageMigrations]:
         """
         topologically order packages in the given scope by depends_on.
 
@@ -676,9 +646,7 @@ class MigrationRunner:
         """
         # Filter to the requested scope.
         in_scope: dict[str, PackageMigrations] = {
-            name: pkg
-            for name, pkg in self._packages.items()
-            if pkg.scope == scope
+            name: pkg for name, pkg in self._packages.items() if pkg.scope == scope
         }
 
         # Build indegree map and adjacency list restricted to in-scope packages.
@@ -711,13 +679,8 @@ class MigrationRunner:
                     queue.sort()
 
         if len(ordered) != len(in_scope):
-            remaining = sorted(
-                name for name, deg in indegree.items() if deg > 0
-            )
-            msg = (
-                f"cycle detected or unresolved dependency among packages: "
-                f"{remaining!r}"
-            )
+            remaining = sorted(name for name, deg in indegree.items() if deg > 0)
+            msg = f"cycle detected or unresolved dependency among packages: {remaining!r}"
             raise MissingDependencyError(msg)
 
         return ordered

@@ -176,10 +176,13 @@ def _build_stack(
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l3_pool=pool)
     config = DefaultCoreConfig(
-        collection_flush="ALWAYS", collection_flush_tables="",
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
     )
     memories = MemoriesCollection(
-        registry=registry, config=config, authorizer=authorizer,
+        registry=registry,
+        config=config,
+        authorizer=authorizer,
     )
     media = MediaCollection(registry=registry, config=config)
     media_content = MediaContentCollection(registry=registry, config=config)
@@ -200,7 +203,8 @@ class TestMemoryCollectionsL1:
         pool = await _make_pool(url, schema)
         try:
             _, l1, memories, _, _, _ = _build_stack(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -252,7 +256,8 @@ class TestMemoryCollectionsL1:
         pool = await _make_pool(url, schema)
         try:
             _, l1, _, media, _, _ = _build_stack(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             media_id = uuid.uuid4()
@@ -295,7 +300,8 @@ class TestMemoryCollectionsL1:
         pool = await _make_pool(url, schema)
         try:
             _, l1, _, media, media_content, _ = _build_stack(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             # seed a media parent first (FK)
@@ -356,7 +362,8 @@ class TestMemoryCollectionsL1:
         pool = await _make_pool(url, schema)
         try:
             _, l1, _, _, _, chunks = _build_stack(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             chunk_id = uuid.uuid4()
@@ -406,7 +413,8 @@ class TestHybridSearchRegression:
         pool = await _make_pool(url, schema)
         try:
             _, _, memories, _, _, _ = _build_stack(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()

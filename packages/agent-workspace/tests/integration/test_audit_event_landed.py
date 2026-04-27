@@ -140,10 +140,7 @@ async def test_doc_set_publishes_audit_envelope_to_consumer(
     # subject (audit-task-01 Phase 3: subject derives directly from
     # event_type via the unified publish helper, so ``doc_set`` rides
     # on ``workspace.doc_set`` verbatim).
-    audit_publishes = [
-        (s, p) for s, p in fx.nats.published
-        if s.startswith(f"{namespace}.audit.workspace.")
-    ]
+    audit_publishes = [(s, p) for s, p in fx.nats.published if s.startswith(f"{namespace}.audit.workspace.")]
     assert len(audit_publishes) == 1, audit_publishes
     subject, payload = audit_publishes[0]
     assert subject == f"{namespace}.audit.workspace.doc_set"

@@ -356,7 +356,8 @@ class TestComputeToolKey:
         """
         tool_a = _StubTool("a", _StubPydanticArgsSchema({"type": "object"}))
         tool_a_v2 = _StubTool(
-            "a", _StubPydanticArgsSchema({"type": "object", "properties": {"x": {}}}),
+            "a",
+            _StubPydanticArgsSchema({"type": "object", "properties": {"x": {}}}),
         )
         assert compute_tool_key([tool_a]) != compute_tool_key([tool_a_v2])
 

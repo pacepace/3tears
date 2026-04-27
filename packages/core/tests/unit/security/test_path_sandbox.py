@@ -347,7 +347,8 @@ class TestValidateSyntax:
         assert "parent" in info.value.reason
 
     def test_valid_relative_passes_even_with_empty_globs(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """syntactically valid key passes regardless of glob allow-lists.
 

@@ -173,9 +173,7 @@ class NatsKvBucket:
             try:
                 kv = await js.key_value(full_name)
             except Exception as exc:
-                raise KvError(
-                    f"bind KV bucket failed: bucket={full_name}: {exc}"
-                ) from exc
+                raise KvError(f"bind KV bucket failed: bucket={full_name}: {exc}") from exc
 
         return cls(client=client, full_name=full_name, kv=kv, ttl=ttl)
 
@@ -217,9 +215,7 @@ class NatsKvBucket:
         except KeyNotFoundError:
             return None
         except Exception as exc:
-            raise KvError(
-                f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}"
-            ) from exc
+            raise KvError(f"KV get_entry failed: bucket={self._full_name} key={key}: {exc}") from exc
         if entry.value is None or entry.revision is None:
             return None
         return (bytes(entry.value), int(entry.revision))
@@ -238,9 +234,7 @@ class NatsKvBucket:
         try:
             revision = await self._kv.put(key, value)
         except Exception as exc:
-            raise KvError(
-                f"KV put failed: bucket={self._full_name} key={key}: {exc}"
-            ) from exc
+            raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
 
     async def create(self, *, key: str, value: bytes) -> int | None:
@@ -259,9 +253,7 @@ class NatsKvBucket:
         except KeyWrongLastSequenceError:
             return None
         except Exception as exc:
-            raise KvError(
-                f"KV create failed: bucket={self._full_name} key={key}: {exc}"
-            ) from exc
+            raise KvError(f"KV create failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
 
     async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
@@ -282,9 +274,7 @@ class NatsKvBucket:
         except KeyWrongLastSequenceError:
             return None
         except Exception as exc:
-            raise KvError(
-                f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}"
-            ) from exc
+            raise KvError(f"KV update failed: bucket={self._full_name} key={key} rev={revision}: {exc}") from exc
         return int(new_revision)
 
     async def delete(self, *, key: str, revision: int | None = None) -> bool:
@@ -315,7 +305,5 @@ class NatsKvBucket:
         except KeyWrongLastSequenceError:
             return False
         except Exception as exc:
-            raise KvError(
-                f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}"
-            ) from exc
+            raise KvError(f"KV delete failed: bucket={self._full_name} key={key} revision={revision}: {exc}") from exc
         return True

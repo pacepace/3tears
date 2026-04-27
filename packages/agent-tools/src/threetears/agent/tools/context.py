@@ -604,7 +604,10 @@ class ToolContextManager:
         return {ref["item_id"] for ref in self._memory_refs_projection}
 
     async def add_ledger_ref(
-        self, item_id: str, item_type: str, short_desc: str,
+        self,
+        item_id: str,
+        item_type: str,
+        short_desc: str,
     ) -> None:
         """Track a surfaced item by persisting through MemoryRefsCollection.
 
@@ -677,9 +680,7 @@ class ToolContextManager:
         """
         if not self._memory_refs_projection:
             return ""
-        lines = [
-            "Previously recalled in this conversation (use recall_memory with the ID and type shown):"
-        ]
+        lines = ["Previously recalled in this conversation (use recall_memory with the ID and type shown):"]
         for ref in self._memory_refs_projection:
             itype = ref["item_type"]
             tag = f"[{itype}:{ref['item_id']}]"

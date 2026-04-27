@@ -19,9 +19,7 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_ADD_DATE_DELETED_COLUMN_SQL = (
-    "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
-)
+_ADD_DATE_DELETED_COLUMN_SQL = "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
 
 
 async def add_date_deleted_column(store: DataStore) -> None:

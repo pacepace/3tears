@@ -136,7 +136,8 @@ class TestBuildRegistryRbacStack:
         assert isinstance(stack.group_member_collection, GroupMemberCollection)
         assert isinstance(stack.role_collection, RoleCollection)
         assert isinstance(
-            stack.role_assignment_collection, RoleAssignmentCollection,
+            stack.role_assignment_collection,
+            RoleAssignmentCollection,
         )
 
     def test_constructs_acl_cache(self) -> None:
@@ -212,10 +213,7 @@ class TestSubscribeInvalidations:
         # process via :func:`set_default_namespace`; assert on the
         # invariant suffix shape rather than a fixed prefix so test
         # ordering does not flake the assertion.
-        suffixes = sorted(
-            call.kwargs["subject"].path.split(".", 1)[1]
-            for call in nc.subscribe.await_args_list
-        )
+        suffixes = sorted(call.kwargs["subject"].path.split(".", 1)[1] for call in nc.subscribe.await_args_list)
         assert suffixes == [
             "acl.assignment.invalidate",
             "acl.membership.invalidate",

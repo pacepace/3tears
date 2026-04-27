@@ -67,9 +67,7 @@ class TestAddColumnWithBackfill:
             upper = sql.upper()
             has_alter = "ALTER TABLE" in upper
             has_update = "UPDATE " in upper and "SET " in upper
-            assert not (has_alter and has_update), (
-                f"DDL+DML mixing in single execute: {sql!r}"
-            )
+            assert not (has_alter and has_update), f"DDL+DML mixing in single execute: {sql!r}"
 
     async def test_add_column_uses_if_not_exists(self) -> None:
         """ADD COLUMN clause includes ``IF NOT EXISTS`` for idempotency."""
@@ -96,9 +94,7 @@ class TestAddColumnWithBackfill:
             backfill_value_sql="'b'",
             backfill_predicate="x IS NULL",
         )
-        update_sqls = [
-            sql for sql, _ in store.executed if "UPDATE " in sql.upper()
-        ]
+        update_sqls = [sql for sql, _ in store.executed if "UPDATE " in sql.upper()]
         assert len(update_sqls) == 1
         update_sql = update_sqls[0]
         # custom predicate present.
@@ -116,9 +112,7 @@ class TestAddColumnWithBackfill:
             column_type="INTEGER",
             default="0",
         )
-        update_sqls = [
-            sql for sql, _ in store.executed if "UPDATE " in sql.upper()
-        ]
+        update_sqls = [sql for sql, _ in store.executed if "UPDATE " in sql.upper()]
         assert update_sqls == []
 
     async def test_schema_qualifies_target(self) -> None:
@@ -132,9 +126,7 @@ class TestAddColumnWithBackfill:
             default="0",
             schema="myschema",
         )
-        assert any(
-            "myschema.t" in sql for sql, _ in store.executed
-        )
+        assert any("myschema.t" in sql for sql, _ in store.executed)
 
 
 # ---------------------------------------------------------------------------
@@ -186,16 +178,12 @@ class TestReplaceCheckConstraint:
             store,
             table="namespaces",
             constraint_name="namespaces_namespace_type_ck",
-            new_expression=(
-                "namespace_type IN ('agent', 'shared', 'system')"
-            ),
+            new_expression=("namespace_type IN ('agent', 'shared', 'system')"),
         )
         joined = "\n".join(sql for sql, _ in store.executed)
         assert "pg_get_constraintdef" in joined
         assert "namespaces_namespace_type_ck" in joined
-        assert (
-            "namespace_type IN ('agent', 'shared', 'system')" in joined
-        )
+        assert "namespace_type IN ('agent', 'shared', 'system')" in joined
 
     async def test_single_execute_call(self) -> None:
         """replace-check is one execute (DDL only)."""
@@ -260,10 +248,7 @@ class TestReplacePrimaryKey:
             ),
         )
         sql = store.executed[0][0]
-        assert (
-            "ALTER TABLE channel_configs DROP CONSTRAINT IF EXISTS "
-            "channel_configs_agent_id_fkey" in sql
-        )
+        assert "ALTER TABLE channel_configs DROP CONSTRAINT IF EXISTS channel_configs_agent_id_fkey" in sql
         assert (
             "ALTER TABLE channel_configs ADD CONSTRAINT "
             "channel_configs_agent_id_fkey FOREIGN KEY (agent_id) "
@@ -353,18 +338,12 @@ class TestAddPartitionColumn:
         )
         for sql, _ in store.executed:
             upper = sql.upper()
-            has_ddl = (
-                "ALTER TABLE" in upper or "ADD CONSTRAINT" in upper
-            )
-            has_dml = (
-                "UPDATE " in upper and "SET " in upper
-            ) or "INSERT INTO" in upper
+            has_ddl = "ALTER TABLE" in upper or "ADD CONSTRAINT" in upper
+            has_dml = ("UPDATE " in upper and "SET " in upper) or "INSERT INTO" in upper
             # add_check is a single ALTER TABLE under a DO block; that
             # block does not perform any DML. the test is precisely
             # "no DML in any execute that contains DDL".
-            assert not (has_ddl and has_dml), (
-                f"DDL+DML mixing in single execute: {sql!r}"
-            )
+            assert not (has_ddl and has_dml), f"DDL+DML mixing in single execute: {sql!r}"
 
 
 # ---------------------------------------------------------------------------

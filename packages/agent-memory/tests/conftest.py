@@ -174,7 +174,8 @@ class _PermissiveMembershipLoader:
         self._group_id = group_id
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return one membership naming the user as member of the group.
 
@@ -193,7 +194,8 @@ class _PermissiveMembershipLoader:
         )
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return one membership naming the agent as member of the group.
 
@@ -277,7 +279,8 @@ class _PermissiveGrantLoader:
         return tuple(assignments)
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """return the synthetic role for every requested role id it owns.
 
@@ -289,7 +292,8 @@ class _PermissiveGrantLoader:
         return {rid: self._role for rid in role_ids if rid == self._role_id}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """resolve every known group id to a synthetic platform-scoped group.
 
@@ -486,6 +490,7 @@ def permissive_memory_authorizer() -> MemoryAuthorizerDependencies:
     :rtype: MemoryAuthorizerDependencies
     """
     from threetears.agent.acl import AclCache
+
     shared_group_id = uuid4()
     shared_role_id = uuid4()
     _ = datetime.now(UTC)  # touch the import so linters don't flag it

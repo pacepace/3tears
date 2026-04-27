@@ -232,10 +232,7 @@ class TestAgentNodeHooks:
         await agent_node(state, config)  # type: ignore[arg-type]
         call_args = mock_model.ainvoke.call_args
         messages_sent = call_args[0][0]
-        assert any(
-            isinstance(m, HumanMessage) and m.content == "probe-a"
-            for m in messages_sent
-        )
+        assert any(isinstance(m, HumanMessage) and m.content == "probe-a" for m in messages_sent)
         assert events == ["before:a", "after:a"]
 
     @pytest.mark.asyncio

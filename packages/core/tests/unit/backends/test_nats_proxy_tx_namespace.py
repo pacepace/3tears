@@ -87,9 +87,7 @@ class _ScriptedReplyPlan:
         del timeout
         assert self._entries, f"no reply scripted for {subject}"
         expected_subject, response = self._entries.pop(0)
-        assert subject == expected_subject, (
-            f"expected {expected_subject!r}, got {subject!r}"
-        )
+        assert subject == expected_subject, f"expected {expected_subject!r}, got {subject!r}"
         self.calls.append((subject, json.loads(payload.decode("utf-8"))))
         return _make_reply(response)
 

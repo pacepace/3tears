@@ -294,9 +294,7 @@ class TestStaleLease:
                 "acquired_at": (past - timedelta(seconds=30)).isoformat(),
             }
         )
-        new_revision = await bucket.update(
-            key="lock/a", value=expired, revision=first_handle.revision
-        )
+        new_revision = await bucket.update(key="lock/a", value=expired, revision=first_handle.revision)
         assert new_revision is not None
 
         second = KVLease(nats_client=client, bucket_name="test_leases", pod_id="pod-second")  # type: ignore[arg-type]
@@ -323,9 +321,7 @@ class TestBucketDefaults:
         envelope = _decode_envelope(value)
         assert envelope["holder"] == "pod-alpha"
 
-    async def test_default_bucket_fallback_when_env_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_default_bucket_fallback_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
         client = FakeNatsClient()
         lease = KVLease(nats_client=client, pod_id="pod-alpha")  # type: ignore[arg-type]

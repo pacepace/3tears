@@ -125,9 +125,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         agent_id = str(args[0]) if args else None
         user_id = str(args[1]) if len(args) > 1 else None
         return any(
-            str(row.get("agent_id")) == agent_id
-            and str(row.get("user_id")) == user_id
-            for row in store.values()
+            str(row.get("agent_id")) == agent_id and str(row.get("user_id")) == user_id for row in store.values()
         )
 
     async def _execute(query: str, *args: object) -> str:
@@ -185,10 +183,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         include_deleted = "is_deleted" not in query
         results = []
         for row in store.values():
-            if (
-                str(row.get("agent_id")) == agent_id
-                and str(row.get("user_id")) == user_id
-            ):
+            if str(row.get("agent_id")) == agent_id and str(row.get("user_id")) == user_id:
                 if include_deleted or not row.get("is_deleted", False):
                     results.append(dict(row))
         return results
@@ -327,9 +322,7 @@ class TestMemoriesCollectionGet:
 
         assert entity is not None
         assert entity.type_memory == "preference"
-        assert any(
-            str(data["memory_id"]) in key for key in nats.store
-        )
+        assert any(str(data["memory_id"]) in key for key in nats.store)
 
     async def test_all_miss_returns_none(
         self,
@@ -482,7 +475,9 @@ class TestMemoriesCollectionFindByUser:
         )
 
         entities = await coll.find_by_user(
-            user_id, agent_id=agent_id, customer_id=customer_id,
+            user_id,
+            agent_id=agent_id,
+            customer_id=customer_id,
         )
 
         assert len(entities) == 2
@@ -683,7 +678,8 @@ class TestMemoriesCollectionCountByUser:
         )
 
         result = await coll.count_by_user(
-            data["user_id"], agent_id=data["agent_id"],
+            data["user_id"],
+            agent_id=data["agent_id"],
         )
         assert result is True
 

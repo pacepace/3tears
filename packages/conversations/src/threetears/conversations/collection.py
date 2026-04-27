@@ -141,7 +141,8 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         self._conversation_write_buffer: ConversationWriteBuffer | None = None
 
     def attach_write_buffer(
-        self, buffer: ConversationWriteBuffer,
+        self,
+        buffer: ConversationWriteBuffer,
     ) -> None:
         """attach a :class:`ConversationWriteBuffer` for delegated batching.
 
@@ -214,7 +215,10 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         return Conversation
 
     async def find_by_user(
-        self, agent_id: UUID, user_id: UUID, include_closed: bool = False,
+        self,
+        agent_id: UUID,
+        user_id: UUID,
+        include_closed: bool = False,
     ) -> list[Conversation]:
         """fetch every conversation owned by the given user under one agent.
 
@@ -236,9 +240,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         """
         if include_closed:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM conversations "
-                "WHERE agent_id = $1 AND user_id = $2 "
-                "ORDER BY date_created DESC",
+                "SELECT * FROM conversations WHERE agent_id = $1 AND user_id = $2 ORDER BY date_created DESC",
                 agent_id,
                 user_id,
             )

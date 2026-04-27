@@ -49,5 +49,7 @@ class ContextItemEntity(BaseEntity):
         """
         super().__init__(data, is_new=is_new, collection=collection)
         object.__setattr__(
-            self, "_id", (data["conversation_id"], data["context_id"]),
+            self,
+            "_id",
+            (data["conversation_id"], data["context_id"]),
         )

@@ -326,9 +326,7 @@ async def test_doc_get_missing_file_returns_clean_error(
 ) -> None:
     """head row absent -> clean error naming file and workspace."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(relative_path="missing.yaml", workspace="ws")
 

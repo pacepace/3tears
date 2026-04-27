@@ -101,7 +101,9 @@ class _FakeWorkspaceCollection:
         self._workspaces = workspaces
 
     async def find_by_id(
-        self, agent_id: UUID, workspace_id: UUID,
+        self,
+        agent_id: UUID,
+        workspace_id: UUID,
     ) -> _FakeWorkspace | None:
         """locate a live workspace by ``(agent_id, workspace_id)`` pair.
 
@@ -114,11 +116,7 @@ class _FakeWorkspaceCollection:
         """
         result: _FakeWorkspace | None = None
         for ws in self._workspaces:
-            if (
-                ws.id == workspace_id
-                and ws.agent_id == agent_id
-                and ws.date_deleted is None
-            ):
+            if ws.id == workspace_id and ws.agent_id == agent_id and ws.date_deleted is None:
                 result = ws
                 break
         return result

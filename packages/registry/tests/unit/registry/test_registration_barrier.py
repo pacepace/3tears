@@ -156,9 +156,7 @@ class TestRegistrationBarrierStateMachine:
         handler = RegistrationHandler(catalog, namespace="test", probe_timeout=0.5)
         nc = AsyncMock()
         nc.request = AsyncMock(
-            side_effect=RequestError(
-                "response decode failed: subject=test.tools.probe.pod-probe-001"
-            ),
+            side_effect=RequestError("response decode failed: subject=test.tools.probe.pod-probe-001"),
         )
         await handler.start(nc)
 

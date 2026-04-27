@@ -311,7 +311,9 @@ def configure_logging(
 
     # Configure root logger so ALL loggers get output (not just threetears.*)
     py_root = logging.getLogger()
-    if not any(isinstance(h, logging.StreamHandler) and getattr(h, "threetears_owned", False) for h in py_root.handlers):
+    if not any(
+        isinstance(h, logging.StreamHandler) and getattr(h, "threetears_owned", False) for h in py_root.handlers
+    ):
         handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(ContextFormatter(use_color=use_color))
         handler.threetears_owned = True  # type: ignore[attr-defined]

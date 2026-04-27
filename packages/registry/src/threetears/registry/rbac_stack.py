@@ -94,7 +94,8 @@ PLATFORM_RBAC_READ_NAMESPACE: str = "system.platform.rbac"
 #: restarts means broker logs always show the same originator string
 #: for registry-side reads, which simplifies operator triage.
 REGISTRY_SERVICE_SENTINEL_AGENT_ID: UUID = uuid5(
-    NAMESPACE_DNS, "threetears.registry.service-sentinel",
+    NAMESPACE_DNS,
+    "threetears.registry.service-sentinel",
 )
 
 
@@ -226,8 +227,7 @@ class RegistryRbacStack:
             payload = MembershipInvalidatePayload.model_validate_json(msg.data)
         except ValidationError:
             log.warning(
-                "registry acl cache: membership.invalidate payload "
-                "unparseable size=%d",
+                "registry acl cache: membership.invalidate payload unparseable size=%d",
                 len(msg.data),
             )
             return
@@ -248,8 +248,7 @@ class RegistryRbacStack:
             payload = AssignmentInvalidatePayload.model_validate_json(msg.data)
         except ValidationError:
             log.warning(
-                "registry acl cache: assignment.invalidate payload "
-                "unparseable size=%d",
+                "registry acl cache: assignment.invalidate payload unparseable size=%d",
                 len(msg.data),
             )
             return
@@ -273,8 +272,7 @@ class RegistryRbacStack:
             RoleInvalidatePayload.model_validate_json(msg.data)
         except ValidationError:
             log.warning(
-                "registry acl cache: role.invalidate payload "
-                "unparseable size=%d",
+                "registry acl cache: role.invalidate payload unparseable size=%d",
                 len(msg.data),
             )
             return
@@ -302,8 +300,7 @@ def _resolve_acl_ttl_seconds() -> int:
                 result = parsed
         except ValueError:
             log.warning(
-                "THREETEARS_REGISTRY_ACL_TTL_SECONDS unparseable, "
-                "falling back to default 60s: value=%s",
+                "THREETEARS_REGISTRY_ACL_TTL_SECONDS unparseable, falling back to default 60s: value=%s",
                 raw,
             )
     return result

@@ -207,9 +207,7 @@ async def authorize_workspace_access(
             namespace_name=workspace.namespace_name,
         )
     except AccessDenied as exc:
-        reason = (
-            f"evaluator denied access on namespace {workspace.namespace_name}"
-        )
+        reason = f"evaluator denied access on namespace {workspace.namespace_name}"
         _log_denial(
             workspace=workspace,
             operation=operation,
@@ -305,13 +303,11 @@ async def authorize_workspace_file_access(
             operation=f"file.{direction}",
             ctx=ctx,
             reason=(
-                f"no {direction}_file_matching glob grants {relative_path!r} "
-                f"on namespace {workspace.namespace_name}"
+                f"no {direction}_file_matching glob grants {relative_path!r} on namespace {workspace.namespace_name}"
             ),
         )
         raise WorkspaceAccessDenied(
-            f"no {direction}_file_matching glob grants {relative_path!r} "
-            f"on namespace {workspace.namespace_name}",
+            f"no {direction}_file_matching glob grants {relative_path!r} on namespace {workspace.namespace_name}",
         )
 
     return None
@@ -339,19 +335,15 @@ def _log_denial(
     """
     log.info(
         "workspace access denied",
-        extra={"extra_data": {
-            "workspace_id": str(workspace.id),
-            "namespace_name": workspace.namespace_name,
-            "operation": operation,
-            "caller_agent_id": (
-                str(ctx.agent_id) if ctx.agent_id is not None else None
-            ),
-            "caller_user_id": (
-                str(ctx.user_id) if ctx.user_id is not None else None
-            ),
-            "caller_customer_id": (
-                str(ctx.customer_id) if ctx.customer_id is not None else None
-            ),
-            "reason": reason,
-        }},
+        extra={
+            "extra_data": {
+                "workspace_id": str(workspace.id),
+                "namespace_name": workspace.namespace_name,
+                "operation": operation,
+                "caller_agent_id": (str(ctx.agent_id) if ctx.agent_id is not None else None),
+                "caller_user_id": (str(ctx.user_id) if ctx.user_id is not None else None),
+                "caller_customer_id": (str(ctx.customer_id) if ctx.customer_id is not None else None),
+                "reason": reason,
+            }
+        },
     )

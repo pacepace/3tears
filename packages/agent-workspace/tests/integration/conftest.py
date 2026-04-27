@@ -456,7 +456,9 @@ class _StoreBackedWorkspaceCollection:
         return ws
 
     async def find_by_id(
-        self, agent_id: UUID, workspace_id: UUID,
+        self,
+        agent_id: UUID,
+        workspace_id: UUID,
     ) -> _StoredWorkspace | None:
         ws = self._store.workspaces.get(workspace_id)
         if ws is None or ws.agent_id != agent_id:
@@ -1113,7 +1115,9 @@ def integration_stub_authorize_workspace_access(
     monkeypatch.setattr(_authorize_module, "authorize_workspace_access", stub)
     file_stub = AsyncMock(return_value=None)
     monkeypatch.setattr(
-        _authorize_module, "authorize_workspace_file_access", file_stub,
+        _authorize_module,
+        "authorize_workspace_file_access",
+        file_stub,
     )
     return stub
 

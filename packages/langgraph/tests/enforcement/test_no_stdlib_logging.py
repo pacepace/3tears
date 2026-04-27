@@ -30,12 +30,7 @@ from pathlib import Path
 
 import pytest
 
-_SRC_ROOT = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src"
-    / "threetears"
-    / "langgraph"
-)
+_SRC_ROOT = Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "langgraph"
 
 
 # --- exemption list --------------------------------------------------------
@@ -52,9 +47,7 @@ def _collect_src_files() -> list[Path]:
     :return: sorted list of absolute Path objects
     :rtype: list[Path]
     """
-    return sorted(
-        p for p in _SRC_ROOT.rglob("*.py") if p.stat().st_size > 0
-    )
+    return sorted(p for p in _SRC_ROOT.rglob("*.py") if p.stat().st_size > 0)
 
 
 def _rel_posix(path: Path) -> str:
@@ -170,6 +163,5 @@ class TestNoStdlibLogging:
         missing = [rel for rel in _EXEMPT if not (_SRC_ROOT / rel).is_file()]
         if missing:
             pytest.fail(
-                "stale exemption entries (file no longer exists): "
-                + ", ".join(missing),
+                "stale exemption entries (file no longer exists): " + ", ".join(missing),
             )

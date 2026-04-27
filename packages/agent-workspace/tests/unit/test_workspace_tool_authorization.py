@@ -936,8 +936,7 @@ async def test_tool_invokes_authorize_with_correct_operation(case: _ToolCase) ->
             await tool.execute(**kwargs)
 
     assert mock_authz.await_count == 1, (
-        f"{case.name} did not call authorize_workspace_access exactly once; "
-        f"saw {mock_authz.await_count} calls"
+        f"{case.name} did not call authorize_workspace_access exactly once; saw {mock_authz.await_count} calls"
     )
     call = mock_authz.await_args
     assert call is not None
@@ -971,9 +970,7 @@ async def test_tool_surfaces_cross_customer_deny_as_data(case: _ToolCase) -> Non
     async with enter_call_scope(scope):
         result = await tool.execute(**kwargs)
 
-    assert result.success is False, (
-        f"{case.name} allowed a cross-customer call"
-    )
+    assert result.success is False, f"{case.name} allowed a cross-customer call"
     assert result.error is not None
 
 
@@ -998,9 +995,7 @@ async def test_tool_surfaces_missing_customer_as_data(case: _ToolCase) -> None:
     async with enter_call_scope(scope):
         result = await tool.execute(**kwargs)
 
-    assert result.success is False, (
-        f"{case.name} allowed a call with no customer_id on scope"
-    )
+    assert result.success is False, f"{case.name} allowed a call with no customer_id on scope"
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
@@ -1027,9 +1022,7 @@ async def test_tool_surfaces_grant_deny_as_data(case: _ToolCase) -> None:
     async with enter_call_scope(scope):
         result = await tool.execute(**kwargs)
 
-    assert result.success is False, (
-        f"{case.name} allowed a call with no grant"
-    )
+    assert result.success is False, f"{case.name} allowed a call with no grant"
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
@@ -1057,9 +1050,7 @@ async def test_tool_allows_owner_path(case: _ToolCase) -> None:
         # test is "authorize did not raise + cache was not consulted".
         await tool.execute(**kwargs)
 
-    assert cache.check_access.await_count == 0, (
-        f"{case.name} consulted ACL cache on owner path"
-    )
+    assert cache.check_access.await_count == 0, f"{case.name} consulted ACL cache on owner path"
 
 
 def test_authorize_matrix_covers_all_19_tools() -> None:

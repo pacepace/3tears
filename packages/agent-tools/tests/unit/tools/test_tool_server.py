@@ -538,11 +538,7 @@ class TestToolServerHeartbeat:
             except asyncio.CancelledError:
                 pass
 
-        heartbeat_calls = [
-            c
-            for c in mock_nc.publish.call_args_list
-            if "heartbeat" in c.kwargs.get("subject").path
-        ]
+        heartbeat_calls = [c for c in mock_nc.publish.call_args_list if "heartbeat" in c.kwargs.get("subject").path]
         assert len(heartbeat_calls) >= 1
         subject_arg = heartbeat_calls[0].kwargs["subject"]
         assert subject_arg.path == "testns.tools.heartbeat.hb-pod"
@@ -870,9 +866,7 @@ class TestToolServerProbe:
         discovery_response = DiscoveryProbeResponse(
             agent_id="wait-pod",
             tools=[
-                DiscoveryProbeResultEntry(
-                    name="test.probe", version="1.0.0", status="available"
-                ),
+                DiscoveryProbeResultEntry(name="test.probe", version="1.0.0", status="available"),
             ],
         )
 
@@ -926,9 +920,7 @@ class TestToolServerProbe:
         discovery_response = DiscoveryProbeResponse(
             agent_id="slow-pod",
             tools=[
-                DiscoveryProbeResultEntry(
-                    name="test.slow", version="1.0.0", status="unavailable"
-                ),
+                DiscoveryProbeResultEntry(name="test.slow", version="1.0.0", status="unavailable"),
             ],
         )
 

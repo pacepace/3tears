@@ -38,7 +38,9 @@ class _StubContext:
     """
 
     def __init__(
-        self, conversation_id: UUID, correlation_id: UUID,
+        self,
+        conversation_id: UUID,
+        correlation_id: UUID,
     ) -> None:
         """capture identity dimensions.
 
@@ -60,7 +62,8 @@ def _resolver():
     :rtype: _StubContext
     """
     return _StubContext(
-        conversation_id=_TEST_CID, correlation_id=_TEST_MID,
+        conversation_id=_TEST_CID,
+        correlation_id=_TEST_MID,
     )
 
 

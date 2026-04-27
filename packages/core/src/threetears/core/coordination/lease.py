@@ -518,9 +518,7 @@ class KVLease:
         # NatsKvBucket.update returns ``None`` on revision mismatch,
         # mapping the previous KeyWrongLastSequenceError raise into a
         # typed conflict signal we surface as LeaseLost.
-        new_revision = await bucket.update(
-            key=handle.key, value=payload, revision=handle.revision
-        )
+        new_revision = await bucket.update(key=handle.key, value=payload, revision=handle.revision)
         if new_revision is None:
             raise LeaseLost(f"lease {handle.key!r} revision advanced during refresh")
         handle.revision = new_revision

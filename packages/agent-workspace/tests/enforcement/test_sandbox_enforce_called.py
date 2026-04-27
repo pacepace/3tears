@@ -170,8 +170,7 @@ class TestAuthorizeCalledBeforeWrite:
 
             if not authorize_lines:
                 violations.append(
-                    f"{module_name}:{execute_fn.lineno}: execute() "
-                    f"contains no authorize_workspace_file call",
+                    f"{module_name}:{execute_fn.lineno}: execute() contains no authorize_workspace_file call",
                 )
                 continue
             # rule: every write must come after at least one authorize call.

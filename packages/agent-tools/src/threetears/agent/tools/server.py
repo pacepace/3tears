@@ -515,10 +515,7 @@ class ToolServer:
             ``nats_client`` carries a usable value
         """
         if not nats_url and nats_client is None:
-            raise ValueError(
-                "ToolServer requires either nats_url or nats_client; neither "
-                "was supplied"
-            )
+            raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
         self._nats_url = nats_url
         self._namespace = namespace
         self._pod_id = pod_id or str(uuid7())
@@ -954,9 +951,7 @@ class ToolServer:
         :rtype: bool
         :raises Exception: when namespace row deletion fails
         """
-        removed_keys = [
-            key for key in self._tools if key.startswith(f"{tool_name}@")
-        ]
+        removed_keys = [key for key in self._tools if key.startswith(f"{tool_name}@")]
         removed = self.unregister(tool_name)
         if removed and self._nc is not None:
             await self.publish_registration()
@@ -1001,7 +996,9 @@ class ToolServer:
         name = _tool_namespace_name(schema.name, schema.version)
         now = datetime.now(UTC)
         namespace_id = _tool_namespace_id(
-            schema.name, schema.version, self._agent_id,
+            schema.name,
+            schema.version,
+            self._agent_id,
         )
         # natural-identity metadata: the canonical ``name`` column is
         # sanitized (``tools.<sanitized-mcp>.<sanitized-version>``);
@@ -1041,14 +1038,8 @@ class ToolServer:
                     "tool_version": schema.version,
                     "namespace_name": name,
                     "namespace_id": str(namespace_id),
-                    "owner_agent_id": (
-                        str(self._agent_id) if self._agent_id is not None else None
-                    ),
-                    "customer_id": (
-                        str(self._customer_id)
-                        if self._customer_id is not None
-                        else None
-                    ),
+                    "owner_agent_id": (str(self._agent_id) if self._agent_id is not None else None),
+                    "customer_id": (str(self._customer_id) if self._customer_id is not None else None),
                 }
             },
         )
@@ -1084,7 +1075,9 @@ class ToolServer:
         for key in removed_keys:
             _, _, version = key.partition("@")
             namespace_id = _tool_namespace_id(
-                mcp_name, version, self._agent_id,
+                mcp_name,
+                version,
+                self._agent_id,
             )
             await self._namespace_collection.delete(namespace_id)
             log.info(
@@ -1398,9 +1391,7 @@ class ToolServer:
             action="call",
             outcome=outcome,
             correlation_id=correlation_id,
-            conversation_id=(
-                context.conversation_id if context is not None else None
-            ),
+            conversation_id=(context.conversation_id if context is not None else None),
             details=details,
         )
         try:
@@ -1461,11 +1452,7 @@ class ToolServer:
                 }
             },
         )
-        if (
-            self._context_factory is not None
-            and context.conversation_id is not None
-            and context.user_id is not None
-        ):
+        if self._context_factory is not None and context.conversation_id is not None and context.user_id is not None:
             context_manager = await self._context_factory(
                 context.conversation_id,
                 context.user_id,

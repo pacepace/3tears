@@ -395,7 +395,8 @@ class TestPartitionEnforcementSubclass:
                 return _PartitionedEntity
 
             async def find_by_conversation(
-                self, conversation_id: uuid.UUID,
+                self,
+                conversation_id: uuid.UUID,
             ) -> list[_PartitionedEntity]:
                 _ = conversation_id
                 return []
@@ -455,7 +456,10 @@ class TestPartitionEnforcementSubclass:
 
             @spans_partitions
             async def find_for_user_in_agents(
-                self, *, user_id: uuid.UUID, agent_ids: tuple[uuid.UUID, ...],
+                self,
+                *,
+                user_id: uuid.UUID,
+                agent_ids: tuple[uuid.UUID, ...],
             ) -> list[_PartitionedEntity]:
                 _ = user_id
                 _ = agent_ids
@@ -543,9 +547,12 @@ class TestSpansPartitionsDecorator:
         ``marker_only=True``.
         """
         with pytest.raises(PartitionEnforcementError, match="marker_only"):
+
             @spans_partitions
             async def list_with_filters(
-                self: Any, sql: str, params: list[Any],
+                self: Any,
+                sql: str,
+                params: list[Any],
             ) -> list[Any]:
                 _ = self
                 _ = sql
@@ -564,7 +571,9 @@ class TestSpansPartitionsDecorator:
 
         @spans_partitions(marker_only=True)
         async def list_with_filters(
-            self: Any, sql: str, params: list[Any],
+            self: Any,
+            sql: str,
+            params: list[Any],
         ) -> list[Any]:
             _ = self
             _ = sql
@@ -588,14 +597,16 @@ class TestSpansPartitionsDecorator:
 
         @spans_partitions(marker_only=True)
         async def list_with_filters(
-            sql: str, params: list[Any],
+            sql: str,
+            params: list[Any],
         ) -> int:
             _ = sql
             return len(params)
 
         # arbitrary arg shapes pass without TypeError on the guard
         result = await list_with_filters(
-            "SELECT 1", ["a", "b", "c"],
+            "SELECT 1",
+            ["a", "b", "c"],
         )
         assert result == 3
 
@@ -907,12 +918,14 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
         aware = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-        await coll.save_to_postgres({
-            "id": uuid.uuid4(),
-            "name": "x",
-            "date_created": aware,
-            "date_updated": aware,
-        })
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "name": "x",
+                "date_created": aware,
+                "date_updated": aware,
+            }
+        )
         args = pool.calls[0][2]
         # date_created at column index 2, date_updated at index 3
         assert args[2].tzinfo is UTC
@@ -937,12 +950,14 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
         naive = datetime(2026, 1, 2, 3, 4, 5)  # naive but logically UTC
-        await coll.save_to_postgres({
-            "id": uuid.uuid4(),
-            "name": "x",
-            "date_created": naive,
-            "date_updated": naive,
-        })
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "name": "x",
+                "date_created": naive,
+                "date_updated": naive,
+            }
+        )
         args = pool.calls[0][2]
         assert args[2].tzinfo is UTC
         assert args[2] == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)

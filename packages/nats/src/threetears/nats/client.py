@@ -406,7 +406,7 @@ class NatsClient:
                 timeout=drain_timeout.total_seconds(),
             )
             log.info("NATS drained and closed", extra={"extra_data": {"client_name": self._client_name}})
-        except (asyncio.TimeoutError, TimeoutError):
+        except asyncio.TimeoutError, TimeoutError:
             log.warning(
                 "NATS drain exceeded timeout; forcing close",
                 extra={
@@ -563,9 +563,7 @@ class NatsClient:
         try:
             await self._raw.publish(reply_subject, payload)
         except Exception as exc:
-            raise PublishError(
-                f"publish_raw_reply failed: subject={reply_subject}: {exc}"
-            ) from exc
+            raise PublishError(f"publish_raw_reply failed: subject={reply_subject}: {exc}") from exc
 
     async def _publish_bytes(
         self,
@@ -722,13 +720,9 @@ class NatsClient:
         try:
             raw_sub = await self._raw.subscribe(subject.path, queue=queue or "")
         except Exception as exc:
-            raise SubscribeError(
-                f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}"
-            ) from exc
+            raise SubscribeError(f"subscribe failed: subject={subject.path} queue={queue!r}: {exc}") from exc
 
-        semaphore: asyncio.Semaphore | None = (
-            asyncio.Semaphore(max_in_flight) if max_in_flight is not None else None
-        )
+        semaphore: asyncio.Semaphore | None = asyncio.Semaphore(max_in_flight) if max_in_flight is not None else None
 
         async def _dispatch_one(msg: "_NatsMsg") -> None:
             """process one message; deadletter on failure when enabled."""
@@ -844,7 +838,7 @@ class NatsClient:
         sub.dispatch_task.cancel()
         try:
             await sub.dispatch_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except asyncio.CancelledError, Exception:  # noqa: BLE001
             pass
         if sub in self._subscriptions:
             self._subscriptions.remove(sub)
@@ -879,9 +873,7 @@ class NatsClient:
         :raises RequestError: on timeout, no responders, transport failure, or response decode failure
         """
         payload = message.model_dump_json().encode("utf-8")
-        response_bytes = await self.request_raw(
-            subject=subject, payload=payload, timeout=timeout
-        )
+        response_bytes = await self.request_raw(subject=subject, payload=payload, timeout=timeout)
         try:
             return response_type.model_validate_json(response_bytes)
         except ValidationError as exc:
@@ -909,25 +901,17 @@ class NatsClient:
         :raises RequestError: on timeout, no responders, transport failure
         """
         try:
-            msg = await self._raw.request(
-                subject.path, payload, timeout=timeout.total_seconds()
-            )
+            msg = await self._raw.request(subject.path, payload, timeout=timeout.total_seconds())
         except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
             raise RequestError(
                 f"request timed out: subject={subject.path} timeout={timeout.total_seconds():.1f}s"
             ) from exc
         except _NatsNoRespondersError as exc:
-            raise RequestError(
-                f"no responders for subject: subject={subject.path}"
-            ) from exc
+            raise RequestError(f"no responders for subject: subject={subject.path}") from exc
         except _NatsConnectionClosedError as exc:
-            raise RequestError(
-                f"NATS connection closed during request: subject={subject.path}"
-            ) from exc
+            raise RequestError(f"NATS connection closed during request: subject={subject.path}") from exc
         except Exception as exc:
-            raise RequestError(
-                f"request failed: subject={subject.path}: {exc}"
-            ) from exc
+            raise RequestError(f"request failed: subject={subject.path}: {exc}") from exc
         return bytes(msg.data)
 
     # ------------------------------------------------------------------
@@ -1078,9 +1062,7 @@ async def _establish_connection(
     try:
         nc: _NatsPyClient = await nats.connect(servers, **options)
     except Exception as exc:
-        raise NatsClientError(
-            f"failed to connect to NATS at {primary_url}: {exc}"
-        ) from exc
+        raise NatsClientError(f"failed to connect to NATS at {primary_url}: {exc}") from exc
     return nc
 
 
@@ -1100,9 +1082,7 @@ async def _verify_jetstream(nc: _NatsPyClient, primary_url: str) -> None:
         await asyncio.wait_for(js.account_info(), timeout=10.0)
     except Exception as exc:
         await nc.close()
-        raise NatsClientError(
-            f"NATS JetStream not available at {primary_url}: {exc}"
-        ) from exc
+        raise NatsClientError(f"NATS JetStream not available at {primary_url}: {exc}") from exc
 
 
 async def _on_reconnected() -> None:

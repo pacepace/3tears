@@ -141,9 +141,7 @@ async def test_fs_read_happy_returns_content_sha_version(
         sha256="a" * 64,
         version=2,
     )
-    tool, files, sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
-    )
+    tool, files, sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(relative_path="docs/readme.md", workspace="ws")
 
@@ -194,9 +192,7 @@ async def test_fs_read_missing_file_returns_clean_error(
 ) -> None:
     """file not in head-state returns ToolResult.success=False."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="missing.md", workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -237,9 +233,7 @@ async def test_fs_read_unknown_workspace_name_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """unknown workspace name returns ToolResult.success=False."""
-    tool, _files, _sandbox, _ = _build_tool(
-        workspace_entities=[], acl_cache=permissive_acl_cache
-    )
+    tool, _files, _sandbox, _ = _build_tool(workspace_entities=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="x", workspace="ghost")
     assert result.success is False
     assert result.error is not None

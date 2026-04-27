@@ -167,9 +167,7 @@ class ConversationWriteBuffer:
         self._collection = collection
         self._flush_interval_seconds = flush_interval_seconds
         self._flush_threshold = flush_threshold_messages
-        self._deltas: dict[
-            tuple[UUID, UUID], _ConversationDelta
-        ] = {}
+        self._deltas: dict[tuple[UUID, UUID], _ConversationDelta] = {}
         self._lock = asyncio.Lock()
         self._running_count = 0
         self._timer_task: asyncio.Task[None] | None = None
@@ -248,11 +246,7 @@ class ConversationWriteBuffer:
         """
         if self._stopped:
             return
-        normalized = (
-            at.astimezone(UTC).replace(tzinfo=None)
-            if at.tzinfo
-            else at
-        )
+        normalized = at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo else at
         key = (agent_id, conversation_id)
         async with self._lock:
             delta = self._deltas.get(key)
@@ -291,9 +285,11 @@ class ConversationWriteBuffer:
             return
         log.debug(
             "conversation write buffer flush",
-            extra={"extra_data": {
-                "delta_count": len(pending),
-            }},
+            extra={
+                "extra_data": {
+                    "delta_count": len(pending),
+                }
+            },
         )
         for delta in pending.values():
             try:
@@ -302,11 +298,13 @@ class ConversationWriteBuffer:
                 log.warning(
                     "conversation write buffer apply failed (soft-fail): %s",
                     exc,
-                    extra={"extra_data": {
-                        "agent_id": str(delta.agent_id),
-                        "conversation_id": str(delta.conversation_id),
-                        "increment": delta.increment,
-                    }},
+                    extra={
+                        "extra_data": {
+                            "agent_id": str(delta.agent_id),
+                            "conversation_id": str(delta.conversation_id),
+                            "increment": delta.increment,
+                        }
+                    },
                 )
 
     async def _apply_delta(self, delta: _ConversationDelta) -> None:
@@ -330,15 +328,18 @@ class ConversationWriteBuffer:
         if entity is None:
             log.debug(
                 "conversation write buffer: missing entity at flush; dropping",
-                extra={"extra_data": {
-                    "agent_id": str(delta.agent_id),
-                    "conversation_id": str(delta.conversation_id),
-                }},
+                extra={
+                    "extra_data": {
+                        "agent_id": str(delta.agent_id),
+                        "conversation_id": str(delta.conversation_id),
+                    }
+                },
             )
             return
         for _ in range(delta.increment):
             entity.record_message(
-                delta.latest_at, delta.latest_role or "unknown",
+                delta.latest_at,
+                delta.latest_role or "unknown",
             )
         await self._collection.save_entity(entity)
 

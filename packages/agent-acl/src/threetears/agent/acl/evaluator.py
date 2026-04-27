@@ -282,19 +282,14 @@ async def evaluate_file_access(
     """
     if direction not in ("read", "write"):
         raise ValueError(
-            f"evaluate_file_access direction must be 'read' or 'write', "
-            f"got {direction!r}",
+            f"evaluate_file_access direction must be 'read' or 'write', got {direction!r}",
         )
     if user_id is None and agent_id is None:
         raise ValueError(
             "evaluate_file_access requires at least one of user_id or agent_id",
         )
 
-    prefix = (
-        READ_FILE_MATCHING_PREFIX
-        if direction == "read"
-        else WRITE_FILE_MATCHING_PREFIX
-    )
+    prefix = READ_FILE_MATCHING_PREFIX if direction == "read" else WRITE_FILE_MATCHING_PREFIX
     # ``ctx.action`` is a sentinel stem — decision bool from
     # :func:`evaluate_with_trail` is ignored. what matters is
     # action-set surfaces: :attr:`EvaluationResult.user_actions`,
@@ -343,7 +338,7 @@ async def evaluate_file_access(
     for action in action_strings:
         if not action.startswith(prefix):
             continue
-        glob = action[len(prefix):]
+        glob = action[len(prefix) :]
         if not glob:
             continue
         if posix_path.full_match(glob):
@@ -458,7 +453,8 @@ async def _resolve_side(
     """
     actor_kind = "user" if member_type == MemberType.USER else "agent"
     membership_key = ActorMembershipKey(
-        actor_kind=actor_kind, actor_id=actor_id,
+        actor_kind=actor_kind,
+        actor_id=actor_id,
     )
     membership_entry = cache.get_membership(membership_key)
     if membership_entry is not None:
@@ -489,7 +485,8 @@ async def _resolve_side(
     trails_acc: list[Trail] = []
     for group_id in eligible_group_ids:
         ns_key = GroupNamespaceKey(
-            group_id=group_id, namespace_id=namespace.id,
+            group_id=group_id,
+            namespace_id=namespace.id,
         )
         ns_entry = cache.get_group_namespace(ns_key)
         if ns_entry is not None:
@@ -605,10 +602,7 @@ def _filter_memberships(
             continue
         if membership.member_type != member_type:
             continue
-        if (
-            membership.customer_id is not None
-            and membership.customer_id != namespace.customer_id
-        ):
+        if membership.customer_id is not None and membership.customer_id != namespace.customer_id:
             continue
         surviving.append(membership)
     return tuple(surviving)
@@ -665,16 +659,15 @@ def _walk_assignments(
         if group is None:
             log.debug(
                 "skipping assignment with unresolved group",
-                extra={"extra_data": {
-                    "assignment_id": str(assignment.id),
-                    "group_id": str(assignment.group_id),
-                }},
+                extra={
+                    "extra_data": {
+                        "assignment_id": str(assignment.id),
+                        "group_id": str(assignment.group_id),
+                    }
+                },
             )
             continue
-        if (
-            group.customer_id is not None
-            and group.customer_id != namespace.customer_id
-        ):
+        if group.customer_id is not None and group.customer_id != namespace.customer_id:
             # group is customer-scoped to a different customer; an
             # assignment it holds cannot reach this namespace.
             continue
@@ -682,10 +675,12 @@ def _walk_assignments(
         if role is None:
             log.debug(
                 "skipping assignment with unresolved role",
-                extra={"extra_data": {
-                    "assignment_id": str(assignment.id),
-                    "role_id": str(assignment.role_id),
-                }},
+                extra={
+                    "extra_data": {
+                        "assignment_id": str(assignment.id),
+                        "role_id": str(assignment.role_id),
+                    }
+                },
             )
             continue
         contributed = role.actions_for(namespace.namespace_type)
@@ -723,11 +718,7 @@ def _coerce_groups(raw: dict[UUID, object]) -> dict[UUID, Group]:
     for group_id, value in raw.items():
         if isinstance(value, Group):
             result[group_id] = value
-        elif (
-            hasattr(value, "id")
-            and hasattr(value, "name")
-            and hasattr(value, "customer_id")
-        ):
+        elif hasattr(value, "id") and hasattr(value, "name") and hasattr(value, "customer_id"):
             result[group_id] = Group(
                 id=value.id,
                 name=value.name,
@@ -815,9 +806,7 @@ def _assemble_result(
     agent_trails_out: tuple[Trail, ...]
 
     if has_user and has_agent:
-        if not user_actions or (
-            not agent_actions and not agent_owner_short_circuited
-        ):
+        if not user_actions or (not agent_actions and not agent_owner_short_circuited):
             effective = frozenset()
             limiting = LimitingSide.NEITHER
         else:
@@ -862,7 +851,9 @@ def _assemble_result(
         agent_actions=_materialize_agent_actions(
             agent_actions=agent_actions,
             short_circuited=agent_owner_short_circuited,
-        ) if has_agent else frozenset(),
+        )
+        if has_agent
+        else frozenset(),
         limiting_side=limiting,
         user_trails=user_trails_out,
         agent_trails=agent_trails_out,

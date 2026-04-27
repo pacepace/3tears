@@ -145,7 +145,8 @@ class _FakeMembershipLoader:
         self._agents = agents or {}
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return user fixture memberships.
 
@@ -157,7 +158,8 @@ class _FakeMembershipLoader:
         return self._users.get(user_id, ())
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return agent fixture memberships.
 
@@ -214,7 +216,8 @@ class _FakeGrantLoader:
         return tuple(out)
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """return role mapping for every supplied role id.
 
@@ -226,7 +229,8 @@ class _FakeGrantLoader:
         return {rid: self._roles[rid] for rid in role_ids if rid in self._roles}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, Any]:
         """return group mapping for every supplied group id.
 
@@ -235,9 +239,7 @@ class _FakeGrantLoader:
         :return: group mapping subset
         :rtype: dict[UUID, Any]
         """
-        return {
-            gid: self._groups[gid] for gid in group_ids if gid in self._groups
-        }
+        return {gid: self._groups[gid] for gid in group_ids if gid in self._groups}
 
 
 class TestRbacEvaluatorAuthorizer:
@@ -309,7 +311,10 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.calc", "1.0",
+            str(agent_id),
+            str(user_id),
+            "aibots.calc",
+            "1.0",
         )
         assert result is True
 
@@ -334,7 +339,10 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.calc", "1.0",
+            str(agent_id),
+            str(user_id),
+            "aibots.calc",
+            "1.0",
         )
         assert result is False
 
@@ -358,7 +366,10 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), None, "aibots.calc", "1.0",
+            str(agent_id),
+            None,
+            "aibots.calc",
+            "1.0",
         )
         assert result is False
 
@@ -374,7 +385,10 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "aibots.unknown", "1.0",
+            str(agent_id),
+            str(user_id),
+            "aibots.unknown",
+            "1.0",
         )
         assert result is False
 
@@ -399,7 +413,10 @@ class TestRbacEvaluatorAuthorizer:
 
         # no memberships => no assignments => deny, even on platform tool
         result = await authorizer.is_authorized(
-            str(agent_id), str(user_id), "platform.time.now", "1.0",
+            str(agent_id),
+            str(user_id),
+            "platform.time.now",
+            "1.0",
         )
         assert result is False
 
@@ -423,7 +440,10 @@ class TestRbacEvaluatorAuthorizer:
         )
 
         result = await authorizer.is_authorized(
-            "not-a-uuid", str(user_id), "aibots.calc", "1.0",
+            "not-a-uuid",
+            str(user_id),
+            "aibots.calc",
+            "1.0",
         )
         assert result is False
 

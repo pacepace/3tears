@@ -159,7 +159,9 @@ def _has_replay_guard(literal: str, column: str) -> bool:
     # extract the WHERE clause text -- everything after the first WHERE
     # token until the end of the statement / DO block.
     where_match = re.search(
-        r"\bWHERE\b(.*)", literal, re.IGNORECASE | re.DOTALL,
+        r"\bWHERE\b(.*)",
+        literal,
+        re.IGNORECASE | re.DOTALL,
     )
     if where_match is None:
         return False
@@ -183,10 +185,7 @@ def _has_replay_guard(literal: str, column: str) -> bool:
         rf"\b{column_re}\s*=\s*",
         rf"\b{column_re}\s+IS\s+DISTINCT\s+FROM\b",
     )
-    result = any(
-        re.search(p, where_clause, re.IGNORECASE | re.DOTALL)
-        for p in patterns
-    )
+    result = any(re.search(p, where_clause, re.IGNORECASE | re.DOTALL) for p in patterns)
     return result
 
 
@@ -276,10 +275,7 @@ class MigrationViolation:
         :return: ``"<path>:<line>: [<rule>] <message>"``
         :rtype: str
         """
-        result = (
-            f"{self.path}:{self.lineno}: [{self.rule}] {self.message} "
-            f"-- {self.literal_excerpt!r}"
-        )
+        result = f"{self.path}:{self.lineno}: [{self.rule}] {self.message} -- {self.literal_excerpt!r}"
         return result
 
 
@@ -326,11 +322,7 @@ def _collect_docstring_ids(tree: ast.AST) -> set[int]:
         if not node.body:
             continue
         first = node.body[0]
-        if (
-            isinstance(first, ast.Expr)
-            and isinstance(first.value, ast.Constant)
-            and isinstance(first.value.value, str)
-        ):
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
             docstring_ids.add(id(first.value))
     return docstring_ids
 
@@ -412,10 +404,7 @@ def _is_sql_literal(literal: str) -> bool:
     stripped = literal.lstrip()
     upper = stripped.upper()
     # tolerate a leading SQL comment / DECLARE block.
-    result = any(
-        upper.startswith(tok + " ") or upper.startswith(tok + "\n")
-        for tok in _SQL_LEADING_TOKENS
-    )
+    result = any(upper.startswith(tok + " ") or upper.startswith(tok + "\n") for tok in _SQL_LEADING_TOKENS)
     return result
 
 
@@ -571,9 +560,14 @@ def _evaluate_m3_idempotency(
     result: MigrationViolation | None = None
     # DO block with an EXISTS / NOT EXISTS guard is an accepted shape.
     if _DO_BLOCK_PATTERN.search(literal) is not None:
-        if re.search(
-            r"\b(?:NOT\s+)?EXISTS\s*\(", literal, re.IGNORECASE,
-        ) is not None:
+        if (
+            re.search(
+                r"\b(?:NOT\s+)?EXISTS\s*\(",
+                literal,
+                re.IGNORECASE,
+            )
+            is not None
+        ):
             return result
     matches = []
     if _CREATE_TABLE_PATTERN.search(literal) is not None:
@@ -713,29 +707,22 @@ def find_migration_violations(
     except SyntaxError:
         return violations
     path_str = str(path)
-    sql_literals = [
-        (lit, lineno)
-        for lit, lineno in _collect_string_literals(tree)
-        if _is_sql_literal(lit)
-    ]
+    sql_literals = [(lit, lineno) for lit, lineno in _collect_string_literals(tree) if _is_sql_literal(lit)]
     # file-level: M-4 is suppressed when a sibling literal in the same
     # file carries a UNIQUE clause (the partition primitive's standard
     # split shape).
-    file_has_unique = any(
-        _UNIQUE_PATTERN.search(lit) is not None
-        for lit, _ in sql_literals
-    )
+    file_has_unique = any(_UNIQUE_PATTERN.search(lit) is not None for lit, _ in sql_literals)
     for literal, lineno in sql_literals:
-        per_literal_evaluators: tuple[
-            tuple[str, MigrationViolation | None], ...
-        ] = (
+        per_literal_evaluators: tuple[tuple[str, MigrationViolation | None], ...] = (
             ("m1", _evaluate_m1_ddl_dml_mixing(literal, path, lineno)),
             ("m2", _evaluate_m2_replay_guard(literal, path, lineno)),
             ("m3", _evaluate_m3_idempotency(literal, path, lineno)),
             (
                 "m4",
                 _evaluate_m4_pk_unique(
-                    literal, path, lineno,
+                    literal,
+                    path,
+                    lineno,
                     file_has_unique=file_has_unique,
                 ),
             ),
@@ -767,7 +754,8 @@ def walk_migration_directory(
             if path.name == "__init__.py":
                 continue
             file_violations = find_migration_violations(
-                path, exemptions=config.exemptions,
+                path,
+                exemptions=config.exemptions,
             )
             violations.extend(file_violations)
     return violations
@@ -812,7 +800,7 @@ def load_exemptions(
         if not rationale_part.lower().startswith("rationale:"):
             missing.append(raw_line)
             continue
-        rationale_text = rationale_part[len("rationale:"):].strip()
+        rationale_text = rationale_part[len("rationale:") :].strip()
         if not rationale_text:
             missing.append(raw_line)
             continue

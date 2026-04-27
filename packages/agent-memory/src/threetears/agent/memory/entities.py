@@ -68,7 +68,9 @@ class MemoryEntity(BaseEntity):
         super().__init__(data, is_new=is_new, collection=collection)
         if "agent_id" in data and "memory_id" in data:
             object.__setattr__(
-                self, "_id", (data["agent_id"], data["memory_id"]),
+                self,
+                "_id",
+                (data["agent_id"], data["memory_id"]),
             )
 
     @property
@@ -241,7 +243,9 @@ class MediaEntity(BaseEntity):
         super().__init__(data, is_new=is_new, collection=collection)
         if "agent_id" in data and "media_id" in data:
             object.__setattr__(
-                self, "_id", (data["agent_id"], data["media_id"]),
+                self,
+                "_id",
+                (data["agent_id"], data["media_id"]),
             )
 
     @property
@@ -422,7 +426,9 @@ class MediaContentEntity(BaseEntity):
         super().__init__(data, is_new=is_new, collection=collection)
         if "agent_id" in data and "content_id" in data:
             object.__setattr__(
-                self, "_id", (data["agent_id"], data["content_id"]),
+                self,
+                "_id",
+                (data["agent_id"], data["content_id"]),
             )
 
     @property
@@ -642,7 +648,9 @@ class MemoryChunkEntity(BaseEntity):
         super().__init__(data, is_new=is_new, collection=collection)
         if "agent_id" in data and "chunk_id" in data:
             object.__setattr__(
-                self, "_id", (data["agent_id"], data["chunk_id"]),
+                self,
+                "_id",
+                (data["agent_id"], data["chunk_id"]),
             )
 
     @property
@@ -894,7 +902,9 @@ class MemoryRefEntity(BaseEntity):
         """
         super().__init__(data, is_new=is_new, collection=collection)
         object.__setattr__(
-            self, "_id", (data["conversation_id"], data["item_id"]),
+            self,
+            "_id",
+            (data["conversation_id"], data["item_id"]),
         )
 
     @property

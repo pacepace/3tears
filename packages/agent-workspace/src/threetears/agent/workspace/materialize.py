@@ -1228,18 +1228,12 @@ async def _capture_back(
                 _scope = _current_scope()
                 if _scope is None:
                     raise RuntimeError(
-                        "workspace.materialize audit: no ToolCallScope "
-                        "installed; bind must run under enter_call_scope."
+                        "workspace.materialize audit: no ToolCallScope installed; bind must run under enter_call_scope."
                     )
                 _ctx = _scope.context
-                if (
-                    _ctx.user_id is None
-                    or _ctx.agent_id is None
-                    or _ctx.customer_id is None
-                ):
+                if _ctx.user_id is None or _ctx.agent_id is None or _ctx.customer_id is None:
                     raise RuntimeError(
-                        "workspace.materialize audit: scope missing "
-                        "identity dimension; cannot publish envelope."
+                        "workspace.materialize audit: scope missing identity dimension; cannot publish envelope."
                     )
                 for rel in changed:
                     event = AuditEvent(

@@ -179,6 +179,7 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
         namespace_id=workspace.id,
     )
 
+
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 
@@ -279,9 +280,7 @@ class Sha256Mismatch(RuntimeError):
         super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
 
 
-_SELECT_NAMESPACE_CUSTOMER_SQL = (
-    "SELECT customer_id FROM platform.namespaces WHERE id = $1"
-)
+_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM platform.namespaces WHERE id = $1"
 
 
 async def authorize_workspace(
@@ -806,10 +805,7 @@ async def _resolve_ref(
     # ``tx_id``; connections without that attribute (raw asyncpg) are
     # always outside-tx so the kwarg flows through.
     inside_tx = getattr(conn, "tx_id", None) is not None
-    kwargs: dict[str, Any] = (
-        {} if inside_tx or namespace_name is None
-        else {"namespace": namespace_name}
-    )
+    kwargs: dict[str, Any] = {} if inside_tx or namespace_name is None else {"namespace": namespace_name}
     result: dict[str, Any] | None
     row: Any
     if isinstance(ref, int):

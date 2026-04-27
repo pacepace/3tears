@@ -25,7 +25,8 @@ class TestMembershipInvalidatePayload:
     def test_roundtrip_user(self) -> None:
         actor_id = uuid7()
         payload = MembershipInvalidatePayload(
-            actor_type="user", actor_id=actor_id,
+            actor_type="user",
+            actor_id=actor_id,
         )
         wire = payload.model_dump_json()
         decoded = MembershipInvalidatePayload.model_validate_json(wire)
@@ -35,7 +36,8 @@ class TestMembershipInvalidatePayload:
     def test_roundtrip_agent(self) -> None:
         actor_id = uuid7()
         payload = MembershipInvalidatePayload(
-            actor_type="agent", actor_id=actor_id,
+            actor_type="agent",
+            actor_id=actor_id,
         )
         wire = payload.model_dump_json()
         decoded = MembershipInvalidatePayload.model_validate_json(wire)
@@ -44,15 +46,14 @@ class TestMembershipInvalidatePayload:
     def test_rejects_unknown_actor_type(self) -> None:
         with pytest.raises(ValidationError):
             MembershipInvalidatePayload(
-                actor_type="device", actor_id=uuid7(),  # type: ignore[arg-type]
+                actor_type="device",
+                actor_id=uuid7(),  # type: ignore[arg-type]
             )
 
     def test_actor_id_is_uuid_after_validate(self) -> None:
         """deserialized ``actor_id`` is real :class:`UUID`."""
         actor_id = uuid7()
-        wire = (
-            '{"actor_type":"user","actor_id":"' + str(actor_id) + '"}'
-        )
+        wire = '{"actor_type":"user","actor_id":"' + str(actor_id) + '"}'
         decoded = MembershipInvalidatePayload.model_validate_json(wire)
         assert isinstance(decoded.actor_id, UUID)
 

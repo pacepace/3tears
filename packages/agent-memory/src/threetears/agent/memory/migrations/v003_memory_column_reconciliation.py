@@ -74,30 +74,22 @@ END
 $$
 """
 
-_DROP_EMBEDDING_MODEL_SQL = (
-    "ALTER TABLE memories DROP COLUMN IF EXISTS embedding_model"
-)
+_DROP_EMBEDDING_MODEL_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS embedding_model"
 
 _DROP_IMPORTANCE_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS importance"
 
 _DROP_METADATA_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS metadata"
 
-_DROP_DATE_ACCESSED_SQL = (
-    "ALTER TABLE memories DROP COLUMN IF EXISTS date_accessed"
-)
+_DROP_DATE_ACCESSED_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS date_accessed"
 
 # agent_id / customer_id were declared NOT NULL in v001 but the code
 # (``tools.load_add_memory_tool``, ``extraction.MemoryExtractor.extract``)
 # treats them as optional scoping tags. Loosen the NOT NULL so the code
 # paths that legitimately omit them do not fail. The code still scopes
 # against them when present.
-_ALTER_AGENT_ID_NULLABLE_SQL = (
-    "ALTER TABLE memories ALTER COLUMN agent_id DROP NOT NULL"
-)
+_ALTER_AGENT_ID_NULLABLE_SQL = "ALTER TABLE memories ALTER COLUMN agent_id DROP NOT NULL"
 
-_ALTER_CUSTOMER_ID_NULLABLE_SQL = (
-    "ALTER TABLE memories ALTER COLUMN customer_id DROP NOT NULL"
-)
+_ALTER_CUSTOMER_ID_NULLABLE_SQL = "ALTER TABLE memories ALTER COLUMN customer_id DROP NOT NULL"
 
 
 async def reconcile_memory_columns(store: DataStore) -> None:

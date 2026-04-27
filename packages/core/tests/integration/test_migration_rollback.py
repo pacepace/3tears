@@ -216,9 +216,7 @@ def _build_composed_agent_runner() -> MigrationRunner:
 class TestScenarioA_FreshApply:
     """apply composed migrations against a fresh schema then re-apply."""
 
-    async def test_fresh_apply_creates_every_table(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_fresh_apply_creates_every_table(self, pg_schema: tuple[str, str]) -> None:
         """
         every registered package contributes at least one live table.
 
@@ -234,9 +232,7 @@ class TestScenarioA_FreshApply:
             count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
             assert count > 0
             # _schema_migrations row count must match applied count
-            rows = await conn.fetch(
-                f'SELECT version, package FROM "{schema}"._schema_migrations'
-            )
+            rows = await conn.fetch(f'SELECT version, package FROM "{schema}"._schema_migrations')
             assert len(rows) == count
             # re-apply is a no-op
             count2 = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
@@ -248,9 +244,7 @@ class TestScenarioA_FreshApply:
 class TestScenarioB_MidSequenceRollback:
     """an injected failing migration halts apply and preserves prior work."""
 
-    async def test_failure_halts_apply_and_preserves_previous_work(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_failure_halts_apply_and_preserves_previous_work(self, pg_schema: tuple[str, str]) -> None:
         """
         inject a broken v99 on conversations; assert v99 is NOT recorded,
         earlier-successful migrations ARE recorded, and the failure
@@ -283,15 +277,13 @@ class TestScenarioB_MidSequenceRollback:
 
             # the failing version must NOT be present in bookkeeping
             rows = await conn.fetch(
-                f'SELECT version FROM "{schema}"._schema_migrations '
-                f"WHERE package = 'conversations' AND version = 99"
+                f"SELECT version FROM \"{schema}\"._schema_migrations WHERE package = 'conversations' AND version = 99"
             )
             assert rows == []
 
             # earlier conversations migrations should have been recorded
             rows = await conn.fetch(
-                f'SELECT version FROM "{schema}"._schema_migrations '
-                f"WHERE package = 'conversations' ORDER BY version"
+                f"SELECT version FROM \"{schema}\"._schema_migrations WHERE package = 'conversations' ORDER BY version"
             )
             versions = [r["version"] for r in rows]
             assert 1 in versions
@@ -309,9 +301,7 @@ class TestScenarioB_MidSequenceRollback:
 class TestScenarioC_Downgrade:
     """downgrade --steps 1 reverts DDL and bookkeeping for the newest migration."""
 
-    async def test_downgrade_one_step_reverts_schema_and_bookkeeping(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_downgrade_one_step_reverts_schema_and_bookkeeping(self, pg_schema: tuple[str, str]) -> None:
         """
         build a toy two-version package with matching upgrades + downgrades,
         apply both, downgrade one step, assert the v2 table is gone and
@@ -363,7 +353,9 @@ class TestScenarioC_Downgrade:
 
             # downgrade one step: demo_b is gone, demo_a remains
             count = await runner.downgrade_for_scope(
-                store, MigrationScope.AGENT, steps=1  # type: ignore[arg-type]
+                store,
+                MigrationScope.AGENT,
+                steps=1,  # type: ignore[arg-type]
             )
             assert count == 1
             rows = await conn.fetch(
@@ -375,8 +367,7 @@ class TestScenarioC_Downgrade:
             assert remaining == {"demo_a"}
             # bookkeeping row for v2 is gone
             rows = await conn.fetch(
-                f'SELECT version FROM "{schema}"._schema_migrations '
-                f"WHERE package = 'demo' ORDER BY version"
+                f"SELECT version FROM \"{schema}\"._schema_migrations WHERE package = 'demo' ORDER BY version"
             )
             assert [r["version"] for r in rows] == [1]
         finally:
@@ -386,9 +377,7 @@ class TestScenarioC_Downgrade:
 class TestDriftDetection:
     """`check` logic catches hand-DDL columns added after apply."""
 
-    async def test_drift_detects_hand_added_column(
-        self, pg_schema: tuple[str, str]
-    ) -> None:
+    async def test_drift_detects_hand_added_column(self, pg_schema: tuple[str, str]) -> None:
         """
         apply the composed runner, hand-INSERT a column the runner did
         not declare, assert the drift diff reports the extra column.
@@ -411,9 +400,7 @@ class TestDriftDetection:
             await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
 
             # hand-add a column to one of the runner-created tables
-            await conn.execute(
-                "ALTER TABLE conversations ADD COLUMN rogue_col TEXT"
-            )
+            await conn.execute("ALTER TABLE conversations ADD COLUMN rogue_col TEXT")
 
             # collect expected DDL via preview against an empty shim
             # so every migration's DDL is captured
@@ -424,14 +411,13 @@ class TestDriftDetection:
                     """no-op execute during preview."""
                     return "NOOP"
 
-                async def query(
-                    self, sql: str, *params: Any
-                ) -> list[dict[str, Any]]:
+                async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
                     """return empty rows for bookkeeping SELECTs."""
                     return []
 
             preview = await runner.preview_for_scope(
-                _EmptyStore(), MigrationScope.AGENT  # type: ignore[arg-type]
+                _EmptyStore(),
+                MigrationScope.AGENT,  # type: ignore[arg-type]
             )
             expected = parse_ddl_to_expected(preview.captured_ddl())
             live = await snapshot_live_schema(store)
@@ -443,9 +429,7 @@ class TestDriftDetection:
             data = report.as_dict()
             assert data["clean"] is False
             assert any(
-                entry["table"] == "conversations"
-                and entry["column"] == "rogue_col"
-                for entry in data["extra_columns"]
+                entry["table"] == "conversations" and entry["column"] == "rogue_col" for entry in data["extra_columns"]
             )
         finally:
             await conn.close()

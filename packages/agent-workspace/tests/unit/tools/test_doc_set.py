@@ -410,9 +410,7 @@ async def test_doc_set_unknown_format_returns_clean_error(
         sha256="b" * 64,
         version=1,
     )
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[file_entity], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="notes.txt",
@@ -441,9 +439,7 @@ async def test_doc_set_missing_file_returns_clean_error(
 ) -> None:
     """no head row -> clean error naming file and workspace, no writes."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
 
     result = await tool.execute(
         relative_path="audience_settings.yaml",

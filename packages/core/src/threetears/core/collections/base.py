@@ -722,7 +722,10 @@ class BaseCollection(ABC, Generic[EntityT]):
 
     @traced()
     async def save_entity(
-        self, entity: BaseEntity, *, conn: Any = None,
+        self,
+        entity: BaseEntity,
+        *,
+        conn: Any = None,
     ) -> None:
         """save entity through the three-tier write path.
 
@@ -777,11 +780,14 @@ class BaseCollection(ABC, Generic[EntityT]):
         else:
             if conn is not None:
                 rows_affected = await self.save_to_postgres(
-                    data, original_timestamp, conn=conn,
+                    data,
+                    original_timestamp,
+                    conn=conn,
                 )
             else:
                 rows_affected = await self.save_to_postgres(
-                    data, original_timestamp,
+                    data,
+                    original_timestamp,
                 )
             if rows_affected == 0:
                 if entity.is_new:

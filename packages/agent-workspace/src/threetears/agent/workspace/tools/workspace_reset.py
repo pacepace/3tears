@@ -94,8 +94,7 @@ INSERT INTO workspace_file_versions (
 """
 
 _UPDATE_WORKSPACE_VERSION_SQL = (
-    "UPDATE workspaces SET current_version = $1, date_updated = $2 "
-    "WHERE id = $3 AND agent_id = $4"
+    "UPDATE workspaces SET current_version = $1, date_updated = $2 WHERE id = $3 AND agent_id = $4"
 )
 
 

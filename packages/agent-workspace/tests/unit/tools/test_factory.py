@@ -48,13 +48,15 @@ class _NoopMembershipLoader:
     """membership loader stub yielding empty memberships."""
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         del user_id
         return ()
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         del agent_id
         return ()
@@ -72,13 +74,15 @@ class _NoopGrantLoader:
         return ()
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         del role_ids
         return {}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         del group_ids
         return {}

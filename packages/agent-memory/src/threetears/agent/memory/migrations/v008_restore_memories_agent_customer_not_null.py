@@ -47,13 +47,9 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_SET_AGENT_ID_NOT_NULL_SQL = (
-    "ALTER TABLE memories ALTER COLUMN agent_id SET NOT NULL"
-)
+_SET_AGENT_ID_NOT_NULL_SQL = "ALTER TABLE memories ALTER COLUMN agent_id SET NOT NULL"
 
-_SET_CUSTOMER_ID_NOT_NULL_SQL = (
-    "ALTER TABLE memories ALTER COLUMN customer_id SET NOT NULL"
-)
+_SET_CUSTOMER_ID_NOT_NULL_SQL = "ALTER TABLE memories ALTER COLUMN customer_id SET NOT NULL"
 
 
 async def restore_memories_agent_customer_not_null(store: DataStore) -> None:

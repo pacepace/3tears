@@ -78,51 +78,57 @@ MODE_STRICT = "strict"
 # bulk refactors; production and CI pipelines run strict.
 _DEFAULT_MODE = MODE_STRICT
 
-_SKIP_DIRS = frozenset({
-    ".venv",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    "__pycache__",
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    ".eggs",
-    "_build",
-})
+_SKIP_DIRS = frozenset(
+    {
+        ".venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".eggs",
+        "_build",
+    }
+)
 
 
 # allowed construction sites for SQLiteBackend (paths relative to repo
 # root). every other site is a violation. each entry carries a short
 # inline rationale documenting why the site is sanctioned.
-_ALLOWED_SQLITE_CONSTRUCTION_SITES: frozenset[str] = frozenset({
-    # namespace-task-01 phase 8.5l-3: the registry process gained its
-    # first L1 tier for :class:`HeartbeatCollection`. the sanctioned
-    # construction site is the per-process factory. every other site
-    # is a bespoke wrapper in disguise. tests and test fixtures are
-    # permitted to construct backends directly; they cover the
-    # Collection-behavior tests that need a clean SQLite tier.
-    "packages/registry/src/threetears/registry/l1_cache.py",
-})
+_ALLOWED_SQLITE_CONSTRUCTION_SITES: frozenset[str] = frozenset(
+    {
+        # namespace-task-01 phase 8.5l-3: the registry process gained its
+        # first L1 tier for :class:`HeartbeatCollection`. the sanctioned
+        # construction site is the per-process factory. every other site
+        # is a bespoke wrapper in disguise. tests and test fixtures are
+        # permitted to construct backends directly; they cover the
+        # Collection-behavior tests that need a clean SQLite tier.
+        "packages/registry/src/threetears/registry/l1_cache.py",
+    }
+)
 
 
 # tables defined in migrations that legitimately lack Collections.
 # bookkeeping tables, extension-created tables, etc. keep this list
 # tiny and document every entry.
-_MIGRATION_TABLE_ALLOWLIST: frozenset[str] = frozenset({
-    # internal migration runner state — not a business entity
-    "_schema_migrations",
-    # checkpoints / checkpoint_writes are accessed via
-    # ``threetears.langgraph.ThreeTierCheckpointSaver`` (LangGraph
-    # ``BaseCheckpointSaver`` contract). the LangGraph interface is
-    # sync-and-async and mandates shape details that cannot be
-    # expressed through ``BaseCollection``. 3tears wraps the three-tier
-    # backend under the LangGraph contract so the platform gets L1/L2/L3
-    # while satisfying LangGraph.
-    "checkpoints",
-    "checkpoint_writes",
-})
+_MIGRATION_TABLE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # internal migration runner state — not a business entity
+        "_schema_migrations",
+        # checkpoints / checkpoint_writes are accessed via
+        # ``threetears.langgraph.ThreeTierCheckpointSaver`` (LangGraph
+        # ``BaseCheckpointSaver`` contract). the LangGraph interface is
+        # sync-and-async and mandates shape details that cannot be
+        # expressed through ``BaseCollection``. 3tears wraps the three-tier
+        # backend under the LangGraph contract so the platform gets L1/L2/L3
+        # while satisfying LangGraph.
+        "checkpoints",
+        "checkpoint_writes",
+    }
+)
 
 
 # logical mapping from migration table name to expected Collection
@@ -159,9 +165,16 @@ _COLLECTION_TABLE_ALLOWLIST: dict[str, str] = {
 # cache-like method names that flag a class as a "wrapper" when
 # combined with a SQLiteBackend field. kept liberal so any new
 # bespoke wrapper hits the walker.
-_CACHE_METHOD_NAMES: frozenset[str] = frozenset({
-    "get", "put", "set", "delete", "upsert", "remove",
-})
+_CACHE_METHOD_NAMES: frozenset[str] = frozenset(
+    {
+        "get",
+        "put",
+        "set",
+        "delete",
+        "upsert",
+        "remove",
+    }
+)
 
 
 # public method names on :class:`~threetears.core.cache.sqlite.SQLiteBackend`
@@ -173,12 +186,14 @@ _CACHE_METHOD_NAMES: frozenset[str] = frozenset({
 # ``dispatch`` / ``consume_token``) that the generic-verb walker in
 # :data:`_CACHE_METHOD_NAMES` misses. namespace-task-01 phase 8.5f
 # added this domain-verb detection path.
-_SQLITE_DATA_API_METHODS: frozenset[str] = frozenset({
-    "upsert",
-    "select_by_id",
-    "delete_by_id",
-    "execute_query",
-})
+_SQLITE_DATA_API_METHODS: frozenset[str] = frozenset(
+    {
+        "upsert",
+        "select_by_id",
+        "delete_by_id",
+        "execute_query",
+    }
+)
 
 
 # ------------------------------------------------------------------------
@@ -240,9 +255,7 @@ class CacheExemption:
 # exemptions parser
 # ------------------------------------------------------------------------
 
-_ENTRY_RE = re.compile(
-    r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$"
-)
+_ENTRY_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$")
 
 
 def parse_cache_exemptions(path: Path) -> list[CacheExemption]:
@@ -271,32 +284,21 @@ def parse_cache_exemptions(path: Path) -> list[CacheExemption]:
         if line.startswith("#"):
             stripped = line.lstrip("#").strip()
             if stripped.lower().startswith("rationale:"):
-                rationale = stripped[len("rationale:"):].strip()
+                rationale = stripped[len("rationale:") :].strip()
                 if not rationale:
-                    raise ValueError(
-                        f"{path}:{lineno}: '# rationale:' must be followed "
-                        f"by a non-empty reason"
-                    )
+                    raise ValueError(f"{path}:{lineno}: '# rationale:' must be followed by a non-empty reason")
                 pending = rationale
             continue
         match = _ENTRY_RE.match(line)
         if match is None:
-            raise ValueError(
-                f"{path}:{lineno}: malformed entry; expected "
-                f"'file:line:symbol' triple, got {line!r}"
-            )
+            raise ValueError(f"{path}:{lineno}: malformed entry; expected 'file:line:symbol' triple, got {line!r}")
         if pending is None:
-            raise ValueError(
-                f"{path}:{lineno}: entry has no preceding '# rationale: ...' line"
-            )
+            raise ValueError(f"{path}:{lineno}: entry has no preceding '# rationale: ...' line")
         line_field = match.group("line")
         try:
             line_int = int(line_field)
         except ValueError as exc:
-            raise ValueError(
-                f"{path}:{lineno}: line number must be an integer, got "
-                f"{line_field!r}"
-            ) from exc
+            raise ValueError(f"{path}:{lineno}: line number must be an integer, got {line_field!r}") from exc
         entries.append(
             CacheExemption(
                 file=match.group("file"),
@@ -358,7 +360,7 @@ def _parse_file(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8")
         result = ast.parse(source, filename=str(path))
-    except (SyntaxError, UnicodeDecodeError):
+    except SyntaxError, UnicodeDecodeError:
         result = None
     return result
 
@@ -469,20 +471,12 @@ def _annotation_names_sqlite_backend(ann: ast.AST | None) -> bool:
     elif isinstance(ann, ast.Attribute) and ann.attr == "SQLiteBackend":
         result = True
     elif isinstance(ann, ast.BinOp):
-        result = (
-            _annotation_names_sqlite_backend(ann.left)
-            or _annotation_names_sqlite_backend(ann.right)
-        )
+        result = _annotation_names_sqlite_backend(ann.left) or _annotation_names_sqlite_backend(ann.right)
     elif isinstance(ann, ast.Subscript):
         inner = ann.slice
-        result = (
-            _annotation_names_sqlite_backend(ann.value)
-            or _annotation_names_sqlite_backend(inner)
-        )
+        result = _annotation_names_sqlite_backend(ann.value) or _annotation_names_sqlite_backend(inner)
     elif isinstance(ann, ast.Tuple):
-        result = any(
-            _annotation_names_sqlite_backend(elt) for elt in ann.elts
-        )
+        result = any(_annotation_names_sqlite_backend(elt) for elt in ann.elts)
     return result
 
 
@@ -517,7 +511,8 @@ def _init_param_names_of_sqlite_type(cls: ast.ClassDef) -> frozenset[str]:
 
 
 def _init_stores_param_on_self(
-    cls: ast.ClassDef, param_names: frozenset[str],
+    cls: ast.ClassDef,
+    param_names: frozenset[str],
 ) -> bool:
     """true iff ``__init__`` assigns one of ``param_names`` to ``self.<x>``.
 
@@ -556,11 +551,7 @@ def _init_stores_param_on_self(
             if not (isinstance(rhs, ast.Name) and rhs.id in param_names):
                 continue
             for tgt in targets:
-                if (
-                    isinstance(tgt, ast.Attribute)
-                    and isinstance(tgt.value, ast.Name)
-                    and tgt.value.id == "self"
-                ):
+                if isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name) and tgt.value.id == "self":
                     result = True
                     break
             if result:
@@ -632,23 +623,18 @@ def _class_sqlite_attr_names(cls: ast.ClassDef) -> frozenset[str]:
                         rhs_is_sqlite_call = True
                     if isinstance(func, ast.Attribute) and func.attr == "SQLiteBackend":
                         rhs_is_sqlite_call = True
-                rhs_is_sqlite_param = (
-                    isinstance(rhs, ast.Name) and rhs.id in sqlite_params
-                )
+                rhs_is_sqlite_param = isinstance(rhs, ast.Name) and rhs.id in sqlite_params
                 if not (rhs_is_sqlite_call or rhs_is_sqlite_param):
                     continue
                 for tgt in sub.targets:
-                    if (
-                        isinstance(tgt, ast.Attribute)
-                        and isinstance(tgt.value, ast.Name)
-                        and tgt.value.id == "self"
-                    ):
+                    if isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name) and tgt.value.id == "self":
                         names.add(tgt.attr)
     return frozenset(names)
 
 
 def _class_calls_sqlite_data_api(
-    cls: ast.ClassDef, sqlite_attrs: frozenset[str],
+    cls: ast.ClassDef,
+    sqlite_attrs: frozenset[str],
 ) -> list[str]:
     """return every SQLiteBackend data-api method called on a stored backend.
 
@@ -701,10 +687,7 @@ def _class_calls_sqlite_data_api(
                 and receiver.value.id == "self"
                 and receiver.attr in sqlite_attrs
             )
-            receiver_is_local_bind = (
-                isinstance(receiver, ast.Name)
-                and receiver.id in local_binds
-            )
+            receiver_is_local_bind = isinstance(receiver, ast.Name) and receiver.id in local_binds
             if receiver_is_self_attr or receiver_is_local_bind:
                 hits.add(func.attr)
     return sorted(hits)
@@ -841,7 +824,8 @@ def find_wrapper_classes(
                 # domain-verb detection (namespace-task-01 phase 8.5f).
                 sqlite_attrs = _class_sqlite_attr_names(node)
                 data_api_calls = _class_calls_sqlite_data_api(
-                    node, sqlite_attrs,
+                    node,
+                    sqlite_attrs,
                 )
                 if not methods and not data_api_calls:
                     continue
@@ -875,9 +859,15 @@ def find_wrapper_classes(
 # ------------------------------------------------------------------------
 
 # pool method names whose SQL text is inspected for violations.
-_POOL_METHOD_NAMES: frozenset[str] = frozenset({
-    "fetch", "fetchrow", "fetchval", "execute", "executemany",
-})
+_POOL_METHOD_NAMES: frozenset[str] = frozenset(
+    {
+        "fetch",
+        "fetchrow",
+        "fetchval",
+        "execute",
+        "executemany",
+    }
+)
 
 # first-argument SQL-text regex: matches ``FROM table`` / ``INTO table`` /
 # ``UPDATE table`` / ``JOIN table`` / ``DELETE FROM table``. case-insensitive.
@@ -917,7 +907,8 @@ def _extract_sql_tables(call_node: ast.Call) -> set[str]:
 
 
 def _class_containing(
-    node: ast.AST, module: ast.Module,
+    node: ast.AST,
+    module: ast.Module,
 ) -> ast.ClassDef | None:
     """return the innermost enclosing class for a node, or None.
 
@@ -1001,9 +992,7 @@ def find_direct_pool_access(
                     continue
                 # allow calls preceded by ``# cache-bypass: ...`` comment
                 bypass = False
-                for prev_line in range(
-                    max(0, node.lineno - 3), node.lineno
-                ):
+                for prev_line in range(max(0, node.lineno - 3), node.lineno):
                     if prev_line >= len(raw_lines):
                         continue
                     if "cache-bypass:" in raw_lines[prev_line]:
@@ -1256,10 +1245,7 @@ def resolve_mode() -> str:
     """
     raw = os.environ.get("CACHE_ENFORCEMENT_MODE", _DEFAULT_MODE).strip().lower()
     if raw not in (MODE_REPORT, MODE_STRICT):
-        raise ValueError(
-            f"CACHE_ENFORCEMENT_MODE must be '{MODE_REPORT}' or "
-            f"'{MODE_STRICT}', got {raw!r}"
-        )
+        raise ValueError(f"CACHE_ENFORCEMENT_MODE must be '{MODE_REPORT}' or '{MODE_STRICT}', got {raw!r}")
     return raw
 
 
@@ -1305,15 +1291,21 @@ def _collect_all() -> tuple[list[CacheViolation], tuple[Path, ...]]:
     """
     src_roots = find_src_roots(_REPO_ROOT)
     v1 = find_sqlite_constructions(
-        src_roots, _REPO_ROOT, _ALLOWED_SQLITE_CONSTRUCTION_SITES,
+        src_roots,
+        _REPO_ROOT,
+        _ALLOWED_SQLITE_CONSTRUCTION_SITES,
     )
     v2 = find_wrapper_classes(src_roots, _REPO_ROOT)
     v3 = find_direct_pool_access(
-        src_roots, _REPO_ROOT, _COLLECTION_TABLE_ALLOWLIST,
+        src_roots,
+        _REPO_ROOT,
+        _COLLECTION_TABLE_ALLOWLIST,
     )
     v4 = find_missing_collections(
-        src_roots, _REPO_ROOT,
-        _COLLECTION_TABLE_ALLOWLIST, _MIGRATION_TABLE_ALLOWLIST,
+        src_roots,
+        _REPO_ROOT,
+        _COLLECTION_TABLE_ALLOWLIST,
+        _MIGRATION_TABLE_ALLOWLIST,
     )
     return v1 + v2 + v3 + v4, src_roots
 
@@ -1372,7 +1364,9 @@ class TestCachePrimitiveUsage:
         src_roots = find_src_roots(_REPO_ROOT)
         exemptions = parse_cache_exemptions(_EXEMPTIONS_PATH)
         raw = find_sqlite_constructions(
-            src_roots, _REPO_ROOT, _ALLOWED_SQLITE_CONSTRUCTION_SITES,
+            src_roots,
+            _REPO_ROOT,
+            _ALLOWED_SQLITE_CONSTRUCTION_SITES,
         )
         filtered = apply_cache_exemptions(raw, exemptions, _REPO_ROOT)
         mode = resolve_mode()
@@ -1381,10 +1375,7 @@ class TestCachePrimitiveUsage:
         if mode == MODE_REPORT:
             return
         if filtered:
-            pytest.fail(
-                f"cache-enforcement: {len(filtered)} bespoke "
-                f"SQLiteBackend construction(s):\n{report}"
-            )
+            pytest.fail(f"cache-enforcement: {len(filtered)} bespoke SQLiteBackend construction(s):\n{report}")
 
     def test_no_bespoke_cache_wrapper_classes(self) -> None:
         """no class stores SQLiteBackend + exposes cache api without BaseCollection."""
@@ -1398,17 +1389,16 @@ class TestCachePrimitiveUsage:
         if mode == MODE_REPORT:
             return
         if filtered:
-            pytest.fail(
-                f"cache-enforcement: {len(filtered)} bespoke cache "
-                f"wrapper class(es):\n{report}"
-            )
+            pytest.fail(f"cache-enforcement: {len(filtered)} bespoke cache wrapper class(es):\n{report}")
 
     def test_no_direct_pool_access_to_collection_tables(self) -> None:
         """pool.fetch/execute never targets a Collection-backed table directly."""
         src_roots = find_src_roots(_REPO_ROOT)
         exemptions = parse_cache_exemptions(_EXEMPTIONS_PATH)
         raw = find_direct_pool_access(
-            src_roots, _REPO_ROOT, _COLLECTION_TABLE_ALLOWLIST,
+            src_roots,
+            _REPO_ROOT,
+            _COLLECTION_TABLE_ALLOWLIST,
         )
         filtered = apply_cache_exemptions(raw, exemptions, _REPO_ROOT)
         mode = resolve_mode()
@@ -1417,18 +1407,17 @@ class TestCachePrimitiveUsage:
         if mode == MODE_REPORT:
             return
         if filtered:
-            pytest.fail(
-                f"cache-enforcement: {len(filtered)} direct-pool-access "
-                f"violation(s):\n{report}"
-            )
+            pytest.fail(f"cache-enforcement: {len(filtered)} direct-pool-access violation(s):\n{report}")
 
     def test_all_tables_have_collections(self) -> None:
         """every migration-defined table has a matching Collection class."""
         src_roots = find_src_roots(_REPO_ROOT)
         exemptions = parse_cache_exemptions(_EXEMPTIONS_PATH)
         raw = find_missing_collections(
-            src_roots, _REPO_ROOT,
-            _COLLECTION_TABLE_ALLOWLIST, _MIGRATION_TABLE_ALLOWLIST,
+            src_roots,
+            _REPO_ROOT,
+            _COLLECTION_TABLE_ALLOWLIST,
+            _MIGRATION_TABLE_ALLOWLIST,
         )
         filtered = apply_cache_exemptions(raw, exemptions, _REPO_ROOT)
         mode = resolve_mode()
@@ -1437,7 +1426,4 @@ class TestCachePrimitiveUsage:
         if mode == MODE_REPORT:
             return
         if filtered:
-            pytest.fail(
-                f"cache-enforcement: {len(filtered)} table(s) missing "
-                f"Collections:\n{report}"
-            )
+            pytest.fail(f"cache-enforcement: {len(filtered)} table(s) missing Collections:\n{report}")

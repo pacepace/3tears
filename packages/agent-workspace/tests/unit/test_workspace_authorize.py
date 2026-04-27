@@ -53,7 +53,8 @@ class _EmptyMembershipLoader:
     """membership loader stub yielding no memberships for any actor."""
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """
         return empty tuple for every user id.
@@ -67,7 +68,8 @@ class _EmptyMembershipLoader:
         return ()
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """
         return empty tuple for every agent id.
@@ -104,7 +106,8 @@ class _EmptyGrantLoader:
         return ()
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """
         return empty mapping for every role set.
@@ -118,7 +121,8 @@ class _EmptyGrantLoader:
         return {}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """
         return empty mapping for every group set.
@@ -265,7 +269,8 @@ class TestMissingCustomerId:
 
     @pytest.mark.asyncio
     async def test_missing_customer_raises(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """scope without customer_id is rejected before any evaluator trip."""
         workspace = _make_workspace(
@@ -278,7 +283,10 @@ class TestMissingCustomerId:
         stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(WorkspaceAccessDenied, match="missing customer_id"):
             await authorize_workspace_access(
-                scope, workspace, "read", acl_cache=cache,
+                scope,
+                workspace,
+                "read",
+                acl_cache=cache,
             )
         stub.assert_not_awaited()
 
@@ -288,7 +296,8 @@ class TestCrossCustomerDenied:
 
     @pytest.mark.asyncio
     async def test_cross_customer_raises(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """workspace owned by customer A is not accessible to caller from B."""
         customer_a = uuid7()
@@ -299,13 +308,18 @@ class TestCrossCustomerDenied:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_b,
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            customer_id=customer_b,
         )
         cache = _make_cache()
         stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(WorkspaceAccessDenied, match="cross-customer"):
             await authorize_workspace_access(
-                scope, workspace, "read", acl_cache=cache,
+                scope,
+                workspace,
+                "read",
+                acl_cache=cache,
             )
         stub.assert_not_awaited()
 
@@ -320,7 +334,8 @@ class TestEvaluatorDelegation:
 
     @pytest.mark.asyncio
     async def test_allow_returns_none(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """evaluator returning True lets the helper return None."""
         customer_id = uuid7()
@@ -330,19 +345,25 @@ class TestEvaluatorDelegation:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            customer_id=customer_id,
         )
         cache = _make_cache()
         stub = _patch_authorize_on_entity(monkeypatch, returning=object())
 
         await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
+            scope,
+            workspace,
+            "read",
+            acl_cache=cache,
         )
         stub.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_deny_raises_workspace_access_denied(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """evaluator denial surfaces as :class:`WorkspaceAccessDenied`."""
         from threetears.agent.acl import AccessDenied
@@ -354,7 +375,9 @@ class TestEvaluatorDelegation:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            customer_id=customer_id,
         )
         cache = _make_cache()
         _patch_authorize_on_entity(
@@ -369,12 +392,16 @@ class TestEvaluatorDelegation:
 
         with pytest.raises(WorkspaceAccessDenied, match="evaluator denied"):
             await authorize_workspace_access(
-                scope, workspace, "read", acl_cache=cache,
+                scope,
+                workspace,
+                "read",
+                acl_cache=cache,
             )
 
     @pytest.mark.asyncio
     async def test_helper_forwards_namespace_fields_and_identity(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """helper threads scope identity + workspace ns into the canonical primitive."""
         customer_id = uuid7()
@@ -387,7 +414,8 @@ class TestEvaluatorDelegation:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=caller_agent, user_id=caller_user,
+            agent_id=caller_agent,
+            user_id=caller_user,
             customer_id=customer_id,
         )
         cache = _make_cache()
@@ -409,7 +437,10 @@ class TestEvaluatorDelegation:
         monkeypatch.setattr(_authorize_module, "authorize_on_entity", fake_authorize)
 
         await authorize_workspace_access(
-            scope, workspace, "read", acl_cache=cache,
+            scope,
+            workspace,
+            "read",
+            acl_cache=cache,
         )
 
         assert captured["namespace_id"] == workspace.id
@@ -424,7 +455,8 @@ class TestEvaluatorDelegation:
 
     @pytest.mark.asyncio
     async def test_write_forwards_write_action_verbatim(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``operation='write'`` lands on the canonical primitive as ``'write'``."""
         customer_id = uuid7()
@@ -434,7 +466,9 @@ class TestEvaluatorDelegation:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            customer_id=customer_id,
         )
         cache = _make_cache()
         captured_action: dict[str, str] = {}
@@ -446,7 +480,10 @@ class TestEvaluatorDelegation:
         monkeypatch.setattr(_authorize_module, "authorize_on_entity", fake_authorize)
 
         await authorize_workspace_access(
-            scope, workspace, "write", acl_cache=cache,
+            scope,
+            workspace,
+            "write",
+            acl_cache=cache,
         )
         assert captured_action["action"] == "write"
 
@@ -461,7 +498,8 @@ class TestUnknownOperation:
 
     @pytest.mark.asyncio
     async def test_unknown_operation_raises(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """operation outside the documented set raises before any evaluator trip."""
         customer_id = uuid7()
@@ -471,15 +509,20 @@ class TestUnknownOperation:
             created_by_user_id=uuid7(),
         )
         scope = _make_scope(
-            agent_id=uuid7(), user_id=uuid7(), customer_id=customer_id,
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            customer_id=customer_id,
         )
         cache = _make_cache()
         stub = _patch_authorize_on_entity(monkeypatch, returning=object())
         with pytest.raises(
-            WorkspaceAccessDenied, match="unknown workspace operation",
+            WorkspaceAccessDenied,
+            match="unknown workspace operation",
         ):
             await authorize_workspace_access(
-                scope, workspace, "delete",  # type: ignore[arg-type]
+                scope,
+                workspace,
+                "delete",  # type: ignore[arg-type]
                 acl_cache=cache,
             )
         stub.assert_not_awaited()

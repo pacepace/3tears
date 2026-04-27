@@ -64,12 +64,7 @@ class TestParseDDL:
     def test_parse_skips_table_constraints(self) -> None:
         """PRIMARY KEY (col) / FOREIGN KEY / UNIQUE / CHECK are not columns."""
         stmts = [
-            "CREATE TABLE IF NOT EXISTS widgets ("
-            "  id UUID,"
-            "  name VARCHAR(100),"
-            "  PRIMARY KEY (id),"
-            "  UNIQUE (name)"
-            ")"
+            "CREATE TABLE IF NOT EXISTS widgets (  id UUID,  name VARCHAR(100),  PRIMARY KEY (id),  UNIQUE (name))"
         ]
         expected = parse_ddl_to_expected(stmts)
         cols = set(expected["widgets"].columns.keys())
@@ -86,18 +81,14 @@ class TestParseDDL:
 
     def test_parse_schema_qualified_table_name_strips_schema(self) -> None:
         """CREATE TABLE platform.agents is registered as 'agents'."""
-        stmts = [
-            "CREATE TABLE IF NOT EXISTS platform.agents (id UUID PRIMARY KEY)"
-        ]
+        stmts = ["CREATE TABLE IF NOT EXISTS platform.agents (id UUID PRIMARY KEY)"]
         expected = parse_ddl_to_expected(stmts)
         assert "agents" in expected
         assert "platform.agents" not in expected
 
     def test_parse_quoted_and_qualified_name_strips_both(self) -> None:
         """CREATE TABLE "platform"."agents" strips quotes and schema."""
-        stmts = [
-            'CREATE TABLE IF NOT EXISTS "platform"."agents" (id UUID PRIMARY KEY)'
-        ]
+        stmts = ['CREATE TABLE IF NOT EXISTS "platform"."agents" (id UUID PRIMARY KEY)']
         expected = parse_ddl_to_expected(stmts)
         assert "agents" in expected
 
@@ -125,9 +116,7 @@ class TestDiff:
 
     def test_missing_table_reported(self) -> None:
         """expected table absent from live DB appears in missing_tables."""
-        expected = parse_ddl_to_expected(
-            ["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY)"]
-        )
+        expected = parse_ddl_to_expected(["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY)"])
         live: dict[str, dict[str, str]] = {}
         report = diff_expected_live(expected, live)
         assert report.missing_tables == ["widgets"]
@@ -142,27 +131,21 @@ class TestDiff:
 
     def test_extra_column_reported(self) -> None:
         """extra live column on a tracked table appears in extra_columns."""
-        expected = parse_ddl_to_expected(
-            ["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY)"]
-        )
+        expected = parse_ddl_to_expected(["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY)"])
         live = {"widgets": {"id": "uuid", "rogue": "text"}}
         report = diff_expected_live(expected, live)
         assert ("widgets", "rogue", "text") in report.extra_columns
 
     def test_missing_column_reported(self) -> None:
         """declared column absent from live table appears in missing_columns."""
-        expected = parse_ddl_to_expected(
-            ["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY, label TEXT)"]
-        )
+        expected = parse_ddl_to_expected(["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY, label TEXT)"])
         live = {"widgets": {"id": "uuid"}}
         report = diff_expected_live(expected, live)
         assert ("widgets", "label") in report.missing_columns
 
     def test_type_mismatch_reported(self) -> None:
         """column that exists with a different type appears in type_mismatches."""
-        expected = parse_ddl_to_expected(
-            ["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY, n INTEGER)"]
-        )
+        expected = parse_ddl_to_expected(["CREATE TABLE IF NOT EXISTS widgets (id UUID PRIMARY KEY, n INTEGER)"])
         live = {"widgets": {"id": "uuid", "n": "bigint"}}
         report = diff_expected_live(expected, live)
         assert ("widgets", "n", "integer", "bigint") in report.type_mismatches
@@ -215,12 +198,8 @@ class TestReportRendering:
         assert data["missing_tables"] == ["a"]
         assert data["extra_tables"] == ["b"]
         assert data["missing_columns"] == [{"table": "t", "column": "c"}]
-        assert data["extra_columns"] == [
-            {"table": "t", "column": "c2", "data_type": "text"}
-        ]
-        assert data["type_mismatches"] == [
-            {"table": "t", "column": "c3", "expected": "uuid", "actual": "text"}
-        ]
+        assert data["extra_columns"] == [{"table": "t", "column": "c2", "data_type": "text"}]
+        assert data["type_mismatches"] == [{"table": "t", "column": "c3", "expected": "uuid", "actual": "text"}]
 
     def test_human_lines_include_every_drift_category(self) -> None:
         """human-readable lines describe each bucket in turn."""

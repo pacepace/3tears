@@ -100,7 +100,9 @@ def db_container(db_image: str) -> Iterator[str]:
         normalised = raw_url
         if normalised.startswith("postgresql+psycopg2://"):
             normalised = normalised.replace(
-                "postgresql+psycopg2://", "postgresql://", 1,
+                "postgresql+psycopg2://",
+                "postgresql://",
+                1,
             )
         yield normalised
 

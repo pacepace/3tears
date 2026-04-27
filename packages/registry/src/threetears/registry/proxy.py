@@ -325,10 +325,7 @@ class CallProxy:
             response = ProxyCallResponse(
                 success=False,
                 content="",
-                error=(
-                    "ProxyCallRequest received without context.agent_id; "
-                    "cannot route"
-                ),
+                error=("ProxyCallRequest received without context.agent_id; cannot route"),
                 error_code="MALFORMED_REQUEST",
                 context=request.context,
             )
@@ -357,11 +354,7 @@ class CallProxy:
         # carries no user identity (authorizer will deny).
         correlation_id_log = _correlation_id_str(request)
         agent_id_log = str(request.context.agent_id)
-        user_id_log: str | None = (
-            str(request.context.user_id)
-            if request.context.user_id is not None
-            else None
-        )
+        user_id_log: str | None = str(request.context.user_id) if request.context.user_id is not None else None
 
         if self._authorizer is not None:
             authorized = await self._authorizer.is_authorized(
@@ -560,10 +553,7 @@ class CallProxy:
             # connectivity blip.
             if isinstance(exc, RequestError) and "timed out" not in str(exc):
                 error_code = "TOOL_UNAVAILABLE"
-                error_msg = (
-                    f"tool call transport failure after "
-                    f"{effective_timeout}s: {exc}"
-                )
+                error_msg = f"tool call transport failure after {effective_timeout}s: {exc}"
             else:
                 error_code = "TOOL_TIMEOUT"
                 error_msg = f"tool call timed out after {effective_timeout}s"

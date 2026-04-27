@@ -41,14 +41,10 @@ CREATE TABLE IF NOT EXISTS context_items (
 )
 """
 
-_CREATE_CTX_CONVERSATION_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_ctx_conversation "
-    "ON context_items (conversation_id)"
-)
+_CREATE_CTX_CONVERSATION_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_ctx_conversation ON context_items (conversation_id)"
 
 _CREATE_CTX_CONVERSATION_TYPE_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_ctx_conversation_type "
-    "ON context_items (conversation_id, context_type)"
+    "CREATE INDEX IF NOT EXISTS idx_ctx_conversation_type ON context_items (conversation_id, context_type)"
 )
 
 

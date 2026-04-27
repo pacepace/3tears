@@ -151,9 +151,7 @@ class WorkspaceCurrentTool(TearsTool):
         customer_id: UUID | None = None if scope is None else scope.context.customer_id
         user_id: UUID | None = None if scope is None else scope.context.user_id
         correlation_id: UUID = (
-            scope.context.correlation_id
-            if scope is not None and scope.context.correlation_id is not None
-            else uuid7()
+            scope.context.correlation_id if scope is not None and scope.context.correlation_id is not None else uuid7()
         )
         if customer_id is None:
             raise WorkspaceAccessDenied(
@@ -169,8 +167,7 @@ class WorkspaceCurrentTool(TearsTool):
         visible = any(item.id == workspace_id for item in items)
         if not visible:
             raise WorkspaceAccessDenied(
-                f"pinned workspace {workspace_id} not in discovery set "
-                "for calling agent + user + customer",
+                f"pinned workspace {workspace_id} not in discovery set for calling agent + user + customer",
             )
 
     def mcp_schema(self) -> MCPToolDefinition:

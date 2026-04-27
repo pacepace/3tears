@@ -262,9 +262,7 @@ class DocSetTool(TearsTool):
                                     outcome="success",
                                     correlation_id=correlation_id,
                                     details={
-                                        "workspace_resource_id": (
-                                            f"{workspace.id}/{relative_path}"
-                                        ),
+                                        "workspace_resource_id": (f"{workspace.id}/{relative_path}"),
                                         "jsonpath": jsonpath,
                                         "value": value,
                                         "bytes_before": old_size,

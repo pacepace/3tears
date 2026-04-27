@@ -54,9 +54,7 @@ def _make_call_request(
     :return: test proxy call request
     :rtype: ProxyCallRequest
     """
-    effective_correlation_id = (
-        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    )
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
     result = ProxyCallRequest(
         tool_name=tool_name,
         tool_version=tool_version,
@@ -136,9 +134,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await asyncio.sleep(0)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error_code"] == "TOOL_NOT_READY"
 
@@ -179,9 +175,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         # ProxyCallResponse echoes correlation_id on context, not top-level
         assert response_data["context"]["correlation_id"] == str(correlation_id)
 
@@ -209,9 +203,7 @@ class TestCallProxyRefusesPendingEndpoints:
         # returns raw bytes, so the fake just hands those bytes back.
         reply_bytes = (
             b'{"success": true, "content": "ok", "context": '
-            b'{"correlation_id": "'
-            + str(correlation_id).encode("ascii")
-            + b'"}}'
+            b'{"correlation_id": "' + str(correlation_id).encode("ascii") + b'"}}'
         )
 
         proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
@@ -263,9 +255,7 @@ class TestCallProxyRefusesPendingEndpoints:
         )
         await proxy.handle_call(msg_pending)
         await asyncio.sleep(0)
-        resp_pending = json.loads(
-            nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json()
-        )
+        resp_pending = json.loads(nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json())
         assert resp_pending["error_code"] == "TOOL_NOT_READY"
 
         # unavailable endpoint: TOOL_UNAVAILABLE
@@ -278,7 +268,5 @@ class TestCallProxyRefusesPendingEndpoints:
         )
         await proxy.handle_call(msg_unavail)
         await asyncio.sleep(0)
-        resp_unavail = json.loads(
-            nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json()
-        )
+        resp_unavail = json.loads(nc.publish_reply.call_args_list[-1].kwargs["message"].model_dump_json())
         assert resp_unavail["error_code"] == "TOOL_UNAVAILABLE"

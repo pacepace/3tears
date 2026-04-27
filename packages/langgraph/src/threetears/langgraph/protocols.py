@@ -153,7 +153,9 @@ class AsyncpgPoolAdapter:
         return [dict(row) for row in rows]
 
     async def fetchrow(
-        self, query: str, *args: object,
+        self,
+        query: str,
+        *args: object,
     ) -> dict[str, Any] | None:
         """execute SELECT and return first row as dict.
 

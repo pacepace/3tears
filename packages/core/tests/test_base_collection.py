@@ -879,9 +879,7 @@ class TestL3PoolAccessor:
     transactions and connection-lifetime assumptions.
     """
 
-    def test_l3_pool_returns_registry_pool_by_default(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_l3_pool_returns_registry_pool_by_default(self, config_always: DefaultCoreConfig) -> None:
         """collection.l3_pool is the same object the registry holds."""
         sentinel_pool = object()
         reg = CollectionRegistry()
@@ -889,9 +887,7 @@ class TestL3PoolAccessor:
         coll = StubCollection(reg, config_always)
         assert coll.l3_pool is sentinel_pool
 
-    def test_l3_pool_respects_per_collection_override(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_l3_pool_respects_per_collection_override(self, config_always: DefaultCoreConfig) -> None:
         """per-collection pool override wins over the registry default."""
         default_pool = object()
         override_pool = object()
@@ -904,9 +900,7 @@ class TestL3PoolAccessor:
         coll = StubCollection(reg, config_always)
         assert coll.l3_pool is override_pool
 
-    def test_l3_pool_none_when_registry_has_no_pool(
-        self, config_always: DefaultCoreConfig
-    ) -> None:
+    def test_l3_pool_none_when_registry_has_no_pool(self, config_always: DefaultCoreConfig) -> None:
         """collection.l3_pool is None when the registry has no pool.
 
         callers MUST guard with ``if self.l3_pool is not None`` — this

@@ -87,9 +87,7 @@ class RegistryServer:
         heartbeat_timeout: float | None = None,
         call_timeout: float | None = None,
         kv_bucket: str = "tool_catalog",
-        rbac_authorizer_factory: (
-            "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None"
-        ) = None,
+        rbac_authorizer_factory: ("Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None") = None,
         health_port: int | None = None,
     ) -> None:
         """initialize registry server.
@@ -175,7 +173,8 @@ class RegistryServer:
         self._shutdown_event = asyncio.Event()
 
     async def apply_rbac_factory(
-        self, nc: "NatsClient",
+        self,
+        nc: "NatsClient",
     ) -> "AgentToolAuthorizer | None":
         """swap the placeholder authorizer for the live rbac one.
 
@@ -518,7 +517,8 @@ def _run_server() -> None:
             )
 
             namespace = os.environ.get(
-                "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots",
+                "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
+                "aibots",
             )
             l1_backend = create_registry_l1_backend()
             stack = build_registry_rbac_stack(
@@ -528,8 +528,7 @@ def _run_server() -> None:
             )
             await stack.subscribe_invalidations()
             _logger.info(
-                "registry running with RbacEvaluatorAuthorizer "
-                "(rbac stack wired against system.platform.rbac proxy)",
+                "registry running with RbacEvaluatorAuthorizer (rbac stack wired against system.platform.rbac proxy)",
                 extra={"extra_data": {"mode": "rbac"}},
             )
             return RbacEvaluatorAuthorizer(

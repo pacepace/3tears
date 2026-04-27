@@ -106,9 +106,9 @@ async def test_spawn_background_cancelled_logs_info_cancelled() -> None:
         await task
     await asyncio.sleep(0)
     info_records = [
-        r for r in handler.records
-        if r.levelno == logging.INFO
-        and r.__dict__.get("extra_data", {}).get("outcome") == "cancelled"
+        r
+        for r in handler.records
+        if r.levelno == logging.INFO and r.__dict__.get("extra_data", {}).get("outcome") == "cancelled"
     ]
     assert len(info_records) == 1
     record = info_records[0]

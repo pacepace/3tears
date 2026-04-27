@@ -55,7 +55,9 @@ def _build_memory_collections(
     pool: asyncpg.Pool,
     authorizer: MemoryAuthorizerDependencies,
 ) -> tuple[
-    MemoriesCollection, MediaContentCollection, MemoryChunkCollection,
+    MemoriesCollection,
+    MediaContentCollection,
+    MemoryChunkCollection,
 ]:
     """build the three memory-package Collections against one pool.
 
@@ -89,6 +91,7 @@ def _build_memory_collections(
         nats_client=None,
     )
     return memories, media_content, chunks
+
 
 from .conftest import AsyncpgStore
 
@@ -230,6 +233,7 @@ async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     :rtype: asyncpg.Pool
     """
     from threetears.core.collections import init_connection
+
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
@@ -265,7 +269,8 @@ class TestMemoriesCollectionAgainstLiveSchema:
         pool = await _make_pool(url, schema)
         try:
             coll, _, _ = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -296,15 +301,15 @@ class TestMemoriesCollectionAgainstLiveSchema:
             await coll.save_entity(entity_b)
 
             entities = await coll.find_by_user(
-                user_id, agent_id=agent_id, customer_id=customer_id,
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
             )
             contents = {e.content for e in entities}
             assert contents == {"mem A", "mem B"}
 
             # scoped find
-            scoped = await coll.find_by_scope(
-                agent_id=agent_id, user_id=user_id
-            )
+            scoped = await coll.find_by_scope(agent_id=agent_id, user_id=user_id)
             assert len(scoped) == 2
         finally:
             await pool.close()
@@ -327,7 +332,8 @@ class TestMemoriesCollectionAgainstLiveSchema:
         pool = await _make_pool(url, schema)
         try:
             coll, _, _ = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
 
             user_id = uuid.uuid4()
@@ -357,14 +363,15 @@ class TestMemoriesCollectionAgainstLiveSchema:
             # direct UPDATE to set is_deleted (bypassing entity lifecycle)
             later = datetime.now(UTC).replace(tzinfo=None)
             await pool.execute(
-                "UPDATE memories SET is_deleted = TRUE, date_deleted = $2 "
-                "WHERE memory_id = $1",
+                "UPDATE memories SET is_deleted = TRUE, date_deleted = $2 WHERE memory_id = $1",
                 mid,
                 later,
             )
 
             visible = await coll.find_by_user(
-                user_id, agent_id=agent_id, customer_id=customer_id,
+                user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
             )
             assert visible == []
 
@@ -429,7 +436,8 @@ class TestMemoryRetrieverAgainstLiveSchema:
 
             config = MemoryConfig()
             memories, media_content, chunks = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
             retriever = MemoryRetriever(
                 config,
@@ -479,12 +487,11 @@ class TestMemoryExtractorAgainstLiveSchema:
         try:
             factory = _StubChatModelFactory(
                 worthiness=json.dumps({"worthy": True, "reason": "has facts"}),
-                extraction=json.dumps(
-                    [{"type": "fact", "content": "User lives in Seattle"}]
-                ),
+                extraction=json.dumps([{"type": "fact", "content": "User lives in Seattle"}]),
             )
             memories, _, _ = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
             extractor = MemoryExtractor(
                 config=MemoryConfig(),
@@ -507,8 +514,7 @@ class TestMemoryExtractorAgainstLiveSchema:
             )
 
             rows = await pool.fetch(
-                "SELECT content, type_memory, search_vector FROM memories "
-                "WHERE user_id = $1",
+                "SELECT content, type_memory, search_vector FROM memories WHERE user_id = $1",
                 user_id,
             )
             assert len(rows) == 1
@@ -550,12 +556,15 @@ class TestMemoryToolsAgainstLiveSchema:
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             memories, media_content, chunks = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
+
             class _StubCtx:
                 def __init__(self, c: uuid.UUID, m: uuid.UUID) -> None:
                     self.conversation_id = c
                     self.correlation_id = m
+
             tools = await load_add_memory_tool(
                 user_id,
                 _StubEmbedding(),
@@ -566,14 +575,11 @@ class TestMemoryToolsAgainstLiveSchema:
                 context_resolver=lambda: _StubCtx(conv_id, msg_id),
             )
             assert len(tools) == 1
-            result = await tools[0].ainvoke(
-                {"content": "User prefers Python", "memory_type": "preference"}
-            )
+            result = await tools[0].ainvoke({"content": "User prefers Python", "memory_type": "preference"})
             assert "Remembered" in result
 
             row = await pool.fetchrow(
-                "SELECT content, type_memory, search_vector FROM memories "
-                "WHERE user_id = $1",
+                "SELECT content, type_memory, search_vector FROM memories WHERE user_id = $1",
                 user_id,
             )
             assert row is not None
@@ -605,12 +611,15 @@ class TestMemoryToolsAgainstLiveSchema:
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             memories, media_content, chunks = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
+
             class _StubCtx2:
                 def __init__(self, c: uuid.UUID, m: uuid.UUID) -> None:
                     self.conversation_id = c
                     self.correlation_id = m
+
             add_tools = await load_add_memory_tool(
                 user_id,
                 _StubEmbedding(),
@@ -620,9 +629,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 memories,
                 context_resolver=lambda: _StubCtx2(conv_id, msg_id),
             )
-            await add_tools[0].ainvoke(
-                {"content": "User loves type hints", "memory_type": "preference"}
-            )
+            await add_tools[0].ainvoke({"content": "User loves type hints", "memory_type": "preference"})
 
             search_tools = await load_memory_search_tool(
                 user_id,
@@ -635,9 +642,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 chunks,
             )
             assert len(search_tools) == 1
-            result = await search_tools[0].ainvoke(
-                {"query": "What does user love about Python?"}
-            )
+            result = await search_tools[0].ainvoke({"query": "What does user love about Python?"})
             # result is text; should contain our inserted content
             assert "type hints" in result or "No relevant memories" not in result
         finally:
@@ -683,7 +688,8 @@ class TestMemoryToolsAgainstLiveSchema:
             )
 
             memories, media_content, chunks = _build_memory_collections(
-                pool, permissive_memory_authorizer,
+                pool,
+                permissive_memory_authorizer,
             )
             tools = await load_recall_memory_tool(
                 user_id,

@@ -192,10 +192,7 @@ class PackageMigrations:
             :raises DuplicateVersionError: if downgrade already registered
             """
             if n in self._downgrades:
-                msg = (
-                    f"package {self._name!r}: downgrade for version {n} "
-                    "already registered"
-                )
+                msg = f"package {self._name!r}: downgrade for version {n} already registered"
                 raise DuplicateVersionError(msg)
             self._downgrades[n] = func
             return func

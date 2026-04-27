@@ -303,7 +303,8 @@ async def _resolve_or_create_memory_namespace(
             "owner_agent_id": agent_id,
             "customer_id": customer_id,
             "schema_name": memory_namespace_schema_name(
-                agent_id, customer_id,
+                agent_id,
+                customer_id,
             ),
             "metadata": {},
             "date_created": now,
@@ -316,8 +317,7 @@ async def _resolve_or_create_memory_namespace(
         await namespace_collection.save_entity(entity)
     except Exception as exc:
         raise MemoryAccessDenied(
-            f"memory namespace for agent={agent_id} customer={customer_id} "
-            f"could not be created: {exc}",
+            f"memory namespace for agent={agent_id} customer={customer_id} could not be created: {exc}",
         ) from exc
 
     # re-read to return the authoritative Collection-managed entity
@@ -445,8 +445,7 @@ async def ensure_memory_owner_assignment(
             break
     if owner_role_id is None:
         log.warning(
-            "memory owner assignment ensure skipped: role %s not "
-            "present in builtin role catalog",
+            "memory owner assignment ensure skipped: role %s not present in builtin role catalog",
             MEMORY_OWNER_ROLE_NAME,
         )
         return None
@@ -454,8 +453,7 @@ async def ensure_memory_owner_assignment(
     customer_id = namespace.customer_id
     group_id = uuid5(
         NAMESPACE_DNS,
-        f"threetears.groups.{MEMORY_OWNER_GROUP_PREFIX}."
-        f"{customer_id.hex}.{user_id.hex}",
+        f"threetears.groups.{MEMORY_OWNER_GROUP_PREFIX}.{customer_id.hex}.{user_id.hex}",
     )
     group_name = f"{MEMORY_OWNER_GROUP_PREFIX}:{user_id.hex}"
     now = datetime.now(UTC).replace(tzinfo=None)

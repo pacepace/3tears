@@ -193,9 +193,7 @@ async def test_history_workspace_wide_returns_newest_first_without_content(
             offset_seconds=20,
         ),
     ]
-    tool, versions, _ = _build_tool(
-        workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache
-    )
+    tool, versions, _ = _build_tool(workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -223,9 +221,7 @@ async def test_history_per_path_calls_enforce_and_narrow_query(
         _row(relative_path="b.md", version=1, offset_seconds=5),
         _row(relative_path="a.txt", version=2, offset_seconds=10),
     ]
-    tool, versions, sandbox = _build_tool(
-        workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache
-    )
+    tool, versions, sandbox = _build_tool(workspace_entities=[ws], version_rows=rows, acl_cache=permissive_acl_cache)
     result = await tool.execute(relative_path="a.txt", workspace="ws")
     assert result.success is True, result.error
     payload = json.loads(result.content)
@@ -314,9 +310,7 @@ async def test_history_unknown_workspace_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """unknown workspace name yields clean error."""
-    tool, _versions, _ = _build_tool(
-        workspace_entities=[], version_rows=[], acl_cache=permissive_acl_cache
-    )
+    tool, _versions, _ = _build_tool(workspace_entities=[], version_rows=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ghost")
     assert result.success is False
     assert result.error is not None

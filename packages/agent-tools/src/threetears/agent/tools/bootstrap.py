@@ -134,10 +134,12 @@ class ToolServerBootstrap:
 
         log.info(
             f"{self._service_name} starting",
-            extra={"extra_data": {
-                "service": self._service_name,
-                "tools_count": server.tools_count,
-            }},
+            extra={
+                "extra_data": {
+                    "service": self._service_name,
+                    "tools_count": server.tools_count,
+                }
+            },
         )
         try:
             await self.run_serve(server)
@@ -260,7 +262,9 @@ class ToolServerBootstrap:
             loop.add_signal_handler(sig, handler)
 
     def make_signal_handler(
-        self, server: "ToolServer", sig_label: str,
+        self,
+        server: "ToolServer",
+        sig_label: str,
     ) -> Callable[[], Awaitable[None] | None]:
         """build the signal-handler closure for ``sig_label``.
 

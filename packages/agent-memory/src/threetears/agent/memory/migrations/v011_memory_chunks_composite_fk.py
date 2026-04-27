@@ -44,9 +44,7 @@ log = get_logger(__name__)
 
 _TRUNCATE_MEMORY_CHUNKS_SQL = "TRUNCATE TABLE memory_chunks CASCADE"
 
-_SET_AGENT_ID_NOT_NULL_SQL = (
-    "ALTER TABLE memory_chunks ALTER COLUMN agent_id SET NOT NULL"
-)
+_SET_AGENT_ID_NOT_NULL_SQL = "ALTER TABLE memory_chunks ALTER COLUMN agent_id SET NOT NULL"
 
 
 _ADD_COMPOSITE_FK_SQL = """

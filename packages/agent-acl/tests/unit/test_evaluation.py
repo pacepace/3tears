@@ -165,10 +165,13 @@ class TestAgentOwnershipShortCircuit:
         namespace = _ns(customer_id=customer, owner_agent_id=agent)
         store = FakeStore()
         ctx = EvaluationContext(
-            namespace=namespace, action="read", agent_id=agent,
+            namespace=namespace,
+            action="read",
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.agent_owner_short_circuited is True
@@ -205,11 +208,14 @@ class TestAgentOwnershipShortCircuit:
         store.add_assignment(assignment)
 
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -231,27 +237,38 @@ class TestAgentOwnershipShortCircuit:
         user = uuid4()
         namespace = _ns(customer_id=customer, owner_agent_id=agent)
         writer = _role(
-            name="Writer", permissions={"workspace": ["read", "write"]},
+            name="Writer",
+            permissions={"workspace": ["read", "write"]},
         )
         admins = _group(name="Admins", customer_id=customer)
         store = FakeStore()
         store.add_role(writer)
         store.add_group(admins)
-        store.add_membership(GroupMembership(
-            group_id=admins.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=writer, group=admins,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=admins.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=writer,
+                group=admins,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="write",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="write",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert "write" in result.effective_actions
@@ -277,20 +294,30 @@ class TestSingleSideUser:
         store = FakeStore()
         store.add_role(reader)
         store.add_group(engineering)
-        store.add_membership(GroupMembership(
-            group_id=engineering.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=engineering,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=engineering.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=engineering,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -310,10 +337,13 @@ class TestSingleSideUser:
         namespace = _ns(customer_id=customer, owner_agent_id=owner)
         store = FakeStore()
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -337,20 +367,30 @@ class TestSingleSideAgent:
         store = FakeStore()
         store.add_role(reader)
         store.add_group(bots)
-        store.add_membership(GroupMembership(
-            group_id=bots.id, member_type=MemberType.AGENT,
-            member_id=agent, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=bots,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=bots.id,
+                member_type=MemberType.AGENT,
+                member_id=agent,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=bots,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", agent_id=agent,
+            namespace=namespace,
+            action="read",
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read"})
@@ -386,31 +426,48 @@ class TestIntersection:
         store.add_role(reader)
         store.add_group(admins)
         store.add_group(bots)
-        store.add_membership(GroupMembership(
-            group_id=admins.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_membership(GroupMembership(
-            group_id=bots.id, member_type=MemberType.AGENT,
-            member_id=agent, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=admin, group=admins,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=bots,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=admins.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_membership(
+            GroupMembership(
+                group_id=bots.id,
+                member_type=MemberType.AGENT,
+                member_id=agent,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=admin,
+                group=admins,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=bots,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
 
         ctx = EvaluationContext(
-            namespace=namespace, action="write",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="write",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         # admin ∩ reader = {read}; write is denied
         assert result.decision is False
@@ -437,21 +494,31 @@ class TestIntersection:
         store = FakeStore()
         store.add_role(reader)
         store.add_group(bots)
-        store.add_membership(GroupMembership(
-            group_id=bots.id, member_type=MemberType.AGENT,
-            member_id=agent, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=bots,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=bots.id,
+                member_type=MemberType.AGENT,
+                member_id=agent,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=bots,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -480,21 +547,31 @@ class TestIntersection:
         store = FakeStore()
         store.add_role(admin)
         store.add_group(admins)
-        store.add_membership(GroupMembership(
-            group_id=admins.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=admin, group=admins,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=admins.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=admin,
+                group=admins,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is False
         assert result.effective_actions == frozenset()
@@ -515,30 +592,47 @@ class TestIntersection:
         store.add_role(reader)
         store.add_group(users)
         store.add_group(bots)
-        store.add_membership(GroupMembership(
-            group_id=users.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_membership(GroupMembership(
-            group_id=bots.id, member_type=MemberType.AGENT,
-            member_id=agent, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=users,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=bots,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=users.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_membership(
+            GroupMembership(
+                group_id=bots.id,
+                member_type=MemberType.AGENT,
+                member_id=agent,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=users,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=bots,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.limiting_side == LimitingSide.EQUAL
@@ -559,7 +653,8 @@ class TestWildcardRole:
         owner = uuid4()
         user = uuid4()
         namespace = _ns(
-            customer_id=customer, owner_agent_id=owner,
+            customer_id=customer,
+            owner_agent_id=owner,
             namespace_type="workspace",
         )
         admin = _role(
@@ -570,20 +665,30 @@ class TestWildcardRole:
         store = FakeStore()
         store.add_role(admin)
         store.add_group(admins)
-        store.add_membership(GroupMembership(
-            group_id=admins.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=admin, group=admins,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=admins.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=admin,
+                group=admins,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="write", user_id=user,
+            namespace=namespace,
+            action="write",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert "write" in result.effective_actions
@@ -595,8 +700,7 @@ class TestWildcardRole:
         customer = uuid4()
         owner = uuid4()
         user = uuid4()
-        namespace = _ns(customer_id=customer, owner_agent_id=owner,
-                        namespace_type="workspace")
+        namespace = _ns(customer_id=customer, owner_agent_id=owner, namespace_type="workspace")
         # wildcard grants read; workspace bucket grants write
         role = _role(
             name="WorkspaceEditor",
@@ -609,20 +713,30 @@ class TestWildcardRole:
         store = FakeStore()
         store.add_role(role)
         store.add_group(editors)
-        store.add_membership(GroupMembership(
-            group_id=editors.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=role, group=editors,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=editors.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=role,
+                group=editors,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="write", user_id=user,
+            namespace=namespace,
+            action="write",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         assert result.effective_actions == frozenset({"read", "write"})
@@ -642,28 +756,37 @@ class TestTypeCustomerScope:
         customer = uuid4()
         owner = uuid4()
         user = uuid4()
-        namespace = _ns(customer_id=customer, owner_agent_id=owner,
-                        namespace_type="workspace")
+        namespace = _ns(customer_id=customer, owner_agent_id=owner, namespace_type="workspace")
         auditor = _role(name="Auditor", permissions={"workspace": ["read"]})
         auditors = _group(name="Auditors", customer_id=customer)
         store = FakeStore()
         store.add_role(auditor)
         store.add_group(auditors)
-        store.add_membership(GroupMembership(
-            group_id=auditors.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=auditor, group=auditors,
-            scope_type=ScopeType.TYPE_CUSTOMER,
-            scope_namespace_type="workspace",
-            scope_customer_id=customer,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=auditors.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=auditor,
+                group=auditors,
+                scope_type=ScopeType.TYPE_CUSTOMER,
+                scope_namespace_type="workspace",
+                scope_customer_id=customer,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
 
@@ -673,28 +796,37 @@ class TestTypeCustomerScope:
         customer = uuid4()
         owner = uuid4()
         user = uuid4()
-        namespace = _ns(customer_id=customer, owner_agent_id=owner,
-                        namespace_type="agent")
+        namespace = _ns(customer_id=customer, owner_agent_id=owner, namespace_type="agent")
         auditor = _role(name="Auditor", permissions={"workspace": ["read"]})
         auditors = _group(name="Auditors", customer_id=customer)
         store = FakeStore()
         store.add_role(auditor)
         store.add_group(auditors)
-        store.add_membership(GroupMembership(
-            group_id=auditors.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=auditor, group=auditors,
-            scope_type=ScopeType.TYPE_CUSTOMER,
-            scope_namespace_type="workspace",
-            scope_customer_id=customer,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=auditors.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=auditor,
+                group=auditors,
+                scope_type=ScopeType.TYPE_CUSTOMER,
+                scope_namespace_type="workspace",
+                scope_customer_id=customer,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is False
 
@@ -718,19 +850,29 @@ class TestAllScope:
         store = FakeStore()
         store.add_role(support)
         store.add_group(platform_admins)
-        store.add_membership(GroupMembership(
-            group_id=platform_admins.id, member_type=MemberType.USER,
-            member_id=user, customer_id=None,  # admin not bound to one customer
-        ))
-        store.add_assignment(_assignment(
-            role=support, group=platform_admins,
-            scope_type=ScopeType.ALL,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=platform_admins.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=None,  # admin not bound to one customer
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=support,
+                group=platform_admins,
+                scope_type=ScopeType.ALL,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
 
@@ -757,21 +899,31 @@ class TestMixedMembership:
         store.add_role(reader)
         store.add_group(mixed)
         # user is a USER member of mixed; agent is NOT a member at all
-        store.add_membership(GroupMembership(
-            group_id=mixed.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=mixed,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=mixed.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=mixed,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         # agent side empty -> deny
         assert result.decision is False
@@ -805,20 +957,30 @@ class TestCrossCustomerWall:
         store = FakeStore()
         store.add_role(reader)
         store.add_group(a_engineering)
-        store.add_membership(GroupMembership(
-            group_id=a_engineering.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer_a,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=a_engineering,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=a_engineering.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer_a,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=a_engineering,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         # filter cuts the membership row -> no eligible groups -> empty side
         assert result.decision is False
@@ -842,10 +1004,13 @@ class TestEvaluateDecisionWrapper:
         namespace = _ns(customer_id=customer, owner_agent_id=owner)
         store = FakeStore()
         ctx = EvaluationContext(
-            namespace=namespace, action="read", user_id=user,
+            namespace=namespace,
+            action="read",
+            user_id=user,
         )
         decision = await evaluate_decision(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert decision is False  # no grants
 
@@ -857,11 +1022,13 @@ class TestEvaluateDecisionWrapper:
         namespace = _ns(customer_id=customer, owner_agent_id=agent)
         store = FakeStore()
         ctx = EvaluationContext(
-            namespace=namespace, action="anything",
+            namespace=namespace,
+            action="anything",
             agent_id=agent,
         )
         decision = await evaluate_decision(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert decision is True
 
@@ -884,7 +1051,8 @@ class TestContextValidation:
         ctx = EvaluationContext(namespace=namespace, action="read")
         with pytest.raises(ValueError, match="at least one"):
             await evaluate_with_trail(
-                ctx, cache=make_cache(store),
+                ctx,
+                cache=make_cache(store),
             )
 
 
@@ -916,30 +1084,47 @@ class TestLimitingSide:
         store.add_role(admin)
         store.add_group(ug)
         store.add_group(ag)
-        store.add_membership(GroupMembership(
-            group_id=ug.id, member_type=MemberType.USER,
-            member_id=user, customer_id=customer,
-        ))
-        store.add_membership(GroupMembership(
-            group_id=ag.id, member_type=MemberType.AGENT,
-            member_id=agent, customer_id=customer,
-        ))
-        store.add_assignment(_assignment(
-            role=reader, group=ug,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
-        store.add_assignment(_assignment(
-            role=admin, group=ag,
-            scope_type=ScopeType.NAMESPACE,
-            scope_namespace_id=namespace.id,
-        ))
+        store.add_membership(
+            GroupMembership(
+                group_id=ug.id,
+                member_type=MemberType.USER,
+                member_id=user,
+                customer_id=customer,
+            )
+        )
+        store.add_membership(
+            GroupMembership(
+                group_id=ag.id,
+                member_type=MemberType.AGENT,
+                member_id=agent,
+                customer_id=customer,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=reader,
+                group=ug,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
+        store.add_assignment(
+            _assignment(
+                role=admin,
+                group=ag,
+                scope_type=ScopeType.NAMESPACE,
+                scope_namespace_id=namespace.id,
+            )
+        )
         ctx = EvaluationContext(
-            namespace=namespace, action="read",
-            user_id=user, agent_id=agent,
+            namespace=namespace,
+            action="read",
+            user_id=user,
+            agent_id=agent,
         )
         result = await evaluate_with_trail(
-            ctx, cache=make_cache(store),
+            ctx,
+            cache=make_cache(store),
         )
         assert result.decision is True
         # user_actions = {read}; agent_actions = {read, write, delete}

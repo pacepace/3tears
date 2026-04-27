@@ -289,9 +289,7 @@ class TestConversationSetterWithCollection:
 
         assert entity.status == "closed"
         # composite-pk entity addresses cache via the (agent_id, id) tuple.
-        coll.set_field_sync.assert_called_with(
-            (data["agent_id"], data["id"]), "status", "closed"
-        )
+        coll.set_field_sync.assert_called_with((data["agent_id"], data["id"]), "status", "closed")
 
     def test_summary_setter_tracks_change(
         self,

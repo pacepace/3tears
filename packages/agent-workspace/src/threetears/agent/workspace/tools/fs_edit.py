@@ -263,9 +263,7 @@ class FsEditTool(TearsTool):
                                         outcome="success",
                                         correlation_id=correlation_id,
                                         details={
-                                            "workspace_resource_id": (
-                                                f"{workspace.id}/{relative_path}"
-                                            ),
+                                            "workspace_resource_id": (f"{workspace.id}/{relative_path}"),
                                             "bytes_before": old_size,
                                             "bytes_after": len(new_bytes),
                                             "sha256_before": old_sha,

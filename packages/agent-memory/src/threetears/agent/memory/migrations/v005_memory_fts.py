@@ -29,14 +29,9 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_ADD_SEARCH_VECTOR_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_vector TSVECTOR"
-)
+_ADD_SEARCH_VECTOR_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS search_vector TSVECTOR"
 
-_CREATE_SEARCH_VECTOR_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_search_vector "
-    "ON memories USING GIN (search_vector)"
-)
+_CREATE_SEARCH_VECTOR_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_search_vector ON memories USING GIN (search_vector)"
 
 _CREATE_TRIGGER_FUNC_SQL = """
 CREATE OR REPLACE FUNCTION memories_search_vector_update()
@@ -50,9 +45,7 @@ END
 $$ LANGUAGE plpgsql
 """
 
-_DROP_TRIGGER_SQL = (
-    "DROP TRIGGER IF EXISTS memories_search_vector_trigger ON memories"
-)
+_DROP_TRIGGER_SQL = "DROP TRIGGER IF EXISTS memories_search_vector_trigger ON memories"
 
 _CREATE_TRIGGER_SQL = """
 CREATE TRIGGER memories_search_vector_trigger

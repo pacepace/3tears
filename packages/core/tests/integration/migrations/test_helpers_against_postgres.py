@@ -203,8 +203,7 @@ async def test_replace_check_constraint_swaps_definition(
 ) -> None:
     """re-installing a CHECK with a wider set admits the new value."""
     await pg_conn.execute(
-        "CREATE TABLE w (c VARCHAR(8) NOT NULL, "
-        "CONSTRAINT w_c_ck CHECK (c IN ('a', 'b')))",
+        "CREATE TABLE w (c VARCHAR(8) NOT NULL, CONSTRAINT w_c_ck CHECK (c IN ('a', 'b')))",
     )
     store = _AsyncpgStore(pg_conn)
 
@@ -234,14 +233,12 @@ async def test_replace_check_constraint_short_circuits_with_engine_form(
     this pattern.
     """
     await pg_conn.execute(
-        "CREATE TABLE w (c VARCHAR(8) NOT NULL, "
-        "CONSTRAINT w_c_ck CHECK (c IN ('a', 'b')))",
+        "CREATE TABLE w (c VARCHAR(8) NOT NULL, CONSTRAINT w_c_ck CHECK (c IN ('a', 'b')))",
     )
     store = _AsyncpgStore(pg_conn)
     # capture the engine-stored form once so we can supply it back.
     engine_form: str = await pg_conn.fetchval(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-        "WHERE conname = 'w_c_ck'",
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'w_c_ck'",
     )
 
     oid_before = await pg_conn.fetchval(
@@ -309,8 +306,7 @@ async def test_replace_primary_key_basic_swap(
     )
 
     pk_def = await pg_conn.fetchval(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-        "WHERE conrelid = 'w'::regclass AND contype = 'p'",
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'w'::regclass AND contype = 'p'",
     )
     assert pk_def is not None
     assert "PRIMARY KEY (customer_id, id)" in pk_def
@@ -328,14 +324,12 @@ async def test_replace_primary_key_with_inbound_fk(
         "CREATE TABLE w (id UUID PRIMARY KEY, customer_id UUID NOT NULL)",
     )
     await pg_conn.execute(
-        "CREATE TABLE child (child_id UUID PRIMARY KEY, "
-        "parent_id UUID NOT NULL REFERENCES w(id) ON DELETE CASCADE)",
+        "CREATE TABLE child (child_id UUID PRIMARY KEY, parent_id UUID NOT NULL REFERENCES w(id) ON DELETE CASCADE)",
     )
     store = _AsyncpgStore(pg_conn)
 
     fk_name = await pg_conn.fetchval(
-        "SELECT conname FROM pg_constraint "
-        "WHERE conrelid = 'child'::regclass AND contype = 'f'",
+        "SELECT conname FROM pg_constraint WHERE conrelid = 'child'::regclass AND contype = 'f'",
     )
     assert fk_name is not None
 
@@ -355,8 +349,7 @@ async def test_replace_primary_key_with_inbound_fk(
 
     # FK still present after the swap, with CASCADE preserved.
     fk_def = await pg_conn.fetchval(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-        "WHERE conrelid = 'child'::regclass AND contype = 'f'",
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'child'::regclass AND contype = 'f'",
     )
     assert fk_def is not None
     assert "ON DELETE CASCADE" in fk_def
@@ -394,8 +387,7 @@ async def test_replace_primary_key_replay_is_noop(
         new_columns=("customer_id", "id"),
     )
     pk_oid_first = await pg_conn.fetchval(
-        "SELECT oid FROM pg_constraint "
-        "WHERE conrelid = 'w'::regclass AND contype = 'p'",
+        "SELECT oid FROM pg_constraint WHERE conrelid = 'w'::regclass AND contype = 'p'",
     )
     await replace_primary_key(
         store,
@@ -403,8 +395,7 @@ async def test_replace_primary_key_replay_is_noop(
         new_columns=("customer_id", "id"),
     )
     pk_oid_second = await pg_conn.fetchval(
-        "SELECT oid FROM pg_constraint "
-        "WHERE conrelid = 'w'::regclass AND contype = 'p'",
+        "SELECT oid FROM pg_constraint WHERE conrelid = 'w'::regclass AND contype = 'p'",
     )
     assert pk_oid_first == pk_oid_second
 
@@ -423,8 +414,7 @@ async def test_add_partition_column_lands_column_backfill_and_check(
     )
     await pg_conn.execute("INSERT INTO w (customer_id) VALUES (NULL)")
     await pg_conn.execute(
-        "INSERT INTO w (customer_id) VALUES "
-        "('22222222-2222-2222-2222-222222222222'::uuid)",
+        "INSERT INTO w (customer_id) VALUES ('22222222-2222-2222-2222-222222222222'::uuid)",
     )
     store = _AsyncpgStore(pg_conn)
 
@@ -447,6 +437,5 @@ async def test_add_partition_column_lands_column_backfill_and_check(
     # CHECK rejects non-allowed values.
     with pytest.raises(asyncpg.exceptions.CheckViolationError):
         await pg_conn.execute(
-            "INSERT INTO w (customer_id, row_scope) "
-            "VALUES (NULL, 'invalid')",
+            "INSERT INTO w (customer_id, row_scope) VALUES (NULL, 'invalid')",
         )

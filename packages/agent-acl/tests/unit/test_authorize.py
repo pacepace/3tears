@@ -212,7 +212,9 @@ class TestAuthorizeAllow:
         )
         store = FakeStore()
         _grant_user_read(
-            store=store, user_id=user, namespace_id=ns.id,
+            store=store,
+            user_id=user,
+            namespace_id=ns.id,
             customer_id=customer,
         )
         cache = AclCache(membership_loader=store, grant_loader=store)
@@ -243,7 +245,9 @@ class TestAuthorizeAllow:
         )
         store = FakeStore()
         _grant_user_read(
-            store=store, user_id=user, namespace_id=ns.id,
+            store=store,
+            user_id=user,
+            namespace_id=ns.id,
             customer_id=customer,
         )
         cache = AclCache(membership_loader=store, grant_loader=store)
@@ -344,7 +348,9 @@ class TestCacheHitRate:
         )
         store = _CountingFakeStore()
         _grant_user_read(
-            store=store, user_id=user, namespace_id=ns.id,
+            store=store,
+            user_id=user,
+            namespace_id=ns.id,
             customer_id=customer,
         )
         cache = AclCache(membership_loader=store, grant_loader=store)
@@ -379,7 +385,9 @@ class TestCacheHitRate:
         )
         store = _CountingFakeStore()
         _grant_user_read(
-            store=store, user_id=user, namespace_id=ns.id,
+            store=store,
+            user_id=user,
+            namespace_id=ns.id,
             customer_id=customer,
         )
         cache = AclCache(membership_loader=store, grant_loader=store)

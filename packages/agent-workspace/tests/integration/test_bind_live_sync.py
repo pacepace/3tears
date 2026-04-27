@@ -115,7 +115,8 @@ async def test_bind_live_watcher_imports_external_write(
         # simulate the awatch batch the OS would deliver; the production
         # helper is called verbatim.
         workspace = await fx.workspace_collection.find_by_id(
-            fx.agent_id, fx.workspace_id,
+            fx.agent_id,
+            fx.workspace_id,
         )
         assert workspace is not None
         just_wrote: deque[tuple[str, str]] = deque(maxlen=256)

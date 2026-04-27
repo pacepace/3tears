@@ -486,11 +486,7 @@ async def test_workspace_create_publishes_audit(
     #    the hub-side ``WorkspaceNamespaceEmitter`` to upsert the
     #    paired ``platform.namespaces`` row of type ``workspace``)
     # 2. AuditEvent on ns.audit.workspace.create (this test's subject)
-    audit_publishes = [
-        (subj, payload)
-        for subj, payload in nats.published
-        if subj == "ns.audit.workspace.create"
-    ]
+    audit_publishes = [(subj, payload) for subj, payload in nats.published if subj == "ns.audit.workspace.create"]
     assert len(audit_publishes) == 1, nats.published
     envelope = json.loads(audit_publishes[0][1].decode("utf-8"))
     assert envelope["event_type"] == "workspace.create"
@@ -503,15 +499,9 @@ async def test_workspace_create_publishes_audit(
 
     # workspace.create event published exactly once with the matching
     # owner_agent_id, namespace_name shape, and schema_name
-    workspace_publishes = [
-        (subj, payload)
-        for subj, payload in nats.published
-        if subj == "aibots.workspaces.create"
-    ]
+    workspace_publishes = [(subj, payload) for subj, payload in nats.published if subj == "aibots.workspaces.create"]
     assert len(workspace_publishes) == 1, nats.published
-    workspace_event = json.loads(
-        workspace_publishes[0][1].decode("utf-8")
-    )
+    workspace_event = json.loads(workspace_publishes[0][1].decode("utf-8"))
     assert workspace_event["owner_agent_id"] == str(agent_id)
     assert workspace_event["namespace_name"].startswith("workspaces.")
     assert workspace_event["schema_name"] == f"agent_{agent_id.hex}"

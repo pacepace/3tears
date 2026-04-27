@@ -200,7 +200,9 @@ class MemoryExtractor:
                 if embedding is None:
                     continue
                 similar = await self._get_similar_memories(
-                    embedding, user_id, agent_id,
+                    embedding,
+                    user_id,
+                    agent_id,
                 )
                 candidates.append(
                     {
@@ -337,7 +339,7 @@ class MemoryExtractor:
             worthy = result.get("worthy", False)
             reason = result.get("reason", "no_reason")
             return bool(worthy), str(reason)
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             log.warning("Failed to parse worthiness gate response, allowing extraction")
             return True, "parse_error"
         except Exception as exc:
@@ -403,7 +405,7 @@ class MemoryExtractor:
                         }
                     )
             return valid
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             log.warning("Failed to parse memory extraction LLM response")
             return []
         except Exception as exc:
@@ -531,7 +533,7 @@ class MemoryExtractor:
 
             return valid_actions
 
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError, KeyError:
             log.warning("Failed to parse memory resolution response, falling back to ADD all")
             return [{"index": i, "action": "ADD"} for i in range(len(candidates))]
         except Exception as exc:

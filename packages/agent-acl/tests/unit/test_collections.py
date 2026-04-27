@@ -29,7 +29,9 @@ from threetears.agent.acl import (
 
 
 def _make_collection(
-    cls: type, *, l3_pool: AsyncMock | None = None,
+    cls: type,
+    *,
+    l3_pool: AsyncMock | None = None,
 ) -> Any:
     """build a Collection instance with mocked registry + config.
 
@@ -80,7 +82,9 @@ def _group_row(
 
 
 def _role_row(
-    *, name: str = "Reader", is_builtin: bool = True,
+    *,
+    name: str = "Reader",
+    is_builtin: bool = True,
 ) -> dict[str, Any]:
     """build a fake ``roles`` row.
 
@@ -421,7 +425,8 @@ class TestEnsureGroupRoleAssignment:
     @pytest.mark.asyncio
     async def test_rejects_unsupported_scope_type(self) -> None:
         coll = _make_collection(
-            RoleAssignmentCollection, l3_pool=AsyncMock(),
+            RoleAssignmentCollection,
+            l3_pool=AsyncMock(),
         )
         with pytest.raises(ValueError):
             await coll.ensure_group_role_assignment(
@@ -434,7 +439,8 @@ class TestEnsureGroupRoleAssignment:
     @pytest.mark.asyncio
     async def test_rejects_namespace_scope_without_id(self) -> None:
         coll = _make_collection(
-            RoleAssignmentCollection, l3_pool=AsyncMock(),
+            RoleAssignmentCollection,
+            l3_pool=AsyncMock(),
         )
         with pytest.raises(ValueError):
             await coll.ensure_group_role_assignment(
@@ -447,7 +453,8 @@ class TestEnsureGroupRoleAssignment:
     @pytest.mark.asyncio
     async def test_rejects_all_scope_with_id(self) -> None:
         coll = _make_collection(
-            RoleAssignmentCollection, l3_pool=AsyncMock(),
+            RoleAssignmentCollection,
+            l3_pool=AsyncMock(),
         )
         with pytest.raises(ValueError):
             await coll.ensure_group_role_assignment(

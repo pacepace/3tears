@@ -109,12 +109,8 @@ def _make_call_request(
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
-    effective_correlation_id = (
-        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    )
-    effective_agent_id = (
-        agent_id if agent_id is not None else _DEFAULT_AGENT_ID
-    )
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    effective_agent_id = agent_id if agent_id is not None else _DEFAULT_AGENT_ID
     result = ProxyCallRequest(
         tool_name=tool_name,
         tool_version=tool_version,
@@ -155,9 +151,7 @@ def _make_tool_response(
     :return: serialized response bytes
     :rtype: bytes
     """
-    effective_correlation_id = (
-        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    )
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
     response = ProxyCallResponse(
         success=success,
         content=content,
@@ -281,9 +275,7 @@ class TestCallProxySuccess:
         assert "correlation_id" not in forwarded_payload
         assert forwarded_payload["context"]["correlation_id"] == str(correlation_id)
 
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         # ProxyCallResponse also moved correlation_id onto context
         assert "correlation_id" not in response_data
         assert response_data["context"]["correlation_id"] == str(correlation_id)
@@ -312,9 +304,7 @@ class TestCallProxyUnavailable:
         await asyncio.sleep(0)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error_code"] == "TOOL_UNAVAILABLE"
         assert "threetears.nonexistent@1.0.0" in response_data["error"]
@@ -336,9 +326,7 @@ class TestCallProxyUnavailable:
         await asyncio.sleep(0)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error_code"] == "TOOL_UNAVAILABLE"
 
@@ -385,9 +373,7 @@ class TestCallProxyTimeout:
         await asyncio.sleep(0)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert response_data["error_code"] == "TOOL_TIMEOUT"
         assert "2.0" in response_data["error"]
@@ -414,9 +400,7 @@ class TestCallProxyTimeout:
         await proxy.handle_call(msg)
         await asyncio.sleep(0)
 
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["context"]["correlation_id"] == str(correlation_id)
 
     @pytest.mark.asyncio
@@ -539,11 +523,11 @@ class TestCallProxyTimeout:
 
         nc.request_raw.assert_called_once()
         call_kwargs = nc.request_raw.call_args
-        assert call_kwargs.kwargs["timeout"].total_seconds() == 120.0, "slow_tool with timeout_seconds=120 must get 120s, not 30s"
-
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
+        assert call_kwargs.kwargs["timeout"].total_seconds() == 120.0, (
+            "slow_tool with timeout_seconds=120 must get 120s, not 30s"
         )
+
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is True
         assert "waited 100 seconds" in response_data["content"]
 
@@ -672,7 +656,9 @@ class TestCallProxyRouting:
         strategy = MagicMock()
         strategy.select = MagicMock(return_value=endpoint_second)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(),
+        proxy = CallProxy(
+            catalog,
+            AllowAllAuthorizer(),
             namespace="test",
             timeout=5.0,
             routing_strategy=strategy,

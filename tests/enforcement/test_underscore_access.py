@@ -76,22 +76,24 @@ _TIMEOUT_SECONDS = 60
 
 
 # files / directories never walked for source-scanning passes
-_SKIP_DIRS = frozenset({
-    ".venv",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    "__pycache__",
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    ".eggs",
-    "_build",
-    # cookiecutter template directories: the path literally contains
-    # '{{cookiecutter.x}}' and the files inside are jinja2 templates,
-    # not valid python source.
-})
+_SKIP_DIRS = frozenset(
+    {
+        ".venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".eggs",
+        "_build",
+        # cookiecutter template directories: the path literally contains
+        # '{{cookiecutter.x}}' and the files inside are jinja2 templates,
+        # not valid python source.
+    }
+)
 
 
 def _is_cookiecutter_template(path: Path) -> bool:
@@ -109,14 +111,17 @@ def _is_cookiecutter_template(path: Path) -> bool:
     result = any(("{{" in part or "}}" in part) for part in path.parts)
     return result
 
+
 # file-level markers that opt a module out of shape-C (missing __all__)
 # detection. these are modules that are intentionally "no public surface"
 # (pure script entrypoints, runtime __main__ shims, test conftests).
-_SHAPE_C_SKIP_BASENAMES = frozenset({
-    "conftest.py",
-    "__main__.py",
-    "_version.py",
-})
+_SHAPE_C_SKIP_BASENAMES = frozenset(
+    {
+        "conftest.py",
+        "__main__.py",
+        "_version.py",
+    }
+)
 
 
 # ------------------------------------------------------------------------
@@ -246,9 +251,7 @@ def same_package(a: Path, b: Path, src_roots: Iterable[Path]) -> bool:
     return result
 
 
-_ENTRY_RE = re.compile(
-    r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$"
-)
+_ENTRY_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$")
 
 
 def parse_exemptions(path: Path) -> list[ExemptionEntry]:
@@ -278,33 +281,22 @@ def parse_exemptions(path: Path) -> list[ExemptionEntry]:
         if line.startswith("#"):
             stripped = line.lstrip("#").strip()
             if stripped.lower().startswith("rationale:"):
-                rationale = stripped[len("rationale:"):].strip()
+                rationale = stripped[len("rationale:") :].strip()
                 if not rationale:
-                    raise ValueError(
-                        f"{path}:{lineno}: '# rationale:' must be followed by a "
-                        f"non-empty reason"
-                    )
+                    raise ValueError(f"{path}:{lineno}: '# rationale:' must be followed by a non-empty reason")
                 pending_rationale = rationale
             # non-rationale comment lines are ignored (no state change)
             continue
         match = _ENTRY_RE.match(line)
         if match is None:
-            raise ValueError(
-                f"{path}:{lineno}: malformed entry; expected 'file:line:symbol' "
-                f"triple, got {line!r}"
-            )
+            raise ValueError(f"{path}:{lineno}: malformed entry; expected 'file:line:symbol' triple, got {line!r}")
         if pending_rationale is None:
-            raise ValueError(
-                f"{path}:{lineno}: entry has no preceding '# rationale: ...' line"
-            )
+            raise ValueError(f"{path}:{lineno}: entry has no preceding '# rationale: ...' line")
         line_field = match.group("line")
         try:
             line_int = int(line_field)
         except ValueError as exc:
-            raise ValueError(
-                f"{path}:{lineno}: line number must be an integer, got "
-                f"{line_field!r}"
-            ) from exc
+            raise ValueError(f"{path}:{lineno}: line number must be an integer, got {line_field!r}") from exc
         entry = ExemptionEntry(
             file=match.group("file"),
             line=line_int,
@@ -349,7 +341,7 @@ def _parse_file(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8")
         result = ast.parse(source, filename=str(path))
-    except (SyntaxError, UnicodeDecodeError):
+    except SyntaxError, UnicodeDecodeError:
         result = None
     return result
 
@@ -365,18 +357,11 @@ def _is_private_name(name: str) -> bool:
     :return: whether name is a "private, module-internal" identifier
     :rtype: bool
     """
-    result = (
-        name.startswith("_")
-        and not name.startswith("__")
-        and name != "_"
-        and not name.endswith("_")
-    )
+    result = name.startswith("_") and not name.startswith("__") and name != "_" and not name.endswith("_")
     return result
 
 
-def _resolve_module_to_file(
-    module: str, src_roots: Iterable[Path]
-) -> Path | None:
+def _resolve_module_to_file(module: str, src_roots: Iterable[Path]) -> Path | None:
     """find the source file that defines a fully-qualified module name.
 
     :param module: dotted module path, e.g. ``threetears.core.backends.x``
@@ -428,10 +413,7 @@ def _shape_a_violations(
                 if node.level and node.level > 0:
                     # relative imports are always intra-package; skip.
                     continue
-                private_names = [
-                    alias for alias in node.names
-                    if _is_private_name(alias.name)
-                ]
+                private_names = [alias for alias in node.names if _is_private_name(alias.name)]
                 if not private_names:
                     continue
                 defining_file = _resolve_module_to_file(module, src_roots)
@@ -441,10 +423,7 @@ def _shape_a_violations(
                 if same_package(importer, defining_file, src_roots):
                     continue
                 for alias in private_names:
-                    detail = (
-                        f"imports private name '{alias.name}' from "
-                        f"'{module}' across package boundary"
-                    )
+                    detail = f"imports private name '{alias.name}' from '{module}' across package boundary"
                     violations.append(
                         Violation(
                             shape="A",
@@ -514,10 +493,7 @@ def _shape_c_violations(
             if not public_names:
                 continue
             first_name, first_line = public_names[0]
-            detail = (
-                f"module defines {len(public_names)} public name(s) but no "
-                f"__all__; first is '{first_name}'"
-            )
+            detail = f"module defines {len(public_names)} public name(s) but no __all__; first is '{first_name}'"
             violations.append(
                 Violation(
                     shape="C",
@@ -566,14 +542,10 @@ def _collect_class_private_attrs(
                             entries[item.name] = (file, item.lineno)
                     elif isinstance(item, ast.Assign):
                         for target in item.targets:
-                            if isinstance(target, ast.Name) and _is_private_name(
-                                target.id
-                            ):
+                            if isinstance(target, ast.Name) and _is_private_name(target.id):
                                 entries[target.id] = (file, item.lineno)
                     elif isinstance(item, ast.AnnAssign):
-                        if isinstance(item.target, ast.Name) and _is_private_name(
-                            item.target.id
-                        ):
+                        if isinstance(item.target, ast.Name) and _is_private_name(item.target.id):
                             entries[item.target.id] = (file, item.lineno)
     return result
 
@@ -629,14 +601,10 @@ def _shape_d_violations(
                             sub_privates.append((item.name, item.lineno))
                     elif isinstance(item, ast.Assign):
                         for target in item.targets:
-                            if isinstance(target, ast.Name) and _is_private_name(
-                                target.id
-                            ):
+                            if isinstance(target, ast.Name) and _is_private_name(target.id):
                                 sub_privates.append((target.id, item.lineno))
                     elif isinstance(item, ast.AnnAssign):
-                        if isinstance(item.target, ast.Name) and _is_private_name(
-                            item.target.id
-                        ):
+                        if isinstance(item.target, ast.Name) and _is_private_name(item.target.id):
                             sub_privates.append((item.target.id, item.lineno))
                 for base_name in base_names:
                     if base_name == node.name:
@@ -712,10 +680,7 @@ def _shape_e_violations(
                             target_line = node.lineno
                             break
                 elif isinstance(node, ast.AnnAssign):
-                    if (
-                        isinstance(node.target, ast.Name)
-                        and node.target.id == "__all__"
-                    ):
+                    if isinstance(node.target, ast.Name) and node.target.id == "__all__":
                         value = node.value
                         target_line = node.lineno
                 if value is None:
@@ -772,9 +737,12 @@ def _shape_b_violations(
     if not src_roots:
         return violations
     args = [
-        "ruff", "check",
-        "--select", "SLF001",
-        "--output-format", "concise",
+        "ruff",
+        "check",
+        "--select",
+        "SLF001",
+        "--output-format",
+        "concise",
         "--no-fix",
         "--force-exclude",
     ]
@@ -793,9 +761,7 @@ def _shape_b_violations(
         pytest.fail(f"ruff check timed out after {_TIMEOUT_SECONDS}s")
     output = completed.stdout.splitlines()
     # concise format: path:line:col: CODE message
-    pattern = re.compile(
-        r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+SLF001\s+(?P<detail>.+)$"
-    )
+    pattern = re.compile(r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+SLF001\s+(?P<detail>.+)$")
     for raw in output:
         match = pattern.match(raw)
         if match is None:
@@ -845,9 +811,7 @@ def _apply_exemptions(
     :rtype: list[Violation]
     """
     result: list[Violation] = []
-    exemption_keys = {
-        (entry.file, entry.line, entry.symbol) for entry in exemptions
-    }
+    exemption_keys = {(entry.file, entry.line, entry.symbol) for entry in exemptions}
     for violation in violations:
         try:
             rel = str(violation.file.relative_to(repo_root))
@@ -919,10 +883,7 @@ def _mode() -> str:
     """
     raw = os.environ.get("UNDERSCORE_AUDIT_MODE", _DEFAULT_MODE).strip().lower()
     if raw not in (MODE_REPORT, MODE_STRICT):
-        raise ValueError(
-            f"UNDERSCORE_AUDIT_MODE must be '{MODE_REPORT}' or "
-            f"'{MODE_STRICT}', got {raw!r}"
-        )
+        raise ValueError(f"UNDERSCORE_AUDIT_MODE must be '{MODE_REPORT}' or '{MODE_STRICT}', got {raw!r}")
     return raw
 
 
@@ -935,9 +896,7 @@ class TestUnderscoreAccess:
         raw_violations, src_roots = _collect_all_violations()
         filtered = _apply_exemptions(raw_violations, exemptions, _REPO_ROOT)
         mode = _mode()
-        by_shape: dict[str, list[Violation]] = {
-            "A": [], "B": [], "C": [], "D": [], "E": []
-        }
+        by_shape: dict[str, list[Violation]] = {"A": [], "B": [], "C": [], "D": [], "E": []}
         for violation in filtered:
             by_shape.setdefault(violation.shape, []).append(violation)
         lines: list[str] = [
@@ -953,9 +912,7 @@ class TestUnderscoreAccess:
             f"  shape-D (subclass shadows base private): {len(by_shape['D'])}",
             f"  shape-E (__all__ contains private name): {len(by_shape['E'])}",
         ]
-        for violation in sorted(
-            filtered, key=lambda v: (v.shape, str(v.file), v.line, v.symbol)
-        ):
+        for violation in sorted(filtered, key=lambda v: (v.shape, str(v.file), v.line, v.symbol)):
             lines.append(violation.format(_REPO_ROOT))
         report = "\n".join(lines)
         # always print so ``-s`` surfaces the inventory even in strict mode
@@ -963,7 +920,4 @@ class TestUnderscoreAccess:
         if mode == MODE_REPORT:
             return
         if filtered:
-            pytest.fail(
-                f"underscore-access enforcement found {len(filtered)} "
-                f"violation(s):\n{report}"
-            )
+            pytest.fail(f"underscore-access enforcement found {len(filtered)} violation(s):\n{report}")

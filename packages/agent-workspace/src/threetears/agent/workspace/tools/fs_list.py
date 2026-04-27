@@ -210,7 +210,7 @@ class FsListTool(TearsTool):
                     db_pool=None,
                     acl_cache=self._acl_cache,
                 )
-            except (SandboxDenied, WorkspaceAccessDenied):
+            except SandboxDenied, WorkspaceAccessDenied:
                 continue
             result.append(row)
         return result

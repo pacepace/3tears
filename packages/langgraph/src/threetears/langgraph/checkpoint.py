@@ -223,7 +223,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         if self._l2 is not None:
             try:
                 result = await self._l2.get(
-                    self._l2_bucket, self.l2_key(thread_id, checkpoint_ns),
+                    self._l2_bucket,
+                    self.l2_key(thread_id, checkpoint_ns),
                 )
             except Exception:
                 log.warning("L2 checkpoint read failed", exc_info=True)
@@ -246,7 +247,9 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return
         try:
             await self._l2.put(
-                self._l2_bucket, self.l2_key(thread_id, checkpoint_ns), data,
+                self._l2_bucket,
+                self.l2_key(thread_id, checkpoint_ns),
+                data,
             )
         except Exception:
             log.warning("L2 checkpoint write failed", exc_info=True)
@@ -263,7 +266,8 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             return
         try:
             await self._l2.delete(
-                self._l2_bucket, self.l2_key(thread_id, ""),
+                self._l2_bucket,
+                self.l2_key(thread_id, ""),
             )
         except Exception:
             log.warning("L2 checkpoint delete failed", exc_info=True)
@@ -481,11 +485,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         checkpoint: Checkpoint = self.serde.loads_typed((cp_type or "msgpack", cp_blob))
         metadata: CheckpointMetadata = cast(
             CheckpointMetadata,
-            (
-                self.serde.loads_typed((cp_type or "msgpack", md_blob))
-                if md_blob and md_blob != b"\x00"
-                else {}
-            ),
+            (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
         )
 
         write_rows = await self._exec.fetch(
@@ -540,7 +540,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # Warm L1 and L2
         try:
             cache_blob = self.serialize_checkpoint_tuple(
-                checkpoint, metadata, parent_id, pending_writes,
+                checkpoint,
+                metadata,
+                parent_id,
+                pending_writes,
             )
             await self.l2_put(thread_id, checkpoint_ns, cache_blob)
             await self.l1_put(thread_id, checkpoint_ns, cache_blob)
@@ -608,11 +611,7 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
             )
             metadata: CheckpointMetadata = cast(
                 CheckpointMetadata,
-                (
-                    self.serde.loads_typed((cp_type or "msgpack", md_blob))
-                    if md_blob and md_blob != b"\x00"
-                    else {}
-                ),
+                (self.serde.loads_typed((cp_type or "msgpack", md_blob)) if md_blob and md_blob != b"\x00" else {}),
             )
 
             if filter and not all(metadata.get(k) == v for k, v in filter.items()):
@@ -704,7 +703,10 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         # --- Warm L2 and L1 caches ---
         try:
             cache_blob = self.serialize_checkpoint_tuple(
-                checkpoint, serializable_metadata, parent_checkpoint_id, [],
+                checkpoint,
+                serializable_metadata,
+                parent_checkpoint_id,
+                [],
             )
             await self.l2_put(thread_id, checkpoint_ns, cache_blob)
             await self.l1_put(thread_id, checkpoint_ns, cache_blob)
@@ -784,10 +786,12 @@ class ThreeTierCheckpointSaver(BaseCheckpointSaver[int]):
         :rtype: None
         """
         await self._exec.execute(
-            "DELETE FROM checkpoint_writes WHERE thread_id = $1", thread_id,
+            "DELETE FROM checkpoint_writes WHERE thread_id = $1",
+            thread_id,
         )
         await self._exec.execute(
-            "DELETE FROM checkpoints WHERE thread_id = $1", thread_id,
+            "DELETE FROM checkpoints WHERE thread_id = $1",
+            thread_id,
         )
 
         await self.l2_delete(thread_id)

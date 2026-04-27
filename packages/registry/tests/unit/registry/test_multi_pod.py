@@ -137,12 +137,8 @@ def _make_call_request(
     """
     if arguments is None:
         arguments = {"expression": "2+2"}
-    effective_correlation_id = (
-        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    )
-    effective_agent_id = (
-        agent_id if agent_id is not None else _DEFAULT_AGENT_ID
-    )
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
+    effective_agent_id = agent_id if agent_id is not None else _DEFAULT_AGENT_ID
     result = ProxyCallRequest(
         tool_name=tool_name,
         tool_version=tool_version,
@@ -172,9 +168,7 @@ def _make_tool_response(
     :return: serialized response bytes
     :rtype: bytes
     """
-    effective_correlation_id = (
-        correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    )
+    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
     response = ProxyCallResponse(
         success=success,
         content=content,
@@ -278,9 +272,7 @@ class TestMultiPodRegistration:
         msg_a = _make_nats_msg(data=manifest_a.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_a)
 
-        response_a = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_a = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_a["success"] is True
 
         nc.reset_mock()
@@ -289,9 +281,7 @@ class TestMultiPodRegistration:
         msg_b = _make_nats_msg(data=manifest_b.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_b)
 
-        response_b = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_b = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_b["success"] is True
 
         entry = catalog.get("threetears.calculator@1.0.0")
@@ -344,9 +334,7 @@ class TestMultiPodRegistration:
         msg_again = _make_nats_msg(data=manifest_again.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg_again)
 
-        response = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response["success"] is True
 
         entry_after = catalog.get("threetears.calculator@1.0.0")
@@ -558,9 +546,7 @@ class TestMultiPodDiscovery:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["name"] == "threetears.calculator"
@@ -593,9 +579,7 @@ class TestMultiPodDiscovery:
         await handler.handle_discover(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert len(response_data["tools"]) == 1
         tool_result = response_data["tools"][0]
         assert tool_result["status"] == "available"

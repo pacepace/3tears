@@ -288,7 +288,9 @@ class TestComposeAgentNodeHooks:
             ],
         )
         out_msgs, _ = await composed.before_invoke(
-            [HumanMessage(content="seed")], {"configurable": {}}, {},
+            [HumanMessage(content="seed")],
+            {"configurable": {}},
+            {},
         )
         # hooks each append one sentinel -> total 3 messages
         assert len(out_msgs) == 3
@@ -310,7 +312,9 @@ class TestComposeAgentNodeHooks:
             ],
         )
         out = await composed.after_invoke(
-            AIMessage(content="x"), {"configurable": {}}, {},
+            AIMessage(content="x"),
+            {"configurable": {}},
+            {},
         )
         assert events == ["after:a", "after:b"]
         assert isinstance(out, AIMessage)
@@ -355,7 +359,9 @@ class TestComposeToolNodeHooks:
             ],
         )
         await composed.before_dispatch(
-            [{"id": "1", "name": "t", "args": {}}], {"configurable": {}}, {},
+            [{"id": "1", "name": "t", "args": {}}],
+            {"configurable": {}},
+            {},
         )
         assert events == ["before_dispatch:a:1", "before_dispatch:b:1"]
 
@@ -373,7 +379,9 @@ class TestComposeToolNodeHooks:
             ],
         )
         await composed.on_tool_start(
-            {"id": "1", "name": "calc", "args": {}}, {"configurable": {}}, {},
+            {"id": "1", "name": "calc", "args": {}},
+            {"configurable": {}},
+            {},
         )
         assert events == ["start:a:calc", "start:b:calc"]
 

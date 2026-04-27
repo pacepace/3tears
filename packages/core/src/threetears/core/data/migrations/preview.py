@@ -130,9 +130,7 @@ class PreviewStore:
         normalized = " ".join(sql.split()).upper()
         is_bookkeeping = any(normalized.startswith(p) for p in _BOOKKEEPING_PREFIXES)
         kind = "BOOKKEEPING" if is_bookkeeping else "DDL"
-        self.captured.append(
-            CapturedStatement(sql=sql, params=tuple(params), kind=kind)
-        )
+        self.captured.append(CapturedStatement(sql=sql, params=tuple(params), kind=kind))
         result = "PREVIEW"
         return result
 

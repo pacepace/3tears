@@ -48,7 +48,8 @@ class TestPartitionWalkerPositive:
     """clean source surfaces no walker violation."""
 
     def test_select_with_partition_predicate_passes(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``WHERE agent_id = $1`` on memories produces no violation."""
         target = _write(
@@ -60,7 +61,8 @@ class TestPartitionWalkerPositive:
         assert deferred == []
 
     def test_unrelated_select_produces_no_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """SQL on a non-partitioned table is ignored."""
         target = _write(
@@ -72,7 +74,8 @@ class TestPartitionWalkerPositive:
         assert deferred == []
 
     def test_docstring_mentioning_table_is_not_sql(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """a docstring that mentions ``FROM memories`` is not flagged."""
         target = _write(
@@ -88,7 +91,8 @@ class TestPartitionWalkerNegative:
     """deliberate violation surfaces a clear walker message."""
 
     def test_select_without_partition_predicate_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``SELECT * FROM memories WHERE user_id = $1`` is a violation."""
         target = _write(
@@ -104,15 +108,13 @@ class TestPartitionWalkerNegative:
         assert str(target) in joined
 
     def test_violation_message_carries_file_and_line(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """walker output identifies path:line for the offending literal."""
         target = _write(
             tmp_path / "src" / "pkg" / "deep.py",
-            (
-                "# leading comment\n"
-                "SQL = 'SELECT id FROM memories'\n"
-            ),
+            ("# leading comment\nSQL = 'SELECT id FROM memories'\n"),
         )
         strict, deferred = _violations_in_file(target)
         all_msgs = strict + deferred
@@ -127,12 +129,7 @@ class TestPartitionWalkerExemption:
         """``websearch_to_tsquery`` matches the dynamic-scope-clause exemption."""
         target = _write(
             tmp_path / "src" / "pkg" / "mod.py",
-            (
-                "SQL = '"
-                "SELECT * FROM memories WHERE search_vector @@ "
-                "websearch_to_tsquery(\\'english\\', $1)"
-                "'\n"
-            ),
+            ("SQL = 'SELECT * FROM memories WHERE search_vector @@ websearch_to_tsquery(\\'english\\', $1)'\n"),
         )
         strict, deferred = _violations_in_file(target)
         assert strict == []

@@ -147,6 +147,7 @@ class TestMembershipLayer:
     def test_put_then_get_returns_entry(self) -> None:
         """entry is round-tripped intact."""
         from threetears.agent.acl import MemberType
+
         cache = _make_cache(ttl_seconds=60)
         user = uuid4()
         customer = uuid4()
@@ -254,7 +255,9 @@ class TestGroupTypeCustomerLayer:
         """entry round-trip works."""
         cache = _make_cache(ttl_seconds=60)
         key = GroupTypeCustomerKey(
-            group_id=uuid4(), namespace_type="workspace", customer_id=uuid4(),
+            group_id=uuid4(),
+            namespace_type="workspace",
+            customer_id=uuid4(),
         )
         cache.put_group_type_customer(key, frozenset({"read"}), ())
         entry = cache.get_group_type_customer(key)
@@ -265,10 +268,14 @@ class TestGroupTypeCustomerLayer:
         """targeted invalidate drops one entry without touching others."""
         cache = _make_cache(ttl_seconds=60)
         key = GroupTypeCustomerKey(
-            group_id=uuid4(), namespace_type="workspace", customer_id=uuid4(),
+            group_id=uuid4(),
+            namespace_type="workspace",
+            customer_id=uuid4(),
         )
         other = GroupTypeCustomerKey(
-            group_id=uuid4(), namespace_type="workspace", customer_id=uuid4(),
+            group_id=uuid4(),
+            namespace_type="workspace",
+            customer_id=uuid4(),
         )
         cache.put_group_type_customer(key, frozenset({"read"}), ())
         cache.put_group_type_customer(other, frozenset({"read"}), ())
@@ -293,27 +300,39 @@ class TestGroupFanOutInvalidation:
         ns_a, ns_b = uuid4(), uuid4()
         cache.put_group_namespace(
             GroupNamespaceKey(group_id=group, namespace_id=ns_a),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         cache.put_group_namespace(
             GroupNamespaceKey(group_id=group, namespace_id=ns_b),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         cache.put_group_namespace(
             GroupNamespaceKey(group_id=other_group, namespace_id=ns_a),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         cache.invalidate_group(group)
-        assert cache.get_group_namespace(
-            GroupNamespaceKey(group_id=group, namespace_id=ns_a),
-        ) is None
-        assert cache.get_group_namespace(
-            GroupNamespaceKey(group_id=group, namespace_id=ns_b),
-        ) is None
+        assert (
+            cache.get_group_namespace(
+                GroupNamespaceKey(group_id=group, namespace_id=ns_a),
+            )
+            is None
+        )
+        assert (
+            cache.get_group_namespace(
+                GroupNamespaceKey(group_id=group, namespace_id=ns_b),
+            )
+            is None
+        )
         # other group untouched
-        assert cache.get_group_namespace(
-            GroupNamespaceKey(group_id=other_group, namespace_id=ns_a),
-        ) is not None
+        assert (
+            cache.get_group_namespace(
+                GroupNamespaceKey(group_id=other_group, namespace_id=ns_a),
+            )
+            is not None
+        )
 
     def test_drops_type_customer_entries_for_group(self) -> None:
         """type+customer entries for the group are also dropped."""
@@ -322,18 +341,24 @@ class TestGroupFanOutInvalidation:
         customer = uuid4()
         cache.put_group_type_customer(
             GroupTypeCustomerKey(
-                group_id=group, namespace_type="workspace",
+                group_id=group,
+                namespace_type="workspace",
                 customer_id=customer,
             ),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         cache.invalidate_group(group)
-        assert cache.get_group_type_customer(
-            GroupTypeCustomerKey(
-                group_id=group, namespace_type="workspace",
-                customer_id=customer,
-            ),
-        ) is None
+        assert (
+            cache.get_group_type_customer(
+                GroupTypeCustomerKey(
+                    group_id=group,
+                    namespace_type="workspace",
+                    customer_id=customer,
+                ),
+            )
+            is None
+        )
 
     def test_does_not_touch_membership_layer(self) -> None:
         """``invalidate_group`` is scoped to the assignment layers."""
@@ -379,7 +404,8 @@ class TestTtl:
         """type+customer entry past ttl is dropped on read."""
         cache = _make_cache(ttl_seconds=0)
         key = GroupTypeCustomerKey(
-            group_id=uuid4(), namespace_type="workspace",
+            group_id=uuid4(),
+            namespace_type="workspace",
             customer_id=uuid4(),
         )
         cache.put_group_type_customer(key, frozenset({"read"}), ())
@@ -400,18 +426,22 @@ class TestBulkOperations:
         """one call drops everything across the three layers."""
         cache = _make_cache(ttl_seconds=60)
         cache.put_membership(
-            ActorMembershipKey(actor_kind="user", actor_id=uuid4()), (),
+            ActorMembershipKey(actor_kind="user", actor_id=uuid4()),
+            (),
         )
         cache.put_group_namespace(
             GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4()),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         cache.put_group_type_customer(
             GroupTypeCustomerKey(
-                group_id=uuid4(), namespace_type="workspace",
+                group_id=uuid4(),
+                namespace_type="workspace",
                 customer_id=uuid4(),
             ),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         assert cache.size == 3
         cache.invalidate_all()
@@ -425,19 +455,23 @@ class TestBulkOperations:
         cache = _make_cache(ttl_seconds=60)
         for _ in range(3):
             cache.put_membership(
-                ActorMembershipKey(actor_kind="user", actor_id=uuid4()), (),
+                ActorMembershipKey(actor_kind="user", actor_id=uuid4()),
+                (),
             )
         for _ in range(2):
             cache.put_group_namespace(
                 GroupNamespaceKey(group_id=uuid4(), namespace_id=uuid4()),
-                frozenset({"read"}), (),
+                frozenset({"read"}),
+                (),
             )
         cache.put_group_type_customer(
             GroupTypeCustomerKey(
-                group_id=uuid4(), namespace_type="workspace",
+                group_id=uuid4(),
+                namespace_type="workspace",
                 customer_id=uuid4(),
             ),
-            frozenset({"read"}), (),
+            frozenset({"read"}),
+            (),
         )
         assert cache.membership_size == 3
         assert cache.group_namespace_size == 2
@@ -469,7 +503,8 @@ class TestConcurrentAccess:
                 for _ in range(500):
                     cache.put_membership(
                         ActorMembershipKey(
-                            actor_kind="user", actor_id=uuid4(),
+                            actor_kind="user",
+                            actor_id=uuid4(),
                         ),
                         (),
                     )

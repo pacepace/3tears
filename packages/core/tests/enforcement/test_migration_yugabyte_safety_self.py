@@ -74,7 +74,8 @@ class TestMigrationWalkerPositive:
         assert violations == []
 
     def test_check_constraint_with_existence_probe_passes(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """DO block with NOT EXISTS guard satisfies M-3."""
         target = _write(
@@ -139,68 +140,50 @@ class TestMigrationWalkerNegative:
         )
         violations = find_migration_violations(target)
         rule_hits = [v for v in violations if v.rule == RULE_M1_DDL_DML_MIXING]
-        assert rule_hits != [], (
-            f"expected M-1 violation; got: {[v.format() for v in violations]}"
-        )
+        assert rule_hits != [], f"expected M-1 violation; got: {[v.format() for v in violations]}"
 
     def test_m2_missing_replay_guard_flagged(self, tmp_path: Path) -> None:
         """UPDATE backfill without replay guard produces M-2 hit."""
         target = _write(
             tmp_path / "src" / "pkg" / "migrations" / "v001.py",
-            (
-                "SQL = \"UPDATE t SET c = 'x' WHERE customer_id IS NULL\"\n"
-            ),
+            ("SQL = \"UPDATE t SET c = 'x' WHERE customer_id IS NULL\"\n"),
         )
         violations = find_migration_violations(target)
         rule_hits = [v for v in violations if v.rule == RULE_M2_REPLAY_GUARD]
-        assert rule_hits != [], (
-            f"expected M-2 violation; got: {[v.format() for v in violations]}"
-        )
+        assert rule_hits != [], f"expected M-2 violation; got: {[v.format() for v in violations]}"
 
     def test_m3_missing_if_not_exists_flagged(self, tmp_path: Path) -> None:
         """bare CREATE TABLE produces M-3 hit."""
         target = _write(
             tmp_path / "src" / "pkg" / "migrations" / "v001.py",
-            (
-                "SQL = 'CREATE TABLE t (id INTEGER PRIMARY KEY)'\n"
-            ),
+            ("SQL = 'CREATE TABLE t (id INTEGER PRIMARY KEY)'\n"),
         )
         violations = find_migration_violations(target)
         rule_hits = [v for v in violations if v.rule == RULE_M3_IDEMPOTENCY]
-        assert rule_hits != [], (
-            f"expected M-3 violation; got: {[v.format() for v in violations]}"
-        )
+        assert rule_hits != [], f"expected M-3 violation; got: {[v.format() for v in violations]}"
 
     def test_m4_composite_pk_without_unique_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """ADD CONSTRAINT PRIMARY KEY (a, b) without UNIQUE produces M-4 hit."""
         target = _write(
             tmp_path / "src" / "pkg" / "migrations" / "v001.py",
-            (
-                "SQL = 'ALTER TABLE t ADD CONSTRAINT t_pkey "
-                "PRIMARY KEY (customer_id, id)'\n"
-            ),
+            ("SQL = 'ALTER TABLE t ADD CONSTRAINT t_pkey PRIMARY KEY (customer_id, id)'\n"),
         )
         violations = find_migration_violations(target)
         rule_hits = [v for v in violations if v.rule == RULE_M4_PK_UNIQUE]
-        assert rule_hits != [], (
-            f"expected M-4 violation; got: {[v.format() for v in violations]}"
-        )
+        assert rule_hits != [], f"expected M-4 violation; got: {[v.format() for v in violations]}"
 
     def test_m5_truncate_flagged(self, tmp_path: Path) -> None:
         """TRUNCATE TABLE produces M-5 hit."""
         target = _write(
             tmp_path / "src" / "pkg" / "migrations" / "v001.py",
-            (
-                "SQL = 'TRUNCATE TABLE media CASCADE'\n"
-            ),
+            ("SQL = 'TRUNCATE TABLE media CASCADE'\n"),
         )
         violations = find_migration_violations(target)
         rule_hits = [v for v in violations if v.rule == RULE_M5_TRUNCATE]
-        assert rule_hits != [], (
-            f"expected M-5 violation; got: {[v.format() for v in violations]}"
-        )
+        assert rule_hits != [], f"expected M-5 violation; got: {[v.format() for v in violations]}"
 
 
 # ---------------------------------------------------------------------------
@@ -231,29 +214,25 @@ class TestMigrationWalkerExemption:
         assert rule_hits == []
 
     def test_exemption_meta_rejects_blank_rationale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """exemption line lacking a rationale is surfaced via ``missing``."""
         exempt_file = _write(
             tmp_path / "exemptions.txt",
-            (
-                "/some/path.py:M-5 # rationale:\n"
-                "/another/path.py:M-1 # internal access needed\n"
-            ),
+            ("/some/path.py:M-5 # rationale:\n/another/path.py:M-1 # internal access needed\n"),
         )
         _, missing = load_exemptions(exempt_file)
         assert len(missing) == 2
 
     def test_exemption_with_specific_rationale_accepted(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """non-blank rationale is accepted; pair is included in the set."""
         exempt_file = _write(
             tmp_path / "exemptions.txt",
-            (
-                "/foo/v009.py:M-5 # rationale: pre-GA TRUNCATE before "
-                "NOT NULL switch on partitioned media table\n"
-            ),
+            ("/foo/v009.py:M-5 # rationale: pre-GA TRUNCATE before NOT NULL switch on partitioned media table\n"),
         )
         exemptions, missing = load_exemptions(exempt_file)
         assert missing == []

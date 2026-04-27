@@ -108,9 +108,7 @@ END
 $$
 """
 
-_SET_AGENT_ID_NOT_NULL_SQL = (
-    "ALTER TABLE media ALTER COLUMN agent_id SET NOT NULL"
-)
+_SET_AGENT_ID_NOT_NULL_SQL = "ALTER TABLE media ALTER COLUMN agent_id SET NOT NULL"
 
 
 async def media_composite_fk(store: DataStore) -> None:

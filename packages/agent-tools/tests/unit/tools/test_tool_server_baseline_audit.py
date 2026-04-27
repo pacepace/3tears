@@ -333,7 +333,9 @@ async def test_baseline_audit_skipped_when_no_nats_client() -> None:
     """server constructed with ``nats_url`` and no client skips emission."""
     # nats_url set but no connected client (serve not called) -> _nc is None
     server = ToolServer(
-        nats_url="nats://localhost:1234", namespace="ns", namespace_collection=None,
+        nats_url="nats://localhost:1234",
+        namespace="ns",
+        namespace_collection=None,
     )
     server.register(_StubTool())
 

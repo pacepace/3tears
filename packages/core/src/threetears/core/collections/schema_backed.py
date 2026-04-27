@@ -265,13 +265,11 @@ class TableSchema:
         for pk_col in pk_cols:
             if pk_col not in by_name:
                 raise ValueError(
-                    f"TableSchema(name={self.name!r}): primary_key column "
-                    f"{pk_col!r} not found in columns",
+                    f"TableSchema(name={self.name!r}): primary_key column {pk_col!r} not found in columns",
                 )
         if self.cas_column is not None and self.cas_column not in by_name:
             raise ValueError(
-                f"TableSchema(name={self.name!r}): cas_column "
-                f"{self.cas_column!r} not found in columns",
+                f"TableSchema(name={self.name!r}): cas_column {self.cas_column!r} not found in columns",
             )
         # dataclass is frozen, use object.__setattr__ to install derived
         # attributes
@@ -560,7 +558,7 @@ def _decode_jsonb(value: Any) -> Any:
     elif isinstance(value, str) and value:
         try:
             result = json.loads(value)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             result = value
     else:
         result = value
@@ -653,12 +651,16 @@ def spans_partitions(method: F) -> F: ...
 
 @overload
 def spans_partitions(
-    method: None = None, *, marker_only: bool = False,
+    method: None = None,
+    *,
+    marker_only: bool = False,
 ) -> Callable[[F], F]: ...
 
 
 def spans_partitions(
-    method: F | None = None, *, marker_only: bool = False,
+    method: F | None = None,
+    *,
+    marker_only: bool = False,
 ) -> F | Callable[[F], F]:
     """mark a Collection method as deliberately cross-partition.
 
@@ -712,6 +714,7 @@ def spans_partitions(
         target method has no ``_ids``-suffix parameter and
         ``marker_only=True`` was not passed
     """
+
     def _decorate(target: F) -> F:
         sig = inspect.signature(target)
         plural_param: str | None = None
@@ -795,7 +798,7 @@ def _method_accepts_partition(method: Any, partition_column: str) -> bool:
     """
     try:
         sig = inspect.signature(method)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return partition_column in sig.parameters
 
@@ -1004,8 +1007,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         schema = self.schema
         if schema.cas_column is None:
             raise RuntimeError(
-                f"TableSchema(name={schema.name!r}): CAS UPDATE requires "
-                f"cas_column to be set",
+                f"TableSchema(name={schema.name!r}): CAS UPDATE requires cas_column to be set",
             )
         pk_cols = schema.pk_columns
         mutable = schema.mutable_columns()
@@ -1019,10 +1021,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         # final $ is the CAS fence value
         cas_idx = next_idx
         set_clause = ", ".join(set_parts)
-        result = (
-            f"UPDATE {schema.name} SET {set_clause} "
-            f"WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
-        )
+        result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
         return result
 
     def _build_fetch_sql(self) -> str:
@@ -1121,8 +1120,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = None
         else:
             raise KeyError(
-                f"{self.schema.name}.save_to_postgres: required column "
-                f"{column.name!r} missing from data",
+                f"{self.schema.name}.save_to_postgres: required column {column.name!r} missing from data",
             )
         return result
 
@@ -1137,7 +1135,9 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self.schema.columns]
 
     def _build_cas_params(
-        self, data: dict[str, Any], original_timestamp: datetime,
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime,
     ) -> list[Any]:
         """build the parameter list for the CAS UPDATE path.
 
@@ -1250,9 +1250,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         else:
             schema = self.schema
             cas_eligible = (
-                schema.cas_column is not None
-                and original_timestamp is not None
-                and schema.on_conflict == "update"
+                schema.cas_column is not None and original_timestamp is not None and schema.on_conflict == "update"
             )
             if cas_eligible:
                 sql = self._build_cas_update_sql()

@@ -40,23 +40,14 @@ CREATE TABLE IF NOT EXISTS memories (
 )
 """
 
-_CREATE_MEM_AGENT_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_agent ON memories (agent_id)"
-)
+_CREATE_MEM_AGENT_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_agent ON memories (agent_id)"
 
-_CREATE_MEM_CUSTOMER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_customer "
-    "ON memories (agent_id, customer_id)"
-)
+_CREATE_MEM_CUSTOMER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_customer ON memories (agent_id, customer_id)"
 
-_CREATE_MEM_USER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_user "
-    "ON memories (agent_id, customer_id, user_id)"
-)
+_CREATE_MEM_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_user ON memories (agent_id, customer_id, user_id)"
 
 _CREATE_MEM_EMBEDDING_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_embedding "
-    "ON memories USING hnsw (embedding vector_cosine_ops)"
+    "CREATE INDEX IF NOT EXISTS idx_mem_embedding ON memories USING hnsw (embedding vector_cosine_ops)"
 )
 
 

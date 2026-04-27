@@ -72,9 +72,7 @@ _TABLE_REF = r'(?P<table_ref>(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)(?:\.(?:"[^"]+"|[
 
 # captures "CREATE TABLE IF NOT EXISTS <name> ( <body> )"
 _RE_CREATE_TABLE = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
-    + _TABLE_REF
-    + r"\s*\((?P<body>.*)\)\s*$",
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?" + _TABLE_REF + r"\s*\((?P<body>.*)\)\s*$",
     flags=re.IGNORECASE | re.DOTALL,
 )
 
@@ -82,18 +80,14 @@ _RE_CREATE_TABLE = re.compile(
 # the type character class permits digits, commas, whitespace, and
 # parentheses so ``NUMERIC(10, 6)`` parses as one token.
 _RE_ADD_COLUMN = re.compile(
-    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?"
-    + _TABLE_REF
-    + r"\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?" + _TABLE_REF + r"\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
     r"(?P<col>[A-Za-z_][A-Za-z0-9_]*)\s+(?P<type>[A-Za-z0-9_ ,()]+?)(?:\s+(?:NOT|DEFAULT|REFERENCES|UNIQUE|CHECK|PRIMARY)|$)",
     flags=re.IGNORECASE,
 )
 
 # captures "ALTER TABLE <name> DROP COLUMN [IF EXISTS] <col>"
 _RE_DROP_COLUMN = re.compile(
-    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?"
-    + _TABLE_REF
-    + r"\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"
+    r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?" + _TABLE_REF + r"\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"
     r"(?P<col>[A-Za-z_][A-Za-z0-9_]*)",
     flags=re.IGNORECASE,
 )
@@ -210,16 +204,10 @@ class DriftReport:
             "clean": self.is_clean(),
             "missing_tables": list(self.missing_tables),
             "extra_tables": list(self.extra_tables),
-            "missing_columns": [
-                {"table": t, "column": c} for t, c in self.missing_columns
-            ],
-            "extra_columns": [
-                {"table": t, "column": c, "data_type": dt}
-                for t, c, dt in self.extra_columns
-            ],
+            "missing_columns": [{"table": t, "column": c} for t, c in self.missing_columns],
+            "extra_columns": [{"table": t, "column": c, "data_type": dt} for t, c, dt in self.extra_columns],
             "type_mismatches": [
-                {"table": t, "column": c, "expected": e, "actual": a}
-                for t, c, e, a in self.type_mismatches
+                {"table": t, "column": c, "expected": e, "actual": a} for t, c, e, a in self.type_mismatches
             ],
         }
         return result
@@ -412,9 +400,7 @@ def parse_ddl_to_expected(statements: list[str]) -> dict[str, ExpectedTable]:
                 if parsed is not None:
                     col_name, col_type = parsed
                     columns[col_name] = col_type
-            expected[name] = ExpectedTable(
-                name=name, columns=columns, schema=schema_prefix
-            )
+            expected[name] = ExpectedTable(name=name, columns=columns, schema=schema_prefix)
         elif upper.startswith("ALTER TABLE"):
             add_match = _RE_ADD_COLUMN.match(stmt)
             if add_match is not None:
@@ -502,9 +488,7 @@ def diff_expected_live(
     report = DriftReport()
     if current_schema is not None:
         scoped_expected = {
-            name: tbl
-            for name, tbl in expected.items()
-            if tbl.schema is None or tbl.schema == current_schema
+            name: tbl for name, tbl in expected.items() if tbl.schema is None or tbl.schema == current_schema
         }
     else:
         scoped_expected = expected
@@ -525,7 +509,5 @@ def diff_expected_live(
             expected_type = exp_cols[col]
             actual_type = live_cols[col]
             if expected_type != actual_type:
-                report.type_mismatches.append(
-                    (table_name, col, expected_type, actual_type)
-                )
+                report.type_mismatches.append((table_name, col, expected_type, actual_type))
     return report

@@ -144,9 +144,7 @@ class _FakeNatsBus:
 
     def __init__(self) -> None:
         """initialize empty subscriber registry and KV store."""
-        self._typed_subscribers: dict[
-            str, list[tuple[type[BaseModel], Callable[[Any], Awaitable[None]]]]
-        ] = {}
+        self._typed_subscribers: dict[str, list[tuple[type[BaseModel], Callable[[Any], Awaitable[None]]]]] = {}
         self._kv: dict[str, dict[str, bytes]] = {}
 
     def bucket_name(self, suffix: str) -> str:

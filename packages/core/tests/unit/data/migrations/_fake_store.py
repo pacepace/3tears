@@ -98,10 +98,7 @@ class FakeDataStore:
         normalized = " ".join(sql.split()).upper()
         result: list[dict[str, Any]]
         if "SELECT VERSION, PACKAGE FROM _SCHEMA_MIGRATIONS" in normalized:
-            result = [
-                {"version": row["version"], "package": row["package"]}
-                for row in self.migrations_rows
-            ]
+            result = [{"version": row["version"], "package": row["package"]} for row in self.migrations_rows]
             return result
         if "SELECT VERSION, PACKAGE, DESCRIPTION, DATE_APPLIED FROM _SCHEMA_MIGRATIONS" in normalized:
             result = [

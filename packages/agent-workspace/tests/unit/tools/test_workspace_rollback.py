@@ -345,9 +345,7 @@ async def test_rollback_missing_ref_required_returns_error(
 ) -> None:
     """omitting ref returns clean error without mutations."""
     ws = _FakeWorkspaceEntity(id=uuid4(), name="ws")
-    tool, _pool, _sandbox, _ = _build_tool(
-        workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[ws], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(workspace="ws")
     assert result.success is False
     assert result.error is not None
@@ -359,9 +357,7 @@ async def test_rollback_unknown_workspace_returns_clean_error(
     permissive_acl_cache: MagicMock,
 ) -> None:
     """unknown workspace name -> clean error."""
-    tool, _pool, _sandbox, _ = _build_tool(
-        workspace_entities=[], files=[], acl_cache=permissive_acl_cache
-    )
+    tool, _pool, _sandbox, _ = _build_tool(workspace_entities=[], files=[], acl_cache=permissive_acl_cache)
     result = await tool.execute(ref=1, workspace="ghost")
     assert result.success is False
     assert result.error is not None

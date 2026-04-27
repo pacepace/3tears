@@ -169,9 +169,7 @@ class TestRegistrationHandlerValidation:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert "malformed" in response_data["error"]
 
@@ -188,9 +186,7 @@ class TestRegistrationHandlerValidation:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert "pod_id" in response_data["error"]
 
@@ -209,9 +205,7 @@ class TestRegistrationHandlerValidation:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is False
         assert "tools" in response_data["error"]
 
@@ -238,9 +232,7 @@ class TestRegistrationHandlerMultiPod:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is True
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
 
@@ -260,9 +252,7 @@ class TestRegistrationHandlerMultiPod:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is True
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
 
@@ -308,9 +298,7 @@ class TestRegistrationHandlerSuccess:
         await handler.handle_registration(msg)
 
         nc.publish_reply.assert_called_once()
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is True
         assert response_data["pod_id"] == "pod-001"
         assert "threetears.calculator@1.0.0" in response_data["registered_tools"]
@@ -349,9 +337,7 @@ class TestRegistrationHandlerSuccess:
         msg = _make_nats_msg(data=manifest.model_dump_json().encode("utf-8"))
         await handler.handle_registration(msg)
 
-        response_data = json.loads(
-            nc.publish_reply.call_args.kwargs["message"].model_dump_json()
-        )
+        response_data = json.loads(nc.publish_reply.call_args.kwargs["message"].model_dump_json())
         assert response_data["success"] is True
         assert len(response_data["registered_tools"]) == 2
         assert catalog.get("threetears.calculator@1.0.0") is not None

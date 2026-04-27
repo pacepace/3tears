@@ -38,39 +38,22 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_ADD_CONVERSATION_ID_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS conversation_id UUID NULL"
-)
+_ADD_CONVERSATION_ID_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS conversation_id UUID NULL"
 
-_ADD_MESSAGE_ID_SOURCE_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS message_id_source UUID NULL"
-)
+_ADD_MESSAGE_ID_SOURCE_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS message_id_source UUID NULL"
 
-_ADD_IS_DELETED_SQL = (
-    "ALTER TABLE memories "
-    "ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE"
-)
+_ADD_IS_DELETED_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE"
 
-_ADD_MEDIA_ID_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS media_id UUID NULL"
-)
+_ADD_MEDIA_ID_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS media_id UUID NULL"
 
-_ADD_DATE_DELETED_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
-)
+_ADD_DATE_DELETED_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS date_deleted TIMESTAMP NULL"
 
-_ADD_SUMMARY_SQL = (
-    "ALTER TABLE memories ADD COLUMN IF NOT EXISTS summary TEXT NULL"
-)
+_ADD_SUMMARY_SQL = "ALTER TABLE memories ADD COLUMN IF NOT EXISTS summary TEXT NULL"
 
-_CREATE_MEM_CONVERSATION_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_conversation "
-    "ON memories (conversation_id)"
-)
+_CREATE_MEM_CONVERSATION_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_conversation ON memories (conversation_id)"
 
 _CREATE_MEM_USER_ACTIVE_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_user_active "
-    "ON memories (user_id) WHERE is_deleted = FALSE"
+    "CREATE INDEX IF NOT EXISTS idx_mem_user_active ON memories (user_id) WHERE is_deleted = FALSE"
 )
 
 

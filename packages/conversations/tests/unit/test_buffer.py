@@ -21,7 +21,8 @@ from threetears.conversations.buffer import ConversationWriteBuffer
 
 
 def _build_collection_mock(
-    *, get_returns: dict[tuple, Any] | None = None,
+    *,
+    get_returns: dict[tuple, Any] | None = None,
 ) -> MagicMock:
     """build a fake :class:`ConversationsCollection` for buffer tests.
 
@@ -33,6 +34,7 @@ def _build_collection_mock(
     """
     collection = MagicMock()
     if get_returns is None:
+
         async def _default_get(pk: Any) -> Any:
             """return a mock entity exposing record_message + metadata.
 
@@ -44,8 +46,10 @@ def _build_collection_mock(
             entity = MagicMock()
             entity.record_message = MagicMock()
             return entity
+
         collection.get = AsyncMock(side_effect=_default_get)
     else:
+
         async def _mapped_get(pk: Any) -> Any:
             """return the pre-mapped entity for ``pk``.
 
@@ -55,6 +59,7 @@ def _build_collection_mock(
             :rtype: Any
             """
             return get_returns.get(pk)
+
         collection.get = AsyncMock(side_effect=_mapped_get)
     collection.save_entity = AsyncMock()
     return collection
@@ -134,12 +139,16 @@ class TestEnqueueAndFlush:
         conv_a = uuid7()
         conv_b = uuid7()
         await buffer.enqueue(
-            agent_id=agent_id, conversation_id=conv_a,
-            at=datetime.now(UTC), role="user",
+            agent_id=agent_id,
+            conversation_id=conv_a,
+            at=datetime.now(UTC),
+            role="user",
         )
         await buffer.enqueue(
-            agent_id=agent_id, conversation_id=conv_b,
-            at=datetime.now(UTC), role="user",
+            agent_id=agent_id,
+            conversation_id=conv_b,
+            at=datetime.now(UTC),
+            role="user",
         )
         await buffer.flush()
         assert collection.save_entity.await_count == 2
@@ -156,8 +165,10 @@ class TestEnqueueAndFlush:
             flush_interval_seconds=0,
         )
         await buffer.enqueue(
-            agent_id=uuid7(), conversation_id=uuid7(),
-            at=datetime.now(UTC), role="user",
+            agent_id=uuid7(),
+            conversation_id=uuid7(),
+            at=datetime.now(UTC),
+            role="user",
         )
         await buffer.flush()
         await buffer.flush()
@@ -209,8 +220,10 @@ class TestShutdownDrain:
             flush_interval_seconds=0,
         )
         await buffer.enqueue(
-            agent_id=uuid7(), conversation_id=uuid7(),
-            at=datetime.now(UTC), role="user",
+            agent_id=uuid7(),
+            conversation_id=uuid7(),
+            at=datetime.now(UTC),
+            role="user",
         )
         await buffer.stop()
         assert collection.save_entity.await_count == 1
@@ -228,8 +241,10 @@ class TestShutdownDrain:
         )
         await buffer.stop()
         await buffer.enqueue(
-            agent_id=uuid7(), conversation_id=uuid7(),
-            at=datetime.now(UTC), role="user",
+            agent_id=uuid7(),
+            conversation_id=uuid7(),
+            at=datetime.now(UTC),
+            role="user",
         )
         # No flush triggered, no saves
         assert collection.save_entity.await_count == 0
@@ -250,8 +265,10 @@ class TestMissingEntityIsSkipped:
             flush_interval_seconds=0,
         )
         await buffer.enqueue(
-            agent_id=uuid7(), conversation_id=uuid7(),
-            at=datetime.now(UTC), role="user",
+            agent_id=uuid7(),
+            conversation_id=uuid7(),
+            at=datetime.now(UTC),
+            role="user",
         )
         await buffer.flush()
         assert collection.save_entity.await_count == 0

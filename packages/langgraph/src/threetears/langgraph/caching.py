@@ -90,15 +90,19 @@ _ANTHROPIC_CACHE_MODEL_PREFIXES: tuple[str, ...] = (
     "claude-4",
 )
 
-_ANTHROPIC_CHAT_MODEL_CLASSES: frozenset[str] = frozenset({
-    "ChatAnthropic",
-    "AnthropicLLM",
-})
+_ANTHROPIC_CHAT_MODEL_CLASSES: frozenset[str] = frozenset(
+    {
+        "ChatAnthropic",
+        "AnthropicLLM",
+    }
+)
 
-_OPENAI_CHAT_MODEL_CLASSES: frozenset[str] = frozenset({
-    "ChatOpenAI",
-    "AzureChatOpenAI",
-})
+_OPENAI_CHAT_MODEL_CLASSES: frozenset[str] = frozenset(
+    {
+        "ChatOpenAI",
+        "AzureChatOpenAI",
+    }
+)
 
 
 @dataclass(frozen=True)

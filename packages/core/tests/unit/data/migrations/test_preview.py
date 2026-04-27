@@ -278,8 +278,6 @@ class TestPreviewStoreType:
         """captured_ddl excludes BOOKKEEPING kind entries."""
         ps = PreviewStore(underlying=object())
         ps.captured.append(CapturedStatement(sql="CREATE TABLE foo", params=(), kind="DDL"))
-        ps.captured.append(
-            CapturedStatement(sql="INSERT INTO _schema_migrations", params=(), kind="BOOKKEEPING")
-        )
+        ps.captured.append(CapturedStatement(sql="INSERT INTO _schema_migrations", params=(), kind="BOOKKEEPING"))
         ddl = ps.captured_ddl()
         assert ddl == ["CREATE TABLE foo"]

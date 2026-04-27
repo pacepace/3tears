@@ -203,7 +203,9 @@ class RbacEvaluatorAuthorizer:
         # ``platform.namespaces.name`` value without the call site
         # needing to reverse the sanitization rules.
         canonical_name = build_namespace_name(
-            PLURAL_PREFIX_TOOL, tool_name, tool_version,
+            PLURAL_PREFIX_TOOL,
+            tool_name,
+            tool_version,
         )
         ns_entity = await self._namespace_collection.get_by_name(canonical_name)
         if ns_entity is None:

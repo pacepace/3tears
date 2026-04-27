@@ -167,8 +167,7 @@ class AuditEvent(BaseModel):
         """
         if value.tzinfo is None:
             raise ValueError(
-                "AuditEvent.timestamp must be timezone-aware (UTC); "
-                "received a naive datetime",
+                "AuditEvent.timestamp must be timezone-aware (UTC); received a naive datetime",
             )
         return value
 
@@ -191,8 +190,7 @@ class AuditEvent(BaseModel):
         allowed = {"success", "failure", "error"}
         if value not in allowed:
             raise ValueError(
-                f"AuditEvent.outcome must be one of {sorted(allowed)}; "
-                f"received {value!r}",
+                f"AuditEvent.outcome must be one of {sorted(allowed)}; received {value!r}",
             )
         return value
 
@@ -214,8 +212,6 @@ class AuditEvent(BaseModel):
         """
         if not value or "." not in value:
             raise ValueError(
-                "AuditEvent.event_type must be dotted "
-                "'{domain}.{verb}[.{sub_verb}]'; "
-                f"received {value!r}",
+                f"AuditEvent.event_type must be dotted '{{domain}}.{{verb}}[.{{sub_verb}}]'; received {value!r}",
             )
         return value

@@ -278,7 +278,8 @@ class NamespaceDiscoveryClient:
             error_code = "UNKNOWN"
             error_message = (
                 f"malformed discovery response: {parse_error}"
-                if parse_error is not None else "discovery returned success=false"
+                if parse_error is not None
+                else "discovery returned success=false"
             )
             try:
                 envelope: dict[str, Any] = NamespaceDiscoveryResponse.model_validate_json(

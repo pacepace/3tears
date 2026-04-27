@@ -132,10 +132,7 @@ class FakeStore:
         :return: tuple of memberships
         :rtype: tuple[GroupMembership, ...]
         """
-        result = tuple(
-            m for m in self.memberships
-            if m.member_type == MemberType.USER and m.member_id == user_id
-        )
+        result = tuple(m for m in self.memberships if m.member_type == MemberType.USER and m.member_id == user_id)
         return result
 
     async def load_for_agent(self, agent_id: UUID) -> tuple[GroupMembership, ...]:
@@ -146,10 +143,7 @@ class FakeStore:
         :return: tuple of memberships
         :rtype: tuple[GroupMembership, ...]
         """
-        result = tuple(
-            m for m in self.memberships
-            if m.member_type == MemberType.AGENT and m.member_id == agent_id
-        )
+        result = tuple(m for m in self.memberships if m.member_type == MemberType.AGENT and m.member_id == agent_id)
         return result
 
     # ---------- GrantLoader -----------------------------------------
@@ -191,7 +185,8 @@ class FakeStore:
         return result
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """resolve group ids to :class:`Group` rows.
 
@@ -200,7 +195,5 @@ class FakeStore:
         :return: mapping group_id -> Group for ids that exist
         :rtype: dict[UUID, object]
         """
-        result: dict[UUID, object] = {
-            gid: self.groups[gid] for gid in group_ids if gid in self.groups
-        }
+        result: dict[UUID, object] = {gid: self.groups[gid] for gid in group_ids if gid in self.groups}
         return result

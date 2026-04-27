@@ -150,7 +150,9 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
             if l2_data is not None:
                 if self._l1 is not None:
                     self._l1.upsert(
-                        self.table_name, l2_data, self.primary_key_column,
+                        self.table_name,
+                        l2_data,
+                        self.primary_key_column,
                     )
                 row = l2_data
         result: HeartbeatEntity | None
@@ -216,14 +218,17 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         """
         if self._l1 is not None:
             self._l1.delete_by_id(
-                self.table_name, str(entity_id), self.primary_key_column,
+                self.table_name,
+                str(entity_id),
+                self.primary_key_column,
             )
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
 
     async def fetch_from_postgres(
-        self, entity_id: Any,
+        self,
+        entity_id: Any,
     ) -> dict[str, Any] | None:
         """unreachable on the L1+L2 Collection.
 
@@ -315,7 +320,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         if isinstance(tools, str):
             try:
                 raw["tools"] = json.loads(tools)
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError, ValueError:
                 raw["tools"] = []
         return raw
 

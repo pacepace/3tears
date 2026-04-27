@@ -220,7 +220,11 @@ class _RecordingNatsClient:
         self.published: list[tuple[Any, Any]] = []
 
     async def publish(
-        self, *, subject: Any, message: Any, reply_to: Any | None = None,
+        self,
+        *,
+        subject: Any,
+        message: Any,
+        reply_to: Any | None = None,
     ) -> None:
         """record the publish call and return without dispatching."""
         del reply_to

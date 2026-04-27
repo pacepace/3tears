@@ -223,9 +223,7 @@ async def add_column_with_backfill(
     null_clause = " NOT NULL" if not_null else ""
     default_clause = f" DEFAULT {default}" if default is not None else ""
     add_column_sql = (
-        f"ALTER TABLE {qualified} "
-        f"ADD COLUMN IF NOT EXISTS {column} {column_type}"
-        f"{null_clause}{default_clause}"
+        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {column} {column_type}{null_clause}{default_clause}"
     )
     log.info(
         "migration helper: add column %s.%s (%s)%s%s",
@@ -244,10 +242,7 @@ async def add_column_with_backfill(
             backfill_replay_guard,
         )
         predicate = backfill_predicate or "TRUE"
-        backfill_sql = (
-            f"UPDATE {qualified} SET {column} = {backfill_value_sql} "
-            f"WHERE {predicate}{guard_tail}"
-        )
+        backfill_sql = f"UPDATE {qualified} SET {column} = {backfill_value_sql} WHERE {predicate}{guard_tail}"
         log.info(
             "migration helper: backfill %s.%s where %s",
             qualified,
@@ -300,16 +295,11 @@ async def add_check_constraint(
         qualified,
     )
     if not if_not_exists:
-        sql = (
-            f"ALTER TABLE {qualified} "
-            f"ADD CONSTRAINT {constraint_name} CHECK ({expression})"
-        )
+        sql = f"ALTER TABLE {qualified} ADD CONSTRAINT {constraint_name} CHECK ({expression})"
         await store.execute(sql)
         return
 
-    schema_filter = (
-        f"\n           AND ns.nspname = '{schema}'" if schema else ""
-    )
+    schema_filter = f"\n           AND ns.nspname = '{schema}'" if schema else ""
     sql = f"""
 DO $$
 BEGIN
@@ -420,11 +410,7 @@ $$;
     # ('a', 'b')`` produces ``'CHECK (c IN ('a', 'b'))'`` -- a syntax
     # error because pl/pgsql terminates the string at the first
     # unescaped quote inside the value.
-    target_literal_value = (
-        engine_normalized_def
-        if engine_normalized_def is not None
-        else f"CHECK ({new_expression})"
-    )
+    target_literal_value = engine_normalized_def if engine_normalized_def is not None else f"CHECK ({new_expression})"
     escaped_for_target_literal = target_literal_value.replace("'", "''")
     sql = f"""
 DO $$
@@ -503,11 +489,7 @@ def _build_pk_swap_plan(
     """
     pkey_name = pk_name or f"{table}_pkey"
     unique_name = f"{table}_{preserve_unique_id_column}_unique"
-    drop_fks = [
-        f"ALTER TABLE {fk.source_table} DROP CONSTRAINT IF EXISTS "
-        f"{fk.constraint_name};"
-        for fk in inbound_fks
-    ]
+    drop_fks = [f"ALTER TABLE {fk.source_table} DROP CONSTRAINT IF EXISTS {fk.constraint_name};" for fk in inbound_fks]
     recreate_fks = []
     for fk in inbound_fks:
         on_delete = f" {fk.on_delete}" if fk.on_delete else ""
@@ -753,10 +735,7 @@ async def add_index(
     unique_clause = "UNIQUE " if unique else ""
     columns_csv = ", ".join(columns)
     where_clause = f" WHERE {where}" if where else ""
-    sql = (
-        f"CREATE {unique_clause}INDEX IF NOT EXISTS {name} "
-        f"ON {qualified} ({columns_csv}){where_clause}"
-    )
+    sql = f"CREATE {unique_clause}INDEX IF NOT EXISTS {name} ON {qualified} ({columns_csv}){where_clause}"
     log.info(
         "migration helper: add index %s on %s (%s)%s",
         name,

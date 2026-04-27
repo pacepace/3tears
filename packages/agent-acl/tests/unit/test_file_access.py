@@ -60,7 +60,9 @@ def _role_with_actions(actions: list[str]) -> Role:
 
 
 def _grant(
-    namespace: Namespace, role: Role, user_id,
+    namespace: Namespace,
+    role: Role,
+    user_id,
 ) -> tuple[Group, GroupMembership, RoleAssignment]:
     """build a one-group one-membership one-assignment chain for ``user_id``.
 
@@ -145,10 +147,12 @@ class TestReadPermit:
         """any glob in the granted action set matching the path permits."""
         user = uuid4()
         namespace = _ns_workspace()
-        role = _role_with_actions([
-            "read_file_matching:*.yaml",
-            "read_file_matching:docs/**",
-        ])
+        role = _role_with_actions(
+            [
+                "read_file_matching:*.yaml",
+                "read_file_matching:docs/**",
+            ]
+        )
         group, membership, assignment = _grant(namespace, role, user)
         store = FakeStore()
         store.add_role(role)

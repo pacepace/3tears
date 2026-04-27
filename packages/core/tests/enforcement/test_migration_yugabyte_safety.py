@@ -44,27 +44,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
 _MIGRATION_DIRS_CANDIDATES: tuple[Path, ...] = (
-    _REPO_ROOT
-    / "packages" / "agent-memory" / "src" / "threetears"
-    / "agent" / "memory" / "migrations",
-    _REPO_ROOT
-    / "packages" / "agent-tools" / "src" / "threetears"
-    / "agent" / "tools" / "migrations",
-    _REPO_ROOT
-    / "packages" / "agent-workspace" / "src" / "threetears"
-    / "agent" / "workspace" / "migrations",
-    _REPO_ROOT
-    / "packages" / "conversations" / "src" / "threetears"
-    / "conversations" / "migrations",
-    _REPO_ROOT
-    / "packages" / "langgraph" / "src" / "threetears"
-    / "langgraph" / "migrations",
+    _REPO_ROOT / "packages" / "agent-memory" / "src" / "threetears" / "agent" / "memory" / "migrations",
+    _REPO_ROOT / "packages" / "agent-tools" / "src" / "threetears" / "agent" / "tools" / "migrations",
+    _REPO_ROOT / "packages" / "agent-workspace" / "src" / "threetears" / "agent" / "workspace" / "migrations",
+    _REPO_ROOT / "packages" / "conversations" / "src" / "threetears" / "conversations" / "migrations",
+    _REPO_ROOT / "packages" / "langgraph" / "src" / "threetears" / "langgraph" / "migrations",
 )
 
 
-_EXEMPTION_FILE = (
-    Path(__file__).resolve().parent / "_migration_exemptions.txt"
-)
+_EXEMPTION_FILE = Path(__file__).resolve().parent / "_migration_exemptions.txt"
 
 
 def _existing_dirs() -> tuple[Path, ...]:
@@ -88,10 +76,7 @@ def test_migration_yugabyte_safety_enforcement_3tears() -> None:
         ``strict`` and at least one violation is not exempted
     """
     exemptions, missing = load_exemptions(_EXEMPTION_FILE)
-    assert missing == [], (
-        "exemption entries lack a non-blank ``# rationale: ...`` "
-        f"suffix: {missing}"
-    )
+    assert missing == [], f"exemption entries lack a non-blank ``# rationale: ...`` suffix: {missing}"
     config = WalkerConfig(
         migration_dirs=_existing_dirs(),
         exemptions=exemptions,
@@ -104,13 +89,11 @@ def test_migration_yugabyte_safety_enforcement_3tears() -> None:
     formatted = "\n".join(v.format() for v in violations)
     if mode == "report":
         pytest.skip(
-            f"3tears migration yugabyte-safety: {len(violations)} "
-            f"violation(s) (mode=report)\n{formatted}",
+            f"3tears migration yugabyte-safety: {len(violations)} violation(s) (mode=report)\n{formatted}",
         )
         return
     raise AssertionError(
-        f"3tears migration yugabyte-safety: {len(violations)} "
-        f"strict violation(s) (mode={mode})\n{formatted}",
+        f"3tears migration yugabyte-safety: {len(violations)} strict violation(s) (mode={mode})\n{formatted}",
     )
 
 
@@ -131,9 +114,7 @@ def test_walker_runs_under_15_seconds() -> None:
     start = time.monotonic()
     walk_migration_directory(config)
     elapsed = time.monotonic() - start
-    assert elapsed < 15.0, (
-        f"walker took {elapsed:.2f}s (budget 15s)"
-    )
+    assert elapsed < 15.0, f"walker took {elapsed:.2f}s (budget 15s)"
 
 
 def test_migration_dirs_resolved() -> None:
@@ -144,10 +125,7 @@ def test_migration_dirs_resolved() -> None:
     :rtype: None
     """
     dirs = _existing_dirs()
-    assert len(dirs) > 0, (
-        f"no migration directories resolved from candidates: "
-        f"{_MIGRATION_DIRS_CANDIDATES}"
-    )
+    assert len(dirs) > 0, f"no migration directories resolved from candidates: {_MIGRATION_DIRS_CANDIDATES}"
 
 
 def test_enforcement_mode_env_var_recognized() -> None:

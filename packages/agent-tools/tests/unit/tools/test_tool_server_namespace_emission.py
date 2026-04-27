@@ -214,7 +214,9 @@ class TestRegisterToolNamespaceEmission:
             "mcp_version": "1.2.0",
         }
         assert entity.data["id"] == _tool_namespace_id(
-            "aibots.calc", "1.2.0", agent_id,
+            "aibots.calc",
+            "1.2.0",
+            agent_id,
         )
 
     @pytest.mark.asyncio
@@ -234,19 +236,24 @@ class TestRegisterToolNamespaceEmission:
 
         (entity,), _ = ns.save_entity.call_args
         assert entity.data["name"] == _tool_namespace_name(
-            "platform.time.now", "1.0.0",
+            "platform.time.now",
+            "1.0.0",
         )
         assert entity.data["owner_agent_id"] is None
         assert entity.data["customer_id"] is None
         assert entity.data["id"] == _tool_namespace_id(
-            "platform.time.now", "1.0.0", None,
+            "platform.time.now",
+            "1.0.0",
+            None,
         )
 
     @pytest.mark.asyncio
     async def test_missing_namespace_collection_suppresses_emission(self) -> None:
         """no namespace_collection means no emission (devx / standalone)."""
         server = _build_server(
-            agent_id=uuid7(), customer_id=uuid7(), namespace_collection=None,
+            agent_id=uuid7(),
+            customer_id=uuid7(),
+            namespace_collection=None,
         )
         tool = _StubTool()
         # no assertion on a Collection; register should simply succeed
@@ -292,7 +299,9 @@ class TestDeregisterToolNamespaceEmission:
         ns.delete.assert_awaited_once()
         (namespace_id,), _ = ns.delete.call_args
         assert namespace_id == _tool_namespace_id(
-            "aibots.calc", "1.2.0", agent_id,
+            "aibots.calc",
+            "1.2.0",
+            agent_id,
         )
 
     @pytest.mark.asyncio
@@ -330,17 +339,11 @@ class TestToolNamespaceNameHelper:
 
     def test_shape_matches_documented_convention(self) -> None:
         """shape is ``tools.<sanitized-mcp>.<sanitized-version>``."""
-        assert (
-            _tool_namespace_name("aibots.calc", "1.2.0")
-            == "tools.aibots-calc.1-2-0"
-        )
+        assert _tool_namespace_name("aibots.calc", "1.2.0") == "tools.aibots-calc.1-2-0"
 
     def test_version_dotted_segments_are_sanitized(self) -> None:
         """semver with dots collapses to hyphens inside each segment."""
-        assert (
-            _tool_namespace_name("platform.x", "2.0.0-rc.1")
-            == "tools.platform-x.2-0-0-rc-1"
-        )
+        assert _tool_namespace_name("platform.x", "2.0.0-rc.1") == "tools.platform-x.2-0-0-rc-1"
 
 
 class TestToolNamespaceIdHelper:

@@ -269,9 +269,7 @@ class DocMergeTool(TearsTool):
                                         outcome="success",
                                         correlation_id=correlation_id,
                                         details={
-                                            "workspace_resource_id": (
-                                                f"{workspace.id}/{relative_path}"
-                                            ),
+                                            "workspace_resource_id": (f"{workspace.id}/{relative_path}"),
                                             "partial_keys": list(partial.keys()),
                                             "bytes_before": old_size,
                                             "bytes_after": len(new_bytes),

@@ -190,8 +190,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :rtype: Workspace | None
         """
         row = await self.l3_pool.fetchrow(
-            "SELECT * FROM workspaces "
-            "WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
+            "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
             workspace_id,
             agent_id,
         )

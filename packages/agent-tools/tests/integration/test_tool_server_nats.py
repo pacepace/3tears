@@ -144,9 +144,7 @@ class TestToolServerNatsIntegration:
             response_data = json.loads(response_bytes)
 
             assert response_data["success"] is True, response_data.get("error")
-            assert (
-                response_data["context"]["correlation_id"] == correlation_id
-            )
+            assert response_data["context"]["correlation_id"] == correlation_id
             content = json.loads(response_data["content"])
             assert content == {"message": "hello"}
 

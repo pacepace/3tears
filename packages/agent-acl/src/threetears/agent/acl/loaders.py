@@ -77,7 +77,8 @@ class CollectionMembershipLoader:
         self._collection = collection
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return every membership row naming ``user_id`` as a user member.
 
@@ -90,7 +91,8 @@ class CollectionMembershipLoader:
         return tuple(memberships)
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return every membership row naming ``agent_id`` as an agent member.
 
@@ -174,15 +176,12 @@ class CollectionGrantLoader:
             assignments = await self._assignment_collection.load_for_groups(
                 group_ids,
             )
-            result = tuple(
-                assignment
-                for assignment in assignments
-                if assignment.covers(namespace)
-            )
+            result = tuple(assignment for assignment in assignments if assignment.covers(namespace))
         return result
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """resolve ``role_ids`` to :class:`Role` rows.
 
@@ -200,7 +199,8 @@ class CollectionGrantLoader:
         return {role.id: role for role in roles}
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """resolve ``group_ids`` to :class:`Group` rows.
 

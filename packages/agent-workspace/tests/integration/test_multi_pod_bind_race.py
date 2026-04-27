@@ -70,7 +70,9 @@ class _FakeWorkspaceCollection:
         self._ws = ws
 
     async def find_by_id(
-        self, agent_id: UUID, workspace_id: UUID,
+        self,
+        agent_id: UUID,
+        workspace_id: UUID,
     ) -> _FakeWorkspace | None:
         if workspace_id != self._ws.id or agent_id != self._ws.agent_id:
             return None

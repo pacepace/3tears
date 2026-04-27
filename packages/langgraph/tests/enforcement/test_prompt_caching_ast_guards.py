@@ -123,10 +123,7 @@ def test_system_message_in_caching_path_uses_list_content() -> None:
         offenders.append(
             f"{_HOOKS_PATH.name}:{node.lineno} SystemMessage with non-list content",
         )
-    assert not offenders, (
-        "SystemMessage in the caching path must pass a list content; "
-        f"offenders: {offenders}"
-    )
+    assert not offenders, f"SystemMessage in the caching path must pass a list content; offenders: {offenders}"
 
 
 def _find_bind_tools_calls(tree: ast.Module) -> list[ast.Call]:
@@ -182,10 +179,7 @@ def _function_calls_should_bind_tools_fresh(
             if isinstance(callee, ast.Name) and callee.id == "should_bind_tools_fresh":
                 found = True
                 break
-            if (
-                isinstance(callee, ast.Attribute)
-                and callee.attr == "should_bind_tools_fresh"
-            ):
+            if isinstance(callee, ast.Attribute) and callee.attr == "should_bind_tools_fresh":
                 found = True
                 break
     return found
@@ -214,12 +208,10 @@ def test_bind_tools_in_hook_module_is_guarded_by_should_bind_tools_fresh() -> No
             continue
         if not _function_calls_should_bind_tools_fresh(func):
             offenders.append(
-                f"{_HOOKS_PATH.name}:{call.lineno} bind_tools in {func.name!r}"
-                " without should_bind_tools_fresh guard",
+                f"{_HOOKS_PATH.name}:{call.lineno} bind_tools in {func.name!r} without should_bind_tools_fresh guard",
             )
     assert not offenders, (
-        "bind_tools in caching path must be guarded by should_bind_tools_fresh; "
-        f"offenders: {offenders}"
+        f"bind_tools in caching path must be guarded by should_bind_tools_fresh; offenders: {offenders}"
     )
 
 
@@ -282,16 +274,12 @@ def test_after_invoke_of_prompt_caching_hook_calls_extract_cache_usage() -> None
         if not isinstance(node, ast.ClassDef) or node.name != "PromptCachingHook":
             continue
         for item in node.body:
-            if (
-                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and item.name == "after_invoke"
-            ):
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "after_invoke":
                 target = item
                 break
         break
     assert target is not None, "PromptCachingHook.after_invoke not found"
     names = _function_calls(target)
     assert "extract_cache_usage" in names, (
-        "PromptCachingHook.after_invoke must call extract_cache_usage "
-        "on every AIMessage-producing path"
+        "PromptCachingHook.after_invoke must call extract_cache_usage on every AIMessage-producing path"
     )

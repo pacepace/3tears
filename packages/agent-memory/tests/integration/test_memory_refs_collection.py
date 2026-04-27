@@ -105,6 +105,7 @@ async def _make_pool(url: str, schema: str) -> asyncpg.Pool:
     :rtype: asyncpg.Pool
     """
     from threetears.core.collections import init_connection
+
     result: asyncpg.Pool = await asyncpg.create_pool(
         dsn=url,
         min_size=1,
@@ -203,7 +204,8 @@ def _build_pod(
     reg = CollectionRegistry()
     reg.configure(l1_backend=l1, l2_client=nats, l3_pool=pool)
     cfg = DefaultCoreConfig(
-        collection_flush="ALWAYS", collection_flush_tables="",
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
     )
     coll = MemoryRefsCollection(registry=reg, config=cfg, nats_client=nats)
     return coll, reg, l1
@@ -213,7 +215,8 @@ class TestMemoryRefsCollectionThreeTier:
     """end-to-end three-tier behaviour for the composite-pk refs table."""
 
     async def test_save_populates_all_tiers(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """save routes to L3 + L1 + L2 with tuple-keyed addressing."""
         url, schema = applied_schema
@@ -262,7 +265,8 @@ class TestMemoryRefsCollectionThreeTier:
             await pool.close()
 
     async def test_get_hits_l1_after_save(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """warm-cache get returns from L1 without fetching from L3."""
         url, schema = applied_schema
@@ -293,7 +297,8 @@ class TestMemoryRefsCollectionThreeTier:
             await pool.close()
 
     async def test_cold_start_l3_pull_through(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """pod restart: fresh L1 + existing L3 row resolves via get."""
         url, schema = applied_schema
@@ -339,7 +344,8 @@ class TestMemoryRefsCollectionThreeTier:
             await pool.close()
 
     async def test_cross_pod_invalidation(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """pod A save publishes ids envelope; pod B evicts composite L1 row."""
         url, schema = applied_schema
@@ -404,7 +410,8 @@ class TestMemoryRefsCollectionThreeTier:
             await pool.close()
 
     async def test_find_by_conversation_returns_rows_ordered(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """multi-row scan returns every ref chronologically per conversation."""
         url, schema = applied_schema
@@ -452,7 +459,8 @@ class TestMemoryRefsCollectionThreeTier:
             await pool.close()
 
     async def test_save_truncates_short_desc(
-        self, applied_schema: tuple[str, str],
+        self,
+        applied_schema: tuple[str, str],
     ) -> None:
         """long descriptions truncate to 150 chars on the write boundary."""
         url, schema = applied_schema
@@ -477,8 +485,7 @@ class TestMemoryRefsCollectionThreeTier:
 
             async with pool.acquire() as conn:
                 stored = await conn.fetchval(
-                    "SELECT short_desc FROM conversation_memory_refs "
-                    "WHERE conversation_id = $1 AND item_id = $2",
+                    "SELECT short_desc FROM conversation_memory_refs WHERE conversation_id = $1 AND item_id = $2",
                     conv_id,
                     item_id,
                 )

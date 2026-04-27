@@ -77,9 +77,7 @@ class GroupEntity(BaseEntity):
         """
         row_scope = data.get("row_scope")
         if row_scope is None:
-            row_scope = (
-                "platform" if data.get("customer_id") is None else "customer"
-            )
+            row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
         object.__setattr__(self, "_row_id", data["id"])
@@ -192,9 +190,7 @@ class RoleAssignmentEntity(BaseEntity):
             scope_customer_id = data.get("scope_customer_id")
             if scope_type == "all":
                 row_scope = "platform"
-            elif (
-                scope_type == "type_customer" and scope_customer_id is None
-            ):
+            elif scope_type == "type_customer" and scope_customer_id is None:
                 row_scope = "platform"
             else:
                 row_scope = "customer"
@@ -249,9 +245,7 @@ class NamespaceEntity(BaseEntity):
         """
         row_scope = data.get("row_scope")
         if row_scope is None:
-            row_scope = (
-                "platform" if data.get("customer_id") is None else "customer"
-            )
+            row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
         object.__setattr__(self, "_row_id", data["id"])

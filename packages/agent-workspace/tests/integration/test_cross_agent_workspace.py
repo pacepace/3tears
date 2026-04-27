@@ -291,7 +291,8 @@ class _SqlMembershipLoader:
         self._pool = pool
 
     async def load_for_user(
-        self, user_id: UUID,
+        self,
+        user_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return every membership row naming ``user_id`` as a user member.
 
@@ -320,7 +321,8 @@ class _SqlMembershipLoader:
         )
 
     async def load_for_agent(
-        self, agent_id: UUID,
+        self,
+        agent_id: UUID,
     ) -> tuple[GroupMembership, ...]:
         """return every membership row naming ``agent_id`` as an agent member.
 
@@ -416,7 +418,8 @@ class _SqlGrantLoader:
         )
 
     async def load_roles(
-        self, role_ids: tuple[UUID, ...],
+        self,
+        role_ids: tuple[UUID, ...],
     ) -> dict[UUID, Role]:
         """resolve role ids into :class:`Role` rows with coerced permissions.
 
@@ -449,9 +452,7 @@ class _SqlGrantLoader:
             permissions: dict[str, frozenset[str]] = {}
             for resource_type, actions in parsed.items():
                 if isinstance(actions, list):
-                    permissions[resource_type] = frozenset(
-                        str(a) for a in actions
-                    )
+                    permissions[resource_type] = frozenset(str(a) for a in actions)
             result[row["id"]] = Role(
                 id=row["id"],
                 name=row["name"],
@@ -461,7 +462,8 @@ class _SqlGrantLoader:
         return result
 
     async def load_groups(
-        self, group_ids: tuple[UUID, ...],
+        self,
+        group_ids: tuple[UUID, ...],
     ) -> dict[UUID, object]:
         """resolve group ids into :class:`AclGroup` rows.
 
@@ -484,7 +486,9 @@ class _SqlGrantLoader:
         result: dict[UUID, object] = {}
         for row in rows:
             result[row["id"]] = AclGroup(
-                id=row["id"], name=row["name"], customer_id=row["customer_id"],
+                id=row["id"],
+                name=row["name"],
+                customer_id=row["customer_id"],
             )
         return result
 
@@ -552,8 +556,7 @@ class _SqlWorkspaceCollection:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces '
-                "WHERE agent_id = $1 AND name = $2",
+                f'SELECT * FROM "{self._schema}".workspaces WHERE agent_id = $1 AND name = $2',
                 agent_id,
                 name,
             )
@@ -577,8 +580,7 @@ class _SqlWorkspaceCollection:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces '
-                "WHERE id = $1 AND agent_id = $2",
+                f'SELECT * FROM "{self._schema}".workspaces WHERE id = $1 AND agent_id = $2',
                 workspace_id,
                 agent_id,
             )
@@ -678,8 +680,7 @@ class _SqlWorkspaceFileCollection:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspace_files '
-                "WHERE workspace_id = $1 AND relative_path = $2",
+                f'SELECT * FROM "{self._schema}".workspace_files WHERE workspace_id = $1 AND relative_path = $2',
                 workspace_id,
                 relative_path,
             )
@@ -1095,8 +1096,12 @@ async def _grant_via_singleton_group(
             id, customer_id, name, description, date_created, date_updated
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
-        group_id, customer_id, group_name,
-        f"test singleton group for {group_name}", now, now,
+        group_id,
+        customer_id,
+        group_name,
+        f"test singleton group for {group_name}",
+        now,
+        now,
     )
     await conn.execute(
         """
@@ -1104,7 +1109,12 @@ async def _grant_via_singleton_group(
             id, group_id, member_type, member_id, customer_id, date_added
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
-        member_id, group_id, principal_type, principal_id, customer_id, now,
+        member_id,
+        group_id,
+        principal_type,
+        principal_id,
+        customer_id,
+        now,
     )
     await conn.execute(
         """
@@ -1115,7 +1125,11 @@ async def _grant_via_singleton_group(
         )
         VALUES ($1, $2, $3, 'namespace', $4, NULL, NULL, NULL, $5)
         """,
-        assignment_id, role_id, group_id, namespace_id, now,
+        assignment_id,
+        role_id,
+        group_id,
+        namespace_id,
+        now,
     )
     return group_id, assignment_id
 
@@ -1254,8 +1268,7 @@ class _CrossAgentWorkspaceCollection:
         del agent_id
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces '
-                "WHERE agent_id = $1 AND name = $2",
+                f'SELECT * FROM "{self._schema}".workspaces WHERE agent_id = $1 AND name = $2',
                 self._owner,
                 name,
             )
@@ -1280,8 +1293,7 @@ class _CrossAgentWorkspaceCollection:
         del agent_id
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces '
-                "WHERE id = $1 AND agent_id = $2",
+                f'SELECT * FROM "{self._schema}".workspaces WHERE id = $1 AND agent_id = $2',
                 workspace_id,
                 self._owner,
             )
@@ -1308,7 +1320,10 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
 
     # --- infra ---
     pool = await asyncpg.create_pool(
-        pg_url, min_size=1, max_size=4, init=init_connection,
+        pg_url,
+        min_size=1,
+        max_size=4,
+        init=init_connection,
     )
     assert pool is not None
     try:
@@ -1467,9 +1482,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
                 "hello.txt",
             )
         assert latest is not None
-        assert latest["actor_id"] == agent_b, (
-            f"journal actor_id should be B ({agent_b}) but was {latest['actor_id']}"
-        )
+        assert latest["actor_id"] == agent_b, f"journal actor_id should be B ({agent_b}) but was {latest['actor_id']}"
         assert latest["action"] == "update"
 
         # --- cross-customer C: categorically denied ---
@@ -1496,9 +1509,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
                 relative_path="hello.txt",
                 workspace="ws",
             )
-        assert c_result.success is False, (
-            "cross-customer caller should be denied categorically"
-        )
+        assert c_result.success is False, "cross-customer caller should be denied categorically"
         assert c_result.error is not None
 
         # --- same-customer U2 without grant: denied ---
@@ -1533,9 +1544,7 @@ async def test_cross_agent_grantee_can_read_and_write(pg_url: str) -> None:
         # the AclCache also has no agent-wide grant for agent_a (the
         # owner path assumes agent+user match). this is the user-
         # scoping rule in effect.
-        assert u2_result.success is False, (
-            "same-customer user without grant should be denied"
-        )
+        assert u2_result.success is False, "same-customer user without grant should be denied"
     finally:
         await pool.close()
 

@@ -260,8 +260,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         # partition-column enforcement.
         try:
             await self.l3_pool.execute(
-                "UPDATE context_items SET date_accessed = $3 "
-                "WHERE conversation_id = $1 AND context_id = $2",
+                "UPDATE context_items SET date_accessed = $3 WHERE conversation_id = $1 AND context_id = $2",
                 conversation_id,
                 cid,
                 now,

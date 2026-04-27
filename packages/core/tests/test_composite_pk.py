@@ -378,9 +378,7 @@ class TestNormalizePk:
             async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_postgres(
-                self, data: dict[str, Any], original_timestamp: datetime | None = None
-            ) -> int:
+            async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
                 return 1
 
             async def delete_from_postgres(self, entity_id: Any) -> None:
@@ -433,9 +431,7 @@ class TestL2Key:
             async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_postgres(
-                self, data: dict[str, Any], original_timestamp: datetime | None = None
-            ) -> int:
+            async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
                 return 1
 
             async def delete_from_postgres(self, entity_id: Any) -> None:
@@ -487,15 +483,11 @@ class TestL2Key:
         agent_id = uuid4()
         conv_id = uuid4()
         key_uuid_pair = coll.l2_key((str(agent_id), str(conv_id)))
-        assert jetstream_kv_valid_key.match(key_uuid_pair), (
-            f"l2_key {key_uuid_pair!r} violates JetStream KV grammar"
-        )
+        assert jetstream_kv_valid_key.match(key_uuid_pair), f"l2_key {key_uuid_pair!r} violates JetStream KV grammar"
 
         # slug-pair PK (existing FakeRef fixture)
         key_slug_pair = coll.l2_key(("conv-A", "item-1"))
-        assert jetstream_kv_valid_key.match(key_slug_pair), (
-            f"l2_key {key_slug_pair!r} violates JetStream KV grammar"
-        )
+        assert jetstream_kv_valid_key.match(key_slug_pair), f"l2_key {key_slug_pair!r} violates JetStream KV grammar"
 
 
 class TestCollectionOps:
@@ -510,9 +502,7 @@ class TestCollectionOps:
         pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
 
-        entity = coll.create(
-            {"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "hello"}
-        )
+        entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "hello"})
         await coll.save_entity(entity)
 
         # L3 keyed by composite tuple
@@ -564,9 +554,7 @@ class TestCollectionOps:
         pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
         coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
 
-        entity = coll.create(
-            {"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "x"}
-        )
+        entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "x"})
         await coll.save_entity(entity)
 
         ok = await coll.delete(("conv-A", "item-1"))

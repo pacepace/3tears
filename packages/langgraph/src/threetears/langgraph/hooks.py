@@ -298,7 +298,9 @@ class _ComposedAgentNodeHook:
         current_config = config
         for hook in self._hooks:
             current_messages, current_config = await hook.before_invoke(
-                current_messages, current_config, state,
+                current_messages,
+                current_config,
+                state,
             )
         return current_messages, current_config
 
@@ -322,7 +324,9 @@ class _ComposedAgentNodeHook:
         current_response = response
         for hook in self._hooks:
             current_response = await hook.after_invoke(
-                current_response, config, state,
+                current_response,
+                config,
+                state,
             )
         return current_response
 
@@ -366,7 +370,9 @@ class _ComposedToolNodeHook:
         current_config = config
         for hook in self._hooks:
             current_tool_calls, current_config = await hook.before_dispatch(
-                current_tool_calls, current_config, state,
+                current_tool_calls,
+                current_config,
+                state,
             )
         return current_tool_calls, current_config
 
@@ -418,7 +424,12 @@ class _ComposedToolNodeHook:
         """
         for hook in self._hooks:
             await hook.on_tool_end(
-                tool_call, result, success, elapsed_ms, config, state,
+                tool_call,
+                result,
+                success,
+                elapsed_ms,
+                config,
+                state,
             )
 
     async def on_heartbeat(
@@ -741,7 +752,8 @@ def _memoize_bound_model(
     if should_bind_tools_fresh(prev_key, current_key):
         bound_model = chat_model.bind_tools(sorted_tools)
         _BOUND_MODEL_CACHE[chat_model] = _BoundModelCache(
-            tool_key=current_key, bound_model=bound_model,
+            tool_key=current_key,
+            bound_model=bound_model,
         )
     else:
         assert cached is not None  # noqa: S101 - guarded by should_bind_tools_fresh
