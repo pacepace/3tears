@@ -686,6 +686,7 @@ def find_migration_violations(
     path: Path,
     *,
     exemptions: frozenset[tuple[str, str]] = frozenset(),
+    repo_root: Path | None = None,
 ) -> list[MigrationViolation]:
     """
     return every walker violation in ``path``, with exemptions applied.
@@ -694,6 +695,14 @@ def find_migration_violations(
     :ptype path: Path
     :param exemptions: set of ``(path_str, rule_name)`` pairs to skip
     :ptype exemptions: frozenset[tuple[str, str]]
+    :param repo_root: when set, the exemption-match key is the
+        repo-relative path of ``path`` (forward-slash, POSIX form);
+        when ``None``, the absolute path is used. exemption files
+        SHOULD use repo-relative paths so they round-trip across
+        developer machines + CI checkouts; absolute paths in an
+        exemption file are non-portable and only match on the host
+        that wrote them.
+    :ptype repo_root: Path | None
     :return: list of violations ordered by line number
     :rtype: list[MigrationViolation]
     """
@@ -706,7 +715,14 @@ def find_migration_violations(
         tree = ast.parse(source, filename=str(path))
     except SyntaxError:
         return violations
-    path_str = str(path)
+    if repo_root is not None:
+        try:
+            path_str = path.relative_to(repo_root).as_posix()
+        except ValueError:
+            # path is not under repo_root -- fall back to absolute
+            path_str = str(path)
+    else:
+        path_str = str(path)
     sql_literals = [(lit, lineno) for lit, lineno in _collect_string_literals(tree) if _is_sql_literal(lit)]
     # file-level: M-4 is suppressed when a sibling literal in the same
     # file carries a UNIQUE clause (the partition primitive's standard
@@ -756,6 +772,7 @@ def walk_migration_directory(
             file_violations = find_migration_violations(
                 path,
                 exemptions=config.exemptions,
+                repo_root=config.repo_root,
             )
             violations.extend(file_violations)
     return violations
