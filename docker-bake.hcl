@@ -51,7 +51,15 @@ variable "PLATFORMS" {
 # ---------------------------------------------------------------------------
 
 group "default" {
-  targets = ["all"]
+  # default build set: bases + the consumers whose contexts live in
+  # repos required by the SDK README's prerequisites
+  # ({3tears, 14-eng-ai-bot, 14-eng-ai-bot-agents}). admin lives in its
+  # own sibling repo (14-eng-ai-bot-agent-admin) which most SDK consumers
+  # do not check out -- making admin part of the default build forces an
+  # otherwise-unnecessary clone and produces a "context not found" bake
+  # error for anyone following the documented prerequisites. opt into
+  # building admin via the explicit `admin` target or the `all` group.
+  targets = ["threetears-base", "aibots-base", "hub", "schema"]
 }
 
 group "base" {
@@ -59,10 +67,13 @@ group "base" {
 }
 
 group "consumers" {
+  # every consumer image; requires the admin repo as a sibling
   targets = ["hub", "admin", "schema"]
 }
 
 group "all" {
+  # everything (bases + every consumer); requires the admin repo as a
+  # sibling. invoke explicitly when you want admin built locally
   targets = ["threetears-base", "aibots-base", "hub", "admin", "schema"]
 }
 
