@@ -208,7 +208,7 @@ class Subscription:
         self.dispatch_task.cancel()
         try:
             await self.dispatch_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except asyncio.CancelledError, Exception:  # noqa: BLE001
             pass
         self._closed = True
 
@@ -541,23 +541,19 @@ class NatsClient:
         if args:
             if len(args) != 2:
                 raise PublishError(
-                    "publish positional form requires exactly "
-                    "(subject, payload_bytes); got "
-                    f"{len(args)} args",
+                    f"publish positional form requires exactly (subject, payload_bytes); got {len(args)} args",
                 )
             pos_subject, pos_payload = args
             if not isinstance(pos_payload, bytes | bytearray | memoryview):
                 raise PublishError(
-                    "publish positional payload must be bytes-like; "
-                    f"got {type(pos_payload).__name__}",
+                    f"publish positional payload must be bytes-like; got {type(pos_payload).__name__}",
                 )
             sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
             await self._publish_bytes(subject=sub, payload=bytes(pos_payload), reply_to=None)
             return
         if subject is None or message is None:
             raise PublishError(
-                "publish requires either positional (subject, payload_bytes) "
-                "or kwargs subject= and message=",
+                "publish requires either positional (subject, payload_bytes) or kwargs subject= and message=",
             )
         sub = subject if isinstance(subject, Subject) else Subject.raw(subject)
         rt = reply_to if (reply_to is None or isinstance(reply_to, Subject)) else Subject.raw(reply_to)
@@ -989,14 +985,12 @@ class NatsClient:
         if args:
             if len(args) != 2:
                 raise RequestError(
-                    "request positional form requires exactly "
-                    f"(subject, payload_bytes); got {len(args)} args",
+                    f"request positional form requires exactly (subject, payload_bytes); got {len(args)} args",
                 )
             pos_subject, pos_payload = args
             if not isinstance(pos_payload, bytes | bytearray | memoryview):
                 raise RequestError(
-                    "request positional payload must be bytes-like; "
-                    f"got {type(pos_payload).__name__}",
+                    f"request positional payload must be bytes-like; got {type(pos_payload).__name__}",
                 )
             sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
             secs = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
