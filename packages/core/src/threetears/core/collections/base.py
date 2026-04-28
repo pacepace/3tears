@@ -748,8 +748,20 @@ class BaseCollection(ABC, Generic[EntityT]):
             ``original_date_updated`` value
         """
         self._set_span_table()
-        entity_id = entity.id
         data = entity.to_dict()
+        # composite-PK collections (eg. ``datasources`` keyed on
+        # ``(customer_id, id)`` after the v054 row_scope partition
+        # split) need a tuple key for ``_save_to_l2`` /
+        # ``_publish_invalidation`` -- ``BaseEntity.id`` only carries
+        # the singular ``primary_key_field`` value, so the framework
+        # rebuilds the composite from the on-the-wire payload here.
+        # single-PK collections short-circuit to ``entity.id`` to
+        # match the behaviour every existing caller already relies on.
+        pk_cols = self.primary_key_columns
+        if len(pk_cols) > 1:
+            entity_id: Any = tuple(data[col] for col in pk_cols)
+        else:
+            entity_id = entity.id
         original_timestamp = getattr(entity, "original_date_updated", None)
 
         now = datetime.now(UTC)

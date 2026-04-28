@@ -186,6 +186,32 @@ class Subscription:
         """
         self._closed = True
 
+    async def unsubscribe(self) -> None:
+        """drop the underlying nats-py subscription and cancel dispatch.
+
+        thin convenience equivalent to
+        ``await client.unsubscribe(sub)`` — saves callers (typically
+        integration tests with no handle to the parent client at
+        teardown time) from re-plumbing the client just to release a
+        subscription. idempotent: a second call after the first is a
+        no-op.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        try:
+            await self.raw_subscription.unsubscribe()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
+        self.dispatch_task.cancel()
+        try:
+            await self.dispatch_task
+        except asyncio.CancelledError, Exception:  # noqa: BLE001
+            pass
+        self._closed = True
+
 
 class NatsClient:
     """canonical NATS client wrapper.
@@ -454,33 +480,85 @@ class NatsClient:
         await self.shutdown()
 
     # ------------------------------------------------------------------
-    # publish
+    # boundary helpers (publish / flush / request)
     # ------------------------------------------------------------------
+
+    async def flush(self, timeout: float = 2.0) -> None:
+        """flush pending publishes through the underlying nats-py client.
+
+        thin pass-through for callers (typically integration tests)
+        that need a publish-side memory barrier before sending the
+        triggering request: subscribe -> flush -> publish-the-trigger
+        ensures the subscription is registered server-side before any
+        message arrives.
+
+        :param timeout: seconds to wait for the flush ack
+        :ptype timeout: float
+        :return: nothing
+        :rtype: None
+        """
+        await self._raw.flush(timeout=timeout)
 
     async def publish(
         self,
-        *,
-        subject: Subject,
-        message: BaseModel,
-        reply_to: Subject | None = None,
+        *args: Any,
+        subject: Subject | str | None = None,
+        message: BaseModel | None = None,
+        reply_to: Subject | str | None = None,
     ) -> None:
-        """publish a typed Pydantic message to subject.
+        """publish to a NATS subject.
 
-        serializes via ``model_dump_json()``. callers needing raw bytes
-        use :meth:`publish_raw`.
+        primary (canonical) form is keyword-only with a Pydantic
+        message:: ``await nc.publish(subject=Subject, message=Model)``;
+        serialization happens via ``model_dump_json()``.
 
-        :param subject: target subject
-        :ptype subject: Subject
-        :param message: typed Pydantic message to serialize and send
-        :ptype message: BaseModel
-        :param reply_to: optional reply subject for request-style transports
-        :ptype reply_to: Subject | None
+        positional shorthand ``nc.publish(subject_str, payload_bytes)``
+        is also accepted for parity with raw nats-py — every
+        integration test (and several legacy fanout sites) calls this
+        shape after a raw ``msg.reply`` lookup. callers needing the
+        kw-only typed form keep working unchanged; the shorthand
+        routes through :meth:`publish_raw_reply` semantics
+        (str subject, bytes payload, no Pydantic in the loop).
+
+        :param args: optional positional ``(subject_str, payload_bytes)``
+            shorthand for raw publishes
+        :ptype args: Any
+        :param subject: target subject (kw form). bare ``str`` is
+            auto-wrapped via :meth:`Subject.raw` for the
+            test-ergonomic path.
+        :ptype subject: Subject | str | None
+        :param message: typed Pydantic message (kw form, mutually
+            exclusive with positional payload bytes)
+        :ptype message: BaseModel | None
+        :param reply_to: optional reply subject for request-style
+            transports; bare ``str`` is auto-wrapped
+        :ptype reply_to: Subject | str | None
         :return: nothing
         :rtype: None
         :raises PublishError: if underlying publish fails
         """
+        # positional shorthand: (subject_str_or_subject, payload_bytes)
+        if args:
+            if len(args) != 2:
+                raise PublishError(
+                    f"publish positional form requires exactly (subject, payload_bytes); got {len(args)} args",
+                )
+            pos_subject, pos_payload = args
+            if not isinstance(pos_payload, bytes | bytearray | memoryview):
+                raise PublishError(
+                    f"publish positional payload must be bytes-like; got {type(pos_payload).__name__}",
+                )
+            sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
+            await self._publish_bytes(subject=sub, payload=bytes(pos_payload), reply_to=None)
+            return
+        if subject is None or message is None:
+            raise PublishError(
+                "publish requires either positional (subject, payload_bytes) or kwargs subject= and message=",
+            )
+        sub = subject if isinstance(subject, Subject) else Subject.raw(subject)
+        rt = reply_to if (reply_to is None or isinstance(reply_to, Subject)) else Subject.raw(reply_to)
         payload = message.model_dump_json().encode("utf-8")
-        await self._publish_bytes(subject=subject, payload=payload, reply_to=reply_to)
+        await self._publish_bytes(subject=sub, payload=payload, reply_to=rt)
 
     async def publish_raw(
         self,
@@ -598,9 +676,9 @@ class NatsClient:
 
     async def subscribe(
         self,
+        subject: Subject | str | None = None,
         *,
-        subject: Subject,
-        cb: "RawMessageCallback",
+        cb: "RawMessageCallback | None" = None,
         queue: str | None = None,
         max_in_flight: int | None = None,
         deadletter_on_error: bool = True,
@@ -628,6 +706,10 @@ class NatsClient:
         :rtype: Subscription
         :raises SubscribeError: if subscription registration fails
         """
+        if subject is None:
+            raise SubscribeError("subscribe requires a subject (positional or kw)")
+        if cb is None:
+            raise SubscribeError("subscribe requires cb= callback")
         return await self._subscribe_internal(
             subject=subject,
             raw_cb=cb,
@@ -716,6 +798,14 @@ class NatsClient:
             raise SubscribeError("exactly one of raw_cb / typed_cb must be supplied")
         if max_in_flight is not None and max_in_flight <= 0:
             raise SubscribeError("max_in_flight must be positive when set")
+
+        # accept a bare ``str`` as a Subject shorthand. integration tests
+        # build subject strings from f-strings and pass them directly;
+        # forcing every test to wrap with ``Subject.raw(...)`` adds noise
+        # without changing the contract -- the wrapper still emits
+        # ``subject.path`` to nats-py either way.
+        if isinstance(subject, str):
+            subject = Subject.raw(subject)
 
         try:
             raw_sub = await self._raw.subscribe(subject.path, queue=queue or "")
@@ -849,36 +939,86 @@ class NatsClient:
 
     async def request(
         self,
-        *,
-        subject: Subject,
-        message: BaseModel,
-        response_type: type[_T],
-        timeout: timedelta = DEFAULT_REQUEST_TIMEOUT,
-    ) -> _T:
-        """typed request/reply round-trip.
+        *args: Any,
+        subject: Subject | str | None = None,
+        message: BaseModel | None = None,
+        response_type: type[_T] | None = None,
+        timeout: timedelta | float = DEFAULT_REQUEST_TIMEOUT,
+    ) -> Any:
+        """request/reply round-trip.
 
-        serializes ``message`` to JSON bytes, awaits one nats-py
-        ``request``, decodes response into ``response_type``.
+        primary (canonical) form is keyword-only with a typed Pydantic
+        request + response::
 
-        :param subject: target subject (point only — pattern subscribes are not request/reply)
-        :ptype subject: Subject
-        :param message: typed Pydantic request body
-        :ptype message: BaseModel
+            await nc.request(subject=Subject, message=Model,
+                             response_type=ResponseModel)
+
+        positional shorthand
+        ``nc.request(subject_str, payload_bytes, timeout=N)`` is also
+        accepted for parity with raw nats-py — every integration test
+        uses this shape. the shorthand returns a raw
+        :class:`nats.aio.client.Msg` whose ``.data`` carries the
+        response bytes (matching the raw-nats interface integration
+        tests already consume).
+
+        :param args: optional positional ``(subject_str, payload_bytes)``
+            shorthand for raw request/reply
+        :ptype args: Any
+        :param subject: target subject (kw form). bare ``str`` is
+            auto-wrapped via :meth:`Subject.raw`.
+        :ptype subject: Subject | str | None
+        :param message: typed Pydantic request body (kw form)
+        :ptype message: BaseModel | None
         :param response_type: Pydantic class to decode response into
-        :ptype response_type: type[_T]
-        :param timeout: max wait for reply
-        :ptype timeout: timedelta
-        :return: decoded response
-        :rtype: _T
-        :raises RequestError: on timeout, no responders, transport failure, or response decode failure
+            (kw form)
+        :ptype response_type: type[_T] | None
+        :param timeout: max wait for reply; ``int`` / ``float`` is
+            interpreted as seconds (raw-nats parity)
+        :ptype timeout: timedelta | float
+        :return: decoded :class:`BaseModel` (kw form) or raw nats-py
+            ``Msg`` (positional form)
+        :rtype: Any
+        :raises RequestError: on timeout, no responders, transport
+            failure, or response decode failure
         """
+        # positional shorthand: (subject, payload_bytes), optional kw timeout
+        if args:
+            if len(args) != 2:
+                raise RequestError(
+                    f"request positional form requires exactly (subject, payload_bytes); got {len(args)} args",
+                )
+            pos_subject, pos_payload = args
+            if not isinstance(pos_payload, bytes | bytearray | memoryview):
+                raise RequestError(
+                    f"request positional payload must be bytes-like; got {type(pos_payload).__name__}",
+                )
+            sub = pos_subject if isinstance(pos_subject, Subject) else Subject.raw(str(pos_subject))
+            secs = timeout.total_seconds() if isinstance(timeout, timedelta) else float(timeout)
+            try:
+                msg = await self._raw.request(sub.path, bytes(pos_payload), timeout=secs)
+            except (_NatsTimeoutError, asyncio.TimeoutError, TimeoutError) as exc:
+                raise RequestError(
+                    f"request timed out: subject={sub.path} timeout={secs:.1f}s",
+                ) from exc
+            except _NatsNoRespondersError as exc:
+                raise RequestError(f"no responders for subject: subject={sub.path}") from exc
+            except Exception as exc:
+                raise RequestError(f"request failed: subject={sub.path}: {exc}") from exc
+            return msg
+        if subject is None or message is None or response_type is None:
+            raise RequestError(
+                "request requires either positional (subject, payload_bytes) "
+                "or kwargs subject= + message= + response_type=",
+            )
+        sub = subject if isinstance(subject, Subject) else Subject.raw(subject)
+        td = timeout if isinstance(timeout, timedelta) else timedelta(seconds=float(timeout))
         payload = message.model_dump_json().encode("utf-8")
-        response_bytes = await self.request_raw(subject=subject, payload=payload, timeout=timeout)
+        response_bytes = await self.request_raw(subject=sub, payload=payload, timeout=td)
         try:
             return response_type.model_validate_json(response_bytes)
         except ValidationError as exc:
             raise RequestError(
-                f"response decode failed: subject={subject.path} type={response_type.__name__}: {exc}"
+                f"response decode failed: subject={sub.path} type={response_type.__name__}: {exc}",
             ) from exc
 
     async def request_raw(

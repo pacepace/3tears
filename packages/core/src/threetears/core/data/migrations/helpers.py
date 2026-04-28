@@ -581,19 +581,36 @@ async def replace_primary_key(
     recreate_fks_block = "\n        ".join(plan.recreate_fks)
     new_pk_columns_csv = ", ".join(new_columns)
 
+    # current_schema() guard: every per-agent invocation lands in its
+    # own ``agent_<hex>`` schema (search_path is set by the runner
+    # caller). without filtering pg_constraint to ``cls.relnamespace
+    # = current_schema()``, the second agent's run sees the FIRST
+    # agent's already-swapped media_pkey row in the global catalog,
+    # the inner ``NOT EXISTS (PK matching new shape)`` short-circuits
+    # to FALSE, and the swap silently skips. result: the second
+    # agent's media keeps the original ``PRIMARY KEY (media_id)`` and
+    # the v010 composite FK fails with "no unique constraint matching
+    # given keys for referenced table 'media'". one-database-many-
+    # schemas (vanilla Postgres testcontainer) exposes this; YB's
+    # one-database-per-tenant deployment shape masks it in
+    # production.
     sql = f"""
 DO $$
+DECLARE
+    cur_ns oid := (SELECT oid FROM pg_namespace WHERE nspname = current_schema());
 BEGIN
     IF EXISTS (
         SELECT 1 FROM pg_constraint pc
           JOIN pg_class cls ON cls.oid = pc.conrelid
          WHERE cls.relname = '{table}'
+           AND cls.relnamespace = cur_ns
            AND pc.conname = '{plan.pkey_name}'
            AND pc.contype = 'p'
     ) AND NOT EXISTS (
         SELECT 1 FROM pg_constraint pc
           JOIN pg_class cls ON cls.oid = pc.conrelid
          WHERE cls.relname = '{table}'
+           AND cls.relnamespace = cur_ns
            AND pc.contype = 'p'
            AND pg_get_constraintdef(pc.oid)
                LIKE 'PRIMARY KEY ({new_pk_columns_csv})%'
@@ -607,6 +624,7 @@ BEGIN
             SELECT 1 FROM pg_constraint pc
               JOIN pg_class cls ON cls.oid = pc.conrelid
              WHERE cls.relname = '{table}'
+               AND cls.relnamespace = cur_ns
                AND pc.conname = '{plan.unique_name}'
         ) THEN
             ALTER TABLE {qualified}
