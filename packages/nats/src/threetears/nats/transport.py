@@ -56,6 +56,22 @@ class IncomingMessage:
     reply_subject: str | None
     subject: str
 
+    @property
+    def reply(self) -> str | None:
+        """alias for :attr:`reply_subject` matching nats-py ``Msg.reply``.
+
+        every integration test (and several legacy handlers) reads
+        ``msg.reply`` after a raw subscribe — that name comes from
+        nats-py's own ``Msg`` shape. exposing it as a ``@property``
+        on the canonical envelope keeps the wrapper a drop-in for
+        callers that came from raw nats-py without forcing a
+        rename across every test fixture.
+
+        :return: reply subject (``None`` for pub/sub messages)
+        :rtype: str | None
+        """
+        return self.reply_subject
+
 
 MessageCallback = Callable[["BaseModel"], Awaitable[None]]
 """typed subscribe callback shape for :meth:`NatsClient.subscribe_typed`.
