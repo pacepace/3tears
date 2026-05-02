@@ -20,7 +20,13 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_CREATE_VECTOR_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector"
+# pgvector is installed once at the database level into the public
+# schema; per-tenant schemas reference the type via the schema-qualified
+# name ``public.vector`` so the search_path used during agent migrations
+# (which only includes the per-agent schema) does not need to be
+# expanded to find the type. matching ``public.vector_cosine_ops`` on
+# the index keeps the operator-class lookup explicit.
+_CREATE_VECTOR_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public"
 
 _CREATE_MEMORIES_SQL = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -36,7 +42,7 @@ CREATE TABLE IF NOT EXISTS memories (
     date_created TIMESTAMP NOT NULL,
     date_updated TIMESTAMP NOT NULL,
     date_accessed TIMESTAMP,
-    embedding vector(1024)
+    embedding public.vector(1024)
 )
 """
 
@@ -47,7 +53,7 @@ _CREATE_MEM_CUSTOMER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_customer ON m
 _CREATE_MEM_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mem_user ON memories (agent_id, customer_id, user_id)"
 
 _CREATE_MEM_EMBEDDING_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mem_embedding ON memories USING hnsw (embedding vector_cosine_ops)"
+    "CREATE INDEX IF NOT EXISTS idx_mem_embedding ON memories USING hnsw (embedding public.vector_cosine_ops)"
 )
 
 

@@ -55,10 +55,12 @@ __all__ = [
     "ToolManifestEntry",
     "ToolServer",
     "nats_connect",
+    "tool_namespace_id",
+    "tool_namespace_name",
 ]
 
 
-def _tool_namespace_name(mcp_name: str, version: str) -> str:
+def tool_namespace_name(mcp_name: str, version: str) -> str:
     """build the canonical ``platform.namespaces.name`` for a tool row.
 
     namespace-task-01 phase 9.5 pins the canonical shape at
@@ -84,7 +86,7 @@ def _tool_namespace_name(mcp_name: str, version: str) -> str:
     return build_namespace_name(PLURAL_PREFIX_TOOL, mcp_name, version)
 
 
-def _tool_namespace_id(
+def tool_namespace_id(
     mcp_name: str,
     version: str,
     agent_id: UUID | None,
@@ -993,9 +995,9 @@ class ToolServer:
         if self._namespace_collection is None:
             return
         schema = tool.mcp_schema()
-        name = _tool_namespace_name(schema.name, schema.version)
+        name = tool_namespace_name(schema.name, schema.version)
         now = datetime.now(UTC)
-        namespace_id = _tool_namespace_id(
+        namespace_id = tool_namespace_id(
             schema.name,
             schema.version,
             self._agent_id,
@@ -1074,7 +1076,7 @@ class ToolServer:
             return
         for key in removed_keys:
             _, _, version = key.partition("@")
-            namespace_id = _tool_namespace_id(
+            namespace_id = tool_namespace_id(
                 mcp_name,
                 version,
                 self._agent_id,

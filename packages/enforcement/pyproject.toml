@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-enforcement"
+version = "0.5.0"
+description = "Static-analysis enforcement scanners for the 3tears ecosystem (cache primitive contract, underscore-access discipline, codebase conventions, etc.)"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears>=0.5.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }

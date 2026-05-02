@@ -17,6 +17,7 @@ __all__ = [
     "build_discord_payload",
     "build_slack_blocks",
     "build_slack_payload",
+    "plain_text_fallback",
     "should_use_rich_formatting",
 ]
 
@@ -145,7 +146,7 @@ def build_slack_payload(
     """
     payload: dict[str, Any] = {
         "channel": channel,
-        "text": _plain_text_fallback(content),
+        "text": plain_text_fallback(content),
         "blocks": build_slack_blocks(content, format_hints),
     }
     if thread_ts:
@@ -175,7 +176,7 @@ def build_discord_payload(content: str, format_hints: dict[str, Any]) -> dict[st
     return result
 
 
-def _plain_text_fallback(content: str, max_length: int = 300) -> str:
+def plain_text_fallback(content: str, max_length: int = 300) -> str:
     """strip markdown formatting for Slack notification fallback text.
 
     removes common markdown syntax characters and truncates to

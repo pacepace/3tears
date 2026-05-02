@@ -4,11 +4,11 @@ from __future__ import annotations
 
 
 from threetears.channels.formatting import (
-    _plain_text_fallback,
     build_discord_embed,
     build_discord_payload,
     build_slack_blocks,
     build_slack_payload,
+    plain_text_fallback,
     should_use_rich_formatting,
 )
 
@@ -150,20 +150,20 @@ class TestPlainTextFallback:
     """tests for markdown stripping fallback."""
 
     def test_strips_markdown(self) -> None:
-        result = _plain_text_fallback("**bold** and _italic_")
+        result = plain_text_fallback("**bold** and _italic_")
         assert "**" not in result
         assert result == "bold and italic"
 
     def test_truncates_long_text(self) -> None:
         long_text = "a" * 500
-        result = _plain_text_fallback(long_text, max_length=100)
+        result = plain_text_fallback(long_text, max_length=100)
         assert len(result) <= 100
         assert result.endswith("...")
 
     def test_strips_heading_prefix(self) -> None:
-        result = _plain_text_fallback("## Heading")
+        result = plain_text_fallback("## Heading")
         assert result == "Heading"
 
     def test_strips_code_block_markers(self) -> None:
-        result = _plain_text_fallback("```python\ncode\n```")
+        result = plain_text_fallback("```python\ncode\n```")
         assert "```" not in result

@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS media_content (
     content_type VARCHAR(64) NOT NULL,
     content TEXT NOT NULL,
     summary TEXT NULL,
-    embedding vector(1024) NULL,
+    embedding public.vector(1024) NULL,
     search_vector TSVECTOR NULL,
     date_created TIMESTAMP NOT NULL
 )
@@ -73,7 +73,7 @@ _CREATE_MC_MEDIA_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_mc_media ON media_con
 
 _CREATE_MC_EMBEDDING_IDX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_mc_embedding "
-    "ON media_content USING hnsw (embedding vector_cosine_ops) "
+    "ON media_content USING hnsw (embedding public.vector_cosine_ops) "
     "WHERE embedding IS NOT NULL"
 )
 

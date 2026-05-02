@@ -14,8 +14,8 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from threetears.channels.formatting import (
-    _plain_text_fallback,
     build_slack_blocks,
+    plain_text_fallback,
     should_use_rich_formatting,
 )
 from threetears.channels.protocol import (
@@ -210,7 +210,7 @@ async def _send_response(
     if is_dm and not thread_ts:
         if use_rich:
             blocks = build_slack_blocks(response.content, response.format_hints)
-            fallback_text = _plain_text_fallback(response.content)
+            fallback_text = plain_text_fallback(response.content)
             await say(text=fallback_text, blocks=blocks)
         else:
             await say(text=response.content)
@@ -218,7 +218,7 @@ async def _send_response(
         reply_thread_ts = thread_ts if thread_ts else event.get("ts", "")
         if use_rich:
             blocks = build_slack_blocks(response.content, response.format_hints)
-            fallback_text = _plain_text_fallback(response.content)
+            fallback_text = plain_text_fallback(response.content)
             await say(text=fallback_text, blocks=blocks, thread_ts=reply_thread_ts)
         else:
             await say(text=response.content, thread_ts=reply_thread_ts)

@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     summary TEXT NULL,
     heading_context TEXT NULL,
     page_number INTEGER NULL,
-    embedding vector(1024) NULL,
+    embedding public.vector(1024) NULL,
     search_vector TSVECTOR NULL,
     date_created TIMESTAMP NOT NULL
 )
@@ -49,7 +49,7 @@ _CREATE_CHUNKS_MEDIA_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_chunks_media ON m
 
 _CREATE_CHUNKS_EMBEDDING_IDX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_embedding "
-    "ON memory_chunks USING hnsw (embedding vector_cosine_ops) "
+    "ON memory_chunks USING hnsw (embedding public.vector_cosine_ops) "
     "WHERE embedding IS NOT NULL"
 )
 
