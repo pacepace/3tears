@@ -246,14 +246,43 @@ class ToolContextManager:
         long_desc: str = "",
         context_type: str = "tool_result",
         metadata: dict[str, Any] | None = None,
+        status: str | None = None,
+        duration_ms: int | None = None,
+        error: str | None = None,
     ) -> str:
         """Save a tool result.  Returns the generated context_id.
 
         If ``result_limit`` is set and the count of tool_result items
         exceeds it, the least-recently-accessed items are evicted.
+
+        :param status: optional invocation status (e.g. ``"completed"``,
+            ``"failed"``). When provided, merged into ``metadata["status"]``.
+        :ptype status: str | None
+        :param duration_ms: optional wall-clock duration of the invocation
+            in milliseconds. When provided, merged into
+            ``metadata["duration_ms"]``.
+        :ptype duration_ms: int | None
+        :param error: optional error message when the invocation failed.
+            When provided, merged into ``metadata["error"]`` (truncated to
+            1000 chars). When ``status`` is ``"failed"`` and ``error`` is
+            given, ``short_desc`` falls back to ``"FAILED: <error>"``
+            instead of a slice of ``result`` so the prompt-side rendering
+            surfaces the failure cause directly.
+        :ptype error: str | None
         """
         now = datetime.now(UTC)
         context_id = uuid7()
+        # Merge observability fields into metadata when present so callers
+        # do not have to construct the metadata dict themselves.
+        merged_meta: dict[str, Any] = dict(metadata) if metadata else {}
+        if status is not None:
+            merged_meta.setdefault("status", status)
+        if duration_ms is not None:
+            merged_meta.setdefault("duration_ms", duration_ms)
+        if error is not None:
+            merged_meta.setdefault("error", error[:1000])
+        if short_desc is None and status == "failed" and error:
+            short_desc = f"FAILED: {error[:280]}"
         data = {
             "context_id": context_id,
             "conversation_id": self.conversation_id,
@@ -262,7 +291,7 @@ class ToolContextManager:
             "short_desc": short_desc or result[:200],
             "long_desc": long_desc[:1000] if long_desc else "",
             "content": result,
-            "metadata": metadata or {},
+            "metadata": merged_meta,
             "date_accessed": now,
             "date_created": now,
             "date_updated": now,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.agent.tools.registry import ToolRegistry
 from threetears.agent.tools.context import ToolContextManager
@@ -34,6 +34,11 @@ from threetears.agent.tools.builtin.analyze_media import (
     AnalyzerConfig,
     create_analyze_media_tool,
 )
+from threetears.agent.tools.builtin.image_generation import (
+    ImageGenerationContext,
+    ImageGenerationInput,
+    create_image_generation_tool,
+)
 from threetears.agent.tools.chunker import (
     ChunkResult,
     ChunkStrategy,
@@ -46,6 +51,12 @@ from threetears.agent.tools.chunker import (
 from threetears.agent.tools.todo import (
     TodoStorage,
     load_todo_tools as load_todo_tools_from_storage,
+)
+from threetears.agent.tools.tool_llm_dispatch import (
+    InvokeToolLlmInput,
+    ToolLlmInvocation,
+    ToolLlmResolver,
+    load_tool_llm_dispatch,
 )
 from threetears.agent.tools.workflow import load_workflow_tools
 from threetears.agent.tools.builtin import register_builtins
@@ -73,6 +84,9 @@ __all__ = [
     "DocumentSection",
     "GeneratedImage",
     "ImageGenerationBackend",
+    "ImageGenerationContext",
+    "ImageGenerationInput",
+    "InvokeToolLlmInput",
     "McpClient",
     "McpTool",
     "McpToolResult",
@@ -84,6 +98,8 @@ __all__ = [
     "ToolContextManager",
     "ToolExecutionResult",
     "ToolExecutor",
+    "ToolLlmInvocation",
+    "ToolLlmResolver",
     "ToolRegistry",
     "ToolRouter",
     "TodoStorage",
@@ -95,9 +111,11 @@ __all__ = [
     "chunk_by_sections",
     "chunk_content",
     "create_analyze_media_tool",
+    "create_image_generation_tool",
     "create_parse_document_tool",
     "detect_mime_from_filename",
     "is_recall_intent",
+    "load_tool_llm_dispatch",
     "load_todo_tools_from_storage",
     "load_workflow_tools",
     "parse_document",

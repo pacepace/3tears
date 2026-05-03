@@ -133,6 +133,88 @@ async def test_save_tool_result(ctx: ToolContextManager) -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_tool_result_observability_metadata(ctx: ToolContextManager) -> None:
+    """``status`` / ``duration_ms`` / ``error`` are merged into metadata."""
+    cid = await ctx.save_tool_result(
+        "search",
+        "found 5 results",
+        status="completed",
+        duration_ms=234,
+    )
+    item = await ctx.get_context_item(cid)
+    assert item is not None
+    assert item["metadata"]["status"] == "completed"
+    assert item["metadata"]["duration_ms"] == 234
+
+
+@pytest.mark.asyncio
+async def test_save_tool_result_failed_with_error_falls_back_short_desc(
+    ctx: ToolContextManager,
+) -> None:
+    """``status='failed'`` + ``error=...`` produces a FAILED short_desc."""
+    cid = await ctx.save_tool_result(
+        "search",
+        "",
+        status="failed",
+        error="upstream timeout",
+    )
+    item = await ctx.get_context_item(cid)
+    assert item is not None
+    assert item["short_desc"].startswith("FAILED:")
+    assert "upstream timeout" in item["short_desc"]
+    assert item["metadata"]["status"] == "failed"
+    assert item["metadata"]["error"] == "upstream timeout"
+
+
+@pytest.mark.asyncio
+async def test_save_tool_result_explicit_short_desc_wins_over_failure_fallback(
+    ctx: ToolContextManager,
+) -> None:
+    """An explicit ``short_desc`` is not overridden by the failed-fallback."""
+    cid = await ctx.save_tool_result(
+        "search",
+        "",
+        short_desc="user-supplied summary",
+        status="failed",
+        error="upstream timeout",
+    )
+    item = await ctx.get_context_item(cid)
+    assert item is not None
+    assert item["short_desc"] == "user-supplied summary"
+
+
+@pytest.mark.asyncio
+async def test_save_tool_result_caller_metadata_takes_precedence(
+    ctx: ToolContextManager,
+) -> None:
+    """Caller-supplied metadata keys are not overwritten by the kwargs."""
+    cid = await ctx.save_tool_result(
+        "search",
+        "result",
+        metadata={"status": "caller-wins"},
+        status="completed",
+    )
+    item = await ctx.get_context_item(cid)
+    assert item is not None
+    assert item["metadata"]["status"] == "caller-wins"
+
+
+@pytest.mark.asyncio
+async def test_save_tool_result_error_truncated_to_1000(ctx: ToolContextManager) -> None:
+    """Long error strings are truncated to 1000 chars in metadata."""
+    huge = "x" * 5000
+    cid = await ctx.save_tool_result(
+        "search",
+        "",
+        status="failed",
+        error=huge,
+    )
+    item = await ctx.get_context_item(cid)
+    assert item is not None
+    assert len(item["metadata"]["error"]) == 1000
+
+
+@pytest.mark.asyncio
 async def test_get_context_item_not_found(ctx: ToolContextManager) -> None:
     assert await ctx.get_context_item("nonexistent-id") is None
 

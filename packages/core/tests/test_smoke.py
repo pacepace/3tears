@@ -11,4 +11,4 @@ def test_cross_package_imports():
 
     assert core_version == "0.5.0"
     assert memory_version == "0.5.0"
-    assert tools_version == "0.5.0"
+    assert tools_version == "0.6.0"
