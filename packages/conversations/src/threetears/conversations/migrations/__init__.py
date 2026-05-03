@@ -20,6 +20,9 @@ from threetears.conversations.migrations.v001_create_conversations_table import 
 from threetears.conversations.migrations.v002_add_message_count import (
     add_message_count,
 )
+from threetears.conversations.migrations.v003_add_name_column import (
+    add_name_column,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -48,6 +51,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     )
     pkg.version(1)(create_conversations_table)
     pkg.version(2)(add_message_count)
+    pkg.version(3)(add_name_column)
     runner.register(pkg)
     return pkg
 
@@ -55,6 +59,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "add_message_count",
+    "add_name_column",
     "create_conversations_table",
     "register",
 ]

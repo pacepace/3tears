@@ -34,6 +34,7 @@ def _sample_data() -> dict[str, Any]:
         "user_id": uuid7(),
         "channel_type": "slack",
         "conversation_ref": "C1234567890",
+        "name": None,
         "status": "active",
         "summary": "initial summary",
         "date_created": now,
@@ -79,8 +80,8 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
 
         composite-pk schema column order (matches SchemaBackedCollection
         generator): agent_id, id, customer_id, user_id, channel_type,
-        conversation_ref, status, summary, date_created, date_updated,
-        date_last_message, metadata.
+        conversation_ref, name, status, summary, date_created,
+        date_updated, date_last_message, metadata, message_count.
 
         :param query: SQL text
         :ptype query: str
@@ -98,6 +99,7 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "user_id",
                 "channel_type",
                 "conversation_ref",
+                "name",
                 "status",
                 "summary",
                 "date_created",
@@ -117,12 +119,13 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             if existing is None:
                 result = "UPDATE 0"
                 return result
-            existing["status"] = args[2]
-            existing["summary"] = args[3]
-            existing["date_updated"] = args[4]
-            existing["date_last_message"] = args[5]
-            existing["metadata"] = args[6]
-            existing["message_count"] = args[7]
+            existing["name"] = args[2]
+            existing["status"] = args[3]
+            existing["summary"] = args[4]
+            existing["date_updated"] = args[5]
+            existing["date_last_message"] = args[6]
+            existing["metadata"] = args[7]
+            existing["message_count"] = args[8]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:

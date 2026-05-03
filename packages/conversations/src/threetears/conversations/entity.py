@@ -222,6 +222,32 @@ class Conversation(BaseEntity):
         BaseEntity.__setattr__(self, "conversation_ref", value)
 
     @property
+    def name(self) -> str | None:
+        """
+        return the conversation display name.
+
+        nullable: conversations are typically un-named at creation time
+        and get a title (often LLM-generated) after the first user turn
+        lands.  callers presenting conversations in a list UI fall back
+        to ``summary`` or a synthesized label when this is ``None``.
+
+        :return: display name or ``None``
+        :rtype: str | None
+        """
+        value: str | None = self._get_raw("name")
+        return value
+
+    @name.setter
+    def name(self, value: str | None) -> None:
+        """
+        set the conversation display name.
+
+        :param value: display name or ``None`` to clear
+        :ptype value: str | None
+        """
+        BaseEntity.__setattr__(self, "name", value)
+
+    @property
     def status(self) -> str:
         """
         return the conversation status enum value.

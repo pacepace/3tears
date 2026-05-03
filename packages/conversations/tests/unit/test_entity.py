@@ -172,6 +172,56 @@ class TestConversationIdentityProperties:
         assert entity.id == (data["agent_id"], data["id"])
 
 
+class TestConversationNameProperty:
+    """display-name property added in conversations v003."""
+
+    def test_name_returns_stored_value(self) -> None:
+        """name getter returns the value set in the row."""
+        data = _sample_data()
+        data["name"] = "Q4 metrics review"
+        entity = Conversation(data)
+
+        assert entity.name == "Q4 metrics review"
+
+    def test_name_is_none_when_unset(self) -> None:
+        """name returns ``None`` when the row has no name field."""
+        data = _sample_data()
+        # _sample_data() does not include "name", so it should be None.
+        assert "name" not in data
+        entity = Conversation(data)
+
+        assert entity.name is None
+
+    def test_name_setter_tracks_change(
+        self,
+        mock_collection: tuple[MagicMock, dict[str, dict[str, object]]],
+    ) -> None:
+        """name setter records the mutation in get_changes."""
+        coll, _ = mock_collection
+        data = _sample_data()
+        entity = Conversation(data, is_new=False, collection=coll)
+
+        entity.name = "Q4 review"
+
+        changes = entity.get_changes()
+        assert changes["name"] == "Q4 review"
+
+    def test_name_can_be_set_to_none(
+        self,
+        mock_collection: tuple[MagicMock, dict[str, dict[str, object]]],
+    ) -> None:
+        """clearing name via setter records None in get_changes."""
+        coll, _ = mock_collection
+        data = _sample_data()
+        data["name"] = "initial"
+        entity = Conversation(data, is_new=False, collection=coll)
+
+        entity.name = None
+
+        changes = entity.get_changes()
+        assert changes["name"] is None
+
+
 class TestConversationChannelProperties:
     """verify channel-type and channel-reference properties."""
 

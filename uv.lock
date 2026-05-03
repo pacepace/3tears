@@ -410,6 +410,9 @@ version = "0.5.0"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
+asgi = [
+    { name = "uuid-utils" },
+]
 otel = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
@@ -421,8 +424,9 @@ requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.28" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.28" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.28" },
+    { name = "uuid-utils", marker = "extra == 'asgi'" },
 ]
-provides-extras = ["otel"]
+provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"

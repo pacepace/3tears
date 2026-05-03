@@ -93,6 +93,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("user_id", UUID_TYPE, immutable=True),
             Column("channel_type", STRING_TYPE, immutable=True),
             Column("conversation_ref", STRING_TYPE, nullable=True, immutable=True),
+            Column("name", STRING_TYPE, nullable=True),
             Column("status", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
             Column("date_created", DATETIME_TYPE, immutable=True),
