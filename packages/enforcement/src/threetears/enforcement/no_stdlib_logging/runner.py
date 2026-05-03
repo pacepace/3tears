@@ -45,7 +45,8 @@ _VALID_WALKERS: frozenset[str] = frozenset({"all"})
 
 
 def run_no_stdlib_logging_enforcement(
-    config: NoStdlibLoggingConfig, walker: str = "all",
+    config: NoStdlibLoggingConfig,
+    walker: str = "all",
 ) -> None:
     """run the walker, apply exemptions, emit report, fail if strict.
 
@@ -83,9 +84,7 @@ def run_no_stdlib_logging_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
     violations = find_stdlib_logging_imports(
@@ -113,10 +112,7 @@ def run_no_stdlib_logging_enforcement(
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"no-stdlib-logging enforcement found {len(filtered)} "
-            f"violation(s):\n{report}"
-        )
+        pytest.fail(f"no-stdlib-logging enforcement found {len(filtered)} violation(s):\n{report}")
 
 
 def _resolve_src_roots(config: NoStdlibLoggingConfig) -> tuple[Path, ...]:

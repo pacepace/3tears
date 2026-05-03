@@ -1,157 +1,108 @@
-"""openrouter chat provider adapter wrapping langchain-openrouter."""
+"""OpenRouter chat factory backed by ``langchain_openrouter``.
+
+LangChain-native shape (3tears v0.6.0+): :func:`create_openrouter_chat`
+returns a fully-configured ``ChatOpenRouter`` instance. ``ChatOpenRouter``
+expects the request timeout in milliseconds — the factory accepts seconds
+to match the rest of the API surface and converts internally.
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING
 
-from threetears.models.messages import ChatMessage, ToolDefinition
-from threetears.models.providers._conversions import (
-    ai_chunk_to_chat_chunk,
-    ai_message_to_result,
-    messages_to_lc,
-    tool_def_to_lc,
-)
-from threetears.models.results import ChatChunk, ChatResult
+from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.enums import ModelStatus, ModelTier, ModelType
+
+if TYPE_CHECKING:
+    from langchain_openrouter import ChatOpenRouter
 
 __all__ = [
-    "OpenRouterChatProvider",
+    "OPENROUTER_PROVIDER_NAME",
+    "create_openrouter_chat",
 ]
 
 
-class OpenRouterChatProvider:
-    """chat provider adapter for OpenRouter models via langchain-openrouter.
+OPENROUTER_PROVIDER_NAME = "openrouter"
 
-    wraps ChatOpenRouter with lazy instantiation, converting between
-    threetears message types and LangChain message types at boundaries.
-    accepts timeout in seconds and converts to milliseconds for
-    ChatOpenRouter which expects millisecond values.
 
-    :param model_name: OpenRouter model identifier (e.g. deepseek/deepseek-chat-v3-0324)
+def create_openrouter_chat(
+    model_name: str,
+    api_key: str,
+    *,
+    timeout: int = 120,
+    max_retries: int = 2,
+    **extra_kwargs: object,
+) -> ChatOpenRouter:
+    """creates a configured ``ChatOpenRouter`` for OpenRouter-routed models.
+
+    :param model_name: OpenRouter model identifier (e.g. ``deepseek/deepseek-chat-v3-0324``)
     :ptype model_name: str
-    :param api_key: OpenRouter API key for authentication
+    :param api_key: OpenRouter API key
     :ptype api_key: str
-    :param timeout: request timeout in seconds (converted to milliseconds internally)
+    :param timeout: request timeout in seconds (converted to ms internally)
     :ptype timeout: int
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
+    :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenRouter``
+    :ptype extra_kwargs: object
+    :return: configured ``ChatOpenRouter`` instance
+    :rtype: ChatOpenRouter
     """
+    from langchain_openrouter import ChatOpenRouter
 
-    def __init__(
-        self,
-        model_name: str,
-        api_key: str,
-        *,
-        timeout: int = 120,
-        max_retries: int = 2,
-    ) -> None:
-        self.model_name = model_name
-        self._api_key = api_key
-        self.timeout = timeout
-        self._max_retries = max_retries
-        self.model: Any = None
-        self.tools: list[ToolDefinition] | None = None
+    # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards
+    # it as `x_title` to the underlying openrouter SDK. openrouter 0.8+
+    # renamed that kwarg to `x_open_router_title`, so the old name now
+    # raises TypeError. setting both to None restores compatibility until
+    # langchain-openrouter ships a fix; callers that need attribution can
+    # pass app_title/app_url via extra_kwargs.
+    kwargs: dict[str, object] = {
+        "model": model_name,
+        "api_key": api_key,
+        "timeout": timeout * 1000,
+        "max_retries": max_retries,
+        "app_title": None,
+        "app_url": None,
+    }
+    kwargs.update(extra_kwargs)
 
-    def _get_model(self) -> Any:
-        """lazily creates and caches ChatOpenRouter instance.
+    model: ChatOpenRouter = ChatOpenRouter(**kwargs)
+    return model
 
-        imports langchain_openrouter on first call to avoid module-level
-        dependency on optional package. converts stored timeout from
-        seconds to milliseconds as required by ChatOpenRouter.
 
-        :return: configured ChatOpenRouter instance, optionally with tools bound
-        :rtype: Any
-        """
-        if self.model is not None:
-            return self.model
+# -- capability registration -------------------------------------------------
 
-        from langchain_openrouter import ChatOpenRouter
+# representative OpenRouter ids. additional ids can be registered by host
+# apps at boot via register_capabilities().
+_OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek/deepseek-chat-v3-0324": ModelCapabilities(
+        model_name="deepseek/deepseek-chat-v3-0324",
+        provider_name=OPENROUTER_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        context_window=64_000,
+        max_output_tokens=8_192,
+        supports_streaming=True,
+        supports_tools=True,
+        supports_vision=False,
+        requires_alternating_roles=True,
+    ),
+    "deepseek/deepseek-r1": ModelCapabilities(
+        model_name="deepseek/deepseek-r1",
+        provider_name=OPENROUTER_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        context_window=64_000,
+        max_output_tokens=8_192,
+        supports_streaming=True,
+        supports_tools=False,
+        supports_vision=False,
+        requires_alternating_roles=True,
+    ),
+}
 
-        kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "api_key": self._api_key,
-            "timeout": self.timeout * 1000,
-            "max_retries": self._max_retries,
-        }
 
-        base_model: Any = ChatOpenRouter(**kwargs)
-
-        if self.tools:
-            lc_tools = [tool_def_to_lc(t) for t in self.tools]
-            base_model = base_model.bind_tools(lc_tools)
-
-        self.model = base_model
-        return self.model
-
-    async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
-        """generates chat completion from message history.
-
-        converts threetears messages to LangChain format, invokes model,
-        and converts response back to ChatResult.
-
-        :param messages: ordered list of conversation messages
-        :ptype messages: list[ChatMessage]
-        :param kwargs: additional parameters passed to LangChain ainvoke
-        :ptype kwargs: Any
-        :return: chat completion result with content, tool calls, and usage
-        :rtype: ChatResult
-        """
-        lc_messages = messages_to_lc(messages)
-        response = await self._get_model().ainvoke(lc_messages, **kwargs)
-        result = ai_message_to_result(response)
-        return result
-
-    async def stream(self, messages: list[ChatMessage], **kwargs: Any) -> AsyncIterator[ChatChunk]:
-        """streams chat completion chunks from message history.
-
-        converts threetears messages to LangChain format and yields
-        converted chunks from async stream.
-
-        :param messages: ordered list of conversation messages
-        :ptype messages: list[ChatMessage]
-        :param kwargs: additional parameters passed to LangChain astream
-        :ptype kwargs: Any
-        :return: async iterator of chat completion chunks
-        :rtype: AsyncIterator[ChatChunk]
-        """
-        lc_messages = messages_to_lc(messages)
-        async for chunk in self._get_model().astream(lc_messages, **kwargs):
-            yield ai_chunk_to_chat_chunk(chunk)
-
-    def bind_tools(self, tools: list[ToolDefinition]) -> None:
-        """binds tool definitions for subsequent completions.
-
-        stores tools and clears cached model instance so next call
-        recreates model with tools bound.
-
-        :param tools: tool definitions available to model
-        :ptype tools: list[ToolDefinition]
-        """
-        self.tools = list(tools)
-        self.model = None
-
-    def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """preprocesses messages before sending to OpenRouter model.
-
-        applies capability-based transforms via preprocessing pipeline.
-        OpenRouter models do not require alternating roles by default,
-        so this is effectively passthrough for standard configurations.
-
-        :param messages: raw conversation messages
-        :ptype messages: list[ChatMessage]
-        :return: preprocessed messages ready for model
-        :rtype: list[ChatMessage]
-        """
-        from threetears.models.capabilities import ModelCapabilities
-        from threetears.models.enums import ModelStatus, ModelTier, ModelType
-        from threetears.models.preprocessing import preprocess_messages
-
-        capabilities = ModelCapabilities(
-            model_name=self.model_name,
-            model_type=ModelType.CHAT,
-            model_tier=ModelTier.LARGE,
-            model_status=ModelStatus.ACTIVE,
-            requires_alternating_roles=False,
-        )
-        result = preprocess_messages(messages, capabilities)
-        return result
+for _model_id, _caps in _OPENROUTER_CAPABILITIES.items():
+    register_capabilities(_model_id, _caps)

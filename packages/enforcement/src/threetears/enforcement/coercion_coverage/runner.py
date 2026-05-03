@@ -44,7 +44,8 @@ _VALID_WALKERS: frozenset[str] = frozenset({"all"})
 
 
 def run_coercion_enforcement(
-    config: CoerceCoverageConfig, walker: str = "all",
+    config: CoerceCoverageConfig,
+    walker: str = "all",
 ) -> None:
     """run the named walker, apply exemptions, emit report, fail if strict.
 
@@ -76,13 +77,13 @@ def run_coercion_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
     violations = find_run_overrides(
-        src_roots, config.repo_root, config.base_class_suffixes,
+        src_roots,
+        config.repo_root,
+        config.base_class_suffixes,
     )
 
     exemptions = _load_exemptions(config.exemptions_path)
@@ -103,10 +104,7 @@ def run_coercion_enforcement(
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"coercion-coverage enforcement found {len(filtered)} "
-            f"violation(s):\n{report}"
-        )
+        pytest.fail(f"coercion-coverage enforcement found {len(filtered)} violation(s):\n{report}")
 
 
 def _resolve_src_roots(config: CoerceCoverageConfig) -> tuple[Path, ...]:

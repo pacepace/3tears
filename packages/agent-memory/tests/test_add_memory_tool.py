@@ -78,9 +78,10 @@ def _make_pool():
 
 
 def _make_embedding_provider():
-    """build a stub embedding provider."""
+    """build a stub LangChain ``Embeddings``."""
     provider = AsyncMock()
-    provider.embed_text.return_value = ([0.1] * 768, 10)
+    provider.aembed_query.return_value = [0.1] * 768
+    provider.aembed_documents.return_value = [[0.1] * 768]
     return provider
 
 
@@ -158,7 +159,7 @@ class TestLoadAddMemoryTool:
 
         assert "Remembered" in result
         assert "Rust" in result
-        provider.embed_text.assert_called_once_with("User prefers Rust")
+        provider.aembed_query.assert_called_once_with("User prefers Rust")
         pool.execute.assert_called_once()
 
     async def test_invalid_type_returns_error(
@@ -181,7 +182,7 @@ class TestLoadAddMemoryTool:
         result = await tools[0].ainvoke({"content": "something", "memory_type": "bogus"})
 
         assert "Invalid memory_type" in result
-        provider.embed_text.assert_not_called()
+        provider.aembed_query.assert_not_called()
 
     async def test_dedup_updates_existing(
         self,
@@ -290,7 +291,7 @@ class TestLoadAddMemoryTool:
     ):
         pool = _make_pool()
         provider = _make_embedding_provider()
-        provider.embed_text.side_effect = RuntimeError("embedding service down")
+        provider.aembed_query.side_effect = RuntimeError("embedding service down")
         memories = _make_collection(pool, permissive_memory_authorizer)
         tools = await load_add_memory_tool(
             _TEST_UID,

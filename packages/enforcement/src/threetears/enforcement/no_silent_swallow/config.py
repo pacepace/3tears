@@ -24,22 +24,26 @@ from pathlib import Path
 __all__ = ["NoSilentSwallowConfig"]
 
 
-_DEFAULT_LOGGER_NAMES: frozenset[str] = frozenset({
-    "log",
-    "logger",
-    "_log",
-    "_logger",
-    "LOGGER",
-})
+_DEFAULT_LOGGER_NAMES: frozenset[str] = frozenset(
+    {
+        "log",
+        "logger",
+        "_log",
+        "_logger",
+        "LOGGER",
+    }
+)
 
-_DEFAULT_LOGGER_METHODS: frozenset[str] = frozenset({
-    "debug",
-    "info",
-    "warning",
-    "error",
-    "critical",
-    "exception",
-})
+_DEFAULT_LOGGER_METHODS: frozenset[str] = frozenset(
+    {
+        "debug",
+        "info",
+        "warning",
+        "error",
+        "critical",
+        "exception",
+    }
+)
 
 _DEFAULT_NOSILENT_MARKER: str = "# NOSILENT:"
 

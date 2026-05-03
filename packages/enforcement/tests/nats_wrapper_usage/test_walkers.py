@@ -32,6 +32,7 @@ def _make_repo(repo_root: Path) -> Path:
 # helpers — is_forbidden_module
 # ------------------------------------------------------------------
 
+
 class TestIsForbiddenModule:
     def test_root_matches(self) -> None:
         assert is_forbidden_module("nats", "nats") is True
@@ -62,6 +63,7 @@ class TestIsForbiddenModule:
 # ------------------------------------------------------------------
 # production walker — Import nodes
 # ------------------------------------------------------------------
+
 
 class TestProductionImport:
     def test_plain_import_nats_flagged(self, tmp_path: Path) -> None:
@@ -127,6 +129,7 @@ class TestProductionImport:
 # production walker — ImportFrom nodes
 # ------------------------------------------------------------------
 
+
 class TestProductionImportFrom:
     def test_from_nats_import_one_name_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -178,7 +181,8 @@ class TestProductionImportFrom:
         assert find_direct_nats_imports((src,), repo) == []
 
     def test_from_threetears_nats_import_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # the wrapper itself.
         repo = _make_repo(tmp_path / "repo")
@@ -190,7 +194,8 @@ class TestProductionImportFrom:
         assert find_direct_nats_imports((src,), repo) == []
 
     def test_relative_from_dot_import_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # relative imports cannot reach the top-level nats package.
         repo = _make_repo(tmp_path / "repo")
@@ -203,6 +208,7 @@ class TestProductionImportFrom:
 # ------------------------------------------------------------------
 # multi-file production scan
 # ------------------------------------------------------------------
+
 
 class TestProductionMultiFile:
     def test_violations_across_multiple_files(self, tmp_path: Path) -> None:
@@ -222,8 +228,7 @@ class TestProductionMultiFile:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from threetears.nats import NatsClient, Subjects\n"
-            "client = NatsClient()\n",
+            "from threetears.nats import NatsClient, Subjects\nclient = NatsClient()\n",
         )
         assert find_direct_nats_imports((src,), repo) == []
 
@@ -232,9 +237,11 @@ class TestProductionMultiFile:
 # production / tests separation
 # ------------------------------------------------------------------
 
+
 class TestProductionVsTestsSeparation:
     def test_production_walker_does_not_scan_tests(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -258,9 +265,11 @@ class TestProductionVsTestsSeparation:
 # tests walker — same matched shapes, distinct category
 # ------------------------------------------------------------------
 
+
 class TestTestsWalker:
     def test_tests_walker_emits_test_import_category(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         tests = repo / "tests"
@@ -272,13 +281,15 @@ class TestTestsWalker:
         assert v.symbol == "*"
 
     def test_tests_walker_with_none_returns_empty(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         assert find_test_nats_imports(None, repo) == []
 
     def test_tests_walker_missing_directory_returns_empty(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         # tests dir does not exist on disk
@@ -301,26 +312,32 @@ class TestTestsWalker:
 # custom forbidden module
 # ------------------------------------------------------------------
 
+
 class TestCustomForbiddenModule:
     def test_custom_forbidden_module_flags_kafka(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "mod.py", "import kafka\n")
         violations = find_direct_nats_imports(
-            (src,), repo, forbidden_module="kafka",
+            (src,),
+            repo,
+            forbidden_module="kafka",
         )
         assert len(violations) == 1
         assert violations[0].symbol == "*"
 
     def test_custom_forbidden_module_does_not_flag_nats(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(src / "pkg" / "mod.py", "import nats\n")
         # forbidden_module="kafka" — nats is allowed.
         violations = find_direct_nats_imports(
-            (src,), repo, forbidden_module="kafka",
+            (src,),
+            repo,
+            forbidden_module="kafka",
         )
         assert violations == []
 
@@ -329,9 +346,11 @@ class TestCustomForbiddenModule:
 # multi-root walking (simulates discover_src_roots output)
 # ------------------------------------------------------------------
 
+
 class TestPathDepWalking:
     def test_two_package_workspace_finds_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         a_src = tmp_path / "a" / "src"
         b_src = tmp_path / "b" / "src"

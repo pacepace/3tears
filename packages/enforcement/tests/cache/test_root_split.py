@@ -54,26 +54,17 @@ def _make_consumer_with_path_dep(
     lib_root = tmp_path / "lib"
     lib_src = lib_root / "src"
     lib_root.mkdir(parents=True)
-    (lib_root / "pyproject.toml").write_text(
-        '[project]\nname = "synthetic-lib"\nversion = "0"\n'
-    )
+    (lib_root / "pyproject.toml").write_text('[project]\nname = "synthetic-lib"\nversion = "0"\n')
     _write(lib_src / "lib_pkg" / "__init__.py", "")
     _write(
         lib_src / "lib_pkg" / "bases.py",
-        (
-            "class BaseCollection: pass\n"
-            "class SchemaBackedCollection(BaseCollection): pass\n"
-        ),
+        ("class BaseCollection: pass\nclass SchemaBackedCollection(BaseCollection): pass\n"),
     )
     # bare construction in the sibling library — would be flagged if
     # the consumer's scan_roots accidentally pulled in lib_src.
     _write(
         lib_src / "lib_pkg" / "wrong.py",
-        (
-            "from x import SQLiteBackend\n"
-            "def make() -> None:\n"
-            "    backend = SQLiteBackend('/tmp/foo')\n"
-        ),
+        ("from x import SQLiteBackend\ndef make() -> None:\n    backend = SQLiteBackend('/tmp/foo')\n"),
     )
 
     consumer_root = tmp_path / "consumer"
@@ -95,10 +86,7 @@ def _make_consumer_with_path_dep(
     _write(consumer_src / "consumer_pkg" / "__init__.py", "")
     _write(
         consumer_src / "consumer_pkg" / "memories.py",
-        (
-            "from lib_pkg.bases import SchemaBackedCollection\n"
-            "class MemoriesCollection(SchemaBackedCollection): pass\n"
-        ),
+        ("from lib_pkg.bases import SchemaBackedCollection\nclass MemoriesCollection(SchemaBackedCollection): pass\n"),
     )
     _write(
         consumer_src / "consumer_pkg" / "migrations" / "v001_init.py",
@@ -109,7 +97,8 @@ def _make_consumer_with_path_dep(
 
 class TestArchitectureFix:
     def test_scan_roots_scopes_violations_to_local_only(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """sibling-package code never appears in violations even when
         the inheritance graph spans both packages."""
@@ -118,7 +107,9 @@ class TestArchitectureFix:
         )
         # scan ONLY the consumer; build inheritance graph over BOTH.
         sqlite_violations = find_sqlite_constructions(
-            (consumer_src,), consumer_root, frozenset(),
+            (consumer_src,),
+            consumer_root,
+            frozenset(),
         )
         # would be 1 if scan accidentally walked the sibling.
         assert sqlite_violations == []
@@ -136,7 +127,8 @@ class TestArchitectureFix:
         assert missing == []
 
     def test_inheritance_roots_default_walks_path_deps(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``inheritance_roots=None`` defaults to discover_src_roots,
         which is path-dep aware."""
@@ -151,7 +143,9 @@ class TestArchitectureFix:
         assert lib_src.resolve() in resolved
 
     def test_explicit_scan_and_inheritance_roots_independent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """end-to-end via the runner: scan_roots and inheritance_roots
         govern independent scopes; bug behaviour does NOT bleed."""

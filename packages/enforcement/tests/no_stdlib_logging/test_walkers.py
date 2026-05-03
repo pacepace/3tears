@@ -31,13 +31,17 @@ def _scan(
     exempt_files: dict[str, str] | None = None,
 ) -> list:
     return find_stdlib_logging_imports(
-        (src,), repo, exempt_files or {}, _LINE_MARKER,
+        (src,),
+        repo,
+        exempt_files or {},
+        _LINE_MARKER,
     )
 
 
 # ------------------------------------------------------------------
 # helpers — is_stdlib_logging_module
 # ------------------------------------------------------------------
+
 
 class TestIsStdlibLoggingModule:
     def test_logging_root_matches(self) -> None:
@@ -62,6 +66,7 @@ class TestIsStdlibLoggingModule:
 # ------------------------------------------------------------------
 # walker — `import logging` (Import nodes)
 # ------------------------------------------------------------------
+
 
 class TestImportLogging:
     def test_plain_import_logging_flagged(self, tmp_path: Path) -> None:
@@ -124,7 +129,8 @@ class TestImportLogging:
         assert _scan(src, repo) == []
 
     def test_combined_import_flags_only_logging(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # ``import os, logging, sys`` — only the logging alias is flagged.
         repo = _make_repo(tmp_path / "repo")
@@ -139,14 +145,17 @@ class TestImportLogging:
 # walker — `from logging import ...` (ImportFrom nodes)
 # ------------------------------------------------------------------
 
+
 class TestFromLoggingImport:
     def test_from_logging_import_one_name_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
-            src / "pkg" / "mod.py", "from logging import getLogger\n",
+            src / "pkg" / "mod.py",
+            "from logging import getLogger\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -155,7 +164,8 @@ class TestFromLoggingImport:
         assert "from logging import getLogger" in v.reason
 
     def test_from_logging_import_multiple_names(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # one violation per imported name.
         repo = _make_repo(tmp_path / "repo")
@@ -178,7 +188,8 @@ class TestFromLoggingImport:
         assert violations[0].symbol == "*"
 
     def test_from_logging_handlers_import_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -193,17 +204,20 @@ class TestFromLoggingImport:
         assert "from logging.handlers import" in v.reason
 
     def test_from_my_logging_import_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
-            src / "pkg" / "mod.py", "from my_logging import x\n",
+            src / "pkg" / "mod.py",
+            "from my_logging import x\n",
         )
         assert _scan(src, repo) == []
 
     def test_relative_from_dot_import_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # ``from . import logging`` — relative import; ``node.level == 1``.
         # the walker ignores relative imports because they cannot
@@ -211,10 +225,12 @@ class TestFromLoggingImport:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
-            src / "pkg" / "__init__.py", "",
+            src / "pkg" / "__init__.py",
+            "",
         )
         _write(
-            src / "pkg" / "mod.py", "from . import logging\n",
+            src / "pkg" / "mod.py",
+            "from . import logging\n",
         )
         assert _scan(src, repo) == []
 
@@ -223,9 +239,11 @@ class TestFromLoggingImport:
 # walker — per-line marker
 # ------------------------------------------------------------------
 
+
 class TestLineMarker:
     def test_marker_on_same_line_exempts_import(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -245,22 +263,23 @@ class TestLineMarker:
         assert _scan(src, repo) == []
 
     def test_marker_on_above_line_does_not_exempt(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # the marker must be on the offending line, not above.
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "# stdlib-logging: ok — quiet uvicorn\n"
-            "import logging\n",
+            "# stdlib-logging: ok — quiet uvicorn\nimport logging\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
         assert violations[0].line == 2
 
     def test_marker_on_one_line_does_not_exempt_other(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # per-line marker is line-scoped: line 1 is exempt, line 2 is
         # still flagged.
@@ -268,8 +287,7 @@ class TestLineMarker:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "import logging  # stdlib-logging: ok — quiet uvicorn\n"
-            "import logging.handlers\n",
+            "import logging  # stdlib-logging: ok — quiet uvicorn\nimport logging.handlers\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -281,26 +299,24 @@ class TestLineMarker:
 # walker — file-level exempt_files
 # ------------------------------------------------------------------
 
+
 class TestExemptFiles:
     def test_exempt_file_skipped_entirely(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "bootstrap.py",
-            "import logging\n"
-            "import logging.handlers\n"
-            "from logging import getLogger\n",
+            "import logging\nimport logging.handlers\nfrom logging import getLogger\n",
         )
         exempt = {
-            "src/pkg/bootstrap.py": (
-                "platform bootstrap; stdlib logging used pre-observe init"
-            ),
+            "src/pkg/bootstrap.py": ("platform bootstrap; stdlib logging used pre-observe init"),
         }
         violations = _scan(src, repo, exempt_files=exempt)
         assert violations == []
 
     def test_exempt_match_is_exact_no_globbing(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # listing ``src/pkg/`` does not exempt ``src/pkg/bootstrap.py``;
         # the match is on the full relative posix path.
@@ -322,9 +338,7 @@ class TestExemptFiles:
             "import logging\n",
         )
         exempt = {
-            "src/pkg/deeply/nested/mod.py": (
-                "transient stdlib reference for fixture-only use"
-            ),
+            "src/pkg/deeply/nested/mod.py": ("transient stdlib reference for fixture-only use"),
         }
         violations = _scan(src, repo, exempt_files=exempt)
         assert violations == []
@@ -334,9 +348,11 @@ class TestExemptFiles:
 # walker — multiple violations and ordering
 # ------------------------------------------------------------------
 
+
 class TestMultipleViolations:
     def test_multiple_imports_on_different_lines(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -359,7 +375,8 @@ class TestMultipleViolations:
         assert "fileConfig" in symbols
 
     def test_violations_across_multiple_files(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -377,6 +394,7 @@ class TestMultipleViolations:
 # walker — clean code
 # ------------------------------------------------------------------
 
+
 class TestCleanCode:
     def test_no_imports_no_violations(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -385,14 +403,14 @@ class TestCleanCode:
         assert _scan(src, repo) == []
 
     def test_only_threetears_observe_no_violations(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from threetears.observe import get_logger\n"
-            "log = get_logger(__name__)\n",
+            "from threetears.observe import get_logger\nlog = get_logger(__name__)\n",
         )
         assert _scan(src, repo) == []
 
@@ -401,9 +419,11 @@ class TestCleanCode:
 # walker — path-dep / multi-root behaviour
 # ------------------------------------------------------------------
 
+
 class TestPathDepWalking:
     def test_two_package_workspace_finds_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # synthetic two-package workspace: A clean, B has a stdlib
         # logging import. with both src roots passed (mimicking
@@ -415,10 +435,14 @@ class TestPathDepWalking:
             "from threetears.observe import get_logger\n",
         )
         _write(
-            b_src / "pkg_b" / "mod.py", "import logging\n",
+            b_src / "pkg_b" / "mod.py",
+            "import logging\n",
         )
         violations = find_stdlib_logging_imports(
-            (a_src, b_src), tmp_path, {}, _LINE_MARKER,
+            (a_src, b_src),
+            tmp_path,
+            {},
+            _LINE_MARKER,
         )
         assert len(violations) == 1
         v = violations[0]

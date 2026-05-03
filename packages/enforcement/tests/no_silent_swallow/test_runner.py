@@ -12,9 +12,7 @@ from threetears.enforcement.no_silent_swallow import (
 )
 
 
-_VALID_RATIONALE = (
-    "intentional silent swallow under controlled fixture for unit-test use only"
-)
+_VALID_RATIONALE = "intentional silent swallow under controlled fixture for unit-test use only"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -39,11 +37,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "pkg" / "mod.py",
-        "def f():\n"
-        "    try:\n"
-        "        do()\n"
-        "    except ValueError:\n"
-        "        pass\n",
+        "def f():\n    try:\n        do()\n    except ValueError:\n        pass\n",
     )
     return repo, src
 
@@ -51,6 +45,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
 # ------------------------------------------------------------------
 # input validation
 # ------------------------------------------------------------------
+
 
 class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
@@ -75,9 +70,12 @@ class TestWalkerArgValidation:
 # strict / report mode behaviour
 # ------------------------------------------------------------------
 
+
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
@@ -90,7 +88,9 @@ class TestModes:
             run_no_silent_swallow_enforcement(config)
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("NSS_TEST_MODE", "report")
@@ -103,17 +103,15 @@ class TestModes:
         run_no_silent_swallow_enforcement(config)
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        log.error('x')\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        log.error('x')\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
@@ -124,7 +122,9 @@ class TestModes:
         run_no_silent_swallow_enforcement(config)
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.delenv("NSS_TEST_MODE", raising=False)
@@ -141,17 +141,17 @@ class TestModes:
 # exemption application
 # ------------------------------------------------------------------
 
+
 class TestExemptions:
     def test_exemption_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         # the violation lives at src/pkg/mod.py:4 with symbol ValueError.
         ex_path = repo / "_no_silent_swallow_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/pkg/mod.py:4:ValueError\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/pkg/mod.py:4:ValueError\n")
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
             repo_root=repo,
@@ -162,7 +162,9 @@ class TestExemptions:
         run_no_silent_swallow_enforcement(config)
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -181,9 +183,12 @@ class TestExemptions:
 # explicit src_roots vs discovery
 # ------------------------------------------------------------------
 
+
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a clean repo with src/, no path-deps; with
         # src_roots=None the runner should call discover_src_roots
@@ -192,11 +197,7 @@ class TestSrcRootsDiscovery:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        log.error('x')\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        log.error('x')\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
@@ -211,9 +212,12 @@ class TestSrcRootsDiscovery:
 # custom logger_names / nosilent_marker
 # ------------------------------------------------------------------
 
+
 class TestCustomConfig:
     def test_custom_logger_names_recognised(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # a repo using ``slog`` as the receiver name should pass with
         # an extended logger_names set.
@@ -221,11 +225,7 @@ class TestCustomConfig:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        slog.error('x')\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        slog.error('x')\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
@@ -237,18 +237,16 @@ class TestCustomConfig:
         run_no_silent_swallow_enforcement(config)
 
     def test_default_logger_names_does_not_match_slog(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # without the override, ``slog`` is not a recognised logger.
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        return None\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        return None\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(
@@ -260,18 +258,16 @@ class TestCustomConfig:
             run_no_silent_swallow_enforcement(config)
 
     def test_custom_marker(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # consumer using a different marker convention.
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:  # SILENT-OK: shutdown path\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:  # SILENT-OK: shutdown path\n        pass\n",
         )
         monkeypatch.setenv("NSS_TEST_MODE", "strict")
         config = NoSilentSwallowConfig(

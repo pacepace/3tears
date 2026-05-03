@@ -15,9 +15,13 @@ from threetears.enforcement.underscore_access.walkers import (
 )
 
 
-_DEFAULT_SHAPE_C_SKIP: frozenset[str] = frozenset({
-    "conftest.py", "__main__.py", "_version.py",
-})
+_DEFAULT_SHAPE_C_SKIP: frozenset[str] = frozenset(
+    {
+        "conftest.py",
+        "__main__.py",
+        "_version.py",
+    }
+)
 
 
 def _write(path: Path, source: str) -> Path:
@@ -29,6 +33,7 @@ def _write(path: Path, source: str) -> Path:
 # ------------------------------------------------------------------
 # package-identity helpers
 # ------------------------------------------------------------------
+
 
 class TestPackageIdentity:
     def test_package_id_under_root(self, tmp_path: Path) -> None:
@@ -65,6 +70,7 @@ class TestPackageIdentity:
 # ------------------------------------------------------------------
 # shape A — cross-module private import
 # ------------------------------------------------------------------
+
 
 class TestShapeA:
     def test_cross_package_private_flagged(self, tmp_path: Path) -> None:
@@ -126,7 +132,8 @@ class TestShapeA:
         assert violations == []
 
     def test_path_dep_walking_treated_as_same_package_under_combined_roots(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # option-B behaviour: when shape A receives the union of all
         # src roots from the runner, an importer in repo A and a
@@ -145,7 +152,9 @@ class TestShapeA:
         # both src roots provided to the walker, mimicking
         # discover_src_roots's output for a repo with a path-dep.
         violations = shape_a_violations(
-            (consumer_src, lib_src), tmp_path, (consumer_src, lib_src),
+            (consumer_src, lib_src),
+            tmp_path,
+            (consumer_src, lib_src),
         )
         assert len(violations) == 1
         assert violations[0].symbol == "_helper"
@@ -154,6 +163,7 @@ class TestShapeA:
 # ------------------------------------------------------------------
 # shape B — ruff SLF001 parsing
 # ------------------------------------------------------------------
+
 
 class TestShapeBParsing:
     def test_parses_ruff_concise_output(self, tmp_path: Path) -> None:
@@ -197,6 +207,7 @@ class TestShapeBParsing:
 # ------------------------------------------------------------------
 # shape C — missing __all__
 # ------------------------------------------------------------------
+
 
 class TestShapeC:
     def test_missing_all_with_public_names_flagged(self, tmp_path: Path) -> None:
@@ -268,7 +279,9 @@ class TestShapeC:
             "def public_fn():\n    pass\n",
         )
         violations = shape_c_violations(
-            (src,), tmp_path, frozenset({"weird.py"}),
+            (src,),
+            tmp_path,
+            frozenset({"weird.py"}),
         )
         assert violations == []
 
@@ -276,6 +289,7 @@ class TestShapeC:
 # ------------------------------------------------------------------
 # shape D — subclass shadows base private
 # ------------------------------------------------------------------
+
 
 class TestShapeD:
     def test_subclass_shadows_base_method(self, tmp_path: Path) -> None:
@@ -286,8 +300,7 @@ class TestShapeD:
         )
         _write(
             src / "pkg" / "sub.py",
-            "from pkg.base import Base\n\nclass Sub(Base):\n"
-            "    def _internal(self):\n        return 2\n",
+            "from pkg.base import Base\n\nclass Sub(Base):\n    def _internal(self):\n        return 2\n",
         )
         violations = shape_d_violations((src,), tmp_path, (src,))
         assert len(violations) == 1
@@ -354,8 +367,7 @@ class TestShapeD:
         )
         _write(
             src / "pkg" / "sub.py",
-            "import pkg\n\nclass Sub(pkg.Base):\n"
-            "    def _hidden(self):\n        return 2\n",
+            "import pkg\n\nclass Sub(pkg.Base):\n    def _hidden(self):\n        return 2\n",
         )
         violations = shape_d_violations((src,), tmp_path, (src,))
         assert len(violations) == 1
@@ -365,6 +377,7 @@ class TestShapeD:
 # ------------------------------------------------------------------
 # shape E — __all__ lists private names
 # ------------------------------------------------------------------
+
 
 class TestShapeE:
     def test_private_name_in_all_flagged(self, tmp_path: Path) -> None:

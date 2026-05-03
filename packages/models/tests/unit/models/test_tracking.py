@@ -206,10 +206,21 @@ class TestUsageTracker:
 
     @classmethod
     def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with in-memory exporter."""
+        """configures shared OTel TracerProvider with in-memory exporter.
+
+        OTel's ``set_tracer_provider`` is a set-once operation; if another
+        test class earlier in the run already set a provider, this call
+        is silently ignored and our spans land in their exporter. Reset
+        the internal sentinel and rebind the cached UsageTracker tracer
+        so this test class always sees its own provider.
+        """
         cls._exporter = _InMemorySpanExporter()
         cls._provider = TracerProvider()
         cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
+        try:
+            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
         trace.set_tracer_provider(cls._provider)
 
     def setup_method(self) -> None:

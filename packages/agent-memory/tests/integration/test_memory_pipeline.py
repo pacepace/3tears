@@ -119,16 +119,23 @@ class _StubEmbedding:
         """
         self._vec = [seed] * 1024
 
-    async def embed_text(self, text: str) -> tuple[list[float] | None, int]:
-        """
-        return ``(vector, token_count)`` deterministically.
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """returns a list of fixed vectors, one per input."""
+        return [self._vec for _ in texts]
 
-        :param text: text to embed (ignored; deterministic output)
-        :ptype text: str
-        :return: (vector, token estimate)
-        :rtype: tuple[list[float] | None, int]
-        """
-        return self._vec, len(text.split())
+    def embed_query(self, text: str) -> list[float]:
+        """returns the fixed vector for the single query."""
+        _ = text
+        return self._vec
+
+    async def aembed_query(self, text: str) -> list[float]:
+        """returns the fixed vector for the single query."""
+        _ = text
+        return self._vec
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        """returns a list of fixed vectors, one per input."""
+        return [self._vec for _ in texts]
 
     @property
     def dimensions(self) -> int:

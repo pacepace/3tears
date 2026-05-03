@@ -116,10 +116,7 @@ def find_print_calls(
                         file=module_path,
                         line=node.lineno,
                         symbol="print",
-                        reason=(
-                            "bare print() found; use the project logger "
-                            "(threetears.observe.get_logger) instead."
-                        ),
+                        reason=("bare print() found; use the project logger (threetears.observe.get_logger) instead."),
                     )
                 )
     return violations
@@ -255,7 +252,9 @@ def _is_stdlib_getlogger_call(node: ast.Call) -> bool:
 
 
 def _line_has_marker(
-    source_lines: list[str], lineno: int, marker: str,
+    source_lines: list[str],
+    lineno: int,
+    marker: str,
 ) -> bool:
     """true iff ``source_lines[lineno-1]`` carries the per-line marker.
 
@@ -429,7 +428,8 @@ def find_missing_return_types(
                 continue
             for node in ast.walk(tree):
                 if not isinstance(
-                    node, (ast.FunctionDef, ast.AsyncFunctionDef),
+                    node,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
                     continue
                 if _is_dunder(node.name):

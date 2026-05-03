@@ -29,6 +29,7 @@ from threetears.agent.memory.authorize import (
 )
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.embedding import EmbeddingProvider
+from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.types import MemoryConfig, MemoryType
@@ -194,7 +195,8 @@ class MemoryExtractor:
 
             candidates: list[dict[str, Any]] = []
             for mem in candidates_raw:
-                embedding, _tokens = await self._embedding_provider.embed_text(
+                embedding = await _safe_aembed_query(
+                    self._embedding_provider,
                     mem["content"],
                 )
                 if embedding is None:
@@ -637,7 +639,8 @@ class MemoryExtractor:
                 elif action == "UPDATE":
                     updated_content = act["content"]
                     updated_type = act.get("type", candidate["type"])
-                    new_embedding, _tokens = await self._embedding_provider.embed_text(
+                    new_embedding = await _safe_aembed_query(
+                        self._embedding_provider,
                         updated_content,
                     )
                     if new_embedding is not None:

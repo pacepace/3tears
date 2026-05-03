@@ -12,9 +12,7 @@ from threetears.enforcement.cache import (
 )
 
 
-_VALID_RATIONALE = (
-    "factory-only construction; legacy hub L1 cache pending migration"
-)
+_VALID_RATIONALE = "factory-only construction; legacy hub L1 cache pending migration"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -34,9 +32,7 @@ def _build_sqlite_violation(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "foo.py",
-        "from x import SQLiteBackend\n"
-        "def make() -> None:\n"
-        "    backend = SQLiteBackend('/tmp/foo')\n",
+        "from x import SQLiteBackend\ndef make() -> None:\n    backend = SQLiteBackend('/tmp/foo')\n",
     )
     return repo, src
 
@@ -47,17 +43,11 @@ def _build_collections_repo(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "bases.py",
-        (
-            "class BaseCollection: pass\n"
-            "class SchemaBackedCollection(BaseCollection): pass\n"
-        ),
+        ("class BaseCollection: pass\nclass SchemaBackedCollection(BaseCollection): pass\n"),
     )
     _write(
         src / "memories.py",
-        (
-            "from .bases import SchemaBackedCollection\n"
-            "class MemoriesCollection(SchemaBackedCollection): pass\n"
-        ),
+        ("from .bases import SchemaBackedCollection\nclass MemoriesCollection(SchemaBackedCollection): pass\n"),
     )
     _write(
         src / "migrations" / "v001_init.py",
@@ -75,7 +65,9 @@ class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         config = CacheEnforcementConfig(
-            repo_root=repo, scan_roots=(), inheritance_roots=(),
+            repo_root=repo,
+            scan_roots=(),
+            inheritance_roots=(),
         )
         with pytest.raises(ValueError, match="walker must be one of"):
             run_cache_enforcement(config, walker="bogus")
@@ -106,7 +98,9 @@ class TestWalkerArgValidation:
 
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_sqlite_violation(tmp_path)
         monkeypatch.setenv("CACHE_TEST_MODE", "strict")
@@ -120,7 +114,9 @@ class TestModes:
             run_cache_enforcement(config, walker="sqlite_construction")
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_sqlite_violation(tmp_path)
         monkeypatch.setenv("CACHE_TEST_MODE", "report")
@@ -134,7 +130,9 @@ class TestModes:
         run_cache_enforcement(config, walker="sqlite_construction")
 
     def test_clean_repo_strict_succeeds(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_collections_repo(tmp_path)
         monkeypatch.setenv("CACHE_TEST_MODE", "strict")
@@ -155,14 +153,13 @@ class TestModes:
 
 class TestExemptions:
     def test_exemption_filters_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_sqlite_violation(tmp_path)
         exemptions = repo / "_cache_exemptions.txt"
-        exemptions.write_text(
-            "# rationale: " + _VALID_RATIONALE + "\n"
-            "src/foo.py:3:SQLiteBackend\n"
-        )
+        exemptions.write_text("# rationale: " + _VALID_RATIONALE + "\nsrc/foo.py:3:SQLiteBackend\n")
         monkeypatch.setenv("CACHE_TEST_MODE", "strict")
         config = CacheEnforcementConfig(
             repo_root=repo,
@@ -182,7 +179,9 @@ class TestExemptions:
 
 class TestTransitiveBugFixViaRunner:
     def test_transitive_chain_no_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # the central bug-fix verification: clean repo with
         # MemoriesCollection -> SchemaBackedCollection -> BaseCollection.

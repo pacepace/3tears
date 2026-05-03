@@ -168,19 +168,12 @@ def body_silent_category(body: list[ast.stmt]) -> str | None:
     stmt = body[0]
     if isinstance(stmt, ast.Pass):
         return "pass"
-    if (
-        isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Constant)
-        and stmt.value.value is Ellipsis
-    ):
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
         return "ellipsis"
     if isinstance(stmt, ast.Return):
         if stmt.value is None:
             return "return-none"
-        if (
-            isinstance(stmt.value, ast.Constant)
-            and stmt.value.value is None
-        ):
+        if isinstance(stmt.value, ast.Constant) and stmt.value.value is None:
             return "return-none"
         return None
     if isinstance(stmt, ast.Continue):
@@ -228,7 +221,7 @@ def _marker_with_reason(
     idx = line_text.find(nosilent_marker)
     if idx < 0:
         return False
-    rationale = line_text[idx + len(nosilent_marker):].strip()
+    rationale = line_text[idx + len(nosilent_marker) :].strip()
     return bool(rationale)
 
 
@@ -415,7 +408,9 @@ def find_silent_swallows(
                 if is_suppress_call(node):
                     assert isinstance(node, ast.Call)
                     if not suppress_has_nosilent(
-                        source_lines, node.lineno, nosilent_marker,
+                        source_lines,
+                        node.lineno,
+                        nosilent_marker,
                     ):
                         violations.append(
                             Violation(
@@ -472,10 +467,7 @@ def _scan_try(
                     file=module_path,
                     line=handler.lineno,
                     symbol="BaseException",
-                    reason=(
-                        "bare `except:` is banned; narrow to "
-                        "`except Exception:` or narrower"
-                    ),
+                    reason=("bare `except:` is banned; narrow to `except Exception:` or narrower"),
                 )
             )
             continue
@@ -488,7 +480,10 @@ def _scan_try(
             continue
         body_line = handler.body[0].lineno if handler.body else None
         if has_nosilent_marker(
-            source_lines, handler.lineno, body_line, nosilent_marker,
+            source_lines,
+            handler.lineno,
+            body_line,
+            nosilent_marker,
         ):
             continue
         violations.append(

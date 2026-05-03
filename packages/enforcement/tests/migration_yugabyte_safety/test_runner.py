@@ -20,10 +20,7 @@ from threetears.enforcement.migration_yugabyte_safety import (
 __all__: list[str] = []
 
 
-_VALID_RATIONALE = (
-    "legacy v007 migration ships TRUNCATE for the bootstrap reset path; "
-    "rewrite tracked under sub-task 7"
-)
+_VALID_RATIONALE = "legacy v007 migration ships TRUNCATE for the bootstrap reset path; rewrite tracked under sub-task 7"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -81,7 +78,9 @@ class TestWalkerArgValidation:
 
 class TestModes:
     def test_report_mode_returns_silently_with_violations(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, migrations = _build_violating_repo(tmp_path)
         monkeypatch.setenv("MIGR_TEST_MODE", "report")
@@ -94,7 +93,9 @@ class TestModes:
         run_migration_enforcement(config, walker="all")
 
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, migrations = _build_violating_repo(tmp_path)
         monkeypatch.setenv("MIGR_TEST_MODE", "strict")
@@ -107,7 +108,9 @@ class TestModes:
             run_migration_enforcement(config, walker="all")
 
     def test_strict_clean_passes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
@@ -124,7 +127,9 @@ class TestModes:
         run_migration_enforcement(config, walker="all")
 
     def test_default_mode_is_report(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # config.default_mode = MODE_REPORT (canonical default); env var
         # unset; violation present; runner returns silently.
@@ -139,7 +144,9 @@ class TestModes:
         run_migration_enforcement(config, walker="all")
 
     def test_default_mode_strict_overrides(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # explicit default_mode=strict (no env var) flips the runner to
         # hard-fail on the same violation.
@@ -162,7 +169,9 @@ class TestModes:
 
 class TestMissingDirs:
     def test_nonexistent_dir_skipped(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -177,7 +186,9 @@ class TestMissingDirs:
         run_migration_enforcement(config, walker="all")
 
     def test_one_existing_one_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, migrations = _build_violating_repo(tmp_path)
         monkeypatch.setenv("MIGR_TEST_MODE", "strict")
@@ -198,7 +209,9 @@ class TestMissingDirs:
 
 class TestExemptionsFile:
     def test_exemption_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, migrations = _build_violating_repo(tmp_path)
         ex_path = repo / "_migration_exemptions.txt"
@@ -215,7 +228,9 @@ class TestExemptionsFile:
         run_migration_enforcement(config, walker="all")
 
     def test_exemption_only_silences_listed_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
@@ -245,7 +260,9 @@ class TestExemptionsFile:
         assert "exempt.py" not in msg
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
@@ -304,7 +321,9 @@ class TestExemptionsFile:
             run_migration_enforcement(config, walker="all")
 
     def test_empty_exemption_file_ok(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # bot trio repos ship empty (header-only) exemption files;
         # this must continue to load without error.
@@ -316,9 +335,7 @@ class TestExemptionsFile:
         )
         ex_path = repo / "_migration_exemptions.txt"
         ex_path.write_text(
-            "# header comment about migration exemptions\n"
-            "#\n"
-            "# format: <file_path>:<rule_name> # rationale: <reason>\n",
+            "# header comment about migration exemptions\n#\n# format: <file_path>:<rule_name> # rationale: <reason>\n",
         )
         monkeypatch.setenv("MIGR_TEST_MODE", "strict")
         config = MigrationYugabyteConfig(

@@ -41,7 +41,8 @@ class TestOverrides:
     def test_explicit_inheritance_roots(self, tmp_path: Path) -> None:
         roots = (tmp_path / "a", tmp_path / "lib" / "src")
         config = UnderscoreAccessConfig(
-            repo_root=tmp_path, inheritance_roots=roots,
+            repo_root=tmp_path,
+            inheritance_roots=roots,
         )
         assert config.inheritance_roots == roots
 
@@ -72,13 +73,15 @@ class TestOverrides:
     def test_explicit_skip_basenames(self, tmp_path: Path) -> None:
         skip = frozenset({"foo.py"})
         config = UnderscoreAccessConfig(
-            repo_root=tmp_path, skip_basenames=skip,
+            repo_root=tmp_path,
+            skip_basenames=skip,
         )
         assert config.skip_basenames == skip
 
     def test_disable_shape_b_ruff(self, tmp_path: Path) -> None:
         config = UnderscoreAccessConfig(
-            repo_root=tmp_path, enable_shape_b_ruff=False,
+            repo_root=tmp_path,
+            enable_shape_b_ruff=False,
         )
         assert config.enable_shape_b_ruff is False
 

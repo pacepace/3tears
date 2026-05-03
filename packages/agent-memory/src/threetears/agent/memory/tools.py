@@ -41,6 +41,7 @@ from threetears.agent.memory.collections import (
     MemoryChunkCollection,
 )
 from threetears.agent.memory.embedding import EmbeddingProvider
+from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
@@ -395,7 +396,7 @@ async def load_memory_search_tool(
         if not query:
             return "Either 'query' or 'ids' must be provided."
 
-        embedding, _tokens = await embedding_provider.embed_text(query)
+        embedding = await _safe_aembed_query(embedding_provider, query)
         if embedding is None:
             return _tool_error("memory_search", "embed", "Embedding API request failed")
 
@@ -838,16 +839,9 @@ async def load_add_memory_tool(
         if mt not in _VALID_MEMORY_TYPES:
             return f"Invalid memory_type '{memory_type}'. Valid types: {', '.join(sorted(_VALID_MEMORY_TYPES))}"
 
-        try:
-            embedding, _token_count = await embedding_provider.embed_text(content)
-            if embedding is None:
-                return _tool_error("add_memory", "embed", "embedding provider returned None")
-        except Exception as exc:
-            log.warning(
-                "add_memory: embedding failed",
-                extra={"extra_data": {"error": str(exc)}},
-            )
-            return _tool_error("add_memory", "embed", str(exc))
+        embedding = await _safe_aembed_query(embedding_provider, content)
+        if embedding is None:
+            return _tool_error("add_memory", "embed", "embedding provider returned None")
 
         try:
             similar_rows = await memories_collection.find_similar_for_dedup(

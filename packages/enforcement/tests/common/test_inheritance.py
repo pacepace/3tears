@@ -106,9 +106,14 @@ class TestTransitivelySubclassesAny:
 
     def test_self_match(self) -> None:
         # if class itself is a target, we say yes
-        assert transitively_subclasses_any(
-            "Base", frozenset({"Base"}), {"Base": set()},
-        ) is True
+        assert (
+            transitively_subclasses_any(
+                "Base",
+                frozenset({"Base"}),
+                {"Base": set()},
+            )
+            is True
+        )
 
     def test_depth_two(self) -> None:
         graph = {"Foo": {"Mid"}, "Mid": {"Base"}}
@@ -138,9 +143,14 @@ class TestTransitivelySubclassesAny:
 
     def test_multi_target_set(self) -> None:
         graph = {"Foo": {"Mid"}, "Mid": {"Schemed"}}
-        assert transitively_subclasses_any(
-            "Foo", frozenset({"Base", "Schemed"}), graph,
-        ) is True
+        assert (
+            transitively_subclasses_any(
+                "Foo",
+                frozenset({"Base", "Schemed"}),
+                graph,
+            )
+            is True
+        )
 
 
 class TestSchemaBackedExample:
@@ -160,8 +170,11 @@ class TestSchemaBackedExample:
             "class MemoriesCollection(SchemaBackedCollection):\n    pass\n",
         )
         graph = collect_class_base_graph((tmp_path,))
-        assert transitively_subclasses_any(
-            "MemoriesCollection",
-            frozenset({"BaseCollection"}),
-            graph,
-        ) is True
+        assert (
+            transitively_subclasses_any(
+                "MemoriesCollection",
+                frozenset({"BaseCollection"}),
+                graph,
+            )
+            is True
+        )

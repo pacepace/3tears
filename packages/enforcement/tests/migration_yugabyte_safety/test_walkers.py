@@ -56,7 +56,9 @@ class TestRuleM3Idempotency:
             'SQL = """CREATE TABLE foo (id uuid PRIMARY KEY)"""\n',
         )
         violations = find_migration_violations(
-            (migrations,), repo, frozenset(),
+            (migrations,),
+            repo,
+            frozenset(),
         )
         assert len(violations) == 1
         v = violations[0]
@@ -74,7 +76,9 @@ class TestRuleM3Idempotency:
             'SQL = """CREATE INDEX foo_id_idx ON foo (id)"""\n',
         )
         violations = find_migration_violations(
-            (migrations,), repo, frozenset(),
+            (migrations,),
+            repo,
+            frozenset(),
         )
         assert len(violations) == 1
         assert violations[0].category == "migration_yugabyte_safety.M-3"
@@ -88,7 +92,9 @@ class TestRuleM3Idempotency:
             'SQL = """ALTER TABLE foo ADD COLUMN bar text"""\n',
         )
         violations = find_migration_violations(
-            (migrations,), repo, frozenset(),
+            (migrations,),
+            repo,
+            frozenset(),
         )
         assert len(violations) == 1
         assert violations[0].category == "migration_yugabyte_safety.M-3"
@@ -113,7 +119,9 @@ class TestRuleM5Truncate:
             'SQL = """TRUNCATE TABLE foo"""\n',
         )
         violations = find_migration_violations(
-            (migrations,), repo, frozenset(),
+            (migrations,),
+            repo,
+            frozenset(),
         )
         # TRUNCATE TABLE matches both M-5 (truncate forbidden) AND, via the
         # DML pattern set, may participate in other heuristics — in this
@@ -139,17 +147,27 @@ class TestNoInput:
         repo.mkdir()
         missing = repo / "no-such-dir"
         # missing path; walker yields []; adapter yields [].
-        assert find_migration_violations(
-            (missing,), repo, frozenset(),
-        ) == []
+        assert (
+            find_migration_violations(
+                (missing,),
+                repo,
+                frozenset(),
+            )
+            == []
+        )
 
     def test_empty_dir_returns_empty(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
         # no .py files in migrations/.
-        assert find_migration_violations(
-            (migrations,), repo, frozenset(),
-        ) == []
+        assert (
+            find_migration_violations(
+                (migrations,),
+                repo,
+                frozenset(),
+            )
+            == []
+        )
 
     def test_init_py_skipped(self, tmp_path: Path) -> None:
         # underlying walker skips __init__.py.
@@ -159,9 +177,14 @@ class TestNoInput:
             migrations / "__init__.py",
             'SQL = """CREATE TABLE foo (id uuid)"""\n',
         )
-        assert find_migration_violations(
-            (migrations,), repo, frozenset(),
-        ) == []
+        assert (
+            find_migration_violations(
+                (migrations,),
+                repo,
+                frozenset(),
+            )
+            == []
+        )
 
 
 # ----------------------------------------------------------------
@@ -182,7 +205,9 @@ class TestMultiFile:
             'SQL = """CREATE INDEX b_idx ON b (id)"""\n',
         )
         violations = find_migration_violations(
-            (migrations,), repo, frozenset(),
+            (migrations,),
+            repo,
+            frozenset(),
         )
         assert len(violations) == 2
         # both fire the same rule (M-3) but from different files
@@ -203,7 +228,9 @@ class TestMultiFile:
         _write(a / "v001.py", 'SQL = """CREATE TABLE a (id uuid)"""\n')
         _write(b / "v001.py", 'SQL = """CREATE TABLE b (id uuid)"""\n')
         violations = find_migration_violations(
-            (a, b), repo, frozenset(),
+            (a, b),
+            repo,
+            frozenset(),
         )
         assert len(violations) == 2
 
@@ -223,12 +250,18 @@ class TestExemptionApplication:
         )
         # exemption key uses repo-relative POSIX path.
         exemptions = frozenset({("migrations/v001.py", "M-3")})
-        assert find_migration_violations(
-            (migrations,), repo, exemptions,
-        ) == []
+        assert (
+            find_migration_violations(
+                (migrations,),
+                repo,
+                exemptions,
+            )
+            == []
+        )
 
     def test_exemption_only_silences_matching_rule(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
@@ -239,13 +272,16 @@ class TestExemptionApplication:
         # exempt M-3, but the only fire is M-5 — exemption must not match.
         exemptions = frozenset({("migrations/v001.py", "M-3")})
         violations = find_migration_violations(
-            (migrations,), repo, exemptions,
+            (migrations,),
+            repo,
+            exemptions,
         )
         rules = {v.symbol for v in violations}
         assert "M-5" in rules
 
     def test_exemption_only_silences_listed_file(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = tmp_path / "repo"
         migrations = _make_repo_with_migrations(repo)
@@ -259,7 +295,9 @@ class TestExemptionApplication:
         )
         exemptions = frozenset({("migrations/exempt.py", "M-3")})
         violations = find_migration_violations(
-            (migrations,), repo, exemptions,
+            (migrations,),
+            repo,
+            exemptions,
         )
         assert len(violations) == 1
         assert violations[0].file == migrations / "violator.py"

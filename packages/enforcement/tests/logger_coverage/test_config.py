@@ -29,7 +29,8 @@ class TestDefaults:
         raise AssertionError("expected FrozenInstanceError")
 
     def test_default_factory_returns_independent_dicts(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         a = LoggerCoverageConfig(repo_root=tmp_path)
         b = LoggerCoverageConfig(repo_root=tmp_path)
@@ -46,24 +47,25 @@ class TestOverrides:
     def test_explicit_exemptions_path(self, tmp_path: Path) -> None:
         ex = tmp_path / "ex.txt"
         config = LoggerCoverageConfig(
-            repo_root=tmp_path, exemptions_path=ex,
+            repo_root=tmp_path,
+            exemptions_path=ex,
         )
         assert config.exemptions_path == ex
 
     def test_explicit_mode_env_var(self, tmp_path: Path) -> None:
         config = LoggerCoverageConfig(
-            repo_root=tmp_path, mode_env_var="MY_MODE",
+            repo_root=tmp_path,
+            mode_env_var="MY_MODE",
         )
         assert config.mode_env_var == "MY_MODE"
 
     def test_custom_exempt_files(self, tmp_path: Path) -> None:
         exempt = {
-            "src/aibots/hub/agents/entities.py": (
-                "pure pydantic model module, no runtime behaviour"
-            ),
+            "src/aibots/hub/agents/entities.py": ("pure pydantic model module, no runtime behaviour"),
         }
         config = LoggerCoverageConfig(
-            repo_root=tmp_path, exempt_files=exempt,
+            repo_root=tmp_path,
+            exempt_files=exempt,
         )
         assert config.exempt_files == exempt
 

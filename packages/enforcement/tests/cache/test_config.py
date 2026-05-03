@@ -42,9 +42,7 @@ class TestDefaults:
         config = CacheEnforcementConfig(repo_root=tmp_path)
         # five canonical cache verbs; intentionally does not include
         # ``remove`` so consumers can opt in.
-        assert config.cache_method_names == frozenset(
-            {"get", "put", "set", "delete", "upsert"}
-        )
+        assert config.cache_method_names == frozenset({"get", "put", "set", "delete", "upsert"})
 
     def test_default_base_collection_names(self, tmp_path: Path) -> None:
         # default is just ``BaseCollection`` — intermediate bases like
@@ -58,14 +56,16 @@ class TestOverrides:
     def test_explicit_scan_roots(self, tmp_path: Path) -> None:
         roots = (tmp_path / "src",)
         config = CacheEnforcementConfig(
-            repo_root=tmp_path, scan_roots=roots,
+            repo_root=tmp_path,
+            scan_roots=roots,
         )
         assert config.scan_roots == roots
 
     def test_explicit_inheritance_roots(self, tmp_path: Path) -> None:
         roots = (tmp_path / "src", tmp_path / "lib" / "src")
         config = CacheEnforcementConfig(
-            repo_root=tmp_path, inheritance_roots=roots,
+            repo_root=tmp_path,
+            inheritance_roots=roots,
         )
         assert config.inheritance_roots == roots
 
@@ -95,7 +95,8 @@ class TestOverrides:
     def test_explicit_collection_allowlist(self, tmp_path: Path) -> None:
         allowlist = {"memories": "MemoriesCollection"}
         config = CacheEnforcementConfig(
-            repo_root=tmp_path, collection_table_allowlist=allowlist,
+            repo_root=tmp_path,
+            collection_table_allowlist=allowlist,
         )
         assert config.collection_table_allowlist == allowlist
 
@@ -105,7 +106,8 @@ class TestOverrides:
         # production consumer.
         names = frozenset({"BaseCollection", "AnotherBase"})
         config = CacheEnforcementConfig(
-            repo_root=tmp_path, base_collection_names=names,
+            repo_root=tmp_path,
+            base_collection_names=names,
         )
         assert config.base_collection_names == names
 

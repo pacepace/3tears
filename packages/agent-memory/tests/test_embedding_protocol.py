@@ -1,62 +1,50 @@
-"""Tests for EmbeddingProvider protocol."""
+"""Tests for the ``EmbeddingProvider`` alias for ``langchain_core.embeddings.Embeddings``."""
 
 from __future__ import annotations
+
+from langchain_core.embeddings import Embeddings
 
 from threetears.agent.memory.embedding import EmbeddingProvider
 
 
-class StubEmbedder:
-    """Concrete implementation of EmbeddingProvider for testing."""
+class StubEmbedder(Embeddings):
+    """Concrete ``Embeddings`` implementation for testing."""
 
     def __init__(self, dims: int = 1024) -> None:
         self._dims = dims
 
-    async def embed_text(self, text: str) -> tuple[list[float] | None, int]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """returns a fixed-length zero vector for each input text."""
+        return [[0.1] * self._dims for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        """returns a fixed-length vector or empty list for empty text."""
         if not text:
-            return None, 0
-        vector = [0.1] * self._dims
-        return vector, len(text.split())
-
-    @property
-    def dimensions(self) -> int:
-        return self._dims
+            return []
+        return [0.1] * self._dims
 
 
-class TestEmbeddingProtocol:
-    def test_stub_satisfies_protocol(self) -> None:
+class TestEmbeddingProvider:
+    """``EmbeddingProvider`` is now an alias for ``Embeddings``."""
+
+    def test_alias_resolves_to_embeddings(self) -> None:
+        """``EmbeddingProvider`` is the same object as ``Embeddings``."""
+        assert EmbeddingProvider is Embeddings
+
+    def test_stub_subclasses_embeddings(self) -> None:
+        """concrete subclasses of ``Embeddings`` satisfy ``isinstance`` checks."""
         embedder = StubEmbedder(dims=1024)
         assert isinstance(embedder, EmbeddingProvider)
+        assert isinstance(embedder, Embeddings)
 
-    def test_dimensions_property(self) -> None:
-        embedder = StubEmbedder(dims=768)
-        assert embedder.dimensions == 768
-
-    async def test_embed_text_returns_vector(self) -> None:
+    def test_embed_query_returns_vector(self) -> None:
+        """``embed_query`` returns a vector of the expected dimensionality."""
         embedder = StubEmbedder(dims=4)
-        vector, tokens = await embedder.embed_text("hello world")
-
-        assert vector is not None
+        vector = embedder.embed_query("hello world")
         assert len(vector) == 4
-        assert tokens == 2
 
-    async def test_embed_text_returns_none_on_empty(self) -> None:
+    def test_embed_query_returns_empty_on_empty(self) -> None:
+        """``embed_query`` returns an empty list for empty input."""
         embedder = StubEmbedder()
-        vector, tokens = await embedder.embed_text("")
-
-        assert vector is None
-        assert tokens == 0
-
-    def test_class_without_dimensions_not_provider(self) -> None:
-        class NotAnEmbedder:
-            async def embed_text(self, text: str) -> tuple[list[float] | None, int]:
-                return None, 0
-
-        assert not isinstance(NotAnEmbedder(), EmbeddingProvider)
-
-    def test_class_without_embed_text_not_provider(self) -> None:
-        class AlsoNotAnEmbedder:
-            @property
-            def dimensions(self) -> int:
-                return 1024
-
-        assert not isinstance(AlsoNotAnEmbedder(), EmbeddingProvider)
+        vector = embedder.embed_query("")
+        assert vector == []

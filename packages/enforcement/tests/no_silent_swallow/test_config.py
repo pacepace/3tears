@@ -45,13 +45,15 @@ class TestOverrides:
     def test_explicit_exemptions_path(self, tmp_path: Path) -> None:
         ex = tmp_path / "ex.txt"
         config = NoSilentSwallowConfig(
-            repo_root=tmp_path, exemptions_path=ex,
+            repo_root=tmp_path,
+            exemptions_path=ex,
         )
         assert config.exemptions_path == ex
 
     def test_explicit_mode_env_var(self, tmp_path: Path) -> None:
         config = NoSilentSwallowConfig(
-            repo_root=tmp_path, mode_env_var="MY_MODE",
+            repo_root=tmp_path,
+            mode_env_var="MY_MODE",
         )
         assert config.mode_env_var == "MY_MODE"
 
@@ -60,20 +62,23 @@ class TestOverrides:
         # receivers can override the recogniser without forking.
         custom = frozenset({"slog", "audit"})
         config = NoSilentSwallowConfig(
-            repo_root=tmp_path, logger_names=custom,
+            repo_root=tmp_path,
+            logger_names=custom,
         )
         assert config.logger_names == custom
 
     def test_custom_logger_methods(self, tmp_path: Path) -> None:
         custom = frozenset({"trace", "audit"})
         config = NoSilentSwallowConfig(
-            repo_root=tmp_path, logger_methods=custom,
+            repo_root=tmp_path,
+            logger_methods=custom,
         )
         assert config.logger_methods == custom
 
     def test_custom_nosilent_marker(self, tmp_path: Path) -> None:
         config = NoSilentSwallowConfig(
-            repo_root=tmp_path, nosilent_marker="# NOSWALLOW:",
+            repo_root=tmp_path,
+            nosilent_marker="# NOSWALLOW:",
         )
         assert config.nosilent_marker == "# NOSWALLOW:"
 

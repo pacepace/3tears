@@ -52,17 +52,20 @@ from threetears.enforcement.cache.walkers import (
 __all__ = ["run_cache_enforcement"]
 
 
-_VALID_WALKERS: frozenset[str] = frozenset({
-    "sqlite_construction",
-    "wrapper_class",
-    "pool_access",
-    "missing_collection",
-    "all",
-})
+_VALID_WALKERS: frozenset[str] = frozenset(
+    {
+        "sqlite_construction",
+        "wrapper_class",
+        "pool_access",
+        "missing_collection",
+        "all",
+    }
+)
 
 
 def run_cache_enforcement(
-    config: CacheEnforcementConfig, walker: str = "all",
+    config: CacheEnforcementConfig,
+    walker: str = "all",
 ) -> None:
     """run the configured walker(s), apply exemptions, fail if strict.
 
@@ -103,9 +106,7 @@ def run_cache_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     scan_roots = _resolve_scan_roots(config)
     inheritance_roots = _resolve_inheritance_roots(config)
@@ -125,19 +126,14 @@ def run_cache_enforcement(
     )
     # the report header carries scan_roots; the inheritance roots are
     # printed alongside so the operator can see both scopes at a glance.
-    inheritance_line = (
-        f"inheritance_roots: {[str(r) for r in inheritance_roots]}"
-    )
+    inheritance_line = f"inheritance_roots: {[str(r) for r in inheritance_roots]}"
     print(report, file=sys.stderr)
     print(inheritance_line, file=sys.stderr)
 
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"cache enforcement found {len(filtered)} violation(s):\n"
-            f"{report}\n{inheritance_line}"
-        )
+        pytest.fail(f"cache enforcement found {len(filtered)} violation(s):\n{report}\n{inheritance_line}")
 
 
 def _resolve_scan_roots(config: CacheEnforcementConfig) -> tuple[Path, ...]:

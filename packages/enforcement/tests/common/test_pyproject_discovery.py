@@ -35,7 +35,7 @@ class TestPoetryPathDeps:
         consumer = _make_repo(
             tmp_path / "consumer",
             '[tool.poetry]\nname = "consumer"\n'
-            '[tool.poetry.dependencies]\n'
+            "[tool.poetry.dependencies]\n"
             f'core = {{path = "../core", develop = true}}\n',
         )
         roots = discover_src_roots(consumer)
@@ -49,9 +49,7 @@ class TestPoetryPathDeps:
         )
         consumer = _make_repo(
             tmp_path / "consumer",
-            '[tool.poetry]\nname = "consumer"\n'
-            '[tool.poetry.group.dev.dependencies]\n'
-            f'tools = {{path = "../tools"}}\n',
+            f'[tool.poetry]\nname = "consumer"\n[tool.poetry.group.dev.dependencies]\ntools = {{path = "../tools"}}\n',
         )
         roots = discover_src_roots(consumer)
         assert (target / "src").resolve() in roots
@@ -59,9 +57,7 @@ class TestPoetryPathDeps:
     def test_version_string_deps_skipped(self, tmp_path: Path) -> None:
         consumer = _make_repo(
             tmp_path / "consumer",
-            '[tool.poetry]\nname = "consumer"\n'
-            '[tool.poetry.dependencies]\n'
-            'fastapi = ">=0.115"\n',
+            '[tool.poetry]\nname = "consumer"\n[tool.poetry.dependencies]\nfastapi = ">=0.115"\n',
         )
         roots = discover_src_roots(consumer)
         assert roots == ((consumer / "src").resolve(),)
@@ -71,17 +67,13 @@ class TestUvWorkspace:
     def test_workspace_globs_expand(self, tmp_path: Path) -> None:
         root = tmp_path / "monorepo"
         root.mkdir()
-        (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
-        )
+        (root / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = ["packages/*"]\n')
         # workspace root itself has no top-level src
         for name in ("core", "observe"):
             pkg = root / "packages" / name
             pkg.mkdir(parents=True)
             (pkg / "src").mkdir()
-            (pkg / "pyproject.toml").write_text(
-                f'[project]\nname = "{name}"\n'
-            )
+            (pkg / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
         # decoy: a packages/* dir without a pyproject — must raise
         bad = root / "packages" / "broken"
         bad.mkdir(parents=True)
@@ -92,16 +84,12 @@ class TestUvWorkspace:
     def test_workspace_clean(self, tmp_path: Path) -> None:
         root = tmp_path / "monorepo"
         root.mkdir()
-        (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
-        )
+        (root / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = ["packages/*"]\n')
         for name in ("core", "observe"):
             pkg = root / "packages" / name
             pkg.mkdir(parents=True)
             (pkg / "src").mkdir()
-            (pkg / "pyproject.toml").write_text(
-                f'[project]\nname = "{name}"\n'
-            )
+            (pkg / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
         roots = discover_src_roots(root)
         assert (root / "packages" / "core" / "src").resolve() in roots
         assert (root / "packages" / "observe" / "src").resolve() in roots
@@ -113,9 +101,7 @@ class TestUvSources:
         root = tmp_path / "monorepo"
         root.mkdir()
         (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
-            '[tool.uv.sources]\n'
-            'core = {workspace = true}\n'
+            '[tool.uv.workspace]\nmembers = ["packages/*"]\n[tool.uv.sources]\ncore = {workspace = true}\n'
         )
         core_pkg = root / "packages" / "core"
         core_pkg.mkdir(parents=True)
@@ -128,9 +114,7 @@ class TestUvSources:
         root = tmp_path / "monorepo"
         root.mkdir()
         (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = ["packages/*"]\n'
-            '[tool.uv.sources]\n'
-            'ghost = {workspace = true}\n'
+            '[tool.uv.workspace]\nmembers = ["packages/*"]\n[tool.uv.sources]\nghost = {workspace = true}\n'
         )
         with pytest.raises(PyprojectError, match="workspace=true"):
             discover_src_roots(root)
@@ -144,9 +128,7 @@ class TestUvSources:
         consumer_dir.mkdir()
         (consumer_dir / "src").mkdir()
         (consumer_dir / "pyproject.toml").write_text(
-            '[project]\nname = "consumer"\n'
-            '[tool.uv.sources]\n'
-            f'lib = {{path = "../lib", editable = true}}\n'
+            f'[project]\nname = "consumer"\n[tool.uv.sources]\nlib = {{path = "../lib", editable = true}}\n'
         )
         roots = discover_src_roots(consumer_dir)
         assert (target / "src").resolve() in roots
@@ -159,17 +141,9 @@ class TestTransitiveResolution:
             tmp_path / "bottom",
             '[tool.poetry]\nname = "bottom"\n',
         )
-        middle_text = (
-            '[tool.poetry]\nname = "middle"\n'
-            '[tool.poetry.dependencies]\n'
-            'bottom = {path = "../bottom"}\n'
-        )
+        middle_text = '[tool.poetry]\nname = "middle"\n[tool.poetry.dependencies]\nbottom = {path = "../bottom"}\n'
         middle = _make_repo(tmp_path / "middle", middle_text)
-        consumer_text = (
-            '[tool.poetry]\nname = "consumer"\n'
-            '[tool.poetry.dependencies]\n'
-            'middle = {path = "../middle"}\n'
-        )
+        consumer_text = '[tool.poetry]\nname = "consumer"\n[tool.poetry.dependencies]\nmiddle = {path = "../middle"}\n'
         consumer = _make_repo(tmp_path / "consumer", consumer_text)
         roots = discover_src_roots(consumer)
         assert (bottom / "src").resolve() in roots
@@ -185,14 +159,10 @@ class TestCycleHandling:
         (tmp_path / "b").mkdir()
         (tmp_path / "b" / "src").mkdir()
         (tmp_path / "a" / "pyproject.toml").write_text(
-            '[tool.poetry]\nname = "a"\n'
-            '[tool.poetry.dependencies]\n'
-            'b = {path = "../b"}\n'
+            '[tool.poetry]\nname = "a"\n[tool.poetry.dependencies]\nb = {path = "../b"}\n'
         )
         (tmp_path / "b" / "pyproject.toml").write_text(
-            '[tool.poetry]\nname = "b"\n'
-            '[tool.poetry.dependencies]\n'
-            'a = {path = "../a"}\n'
+            '[tool.poetry]\nname = "b"\n[tool.poetry.dependencies]\na = {path = "../a"}\n'
         )
         roots = discover_src_roots(tmp_path / "a")
         assert (tmp_path / "a" / "src").resolve() in roots
@@ -218,9 +188,7 @@ class TestErrors:
         repo = tmp_path / "repo"
         repo.mkdir()
         (repo / "src").mkdir()
-        (repo / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = "not-a-list"\n'
-        )
+        (repo / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = "not-a-list"\n')
         with pytest.raises(PyprojectError, match="must be a list"):
             discover_src_roots(repo)
 
@@ -228,10 +196,7 @@ class TestErrors:
         repo = tmp_path / "repo"
         repo.mkdir()
         (repo / "src").mkdir()
-        (repo / "pyproject.toml").write_text(
-            '[tool.uv.sources]\n'
-            'lib = {path = 42}\n'
-        )
+        (repo / "pyproject.toml").write_text("[tool.uv.sources]\nlib = {path = 42}\n")
         with pytest.raises(PyprojectError, match="must be a string"):
             discover_src_roots(repo)
 

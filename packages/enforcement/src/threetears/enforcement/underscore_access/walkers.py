@@ -57,9 +57,7 @@ __all__ = [
 _RUFF_TIMEOUT_SECONDS = 60
 
 # ruff's concise output format: ``path:line:col: CODE message``
-_RUFF_LINE_RE = re.compile(
-    r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+SLF001\s+(?P<detail>.+)$"
-)
+_RUFF_LINE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+SLF001\s+(?P<detail>.+)$")
 # ruff's SLF001 message embeds the offending name as ``\`_name\```.
 _RUFF_SYMBOL_RE = re.compile(r"`(_[A-Za-z_0-9]+)`")
 
@@ -113,7 +111,8 @@ def same_package(a: Path, b: Path, src_roots: Iterable[Path]) -> bool:
 
 
 def _resolve_module_to_file(
-    module: str, src_roots: Iterable[Path],
+    module: str,
+    src_roots: Iterable[Path],
 ) -> Path | None:
     """find the source file that defines a fully-qualified module name.
 
@@ -187,24 +186,19 @@ def shape_a_violations(
                     continue
                 if node.level and node.level > 0:
                     continue
-                private_aliases = [
-                    alias for alias in node.names
-                    if is_private_name(alias.name)
-                ]
+                private_aliases = [alias for alias in node.names if is_private_name(alias.name)]
                 if not private_aliases:
                     continue
                 defining_file = _resolve_module_to_file(
-                    module, inheritance_roots,
+                    module,
+                    inheritance_roots,
                 )
                 if defining_file is None:
                     continue
                 if same_package(importer, defining_file, inheritance_roots):
                     continue
                 for alias in private_aliases:
-                    reason = (
-                        f"imports private name '{alias.name}' from "
-                        f"'{module}' across package boundary"
-                    )
+                    reason = f"imports private name '{alias.name}' from '{module}' across package boundary"
                     violations.append(
                         Violation(
                             category="underscore_access.A",
@@ -218,7 +212,8 @@ def shape_a_violations(
 
 
 def shape_b_violations(
-    repo_root: Path, scan_roots: tuple[Path, ...],
+    repo_root: Path,
+    scan_roots: tuple[Path, ...],
 ) -> list[Violation]:
     """delegate cross-class protected access to ruff's SLF001 (shape B).
 
@@ -243,9 +238,12 @@ def shape_b_violations(
     if not scan_roots:
         return []
     args = [
-        "ruff", "check",
-        "--select", "SLF001",
-        "--output-format", "concise",
+        "ruff",
+        "check",
+        "--select",
+        "SLF001",
+        "--output-format",
+        "concise",
         "--no-fix",
         "--force-exclude",
     ]
@@ -311,7 +309,8 @@ def parse_ruff_slf001_output(stdout: str, repo_root: Path) -> list[Violation]:
 
 
 def shape_c_violations(
-    scan_roots: tuple[Path, ...], repo_root: Path,
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
     skip_basenames: frozenset[str],
 ) -> list[Violation]:
     """walk every source file for missing ``__all__`` with public surface (shape C).
@@ -377,10 +376,7 @@ def shape_c_violations(
             if not public_names:
                 continue
             first_name, first_line = public_names[0]
-            reason = (
-                f"module defines {len(public_names)} public name(s) but no "
-                f"__all__; first is '{first_name}'"
-            )
+            reason = f"module defines {len(public_names)} public name(s) but no __all__; first is '{first_name}'"
             violations.append(
                 Violation(
                     category="underscore_access.C",
@@ -572,7 +568,8 @@ def _base_names_textual(cls: ast.ClassDef) -> list[str]:
 
 
 def _accumulate_sub_private(
-    item: ast.stmt, sub_privates: list[tuple[str, int]],
+    item: ast.stmt,
+    sub_privates: list[tuple[str, int]],
 ) -> None:
     """append ``item``'s private name to ``sub_privates`` if applicable.
 
@@ -599,7 +596,8 @@ def _accumulate_sub_private(
 
 
 def shape_e_violations(
-    scan_roots: tuple[Path, ...], repo_root: Path,
+    scan_roots: tuple[Path, ...],
+    repo_root: Path,
 ) -> list[Violation]:
     """walk every ``__all__`` for underscore-prefixed entries (shape E).
 
@@ -677,11 +675,7 @@ def _extract_all_value(node: ast.stmt) -> tuple[ast.expr | None, int]:
                 return node.value, node.lineno
         return None, 0
     if isinstance(node, ast.AnnAssign):
-        if (
-            isinstance(node.target, ast.Name)
-            and node.target.id == "__all__"
-            and node.value is not None
-        ):
+        if isinstance(node.target, ast.Name) and node.target.id == "__all__" and node.value is not None:
             return node.value, node.lineno
         return None, 0
     return None, 0

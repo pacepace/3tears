@@ -12,9 +12,7 @@ from threetears.enforcement.codebase_conventions import (
 )
 
 
-_VALID_RATIONALE = (
-    "synthetic test fixture; intentional convention violation for unit-test use only"
-)
+_VALID_RATIONALE = "synthetic test fixture; intentional convention violation for unit-test use only"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -34,9 +32,7 @@ def _build_print_violation(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "pkg" / "mod.py",
-        "from __future__ import annotations\n"
-        "def foo() -> None:\n"
-        "    print('hi')\n",
+        "from __future__ import annotations\ndef foo() -> None:\n    print('hi')\n",
     )
     return repo, src
 
@@ -46,9 +42,7 @@ def _build_clean_repo(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "pkg" / "mod.py",
-        "from __future__ import annotations\n"
-        "def foo() -> int:\n"
-        "    return 1\n",
+        "from __future__ import annotations\ndef foo() -> int:\n    return 1\n",
     )
     return repo, src
 
@@ -98,7 +92,9 @@ class TestWalkerArgValidation:
 
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_print_violation(tmp_path)
         monkeypatch.setenv("CC_TEST_MODE", "strict")
@@ -111,7 +107,9 @@ class TestModes:
             run_codebase_conventions_enforcement(config)
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_print_violation(tmp_path)
         monkeypatch.setenv("CC_TEST_MODE", "report")
@@ -123,7 +121,9 @@ class TestModes:
         run_codebase_conventions_enforcement(config)
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_clean_repo(tmp_path)
         monkeypatch.setenv("CC_TEST_MODE", "strict")
@@ -135,7 +135,9 @@ class TestModes:
         run_codebase_conventions_enforcement(config)
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_print_violation(tmp_path)
         monkeypatch.delenv("CC_TEST_MODE", raising=False)
@@ -155,7 +157,9 @@ class TestModes:
 
 class TestWalkerDispatching:
     def test_print_walker_finds_only_print_violations(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # mod has both a print violation and a missing-return-type
         # violation; choosing walker="print" should only fail on print.
@@ -163,8 +167,7 @@ class TestWalkerDispatching:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def foo():\n"
-            "    print('x')\n",
+            "def foo():\n    print('x')\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -182,15 +185,15 @@ class TestWalkerDispatching:
             run_codebase_conventions_enforcement(config, walker="print")
 
     def test_return_type_walker_finds_only_return_type(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from __future__ import annotations\n"
-            "def foo():\n"
-            "    return 1\n",
+            "from __future__ import annotations\ndef foo():\n    return 1\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -203,11 +206,14 @@ class TestWalkerDispatching:
         # walker="return_type" — fails.
         with pytest.raises(pytest.fail.Exception):
             run_codebase_conventions_enforcement(
-                config, walker="return_type",
+                config,
+                walker="return_type",
             )
 
     def test_future_annotations_walker_alone(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -220,19 +226,20 @@ class TestWalkerDispatching:
         )
         with pytest.raises(pytest.fail.Exception):
             run_codebase_conventions_enforcement(
-                config, walker="future_annotations",
+                config,
+                walker="future_annotations",
             )
 
     def test_stdlib_getlogger_walker_alone(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from __future__ import annotations\n"
-            "import logging\n"
-            "log = logging.getLogger(__name__)\n",
+            "from __future__ import annotations\nimport logging\nlog = logging.getLogger(__name__)\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -242,7 +249,8 @@ class TestWalkerDispatching:
         )
         with pytest.raises(pytest.fail.Exception):
             run_codebase_conventions_enforcement(
-                config, walker="stdlib_getlogger",
+                config,
+                walker="stdlib_getlogger",
             )
 
 
@@ -253,7 +261,9 @@ class TestWalkerDispatching:
 
 class TestExemptFiles:
     def test_print_exempt_file_silences(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_print_violation(tmp_path)
         monkeypatch.setenv("CC_TEST_MODE", "strict")
@@ -266,15 +276,15 @@ class TestExemptFiles:
         run_codebase_conventions_enforcement(config, walker="print")
 
     def test_getlogger_exempt_file_silences(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "config.py",
-            "from __future__ import annotations\n"
-            "import logging\n"
-            "log = logging.getLogger(__name__)\n",
+            "from __future__ import annotations\nimport logging\nlog = logging.getLogger(__name__)\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -284,11 +294,14 @@ class TestExemptFiles:
             getlogger_exempt_files={"src/pkg/config.py": _VALID_RATIONALE},
         )
         run_codebase_conventions_enforcement(
-            config, walker="stdlib_getlogger",
+            config,
+            walker="stdlib_getlogger",
         )
 
     def test_future_annotations_exempt_file_silences(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -303,19 +316,20 @@ class TestExemptFiles:
             },
         )
         run_codebase_conventions_enforcement(
-            config, walker="future_annotations",
+            config,
+            walker="future_annotations",
         )
 
     def test_return_type_exempt_file_silences(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from __future__ import annotations\n"
-            "def foo():\n"
-            "    return 1\n",
+            "from __future__ import annotations\ndef foo():\n    return 1\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -334,14 +348,13 @@ class TestExemptFiles:
 
 class TestExemptionsPath:
     def test_exemption_file_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_print_violation(tmp_path)
         ex_path = repo / "_codebase_conventions_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/pkg/mod.py:3:print\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/pkg/mod.py:3:print\n")
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
             repo_root=repo,
@@ -352,7 +365,9 @@ class TestExemptionsPath:
         run_codebase_conventions_enforcement(config, walker="print")
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_clean_repo(tmp_path)
         monkeypatch.setenv("CC_TEST_MODE", "strict")
@@ -372,15 +387,15 @@ class TestExemptionsPath:
 
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from __future__ import annotations\n"
-            "def foo() -> int:\n"
-            "    return 1\n",
+            "from __future__ import annotations\ndef foo() -> int:\n    return 1\n",
         )
         monkeypatch.setenv("CC_TEST_MODE", "strict")
         config = CodebaseConventionsConfig(
@@ -398,7 +413,9 @@ class TestSrcRootsDiscovery:
 
 class TestCustomConfig:
     def test_custom_getlogger_marker(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -416,11 +433,14 @@ class TestCustomConfig:
             getlogger_marker="# stdlogger-allowed",
         )
         run_codebase_conventions_enforcement(
-            config, walker="stdlib_getlogger",
+            config,
+            walker="stdlib_getlogger",
         )
 
     def test_custom_skip_basenames(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # also skip conftest.py.
         repo = _make_repo(tmp_path / "repo")

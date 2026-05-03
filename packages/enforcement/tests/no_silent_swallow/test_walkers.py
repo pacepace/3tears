@@ -33,7 +33,11 @@ def _make_repo(repo_root: Path) -> Path:
 
 def _scan(src: Path, repo: Path) -> list:
     return find_silent_swallows(
-        (src,), repo, _LOGGER_NAMES, _LOGGER_METHODS, _MARKER,
+        (src,),
+        repo,
+        _LOGGER_NAMES,
+        _LOGGER_METHODS,
+        _MARKER,
     )
 
 
@@ -41,60 +45,60 @@ def _scan(src: Path, repo: Path) -> list:
 # helpers — body_silent_category
 # ------------------------------------------------------------------
 
+
 class TestBodySilentCategory:
     def test_pass_classified(self) -> None:
         import ast
+
         body = ast.parse("def f():\n    pass\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "pass"
 
     def test_ellipsis_classified(self) -> None:
         import ast
+
         body = ast.parse("def f():\n    ...\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "ellipsis"
 
     def test_return_none_explicit_classified(self) -> None:
         import ast
+
         body = ast.parse("def f():\n    return None\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "return-none"
 
     def test_return_no_value_classified(self) -> None:
         import ast
+
         body = ast.parse("def f():\n    return\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "return-none"
 
     def test_continue_classified(self) -> None:
         import ast
-        body = ast.parse(
-            "for x in y:\n"
-            "    continue\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("for x in y:\n    continue\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "continue"
 
     def test_break_classified(self) -> None:
         import ast
-        body = ast.parse(
-            "for x in y:\n"
-            "    break\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("for x in y:\n    break\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) == "break"
 
     def test_non_silent_returns_none(self) -> None:
         import ast
+
         body = ast.parse("def f():\n    x = 1\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
     def test_return_value_not_none(self) -> None:
         import ast
-        body = ast.parse(
-            "def f():\n    return 42\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    return 42\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
     def test_multi_statement_returns_none(self) -> None:
         import ast
-        body = ast.parse(
-            "def f():\n    x = 1\n    pass\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    x = 1\n    pass\n").body[0].body  # type: ignore[attr-defined]
         assert body_silent_category(body) is None
 
 
@@ -102,45 +106,39 @@ class TestBodySilentCategory:
 # helpers — body_contains_log
 # ------------------------------------------------------------------
 
+
 class TestBodyContainsLog:
     def test_bare_log_call(self) -> None:
         import ast
-        body = ast.parse(
-            "def f():\n    log.error('x')\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    log.error('x')\n").body[0].body  # type: ignore[attr-defined]
         assert body_contains_log(body, _LOGGER_NAMES, _LOGGER_METHODS) is True
 
     def test_self_log_call(self) -> None:
         import ast
-        body = ast.parse(
-            "def f():\n    self.log.error('x')\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    self.log.error('x')\n").body[0].body  # type: ignore[attr-defined]
         assert body_contains_log(body, _LOGGER_NAMES, _LOGGER_METHODS) is True
 
     def test_self_logger_call(self) -> None:
         import ast
-        body = ast.parse(
-            "def f():\n    ctx.logger.warning('x')\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    ctx.logger.warning('x')\n").body[0].body  # type: ignore[attr-defined]
         assert body_contains_log(body, _LOGGER_NAMES, _LOGGER_METHODS) is True
 
     def test_unrelated_attribute_not_logged(self) -> None:
         # ``self.cache.error(...)`` is not a logger call: the attribute
         # name ``cache`` is not in ``{log, logger}``.
         import ast
-        body = ast.parse(
-            "def f():\n    self.cache.error('x')\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    self.cache.error('x')\n").body[0].body  # type: ignore[attr-defined]
         assert body_contains_log(body, _LOGGER_NAMES, _LOGGER_METHODS) is False
 
     def test_nested_log_call(self) -> None:
         # a logger call deeper in the body still counts.
         import ast
-        body = ast.parse(
-            "def f():\n"
-            "    if cond:\n"
-            "        log.error('x')\n"
-        ).body[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("def f():\n    if cond:\n        log.error('x')\n").body[0].body  # type: ignore[attr-defined]
         assert body_contains_log(body, _LOGGER_NAMES, _LOGGER_METHODS) is True
 
 
@@ -148,26 +146,24 @@ class TestBodyContainsLog:
 # helpers — body_reraises
 # ------------------------------------------------------------------
 
+
 class TestBodyReraises:
     def test_bare_raise(self) -> None:
         import ast
-        body = ast.parse(
-            "try:\n    pass\nexcept Exception:\n    raise\n"
-        ).body[0].handlers[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("try:\n    pass\nexcept Exception:\n    raise\n").body[0].handlers[0].body  # type: ignore[attr-defined]
         assert body_reraises(body) is True
 
     def test_raise_new_error(self) -> None:
         import ast
-        body = ast.parse(
-            "try:\n    pass\nexcept Exception as e:\n    raise X() from e\n"
-        ).body[0].handlers[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("try:\n    pass\nexcept Exception as e:\n    raise X() from e\n").body[0].handlers[0].body  # type: ignore[attr-defined]
         assert body_reraises(body) is True
 
     def test_no_raise(self) -> None:
         import ast
-        body = ast.parse(
-            "try:\n    pass\nexcept Exception:\n    pass\n"
-        ).body[0].handlers[0].body  # type: ignore[attr-defined]
+
+        body = ast.parse("try:\n    pass\nexcept Exception:\n    pass\n").body[0].handlers[0].body  # type: ignore[attr-defined]
         assert body_reraises(body) is False
 
 
@@ -175,17 +171,14 @@ class TestBodyReraises:
 # walker — bare except
 # ------------------------------------------------------------------
 
+
 class TestBareExcept:
     def test_bare_except_pass_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except:\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except:\n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -202,11 +195,7 @@ class TestBareExcept:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except:\n"
-            "        log.error('x')\n",
+            "def f():\n    try:\n        do()\n    except:\n        log.error('x')\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -217,17 +206,14 @@ class TestBareExcept:
 # walker — typed except, silent
 # ------------------------------------------------------------------
 
+
 class TestTypedSilentExcept:
     def test_silent_pass_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -242,11 +228,7 @@ class TestTypedSilentExcept:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        ...\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        ...\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -257,11 +239,7 @@ class TestTypedSilentExcept:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        return None\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        return None\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -304,17 +282,14 @@ class TestTypedSilentExcept:
 # walker — typed except, accepted patterns
 # ------------------------------------------------------------------
 
+
 class TestTypedExceptAccepted:
     def test_logged_handler_not_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError as e:\n"
-            "        log.error(e)\n",
+            "def f():\n    try:\n        do()\n    except ValueError as e:\n        log.error(e)\n",
         )
         assert _scan(src, repo) == []
 
@@ -323,11 +298,7 @@ class TestTypedExceptAccepted:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        raise\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        raise\n",
         )
         # ``raise`` makes the body non-silent (not pass / ellipsis /
         # return / continue / break) — body_silent_category returns
@@ -339,12 +310,7 @@ class TestTypedExceptAccepted:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        log.error('x')\n"
-            "        raise\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        log.error('x')\n        raise\n",
         )
         assert _scan(src, repo) == []
 
@@ -383,11 +349,7 @@ class TestTypedExceptAccepted:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        x = 1\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        x = 1\n",
         )
         assert _scan(src, repo) == []
 
@@ -395,6 +357,7 @@ class TestTypedExceptAccepted:
 # ------------------------------------------------------------------
 # walker — marker rationale-required
 # ------------------------------------------------------------------
+
 
 class TestMarkerReasonRequired:
     def test_empty_marker_reason_rejected(self, tmp_path: Path) -> None:
@@ -405,28 +368,21 @@ class TestMarkerReasonRequired:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:  # NOSILENT:\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:  # NOSILENT:\n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
         assert violations[0].symbol == "ValueError"
 
     def test_marker_with_only_whitespace_rejected(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:  # NOSILENT:    \n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:  # NOSILENT:    \n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -436,17 +392,14 @@ class TestMarkerReasonRequired:
 # walker — contextlib.suppress
 # ------------------------------------------------------------------
 
+
 class TestSuppress:
     def test_bare_suppress_flagged(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from contextlib import suppress\n"
-            "\n"
-            "def f():\n"
-            "    with suppress(KeyError):\n"
-            "        do()\n",
+            "from contextlib import suppress\n\ndef f():\n    with suppress(KeyError):\n        do()\n",
         )
         violations = _scan(src, repo)
         # one violation for the suppress; the with-body is non-silent
@@ -462,18 +415,15 @@ class TestSuppress:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "import contextlib\n"
-            "\n"
-            "def f():\n"
-            "    with contextlib.suppress(KeyError):\n"
-            "        do()\n",
+            "import contextlib\n\ndef f():\n    with contextlib.suppress(KeyError):\n        do()\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
         assert violations[0].category == "no_silent_swallow.suppress"
 
     def test_suppress_with_marker_above_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -489,7 +439,8 @@ class TestSuppress:
         assert _scan(src, repo) == []
 
     def test_suppress_with_marker_inline_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -508,11 +459,7 @@ class TestSuppress:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from contextlib import suppress\n"
-            "\n"
-            "def f():\n"
-            "    with suppress(KeyError, ValueError):\n"
-            "        do()\n",
+            "from contextlib import suppress\n\ndef f():\n    with suppress(KeyError, ValueError):\n        do()\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -523,6 +470,7 @@ class TestSuppress:
 # ------------------------------------------------------------------
 # walker — multiple violations and ordering
 # ------------------------------------------------------------------
+
 
 class TestMultipleViolations:
     def test_mixed_violations_in_one_file(self, tmp_path: Path) -> None:
@@ -559,9 +507,11 @@ class TestMultipleViolations:
 # walker — path-dep / multi-root behaviour
 # ------------------------------------------------------------------
 
+
 class TestPathDepWalking:
     def test_two_package_workspace_finds_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # synthetic two-package workspace: package A holds clean code,
         # package B holds the silent swallow. with both src roots
@@ -571,23 +521,18 @@ class TestPathDepWalking:
         b_src = tmp_path / "b" / "src"
         _write(
             a_src / "pkg_a" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        log.error('x')\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        log.error('x')\n",
         )
         _write(
             b_src / "pkg_b" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except ValueError:\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except ValueError:\n        pass\n",
         )
         violations = find_silent_swallows(
-            (a_src, b_src), tmp_path,
-            _LOGGER_NAMES, _LOGGER_METHODS, _MARKER,
+            (a_src, b_src),
+            tmp_path,
+            _LOGGER_NAMES,
+            _LOGGER_METHODS,
+            _MARKER,
         )
         assert len(violations) == 1
         v = violations[0]
@@ -599,17 +544,14 @@ class TestPathDepWalking:
 # walker — symbol rendering for unusual handler shapes
 # ------------------------------------------------------------------
 
+
 class TestHandlerSymbol:
     def test_attribute_exception_type(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except foo.BarError:\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except foo.BarError:\n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1
@@ -620,11 +562,7 @@ class TestHandlerSymbol:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "def f():\n"
-            "    try:\n"
-            "        do()\n"
-            "    except (KeyError, ValueError):\n"
-            "        pass\n",
+            "def f():\n    try:\n        do()\n    except (KeyError, ValueError):\n        pass\n",
         )
         violations = _scan(src, repo)
         assert len(violations) == 1

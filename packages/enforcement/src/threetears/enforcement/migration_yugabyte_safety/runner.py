@@ -52,7 +52,8 @@ _VALID_WALKERS: frozenset[str] = frozenset({"all"})
 
 
 def run_migration_enforcement(
-    config: MigrationYugabyteConfig, walker: str = "all",
+    config: MigrationYugabyteConfig,
+    walker: str = "all",
 ) -> None:
     """run the walker, emit report, fail if strict.
 
@@ -94,9 +95,7 @@ def run_migration_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     existing_dirs = tuple(d for d in config.migration_dirs if d.exists())
     exemptions, exemption_entries = _load_exemptions(config.exemptions_path)
@@ -122,10 +121,7 @@ def run_migration_enforcement(
     if mode == MODE_REPORT:
         return
     if violations:
-        pytest.fail(
-            f"migration-yugabyte-safety enforcement found "
-            f"{len(violations)} violation(s):\n{report}"
-        )
+        pytest.fail(f"migration-yugabyte-safety enforcement found {len(violations)} violation(s):\n{report}")
 
 
 def _load_exemptions(
@@ -166,8 +162,7 @@ def _load_exemptions(
     if missing:
         rendered = "\n".join(f"  {line!r}" for line in missing)
         raise ExemptionError(
-            f"{path}: {len(missing)} exemption entry/entries lack a "
-            f"non-blank '# rationale: ...' suffix:\n{rendered}"
+            f"{path}: {len(missing)} exemption entry/entries lack a non-blank '# rationale: ...' suffix:\n{rendered}"
         )
     entries = [
         Exemption(

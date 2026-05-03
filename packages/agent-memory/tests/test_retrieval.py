@@ -314,13 +314,24 @@ class TestFormatMemoryContext:
 
 
 class StubEmbeddingProvider:
-    """Stub embedding provider for testing."""
+    """Stub LangChain ``Embeddings`` for testing."""
 
     def __init__(self, embedding: list[float] | None = None) -> None:
         self._embedding = embedding or [1.0, 0.0, 0.0]
 
-    async def embed_text(self, text: str) -> tuple[list[float] | None, int]:
-        return self._embedding, 10
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embedding for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        _ = text
+        return self._embedding
+
+    async def aembed_query(self, text: str) -> list[float]:
+        _ = text
+        return self._embedding
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embedding for _ in texts]
 
     @property
     def dimensions(self) -> int:
@@ -448,8 +459,21 @@ class TestMemoryRetrieverE2E:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         class FailingProvider:
-            async def embed_text(self, text: str) -> tuple[None, int]:
-                return None, 0
+            async def aembed_query(self, text: str) -> list[float]:
+                _ = text
+                raise RuntimeError("embedding service down")
+
+            async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+                _ = texts
+                raise RuntimeError("embedding service down")
+
+            def embed_query(self, text: str) -> list[float]:
+                _ = text
+                return []
+
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                _ = texts
+                return []
 
             @property
             def dimensions(self) -> int:

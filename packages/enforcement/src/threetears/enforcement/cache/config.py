@@ -52,9 +52,15 @@ from pathlib import Path
 __all__ = ["CacheEnforcementConfig"]
 
 
-_DEFAULT_CACHE_METHOD_NAMES: frozenset[str] = frozenset({
-    "get", "put", "set", "delete", "upsert",
-})
+_DEFAULT_CACHE_METHOD_NAMES: frozenset[str] = frozenset(
+    {
+        "get",
+        "put",
+        "set",
+        "delete",
+        "upsert",
+    }
+)
 
 
 _DEFAULT_BASE_COLLECTION_NAMES: frozenset[str] = frozenset({"BaseCollection"})

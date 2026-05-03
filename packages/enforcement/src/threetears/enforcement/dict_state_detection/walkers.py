@@ -63,9 +63,7 @@ __all__ = [
 
 _DETECTOR_CATEGORY = "dict_state_detection.dict_in_init"
 _STALE_ALLOWLIST_CATEGORY = "dict_state_detection.stale_allowlist"
-_STALE_KNOWN_VIOLATION_CATEGORY = (
-    "dict_state_detection.stale_known_violation"
-)
+_STALE_KNOWN_VIOLATION_CATEGORY = "dict_state_detection.stale_known_violation"
 
 
 def _is_dict_literal(node: ast.expr) -> bool:
@@ -160,7 +158,8 @@ def _is_dict_type_annotation(annotation: ast.expr | None) -> bool:
     if isinstance(annotation, ast.Name):
         return annotation.id in ("dict", "OrderedDict")
     if isinstance(annotation, ast.Subscript) and isinstance(
-        annotation.value, ast.Name,
+        annotation.value,
+        ast.Name,
     ):
         return annotation.value.id in ("dict", "OrderedDict")
     return False
@@ -179,12 +178,7 @@ def _is_bad_value(node: ast.expr) -> bool:
     :return: whether the node is any of the recognised bad shapes
     :rtype: bool
     """
-    return (
-        _is_dict_literal(node)
-        or _is_dict_call(node)
-        or _is_ordered_dict_call(node)
-        or _is_dict_or_fallback(node)
-    )
+    return _is_dict_literal(node) or _is_dict_call(node) or _is_ordered_dict_call(node) or _is_dict_or_fallback(node)
 
 
 def _get_self_attr_name(target: ast.expr) -> str | None:
@@ -342,7 +336,8 @@ def _scan_module(
             continue
         for child in node.body:
             if not isinstance(
-                child, (ast.FunctionDef, ast.AsyncFunctionDef),
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
             ):
                 continue
             if child.name != "__init__":
@@ -474,27 +469,31 @@ def find_stale_allowlist_entries(
     :rtype: list[Violation]
     """
     real = find_dict_state_violations(src_roots, repo_root)
-    real_keys: set[tuple[str, int, str]] = {
-        (relative_posix_path(v.file, repo_root), v.line, v.symbol)
-        for v in real
-    }
+    real_keys: set[tuple[str, int, str]] = {(relative_posix_path(v.file, repo_root), v.line, v.symbol) for v in real}
 
     stale: list[Violation] = []
     for entry in allowlist:
         if (entry.file, entry.line, entry.attr_name) in real_keys:
             continue
-        stale.append(_stale_violation(
-            entry, repo_root, _STALE_ALLOWLIST_CATEGORY, "allowlist",
-        ))
+        stale.append(
+            _stale_violation(
+                entry,
+                repo_root,
+                _STALE_ALLOWLIST_CATEGORY,
+                "allowlist",
+            )
+        )
     for entry in known_violations:
         if (entry.file, entry.line, entry.attr_name) in real_keys:
             continue
-        stale.append(_stale_violation(
-            entry,
-            repo_root,
-            _STALE_KNOWN_VIOLATION_CATEGORY,
-            "known_violations",
-        ))
+        stale.append(
+            _stale_violation(
+                entry,
+                repo_root,
+                _STALE_KNOWN_VIOLATION_CATEGORY,
+                "known_violations",
+            )
+        )
     return stale
 
 

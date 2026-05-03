@@ -28,8 +28,7 @@ class TestParseWellFormed:
     def test_simple_entry(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "src/pkg/mod.py:42:_helper\n",
+            f"# rationale: {VALID_RATIONALE}\nsrc/pkg/mod.py:42:_helper\n",
         )
         entries = parse_exemptions_with_rationale(path)
         assert len(entries) == 1
@@ -42,10 +41,7 @@ class TestParseWellFormed:
     def test_multiple_entries(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "a.py:1:_a\n"
-            f"# rationale: {VALID_RATIONALE} two\n"
-            "b.py:2:_b\n",
+            f"# rationale: {VALID_RATIONALE}\na.py:1:_a\n# rationale: {VALID_RATIONALE} two\nb.py:2:_b\n",
         )
         entries = parse_exemptions_with_rationale(path)
         assert [e.symbol for e in entries] == ["_a", "_b"]
@@ -53,10 +49,7 @@ class TestParseWellFormed:
     def test_blank_lines_ignored(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            "\n\n"
-            f"# rationale: {VALID_RATIONALE}\n"
-            "\n"
-            "a.py:1:_a\n",
+            f"\n\n# rationale: {VALID_RATIONALE}\n\na.py:1:_a\n",
         )
         entries = parse_exemptions_with_rationale(path)
         assert len(entries) == 1
@@ -64,10 +57,7 @@ class TestParseWellFormed:
     def test_non_rationale_comments_pass_through(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            "# header note about this file\n"
-            "# another comment line\n"
-            f"# rationale: {VALID_RATIONALE}\n"
-            "a.py:1:_a\n",
+            f"# header note about this file\n# another comment line\n# rationale: {VALID_RATIONALE}\na.py:1:_a\n",
         )
         entries = parse_exemptions_with_rationale(path)
         assert len(entries) == 1
@@ -75,8 +65,7 @@ class TestParseWellFormed:
     def test_star_line_means_zero(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "any/file.py:*:_helper\n",
+            f"# rationale: {VALID_RATIONALE}\nany/file.py:*:_helper\n",
         )
         entries = parse_exemptions_with_rationale(path)
         assert entries[0].line == 0
@@ -96,8 +85,7 @@ class TestParseRejects:
     def test_too_short_rationale_raises(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            "# rationale: short\n"
-            "a.py:1:_x\n",
+            "# rationale: short\na.py:1:_x\n",
         )
         with pytest.raises(ExemptionError, match="at least"):
             parse_exemptions_with_rationale(path)
@@ -108,8 +96,7 @@ class TestParseRejects:
         assert len(rationale) >= 30
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {rationale}\n"
-            "a.py:1:_x\n",
+            f"# rationale: {rationale}\na.py:1:_x\n",
         )
         with pytest.raises(ExemptionError, match="blanket phrase"):
             parse_exemptions_with_rationale(path)
@@ -120,8 +107,7 @@ class TestParseRejects:
         assert len(rationale) >= 30
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {rationale}\n"
-            "a.py:1:_x\n",
+            f"# rationale: {rationale}\na.py:1:_x\n",
         )
         with pytest.raises(ExemptionError, match="blanket phrase"):
             parse_exemptions_with_rationale(path)
@@ -129,8 +115,7 @@ class TestParseRejects:
     def test_malformed_entry_raises(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "not-a-valid-entry\n",
+            f"# rationale: {VALID_RATIONALE}\nnot-a-valid-entry\n",
         )
         with pytest.raises(ExemptionError, match="malformed"):
             parse_exemptions_with_rationale(path)
@@ -138,8 +123,7 @@ class TestParseRejects:
     def test_non_int_line_raises(self, tmp_path: Path) -> None:
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "a.py:notnumber:_x\n",
+            f"# rationale: {VALID_RATIONALE}\na.py:notnumber:_x\n",
         )
         with pytest.raises(ExemptionError, match="must be an integer"):
             parse_exemptions_with_rationale(path)
@@ -148,8 +132,7 @@ class TestParseRejects:
         # the ``*`` form is the canonical "any line"; literal 0 must be rejected
         path = _write(
             tmp_path / "ex.txt",
-            f"# rationale: {VALID_RATIONALE}\n"
-            "a.py:0:_x\n",
+            f"# rationale: {VALID_RATIONALE}\na.py:0:_x\n",
         )
         with pytest.raises(ExemptionError, match="must be positive"):
             parse_exemptions_with_rationale(path)
@@ -192,10 +175,7 @@ class TestApplyExemptions:
         repo = tmp_path
         f = repo / "a.py"
         f.write_text("")
-        violations = [
-            Violation(category="c", file=f, line=i, symbol=f"_v{i}", reason="r")
-            for i in range(5)
-        ]
+        violations = [Violation(category="c", file=f, line=i, symbol=f"_v{i}", reason="r") for i in range(5)]
         result = apply_exemptions(violations, [], repo)
         assert [v.line for v in result] == [0, 1, 2, 3, 4]
 

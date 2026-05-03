@@ -46,7 +46,8 @@ _CATEGORY = "coercion_coverage.run_override"
 
 
 def base_looks_toolish(
-    node: ast.expr, base_class_suffixes: frozenset[str],
+    node: ast.expr,
+    base_class_suffixes: frozenset[str],
 ) -> bool:
     """return True when a base-class expression names a Tool-ish class.
 
@@ -115,14 +116,12 @@ def find_run_overrides(
             for node in tree.body:
                 if not isinstance(node, ast.ClassDef):
                     continue
-                if not any(
-                    base_looks_toolish(b, base_class_suffixes)
-                    for b in node.bases
-                ):
+                if not any(base_looks_toolish(b, base_class_suffixes) for b in node.bases):
                     continue
                 for member in node.body:
                     if not isinstance(
-                        member, (ast.FunctionDef, ast.AsyncFunctionDef),
+                        member,
+                        (ast.FunctionDef, ast.AsyncFunctionDef),
                     ):
                         continue
                     if member.name != "run":

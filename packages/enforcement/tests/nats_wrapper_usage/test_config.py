@@ -41,19 +41,22 @@ class TestOverrides:
     def test_explicit_exemptions_path(self, tmp_path: Path) -> None:
         ex = tmp_path / "_nats_exemptions.txt"
         config = NatsWrapperConfig(
-            repo_root=tmp_path, exemptions_path=ex,
+            repo_root=tmp_path,
+            exemptions_path=ex,
         )
         assert config.exemptions_path == ex
 
     def test_explicit_mode_env_var(self, tmp_path: Path) -> None:
         config = NatsWrapperConfig(
-            repo_root=tmp_path, mode_env_var="MY_MODE",
+            repo_root=tmp_path,
+            mode_env_var="MY_MODE",
         )
         assert config.mode_env_var == "MY_MODE"
 
     def test_explicit_forbidden_module(self, tmp_path: Path) -> None:
         config = NatsWrapperConfig(
-            repo_root=tmp_path, forbidden_module="kafka",
+            repo_root=tmp_path,
+            forbidden_module="kafka",
         )
         assert config.forbidden_module == "kafka"
 

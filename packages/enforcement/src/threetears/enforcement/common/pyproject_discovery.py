@@ -58,9 +58,7 @@ def discover_src_roots(repo_root: Path) -> tuple[Path, ...]:
         a path-dep target whose own ``pyproject.toml`` did not exist
     """
     if sys.version_info < (3, 11):
-        raise PyprojectError(
-            "discover_src_roots requires Python 3.11+ (tomllib stdlib)"
-        )
+        raise PyprojectError("discover_src_roots requires Python 3.11+ (tomllib stdlib)")
     visited: set[Path] = set()
     roots: set[Path] = set()
     _visit(repo_root.resolve(), visited, roots)
@@ -116,7 +114,9 @@ def _load_toml(path: Path) -> dict[str, Any]:
 
 
 def _collect_path_deps(
-    target: Path, data: dict[str, Any], pyproject_path: Path,
+    target: Path,
+    data: dict[str, Any],
+    pyproject_path: Path,
 ) -> list[Path]:
     """resolve every path-dep target referenced by ``data`` to an absolute path.
 
@@ -140,17 +140,15 @@ def _collect_path_deps(
     workspace_members = _resolve_uv_workspace_members(target, data, pyproject_path)
     deps.extend(workspace_members)
 
-    deps.extend(
-        _resolve_poetry_path_deps(target, data, pyproject_path)
-    )
-    deps.extend(
-        _resolve_uv_sources(target, data, pyproject_path, workspace_members)
-    )
+    deps.extend(_resolve_poetry_path_deps(target, data, pyproject_path))
+    deps.extend(_resolve_uv_sources(target, data, pyproject_path, workspace_members))
     return deps
 
 
 def _resolve_uv_workspace_members(
-    target: Path, data: dict[str, Any], pyproject_path: Path,
+    target: Path,
+    data: dict[str, Any],
+    pyproject_path: Path,
 ) -> list[Path]:
     """expand ``[tool.uv.workspace] members = [...]`` globs to absolute paths.
 
@@ -172,16 +170,12 @@ def _resolve_uv_workspace_members(
     if workspace is None:
         return []
     if not isinstance(workspace, dict):
-        raise PyprojectError(
-            f"{pyproject_path}: [tool.uv.workspace] must be a table, got {type(workspace).__name__}"
-        )
+        raise PyprojectError(f"{pyproject_path}: [tool.uv.workspace] must be a table, got {type(workspace).__name__}")
     members = workspace.get("members")
     if members is None:
         return []
     if not isinstance(members, list):
-        raise PyprojectError(
-            f"{pyproject_path}: [tool.uv.workspace].members must be a list of strings"
-        )
+        raise PyprojectError(f"{pyproject_path}: [tool.uv.workspace].members must be a list of strings")
     resolved: list[Path] = []
     seen: set[Path] = set()
     for entry in members:
@@ -201,7 +195,9 @@ def _resolve_uv_workspace_members(
 
 
 def _resolve_poetry_path_deps(
-    target: Path, data: dict[str, Any], pyproject_path: Path,
+    target: Path,
+    data: dict[str, Any],
+    pyproject_path: Path,
 ) -> list[Path]:
     """resolve every ``{path = "..."}`` dep under ``[tool.poetry.*]``.
 
@@ -224,9 +220,7 @@ def _resolve_poetry_path_deps(
     if poetry is None:
         return []
     if not isinstance(poetry, dict):
-        raise PyprojectError(
-            f"{pyproject_path}: [tool.poetry] must be a table, got {type(poetry).__name__}"
-        )
+        raise PyprojectError(f"{pyproject_path}: [tool.poetry] must be a table, got {type(poetry).__name__}")
     resolved: list[Path] = []
     deps_tables: list[tuple[str, Any]] = []
     if "dependencies" in poetry:
@@ -234,24 +228,16 @@ def _resolve_poetry_path_deps(
     groups = poetry.get("group")
     if groups is not None:
         if not isinstance(groups, dict):
-            raise PyprojectError(
-                f"{pyproject_path}: [tool.poetry.group] must be a table"
-            )
+            raise PyprojectError(f"{pyproject_path}: [tool.poetry.group] must be a table")
         for group_name, group_data in groups.items():
             if not isinstance(group_data, dict):
-                raise PyprojectError(
-                    f"{pyproject_path}: [tool.poetry.group.{group_name}] must be a table"
-                )
+                raise PyprojectError(f"{pyproject_path}: [tool.poetry.group.{group_name}] must be a table")
             sub_deps = group_data.get("dependencies")
             if sub_deps is not None:
-                deps_tables.append(
-                    (f"group.{group_name}.dependencies", sub_deps)
-                )
+                deps_tables.append((f"group.{group_name}.dependencies", sub_deps))
     for label, deps in deps_tables:
         if not isinstance(deps, dict):
-            raise PyprojectError(
-                f"{pyproject_path}: [tool.poetry.{label}] must be a table"
-            )
+            raise PyprojectError(f"{pyproject_path}: [tool.poetry.{label}] must be a table")
         for name, value in deps.items():
             if not isinstance(value, dict):
                 continue
@@ -259,9 +245,7 @@ def _resolve_poetry_path_deps(
             if path_value is None:
                 continue
             if not isinstance(path_value, str):
-                raise PyprojectError(
-                    f"{pyproject_path}: [tool.poetry.{label}].{name}.path must be a string"
-                )
+                raise PyprojectError(f"{pyproject_path}: [tool.poetry.{label}].{name}.path must be a string")
             candidate = (target / path_value).resolve()
             resolved.append(candidate)
     return resolved
@@ -312,9 +296,7 @@ def _resolve_uv_sources(
     if sources is None:
         return []
     if not isinstance(sources, dict):
-        raise PyprojectError(
-            f"{pyproject_path}: [tool.uv.sources] must be a table"
-        )
+        raise PyprojectError(f"{pyproject_path}: [tool.uv.sources] must be a table")
     resolved: list[Path] = []
     enclosing_members: list[Path] | None = None
     for name, value in sources.items():
@@ -326,9 +308,7 @@ def _resolve_uv_sources(
         workspace_flag = value.get("workspace")
         if path_value is not None:
             if not isinstance(path_value, str):
-                raise PyprojectError(
-                    f"{pyproject_path}: [tool.uv.sources].{name}.path must be a string"
-                )
+                raise PyprojectError(f"{pyproject_path}: [tool.uv.sources].{name}.path must be a string")
             resolved.append((target / path_value).resolve())
             continue
         if workspace_flag is True:

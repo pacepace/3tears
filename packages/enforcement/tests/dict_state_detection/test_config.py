@@ -14,10 +14,7 @@ from threetears.enforcement.dict_state_detection import (
 )
 
 
-_VALID_RATIONALE = (
-    "live LangChain ChatModel instances; non-serializable, "
-    "process-local by design"
-)
+_VALID_RATIONALE = "live LangChain ChatModel instances; non-serializable, process-local by design"
 
 
 class TestDictStateConfigDefaults:
@@ -45,13 +42,15 @@ class TestDictStateConfigOverrides:
     def test_explicit_exemptions_path(self, tmp_path: Path) -> None:
         ex = tmp_path / "_dict_state_exemptions.txt"
         config = DictStateConfig(
-            repo_root=tmp_path, exemptions_path=ex,
+            repo_root=tmp_path,
+            exemptions_path=ex,
         )
         assert config.exemptions_path == ex
 
     def test_explicit_mode_env_var(self, tmp_path: Path) -> None:
         config = DictStateConfig(
-            repo_root=tmp_path, mode_env_var="MY_MODE",
+            repo_root=tmp_path,
+            mode_env_var="MY_MODE",
         )
         assert config.mode_env_var == "MY_MODE"
 
@@ -63,7 +62,8 @@ class TestDictStateConfigOverrides:
             rationale=_VALID_RATIONALE,
         )
         config = DictStateConfig(
-            repo_root=tmp_path, allowlist=(entry,),
+            repo_root=tmp_path,
+            allowlist=(entry,),
         )
         assert config.allowlist == (entry,)
 
@@ -75,7 +75,8 @@ class TestDictStateConfigOverrides:
             rationale=_VALID_RATIONALE,
         )
         config = DictStateConfig(
-            repo_root=tmp_path, known_violations=(entry,),
+            repo_root=tmp_path,
+            known_violations=(entry,),
         )
         assert config.known_violations == (entry,)
 

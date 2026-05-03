@@ -249,7 +249,9 @@ def find_wrapper_classes(
                 if not isinstance(node, ast.ClassDef):
                     continue
                 if transitively_subclasses_any(
-                    node.name, base_collection_names, base_graph,
+                    node.name,
+                    base_collection_names,
+                    base_graph,
                 ):
                     continue
                 sqlite_attrs = _class_sqlite_attr_names(node)
@@ -257,7 +259,8 @@ def find_wrapper_classes(
                     continue
                 methods = _class_cache_methods(node, cache_method_names)
                 data_api_calls = _class_calls_sqlite_data_api(
-                    node, sqlite_attrs,
+                    node,
+                    sqlite_attrs,
                 )
                 if not methods and not data_api_calls:
                     continue
@@ -288,12 +291,14 @@ def find_wrapper_classes(
     return violations
 
 
-_SQLITE_DATA_API_METHODS: frozenset[str] = frozenset({
-    "upsert",
-    "select_by_id",
-    "delete_by_id",
-    "execute_query",
-})
+_SQLITE_DATA_API_METHODS: frozenset[str] = frozenset(
+    {
+        "upsert",
+        "select_by_id",
+        "delete_by_id",
+        "execute_query",
+    }
+)
 
 
 def _annotation_names_sqlite_backend(ann: ast.AST | None) -> bool:
@@ -319,15 +324,9 @@ def _annotation_names_sqlite_backend(ann: ast.AST | None) -> bool:
     if isinstance(ann, ast.Attribute):
         return ann.attr == "SQLiteBackend"
     if isinstance(ann, ast.BinOp):
-        return (
-            _annotation_names_sqlite_backend(ann.left)
-            or _annotation_names_sqlite_backend(ann.right)
-        )
+        return _annotation_names_sqlite_backend(ann.left) or _annotation_names_sqlite_backend(ann.right)
     if isinstance(ann, ast.Subscript):
-        return (
-            _annotation_names_sqlite_backend(ann.value)
-            or _annotation_names_sqlite_backend(ann.slice)
-        )
+        return _annotation_names_sqlite_backend(ann.value) or _annotation_names_sqlite_backend(ann.slice)
     if isinstance(ann, ast.Tuple):
         return any(_annotation_names_sqlite_backend(elt) for elt in ann.elts)
     return False
@@ -386,33 +385,22 @@ def _class_sqlite_attr_names(cls: ast.ClassDef) -> frozenset[str]:
                 rhs_is_sqlite_call = False
                 if isinstance(rhs, ast.Call):
                     func = rhs.func
-                    if (
-                        isinstance(func, ast.Name)
-                        and func.id == "SQLiteBackend"
-                    ):
+                    if isinstance(func, ast.Name) and func.id == "SQLiteBackend":
                         rhs_is_sqlite_call = True
-                    if (
-                        isinstance(func, ast.Attribute)
-                        and func.attr == "SQLiteBackend"
-                    ):
+                    if isinstance(func, ast.Attribute) and func.attr == "SQLiteBackend":
                         rhs_is_sqlite_call = True
-                rhs_is_sqlite_param = (
-                    isinstance(rhs, ast.Name) and rhs.id in sqlite_params
-                )
+                rhs_is_sqlite_param = isinstance(rhs, ast.Name) and rhs.id in sqlite_params
                 if not (rhs_is_sqlite_call or rhs_is_sqlite_param):
                     continue
                 for tgt in sub.targets:
-                    if (
-                        isinstance(tgt, ast.Attribute)
-                        and isinstance(tgt.value, ast.Name)
-                        and tgt.value.id == "self"
-                    ):
+                    if isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name) and tgt.value.id == "self":
                         names.add(tgt.attr)
     return frozenset(names)
 
 
 def _class_cache_methods(
-    cls: ast.ClassDef, cache_method_names: frozenset[str],
+    cls: ast.ClassDef,
+    cache_method_names: frozenset[str],
 ) -> list[str]:
     """return public methods on ``cls`` whose name is in ``cache_method_names``.
 
@@ -439,7 +427,8 @@ def _class_cache_methods(
 
 
 def _class_calls_sqlite_data_api(
-    cls: ast.ClassDef, sqlite_attrs: frozenset[str],
+    cls: ast.ClassDef,
+    sqlite_attrs: frozenset[str],
 ) -> list[str]:
     """return data-api method names called on a stored :class:`SQLiteBackend`.
 
@@ -492,10 +481,7 @@ def _class_calls_sqlite_data_api(
                 and receiver.value.id == "self"
                 and receiver.attr in sqlite_attrs
             )
-            receiver_is_local_bind = (
-                isinstance(receiver, ast.Name)
-                and receiver.id in local_binds
-            )
+            receiver_is_local_bind = isinstance(receiver, ast.Name) and receiver.id in local_binds
             if receiver_is_self_attr or receiver_is_local_bind:
                 hits.add(func.attr)
     return sorted(hits)
@@ -506,9 +492,15 @@ def _class_calls_sqlite_data_api(
 # ----------------------------------------------------------------------
 
 
-_POOL_METHOD_NAMES: frozenset[str] = frozenset({
-    "fetch", "fetchrow", "fetchval", "execute", "executemany",
-})
+_POOL_METHOD_NAMES: frozenset[str] = frozenset(
+    {
+        "fetch",
+        "fetchrow",
+        "fetchval",
+        "execute",
+        "executemany",
+    }
+)
 
 
 _SQL_TARGET_RE = re.compile(
@@ -595,10 +587,7 @@ def find_direct_pool_access(
                 if _has_bypass_comment(raw_lines, node.lineno):
                     continue
                 enclosing = _enclosing_class(node, parents)
-                if (
-                    enclosing is not None
-                    and enclosing.name in collection_names
-                ):
+                if enclosing is not None and enclosing.name in collection_names:
                     continue
                 for table in sorted(hits):
                     violations.append(
@@ -663,9 +652,7 @@ def _extract_sql_tables(call_node: ast.Call) -> set[str]:
         text = "".join(parts)
     if text is None:
         return set()
-    return {
-        match.group(1).lower() for match in _SQL_TARGET_RE.finditer(text)
-    }
+    return {match.group(1).lower() for match in _SQL_TARGET_RE.finditer(text)}
 
 
 def _has_bypass_comment(raw_lines: list[str], lineno: int) -> bool:
@@ -702,7 +689,8 @@ def _build_parent_map(module: ast.Module) -> dict[int, ast.AST]:
 
 
 def _enclosing_class(
-    node: ast.AST, parents: dict[int, ast.AST],
+    node: ast.AST,
+    parents: dict[int, ast.AST],
 ) -> ast.ClassDef | None:
     """return the innermost enclosing :class:`ast.ClassDef`, or ``None``.
 
@@ -850,7 +838,9 @@ def find_missing_collections(
                         )
                         continue
                     if not _class_is_collection(
-                        expected, base_collection_names, base_graph,
+                        expected,
+                        base_collection_names,
+                        base_graph,
                     ):
                         violations.append(
                             Violation(
@@ -897,7 +887,9 @@ def _class_is_collection(
     if class_name not in base_graph:
         return False
     return transitively_subclasses_any(
-        class_name, base_collection_names, base_graph,
+        class_name,
+        base_collection_names,
+        base_graph,
     )
 
 
@@ -938,10 +930,7 @@ def _extract_sql_strings(tree: ast.Module) -> list[tuple[int, str]]:
         elif isinstance(node, ast.JoinedStr):
             parts: list[str] = []
             for piece in node.values:
-                if (
-                    isinstance(piece, ast.Constant)
-                    and isinstance(piece.value, str)
-                ):
+                if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
                     parts.append(piece.value)
             if parts:
                 result.append((node.lineno, "".join(parts)))

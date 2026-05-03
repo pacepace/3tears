@@ -54,22 +54,22 @@ class Exemption:
     rationale: str
 
 
-_ENTRY_RE = re.compile(
-    r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$"
-)
+_ENTRY_RE = re.compile(r"^(?P<file>[^\s:][^:]*):(?P<line>[^:]+):(?P<symbol>[A-Za-z_][A-Za-z_0-9]*)\s*$")
 
 _MIN_RATIONALE_LENGTH = 30
 
-_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset({
-    "internal access",
-    "tests need this",
-    "temporary",
-    "todo",
-    "fixme",
-    "needed",
-    "required",
-    "necessary",
-})
+_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset(
+    {
+        "internal access",
+        "tests need this",
+        "temporary",
+        "todo",
+        "fixme",
+        "needed",
+        "required",
+        "necessary",
+    }
+)
 
 
 def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
@@ -113,21 +113,15 @@ def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
         if line.startswith("#"):
             stripped = line.lstrip("#").strip()
             if stripped.lower().startswith("rationale:"):
-                rationale = stripped[len("rationale:"):].strip()
+                rationale = stripped[len("rationale:") :].strip()
                 _validate_rationale(rationale, path, lineno)
                 pending = rationale
             continue
         match = _ENTRY_RE.match(line)
         if match is None:
-            raise ExemptionError(
-                f"{path}:{lineno}: malformed entry; expected "
-                f"'file:line:symbol' triple, got {line!r}"
-            )
+            raise ExemptionError(f"{path}:{lineno}: malformed entry; expected 'file:line:symbol' triple, got {line!r}")
         if pending is None:
-            raise ExemptionError(
-                f"{path}:{lineno}: entry has no preceding "
-                f"'# rationale: ...' line"
-            )
+            raise ExemptionError(f"{path}:{lineno}: entry has no preceding '# rationale: ...' line")
         line_field = match.group("line")
         if line_field == "*":
             line_int = 0
@@ -136,14 +130,10 @@ def parse_exemptions_with_rationale(path: Path) -> list[Exemption]:
                 line_int = int(line_field)
             except ValueError as exc:
                 raise ExemptionError(
-                    f"{path}:{lineno}: line number must be an integer "
-                    f"or '*', got {line_field!r}"
+                    f"{path}:{lineno}: line number must be an integer or '*', got {line_field!r}"
                 ) from exc
             if line_int < 1:
-                raise ExemptionError(
-                    f"{path}:{lineno}: line number must be positive, "
-                    f"got {line_int}"
-                )
+                raise ExemptionError(f"{path}:{lineno}: line number must be positive, got {line_int}")
         entries.append(
             Exemption(
                 file=match.group("file"),
@@ -168,10 +158,7 @@ def _validate_rationale(rationale: str, path: Path, lineno: int) -> None:
     :raises ExemptionError: rationale fails any of the contract checks
     """
     if not rationale:
-        raise ExemptionError(
-            f"{path}:{lineno}: '# rationale:' must be followed by a "
-            f"non-empty reason"
-        )
+        raise ExemptionError(f"{path}:{lineno}: '# rationale:' must be followed by a non-empty reason")
     if len(rationale) < _MIN_RATIONALE_LENGTH:
         raise ExemptionError(
             f"{path}:{lineno}: rationale must be at least "

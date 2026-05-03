@@ -65,9 +65,7 @@ def _make_consumer_with_path_dep(
     lib_root = tmp_path / "lib"
     lib_src = lib_root / "src"
     lib_root.mkdir(parents=True)
-    (lib_root / "pyproject.toml").write_text(
-        '[project]\nname = "synthetic-lib"\nversion = "0"\n'
-    )
+    (lib_root / "pyproject.toml").write_text('[project]\nname = "synthetic-lib"\nversion = "0"\n')
     _write(lib_src / "lib_pkg" / "__init__.py", "")
     _write(
         lib_src / "lib_pkg" / "_internals.py",
@@ -75,11 +73,7 @@ def _make_consumer_with_path_dep(
     )
     _write(
         lib_src / "lib_pkg" / "base.py",
-        (
-            "class LibBase:\n"
-            "    def _internal(self):\n"
-            "        return 1\n"
-        ),
+        ("class LibBase:\n    def _internal(self):\n        return 1\n"),
     )
     # different top-level package so a private import from this
     # module is a shape-A violation across (lib_pkg, sibling_pkg)
@@ -124,7 +118,8 @@ def _make_consumer_with_path_dep(
 
 class TestArchitectureFix:
     def test_scan_roots_scopes_violations_to_local_only(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """sibling-package code never appears in violations even when
         the inheritance graph spans both packages."""
@@ -135,7 +130,9 @@ class TestArchitectureFix:
         # the consumer has no shape-A violations of its own; the lib's
         # ``sibling_pkg/consumer.py`` does, but it must NOT be reported.
         a = shape_a_violations(
-            (consumer_src,), consumer_root, (consumer_src, lib_src),
+            (consumer_src,),
+            consumer_root,
+            (consumer_src, lib_src),
         )
         assert a == []
 
@@ -145,12 +142,15 @@ class TestArchitectureFix:
         # spurious violation is produced AND that the inventory still
         # crosses package boundaries.)
         d = shape_d_violations(
-            (consumer_src,), consumer_root, (consumer_src, lib_src),
+            (consumer_src,),
+            consumer_root,
+            (consumer_src, lib_src),
         )
         assert d == []
 
     def test_inheritance_roots_default_walks_path_deps(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``inheritance_roots=None`` defaults to discover_src_roots,
         which is path-dep aware."""
@@ -163,7 +163,9 @@ class TestArchitectureFix:
         assert lib_src.resolve() in resolved
 
     def test_explicit_scan_and_inheritance_roots_independent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """end-to-end via the runner: scan_roots and inheritance_roots
         govern independent scopes; sibling-internal violations stay

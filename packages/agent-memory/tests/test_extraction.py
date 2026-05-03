@@ -82,7 +82,7 @@ class StubChatModelFactory:
 
 
 class StubEmbeddingProvider:
-    """Embedding provider that returns a fixed vector."""
+    """Stub LangChain ``Embeddings`` returning a fixed vector."""
 
     def __init__(
         self,
@@ -92,10 +92,27 @@ class StubEmbeddingProvider:
         self._embedding = embedding or [1.0, 0.0, 0.0]
         self._fail = fail
 
-    async def embed_text(self, text: str) -> tuple[list[float] | None, int]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if self._fail:
-            return None, 0
-        return self._embedding, 10
+            return [[] for _ in texts]
+        return [self._embedding for _ in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        _ = text
+        if self._fail:
+            return []
+        return self._embedding
+
+    async def aembed_query(self, text: str) -> list[float]:
+        _ = text
+        if self._fail:
+            raise RuntimeError("embedding service down")
+        return self._embedding
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        if self._fail:
+            raise RuntimeError("embedding service down")
+        return [self._embedding for _ in texts]
 
     @property
     def dimensions(self) -> int:

@@ -50,17 +50,20 @@ from threetears.enforcement.codebase_conventions.walkers import (
 __all__ = ["run_codebase_conventions_enforcement"]
 
 
-_VALID_WALKERS: frozenset[str] = frozenset({
-    "print",
-    "stdlib_getlogger",
-    "future_annotations",
-    "return_type",
-    "all",
-})
+_VALID_WALKERS: frozenset[str] = frozenset(
+    {
+        "print",
+        "stdlib_getlogger",
+        "future_annotations",
+        "return_type",
+        "all",
+    }
+)
 
 
 def run_codebase_conventions_enforcement(
-    config: CodebaseConventionsConfig, walker: str = "all",
+    config: CodebaseConventionsConfig,
+    walker: str = "all",
 ) -> None:
     """run the configured walker(s), apply exemptions, fail if strict.
 
@@ -101,9 +104,7 @@ def run_codebase_conventions_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
     violations = _run_walkers(config, walker, src_roots)
@@ -125,10 +126,7 @@ def run_codebase_conventions_enforcement(
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"codebase-conventions enforcement found {len(filtered)} "
-            f"violation(s):\n{report}"
-        )
+        pytest.fail(f"codebase-conventions enforcement found {len(filtered)} violation(s):\n{report}")
 
 
 def _resolve_src_roots(

@@ -33,11 +33,13 @@ from pathlib import Path
 __all__ = ["UnderscoreAccessConfig"]
 
 
-_DEFAULT_SKIP_BASENAMES: frozenset[str] = frozenset({
-    "conftest.py",
-    "__main__.py",
-    "_version.py",
-})
+_DEFAULT_SKIP_BASENAMES: frozenset[str] = frozenset(
+    {
+        "conftest.py",
+        "__main__.py",
+        "_version.py",
+    }
+)
 
 
 @dataclass(frozen=True)

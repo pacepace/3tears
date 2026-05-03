@@ -12,10 +12,7 @@ from threetears.enforcement.dict_state_detection import (
 )
 
 
-_VALID_RATIONALE = (
-    "live LangChain ChatModel instances; non-serializable, "
-    "process-local by design"
-)
+_VALID_RATIONALE = "live LangChain ChatModel instances; non-serializable, process-local by design"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -102,11 +99,7 @@ class TestOrFallbackDetection:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self, opts=None) -> None:\n"
-                "        self._opts = opts or {}\n"
-            ),
+            ("class Foo:\n    def __init__(self, opts=None) -> None:\n        self._opts = opts or {}\n"),
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
@@ -114,34 +107,28 @@ class TestOrFallbackDetection:
         assert "fallback" in violations[0].reason
 
     def test_or_with_non_dict_fallback_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self, opts=None) -> None:\n"
-                "        self._opts = opts or None\n"
-            ),
+            ("class Foo:\n    def __init__(self, opts=None) -> None:\n        self._opts = opts or None\n"),
         )
         assert find_dict_state_violations((src,), repo) == []
 
 
 class TestAnnotatedDetection:
     def test_dict_typed_annotation_with_empty_value(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self) -> None:\n"
-                "        self._cache: dict[str, int] = {}\n"
-            ),
+            ("class Foo:\n    def __init__(self) -> None:\n        self._cache: dict[str, int] = {}\n"),
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
@@ -149,24 +136,22 @@ class TestAnnotatedDetection:
         assert "annotated empty-dict literal" in violations[0].reason
 
     def test_bare_dict_annotation_with_empty_value(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self) -> None:\n"
-                "        self._cache: dict = {}\n"
-            ),
+            ("class Foo:\n    def __init__(self) -> None:\n        self._cache: dict = {}\n"),
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
         assert violations[0].symbol == "_cache"
 
     def test_dict_annotation_with_clean_value_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # annotation + clean value is fine.
         repo = _make_repo(tmp_path / "repo")
@@ -208,18 +193,14 @@ class TestNegatives:
         assert find_dict_state_violations((src,), repo) == []
 
     def test_other_class_construction_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Backend: pass\n"
-                "class Foo:\n"
-                "    def __init__(self) -> None:\n"
-                "        self._backend = Backend()\n"
-            ),
+            ("class Backend: pass\nclass Foo:\n    def __init__(self) -> None:\n        self._backend = Backend()\n"),
         )
         assert find_dict_state_violations((src,), repo) == []
 
@@ -238,7 +219,8 @@ class TestNegatives:
         assert find_dict_state_violations((src,), repo) == []
 
     def test_assignment_outside_init_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -255,7 +237,8 @@ class TestNegatives:
         assert find_dict_state_violations((src,), repo) == []
 
     def test_module_level_assignment_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -263,24 +246,21 @@ class TestNegatives:
         assert find_dict_state_violations((src,), repo) == []
 
     def test_local_assignment_in_init_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # only self._x flagged; locals are ignored.
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self) -> None:\n"
-                "        local = {}\n"
-                "        self.x = local\n"
-            ),
+            ("class Foo:\n    def __init__(self) -> None:\n        local = {}\n        self.x = local\n"),
         )
         assert find_dict_state_violations((src,), repo) == []
 
     def test_public_self_attribute_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         # walker only flags self._x (single underscore prefix).
         repo = _make_repo(tmp_path / "repo")
@@ -292,17 +272,14 @@ class TestNegatives:
         assert find_dict_state_violations((src,), repo) == []
 
     def test_other_object_attribute_not_flagged(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self, other) -> None:\n"
-                "        other._cache = {}\n"
-            ),
+            ("class Foo:\n    def __init__(self, other) -> None:\n        other._cache = {}\n"),
         )
         assert find_dict_state_violations((src,), repo) == []
 
@@ -312,11 +289,7 @@ class TestNegatives:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    async def __init__(self) -> None:  # type: ignore[misc]\n"
-                "        self._cache = {}\n"
-            ),
+            ("class Foo:\n    async def __init__(self) -> None:  # type: ignore[misc]\n        self._cache = {}\n"),
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 1
@@ -330,7 +303,8 @@ class TestNegatives:
 
 class TestFilterAgainstAllowlist:
     def test_allowlist_removes_matching_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -347,14 +321,18 @@ class TestFilterAgainstAllowlist:
             rationale=_VALID_RATIONALE,
         )
         true_v, allowed = filter_against_allowlist(
-            violations, (entry,), (), repo,
+            violations,
+            (entry,),
+            (),
+            repo,
         )
         assert true_v == []
         assert len(allowed) == 1
         assert allowed[0].symbol == "_cache"
 
     def test_known_violations_remove_matching_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -370,13 +348,17 @@ class TestFilterAgainstAllowlist:
             rationale=_VALID_RATIONALE,
         )
         true_v, allowed = filter_against_allowlist(
-            violations, (), (entry,), repo,
+            violations,
+            (),
+            (entry,),
+            repo,
         )
         assert true_v == []
         assert len(allowed) == 1
 
     def test_non_matching_allowlist_passes_through(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -393,24 +375,23 @@ class TestFilterAgainstAllowlist:
             rationale=_VALID_RATIONALE,
         )
         true_v, allowed = filter_against_allowlist(
-            violations, (entry,), (), repo,
+            violations,
+            (entry,),
+            (),
+            repo,
         )
         assert len(true_v) == 1
         assert allowed == []
 
     def test_partial_allowlist_filters_only_matching(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            (
-                "class Foo:\n"
-                "    def __init__(self) -> None:\n"
-                "        self._a = {}\n"
-                "        self._b = {}\n"
-            ),
+            ("class Foo:\n    def __init__(self) -> None:\n        self._a = {}\n        self._b = {}\n"),
         )
         violations = find_dict_state_violations((src,), repo)
         assert len(violations) == 2
@@ -421,7 +402,10 @@ class TestFilterAgainstAllowlist:
             rationale=_VALID_RATIONALE,
         )
         true_v, allowed = filter_against_allowlist(
-            violations, (entry,), (), repo,
+            violations,
+            (entry,),
+            (),
+            repo,
         )
         assert len(true_v) == 1
         assert true_v[0].symbol == "_b"
@@ -436,7 +420,8 @@ class TestFilterAgainstAllowlist:
 
 class TestStaleAllowlist:
     def test_stale_allowlist_entry_emits_violation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -452,7 +437,10 @@ class TestStaleAllowlist:
             rationale=_VALID_RATIONALE,
         )
         stale = find_stale_allowlist_entries(
-            (src,), (entry,), (), repo,
+            (src,),
+            (entry,),
+            (),
+            repo,
         )
         assert len(stale) == 1
         v = stale[0]
@@ -462,7 +450,8 @@ class TestStaleAllowlist:
         assert "no longer matches" in v.reason
 
     def test_stale_known_violation_distinct_category(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -477,7 +466,10 @@ class TestStaleAllowlist:
             rationale=_VALID_RATIONALE,
         )
         stale = find_stale_allowlist_entries(
-            (src,), (), (entry,), repo,
+            (src,),
+            (),
+            (entry,),
+            repo,
         )
         assert len(stale) == 1
         v = stale[0]
@@ -518,13 +510,17 @@ class TestStaleAllowlist:
             rationale=_VALID_RATIONALE,
         )
         result = find_stale_allowlist_entries(
-            (src,), (match, stale), (), repo,
+            (src,),
+            (match, stale),
+            (),
+            repo,
         )
         assert len(result) == 1
         assert result[0].symbol == "_phantom"
 
     def test_allowlist_and_known_violations_audited_separately(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -545,7 +541,10 @@ class TestStaleAllowlist:
             rationale=_VALID_RATIONALE,
         )
         result = find_stale_allowlist_entries(
-            (src,), (a,), (b,), repo,
+            (src,),
+            (a,),
+            (b,),
+            repo,
         )
         cats = sorted(v.category for v in result)
         assert cats == [
@@ -584,7 +583,8 @@ class TestMultiRoot:
 
 class TestMultipleInOneInit:
     def test_multiple_violations_in_single_init(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"

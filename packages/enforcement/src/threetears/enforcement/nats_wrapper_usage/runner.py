@@ -57,12 +57,14 @@ _VALID_WALKERS: frozenset[str] = frozenset({"production", "tests", "all"})
 
 _MIN_RATIONALE_LENGTH = 30
 
-_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset({
-    "internal access needed",
-    "tests need access",
-    "tests need this",
-    "same-file colocation",
-})
+_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset(
+    {
+        "internal access needed",
+        "tests need access",
+        "tests need this",
+        "same-file colocation",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,8 @@ class _PathExemption:
 
 
 def run_nats_enforcement(
-    config: NatsWrapperConfig, walker: str = "all",
+    config: NatsWrapperConfig,
+    walker: str = "all",
 ) -> None:
     """run the configured walker(s), emit report, fail if strict.
 
@@ -125,9 +128,7 @@ def run_nats_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
     path_exemptions = _load_path_exemptions(config.exemptions_path)
@@ -135,7 +136,9 @@ def run_nats_enforcement(
 
     violations = _run_walkers(config, walker, src_roots)
     filtered = _apply_path_exemptions(
-        violations, exempt_paths, config.repo_root,
+        violations,
+        exempt_paths,
+        config.repo_root,
     )
 
     mode = resolve_mode(config.mode_env_var, default=MODE_STRICT)
@@ -154,10 +157,7 @@ def run_nats_enforcement(
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"nats-wrapper-usage enforcement found {len(filtered)} "
-            f"violation(s):\n{report}"
-        )
+        pytest.fail(f"nats-wrapper-usage enforcement found {len(filtered)} violation(s):\n{report}")
 
 
 def _resolve_src_roots(config: NatsWrapperConfig) -> tuple[Path, ...]:
@@ -200,13 +200,17 @@ def _run_walkers(
     if walker in {"production", "all"}:
         violations.extend(
             find_direct_nats_imports(
-                src_roots, config.repo_root, config.forbidden_module,
+                src_roots,
+                config.repo_root,
+                config.forbidden_module,
             )
         )
     if walker in {"tests", "all"}:
         violations.extend(
             find_test_nats_imports(
-                config.tests_root, config.repo_root, config.forbidden_module,
+                config.tests_root,
+                config.repo_root,
+                config.forbidden_module,
             )
         )
     return violations
@@ -309,15 +313,12 @@ def _load_path_exemptions(path: Path | None) -> list[_PathExemption]:
         if line.startswith("#"):
             stripped = line.lstrip("#").strip()
             if stripped.lower().startswith("rationale:"):
-                rationale = stripped[len("rationale:"):].strip()
+                rationale = stripped[len("rationale:") :].strip()
                 _validate_rationale(rationale, path, lineno)
                 pending = rationale
             continue
         if pending is None:
-            raise ExemptionError(
-                f"{path}:{lineno}: entry {line!r} has no preceding "
-                f"'# rationale: ...' line"
-            )
+            raise ExemptionError(f"{path}:{lineno}: entry {line!r} has no preceding '# rationale: ...' line")
         entries.append(_PathExemption(path=line, rationale=pending))
         pending = None
     return entries
@@ -341,10 +342,7 @@ def _validate_rationale(rationale: str, path: Path, lineno: int) -> None:
     :raises ExemptionError: rationale fails any of the contract checks
     """
     if not rationale:
-        raise ExemptionError(
-            f"{path}:{lineno}: '# rationale:' must be followed by a "
-            f"non-empty reason"
-        )
+        raise ExemptionError(f"{path}:{lineno}: '# rationale:' must be followed by a non-empty reason")
     if len(rationale) < _MIN_RATIONALE_LENGTH:
         raise ExemptionError(
             f"{path}:{lineno}: rationale must be at least "
@@ -354,8 +352,7 @@ def _validate_rationale(rationale: str, path: Path, lineno: int) -> None:
     lower = rationale.lower()
     if lower in _BLANKET_RATIONALE_PHRASES:
         raise ExemptionError(
-            f"{path}:{lineno}: rationale {rationale!r} matches blanket "
-            f"phrase; rationales must be specific"
+            f"{path}:{lineno}: rationale {rationale!r} matches blanket phrase; rationales must be specific"
         )
 
 
@@ -375,7 +372,4 @@ def _to_common_exemptions(
     :return: adapted entries
     :rtype: list[Exemption]
     """
-    return [
-        Exemption(file=e.path, line=0, symbol="*", rationale=e.rationale)
-        for e in entries
-    ]
+    return [Exemption(file=e.path, line=0, symbol="*", rationale=e.rationale) for e in entries]

@@ -239,11 +239,21 @@ def _scan_module(
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             _scan_import(
-                node, module_path, forbidden_module, category, hint, violations,
+                node,
+                module_path,
+                forbidden_module,
+                category,
+                hint,
+                violations,
             )
         elif isinstance(node, ast.ImportFrom):
             _scan_import_from(
-                node, module_path, forbidden_module, category, hint, violations,
+                node,
+                module_path,
+                forbidden_module,
+                category,
+                hint,
+                violations,
             )
 
 

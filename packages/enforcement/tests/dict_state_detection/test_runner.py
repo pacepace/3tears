@@ -14,10 +14,7 @@ from threetears.enforcement.dict_state_detection import (
 )
 
 
-_VALID_RATIONALE = (
-    "live LangChain ChatModel instances; non-serializable, "
-    "process-local by design"
-)
+_VALID_RATIONALE = "live LangChain ChatModel instances; non-serializable, process-local by design"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -60,7 +57,9 @@ class TestWalkerArgValidation:
             run_dict_state_enforcement(config, walker="bogus")
 
     def test_default_walker_is_all(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -82,7 +81,9 @@ class TestWalkerArgValidation:
 
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("DICT_TEST_MODE", "strict")
@@ -95,7 +96,9 @@ class TestModes:
             run_dict_state_enforcement(config, walker="detect")
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("DICT_TEST_MODE", "report")
@@ -107,7 +110,9 @@ class TestModes:
         run_dict_state_enforcement(config, walker="detect")
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -124,7 +129,9 @@ class TestModes:
         run_dict_state_enforcement(config, walker="detect")
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.delenv("DICT_TEST_MODE", raising=False)
@@ -144,7 +151,9 @@ class TestModes:
 
 class TestWalkerSelection:
     def test_detect_only_skips_stale_check(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -171,7 +180,9 @@ class TestWalkerSelection:
         run_dict_state_enforcement(config, walker="detect")
 
     def test_allowlist_integrity_only_skips_detection(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         # detect violation exists; integrity walker doesn't surface it.
@@ -184,7 +195,9 @@ class TestWalkerSelection:
         run_dict_state_enforcement(config, walker="allowlist_integrity")
 
     def test_all_runs_both_walkers(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -220,7 +233,9 @@ class TestWalkerSelection:
 
 class TestAllowlistIntegration:
     def test_allowlist_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         entry = DictStateAllowlistEntry(
@@ -239,7 +254,9 @@ class TestAllowlistIntegration:
         run_dict_state_enforcement(config, walker="detect")
 
     def test_known_violations_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         entry = DictStateAllowlistEntry(
@@ -258,7 +275,9 @@ class TestAllowlistIntegration:
         run_dict_state_enforcement(config, walker="detect")
 
     def test_stale_allowlist_entry_fails_in_all_walker(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -291,14 +310,14 @@ class TestAllowlistIntegration:
 
 class TestExemptionFile:
     def test_exemption_file_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         ex_path = repo / "_dict_state_exemptions.txt"
         ex_path.write_text(
-            "# rationale: legitimately ephemeral, "
-            "documented in the module docstring\n"
-            "src/pkg/mod.py:3:_cache\n"
+            "# rationale: legitimately ephemeral, documented in the module docstring\nsrc/pkg/mod.py:3:_cache\n"
         )
         monkeypatch.setenv("DICT_TEST_MODE", "strict")
         config = DictStateConfig(
@@ -322,14 +341,12 @@ class TestExemptionFile:
             run_dict_state_enforcement(config, walker="detect")
 
     def test_exemption_blanket_rationale_rejected(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         ex_path = repo / "_dict_state_exemptions.txt"
-        ex_path.write_text(
-            "# rationale: tests need this\n"
-            "src/pkg/mod.py:3:_cache\n"
-        )
+        ex_path.write_text("# rationale: tests need this\nsrc/pkg/mod.py:3:_cache\n")
         config = DictStateConfig(
             repo_root=repo,
             src_roots=(src,),
@@ -346,7 +363,9 @@ class TestExemptionFile:
 
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"

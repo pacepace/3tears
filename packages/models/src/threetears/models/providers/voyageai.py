@@ -1,25 +1,45 @@
-"""voyageai embedding provider adapter wrapping langchain-voyageai."""
+"""VoyageAI embedding factory backed by ``langchain_voyageai``.
+
+LangChain-native shape (3tears v0.6.0+): :func:`create_voyageai_embedding`
+returns a configured ``VoyageAIEmbeddings`` instance, which already
+inherits from :class:`langchain_core.embeddings.Embeddings`. The factory
+applies a Python 3.14 compatibility shim that the upstream voyageai SDK
+needs (see :mod:`._voyageai_compat`).
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from threetears.models.results import EmbeddingResult
+from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.enums import ModelStatus, ModelTier, ModelType
+
+if TYPE_CHECKING:
+    from langchain_voyageai import VoyageAIEmbeddings
 
 __all__ = [
-    "VoyageAIEmbeddingProvider",
+    "VOYAGEAI_PROVIDER_NAME",
+    "create_voyageai_embedding",
 ]
 
-# default embedding dimensions for voyage-3 / voyage-3-lite
-_DEFAULT_EMBEDDING_DIMENSIONS = 1024
+
+VOYAGEAI_PROVIDER_NAME = "voyageai"
 
 
-class VoyageAIEmbeddingProvider:
-    """embedding provider adapter for VoyageAI models via langchain-voyageai.
+def create_voyageai_embedding(
+    api_key: str,
+    *,
+    model_name: str = "voyage-3-lite",
+    base_url: str | None = None,
+    embedding_dimensions: int | None = None,
+    **extra_kwargs: object,
+) -> VoyageAIEmbeddings:
+    """creates a configured ``VoyageAIEmbeddings`` instance.
 
-    wraps VoyageAIEmbeddings with lazy instantiation for single and batch
-    embedding operations. maps standard api_key parameter to voyage_api_key
-    and dimensions to output_dimension as required by VoyageAI SDK.
+    applies the Python 3.14 voyageai compat shim before importing the
+    upstream package so the legacy Pydantic-v1 multimodal models do not
+    explode at import time.
 
     :param api_key: API key for VoyageAI authentication
     :ptype api_key: str
@@ -29,101 +49,58 @@ class VoyageAIEmbeddingProvider:
     :ptype base_url: str | None
     :param embedding_dimensions: optional output vector dimensionality
     :ptype embedding_dimensions: int | None
+    :param extra_kwargs: additional keyword arguments forwarded to ``VoyageAIEmbeddings``
+    :ptype extra_kwargs: object
+    :return: configured ``VoyageAIEmbeddings`` instance
+    :rtype: VoyageAIEmbeddings
     """
+    from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
-    def __init__(
-        self,
-        api_key: str,
-        *,
-        model_name: str = "voyage-3-lite",
-        base_url: str | None = None,
-        embedding_dimensions: int | None = None,
-    ) -> None:
-        self.model_name = model_name
-        self._api_key = api_key
-        self.base_url = base_url
-        self._embedding_dimensions = embedding_dimensions
-        self.model: Any = None
+    apply_voyageai_compat()
 
-    def _get_model(self) -> Any:
-        """lazily creates and caches VoyageAIEmbeddings instance.
+    from langchain_voyageai import VoyageAIEmbeddings
 
-        imports langchain_voyageai on first call to avoid module-level
-        dependency on optional package. maps api_key to voyage_api_key
-        and embedding_dimensions to output_dimension for VoyageAI SDK.
+    kwargs: dict[str, object] = {
+        "model": model_name,
+        "api_key": api_key,
+    }
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+    if embedding_dimensions is not None:
+        kwargs["output_dimension"] = embedding_dimensions
+    kwargs.update(extra_kwargs)
 
-        :return: configured VoyageAIEmbeddings instance
-        :rtype: Any
-        """
-        if self.model is not None:
-            return self.model
+    model: VoyageAIEmbeddings = VoyageAIEmbeddings(**kwargs)
+    return model
 
-        from threetears.models.providers._voyageai_compat import apply_voyageai_compat
 
-        apply_voyageai_compat()
+# -- capability registration -------------------------------------------------
 
-        from langchain_voyageai import VoyageAIEmbeddings
+_VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "voyage-3": ModelCapabilities(
+        model_name="voyage-3",
+        provider_name=VOYAGEAI_PROVIDER_NAME,
+        model_type=ModelType.EMBEDDING,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        embedding_dimensions=1024,
+        max_embedding_tokens=32_000,
+        supports_batch_embedding=True,
+        cost_per_input_token=Decimal("0.00000006"),
+    ),
+    "voyage-3-lite": ModelCapabilities(
+        model_name="voyage-3-lite",
+        provider_name=VOYAGEAI_PROVIDER_NAME,
+        model_type=ModelType.EMBEDDING,
+        model_tier=ModelTier.SMALL,
+        model_status=ModelStatus.ACTIVE,
+        embedding_dimensions=512,
+        max_embedding_tokens=32_000,
+        supports_batch_embedding=True,
+        cost_per_input_token=Decimal("0.00000002"),
+    ),
+}
 
-        kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "api_key": self._api_key,
-        }
-        if self.base_url is not None:
-            kwargs["base_url"] = self.base_url
-        if self._embedding_dimensions is not None:
-            kwargs["output_dimension"] = self._embedding_dimensions
 
-        self.model = VoyageAIEmbeddings(**kwargs)
-        return self.model
-
-    @property
-    def dimensions(self) -> int:
-        """number of dimensions in embedding vectors.
-
-        returns configured dimensions if set, otherwise defaults to
-        1024 for voyage-3 / voyage-3-lite compatibility.
-
-        :return: embedding vector dimensionality
-        :rtype: int
-        """
-        if self._embedding_dimensions is not None:
-            return self._embedding_dimensions
-        return _DEFAULT_EMBEDDING_DIMENSIONS
-
-    async def embed(self, text: str) -> EmbeddingResult:
-        """generates embedding vector for single text input.
-
-        delegates to embed_batch and returns first result.
-
-        :param text: text to embed
-        :ptype text: str
-        :return: embedding result with vector and metadata
-        :rtype: EmbeddingResult
-        """
-        results = await self.embed_batch([text])
-        return results[0]
-
-    async def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
-        """generates embedding vectors for batch of text inputs.
-
-        calls VoyageAIEmbeddings.aembed_documents and converts raw float
-        vectors into EmbeddingResult objects with metadata.
-
-        :param texts: list of texts to embed
-        :ptype texts: list[str]
-        :return: list of embedding results in same order as inputs
-        :rtype: list[EmbeddingResult]
-        """
-        raw_embeddings: list[list[float]] = await self._get_model().aembed_documents(texts)
-
-        results: list[EmbeddingResult] = []
-        for text, embedding in zip(texts, raw_embeddings):
-            results.append(
-                EmbeddingResult(
-                    vector=embedding,
-                    dimensions=len(embedding),
-                    model=self.model_name,
-                    token_count=len(text) // 4,
-                )
-            )
-        return results
+for _model_id, _caps in _VOYAGEAI_CAPABILITIES.items():
+    register_capabilities(_model_id, _caps)

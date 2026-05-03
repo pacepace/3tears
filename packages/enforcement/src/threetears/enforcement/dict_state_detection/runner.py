@@ -52,15 +52,18 @@ from threetears.enforcement.dict_state_detection.walkers import (
 __all__ = ["run_dict_state_enforcement"]
 
 
-_VALID_WALKERS: frozenset[str] = frozenset({
-    "detect",
-    "allowlist_integrity",
-    "all",
-})
+_VALID_WALKERS: frozenset[str] = frozenset(
+    {
+        "detect",
+        "allowlist_integrity",
+        "all",
+    }
+)
 
 
 def run_dict_state_enforcement(
-    config: DictStateConfig, walker: str = "all",
+    config: DictStateConfig,
+    walker: str = "all",
 ) -> None:
     """run the configured walker(s), apply allowlist/exemptions, fail if strict.
 
@@ -73,9 +76,7 @@ def run_dict_state_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     src_roots = _resolve_src_roots(config)
     aggregated: list[Violation] = []
@@ -118,10 +119,7 @@ def run_dict_state_enforcement(
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"dict-state-detection enforcement found {len(filtered)} "
-            f"violation(s):\n{report}"
-        )
+        pytest.fail(f"dict-state-detection enforcement found {len(filtered)} violation(s):\n{report}")
 
 
 def _resolve_src_roots(config: DictStateConfig) -> tuple[Path, ...]:

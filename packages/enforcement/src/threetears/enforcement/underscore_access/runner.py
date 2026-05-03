@@ -51,13 +51,21 @@ from threetears.enforcement.underscore_access.walkers import (
 __all__ = ["run_underscore_enforcement"]
 
 
-_VALID_WALKERS: frozenset[str] = frozenset({
-    "shape_a", "shape_b", "shape_c", "shape_d", "shape_e", "all",
-})
+_VALID_WALKERS: frozenset[str] = frozenset(
+    {
+        "shape_a",
+        "shape_b",
+        "shape_c",
+        "shape_d",
+        "shape_e",
+        "all",
+    }
+)
 
 
 def run_underscore_enforcement(
-    config: UnderscoreAccessConfig, walker: str,
+    config: UnderscoreAccessConfig,
+    walker: str,
 ) -> None:
     """run the named walker(s), apply exemptions, emit report, fail if strict.
 
@@ -99,9 +107,7 @@ def run_underscore_enforcement(
     :raises pytest.fail.Exception: in strict mode with violations
     """
     if walker not in _VALID_WALKERS:
-        raise ValueError(
-            f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}"
-        )
+        raise ValueError(f"walker must be one of {sorted(_VALID_WALKERS)}, got {walker!r}")
 
     scan_roots = _resolve_scan_roots(config)
     inheritance_roots = _resolve_inheritance_roots(config)
@@ -120,19 +126,14 @@ def run_underscore_enforcement(
         config.repo_root,
         domain=f"underscore_access.{walker}",
     )
-    inheritance_line = (
-        f"inheritance_roots: {[str(r) for r in inheritance_roots]}"
-    )
+    inheritance_line = f"inheritance_roots: {[str(r) for r in inheritance_roots]}"
     print(report, file=sys.stderr)
     print(inheritance_line, file=sys.stderr)
 
     if mode == MODE_REPORT:
         return
     if filtered:
-        pytest.fail(
-            f"underscore-access enforcement found {len(filtered)} "
-            f"violation(s):\n{report}\n{inheritance_line}"
-        )
+        pytest.fail(f"underscore-access enforcement found {len(filtered)} violation(s):\n{report}\n{inheritance_line}")
 
 
 def _resolve_scan_roots(config: UnderscoreAccessConfig) -> tuple[Path, ...]:
@@ -211,17 +212,20 @@ def _run_walker(
     """
     runners: dict[str, Callable[[], list[Violation]]] = {
         "shape_a": lambda: shape_a_violations(
-            scan_roots, config.repo_root, inheritance_roots,
+            scan_roots,
+            config.repo_root,
+            inheritance_roots,
         ),
-        "shape_b": lambda: (
-            shape_b_violations(config.repo_root, scan_roots)
-            if config.enable_shape_b_ruff else []
-        ),
+        "shape_b": lambda: shape_b_violations(config.repo_root, scan_roots) if config.enable_shape_b_ruff else [],
         "shape_c": lambda: shape_c_violations(
-            scan_roots, config.repo_root, config.skip_basenames,
+            scan_roots,
+            config.repo_root,
+            config.skip_basenames,
         ),
         "shape_d": lambda: shape_d_violations(
-            scan_roots, config.repo_root, inheritance_roots,
+            scan_roots,
+            config.repo_root,
+            inheritance_roots,
         ),
         "shape_e": lambda: shape_e_violations(scan_roots, config.repo_root),
     }

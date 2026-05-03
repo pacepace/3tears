@@ -25,19 +25,21 @@ __all__ = [
 # environments, build artefacts, IDE caches, vcs metadata, and the
 # legacy sphinx ``_build`` output dir. cookiecutter template trees are
 # detected separately because their names contain ``{{`` placeholders.
-_SKIP_DIRS: frozenset[str] = frozenset({
-    ".venv",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".pytest_cache",
-    "__pycache__",
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    ".eggs",
-    "_build",
-})
+_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        ".venv",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".eggs",
+        "_build",
+    }
+)
 
 
 def _has_cookiecutter_marker(path: Path) -> bool:
@@ -83,7 +85,7 @@ def _walk_sorted(directory: Path) -> Iterable[Path]:
     """
     try:
         entries = sorted(directory.iterdir(), key=lambda p: p.name)
-    except (PermissionError, FileNotFoundError):
+    except PermissionError, FileNotFoundError:
         return
     for entry in entries:
         if entry.is_dir():

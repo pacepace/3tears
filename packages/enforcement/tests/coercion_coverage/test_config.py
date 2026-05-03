@@ -39,14 +39,16 @@ class TestOverrides:
 
     def test_explicit_mode_env_var(self, tmp_path: Path) -> None:
         config = CoerceCoverageConfig(
-            repo_root=tmp_path, mode_env_var="MY_MODE",
+            repo_root=tmp_path,
+            mode_env_var="MY_MODE",
         )
         assert config.mode_env_var == "MY_MODE"
 
     def test_explicit_base_class_suffixes(self, tmp_path: Path) -> None:
         suffixes = frozenset({"Tool", "Action", "Hook"})
         config = CoerceCoverageConfig(
-            repo_root=tmp_path, base_class_suffixes=suffixes,
+            repo_root=tmp_path,
+            base_class_suffixes=suffixes,
         )
         assert config.base_class_suffixes == suffixes
 

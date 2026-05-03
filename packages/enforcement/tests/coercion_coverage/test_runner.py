@@ -12,9 +12,7 @@ from threetears.enforcement.coercion_coverage import (
 )
 
 
-_VALID_RATIONALE = (
-    "intentional override under controlled fixture for unit-test use only"
-)
+_VALID_RATIONALE = "intentional override under controlled fixture for unit-test use only"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -39,9 +37,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
     src = repo / "src"
     _write(
         src / "pkg" / "tool.py",
-        "class FooTool(Tool):\n"
-        "    def run(self):\n"
-        "        return None\n",
+        "class FooTool(Tool):\n    def run(self):\n        return None\n",
     )
     return repo, src
 
@@ -49,6 +45,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
 # ------------------------------------------------------------------
 # input validation
 # ------------------------------------------------------------------
+
 
 class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
@@ -74,9 +71,12 @@ class TestWalkerArgValidation:
 # strict / report mode behaviour
 # ------------------------------------------------------------------
 
+
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
@@ -89,7 +89,9 @@ class TestModes:
             run_coercion_enforcement(config)
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("COERCE_TEST_MODE", "report")
@@ -102,15 +104,15 @@ class TestModes:
         run_coercion_enforcement(config)
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "tool.py",
-            "class FooTool(Tool):\n"
-            "    def execute(self):\n"
-            "        return None\n",
+            "class FooTool(Tool):\n    def execute(self):\n        return None\n",
         )
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
         config = CoerceCoverageConfig(
@@ -121,7 +123,9 @@ class TestModes:
         run_coercion_enforcement(config)
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.delenv("COERCE_TEST_MODE", raising=False)
@@ -138,17 +142,17 @@ class TestModes:
 # exemption application
 # ------------------------------------------------------------------
 
+
 class TestExemptions:
     def test_exemption_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         # the violation lives at src/pkg/tool.py:2 with symbol FooTool.
         ex_path = repo / "_coercion_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/pkg/tool.py:2:FooTool\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/pkg/tool.py:2:FooTool\n")
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
         config = CoerceCoverageConfig(
             repo_root=repo,
@@ -160,7 +164,9 @@ class TestExemptions:
         run_coercion_enforcement(config)
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
@@ -179,9 +185,12 @@ class TestExemptions:
 # explicit src_roots vs discovery
 # ------------------------------------------------------------------
 
+
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a repo with a single src root and no path-deps; with
         # src_roots=None the runner should call discover_src_roots
@@ -190,9 +199,7 @@ class TestSrcRootsDiscovery:
         src = repo / "src"
         _write(
             src / "pkg" / "tool.py",
-            "class FooTool(Tool):\n"
-            "    def execute(self):\n"
-            "        return None\n",
+            "class FooTool(Tool):\n    def execute(self):\n        return None\n",
         )
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
         config = CoerceCoverageConfig(
@@ -207,17 +214,18 @@ class TestSrcRootsDiscovery:
 # custom base_class_suffixes
 # ------------------------------------------------------------------
 
+
 class TestCustomSuffixes:
     def test_custom_suffix_flags_action_class(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "thing.py",
-            "class FooAction(BaseAction):\n"
-            "    def run(self):\n"
-            "        return None\n",
+            "class FooAction(BaseAction):\n    def run(self):\n        return None\n",
         )
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
         config = CoerceCoverageConfig(
@@ -230,15 +238,15 @@ class TestCustomSuffixes:
             run_coercion_enforcement(config)
 
     def test_default_suffix_does_not_flag_action_class(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "thing.py",
-            "class FooAction(BaseAction):\n"
-            "    def run(self):\n"
-            "        return None\n",
+            "class FooAction(BaseAction):\n    def run(self):\n        return None\n",
         )
         monkeypatch.setenv("COERCE_TEST_MODE", "strict")
         config = CoerceCoverageConfig(

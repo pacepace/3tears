@@ -12,9 +12,7 @@ from threetears.enforcement.underscore_access import (
 )
 
 
-_VALID_RATIONALE = (
-    "framework-stable internal sentinel that test legitimately reads"
-)
+_VALID_RATIONALE = "framework-stable internal sentinel that test legitimately reads"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -50,11 +48,14 @@ def _build_shape_a_repo(tmp_path: Path) -> tuple[Path, Path]:
 # input validation
 # ------------------------------------------------------------------
 
+
 class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         config = UnderscoreAccessConfig(
-            repo_root=repo, scan_roots=(), inheritance_roots=(),
+            repo_root=repo,
+            scan_roots=(),
+            inheritance_roots=(),
         )
         with pytest.raises(ValueError, match="walker must be one of"):
             run_underscore_enforcement(config, walker="bogus")
@@ -64,9 +65,12 @@ class TestWalkerArgValidation:
 # strict/report mode behaviour
 # ------------------------------------------------------------------
 
+
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_shape_a_repo(tmp_path)
         monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "strict")
@@ -81,7 +85,9 @@ class TestModes:
             run_underscore_enforcement(config, walker="shape_a")
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_shape_a_repo(tmp_path)
         monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "report")
@@ -96,7 +102,9 @@ class TestModes:
         run_underscore_enforcement(config, walker="shape_a")
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
@@ -114,7 +122,9 @@ class TestModes:
         run_underscore_enforcement(config, walker="shape_a")
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_shape_a_repo(tmp_path)
         monkeypatch.delenv("UNDERSCORE_AUDIT_MODE_TEST", raising=False)
@@ -133,18 +143,18 @@ class TestModes:
 # exemption application
 # ------------------------------------------------------------------
 
+
 class TestExemptions:
     def test_exemption_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_shape_a_repo(tmp_path)
         # the shape-A violation is at src/consumer/__init__.py:1:_name.
         # the exemption uses the repo-relative path with forward slashes.
         ex_path = repo / "_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/consumer/__init__.py:1:_name\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/consumer/__init__.py:1:_name\n")
         monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "strict")
         config = UnderscoreAccessConfig(
             repo_root=repo,
@@ -158,7 +168,9 @@ class TestExemptions:
         run_underscore_enforcement(config, walker="shape_a")
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
@@ -179,9 +191,12 @@ class TestExemptions:
 # walker == "all" aggregates correctly
 # ------------------------------------------------------------------
 
+
 class TestWalkerAll:
     def test_all_aggregates_shape_a_c_e(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a repo that exercises shapes A, C, and E together.
         repo = _make_repo_with_pyproject(tmp_path / "repo")
@@ -225,9 +240,12 @@ class TestWalkerAll:
 # explicit roots vs discovery
 # ------------------------------------------------------------------
 
+
 class TestRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a repo with a single src root and no path-deps; with
         # both root fields = None the runner should call
@@ -253,9 +271,12 @@ class TestRootsDiscovery:
 # shape-B ruff toggle
 # ------------------------------------------------------------------
 
+
 class TestShapeBToggle:
     def test_disabled_shape_b_yields_no_violations(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo_with_pyproject(tmp_path / "repo")
         src = repo / "src"
@@ -267,10 +288,7 @@ class TestShapeBToggle:
         # arbitrary cross-class private access that ruff would flag.
         _write(
             src / "pkg" / "consumer.py",
-            "from pkg.obj import Obj\n\n"
-            "def caller():\n"
-            "    o = Obj()\n"
-            "    return o._x\n",
+            "from pkg.obj import Obj\n\ndef caller():\n    o = Obj()\n    return o._x\n",
         )
         monkeypatch.setenv("UNDERSCORE_AUDIT_MODE_TEST", "strict")
         config = UnderscoreAccessConfig(

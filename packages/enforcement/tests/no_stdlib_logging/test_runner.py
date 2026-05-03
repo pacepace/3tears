@@ -12,9 +12,7 @@ from threetears.enforcement.no_stdlib_logging import (
 )
 
 
-_VALID_RATIONALE = (
-    "intentional stdlib logging import under controlled fixture for unit-test use only"
-)
+_VALID_RATIONALE = "intentional stdlib logging import under controlled fixture for unit-test use only"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -45,6 +43,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
 # input validation
 # ------------------------------------------------------------------
 
+
 class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -68,9 +67,12 @@ class TestWalkerArgValidation:
 # strict / report mode behaviour
 # ------------------------------------------------------------------
 
+
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("NSL_TEST_MODE", "strict")
@@ -83,7 +85,9 @@ class TestModes:
             run_no_stdlib_logging_enforcement(config)
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("NSL_TEST_MODE", "report")
@@ -96,7 +100,9 @@ class TestModes:
         run_no_stdlib_logging_enforcement(config)
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -113,7 +119,9 @@ class TestModes:
         run_no_stdlib_logging_enforcement(config)
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.delenv("NSL_TEST_MODE", raising=False)
@@ -130,9 +138,12 @@ class TestModes:
 # exemption application — exempt_files (file-level, in-walker)
 # ------------------------------------------------------------------
 
+
 class TestExemptFiles:
     def test_exempt_file_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("NSL_TEST_MODE", "strict")
@@ -141,9 +152,7 @@ class TestExemptFiles:
             src_roots=(src,),
             mode_env_var="NSL_TEST_MODE",
             exempt_files={
-                "src/pkg/mod.py": (
-                    "platform bootstrap; stdlib logging used pre-observe init"
-                ),
+                "src/pkg/mod.py": ("platform bootstrap; stdlib logging used pre-observe init"),
             },
         )
         run_no_stdlib_logging_enforcement(config)
@@ -153,9 +162,12 @@ class TestExemptFiles:
 # exemption application — exemptions_path (line-level, parsed file)
 # ------------------------------------------------------------------
 
+
 class TestExemptionsPath:
     def test_exemption_file_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         # the violation lives at src/pkg/mod.py:1 with symbol "*". the
@@ -167,10 +179,7 @@ class TestExemptionsPath:
             "from logging import getLogger\n",
         )
         ex_path = repo / "_no_stdlib_logging_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/pkg/mod.py:1:getLogger\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/pkg/mod.py:1:getLogger\n")
         monkeypatch.setenv("NSL_TEST_MODE", "strict")
         config = NoStdlibLoggingConfig(
             repo_root=repo,
@@ -181,7 +190,9 @@ class TestExemptionsPath:
         run_no_stdlib_logging_enforcement(config)
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -200,9 +211,12 @@ class TestExemptionsPath:
 # explicit src_roots vs discovery
 # ------------------------------------------------------------------
 
+
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a clean repo with src/, no path-deps; with
         # src_roots=None the runner should call discover_src_roots
@@ -226,9 +240,12 @@ class TestSrcRootsDiscovery:
 # custom line marker
 # ------------------------------------------------------------------
 
+
 class TestCustomConfig:
     def test_custom_line_marker(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # consumer using a different marker convention.
         repo = _make_repo(tmp_path / "repo")

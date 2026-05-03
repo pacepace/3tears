@@ -7,13 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from threetears.models.protocol import TranscriptionProvider
 from threetears.models.providers.whisper import (
+    TranscriptionResult,
+    TranscriptionSegment,
     WhisperTranscriptionProvider,
     _MIME_TO_EXT,
     _parse_verbose_json,
 )
-from threetears.models.results import TranscriptionResult, TranscriptionSegment
 
 
 def _mock_response(
@@ -39,10 +39,10 @@ def _mock_response(
 class TestWhisperTranscriptionProvider:
     """tests for WhisperTranscriptionProvider class."""
 
-    def test_satisfies_transcription_provider_protocol(self) -> None:
-        """WhisperTranscriptionProvider instance satisfies TranscriptionProvider protocol check."""
+    def test_has_transcribe_method(self) -> None:
+        """WhisperTranscriptionProvider exposes the async ``transcribe`` method."""
         provider = WhisperTranscriptionProvider("sk-test")
-        assert isinstance(provider, TranscriptionProvider)
+        assert callable(provider.transcribe)
 
     def test_default_model_name(self) -> None:
         """default model_name is whisper-1."""

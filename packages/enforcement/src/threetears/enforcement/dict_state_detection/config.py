@@ -44,17 +44,19 @@ __all__ = [
 
 _MIN_RATIONALE_LENGTH = 30
 
-_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset({
-    "internal access",
-    "tests need this",
-    "tests need access",
-    "temporary",
-    "todo",
-    "fixme",
-    "needed",
-    "required",
-    "necessary",
-})
+_BLANKET_RATIONALE_PHRASES: frozenset[str] = frozenset(
+    {
+        "internal access",
+        "tests need this",
+        "tests need access",
+        "temporary",
+        "todo",
+        "fixme",
+        "needed",
+        "required",
+        "necessary",
+    }
+)
 
 
 class AllowlistRationaleError(ValueError):
@@ -111,8 +113,7 @@ class DictStateAllowlistEntry:
         rationale = self.rationale.strip()
         if not rationale:
             raise AllowlistRationaleError(
-                f"{self.file}:{self.line}:{self.attr_name}: rationale "
-                f"must be non-empty",
+                f"{self.file}:{self.line}:{self.attr_name}: rationale must be non-empty",
             )
         if len(rationale) < _MIN_RATIONALE_LENGTH:
             raise AllowlistRationaleError(

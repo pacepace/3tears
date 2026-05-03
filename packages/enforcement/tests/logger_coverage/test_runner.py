@@ -12,9 +12,7 @@ from threetears.enforcement.logger_coverage import (
 )
 
 
-_VALID_RATIONALE = (
-    "intentional silent module under controlled fixture for unit-test use only"
-)
+_VALID_RATIONALE = "intentional silent module under controlled fixture for unit-test use only"
 
 
 def _write(path: Path, source: str) -> Path:
@@ -45,6 +43,7 @@ def _build_violation_repo(tmp_path: Path) -> tuple[Path, Path]:
 # input validation
 # ------------------------------------------------------------------
 
+
 class TestWalkerArgValidation:
     def test_unknown_walker_raises(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path / "repo")
@@ -53,7 +52,9 @@ class TestWalkerArgValidation:
             run_logger_coverage_enforcement(config, walker="bogus")
 
     def test_default_walker_is_all(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -71,9 +72,12 @@ class TestWalkerArgValidation:
 # strict / report mode behaviour
 # ------------------------------------------------------------------
 
+
 class TestModes:
     def test_strict_fails_on_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("LC_TEST_MODE", "strict")
@@ -86,7 +90,9 @@ class TestModes:
             run_logger_coverage_enforcement(config)
 
     def test_report_mode_returns_silently(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("LC_TEST_MODE", "report")
@@ -99,14 +105,15 @@ class TestModes:
         run_logger_coverage_enforcement(config)
 
     def test_clean_run_does_nothing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from threetears.observe import get_logger\n"
-            "log = get_logger(__name__)\n",
+            "from threetears.observe import get_logger\nlog = get_logger(__name__)\n",
         )
         monkeypatch.setenv("LC_TEST_MODE", "strict")
         config = LoggerCoverageConfig(
@@ -117,7 +124,9 @@ class TestModes:
         run_logger_coverage_enforcement(config)
 
     def test_default_mode_is_strict(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.delenv("LC_TEST_MODE", raising=False)
@@ -134,9 +143,12 @@ class TestModes:
 # exemption application — exempt_files (file-level, in-walker)
 # ------------------------------------------------------------------
 
+
 class TestExemptFiles:
     def test_exempt_file_silences_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo, src = _build_violation_repo(tmp_path)
         monkeypatch.setenv("LC_TEST_MODE", "strict")
@@ -145,9 +157,7 @@ class TestExemptFiles:
             src_roots=(src,),
             mode_env_var="LC_TEST_MODE",
             exempt_files={
-                "src/pkg/mod.py": (
-                    "pure pydantic model module, no runtime behaviour"
-                ),
+                "src/pkg/mod.py": ("pure pydantic model module, no runtime behaviour"),
             },
         )
         run_logger_coverage_enforcement(config)
@@ -157,9 +167,12 @@ class TestExemptFiles:
 # exemption application — exemptions_path (line-level, parsed file)
 # ------------------------------------------------------------------
 
+
 class TestExemptionsPath:
     def test_exemption_file_removes_violation(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # the walker emits ``symbol`` = relative posix path. the
         # exemption parser's grammar does not accept ``/`` or ``.`` in
@@ -170,10 +183,7 @@ class TestExemptionsPath:
         # violation is unchanged.
         repo, src = _build_violation_repo(tmp_path)
         ex_path = repo / "_logger_coverage_exemptions.txt"
-        ex_path.write_text(
-            f"# rationale: {_VALID_RATIONALE}\n"
-            "src/other/unrelated.py:1:placeholder\n"
-        )
+        ex_path.write_text(f"# rationale: {_VALID_RATIONALE}\nsrc/other/unrelated.py:1:placeholder\n")
         monkeypatch.setenv("LC_TEST_MODE", "strict")
         config = LoggerCoverageConfig(
             repo_root=repo,
@@ -185,7 +195,9 @@ class TestExemptionsPath:
             run_logger_coverage_enforcement(config)
 
     def test_exemption_path_none_skips_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
@@ -204,9 +216,12 @@ class TestExemptionsPath:
 # explicit src_roots vs discovery
 # ------------------------------------------------------------------
 
+
 class TestSrcRootsDiscovery:
     def test_falls_back_to_discover(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # build a clean repo with src/, no path-deps; with
         # src_roots=None the runner should call discover_src_roots
@@ -215,8 +230,7 @@ class TestSrcRootsDiscovery:
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from threetears.observe import get_logger\n"
-            "log = get_logger(__name__)\n",
+            "from threetears.observe import get_logger\nlog = get_logger(__name__)\n",
         )
         monkeypatch.setenv("LC_TEST_MODE", "strict")
         config = LoggerCoverageConfig(
@@ -231,16 +245,18 @@ class TestSrcRootsDiscovery:
 # custom factory / var configuration through the runner
 # ------------------------------------------------------------------
 
+
 class TestCustomConfig:
     def test_custom_factory_name_accepted_end_to_end(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         repo = _make_repo(tmp_path / "repo")
         src = repo / "src"
         _write(
             src / "pkg" / "mod.py",
-            "from somewhere import make_logger\n"
-            "log = make_logger(__name__)\n",
+            "from somewhere import make_logger\nlog = make_logger(__name__)\n",
         )
         monkeypatch.setenv("LC_TEST_MODE", "strict")
         config = LoggerCoverageConfig(

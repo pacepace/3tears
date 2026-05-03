@@ -1,7 +1,15 @@
-"""model capabilities registry for tracking AI model features and costs."""
+"""model capabilities registry for tracking AI model features and costs.
+
+Defines :class:`ModelCapabilities` (the per-model metadata schema) plus a
+module-level registry keyed by ``model_id`` (the public identifier used by
+the provider). Each provider module registers its supported models at
+import time via :func:`register_capabilities`; consumers query without
+instantiating a provider via :func:`get_capabilities`.
+"""
 
 from __future__ import annotations
 
+import threading
 from decimal import Decimal
 
 from pydantic import BaseModel
@@ -10,6 +18,9 @@ from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
 __all__ = [
     "ModelCapabilities",
+    "get_capabilities",
+    "list_capabilities",
+    "register_capabilities",
 ]
 
 
@@ -28,6 +39,8 @@ class ModelCapabilities(BaseModel):
     :ptype model_tier: ModelTier
     :param model_status: lifecycle status
     :ptype model_status: ModelStatus
+    :param provider_name: provider that serves this model (e.g. "anthropic")
+    :ptype provider_name: str | None
     :param context_window: maximum input context length in tokens
     :ptype context_window: int | None
     :param max_output_tokens: maximum output length in tokens
@@ -82,6 +95,7 @@ class ModelCapabilities(BaseModel):
     model_type: ModelType
     model_tier: ModelTier
     model_status: ModelStatus = ModelStatus.ACTIVE
+    provider_name: str | None = None
 
     # chat fields
     context_window: int | None = None
@@ -120,3 +134,46 @@ class ModelCapabilities(BaseModel):
     cost_per_input_token: Decimal | None = None
     cost_per_output_token: Decimal | None = None
     cost_per_request: Decimal | None = None
+
+
+_REGISTRY_LOCK = threading.Lock()
+_REGISTRY: dict[str, ModelCapabilities] = {}
+
+
+def register_capabilities(model_id: str, capabilities: ModelCapabilities) -> None:
+    """registers capability metadata for ``model_id`` in the module-level registry.
+
+    overwrites any existing entry for the same id. providers call this at
+    import time so consumers can query without instantiating a provider.
+
+    :param model_id: public identifier for the model (matches what consumers pass to the factory)
+    :ptype model_id: str
+    :param capabilities: capability metadata
+    :ptype capabilities: ModelCapabilities
+    """
+    with _REGISTRY_LOCK:
+        _REGISTRY[model_id] = capabilities
+
+
+def get_capabilities(model_id: str) -> ModelCapabilities | None:
+    """returns capability metadata for ``model_id`` if registered.
+
+    :param model_id: public identifier for the model
+    :ptype model_id: str
+    :return: capability metadata, or ``None`` if no provider registered the id
+    :rtype: ModelCapabilities | None
+    """
+    with _REGISTRY_LOCK:
+        result = _REGISTRY.get(model_id)
+    return result
+
+
+def list_capabilities() -> dict[str, ModelCapabilities]:
+    """returns a snapshot of all registered model capabilities.
+
+    :return: mapping of ``model_id`` to capability metadata
+    :rtype: dict[str, ModelCapabilities]
+    """
+    with _REGISTRY_LOCK:
+        result = dict(_REGISTRY)
+    return result

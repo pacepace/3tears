@@ -55,8 +55,5 @@ def resolve_mode(env_var: str, default: str = MODE_STRICT) -> str:
         candidate = raw
     normalised = candidate.strip().lower()
     if normalised not in _VALID_MODES:
-        raise ModeError(
-            f"{env_var}: must be one of {sorted(_VALID_MODES)}, "
-            f"got {raw!r} (default={default!r})"
-        )
+        raise ModeError(f"{env_var}: must be one of {sorted(_VALID_MODES)}, got {raw!r} (default={default!r})")
     return normalised

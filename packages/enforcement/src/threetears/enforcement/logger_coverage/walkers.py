@@ -92,10 +92,7 @@ def _has_module_level_logger(
         fn = value.func
         if isinstance(fn, ast.Name) and fn.id in logger_factory_names:
             return True
-        if (
-            isinstance(fn, ast.Attribute)
-            and fn.attr in logger_factory_names
-        ):
+        if isinstance(fn, ast.Attribute) and fn.attr in logger_factory_names:
             return True
     return False
 
@@ -205,12 +202,16 @@ def find_modules_without_logger(
             if tree is None:
                 continue
             if _has_module_level_logger(
-                tree, logger_factory_names, expected_var_names,
+                tree,
+                logger_factory_names,
+                expected_var_names,
             ):
                 continue
             violations.append(
                 _missing_logger_violation(
-                    module_path, rel, expected_var_names,
+                    module_path,
+                    rel,
+                    expected_var_names,
                 )
             )
     return violations

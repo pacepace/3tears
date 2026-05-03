@@ -95,7 +95,9 @@ def _import_violation(
 
 
 def _line_has_marker(
-    source_lines: list[str], lineno: int, line_marker: str,
+    source_lines: list[str],
+    lineno: int,
+    line_marker: str,
 ) -> bool:
     """true iff ``source_lines[lineno-1]`` carries the per-line marker.
 
@@ -235,7 +237,11 @@ def _scan_import(
             description = f"import {alias.name}"
         violations.append(
             _import_violation(
-                module_path, node.lineno, symbol, description, line_marker,
+                module_path,
+                node.lineno,
+                symbol,
+                description,
+                line_marker,
             )
         )
 
@@ -277,6 +283,10 @@ def _scan_import_from(
         description = f"from {module_name} import {alias.name}"
         violations.append(
             _import_violation(
-                module_path, node.lineno, symbol, description, line_marker,
+                module_path,
+                node.lineno,
+                symbol,
+                description,
+                line_marker,
             )
         )

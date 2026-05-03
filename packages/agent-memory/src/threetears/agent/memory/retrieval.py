@@ -37,6 +37,7 @@ from threetears.agent.memory.collections import (
     MemoryChunkCollection,
 )
 from threetears.agent.memory.embedding import EmbeddingProvider
+from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
 from threetears.observe import traced
 
@@ -451,9 +452,10 @@ class MemoryRetriever:
                 deps=self._authorizer,
             )
 
-        embedding, embed_tokens = await self._embedding.embed_text(user_text)
+        embedding = await _safe_aembed_query(self._embedding, user_text)
         if embedding is None:
             return empty
+        embed_tokens = _estimate_tokens(user_text)
 
         cfg = self._config
         top_k = cfg.top_k
