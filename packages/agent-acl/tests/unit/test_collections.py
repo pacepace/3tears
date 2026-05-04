@@ -521,7 +521,7 @@ def _namespace_row(
     owner_agent_id: UUID | None = None,
 ) -> dict[str, Any]:
     """build a fake ``namespaces`` row."""
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
     return {
         "row_scope": "platform" if customer_id is None else "customer",
         "id": uuid7(),

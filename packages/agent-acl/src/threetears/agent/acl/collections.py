@@ -44,7 +44,6 @@ from uuid import UUID, uuid7
 
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
-    DATETIME_TYPE,
     DATETIMETZ_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -1159,8 +1158,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("schema_name", STRING_TYPE, nullable=True, immutable=True),
             Column("metadata", JSONB_TYPE, nullable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
     )
