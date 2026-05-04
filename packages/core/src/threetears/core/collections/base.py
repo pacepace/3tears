@@ -770,10 +770,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         if "date_updated" in data or not entity.is_new:
             data["date_updated"] = now
 
-        # Convert aware -> naive for TIMESTAMP columns at database border
-        for key, val in data.items():
-            if isinstance(val, datetime) and val.tzinfo is not None:
-                data[key] = val.replace(tzinfo=None)
+        # Datetime values flow through aware-UTC end to end. Per-column
+        # coercion at the L3 SQL border is the responsibility of
+        # subclasses (SchemaBackedCollection drives this from declared
+        # column types). collections-task-05 eliminated DATETIME_TYPE /
+        # TIMESTAMP from the platform; the unconditional tzinfo strip
+        # that used to live here was load-bearing only while TIMESTAMP
+        # columns existed and is gone with them.
 
         defer = (
             self._flush_strategy != FlushStrategy.ALWAYS

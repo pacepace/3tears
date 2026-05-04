@@ -22,7 +22,6 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
-    DATETIME_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
@@ -64,8 +63,8 @@ class _ItemCollection(SchemaBackedCollection[_StubEntity]):
             Column("blob", BYTES_TYPE, nullable=True),
             Column("counter", INT_TYPE),
             Column("flag", BOOL_TYPE),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
     )
@@ -91,7 +90,7 @@ class _JournalCollection(SchemaBackedCollection[_StubEntity]):
         columns=[
             Column("id", UUID_TYPE),
             Column("event", STRING_TYPE),
-            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
         on_conflict="raise",
     )
@@ -118,7 +117,7 @@ class _CompositeCollection(SchemaBackedCollection[_StubEntity]):
             Column("left_id", UUID_TYPE),
             Column("right_id", UUID_TYPE),
             Column("weight", INT_TYPE),
-            Column("date_added", DATETIME_TYPE, immutable=True),
+            Column("date_added", DATETIMETZ_TYPE, immutable=True),
         ],
     )
 
@@ -686,7 +685,7 @@ class TestInsertSqlShape:
                 columns=[
                     Column("id", UUID_TYPE),
                     Column("event", STRING_TYPE),
-                    Column("date_created", DATETIME_TYPE, immutable=True),
+                    Column("date_created", DATETIMETZ_TYPE, immutable=True),
                 ],
                 on_conflict="ignore",
             )
@@ -890,8 +889,17 @@ class TestWriteCoercion:
         assert args[4] == "[1.0, 2.0, 3.0]"
 
     @pytest.mark.asyncio
-    async def test_aware_datetime_becomes_naive_utc(self) -> None:
-        """aware datetimes are projected to naive-UTC before asyncpg bind."""
+    async def test_aware_datetime_round_trips_aware_utc(self) -> None:
+        """aware-UTC datetimes round-trip aware through the asyncpg bind.
+
+        collections-task-05 eliminated DATETIME_TYPE; every datetime
+        column is now DATETIMETZ_TYPE. The write coercion ensures the
+        asyncpg-bound value carries ``tzinfo=UTC`` so the codec's
+        ``astimezone(UTC)`` is a no-op. This test pins that behavior on
+        the general-purpose ``_ItemCollection`` (the dedicated
+        ``_TzCollection`` covers the same path with explicit
+        DATETIMETZ-only intent in the tests below).
+        """
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
@@ -900,8 +908,8 @@ class TestWriteCoercion:
         await coll.save_to_postgres(data)
         args = pool.calls[0][2]
         # date_created is at column index 8
-        assert args[8].tzinfo is None
-        assert args[8] == datetime(2026, 1, 2, 3, 4, 5)
+        assert args[8].tzinfo is UTC
+        assert args[8] == aware
 
     @pytest.mark.asyncio
     async def test_datetimetz_keeps_aware_utc_on_insert(self) -> None:
@@ -1050,9 +1058,13 @@ class TestCasBranching:
         assert "UPDATE items SET" in sql
         assert "WHERE id = $1" in sql
         assert "AND date_updated = $" in sql
-        # CAS fence value is the last positional arg
+        # CAS fence value is the last positional arg. The collection's
+        # cas_column is now DATETIMETZ_TYPE so the fence value carries
+        # tzinfo=UTC; before collections-task-05 the unconditional
+        # base.py strip projected it to naive.
         args = pool.calls[0][2]
-        assert args[-1] == old_ts.replace(tzinfo=None)
+        assert args[-1] == old_ts
+        assert args[-1].tzinfo is UTC
 
     @pytest.mark.asyncio
     async def test_cas_zero_rowcount_on_stale(self) -> None:

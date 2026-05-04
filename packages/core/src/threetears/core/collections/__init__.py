@@ -11,7 +11,6 @@ from threetears.core.collections.registry import (
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
-    DATETIME_TYPE,
     DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
@@ -33,7 +32,6 @@ __all__ = [
     "CacheInvalidationMessage",
     "CollectionRegistry",
     "Column",
-    "DATETIME_TYPE",
     "DATETIMETZ_TYPE",
     "FlushStrategy",
     "INT_TYPE",
