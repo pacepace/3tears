@@ -802,12 +802,14 @@ class TestWorkspaceCollectionSaveIncludesDateDeleted:
         assert "date_deleted" in issued_sql
         # ON CONFLICT clause also wires the column
         assert "date_deleted = EXCLUDED.date_deleted" in issued_sql
-        # confirm the row's date_deleted value got bound as naive UTC
-        # (SchemaBackedCollection converts aware datetimes at the WRITE
-        # boundary per CLAUDE.md's "YugabyteDB WRITE: Convert aware ->
-        # naive for TIMESTAMP columns" rule)
+        # confirm the row's date_deleted value got bound as aware UTC.
+        # collections-task-05 phase A3 promoted ``workspaces.date_deleted``
+        # from DATETIME_TYPE (TIMESTAMP, naive) to DATETIMETZ_TYPE
+        # (TIMESTAMPTZ, aware), so SchemaBackedCollection keeps the
+        # tzinfo intact at the WRITE boundary -- aware in, aware out.
         bound_args = pool.executed[0][1]
-        assert row["date_deleted"].replace(tzinfo=None) in bound_args
+        assert row["date_deleted"] in bound_args
+        assert row["date_deleted"].tzinfo is UTC
 
 
 class TestWorkspaceFileCollectionFindByWorkspace:

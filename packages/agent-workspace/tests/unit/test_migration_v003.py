@@ -138,10 +138,17 @@ class TestWorkspaceNamespaceBackfillShape:
 class TestRegisterIncludesV003:
     """tests verifying the new version is wired into the package registration."""
 
-    async def test_register_returns_package_with_versions_one_two_three(self) -> None:
-        """register populates the PackageMigrations with versions 1, 2, and 3."""
+    async def test_register_includes_v003(self) -> None:
+        """register wires v003 (workspace_namespace_backfill) alongside v001/v002.
+
+        the broader ``register_returns_package_with_versions_*`` total-set
+        assertion lives in ``test_migrations.py`` and tracks the full
+        version list as new migrations land. this test pins the v003
+        contract specifically: v003 is registered and the first three
+        versions are in the package.
+        """
         runner = MigrationRunner()
         pkg = register(runner)
         assert pkg.name == PACKAGE_NAME
         assert pkg.scope == MigrationScope.AGENT
-        assert set(pkg.versions.keys()) == {1, 2, 3}
+        assert {1, 2, 3}.issubset(set(pkg.versions.keys()))

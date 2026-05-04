@@ -17,7 +17,7 @@ from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BYTES_TYPE,
-    DATETIME_TYPE,
+    DATETIMETZ_TYPE,
     INT_TYPE,
     STRING_TYPE,
     UUID_TYPE,
@@ -66,9 +66,9 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
             Column("template_name", STRING_TYPE, nullable=True),
             Column("created_by", UUID_TYPE, immutable=True),
             Column("current_version", INT_TYPE),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
-            Column("date_deleted", DATETIME_TYPE, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+            Column("date_deleted", DATETIMETZ_TYPE, nullable=True),
         ],
     )
 
@@ -287,7 +287,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
             Column("content", BYTES_TYPE),
             Column("sha256", STRING_TYPE),
             Column("version", INT_TYPE),
-            Column("date_updated", DATETIME_TYPE),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
     )
 
@@ -425,7 +425,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             Column("label", STRING_TYPE, nullable=True, immutable=True),
             Column("actor_id", UUID_TYPE, immutable=True),
             Column("correlation_id", UUID_TYPE, immutable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
         on_conflict="raise",
     )
