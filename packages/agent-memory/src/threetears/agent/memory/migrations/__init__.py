@@ -51,6 +51,15 @@ version history:
   with ``ON DELETE SET NULL`` semantics -- the v004 ``media_id``
   column landed without an FK constraint; this closes the gap. the
   AST walker enforces query-shape; the FK enforces data integrity.
+- v013 (collections-task-05) promotes every naive TIMESTAMP column
+  in the agent-memory partition (memories, media, media_content,
+  memory_chunks, conversation_memory_refs) to TIMESTAMPTZ via
+  ``ALTER COLUMN ... TYPE TIMESTAMPTZ USING ... AT TIME ZONE 'UTC'``.
+  flips the package off the hybrid "naive-UTC at rest, aware
+  everywhere else" convention so the database holds aware-UTC end
+  to end. ships paired with the DATETIME_TYPE -> DATETIMETZ_TYPE
+  Column-declaration flip in ``collections.py`` so the alignment
+  enforcement test stays green.
 
 the package declares ``depends_on=("conversations",)`` because the
 ledger references ``conversations(id)`` even though no FK constraint
@@ -96,6 +105,9 @@ from threetears.agent.memory.migrations.v011_memory_chunks_composite_fk import (
 from threetears.agent.memory.migrations.v012_memories_media_composite_fk import (
     memories_media_composite_fk,
 )
+from threetears.agent.memory.migrations.v013_datetime_to_datetimetz import (
+    datetime_to_datetimetz,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -136,6 +148,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(10)(media_content_composite_fk)
     pkg.version(11)(memory_chunks_composite_fk)
     pkg.version(12)(memories_media_composite_fk)
+    pkg.version(13)(datetime_to_datetimetz)
     runner.register(pkg)
     return pkg
 
@@ -148,6 +161,7 @@ __all__ = [
     "create_media_tables",
     "create_memories_table",
     "create_memory_chunks",
+    "datetime_to_datetimetz",
     "media_composite_fk",
     "media_content_composite_fk",
     "memories_media_composite_fk",

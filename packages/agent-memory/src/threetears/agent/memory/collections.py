@@ -28,7 +28,7 @@ from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
-    DATETIME_TYPE,
+    DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -221,9 +221,9 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("embedding", VECTOR_TYPE),
             Column("is_deleted", BOOL_TYPE),
             Column("media_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_deleted", DATETIME_TYPE, nullable=True),
-            Column("date_updated", DATETIME_TYPE, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_deleted", DATETIMETZ_TYPE, nullable=True),
+            Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
         cas_column="date_updated",
     )
@@ -1126,8 +1126,8 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
             Column("user_id", UUID_TYPE),
             Column("media_category", STRING_TYPE),
             Column("metadata_json", JSONB_TYPE, nullable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
     )
 
@@ -1177,7 +1177,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             Column("content", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
             Column("embedding", VECTOR_TYPE, nullable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
     )
 
@@ -1630,7 +1630,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             Column("heading_context", STRING_TYPE, nullable=True),
             Column("page_number", INT_TYPE, nullable=True),
             Column("embedding", VECTOR_TYPE, nullable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
     )
 
@@ -2024,7 +2024,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             Column("item_id", UUID_TYPE),
             Column("item_type", STRING_TYPE),
             Column("short_desc", STRING_TYPE),
-            Column("date_added", DATETIME_TYPE),
+            Column("date_added", DATETIMETZ_TYPE),
         ],
     )
 
