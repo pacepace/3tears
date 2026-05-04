@@ -17,6 +17,7 @@ from threetears.conversations.migrations import (
     PACKAGE_NAME,
     add_name_column,
     create_conversations_table,
+    datetime_to_datetimetz,
     register,
 )
 from threetears.core.data.migrations import (
@@ -130,21 +131,21 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_two_and_three(self) -> None:
-        """register wires v001 (create), v002 (message_count), v003 (name)."""
+    async def test_register_populates_versions_one_two_three_and_four(self) -> None:
+        """register wires v001 (create), v002 (message_count), v003 (name), v004 (datetimetz)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4}
 
-    async def test_apply_runs_three_versions_then_idempotent(self) -> None:
-        """apply records v1+v2+v3 and re-running is a no-op."""
+    async def test_apply_runs_four_versions_then_idempotent(self) -> None:
+        """apply records v1+v2+v3+v4 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 3
+        assert first_count == 4
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -234,6 +235,61 @@ class TestDirectMigrationFunction:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await create_conversations_table(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestDatetimeToDatetimetzMigration:
+    """
+    tests for v004: TIMESTAMP -> TIMESTAMPTZ promotion of every
+    datetime column on ``conversations``.
+
+    collections-task-05 requires every per-column ALTER to appear as a
+    literal SQL string (not a templated DO block iterating a list) so
+    the column-type-alignment AST walker in
+    ``packages/core/tests/enforcement/test_column_type_alignment.py``
+    can match each ``(table, column) -> TIMESTAMPTZ`` pair against its
+    ``Column(..., DATETIMETZ_TYPE, ...)`` declaration in
+    ``collection.py``. these tests pin that pattern so a future
+    refactor cannot regress it.
+    """
+
+    async def test_direct_call_issues_three_per_column_alters(self) -> None:
+        """one DO block per (table, column) pair: 3 statements."""
+        store = _FakeDataStore()
+        await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 3
+
+    async def test_direct_call_targets_every_datetime_column(self) -> None:
+        """every datetime column on conversations has its own ALTER."""
+        store = _FakeDataStore()
+        await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "ALTER TABLE conversations ALTER COLUMN date_created TYPE TIMESTAMPTZ" in joined
+        assert "ALTER TABLE conversations ALTER COLUMN date_updated TYPE TIMESTAMPTZ" in joined
+        assert "ALTER TABLE conversations ALTER COLUMN date_last_message TYPE TIMESTAMPTZ" in joined
+
+    async def test_direct_call_uses_at_time_zone_utc(self) -> None:
+        """every ALTER asserts UTC semantics on the bare TIMESTAMP cell."""
+        store = _FakeDataStore()
+        await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "USING date_created AT TIME ZONE 'UTC'" in joined
+        assert "USING date_updated AT TIME ZONE 'UTC'" in joined
+        assert "USING date_last_message AT TIME ZONE 'UTC'" in joined
+
+    async def test_direct_call_is_guarded_by_information_schema(self) -> None:
+        """each ALTER lives inside a DO block that probes data_type."""
+        store = _FakeDataStore()
+        await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert joined.count("information_schema.columns") == 3
+        assert joined.count("'timestamp without time zone'") == 3
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await datetime_to_datetimetz(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 
