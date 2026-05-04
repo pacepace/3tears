@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.schema_backed import (
-    DATETIME_TYPE,
+    DATETIMETZ_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
     UUID_TYPE,
@@ -99,9 +99,9 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             Column("long_desc", STRING_TYPE, nullable=True),
             Column("content", STRING_TYPE),
             Column("metadata", JSONB_TYPE, nullable=True),
-            Column("date_accessed", DATETIME_TYPE),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
+            Column("date_accessed", DATETIMETZ_TYPE),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
     )

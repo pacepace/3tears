@@ -12,12 +12,27 @@ context surfaced to the LLM at tool-call time, not extracted memory.
 the package declares ``depends_on=("conversations",)`` because every
 ``context_items`` row references a ``conversations.id`` value; ordering
 on apply guarantees the parent table exists before the child.
+
+version history:
+
+- v001 creates the ``context_items`` table with two lookup indexes.
+- v002 (collections-task-05) promotes every naive TIMESTAMP column in
+  the ``context_items`` table (date_accessed, date_created,
+  date_updated) to TIMESTAMPTZ via ``ALTER COLUMN ... TYPE TIMESTAMPTZ
+  USING ... AT TIME ZONE 'UTC'``. flips the package off the hybrid
+  "naive-UTC at rest, aware everywhere else" convention so the
+  database holds aware-UTC end to end. ships paired with the
+  DATETIME_TYPE -> DATETIMETZ_TYPE Column-declaration flip in
+  ``collections.py`` so the alignment enforcement test stays green.
 """
 
 from __future__ import annotations
 
 from threetears.agent.tools.migrations.v001_create_context_items_table import (
     create_context_items_table,
+)
+from threetears.agent.tools.migrations.v002_datetime_to_datetimetz import (
+    datetime_to_datetimetz,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -47,6 +62,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
         depends_on=("conversations",),
     )
     pkg.version(1)(create_context_items_table)
+    pkg.version(2)(datetime_to_datetimetz)
     runner.register(pkg)
     return pkg
 
@@ -54,5 +70,6 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "create_context_items_table",
+    "datetime_to_datetimetz",
     "register",
 ]
