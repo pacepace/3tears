@@ -125,6 +125,11 @@ class UsageRecord:
         ``image_generation`` / ``naming`` / ``reasoning`` /
         ``tool_llm_dispatch``)
     :ptype category: str | None
+    :param model_id: optional consumer-side model UUID. metallm
+        populates this from its ``models`` table primary key so
+        :class:`MetaLLMTokenAuditSink` can write the FK column;
+        14-eng-ai-bot leaves it ``None``.
+    :ptype model_id: UUID | None
     """
 
     model_name: str
@@ -137,16 +142,16 @@ class UsageRecord:
     tier: ModelTier | None = None
     cost_usd: Decimal | None = None
     date_created: datetime = field(default_factory=lambda: datetime.now(UTC))
-    # task-07.5: optional tenant context. `model_id` is intentionally
-    # absent here -- the consumer-side audit sink (e.g.
-    # ``MetaLLMTokenAuditSink``) carries any consumer-specific fields
-    # like model UUIDs that don't belong on the canonical record shape.
+    # task-07.5: optional tenant + consumer context. flows to OTel spans
+    # (as ``llm.tenant.*``) and to attached sinks; never to Prometheus
+    # labels (cardinality discipline).
     agent_id: UUID | None = None
     customer_id: UUID | None = None
     user_id: UUID | None = None
     conversation_id: UUID | None = None
     invocation_ref: str | None = None
     category: str | None = None
+    model_id: UUID | None = None
 
 
 @runtime_checkable

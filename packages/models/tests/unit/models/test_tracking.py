@@ -333,6 +333,7 @@ class TestUsageRecordTenantFields:
         assert record.conversation_id is None
         assert record.invocation_ref is None
         assert record.category is None
+        assert record.model_id is None
 
     def test_tenant_fields_round_trip(self) -> None:
         """tenant context fields persist on the dataclass."""
@@ -340,6 +341,7 @@ class TestUsageRecordTenantFields:
         customer_id = uuid4()
         user_id = uuid4()
         conversation_id = uuid4()
+        model_id = uuid4()
         record = UsageRecord(
             model_name="claude-3-opus",
             provider_name="anthropic",
@@ -354,6 +356,7 @@ class TestUsageRecordTenantFields:
             conversation_id=conversation_id,
             invocation_ref="tool-llm-7c1a",
             category="chat",
+            model_id=model_id,
         )
         assert record.agent_id == agent_id
         assert record.customer_id == customer_id
@@ -361,6 +364,7 @@ class TestUsageRecordTenantFields:
         assert record.conversation_id == conversation_id
         assert record.invocation_ref == "tool-llm-7c1a"
         assert record.category == "chat"
+        assert record.model_id == model_id
 
 
 class _RecordingSink:
