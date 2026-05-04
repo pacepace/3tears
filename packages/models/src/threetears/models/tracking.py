@@ -11,16 +11,24 @@ processor cannot sum custom span attributes — task-08 dashboards depend on
 the counters this callback emits. Both the span attribute names and the
 Prometheus instrument names are LOCKED. Adding new attributes/labels is
 fine; renaming existing ones breaks the dashboards.
+
+task-07.5 unified the per-invocation audit and aggregated counter side
+effects behind two Protocols (``UsageAuditSink``, ``UsageCounterSink``)
+that consumers attach to ``UsageTracker``. Sinks are awaited via
+``asyncio.create_task(...)`` so a slow database write never blocks the
+LLM caller; each sink invocation is wrapped in its own try/except that
+logs failures with ``exc_info=True`` and never re-raises.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -31,6 +39,8 @@ from threetears.models.enums import ModelTier
 
 __all__ = [
     "LlmPurpose",
+    "UsageAuditSink",
+    "UsageCounterSink",
     "UsageRecord",
     "UsageTracker",
     "UsageTrackingCallback",
@@ -70,6 +80,14 @@ class LlmPurpose(StrEnum):
 class UsageRecord:
     """single LLM usage event with token counts, cost, and latency.
 
+    The tenant fields (``agent_id``, ``customer_id``, ``user_id``,
+    ``conversation_id``, ``invocation_ref``, ``category``) are optional
+    so that pure in-memory callers (no audit / counter sinks attached)
+    continue to work unchanged. They flow only to OTel spans (as
+    ``llm.tenant.*`` attributes) and to attached sinks; they MUST NOT
+    be added as Prometheus labels (cardinality discipline -- ``user_id``
+    alone would explode the time-series database).
+
     :param model_name: identifier of model used
     :ptype model_name: str
     :param provider_name: name of provider serving model
@@ -90,6 +108,23 @@ class UsageRecord:
     :ptype cost_usd: Decimal | None
     :param date_created: timestamp when usage was recorded
     :ptype date_created: datetime
+    :param agent_id: optional agent UUID (14-eng-ai-bot tenant context)
+    :ptype agent_id: UUID | None
+    :param customer_id: optional customer UUID (14-eng-ai-bot tenant context)
+    :ptype customer_id: UUID | None
+    :param user_id: optional user UUID (metallm + 14-eng-ai-bot tenant context)
+    :ptype user_id: UUID | None
+    :param conversation_id: optional conversation UUID (metallm tenant context)
+    :ptype conversation_id: UUID | None
+    :param invocation_ref: optional free-form reference to the underlying
+        invocation (metallm passes ``str(tool_llm_id)``; 14-eng-ai-bot
+        typically passes ``None``)
+    :ptype invocation_ref: str | None
+    :param category: optional consumer-defined usage category (metallm:
+        ``chat`` / ``sycophancy`` / ``tool`` / ``embedding`` /
+        ``image_generation`` / ``naming`` / ``reasoning`` /
+        ``tool_llm_dispatch``)
+    :ptype category: str | None
     """
 
     model_name: str
@@ -102,6 +137,63 @@ class UsageRecord:
     tier: ModelTier | None = None
     cost_usd: Decimal | None = None
     date_created: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # task-07.5: optional tenant context. `model_id` is intentionally
+    # absent here -- the consumer-side audit sink (e.g.
+    # ``MetaLLMTokenAuditSink``) carries any consumer-specific fields
+    # like model UUIDs that don't belong on the canonical record shape.
+    agent_id: UUID | None = None
+    customer_id: UUID | None = None
+    user_id: UUID | None = None
+    conversation_id: UUID | None = None
+    invocation_ref: str | None = None
+    category: str | None = None
+
+
+@runtime_checkable
+class UsageAuditSink(Protocol):
+    """Protocol for per-invocation audit sinks.
+
+    An audit sink writes one row per LLM invocation to a durable store
+    suitable for cost reconciliation and per-conversation cost
+    attribution. metallm's :class:`MetaLLMTokenAuditSink` (writes the
+    ``token_usage_logs`` table) is the canonical implementation.
+
+    Implementations MUST be coroutine-safe and MUST NOT raise into the
+    caller -- ``UsageTracker`` already wraps each sink call in a
+    try/except, but defense in depth keeps the contract clear.
+    """
+
+    async def record(self, record: UsageRecord) -> None:
+        """persists one usage record as a per-invocation audit row.
+
+        :param record: usage record to persist
+        :ptype record: UsageRecord
+        """
+        ...
+
+
+@runtime_checkable
+class UsageCounterSink(Protocol):
+    """Protocol for aggregated counter sinks.
+
+    A counter sink increments rolling-window counters (e.g. daily /
+    monthly tokens-per-customer) suitable for quota enforcement and
+    billing rollups. 14-eng-ai-bot's :class:`AggregateUsageCounterSink`
+    (increments the ``platform.usage_records`` table) is the canonical
+    implementation.
+
+    Implementations MUST be coroutine-safe and MUST NOT raise into the
+    caller -- ``UsageTracker`` already wraps each sink call in a
+    try/except, but defense in depth keeps the contract clear.
+    """
+
+    async def record(self, record: UsageRecord) -> None:
+        """increments aggregated usage counters for one event.
+
+        :param record: usage record carrying the counter increments
+        :ptype record: UsageRecord
+        """
+        ...
 
 
 # Locked Prometheus instrument names (do not rename — task-08 dashboards
@@ -240,12 +332,34 @@ class UsageTracker:
     degrades gracefully to no-op when OpenTelemetry is not configured. the
     ``make_callback()`` method returns a LangChain ``BaseCallbackHandler``
     that fires both side effects on every ``on_llm_end`` event.
+
+    task-07.5: ``record()`` additionally fans out to optional audit and
+    counter sinks. The fanout order is OTel span → Prometheus → audit
+    sink → counter sink. Sink invocations are awaited via
+    ``asyncio.create_task(...)`` when a running event loop is available
+    so a slow sink never blocks the LLM caller; each sink invocation is
+    wrapped in a try/except that logs failures with ``exc_info=True``
+    and never re-raises.
+
+    :param audit_sink: optional sink that persists per-invocation rows
+        (e.g. metallm's ``MetaLLMTokenAuditSink``)
+    :ptype audit_sink: UsageAuditSink | None
+    :param counter_sink: optional sink that increments rolling-window
+        counters (e.g. 14-eng-ai-bot's ``AggregateUsageCounterSink``)
+    :ptype counter_sink: UsageCounterSink | None
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        audit_sink: UsageAuditSink | None = None,
+        counter_sink: UsageCounterSink | None = None,
+    ) -> None:
         self._tracer: Tracer | None = None
         self._otel_available = False
         self._prom = _get_prom_emitter()
+        self._audit_sink = audit_sink
+        self._counter_sink = counter_sink
         try:
             from opentelemetry import trace
 
@@ -257,21 +371,105 @@ class UsageTracker:
             )
 
     def record(self, usage: UsageRecord) -> None:
-        """records usage as an OTel span and Prometheus samples.
+        """records usage as an OTel span, Prometheus samples, and (optional) sinks.
 
         creates span named ``llm.usage`` with the 9 locked attributes
         (``llm.{model,provider,purpose,input_tokens,output_tokens,total_tokens,latency_ms,tier,cost_usd}``)
-        and increments the locked Prometheus counters/histogram. either side
+        plus optional ``llm.tenant.*`` attributes for tenant context, and
+        increments the locked Prometheus counters/histogram. either side
         effect no-ops gracefully when its backing library is missing.
+
+        Audit and counter sinks (when attached) are awaited via
+        ``asyncio.create_task(...)`` so slow sinks do not block the
+        caller. Sink failures are logged via ``exc_info=True`` and
+        swallowed; a billing-audit failure must never surface to the
+        LLM caller.
 
         :param usage: usage record to emit
         :ptype usage: UsageRecord
         """
         self._emit_otel_span(usage)
         self._prom.emit(usage)
+        self._dispatch_sink("audit", self._audit_sink, usage)
+        self._dispatch_sink("counter", self._counter_sink, usage)
+
+    def _dispatch_sink(
+        self,
+        kind: str,
+        sink: UsageAuditSink | UsageCounterSink | None,
+        usage: UsageRecord,
+    ) -> None:
+        """schedules a fire-and-forget sink invocation on the running loop.
+
+        when no event loop is running (sync callsite without a loop),
+        the sink is invoked synchronously via ``asyncio.run()`` -- this
+        path is intended for tests and one-off scripts; production
+        callers all run inside an asyncio loop already.
+
+        :param kind: human-readable sink kind for log context (``audit`` or ``counter``)
+        :ptype kind: str
+        :param sink: sink instance or ``None`` (no-op)
+        :ptype sink: UsageAuditSink | UsageCounterSink | None
+        :param usage: usage record to forward to the sink
+        :ptype usage: UsageRecord
+        """
+        if sink is None:
+            return
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            loop.create_task(self._invoke_sink(kind, sink, usage))
+            return
+
+        # no running loop -- synchronous fallback for tests and scripts.
+        # we still wrap in try/except to honour the "never re-raise"
+        # contract; ``asyncio.run()`` may itself raise if a previous loop
+        # was left in an inconsistent state.
+        try:
+            asyncio.run(self._invoke_sink(kind, sink, usage))
+        except Exception:  # noqa: BLE001 -- intentional swallow per task-07.5
+            logger.warning(
+                "%s usage sink failed (sync fallback)",
+                kind,
+                exc_info=True,
+            )
+
+    @staticmethod
+    async def _invoke_sink(
+        kind: str,
+        sink: UsageAuditSink | UsageCounterSink,
+        usage: UsageRecord,
+    ) -> None:
+        """awaits one sink invocation, swallowing any exception.
+
+        :param kind: human-readable sink kind for log context
+        :ptype kind: str
+        :param sink: sink to invoke
+        :ptype sink: UsageAuditSink | UsageCounterSink
+        :param usage: usage record to forward
+        :ptype usage: UsageRecord
+        """
+        try:
+            await sink.record(usage)
+        except Exception:  # noqa: BLE001 -- intentional swallow per task-07.5
+            logger.warning(
+                "%s usage sink failed",
+                kind,
+                exc_info=True,
+            )
 
     def _emit_otel_span(self, usage: UsageRecord) -> None:
         """creates the locked ``llm.usage`` OTel span.
+
+        Existing ``llm.{model,provider,purpose,input_tokens,output_tokens,total_tokens,latency_ms,tier,cost_usd}``
+        attributes are NEVER renamed or removed (task-08 dashboards
+        reference them). Tenant context is added under the ``llm.tenant.*``
+        namespace when populated; absent attributes when fields are
+        ``None``.
 
         :param usage: usage record to emit as span
         :ptype usage: UsageRecord
@@ -292,6 +490,23 @@ class UsageTracker:
                 span.set_attribute("llm.tier", str(usage.tier))
             if usage.cost_usd is not None:
                 span.set_attribute("llm.cost_usd", str(usage.cost_usd))
+
+            # task-07.5: tenant attributes under the locked llm.tenant.*
+            # namespace. Names here are part of the public dashboard
+            # contract -- do not rename. Absent attributes when fields
+            # are None so consumers can detect "no tenant context".
+            if usage.agent_id is not None:
+                span.set_attribute("llm.tenant.agent_id", str(usage.agent_id))
+            if usage.customer_id is not None:
+                span.set_attribute("llm.tenant.customer_id", str(usage.customer_id))
+            if usage.user_id is not None:
+                span.set_attribute("llm.tenant.user_id", str(usage.user_id))
+            if usage.conversation_id is not None:
+                span.set_attribute("llm.tenant.conversation_id", str(usage.conversation_id))
+            if usage.invocation_ref is not None:
+                span.set_attribute("llm.tenant.invocation_ref", usage.invocation_ref)
+            if usage.category is not None:
+                span.set_attribute("llm.tenant.category", usage.category)
 
     def make_callback(
         self,

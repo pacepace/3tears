@@ -35,6 +35,8 @@ from threetears.models.preprocessing import (
 from threetears.models.registry import BUILTIN_PROVIDERS, ProviderRegistry
 from threetears.models.tracking import (
     LlmPurpose,
+    UsageAuditSink,
+    UsageCounterSink,
     UsageRecord,
     UsageTracker,
     UsageTrackingCallback,
@@ -73,6 +75,8 @@ __all__ = [
     "CircuitBreakerRegistry",
     # tracking
     "LlmPurpose",
+    "UsageAuditSink",
+    "UsageCounterSink",
     "UsageRecord",
     "UsageTracker",
     "UsageTrackingCallback",

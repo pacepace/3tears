@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from datetime import UTC, datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
+from uuid import uuid4
 
 import threading
 from typing import Sequence
@@ -19,7 +21,13 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from threetears.models.enums import ModelTier
-from threetears.models.tracking import LlmPurpose, UsageRecord, UsageTracker
+from threetears.models.tracking import (
+    LlmPurpose,
+    UsageAuditSink,
+    UsageCounterSink,
+    UsageRecord,
+    UsageTracker,
+)
 
 
 class _InMemorySpanExporter(SpanExporter):
@@ -303,3 +311,324 @@ class TestUsageTracker:
         assert len(spans) == 1
         attrs = dict(spans[0].attributes or {})
         assert "llm.cost_usd" not in attrs
+
+
+class TestUsageRecordTenantFields:
+    """task-07.5: tests for the optional tenant context fields."""
+
+    def test_tenant_fields_default_none(self) -> None:
+        """tenant context fields default to None for backward compat."""
+        record = UsageRecord(
+            model_name="claude-3-opus",
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            latency_ms=10,
+        )
+        assert record.agent_id is None
+        assert record.customer_id is None
+        assert record.user_id is None
+        assert record.conversation_id is None
+        assert record.invocation_ref is None
+        assert record.category is None
+
+    def test_tenant_fields_round_trip(self) -> None:
+        """tenant context fields persist on the dataclass."""
+        agent_id = uuid4()
+        customer_id = uuid4()
+        user_id = uuid4()
+        conversation_id = uuid4()
+        record = UsageRecord(
+            model_name="claude-3-opus",
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            latency_ms=10,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            invocation_ref="tool-llm-7c1a",
+            category="chat",
+        )
+        assert record.agent_id == agent_id
+        assert record.customer_id == customer_id
+        assert record.user_id == user_id
+        assert record.conversation_id == conversation_id
+        assert record.invocation_ref == "tool-llm-7c1a"
+        assert record.category == "chat"
+
+
+class _RecordingSink:
+    """test sink that records every call into a list."""
+
+    def __init__(self) -> None:
+        self.calls: list[UsageRecord] = []
+
+    async def record(self, record: UsageRecord) -> None:
+        """records the incoming record into ``self.calls``.
+
+        :param record: usage record forwarded from the tracker
+        :ptype record: UsageRecord
+        """
+        self.calls.append(record)
+
+
+class _FailingSink:
+    """test sink that always raises to verify the swallow contract."""
+
+    async def record(self, record: UsageRecord) -> None:
+        """raises every call so callers can assert the swallow contract.
+
+        :param record: usage record (unused)
+        :ptype record: UsageRecord
+        """
+        _ = record
+        raise RuntimeError("sink intentionally failed")
+
+
+class TestUsageTrackerSinks:
+    """task-07.5: tests for audit + counter sink fanout."""
+
+    _exporter: _InMemorySpanExporter
+    _provider: TracerProvider
+
+    @classmethod
+    def setup_class(cls) -> None:
+        """configures shared OTel TracerProvider with in-memory exporter."""
+        cls._exporter = _InMemorySpanExporter()
+        cls._provider = TracerProvider()
+        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
+        try:
+            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        trace.set_tracer_provider(cls._provider)
+
+    def setup_method(self) -> None:
+        """clears collected spans before each test."""
+        self._exporter.clear()
+
+    def _make_usage(self, **overrides: object) -> UsageRecord:
+        """builds a usage record with sane defaults for sink tests.
+
+        :param overrides: keyword overrides for the record fields
+        :ptype overrides: object
+        :return: usage record instance
+        :rtype: UsageRecord
+        """
+        defaults: dict[str, object] = {
+            "model_name": "claude-3-opus",
+            "provider_name": "anthropic",
+            "purpose": LlmPurpose.CHAT,
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+            "latency_ms": 500,
+        }
+        defaults.update(overrides)
+        return UsageRecord(**defaults)  # type: ignore[arg-type]
+
+    def test_protocols_runtime_checkable(self) -> None:
+        """sinks satisfy the runtime-checkable Protocols."""
+        audit_sink = _RecordingSink()
+        counter_sink = _RecordingSink()
+        assert isinstance(audit_sink, UsageAuditSink)
+        assert isinstance(counter_sink, UsageCounterSink)
+
+    def test_record_without_sinks_no_op(self) -> None:
+        """tracker without sinks just emits OTel + Prom (backward compat)."""
+        tracker = UsageTracker()
+        tracker.record(self._make_usage())
+        spans = self._exporter.get_finished_spans()
+        assert len(spans) == 1
+
+    def test_audit_sink_invoked_on_async(self) -> None:
+        """audit sink fires when called from inside an asyncio loop."""
+        audit_sink = _RecordingSink()
+        tracker = UsageTracker(audit_sink=audit_sink)
+
+        async def _drive() -> None:
+            tracker.record(self._make_usage(category="chat"))
+            # let the scheduled task run
+            await asyncio.sleep(0)
+
+        asyncio.run(_drive())
+        assert len(audit_sink.calls) == 1
+        assert audit_sink.calls[0].category == "chat"
+
+    def test_counter_sink_invoked_on_async(self) -> None:
+        """counter sink fires when called from inside an asyncio loop."""
+        counter_sink = _RecordingSink()
+        tracker = UsageTracker(counter_sink=counter_sink)
+
+        async def _drive() -> None:
+            tracker.record(self._make_usage())
+            await asyncio.sleep(0)
+
+        asyncio.run(_drive())
+        assert len(counter_sink.calls) == 1
+
+    def test_fanout_order_is_otel_prom_audit_counter(self) -> None:
+        """sink fanout fires audit before counter (documented order)."""
+        events: list[str] = []
+
+        class _OrderingSink:
+            def __init__(self, name: str) -> None:
+                self._name = name
+
+            async def record(self, record: UsageRecord) -> None:
+                _ = record
+                events.append(self._name)
+
+        audit_sink = _OrderingSink("audit")
+        counter_sink = _OrderingSink("counter")
+        tracker = UsageTracker(audit_sink=audit_sink, counter_sink=counter_sink)
+
+        async def _drive() -> None:
+            tracker.record(self._make_usage())
+            await asyncio.sleep(0)
+
+        asyncio.run(_drive())
+        assert events == ["audit", "counter"]
+
+    def test_failing_audit_sink_does_not_propagate(self) -> None:
+        """a raising audit sink is swallowed; OTel + Prom + counter still fire."""
+        counter_sink = _RecordingSink()
+        tracker = UsageTracker(
+            audit_sink=_FailingSink(),
+            counter_sink=counter_sink,
+        )
+
+        async def _drive() -> None:
+            tracker.record(self._make_usage())
+            # let scheduled tasks run; the failing sink raises but
+            # the counter sink should still run.
+            await asyncio.sleep(0)
+
+        # asyncio.run must not raise even though the audit sink raises
+        asyncio.run(_drive())
+        assert len(counter_sink.calls) == 1
+        # OTel side effect still fired
+        spans = self._exporter.get_finished_spans()
+        assert len(spans) == 1
+
+    def test_failing_counter_sink_does_not_propagate(self) -> None:
+        """a raising counter sink is swallowed; audit sink still fires."""
+        audit_sink = _RecordingSink()
+        tracker = UsageTracker(
+            audit_sink=audit_sink,
+            counter_sink=_FailingSink(),
+        )
+
+        async def _drive() -> None:
+            tracker.record(self._make_usage())
+            await asyncio.sleep(0)
+
+        asyncio.run(_drive())
+        assert len(audit_sink.calls) == 1
+
+
+class TestUsageTrackerTenantSpanAttrs:
+    """task-07.5: tests for llm.tenant.* span attribute emission."""
+
+    _exporter: _InMemorySpanExporter
+    _provider: TracerProvider
+
+    @classmethod
+    def setup_class(cls) -> None:
+        """configures shared OTel TracerProvider with in-memory exporter."""
+        cls._exporter = _InMemorySpanExporter()
+        cls._provider = TracerProvider()
+        cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
+        try:
+            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        trace.set_tracer_provider(cls._provider)
+
+    def setup_method(self) -> None:
+        """clears collected spans before each test."""
+        self._exporter.clear()
+
+    def test_span_carries_tenant_attrs_when_populated(self) -> None:
+        """populated tenant fields land as llm.tenant.* span attributes."""
+        agent_id = uuid4()
+        customer_id = uuid4()
+        user_id = uuid4()
+        conversation_id = uuid4()
+        tracker = UsageTracker()
+        usage = UsageRecord(
+            model_name="claude-3-opus",
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            latency_ms=1,
+            agent_id=agent_id,
+            customer_id=customer_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            invocation_ref="tool-llm-7c1a",
+            category="chat",
+        )
+        tracker.record(usage)
+
+        spans = self._exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = dict(spans[0].attributes or {})
+        assert attrs["llm.tenant.agent_id"] == str(agent_id)
+        assert attrs["llm.tenant.customer_id"] == str(customer_id)
+        assert attrs["llm.tenant.user_id"] == str(user_id)
+        assert attrs["llm.tenant.conversation_id"] == str(conversation_id)
+        assert attrs["llm.tenant.invocation_ref"] == "tool-llm-7c1a"
+        assert attrs["llm.tenant.category"] == "chat"
+
+    def test_span_omits_tenant_attrs_when_absent(self) -> None:
+        """tenant span attrs are absent when fields are None."""
+        tracker = UsageTracker()
+        usage = UsageRecord(
+            model_name="claude-3-opus",
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=1,
+            output_tokens=1,
+            total_tokens=2,
+            latency_ms=1,
+        )
+        tracker.record(usage)
+
+        spans = self._exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = dict(spans[0].attributes or {})
+        assert "llm.tenant.agent_id" not in attrs
+        assert "llm.tenant.customer_id" not in attrs
+        assert "llm.tenant.user_id" not in attrs
+        assert "llm.tenant.conversation_id" not in attrs
+        assert "llm.tenant.invocation_ref" not in attrs
+        assert "llm.tenant.category" not in attrs
+
+
+class TestPrometheusLabelDiscipline:
+    """task-07.5: enforce that tenant fields never leak to Prometheus labels."""
+
+    def test_prom_labels_unchanged(self) -> None:
+        """the locked Prometheus label set is exactly {model, provider, purpose}.
+
+        adding tenant fields here would explode user_id / conversation_id
+        cardinality and bloat the time-series database.
+        """
+        from threetears.models.tracking import _PROM_LABELS
+
+        assert set(_PROM_LABELS) == {"model", "provider", "purpose"}
+        assert "user_id" not in _PROM_LABELS
+        assert "customer_id" not in _PROM_LABELS
+        assert "agent_id" not in _PROM_LABELS
+        assert "conversation_id" not in _PROM_LABELS
+        assert "invocation_ref" not in _PROM_LABELS
+        assert "category" not in _PROM_LABELS
