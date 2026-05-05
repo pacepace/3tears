@@ -44,14 +44,29 @@ __all__: list[str] = []
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
 # package source roots to walk for Column(...) declarations.
+#
+# Walks every package with a ``src/`` tree. The original walk skipped
+# channels / langgraph / models / nats / observe / registry / enforcement
+# -- a coverage gap that let the registry's
+# ``HeartbeatCollection.save_entity`` retain a tzinfo-strip well after
+# collections-task-05 phase D was supposed to have removed every such
+# leak. Closing the coverage gap here so the AST guard runs against
+# the entire 3tears workspace.
 _PACKAGE_SRC_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "core" / "src",
     _REPO_ROOT / "packages" / "agent-acl" / "src",
     _REPO_ROOT / "packages" / "agent-audit" / "src",
     _REPO_ROOT / "packages" / "agent-memory" / "src",
     _REPO_ROOT / "packages" / "agent-tools" / "src",
     _REPO_ROOT / "packages" / "agent-workspace" / "src",
+    _REPO_ROOT / "packages" / "channels" / "src",
     _REPO_ROOT / "packages" / "conversations" / "src",
+    _REPO_ROOT / "packages" / "core" / "src",
+    _REPO_ROOT / "packages" / "enforcement" / "src",
+    _REPO_ROOT / "packages" / "langgraph" / "src",
+    _REPO_ROOT / "packages" / "models" / "src",
+    _REPO_ROOT / "packages" / "nats" / "src",
+    _REPO_ROOT / "packages" / "observe" / "src",
+    _REPO_ROOT / "packages" / "registry" / "src",
 ]
 
 
