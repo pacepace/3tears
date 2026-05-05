@@ -283,7 +283,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
             user_id = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             vec = [0.1] * 1024
             data_common = {
                 "agent_id": agent_id,
@@ -347,7 +347,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
             mid = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             data = {
                 "memory_id": mid,
                 "agent_id": agent_id,
@@ -368,7 +368,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
             await coll.save_entity(entity)
 
             # direct UPDATE to set is_deleted (bypassing entity lifecycle)
-            later = datetime.now(UTC).replace(tzinfo=None)
+            later = datetime.now(UTC)
             await pool.execute(
                 "UPDATE memories SET is_deleted = TRUE, date_deleted = $2 WHERE memory_id = $1",
                 mid,
@@ -420,7 +420,7 @@ class TestMemoryRetrieverAgainstLiveSchema:
             user_id = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             vec = [0.1] * 1024
             vec_str = json.dumps(vec)
             await pool.execute(
@@ -675,7 +675,7 @@ class TestMemoryToolsAgainstLiveSchema:
             mid = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             await pool.execute(
                 "INSERT INTO memories ("
                 "memory_id, agent_id, customer_id, user_id, "

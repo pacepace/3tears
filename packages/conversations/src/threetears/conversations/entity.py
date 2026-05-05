@@ -428,7 +428,7 @@ class Conversation(BaseEntity):
         :rtype: None
         """
         self.status = ConversationStatus.ACTIVE.value
-        self.date_updated = datetime.now(UTC).replace(tzinfo=None)
+        self.date_updated = datetime.now(UTC)
 
     def record_message(self, at: datetime, role: str) -> None:
         """
@@ -439,9 +439,8 @@ class Conversation(BaseEntity):
         :meth:`mark_active`. ``role`` is recorded on the metadata blob
         so downstream consumers (analytics, audit) can read which
         actor triggered the increment without reaching into the
-        message table. ``at`` is normalized to a naive UTC datetime
-        because the underlying ``date_last_message`` column is
-        ``TIMESTAMP`` (no tz) on the canonical schema.
+        message table. ``at`` is normalized to aware-UTC; naive input
+        is coerced as a boundary defense for legacy callers.
 
         :param at: timestamp the message was observed at
         :ptype at: datetime
@@ -450,7 +449,7 @@ class Conversation(BaseEntity):
         :return: nothing
         :rtype: None
         """
-        normalized = at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo else at
+        normalized = at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
         self.message_count = self.message_count + 1
         self.date_last_message = normalized
         self.date_updated = normalized
@@ -475,7 +474,7 @@ class Conversation(BaseEntity):
         :rtype: None
         """
         self.status = ConversationStatus.CLOSED.value
-        self.date_updated = datetime.now(UTC).replace(tzinfo=None)
+        self.date_updated = datetime.now(UTC)
         meta = dict(self.metadata) if self.metadata is not None else {}
         meta["close_reason"] = reason
         self.metadata = meta
@@ -496,4 +495,4 @@ class Conversation(BaseEntity):
         :rtype: None
         """
         self.summary = text
-        self.date_updated = datetime.now(UTC).replace(tzinfo=None)
+        self.date_updated = datetime.now(UTC)

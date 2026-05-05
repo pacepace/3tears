@@ -881,7 +881,7 @@ async def load_add_memory_tool(
             )
 
         try:
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             memory_id = uuid4()
             new_data: dict[str, Any] = {
                 "memory_id": memory_id,

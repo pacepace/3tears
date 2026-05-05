@@ -295,7 +295,7 @@ class TestV012MemoriesMediaCompositeFK:
             import uuid
             from datetime import UTC, datetime
 
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -388,7 +388,7 @@ class TestV012MemoriesMediaCompositeFK:
             import uuid
             from datetime import UTC, datetime
 
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             agent_id = uuid.uuid4()
             ghost_media_id = uuid.uuid4()  # never inserted
 
@@ -441,7 +441,7 @@ class TestFtsTriggerPopulatesVector:
             import uuid
             from datetime import UTC, datetime
 
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             mem_id = uuid.uuid4()
             await conn.execute(
                 "INSERT INTO memories ("

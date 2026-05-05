@@ -294,7 +294,7 @@ async def _resolve_or_create_memory_namespace(
         NAMESPACE_DNS,
         f"threetears.namespaces.memory.{agent_id.hex}.{customer_id.hex}",
     )
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
     entity = namespace_collection.entity_class(
         {
             "id": new_id,
@@ -456,7 +456,7 @@ async def ensure_memory_owner_assignment(
         f"threetears.groups.{MEMORY_OWNER_GROUP_PREFIX}.{customer_id.hex}.{user_id.hex}",
     )
     group_name = f"{MEMORY_OWNER_GROUP_PREFIX}:{user_id.hex}"
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
 
     existing_group = await deps.group_collection.get(group_id)
     if existing_group is None:

@@ -210,7 +210,7 @@ class TestMemoryCollectionsL1:
             user_id = uuid.uuid4()
             mid = uuid.uuid4()
             agent_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             data = {
                 "memory_id": mid,
                 "agent_id": agent_id,
@@ -262,7 +262,7 @@ class TestMemoryCollectionsL1:
 
             media_id = uuid.uuid4()
             agent_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             data = {
                 "media_id": media_id,
                 "agent_id": agent_id,
@@ -307,7 +307,7 @@ class TestMemoryCollectionsL1:
             # seed a media parent first (FK)
             media_id = uuid.uuid4()
             agent_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             media_entity = media.create(
                 {
                     "media_id": media_id,
@@ -368,7 +368,7 @@ class TestMemoryCollectionsL1:
 
             chunk_id = uuid.uuid4()
             agent_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             chunk_data = {
                 "chunk_id": chunk_id,
                 "media_id": None,
@@ -420,7 +420,7 @@ class TestHybridSearchRegression:
             user_id = uuid.uuid4()
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
 
             # seed via Collection save_entity path so we go through the
             # Collection's own INSERT

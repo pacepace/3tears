@@ -392,7 +392,7 @@ def _seed_memory(
     :return: awaitable coroutine ready for pool.execute
     :rtype: Any
     """
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
     return pool.execute(
         "INSERT INTO memories ("
         "memory_id, agent_id, customer_id, user_id, "

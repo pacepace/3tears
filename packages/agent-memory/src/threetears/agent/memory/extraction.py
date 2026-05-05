@@ -602,7 +602,7 @@ class MemoryExtractor:
         :return: nothing
         :rtype: None
         """
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = datetime.now(UTC)
 
         for act in actions:
             idx = act["index"]

@@ -227,7 +227,7 @@ class TestMemoryRefsCollectionThreeTier:
 
             conv_id = uuid.uuid4()
             item_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             entity = coll.create(
                 {
                     "conversation_id": conv_id,
@@ -277,7 +277,7 @@ class TestMemoryRefsCollectionThreeTier:
 
             conv_id = uuid.uuid4()
             item_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             entity = coll.create(
                 {
                     "conversation_id": conv_id,
@@ -310,7 +310,7 @@ class TestMemoryRefsCollectionThreeTier:
             coll_a, _reg_a, l1_a = _build_pod(pool, nats)
             conv_id = uuid.uuid4()
             item_id = uuid.uuid4()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             entity = coll_a.create(
                 {
                     "conversation_id": conv_id,
@@ -360,7 +360,7 @@ class TestMemoryRefsCollectionThreeTier:
 
                 conv_id = uuid.uuid4()
                 item_id = uuid.uuid4()
-                now = datetime.now(UTC).replace(tzinfo=None)
+                now = datetime.now(UTC)
                 entity = coll_a.create(
                     {
                         "conversation_id": conv_id,
@@ -421,7 +421,7 @@ class TestMemoryRefsCollectionThreeTier:
             coll, _reg, _l1 = _build_pod(pool, nats)
 
             conv_id = uuid.uuid4()
-            base = datetime.now(UTC).replace(tzinfo=None)
+            base = datetime.now(UTC)
             ids_in_order: list[uuid.UUID] = []
             for i in range(3):
                 item_id = uuid.uuid4()
@@ -478,7 +478,7 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": item_id,
                     "item_type": "memory",
                     "short_desc": long_text,
-                    "date_added": datetime.now(UTC).replace(tzinfo=None),
+                    "date_added": datetime.now(UTC),
                 },
             )
             await coll.save_entity(entity)

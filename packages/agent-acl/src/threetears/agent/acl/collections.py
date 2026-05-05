@@ -998,7 +998,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             result = existing_row["id"]
         else:
             new_id = uuid7()
-            now = datetime.now(UTC).replace(tzinfo=None)
+            now = datetime.now(UTC)
             await self.l3_pool.execute(
                 """
                 INSERT INTO role_assignments (
