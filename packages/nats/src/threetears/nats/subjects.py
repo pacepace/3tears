@@ -662,6 +662,16 @@ class Subjects:
         from the row in the next read. intended call site: metallm
         process bound to namespace ``metallm``.
 
+        constraint (single-product-per-namespace): the path has no
+        product segment after ``{ns}`` because the metallm namespace
+        is single-product. if a second product ever joins the
+        metallm namespace, this subject must be renamed to
+        ``{ns}.metallm.capabilities.epoch`` and every subscriber
+        must roll forward together — a coordinated wire-protocol
+        break, not a hot-deploy change. the constraint is documented
+        here at the call site (not just in the section header) so
+        the implication is visible from the builder's own docstring.
+
         :return: subject ``{ns}.capabilities.epoch`` (metallm-bound:
             ``metallm.capabilities.epoch``)
         :rtype: Subject

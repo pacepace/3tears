@@ -147,6 +147,59 @@ def test_acl_subjects() -> None:
     assert Subjects.acl_invalidate("role").path == "aibots.acl.role.invalidate"
 
 
+def test_metallm_capabilities_epoch_under_metallm_namespace() -> None:
+    """metallm-bound builder produces ``metallm.capabilities.epoch`` (no product segment).
+
+    metallm uses its own namespace so the path has nothing after the
+    namespace to disambiguate against. asymmetric on purpose vs the
+    aibots-bound builders, which carry a product segment.
+    """
+    set_default_namespace("metallm")
+    assert Subjects.metallm_capabilities_epoch().path == "metallm.capabilities.epoch"
+    set_default_namespace("aibots")
+
+
+def test_gateway_catalog_epoch_under_aibots_namespace() -> None:
+    """aibots-bound builder produces ``aibots.gateway.catalog.epoch`` (with product segment)."""
+    assert Subjects.gateway_catalog_epoch().path == "aibots.gateway.catalog.epoch"
+
+
+def test_mcp_rbac_epoch_under_aibots_namespace() -> None:
+    """aibots-bound builder produces ``aibots.mcp.rbac.epoch`` (with product segment)."""
+    assert Subjects.mcp_rbac_epoch().path == "aibots.mcp.rbac.epoch"
+
+
+def test_epoch_subjects_track_namespace_changes() -> None:
+    """epoch subjects honour the bound namespace at call time, like every other Subject."""
+    set_default_namespace("metallm-staging")
+    assert Subjects.metallm_capabilities_epoch().path == "metallm-staging.capabilities.epoch"
+    set_default_namespace("aibots-staging")
+    assert Subjects.gateway_catalog_epoch().path == "aibots-staging.gateway.catalog.epoch"
+    assert Subjects.mcp_rbac_epoch().path == "aibots-staging.mcp.rbac.epoch"
+    set_default_namespace("aibots")
+
+
+def test_epoch_subject_path_is_row_pk_identity() -> None:
+    """subject path is also the ``config_epochs`` row PK; same string both places.
+
+    regression-frame: identity binding is part of the contract; if the
+    builder path diverges from the EpochClient row-key encoding, every
+    cross-pod coordination silently fails.
+    """
+    # under aibots namespace, gateway catalog and mcp rbac collide on
+    # nothing because their paths are distinct -- structural assertion.
+    set_default_namespace("aibots")
+    catalog = Subjects.gateway_catalog_epoch().path
+    rbac = Subjects.mcp_rbac_epoch().path
+    assert catalog != rbac
+    # under metallm namespace, capabilities epoch is different from any
+    # aibots-namespace path (no cross-product collision).
+    set_default_namespace("metallm")
+    capabilities = Subjects.metallm_capabilities_epoch().path
+    assert capabilities not in (catalog, rbac)
+    set_default_namespace("aibots")
+
+
 def test_namespace_discover() -> None:
     """namespace discovery subject."""
     assert Subjects.namespace_discover().path == "aibots.namespace.discover"

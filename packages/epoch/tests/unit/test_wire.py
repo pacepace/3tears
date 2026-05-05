@@ -49,19 +49,26 @@ class TestEpochBumpMessageShape:
         with pytest.raises(ValidationError):
             msg.epoch = 2  # type: ignore[misc]
 
-    def test_extra_field_rejection_default(self) -> None:
-        """unknown fields are silently dropped by default Pydantic config.
+    def test_unknown_fields_silently_dropped_for_forward_compat(self) -> None:
+        """unknown fields are silently dropped per EPOCH-09 forward compatibility.
 
-        regression-frame: if frozen field-set enforcement gets
-        added (e.g. extra="forbid"), this test inverts to expect a
-        ValidationError. for now, document the current behaviour:
-        unknown fields do not crash the wire.
+        ``extra="ignore"`` is locked in :class:`EpochBumpMessage`'s
+        ``model_config``. flipping to ``extra="forbid"`` is a
+        wire-protocol break: every publisher would have to roll
+        forward together. this test enforces the lock so a
+        well-meaning future maintainer cannot accidentally tighten
+        validation and silently deadletter every older publisher's
+        broadcasts.
         """
         msg = EpochBumpMessage.model_validate(
             {"subject_path": "x.y.z", "epoch": 1, "unknown_field": "ignored"},
         )
         assert msg.subject_path == "x.y.z"
         assert not hasattr(msg, "unknown_field")
+        # explicit assertion on the config policy -- the regression
+        # gate. flipping this to "forbid" must be a deliberate,
+        # platform-wide decision recorded in a wire-protocol break note.
+        assert EpochBumpMessage.model_config["extra"] == "ignore"
 
 
 class TestEpochBumpMessageWireRoundTrip:

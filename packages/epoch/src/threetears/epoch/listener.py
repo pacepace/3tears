@@ -109,6 +109,22 @@ class EpochListener:
         epoch (e.g. via :meth:`EpochClient.current` having been
         called by an upstream catalog-load).
 
+        race window (intentional): a bump that commits between the
+        :meth:`EpochClient.current` read and the NATS subscribe
+        registration is missed by the broadcast (subscription not
+        live) and not reflected in ``primed`` (read before commit).
+        the next broadcast at higher epoch fires correctly via
+        gap-jump dispatch; if no further bump occurs, the periodic
+        :meth:`catch_up` tick is the safety net. proven by
+        :func:`tests.unit.test_listener.TestEpochListenerRaceRecovery.
+        test_catch_up_recovers_when_bump_lands_during_subscribe_window`.
+        the alternative ordering (subscribe-first, prime-second)
+        trades this race for one where a broadcast received
+        between subscribe and prime advances last_seen ahead of the
+        prime read; the prime would then write a STALER value over
+        the live one. the current order keeps the failure mode
+        recoverable via the documented pull-on-stale path.
+
         narrow exception scope: :class:`~threetears.nats.errors.
         SubscribeError` propagates because cache coherence is not
         optional. validation failures inside the typed dispatcher

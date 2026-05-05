@@ -38,7 +38,15 @@ class EpochBumpMessage(BaseModel):
         framework never inspects, consumers parse if useful
     """
 
-    model_config = ConfigDict(frozen=True)
+    # ``extra="ignore"`` is locked deliberately (EPOCH-09 forward
+    # compatibility): publishers running newer envelope shapes may
+    # carry fields older subscribers do not understand. silently
+    # dropping them keeps the wire migration additive. flipping to
+    # ``extra="forbid"`` is a wire-protocol break -- every publisher
+    # must roll forward together. ``frozen=True`` forbids attribute
+    # mutation after construction so the dispatched message cannot be
+    # mutated mid-callback.
+    model_config = ConfigDict(frozen=True, extra="ignore")
 
     subject_path: str
     epoch: int

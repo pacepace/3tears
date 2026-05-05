@@ -214,6 +214,44 @@ class TestEpochListenerCatchUp:
         consumer_cb.assert_not_awaited()
 
 
+class TestEpochListenerRaceRecovery:
+    """:meth:`subscribe` race-window recovery via :meth:`catch_up` (safety net).
+
+    documents the contract called out in :meth:`subscribe`'s
+    docstring: a bump that commits between prime-read and subscribe-
+    register is missed by the broadcast. recovery is via the next
+    periodic :meth:`catch_up` tick (or :meth:`echo`). this test
+    explicitly asserts the recovery path so a future refactor cannot
+    silently break the safety net.
+    """
+
+    @pytest.mark.asyncio
+    async def test_catch_up_recovers_when_bump_lands_during_subscribe_window(self) -> None:
+        """bump committed during prime/subscribe window: catch_up advances last_seen."""
+        pool = MagicMock()
+        # priming reads epoch=4; later catch_up sees epoch=5 (the missed bump).
+        # no broadcast is dispatched for epoch=5 in this test (the listener
+        # subscribed AFTER the missed broadcast left the wire).
+        pool.fetchval = AsyncMock(side_effect=[4, 5])
+        nats, _ = _capture_subscribe_typed()
+        client = EpochClient(pool, nats)
+        listener = EpochListener(nats, client)
+        subject = _subject()
+        consumer_cb = AsyncMock()
+
+        await listener.subscribe(subject, consumer_cb)
+        # listener primed at 4; the missed broadcast at 5 never arrived.
+        assert listener.last_seen(subject) == 4
+        consumer_cb.assert_not_awaited()
+
+        # next periodic catch_up tick: discovers durable=5, fires callback.
+        result = await listener.catch_up(subject, consumer_cb)
+
+        assert result == 5
+        assert listener.last_seen(subject) == 5
+        consumer_cb.assert_awaited_once_with(5, None)
+
+
 class TestEpochListenerEcho:
     """:meth:`echo` is the per-message epoch-echo path; pulls L3 to confirm."""
 
