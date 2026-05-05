@@ -27,6 +27,7 @@ from threetears.models.tracking import (
     UsageCounterSink,
     UsageRecord,
     UsageTracker,
+    _reset_prom_emitter_for_testing,
 )
 
 
@@ -636,3 +637,143 @@ class TestPrometheusLabelDiscipline:
         assert "conversation_id" not in _PROM_LABELS
         assert "invocation_ref" not in _PROM_LABELS
         assert "category" not in _PROM_LABELS
+
+
+class TestUsageTrackerCustomRegistry:
+    """task-01 follow-up: ``UsageTracker(prom_registry=...)`` targets a custom
+    ``CollectorRegistry`` so consumers (like the 14-eng-ai-bot gateway) can
+    expose ``threetears_llm_*`` instruments on their own metrics endpoint.
+
+    The default-registry path MUST remain unchanged for backward compat.
+    Each test resets the per-registry emitter cache in setup so registrations
+    don't bleed across tests.
+    """
+
+    def setup_method(self) -> None:
+        """clears the per-registry emitter cache so each test gets fresh
+        instruments without raising "Duplicated timeseries" against any
+        registry it touches.
+        """
+        _reset_prom_emitter_for_testing()
+
+    def teardown_method(self) -> None:
+        """clears the cache again so the next test class starts clean."""
+        _reset_prom_emitter_for_testing()
+
+    def _make_usage(self) -> UsageRecord:
+        """builds a usage record carrying a non-zero cost so the
+        ``threetears_llm_cost_usd_total`` counter increments.
+
+        :return: usage record instance
+        :rtype: UsageRecord
+        """
+        return UsageRecord(
+            model_name="claude-3-opus",
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            latency_ms=500,
+            cost_usd=Decimal("0.0042"),
+        )
+
+    def test_records_to_custom_registry(self) -> None:
+        """tracker built with a custom registry emits the locked
+        ``threetears_llm_*`` instruments against THAT registry.
+        """
+        try:
+            from prometheus_client import CollectorRegistry, generate_latest
+        except ImportError:
+            import pytest
+
+            pytest.skip("prometheus_client not installed in this environment")
+
+        custom = CollectorRegistry()
+        tracker = UsageTracker(prom_registry=custom)
+        tracker.record(self._make_usage())
+
+        scraped = generate_latest(custom).decode("utf-8")
+        assert "threetears_llm_cost_usd_total" in scraped
+        assert "threetears_llm_input_tokens_total" in scraped
+        assert "threetears_llm_output_tokens_total" in scraped
+        assert "threetears_llm_calls_total" in scraped
+        assert "threetears_llm_latency_seconds" in scraped
+        # the labels survived
+        assert 'model="claude-3-opus"' in scraped
+        assert 'provider="anthropic"' in scraped
+        assert 'purpose="chat"' in scraped
+
+    def test_default_registry_path_unchanged(self) -> None:
+        """tracker built without ``prom_registry`` still uses the default
+        global registry — backward compat guarantee.
+
+        Constructs a tracker with no kwarg and asserts it is wired to the
+        same emitter that ``_get_prom_emitter()`` (no arg) returns.
+        """
+        from threetears.models.tracking import _get_prom_emitter
+
+        tracker = UsageTracker()
+        assert tracker._prom is _get_prom_emitter()
+
+    def test_custom_registry_does_not_pollute_default(self) -> None:
+        """instruments registered on a custom registry are NOT exposed via
+        the default global registry — registry isolation guarantee.
+        """
+        try:
+            from prometheus_client import REGISTRY, CollectorRegistry, generate_latest
+        except ImportError:
+            import pytest
+
+            pytest.skip("prometheus_client not installed in this environment")
+
+        custom = CollectorRegistry()
+        tracker = UsageTracker(prom_registry=custom)
+        tracker.record(self._make_usage())
+
+        # the default-registry emitter has not been built (we only used
+        # a custom one), so the locked instruments should not appear in
+        # the default scrape.
+        default_scraped = generate_latest(REGISTRY).decode("utf-8")
+        # if some other test already built a default-registry emitter,
+        # the metric NAMES will be present, but the metric SAMPLES from
+        # this test's custom-registry record() must not show up. We
+        # check for the cost_usd value 0.0042 by way of its decoded
+        # representation, which is the smoking-gun for "samples leaked
+        # into the default registry".
+        assert "0.0042" not in default_scraped
+
+    def test_per_registry_emitter_caching(self) -> None:
+        """two ``UsageTracker(prom_registry=same)`` calls share the same
+        cached ``_PrometheusEmitter`` and do NOT double-register
+        instruments (which would raise in prometheus_client).
+        """
+        try:
+            from prometheus_client import CollectorRegistry
+        except ImportError:
+            import pytest
+
+            pytest.skip("prometheus_client not installed in this environment")
+
+        custom = CollectorRegistry()
+        tracker_a = UsageTracker(prom_registry=custom)
+        tracker_b = UsageTracker(prom_registry=custom)
+        # both trackers share the cached emitter for that registry
+        assert tracker_a._prom is tracker_b._prom
+
+    def test_distinct_registries_get_distinct_emitters(self) -> None:
+        """two trackers with two different registries do NOT share the
+        cached emitter (each registry holds its own instruments).
+        """
+        try:
+            from prometheus_client import CollectorRegistry
+        except ImportError:
+            import pytest
+
+            pytest.skip("prometheus_client not installed in this environment")
+
+        reg_a = CollectorRegistry()
+        reg_b = CollectorRegistry()
+        tracker_a = UsageTracker(prom_registry=reg_a)
+        tracker_b = UsageTracker(prom_registry=reg_b)
+        assert tracker_a._prom is not tracker_b._prom

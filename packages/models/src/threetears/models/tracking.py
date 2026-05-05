@@ -51,6 +51,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from langchain_core.outputs import LLMResult
     from opentelemetry.trace import Tracer
+    from prometheus_client import CollectorRegistry
 
 
 class LlmPurpose(StrEnum):
@@ -219,9 +220,22 @@ class _PrometheusEmitter:
     ``prometheus_client`` is an optional dependency. when not installed
     this emitter no-ops every call gracefully — matching the OTel side
     effect's behaviour when OTel is not available.
+
+    Optionally targets a non-default ``CollectorRegistry`` so consumers
+    that scrape from their own registry (e.g. the 14-eng-ai-bot gateway,
+    which exposes a dedicated ``GATEWAY_METRICS_REGISTRY`` on its
+    ``:8001/metrics`` endpoint) can still surface ``threetears_llm_*``
+    instruments. When ``registry`` is ``None`` the default global
+    registry is used as before.
+
+    :param registry: optional Prometheus collector registry to register
+        the locked instruments against; ``None`` uses the default
+        global registry
+    :ptype registry: CollectorRegistry | None
     """
 
-    def __init__(self) -> None:
+    def __init__(self, registry: "CollectorRegistry | None" = None) -> None:
+        self._registry = registry
         self._available = False
         self._counter_input: Any = None
         self._counter_output: Any = None
@@ -234,7 +248,9 @@ class _PrometheusEmitter:
         """imports prometheus_client and registers the locked instruments.
 
         on import failure (extra not installed) leaves ``_available`` as
-        False so subsequent calls become no-ops.
+        False so subsequent calls become no-ops. when ``self._registry``
+        is ``None`` the instruments register against the default global
+        registry; otherwise they register against the supplied one.
         """
         try:
             from prometheus_client import Counter, Histogram
@@ -244,30 +260,37 @@ class _PrometheusEmitter:
             )
             return
 
+        # prometheus_client treats ``registry=None`` as "use the default
+        # registry"; pass through verbatim so the default-registry path
+        # behaves identically to before this knob existed.
+        kwargs: dict[str, Any] = {"labelnames": _PROM_LABELS}
+        if self._registry is not None:
+            kwargs["registry"] = self._registry
+
         self._counter_input = Counter(
             _PROM_COUNTER_INPUT_TOKENS_NAME,
             "Total LLM input tokens consumed",
-            labelnames=_PROM_LABELS,
+            **kwargs,
         )
         self._counter_output = Counter(
             _PROM_COUNTER_OUTPUT_TOKENS_NAME,
             "Total LLM output tokens generated",
-            labelnames=_PROM_LABELS,
+            **kwargs,
         )
         self._counter_calls = Counter(
             _PROM_COUNTER_CALLS_NAME,
             "Total LLM calls observed",
-            labelnames=_PROM_LABELS,
+            **kwargs,
         )
         self._counter_cost = Counter(
             _PROM_COUNTER_COST_USD_NAME,
             "Total LLM cost in USD",
-            labelnames=_PROM_LABELS,
+            **kwargs,
         )
         self._histogram_latency = Histogram(
             _PROM_HISTOGRAM_LATENCY_NAME,
             "LLM call latency in seconds",
-            labelnames=_PROM_LABELS,
+            **kwargs,
         )
         self._available = True
 
@@ -302,33 +325,45 @@ class _PrometheusEmitter:
         self._histogram_latency.labels(**labels).observe(usage.latency_ms / 1000.0)
 
 
-# module-level emitter so the prometheus instruments are registered exactly
-# once per process (registering the same metric twice raises in
-# prometheus_client). lazy-instantiated on first UsageTracker construction.
-_PROM_EMITTER: _PrometheusEmitter | None = None
+# per-registry emitter cache so the prometheus instruments are registered
+# exactly once per (process, registry) pair (registering the same metric
+# twice on the same registry raises in prometheus_client). The key is
+# ``id(registry)``; the sentinel ``0`` denotes "default global registry".
+# Multiple consumers in the same process can each pass their own
+# ``CollectorRegistry`` and get independent emitters back.
+_PROM_EMITTERS: dict[int, _PrometheusEmitter] = {}
 
 
-def _get_prom_emitter() -> _PrometheusEmitter:
-    """returns the singleton Prometheus emitter, instantiating it once.
+def _get_prom_emitter(registry: "CollectorRegistry | None" = None) -> _PrometheusEmitter:
+    """returns the cached Prometheus emitter for the given registry.
 
-    :return: shared emitter (no-op when prometheus_client is missing)
+    when ``registry`` is ``None`` the default global registry is used and
+    the sentinel key ``0`` indexes the cache. The emitter is instantiated
+    on first use per (process, registry) pair.
+
+    :param registry: optional collector registry; ``None`` uses the
+        default global registry
+    :ptype registry: CollectorRegistry | None
+    :return: shared emitter for that registry (no-op when
+        prometheus_client is missing)
     :rtype: _PrometheusEmitter
     """
-    global _PROM_EMITTER
-    if _PROM_EMITTER is None:
-        _PROM_EMITTER = _PrometheusEmitter()
-    return _PROM_EMITTER
+    key = 0 if registry is None else id(registry)
+    emitter = _PROM_EMITTERS.get(key)
+    if emitter is None:
+        emitter = _PrometheusEmitter(registry=registry)
+        _PROM_EMITTERS[key] = emitter
+    return emitter
 
 
 def _reset_prom_emitter_for_testing() -> None:
-    """resets the singleton emitter so unit tests can re-register metrics.
+    """resets the per-registry emitter cache so unit tests can re-register metrics.
 
     only intended for use by the test suite — production code never calls
     this. clears the module-level cache so the next ``_get_prom_emitter``
     call rebuilds against the current process state.
     """
-    global _PROM_EMITTER
-    _PROM_EMITTER = None
+    _PROM_EMITTERS.clear()
 
 
 class UsageTracker:
@@ -352,6 +387,13 @@ class UsageTracker:
     :param counter_sink: optional sink that increments rolling-window
         counters (e.g. 14-eng-ai-bot's ``AggregateUsageCounterSink``)
     :ptype counter_sink: UsageCounterSink | None
+    :param prom_registry: optional Prometheus ``CollectorRegistry`` to
+        register the locked ``threetears_llm_*`` instruments against.
+        Consumers that scrape from a non-default registry (e.g. the
+        14-eng-ai-bot gateway's ``GATEWAY_METRICS_REGISTRY``) pass their
+        registry here so cross-product Grafana panels can sum traffic
+        across both products. ``None`` uses the default global registry.
+    :ptype prom_registry: CollectorRegistry | None
     """
 
     def __init__(
@@ -359,10 +401,11 @@ class UsageTracker:
         *,
         audit_sink: UsageAuditSink | None = None,
         counter_sink: UsageCounterSink | None = None,
+        prom_registry: "CollectorRegistry | None" = None,
     ) -> None:
         self._tracer: Tracer | None = None
         self._otel_available = False
-        self._prom = _get_prom_emitter()
+        self._prom = _get_prom_emitter(prom_registry)
         self._audit_sink = audit_sink
         self._counter_sink = counter_sink
         try:
