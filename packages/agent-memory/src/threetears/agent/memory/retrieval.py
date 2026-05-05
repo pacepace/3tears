@@ -50,7 +50,10 @@ __all__ = [
 def _recency_decay(created: datetime, half_life_hours: float) -> float:
     """Exponential recency decay (1.0 = just created, ~0.37 at half-life).
 
-    :param created: creation timestamp
+    :param created: creation timestamp; must be timezone-aware UTC
+        (every datetime in the platform is aware-UTC after
+        collections-task-05; passing naive raises TypeError on the
+        ``now - created`` subtract)
     :ptype created: datetime
     :param half_life_hours: half-life in hours
     :ptype half_life_hours: float
@@ -58,8 +61,6 @@ def _recency_decay(created: datetime, half_life_hours: float) -> float:
     :rtype: float
     """
     now = datetime.now(timezone.utc)
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
     hours_ago = max((now - created).total_seconds() / 3600, 0.0)
     return math.exp(-hours_ago / half_life_hours)
 

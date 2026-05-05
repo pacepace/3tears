@@ -334,8 +334,6 @@ class HeartbeatSubscriber:
                 to_remove.append(pod_id)
                 continue
             last = entity.date_last_heartbeat
-            if isinstance(last, datetime) and last.tzinfo is None:
-                last = last.replace(tzinfo=UTC)
             elapsed = (now - last).total_seconds()
             if elapsed <= self._timeout:
                 continue

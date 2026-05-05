@@ -56,10 +56,15 @@ class TestRecencyDecay:
         result = _recency_decay(t, half_life_hours=24.0)
         assert result == pytest.approx(math.exp(-2), abs=0.01)
 
-    def test_naive_datetime_treated_as_utc(self) -> None:
+    def test_naive_datetime_raises_typeerror(self) -> None:
+        # collections-task-05: every datetime in the platform is
+        # timezone-aware UTC. Passing a naive value to _recency_decay
+        # used to be silently coerced; the defensive wrap is gone now,
+        # so the platform-wide convention surfaces as a TypeError on
+        # the ``now - created`` subtract.
         t = datetime.now(timezone.utc).replace(tzinfo=None)
-        result = _recency_decay(t, half_life_hours=24.0)
-        assert result == pytest.approx(1.0, abs=0.01)
+        with pytest.raises(TypeError):
+            _recency_decay(t, half_life_hours=24.0)
 
     def test_custom_half_life(self) -> None:
         t = datetime.now(timezone.utc) - timedelta(hours=12)
