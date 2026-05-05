@@ -13,6 +13,7 @@ members = [
     "3tears-channels",
     "3tears-conversations",
     "3tears-enforcement",
+    "3tears-epoch",
     "3tears-langgraph",
     "3tears-models",
     "3tears-nats",
@@ -323,6 +324,25 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
 ]
 provides-extras = ["test"]
+
+[[package]]
+name = "3tears-epoch"
+version = "0.5.0"
+source = { editable = "packages/epoch" }
+dependencies = [
+    { name = "3tears" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears", editable = "packages/core" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
+    { name = "pydantic", specifier = ">=2" },
+]
 
 [[package]]
 name = "3tears-langgraph"

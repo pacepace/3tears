@@ -71,6 +71,16 @@ _CONFIG = CacheEnforcementConfig(
             # L1/L2/L3 while satisfying LangGraph.
             "checkpoints",
             "checkpoint_writes",
+            # config_epochs is platform-internal coordination state
+            # accessed by :class:`threetears.epoch.client.EpochClient`
+            # via raw atomic INSERT ... ON CONFLICT. wrapping in a
+            # Collection would be circular: the table IS the
+            # cache-coordination signal that BaseCollection's L1/L2
+            # eviction broadcasts cross-product, so layering its own
+            # caches on top of itself buys nothing and risks staleness
+            # of the staleness signal. one row per subject, atomic
+            # row-lock serialization, no derived view to cache.
+            "config_epochs",
         }
     ),
     exemptions_path=_REPO_ROOT / "tests" / "enforcement" / "_cache_exemptions.txt",
