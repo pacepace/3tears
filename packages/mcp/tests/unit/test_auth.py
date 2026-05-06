@@ -379,3 +379,56 @@ class TestLocalGrantAuthorizerAdminLogging:
                 )
             finally:
                 await authz.stop()
+
+
+class TestLocalGrantAuthorizerOptionalEpoch:
+    """epoch_client / epoch_listener are jointly optional (single-process mode)."""
+
+    @pytest.mark.asyncio
+    async def test_start_without_epoch_loads_cache_and_skips_subscribe(self) -> None:
+        """no epoch deps: start() loads cache, skips subscribe + catchup."""
+        loader = AsyncMock(return_value=[])
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            # no epoch_client / epoch_listener: single-process mode
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            # cache primed (loader called once at start)
+            assert loader.await_count == 1
+            # no catchup task in single-process mode
+            assert authz._catchup_task is None  # noqa: SLF001
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_is_noop_when_no_catchup_task(self) -> None:
+        """stop() handles the single-process case where no catchup task ever started."""
+        loader = AsyncMock(return_value=[])
+        authz = LocalGrantAuthorizer(grant_loader=loader)
+        await authz.start()
+        # should not raise; catchup_task is None
+        await authz.stop()
+
+    def test_constructor_rejects_only_epoch_client(self) -> None:
+        """passing exactly one of (client, listener) is a usage error."""
+        loader = AsyncMock(return_value=[])
+        client, _listener, _captured = _make_listener_capturing_subscribe()
+        with pytest.raises(ValueError, match="must be provided together"):
+            LocalGrantAuthorizer(
+                grant_loader=loader,
+                epoch_client=client,
+                # epoch_listener intentionally omitted
+            )
+
+    def test_constructor_rejects_only_epoch_listener(self) -> None:
+        """passing exactly one of (client, listener) is a usage error."""
+        loader = AsyncMock(return_value=[])
+        _client, listener, _captured = _make_listener_capturing_subscribe()
+        with pytest.raises(ValueError, match="must be provided together"):
+            LocalGrantAuthorizer(
+                grant_loader=loader,
+                epoch_listener=listener,
+                # epoch_client intentionally omitted
+            )

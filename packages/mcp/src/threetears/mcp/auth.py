@@ -275,11 +275,18 @@ class LocalGrantAuthorizer:
         rows from L3
     :ptype grant_loader: GrantLoader
     :param epoch_client: task-02 :class:`EpochClient`; used by the
-        listener for cold-start prime via ``current(subject)``
-    :ptype epoch_client: EpochClient
+        listener for cold-start prime via ``current(subject)``.
+        Optional: when ``None``, the cache is loaded once at
+        :meth:`start` and never reloaded -- correct for single-process
+        modes (stdio MCP servers, tests) where there is no other
+        writer to broadcast against.
+    :ptype epoch_client: EpochClient | None
     :param epoch_listener: task-02 :class:`EpochListener`; subscribes
-        to the rbac epoch
-    :ptype epoch_listener: EpochListener
+        to the rbac epoch. Optional: when ``None`` (or when
+        ``epoch_client`` is None), :meth:`start` skips the broadcast
+        subscription and the periodic catch-up loop. Same single-
+        process rationale as ``epoch_client``.
+    :ptype epoch_listener: EpochListener | None
     :param admin_principal_ids: optional set of principal UUIDs to
         log explicitly at start-time as auto-granted. logging the
         specific principal_id (not just "admins get everything")
@@ -297,26 +304,39 @@ class LocalGrantAuthorizer:
         self,
         *,
         grant_loader: GrantLoader,
-        epoch_client: EpochClient,
-        epoch_listener: EpochListener,
+        epoch_client: EpochClient | None = None,
+        epoch_listener: EpochListener | None = None,
         admin_principal_ids: set[UUID] | None = None,
         catchup_interval_seconds: float = 60.0,
     ) -> None:
         """capture deps; no I/O until :meth:`start`.
 
+        ``epoch_client`` and ``epoch_listener`` are jointly optional --
+        single-process modes (stdio MCP servers, tests) pass neither;
+        multi-pod modes pass both. Passing exactly one is a usage
+        error and raised here.
+
         :param grant_loader: L3 grant loader
         :ptype grant_loader: GrantLoader
-        :param epoch_client: task-02 epoch client
-        :ptype epoch_client: EpochClient
-        :param epoch_listener: task-02 epoch listener
-        :ptype epoch_listener: EpochListener
+        :param epoch_client: task-02 epoch client; optional
+        :ptype epoch_client: EpochClient | None
+        :param epoch_listener: task-02 epoch listener; optional
+        :ptype epoch_listener: EpochListener | None
         :param admin_principal_ids: principals to log as auto-granted
         :ptype admin_principal_ids: set[UUID] | None
         :param catchup_interval_seconds: periodic catch-up interval
+            (only consulted when ``epoch_listener`` is provided)
         :ptype catchup_interval_seconds: float
         :return: nothing
         :rtype: None
+        :raises ValueError: when exactly one of epoch_client /
+            epoch_listener is provided (must be both or neither)
         """
+        if (epoch_client is None) != (epoch_listener is None):
+            raise ValueError(
+                "epoch_client and epoch_listener must be provided "
+                "together; passing exactly one is a usage error",
+            )
         self._grant_loader = grant_loader
         self._epoch_client = epoch_client
         self._epoch_listener = epoch_listener
@@ -346,35 +366,39 @@ class LocalGrantAuthorizer:
             log.warning("LocalGrantAuthorizer.start called twice; ignoring")
             return
         await self._reload_cache()
-        await self._epoch_listener.subscribe(
-            Subjects.mcp_rbac_epoch(),
-            self._on_rbac_bump,
-        )
+        epoch_mode = self._epoch_listener is not None
+        if epoch_mode:
+            assert self._epoch_listener is not None  # narrowed by epoch_mode
+            await self._epoch_listener.subscribe(
+                Subjects.mcp_rbac_epoch(),
+                self._on_rbac_bump,
+            )
+        log_extras: dict[str, Any] = {
+            "grant_count": len(self._cache),
+            "epoch_mode": "multi-pod" if epoch_mode else "single-process",
+        }
+        if epoch_mode:
+            log_extras["catchup_interval_seconds"] = self._catchup_interval_seconds
         if self._admin_principal_ids:
+            log_extras["admin_principal_ids"] = sorted(
+                str(pid) for pid in self._admin_principal_ids
+            )
             log.info(
                 "MCP authorizer started; admin principals auto-granted in memory "
                 "(not persisted to mcp_tool_grants)",
-                extra={"extra_data": {
-                    "grant_count": len(self._cache),
-                    "admin_principal_ids": sorted(
-                        str(pid) for pid in self._admin_principal_ids
-                    ),
-                    "catchup_interval_seconds": self._catchup_interval_seconds,
-                }},
+                extra={"extra_data": log_extras},
             )
         else:
             log.info(
                 "MCP authorizer started; no explicit admin principals registered "
                 "(any Identity arriving with is_admin=True still short-circuits)",
-                extra={"extra_data": {
-                    "grant_count": len(self._cache),
-                    "catchup_interval_seconds": self._catchup_interval_seconds,
-                }},
+                extra={"extra_data": log_extras},
             )
-        self._catchup_task = asyncio.create_task(
-            self._catchup_loop(),
-            name="mcp-rbac-catchup-loop",
-        )
+        if epoch_mode:
+            self._catchup_task = asyncio.create_task(
+                self._catchup_loop(),
+                name="mcp-rbac-catchup-loop",
+            )
         self._started = True
 
     async def stop(self) -> None:
