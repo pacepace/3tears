@@ -57,6 +57,10 @@ _CONFIG = CacheEnforcementConfig(
         # it here excludes it from the pool-access allowlist path
         # should a future caller reach for raw SQL.
         "pod_heartbeats": "HeartbeatCollection",
+        # mcp_tool_grants is the per-tool RBAC grant table created by
+        # threetears-mcp's v001 migration; the matching Collection
+        # is :class:`threetears.mcp.rbac.McpToolGrantCollection`.
+        "mcp_tool_grants": "McpToolGrantCollection",
     },
     migration_table_allowlist=frozenset(
         {
