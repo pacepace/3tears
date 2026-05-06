@@ -35,6 +35,7 @@ from threetears.mcp.auth import (
     PrincipalType,
 )
 from threetears.mcp.http_client import PlatformHttpClient, PlatformHttpError
+from threetears.mcp.noop_epoch import NoopEpochClient, NoopEpochListener
 from threetears.mcp.rbac import (
     McpToolGrantCollection,
     McpToolGrantEntity,
@@ -60,6 +61,8 @@ __all__ = [
     "McpTool",
     "McpToolGrantCollection",
     "McpToolGrantEntity",
+    "NoopEpochClient",
+    "NoopEpochListener",
     "PlatformHttpClient",
     "PlatformHttpError",
     "PrincipalType",
