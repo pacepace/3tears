@@ -314,6 +314,7 @@ class TestServerLifecycle:
                     identity=Identity(principal_type="user", principal_id=uuid4()),
                 ),
                 authorizer=_authorizer(),
+                registry=ToolRegistry(),
             )
 
     def test_name_property_exposes_constructor_value(self) -> None:
@@ -324,5 +325,6 @@ class TestServerLifecycle:
                 identity=Identity(principal_type="user", principal_id=uuid4()),
             ),
             authorizer=_authorizer(),
+            registry=ToolRegistry(),
         )
         assert server.name == "metallm-test"

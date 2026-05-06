@@ -141,32 +141,39 @@ class ToolRegistry:
         return list(self._tools.keys())
 
 
-_DEFAULT_REGISTRY = ToolRegistry()
-
-
 def register_tool(
     *,
     name: str,
     description: str,
     input_schema: dict[str, Any],
     required_permission: str,
-    registry: ToolRegistry | None = None,
+    registry: ToolRegistry,
 ) -> Callable[[ToolHandler], ToolHandler]:
-    """decorator that registers ``handler`` as an MCP tool.
+    """decorator that registers ``handler`` as an MCP tool against ``registry``.
 
     canonical usage::
+
+        registry = ToolRegistry()
 
         @register_tool(
             name="list_conversations",
             description="list recent conversations",
             input_schema={"type": "object", "properties": {...}},
             required_permission="metallm.conversations.read",
+            registry=registry,
         )
         async def handle_list_conversations(**kwargs) -> str:
             ...
 
-    when ``registry`` is ``None`` the call uses the module-level
-    default registry. tests that need isolation pass their own.
+    ``registry`` is required: the framework intentionally does not
+    keep a module-level default registry. Per-product MCP servers
+    construct their own registry inside a ``build_registry()``
+    factory so the registry's lifetime is tied to one server
+    process and tests get isolation by construction. The
+    earlier-shipped module-level default was unused by every
+    production caller (all three per-product servers passed
+    ``registry=`` explicitly) and was removed 2026-05-06 to keep
+    the framework's surface honest.
 
     :param name: MCP tool name (must be unique within the registry)
     :ptype name: str
@@ -177,17 +184,15 @@ def register_tool(
     :param required_permission: permission string the caller must
         hold; default-deny when no grant matches
     :ptype required_permission: str
-    :param registry: target registry; defaults to module-level
-    :ptype registry: ToolRegistry | None
+    :param registry: target registry; required (no module-level default)
+    :ptype registry: ToolRegistry
     :return: decorator returning the handler unchanged
     :rtype: Callable[[ToolHandler], ToolHandler]
     """
 
-    target = registry if registry is not None else _DEFAULT_REGISTRY
-
     def _decorator(handler: ToolHandler) -> ToolHandler:
         """register ``handler`` as :class:`McpTool` and return it unchanged."""
-        target.register(
+        registry.register(
             McpTool(
                 name=name,
                 description=description,
@@ -199,28 +204,3 @@ def register_tool(
         return handler
 
     return _decorator
-
-
-def get_default_registry() -> ToolRegistry:
-    """return the module-level default tool registry.
-
-    server entry-point modules call this to hand the registry to
-    their :class:`McpServer`. tests typically construct their own
-    registry instead of touching the default.
-
-    :return: default registry instance
-    :rtype: ToolRegistry
-    """
-    return _DEFAULT_REGISTRY
-
-
-def reset_default_registry_for_testing() -> None:
-    """clear the module-level default registry.
-
-    test-only escape hatch. production code never resets the default
-    registry; the singleton lives for the process's lifetime.
-
-    :return: nothing
-    :rtype: None
-    """
-    _DEFAULT_REGISTRY._tools.clear()  # noqa: SLF001

@@ -115,11 +115,12 @@ class TestRegisterToolDecorator:
         # decorator did not wrap; the handler is the same callable.
         assert handler.__name__ == "handler"
 
-    def test_decorator_default_registry_isolation(self) -> None:
-        """test fixture: explicit registry isolates from module default.
+    def test_decorator_registries_are_isolated(self) -> None:
+        """tools registered against registry_a do not leak into registry_b.
 
-        passing ``registry=...`` means the module-level default is
-        untouched -- important for test independence.
+        Tests construct their own registries; with no module-level
+        default to fall back on, isolation is guaranteed by
+        construction. This is the canonical shape post-cleanup.
         """
         registry_a = ToolRegistry()
         registry_b = ToolRegistry()

@@ -46,9 +46,7 @@ from threetears.mcp.tool import (
     McpTool,
     ToolHandler,
     ToolRegistry,
-    get_default_registry,
     register_tool,
-    reset_default_registry_for_testing,
 )
 
 __all__ = [
@@ -68,8 +66,6 @@ __all__ = [
     "PrincipalType",
     "ToolHandler",
     "ToolRegistry",
-    "get_default_registry",
     "mcp_tool_grants_table",
     "register_tool",
-    "reset_default_registry_for_testing",
 ]

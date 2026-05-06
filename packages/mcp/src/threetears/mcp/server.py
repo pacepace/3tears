@@ -39,7 +39,7 @@ from mcp.server.stdio import stdio_server as _stdio_server
 from threetears.observe import get_logger
 
 from threetears.mcp.auth import Authorizer, IdentityProvider
-from threetears.mcp.tool import ToolRegistry, get_default_registry
+from threetears.mcp.tool import ToolRegistry
 
 __all__ = [
     "McpServer",
@@ -67,9 +67,13 @@ class McpServer:
         before each tool dispatch; framework default is
         :class:`LocalGrantAuthorizer`
     :ptype authorizer: Authorizer
-    :param registry: tool registry to expose; defaults to the
-        module-level singleton populated by :func:`register_tool`
-    :ptype registry: ToolRegistry | None
+    :param registry: tool registry to expose. Required: per-product
+        servers construct their own via a ``build_registry()``
+        factory so registry lifetime is tied to one server process
+        and tests get isolation by construction. The earlier-shipped
+        module-level default was unused by every production caller
+        and removed 2026-05-06.
+    :ptype registry: ToolRegistry
     """
 
     def __init__(
@@ -78,7 +82,7 @@ class McpServer:
         name: str,
         identity_provider: IdentityProvider,
         authorizer: Authorizer,
-        registry: ToolRegistry | None = None,
+        registry: ToolRegistry,
     ) -> None:
         """capture deps; no I/O until :meth:`serve_stdio`.
 
@@ -88,8 +92,8 @@ class McpServer:
         :ptype identity_provider: IdentityProvider
         :param authorizer: permission evaluator
         :ptype authorizer: Authorizer
-        :param registry: tool registry; defaults to module-level
-        :ptype registry: ToolRegistry | None
+        :param registry: tool registry; required (no module-level default)
+        :ptype registry: ToolRegistry
         :return: nothing
         :rtype: None
         :raises ValueError: when ``name`` is empty
@@ -99,7 +103,7 @@ class McpServer:
         self._name = name
         self._identity_provider = identity_provider
         self._authorizer = authorizer
-        self._registry = registry if registry is not None else get_default_registry()
+        self._registry = registry
         self._sdk_server: _SdkServer = _SdkServer(name)
         self._started = False
         self._wire_handlers()
