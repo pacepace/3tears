@@ -42,17 +42,20 @@ class McpTool:
     """one MCP tool's full descriptor.
 
     :ivar name: MCP tool name as the client sees it (must be unique
-        per server)
+        per server); must be non-empty
     :ivar description: human-readable description; the LLM uses this
         to decide whether to invoke the tool
     :ivar input_schema: JSON Schema (draft 2020-12 compatible) for
         the tool's input arguments; the MCP SDK validates against
         this before dispatch
     :ivar required_permission: permission string the caller must
-        hold; default-deny when no grant matches. v1 framework
-        rejects ``None`` -- explicit ``"public"`` would still go
-        through the authorizer (which is free to implement an
-        always-allow policy for that exact string)
+        hold; default-deny when no grant matches. ``""`` (empty
+        string) is rejected at construction because an empty
+        permission would silently default-deny every call without
+        the explicit "no permission gate" intent the framework
+        forbids. tools that genuinely want public access should
+        declare a sentinel like ``"public"`` and the consuming
+        :class:`Authorizer` impl decides
     :ivar handler: async callable invoked with validated input
         kwargs; return value is wrapped into MCP response envelope
     """
@@ -62,6 +65,23 @@ class McpTool:
     input_schema: dict[str, Any]
     required_permission: str
     handler: ToolHandler
+
+    def __post_init__(self) -> None:
+        """validate non-empty fields at construction.
+
+        :raises ValueError: ``name`` or ``required_permission`` is
+            an empty string. silent empty-permission default-deny
+            is the kind of bug that doesn't surface until a real
+            user is denied for an unexplained reason.
+        """
+        if not self.name:
+            raise ValueError("McpTool.name must be non-empty")
+        if not self.required_permission:
+            raise ValueError(
+                "McpTool.required_permission must be non-empty; "
+                "use a sentinel like 'public' if the tool truly has "
+                "no permission gate (the Authorizer impl decides)",
+            )
 
 
 class ToolRegistry:

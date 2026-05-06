@@ -203,17 +203,24 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         rows go straight from L3 (no caching here -- the authorizer
         owns the in-memory cache).
 
+        uses the public :attr:`l3_pool` extension seam (matches every
+        other peer collection) and fails closed when the registry
+        has not been configured.
+
         :return: list of dict rows with keys
             ``(grant_id, principal_type, principal_id, tool_name,
             permission, date_created)``
         :rtype: list[dict[str, Any]]
+        :raises RuntimeError: when the L3 pool is not configured
+            on this collection's registry
         """
-        # narrow path: read directly via the L3 pool to bypass per-row
-        # cache lookups (we want the authoritative current set, not
-        # whatever's in L1). the authorizer cache IS the in-memory
-        # source of truth at runtime; this loader feeds it.
-        l3_pool = self._registry.get_l3_pool(self.table_name)
-        rows = await l3_pool.fetch(
+        if self.l3_pool is None:
+            raise RuntimeError(
+                "McpToolGrantCollection L3 pool is not configured; "
+                "wire CollectionRegistry.configure(l3_pool=...) before "
+                "calling load_all_grants",
+            )
+        rows = await self.l3_pool.fetch(
             "SELECT grant_id, principal_type, principal_id, "
             "tool_name, permission, date_created "
             "FROM mcp_tool_grants",

@@ -30,6 +30,7 @@ auditable.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -224,6 +225,18 @@ class Authorizer(Protocol):
         """
         ...
 
+    async def stop(self) -> None:
+        """tear down background state (cancel periodic tasks, etc.).
+
+        called by :meth:`McpServer.stop` (or the server's lifespan
+        teardown). authorizers without background state implement
+        as a no-op.
+
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
 
 # ---------------------------------------------------------------------
 # LocalGrantAuthorizer -- framework default impl
@@ -267,6 +280,17 @@ class LocalGrantAuthorizer:
     :param epoch_listener: task-02 :class:`EpochListener`; subscribes
         to the rbac epoch
     :ptype epoch_listener: EpochListener
+    :param admin_principal_ids: optional set of principal UUIDs to
+        log explicitly at start-time as auto-granted. logging the
+        specific principal_id (not just "admins get everything")
+        keeps the audit trail concrete for the v1 single-identity
+        stdio mode
+    :ptype admin_principal_ids: set[UUID] | None
+    :param catchup_interval_seconds: how often the periodic catch-up
+        tick polls :meth:`EpochListener.catch_up` to recover from
+        missed broadcasts. default 60 matches task-02 Chunk B's
+        capabilities-epoch tick
+    :ptype catchup_interval_seconds: float
     """
 
     def __init__(
@@ -275,6 +299,8 @@ class LocalGrantAuthorizer:
         grant_loader: GrantLoader,
         epoch_client: EpochClient,
         epoch_listener: EpochListener,
+        admin_principal_ids: set[UUID] | None = None,
+        catchup_interval_seconds: float = 60.0,
     ) -> None:
         """capture deps; no I/O until :meth:`start`.
 
@@ -284,24 +310,34 @@ class LocalGrantAuthorizer:
         :ptype epoch_client: EpochClient
         :param epoch_listener: task-02 epoch listener
         :ptype epoch_listener: EpochListener
+        :param admin_principal_ids: principals to log as auto-granted
+        :ptype admin_principal_ids: set[UUID] | None
+        :param catchup_interval_seconds: periodic catch-up interval
+        :ptype catchup_interval_seconds: float
         :return: nothing
         :rtype: None
         """
         self._grant_loader = grant_loader
         self._epoch_client = epoch_client
         self._epoch_listener = epoch_listener
+        self._admin_principal_ids = admin_principal_ids or set()
+        self._catchup_interval_seconds = catchup_interval_seconds
         # cache key shape: (principal_id, permission) -> True. presence
         # is the grant; we don't store False entries because absence
         # means "no grant" by default-deny semantics.
         self._cache: set[tuple[UUID, str]] = set()
         self._started = False
+        self._catchup_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        """prime the cache from L3 and subscribe to the rbac epoch.
+        """prime cache, subscribe to rbac epoch, spawn catch-up tick.
 
         idempotent: subsequent calls log a warning and short-circuit.
-        production code calls once at server startup; tests may
-        re-construct.
+        the catch-up tick is the safety net for the documented
+        prime/subscribe race in :meth:`EpochListener.subscribe`
+        (and for any broadcast outright dropped on the wire). v1
+        spec EPOCH-09 requires recovery within bounded time; the
+        tick provides it.
 
         :return: nothing
         :rtype: None
@@ -314,12 +350,78 @@ class LocalGrantAuthorizer:
             Subjects.mcp_rbac_epoch(),
             self._on_rbac_bump,
         )
-        log.info(
-            "MCP authorizer started; admin identities are auto-granted "
-            "every tool in memory (not persisted to mcp_tool_grants)",
-            extra={"extra_data": {"grant_count": len(self._cache)}},
+        if self._admin_principal_ids:
+            log.info(
+                "MCP authorizer started; admin principals auto-granted in memory "
+                "(not persisted to mcp_tool_grants)",
+                extra={"extra_data": {
+                    "grant_count": len(self._cache),
+                    "admin_principal_ids": sorted(
+                        str(pid) for pid in self._admin_principal_ids
+                    ),
+                    "catchup_interval_seconds": self._catchup_interval_seconds,
+                }},
+            )
+        else:
+            log.info(
+                "MCP authorizer started; no explicit admin principals registered "
+                "(any Identity arriving with is_admin=True still short-circuits)",
+                extra={"extra_data": {
+                    "grant_count": len(self._cache),
+                    "catchup_interval_seconds": self._catchup_interval_seconds,
+                }},
+            )
+        self._catchup_task = asyncio.create_task(
+            self._catchup_loop(),
+            name="mcp-rbac-catchup-loop",
         )
         self._started = True
+
+    async def stop(self) -> None:
+        """cancel the periodic catch-up tick and await its exit.
+
+        idempotent: subsequent calls are no-ops. callers (typically
+        :meth:`McpServer.stop` or a lifespan teardown) invoke once
+        on shutdown.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._catchup_task is None:
+            return
+        self._catchup_task.cancel()
+        try:
+            await self._catchup_task
+        except asyncio.CancelledError:
+            pass
+        self._catchup_task = None
+        log.info("MCP authorizer catch-up loop stopped")
+
+    async def _catchup_loop(self) -> None:
+        """periodic safety-net: pull current epoch; reload if stale.
+
+        the listener's subscribe path covers the happy case; this
+        loop covers (a) the documented prime/subscribe race window
+        and (b) a broadcast outright dropped on the wire (subscriber
+        blip, JetStream redelivery edge). cheap when nothing has
+        changed -- a one-row indexed lookup on
+        ``platform.config_epochs``.
+
+        :return: nothing
+        :rtype: None
+        """
+        subject = Subjects.mcp_rbac_epoch()
+        while True:
+            try:
+                await asyncio.sleep(self._catchup_interval_seconds)
+                await self._epoch_listener.catch_up(subject, self._on_rbac_bump)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning(
+                    "MCP rbac catch-up tick errored; will retry on next interval",
+                    exc_info=True,
+                )
 
     async def allows(self, identity: Identity, permission: str) -> bool:
         """return True iff ``identity`` holds ``permission``.

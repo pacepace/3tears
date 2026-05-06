@@ -15,6 +15,51 @@ from threetears.mcp.auth import (
 
 
 # ---------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------
+
+
+def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any]]:
+    """build a fake EpochClient + EpochListener; capture subscribe callback."""
+    fake_client = MagicMock()
+    fake_client.current = AsyncMock(return_value=0)
+
+    fake_listener = MagicMock()
+    captured: list[Any] = []
+
+    async def _subscribe(subject: Any, on_bump: Any) -> None:  # noqa: ARG001
+        captured.append(on_bump)
+
+    fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
+    fake_listener.catch_up = AsyncMock(return_value=0)
+    return fake_client, fake_listener, captured
+
+
+async def _build_started_authorizer(
+    *,
+    loader: AsyncMock,
+    admin_principal_ids: set[UUID] | None = None,
+) -> tuple[LocalGrantAuthorizer, list[Any]]:
+    """construct + start a LocalGrantAuthorizer; return (authz, captured_callbacks).
+
+    every test that uses this helper MUST ``await authz.stop()`` at
+    teardown so the spawned catch-up task is cancelled. catchup
+    interval is set to a very large value so the task never fires
+    during the test (deterministic).
+    """
+    client, listener, captured = _make_listener_capturing_subscribe()
+    authz = LocalGrantAuthorizer(
+        grant_loader=loader,
+        epoch_client=client,
+        epoch_listener=listener,
+        admin_principal_ids=admin_principal_ids,
+        catchup_interval_seconds=3600.0,
+    )
+    await authz.start()
+    return authz, captured
+
+
+# ---------------------------------------------------------------------
 # EnvVarIdentityProvider
 # ---------------------------------------------------------------------
 
@@ -70,22 +115,6 @@ class TestEnvVarIdentityProvider:
 # ---------------------------------------------------------------------
 
 
-def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any]]:
-    """build a fake EpochClient + EpochListener; capture subscribe callback."""
-    fake_client = MagicMock()
-    fake_client.current = AsyncMock(return_value=0)
-
-    fake_listener = MagicMock()
-    captured: list[Any] = []
-
-    async def _subscribe(subject: Any, on_bump: Any) -> None:  # noqa: ARG001
-        captured.append(on_bump)
-
-    fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
-    fake_listener.catch_up = AsyncMock(return_value=0)
-    return fake_client, fake_listener, captured
-
-
 class TestLocalGrantAuthorizer:
     """default-deny + admin auto-grant + cache reload on epoch bump."""
 
@@ -93,29 +122,24 @@ class TestLocalGrantAuthorizer:
     async def test_admin_short_circuit_allows_without_grant(self) -> None:
         """is_admin=True identity allows every permission without DB lookup."""
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=uuid4(), is_admin=True)
-        assert await authz.allows(identity, "anything.at.all") is True
-        # admin path does not consult the loader after start().
-        loader.assert_awaited_once()  # called by start() reload
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=uuid4(), is_admin=True)
+            assert await authz.allows(identity, "anything.at.all") is True
+            loader.assert_awaited_once()  # called by start() reload
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_default_deny_when_no_grant(self) -> None:
         """non-admin identity with no matching grant is denied."""
         loader = AsyncMock(return_value=[])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=uuid4())
-        assert await authz.allows(identity, "metallm.conv.read") is False
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=uuid4())
+            assert await authz.allows(identity, "metallm.conv.read") is False
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_principal_grant_allows(self) -> None:
@@ -124,16 +148,13 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(return_value=[
             {"principal_id": principal_id, "permission": "metallm.conv.read"},
         ])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=principal_id)
-        assert await authz.allows(identity, "metallm.conv.read") is True
-        # other permissions still deny.
-        assert await authz.allows(identity, "metallm.conv.write") is False
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "metallm.conv.read") is True
+            assert await authz.allows(identity, "metallm.conv.write") is False
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_group_grant_allows_via_membership(self) -> None:
@@ -142,18 +163,16 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(return_value=[
             {"principal_id": group_id, "permission": "hub.audit.read"},
         ])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(
-            principal_type="user",
-            principal_id=uuid4(),
-            groups=frozenset({group_id}),
-        )
-        assert await authz.allows(identity, "hub.audit.read") is True
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(
+                principal_type="user",
+                principal_id=uuid4(),
+                groups=frozenset({group_id}),
+            )
+            assert await authz.allows(identity, "hub.audit.read") is True
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_role_grant_allows_via_assignment(self) -> None:
@@ -162,77 +181,70 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(return_value=[
             {"principal_id": role_id, "permission": "hub.audit.read"},
         ])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(
-            principal_type="user",
-            principal_id=uuid4(),
-            roles=frozenset({role_id}),
-        )
-        assert await authz.allows(identity, "hub.audit.read") is True
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(
+                principal_type="user",
+                principal_id=uuid4(),
+                roles=frozenset({role_id}),
+            )
+            assert await authz.allows(identity, "hub.audit.read") is True
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_start_subscribes_to_rbac_epoch(self) -> None:
         """start() subscribes the listener to Subjects.mcp_rbac_epoch."""
         loader = AsyncMock(return_value=[])
-        client, listener, _captured = _make_listener_capturing_subscribe()
+        client, listener, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
+            grant_loader=loader,
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
         )
         await authz.start()
-        listener.subscribe.assert_awaited_once()
-        # subject argument should be the canonical mcp.rbac epoch subject
-        from threetears.nats import Subjects
-        called_subject = listener.subscribe.await_args.args[0]
-        assert called_subject == Subjects.mcp_rbac_epoch()
+        try:
+            listener.subscribe.assert_awaited_once()
+            from threetears.nats import Subjects
+            called_subject = listener.subscribe.await_args.args[0]
+            assert called_subject == Subjects.mcp_rbac_epoch()
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_epoch_bump_reloads_cache(self) -> None:
         """on rbac bump, reload pulls current grants and replaces cache."""
         principal_id = uuid4()
         loader = AsyncMock(side_effect=[
-            [],  # cold-start load: no grants yet
-            [{"principal_id": principal_id, "permission": "metallm.conv.read"}],  # post-bump
+            [],
+            [{"principal_id": principal_id, "permission": "metallm.conv.read"}],
         ])
-        client, listener, captured = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=principal_id)
-        # before bump: deny.
-        assert await authz.allows(identity, "metallm.conv.read") is False
-        # simulate bump dispatch.
-        on_bump = captured[0]
-        await on_bump(7, {"hint": "added grant"})
-        # after bump: allow.
-        assert await authz.allows(identity, "metallm.conv.read") is True
+        authz, captured = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "metallm.conv.read") is False
+            await captured[0](7, {"hint": "added grant"})
+            assert await authz.allows(identity, "metallm.conv.read") is True
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_loader_failure_keeps_prior_cache(self) -> None:
         """transient L3 hiccup logs + leaves prior cache in place."""
         principal_id = uuid4()
         loader = AsyncMock(side_effect=[
-            [{"principal_id": principal_id, "permission": "hub.audit.read"}],  # initial
-            RuntimeError("L3 down"),  # bump-time failure
+            [{"principal_id": principal_id, "permission": "hub.audit.read"}],
+            RuntimeError("L3 down"),
         ])
-        client, listener, captured = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=principal_id)
-        assert await authz.allows(identity, "hub.audit.read") is True
-
-        await captured[0](2, None)  # bump that fails
-        # cache should still hold the original grant.
-        assert await authz.allows(identity, "hub.audit.read") is True
+        authz, captured = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "hub.audit.read") is True
+            await captured[0](2, None)
+            assert await authz.allows(identity, "hub.audit.read") is True
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_uuid_string_in_loader_row_is_normalised(self) -> None:
@@ -241,14 +253,12 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(return_value=[
             {"principal_id": str(principal_id), "permission": "metallm.conv.read"},
         ])
-        client, listener, _ = _make_listener_capturing_subscribe()
-        authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
-        )
-        await authz.start()
-
-        identity = Identity(principal_type="user", principal_id=principal_id)
-        assert await authz.allows(identity, "metallm.conv.read") is True
+        authz, _ = await _build_started_authorizer(loader=loader)
+        try:
+            identity = Identity(principal_type="user", principal_id=principal_id)
+            assert await authz.allows(identity, "metallm.conv.read") is True
+        finally:
+            await authz.stop()
 
     @pytest.mark.asyncio
     async def test_double_start_is_no_op(self) -> None:
@@ -256,9 +266,116 @@ class TestLocalGrantAuthorizer:
         loader = AsyncMock(return_value=[])
         client, listener, _ = _make_listener_capturing_subscribe()
         authz = LocalGrantAuthorizer(
-            grant_loader=loader, epoch_client=client, epoch_listener=listener,
+            grant_loader=loader,
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
         )
         await authz.start()
         await authz.start()
-        loader.assert_awaited_once()
-        listener.subscribe.assert_awaited_once()
+        try:
+            loader.assert_awaited_once()
+            listener.subscribe.assert_awaited_once()
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_catchup_task_and_is_idempotent(self) -> None:
+        """stop() cancels the spawned tick; second stop is a no-op."""
+        loader = AsyncMock(return_value=[])
+        authz, _ = await _build_started_authorizer(loader=loader)
+        # first stop() cancels the task.
+        await authz.stop()
+        # second stop() is safe (no-op).
+        await authz.stop()
+
+
+class TestLocalGrantAuthorizerCatchupTick:
+    """the periodic catch-up tick is the safety net for missed broadcasts."""
+
+    @pytest.mark.asyncio
+    async def test_catchup_loop_invokes_epoch_listener_catch_up(self) -> None:
+        """the spawned tick calls EpochListener.catch_up on every interval.
+
+        constructs the authorizer with a tiny interval and asserts
+        catch_up was called at least once before stop. proves the
+        background task wires the right method, even if we don't
+        wait for many ticks.
+        """
+        import asyncio
+
+        loader = AsyncMock(return_value=[])
+        client, listener, _ = _make_listener_capturing_subscribe()
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=0.01,  # 10ms -- fires almost immediately
+        )
+        await authz.start()
+        try:
+            # let the loop run a couple of ticks.
+            await asyncio.sleep(0.05)
+            assert listener.catch_up.await_count >= 1
+            # the tick uses Subjects.mcp_rbac_epoch as the subject.
+            from threetears.nats import Subjects
+            for call in listener.catch_up.await_args_list:
+                assert call.args[0] == Subjects.mcp_rbac_epoch()
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_catchup_loop_swallows_transient_errors(self) -> None:
+        """a tick that raises does not kill the loop; subsequent ticks fire.
+
+        proves the narrow exception scope around catch_up keeps the
+        safety net alive across a transient L3 / NATS hiccup.
+        """
+        import asyncio
+
+        loader = AsyncMock(return_value=[])
+        client, listener, _ = _make_listener_capturing_subscribe()
+        # first catch_up raises; subsequent ones return 0.
+        listener.catch_up = AsyncMock(side_effect=[
+            RuntimeError("transient"),
+            0,
+            0,
+            0,
+        ])
+        authz = LocalGrantAuthorizer(
+            grant_loader=loader,
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=0.01,
+        )
+        await authz.start()
+        try:
+            await asyncio.sleep(0.05)
+            # at least 2 calls means the loop survived the first error.
+            assert listener.catch_up.await_count >= 2
+        finally:
+            await authz.stop()
+
+
+class TestLocalGrantAuthorizerAdminLogging:
+    """admin auto-grant logs the specific principal IDs at start-time."""
+
+    @pytest.mark.asyncio
+    async def test_admin_principal_ids_recorded(self, caplog: pytest.LogCaptureFixture) -> None:
+        """admin_principal_ids surface in the start-time log payload."""
+        admin_id = uuid4()
+        loader = AsyncMock(return_value=[])
+        with caplog.at_level("INFO"):
+            authz, _ = await _build_started_authorizer(
+                loader=loader,
+                admin_principal_ids={admin_id},
+            )
+            try:
+                # caplog accumulates records; one of them carries the ids.
+                joined = " ".join(rec.message for rec in caplog.records)
+                assert str(admin_id) in joined or any(
+                    str(admin_id) in str(rec.__dict__.get("extra_data", ""))
+                    for rec in caplog.records
+                )
+            finally:
+                await authz.stop()

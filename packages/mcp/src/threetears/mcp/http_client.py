@@ -26,6 +26,7 @@ mcp-specific home if a third consumer ever appears.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -133,6 +134,11 @@ class PlatformHttpClient:
         self._timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
         self._token: str | None = None
+        # serializes login() so concurrent first-requests + concurrent
+        # 401-refreshes don't trigger a login storm. each waiter that
+        # arrives while a login is in flight observes the freshly-cached
+        # token after the lock releases instead of issuing its own.
+        self._login_lock = asyncio.Lock()
 
     @classmethod
     def from_env(
@@ -196,42 +202,55 @@ class PlatformHttpClient:
         """
         await self._client.aclose()
 
-    async def login(self) -> str:
+    async def login(self, *, force: bool = False) -> str:
         """POST ``login_path`` with email/password; cache the token.
 
+        serialized via :attr:`_login_lock` so concurrent callers
+        don't issue parallel login requests. when ``force=False``
+        (the default) waiters that arrive after another login
+        completed observe the freshly-cached token without issuing
+        their own POST. ``force=True`` forces a re-login (the
+        refresh-on-401 retry path uses this so the new token is
+        guaranteed fresh).
+
+        :param force: re-login even if a token is already cached
+        :ptype force: bool
         :return: the bearer token
         :rtype: str
         :raises PlatformHttpError: when login returns non-2xx or
             the response body lacks ``token_field``
         """
-        url = self._url(self._login_path)
-        response = await self._client.post(
-            url,
-            json={"email": self._email, "password": self._password},
-        )
-        if response.status_code >= 400:
-            raise PlatformHttpError(
-                f"login failed: {response.status_code}",
-                status_code=response.status_code,
-                body=response.content,
+        async with self._login_lock:
+            if not force and self._token is not None:
+                return self._token
+            url = self._url(self._login_path)
+            response = await self._client.post(
+                url,
+                json={"email": self._email, "password": self._password},
             )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise PlatformHttpError(
-                f"login response not JSON: {response.text[:200]}",
-                status_code=response.status_code,
-                body=response.content,
-            ) from exc
-        token = payload.get(self._token_field)
-        if not token:
-            raise PlatformHttpError(
-                f"login response missing {self._token_field!r}",
-                status_code=response.status_code,
-                body=response.content,
-            )
-        self._token = token
-        return token
+            if response.status_code >= 400:
+                raise PlatformHttpError(
+                    f"login failed: {response.status_code}",
+                    status_code=response.status_code,
+                    body=response.content,
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise PlatformHttpError(
+                    f"login response not JSON: {response.text[:200]}",
+                    status_code=response.status_code,
+                    body=response.content,
+                ) from exc
+            token = payload.get(self._token_field)
+            if not token:
+                raise PlatformHttpError(
+                    f"login response missing {self._token_field!r}",
+                    status_code=response.status_code,
+                    body=response.content,
+                )
+            self._token = token
+            return token
 
     @property
     def token(self) -> str | None:
@@ -285,7 +304,7 @@ class PlatformHttpClient:
                 "401 from upstream; refreshing token and retrying once",
                 extra={"extra_data": {"method": method, "path": path}},
             )
-            await self.login()
+            await self.login(force=True)
             response = await self._send(method, path, json=json, params=params, headers=headers)
             if response.status_code == 401:
                 raise PlatformHttpError(

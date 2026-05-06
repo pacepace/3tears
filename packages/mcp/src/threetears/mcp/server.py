@@ -7,13 +7,14 @@ owns three things on top of the SDK:
    server so the client sees them at ``tools/list`` time.
 2. RBAC gating: every dispatch flows through
    :meth:`Authorizer.allows(identity, tool.required_permission)`
-   before the handler runs. denied dispatches return a structured
-   MCP error envelope (per the MCP spec) -- not a Python exception
-   in the response body.
+   before the handler runs. denied dispatches return a
+   :class:`mcp.types.CallToolResult` with ``isError=True`` so the
+   MCP client sees the failure at the protocol level (not as
+   ``isError=False`` text content carrying inner JSON).
 3. error mapping: handler exceptions are caught at the framework
-   border, logged with context, and returned to the client as
-   structured ``isError=True`` content. nothing leaks past the
-   border as a raw traceback.
+   border, logged with context, and returned as ``CallToolResult
+   (isError=True, content=[...])``. nothing leaks past the border
+   as a raw traceback.
 
 stdio is the v1 transport. v2 HTTP slots in by adding a
 ``serve_http`` method alongside :meth:`serve_stdio`; the rest of
@@ -100,6 +101,7 @@ class McpServer:
         self._authorizer = authorizer
         self._registry = registry if registry is not None else get_default_registry()
         self._sdk_server: _SdkServer = _SdkServer(name)
+        self._started = False
         self._wire_handlers()
 
     @property
@@ -136,7 +138,10 @@ class McpServer:
             return tools
 
         @self._sdk_server.call_tool()
-        async def _call_tool(name: str, arguments: dict[str, Any]) -> list[mcp_types.TextContent]:
+        async def _call_tool(
+            name: str,
+            arguments: dict[str, Any],
+        ) -> mcp_types.CallToolResult | list[mcp_types.TextContent]:
             """dispatch one tool call; RBAC gate + error mapping."""
             return await self._dispatch(name, arguments)
 
@@ -144,23 +149,30 @@ class McpServer:
         self,
         tool_name: str,
         arguments: dict[str, Any],
-    ) -> list[mcp_types.TextContent]:
+    ) -> mcp_types.CallToolResult | list[mcp_types.TextContent]:
         """resolve identity, gate via authorizer, run handler, map errors.
 
         the gate fires BEFORE the handler so denied callers cannot
-        observe handler-side state (timing, log output, etc.). all
-        framework errors -- unknown tool, denied permission, handler
-        exception -- return as ``isError=True`` text content per the
-        MCP spec, not as raised exceptions to the SDK transport.
+        observe handler-side state (timing, log output, etc.). every
+        framework error path -- unknown tool, denied permission,
+        handler exception -- returns a :class:`CallToolResult` with
+        ``isError=True`` so the MCP client sees the failure at the
+        protocol level. happy-path returns a ``list[TextContent]``
+        which the SDK wraps in ``CallToolResult(isError=False, ...)``.
+
+        the structured error detail (machine-readable ``code`` field)
+        is preserved in the content text as JSON so callers that want
+        to pattern-match on ``code`` can; the protocol-level
+        ``isError`` flag is what gates "did it succeed" decisions.
 
         :param tool_name: requested tool name from the MCP client
         :ptype tool_name: str
         :param arguments: validated input arguments
         :ptype arguments: dict[str, Any]
-        :return: list with a single :class:`TextContent`; for errors
-            the content text is a JSON envelope with ``isError=True``
-            and an ``error`` field carrying the structured detail
-        :rtype: list[mcp_types.TextContent]
+        :return: :class:`CallToolResult` (errors) or
+            ``list[TextContent]`` (success; SDK wraps with
+            ``isError=False``)
+        :rtype: mcp_types.CallToolResult | list[mcp_types.TextContent]
         """
         tool = self._registry.get(tool_name)
         if tool is None:
@@ -168,7 +180,7 @@ class McpServer:
                 "MCP dispatch: unknown tool",
                 extra={"extra_data": {"tool_name": tool_name}},
             )
-            return self._error_content(
+            return self._error_result(
                 tool_name=tool_name,
                 code="UNKNOWN_TOOL",
                 message=f"no tool named {tool_name!r} registered",
@@ -182,7 +194,7 @@ class McpServer:
                 exc_info=True,
                 extra={"extra_data": {"tool_name": tool_name}},
             )
-            return self._error_content(
+            return self._error_result(
                 tool_name=tool_name,
                 code="IDENTITY_UNAVAILABLE",
                 message="caller identity could not be resolved",
@@ -200,7 +212,7 @@ class McpServer:
                     "required_permission": tool.required_permission,
                 }},
             )
-            return self._error_content(
+            return self._error_result(
                 tool_name=tool_name,
                 code="AUTHZ_ERROR",
                 message="authorizer evaluation failed",
@@ -215,7 +227,7 @@ class McpServer:
                     "required_permission": tool.required_permission,
                 }},
             )
-            return self._error_content(
+            return self._error_result(
                 tool_name=tool_name,
                 code="PERMISSION_DENIED",
                 message=(
@@ -235,34 +247,44 @@ class McpServer:
                     "principal_id": str(identity.principal_id),
                 }},
             )
-            return self._error_content(
+            return self._error_result(
                 tool_name=tool_name,
                 code="HANDLER_ERROR",
                 message=f"{type(exc).__name__}: {exc}",
             )
 
+        # happy-path normalization: handler may return a str, a
+        # single TextContent, a list of TextContent (already wire-
+        # ready), or something JSON-serialisable. the SDK wraps
+        # the returned list in CallToolResult(isError=False, ...).
+        if isinstance(result, list) and all(
+            isinstance(item, mcp_types.TextContent) for item in result
+        ):
+            return result
+        if isinstance(result, mcp_types.TextContent):
+            return [result]
         if isinstance(result, str):
             text = result
-        elif isinstance(result, mcp_types.TextContent):
-            return [result]
         else:
             text = json.dumps(result, default=str, indent=2)
         return [mcp_types.TextContent(type="text", text=text)]
 
     @staticmethod
-    def _error_content(
+    def _error_result(
         *,
         tool_name: str,
         code: str,
         message: str,
-    ) -> list[mcp_types.TextContent]:
-        """build the structured error envelope for a denied / failed dispatch.
+    ) -> mcp_types.CallToolResult:
+        """build the protocol-level error result for a denied / failed dispatch.
 
-        the MCP spec returns errors via ``isError=True`` content
-        (``CallToolResult.isError``); the SDK reads the content
-        envelope back. for v1 we encode the error detail as JSON in
-        the text content -- LLM clients can parse; human clients can
-        read.
+        returns a :class:`CallToolResult` with ``isError=True`` so
+        the MCP client sees the failure via the protocol envelope,
+        not via a text-content JSON body. the structured detail
+        (``code`` + ``tool_name``) is preserved in the inner content
+        as JSON so callers that want machine-readable error codes
+        can parse; clients that only check ``isError`` see the
+        failure regardless.
 
         :param tool_name: tool name the dispatch targeted
         :ptype tool_name: str
@@ -270,15 +292,17 @@ class McpServer:
         :ptype code: str
         :param message: human-readable error message
         :ptype message: str
-        :return: single-element content list carrying the JSON envelope
-        :rtype: list[mcp_types.TextContent]
+        :return: :class:`CallToolResult` with ``isError=True``
+        :rtype: mcp_types.CallToolResult
         """
         envelope = {
-            "isError": True,
             "tool_name": tool_name,
             "error": {"code": code, "message": message},
         }
-        return [mcp_types.TextContent(type="text", text=json.dumps(envelope, indent=2))]
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=json.dumps(envelope, indent=2))],
+            isError=True,
+        )
 
     async def start(self) -> None:
         """initialize background state (authorizer cache prime + subscribe).
@@ -291,17 +315,38 @@ class McpServer:
         :rtype: None
         """
         await self._authorizer.start()
+        self._started = True
+
+    async def stop(self) -> None:
+        """tear down background state (authorizer catch-up tick, etc.).
+
+        called once on shutdown (typically from a lifespan teardown
+        or a SIGTERM handler). delegates to :meth:`Authorizer.stop`.
+
+        :return: nothing
+        :rtype: None
+        """
+        await self._authorizer.stop()
 
     async def serve_stdio(self) -> None:
         """run the SDK's stdio transport loop until EOF.
 
         callers MUST have called :meth:`start` first AND configured
-        logging away from stdout / stderr. this method blocks until
-        the client disconnects.
+        logging away from stdout / stderr. this method raises a
+        clear error rather than silently default-denying every
+        dispatch when start() was forgotten -- the
+        :class:`LocalGrantAuthorizer` cache would be empty and
+        every non-admin call would deny without explanation.
 
         :return: nothing
         :rtype: None
+        :raises RuntimeError: when :meth:`start` has not been called
         """
+        if not getattr(self, "_started", False):
+            raise RuntimeError(
+                "McpServer.serve_stdio called before start; the authorizer "
+                "cache has not been primed. Call McpServer.start() first.",
+            )
         async with _stdio_server() as (read_stream, write_stream):
             await self._sdk_server.run(
                 read_stream,
