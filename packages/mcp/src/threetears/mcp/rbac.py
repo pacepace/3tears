@@ -181,7 +181,12 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         """delete a grant by id.
 
         the caller is responsible for bumping the rbac epoch after
-        the row commits.
+        the row commits. uses the public :meth:`BaseCollection.get`
+        + :meth:`BaseCollection.delete` extension seams (the
+        ``find_by_id`` / ``delete_entity`` shorthand the original
+        prototype reached for does not exist on the canonical
+        BaseCollection surface; this method shapes around the real
+        contract).
 
         :param grant_id: target grant UUID
         :ptype grant_id: UUID
@@ -189,11 +194,10 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             no row matched
         :rtype: bool
         """
-        existing = await self.find_by_id(grant_id)
+        existing = await self.get(grant_id)
         if existing is None:
             return False
-        await self.delete_entity(existing)
-        return True
+        return await self.delete(grant_id)
 
     async def load_all_grants(self) -> list[dict[str, Any]]:
         """return every grant row as a dict suitable for cache rebuild.

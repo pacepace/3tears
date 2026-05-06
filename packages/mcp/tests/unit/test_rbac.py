@@ -116,32 +116,38 @@ class TestAddGrant:
 
 
 class TestRemoveGrant:
-    """``remove_grant`` lookups + delete + missing-row handling."""
+    """``remove_grant`` lookups + delete + missing-row handling.
+
+    Uses the public :meth:`BaseCollection.get` + :meth:`BaseCollection.delete`
+    extension seams (the prior ``find_by_id`` / ``delete_entity`` shorthand
+    does not exist on the canonical BaseCollection surface).
+    """
 
     @pytest.mark.asyncio
     async def test_remove_grant_existing_row_returns_true(self) -> None:
         """a found entity is deleted; True returned."""
         coll, _ = _make_collection()
         existing = MagicMock()
-        coll.find_by_id = AsyncMock(return_value=existing)  # type: ignore[method-assign]
-        coll.delete_entity = AsyncMock()  # type: ignore[method-assign]
+        coll.get = AsyncMock(return_value=existing)  # type: ignore[method-assign]
+        coll.delete = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-        result = await coll.remove_grant(uuid4())
+        target_id = uuid4()
+        result = await coll.remove_grant(target_id)
 
         assert result is True
-        coll.delete_entity.assert_awaited_once_with(existing)
+        coll.delete.assert_awaited_once_with(target_id)
 
     @pytest.mark.asyncio
     async def test_remove_grant_missing_row_returns_false(self) -> None:
         """no matching row -> False, no delete attempted."""
         coll, _ = _make_collection()
-        coll.find_by_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        coll.delete_entity = AsyncMock()  # type: ignore[method-assign]
+        coll.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        coll.delete = AsyncMock()  # type: ignore[method-assign]
 
         result = await coll.remove_grant(uuid4())
 
         assert result is False
-        coll.delete_entity.assert_not_called()
+        coll.delete.assert_not_called()
 
 
 class TestLoadAllGrants:
