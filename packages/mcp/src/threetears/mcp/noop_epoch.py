@@ -26,11 +26,19 @@ a future stdio consumer needs non-admin grant semantics, swap in
 real :class:`EpochClient` + :class:`EpochListener` against the
 hub / metallm NATS bus -- mirror the production lifespan wiring.
 
-these helpers implement the same Protocol shape that the
-:class:`LocalGrantAuthorizer` constructor expects but are typed as
-their own classes (no ``# type: ignore`` at the call site
-required) -- the framework's protocols are runtime-checkable so
-isinstance / structural-subtyping accepts them.
+these helpers are duck-typed against the concrete
+:class:`~threetears.epoch.EpochClient` /
+:class:`~threetears.epoch.EpochListener` classes the
+:class:`~threetears.mcp.auth.LocalGrantAuthorizer` constructor
+expects. they share the method signatures verbatim but do not
+inherit from those classes (those classes have constructor side
+effects we want to avoid for stdio mode). consumer scripts that
+import them no longer need ``# type: ignore`` at the call site
+because the consumer scripts are not type-checked by the project's
+mypy config; if a future maintainer adds them to a strict-mypy
+boundary, promote :class:`EpochClient` / :class:`EpochListener` to
+:func:`typing.runtime_checkable` Protocols and have these noops
+formally implement them.
 """
 
 from __future__ import annotations
