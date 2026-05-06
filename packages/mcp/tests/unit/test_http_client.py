@@ -238,3 +238,125 @@ class TestFromEnv:
             assert client._password == "topsecret"  # noqa: SLF001
         finally:
             await client.aclose()
+
+
+class TestUpload:
+    """multipart/form-data POST with refresh-on-401 semantics."""
+
+    @pytest.mark.asyncio
+    async def test_upload_sends_multipart_with_file(self) -> None:
+        """upload(path, file_data=..., filename=..., content_type=...) puts a
+        multipart body on the wire with the file under the named field."""
+        captured: dict[str, object] = {}
+
+        def responder(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/auth/login":
+                return httpx.Response(200, json={"access_token": "x"})
+            assert request.method == "POST"
+            content_type = request.headers.get("content-type", "")
+            assert content_type.startswith("multipart/form-data")
+            captured["body"] = request.content
+            captured["filename_marker"] = b'filename="readme.md"' in request.content
+            captured["field_marker"] = b'name="file"' in request.content
+            captured["bytes_marker"] = b"# MetaLLM\n" in request.content
+            return httpx.Response(
+                200,
+                json={"media_id": "019dff00-aaaa-bbbb-cccc-ddddeeeeffff"},
+            )
+
+        transport = httpx.MockTransport(responder)
+        client = _build_client(transport)
+        try:
+            response = await client.upload(
+                "/api/v1/media/upload",
+                file_field="file",
+                file_data=b"# MetaLLM\nHello world",
+                filename="readme.md",
+                content_type="text/markdown",
+            )
+            assert response.status_code == 200
+            assert captured["filename_marker"] is True
+            assert captured["field_marker"] is True
+            assert captured["bytes_marker"] is True
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_upload_refresh_on_401_retries_once(self) -> None:
+        """a 401 on the first upload triggers re-login and one retry."""
+        login_calls = {"n": 0}
+
+        def responder(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/auth/login":
+                login_calls["n"] += 1
+                token = f"tok-{login_calls['n']}"
+                return httpx.Response(200, json={"access_token": token})
+            # first upload returns 401, second returns 200
+            if request.headers.get("Authorization") == "Bearer tok-1":
+                return httpx.Response(401, json={"detail": "stale"})
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(responder)
+        client = _build_client(transport)
+        try:
+            response = await client.upload(
+                "/api/v1/media/upload",
+                file_field="file",
+                file_data=b"x",
+                filename="x.txt",
+                content_type="text/plain",
+            )
+            assert response.status_code == 200
+            assert login_calls["n"] == 2  # initial + force-refresh
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_upload_persistent_401_raises(self) -> None:
+        """a second 401 after refresh raises PlatformHttpError."""
+        def responder(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/auth/login":
+                return httpx.Response(200, json={"access_token": "x"})
+            return httpx.Response(401, json={"detail": "no"})
+
+        transport = httpx.MockTransport(responder)
+        client = _build_client(transport)
+        try:
+            with pytest.raises(PlatformHttpError):
+                await client.upload(
+                    "/api/v1/media/upload",
+                    file_field="file",
+                    file_data=b"x",
+                    filename="x.txt",
+                    content_type="text/plain",
+                )
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_upload_includes_extra_form_fields(self) -> None:
+        """extra_form= mapping lands as additional form fields on the wire."""
+        seen: dict[str, bool] = {}
+
+        def responder(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/v1/auth/login":
+                return httpx.Response(200, json={"access_token": "x"})
+            seen["has_label"] = b'name="label"' in request.content
+            seen["has_value"] = b"important" in request.content
+            return httpx.Response(200, json={"ok": True})
+
+        transport = httpx.MockTransport(responder)
+        client = _build_client(transport)
+        try:
+            await client.upload(
+                "/api/v1/media/upload",
+                file_field="file",
+                file_data=b"x",
+                filename="x.txt",
+                content_type="text/plain",
+                extra_form={"label": "important"},
+            )
+            assert seen.get("has_label") is True
+            assert seen.get("has_value") is True
+        finally:
+            await client.aclose()

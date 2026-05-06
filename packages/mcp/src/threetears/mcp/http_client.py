@@ -398,6 +398,106 @@ class PlatformHttpClient:
         """
         return await self.request("DELETE", path)
 
+    async def upload(
+        self,
+        path: str,
+        *,
+        file_field: str,
+        file_data: bytes,
+        filename: str,
+        content_type: str,
+        extra_form: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        """POST ``path`` with multipart/form-data and refresh-on-401.
+
+        ``post()`` is JSON-only by design; multipart requests use
+        ``files=`` / ``data=`` on the underlying httpx call instead.
+        Rather than expand ``post()``'s contract, this is its own
+        method so the JSON path stays simple and callers see an
+        explicit upload site.
+
+        Mirrors :meth:`request` for the auth + 401-retry semantics:
+        ensure a token, send the upload, on 401 re-login once and
+        retry once. A second 401 raises :class:`PlatformHttpError`.
+
+        :param path: API path; leading slash optional
+        :ptype path: str
+        :param file_field: name of the multipart field to attach the
+            file under (e.g. ``"file"`` for a FastAPI
+            ``UploadFile = File(...)`` parameter named ``file``)
+        :ptype file_field: str
+        :param file_data: raw bytes to upload
+        :ptype file_data: bytes
+        :param filename: original filename to send (servers commonly
+            use this for content-type fallback / extension sniffing)
+        :ptype filename: str
+        :param content_type: MIME type of the upload
+        :ptype content_type: str
+        :param extra_form: additional form fields to include alongside
+            the file
+        :ptype extra_form: Mapping[str, str] | None
+        :return: full httpx response
+        :rtype: httpx.Response
+        :raises PlatformHttpError: when the second attempt also
+            returns 401 (auth genuinely failed, not a stale token)
+        """
+        if self._token is None:
+            await self.login()
+
+        response = await self._send_upload(
+            path,
+            file_field=file_field,
+            file_data=file_data,
+            filename=filename,
+            content_type=content_type,
+            extra_form=extra_form,
+        )
+        if response.status_code == 401:
+            log.info(
+                "401 on upload; refreshing token and retrying once",
+                extra={"extra_data": {"path": path, "filename": filename}},
+            )
+            await self.login(force=True)
+            response = await self._send_upload(
+                path,
+                file_field=file_field,
+                file_data=file_data,
+                filename=filename,
+                content_type=content_type,
+                extra_form=extra_form,
+            )
+            if response.status_code == 401:
+                raise PlatformHttpError(
+                    "auth failed after refresh-on-401 retry on upload",
+                    status_code=401,
+                    body=response.content,
+                )
+        return response
+
+    async def _send_upload(
+        self,
+        path: str,
+        *,
+        file_field: str,
+        file_data: bytes,
+        filename: str,
+        content_type: str,
+        extra_form: Mapping[str, str] | None,
+    ) -> httpx.Response:
+        """execute one multipart POST with the current token; no retry."""
+        merged_headers: dict[str, str] = {}
+        if self._token is not None:
+            merged_headers["Authorization"] = f"Bearer {self._token}"
+        url = self._url(path)
+        files = {file_field: (filename, file_data, content_type)}
+        data = dict(extra_form) if extra_form else None
+        return await self._client.post(
+            url,
+            files=files,
+            data=data,
+            headers=merged_headers,
+        )
+
     def _url(self, path: str) -> str:
         """build the full URL for ``path`` (joins to ``base_url``).
 
