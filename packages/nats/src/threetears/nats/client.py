@@ -388,6 +388,31 @@ class NatsClient:
         """
         return bool(self._raw.is_closed)
 
+    async def ping(self, *, timeout: float = 2.0) -> bool:
+        """force a server round-trip to verify the broker is responsive.
+
+        unlike :attr:`is_connected` (which only reports the local
+        socket-state cached by nats-py), this awaits an actual
+        round-trip via ``nats-py.flush()`` -- a stale socket that
+        the OS hasn't yet timed out can report ``is_connected=True``
+        long after the broker has gone away. consumers building
+        ``/healthz`` endpoints should call ``ping()``.
+
+        :param timeout: seconds to wait for the round-trip before
+            treating as unhealthy.
+        :ptype timeout: float
+        :return: True if the server responded within the timeout,
+            False on timeout or any nats-py error.
+        :rtype: bool
+        """
+        if not self._raw.is_connected:
+            return False
+        try:
+            await self._raw.flush(timeout=timeout)
+        except Exception:
+            return False
+        return True
+
     @property
     def raw(self) -> _NatsPyClient:
         """direct access to underlying nats-py client.
