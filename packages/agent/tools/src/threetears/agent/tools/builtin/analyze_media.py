@@ -492,7 +492,7 @@ def create_analyze_media_tool(
 
     return StructuredTool.from_function(
         coroutine=_analyze_media,
-        name="analyze_media",
+        name="threetears.analyze_media",
         description=full_description,
         args_schema=MediaAnalysisInput,
     )

@@ -122,7 +122,7 @@ def test_returns_structured_tool() -> None:
         context,
         default_model="sd",
     )
-    assert tool.name == "image_generation"
+    assert tool.name == "threetears.image_generation"
     assert tool.args_schema is ImageGenerationInput
 
 

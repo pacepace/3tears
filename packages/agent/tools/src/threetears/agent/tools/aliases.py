@@ -14,8 +14,10 @@ groups intentionally model the way platform users think about tools:
   no API keys.
 * ``web`` -- web_search, web_fetch. opt-in because they hit the network
   and may not be wanted for every agent.
-* ``media`` -- analyze_media, parse_document, image_generation. opt-in
-  because they need provider API keys and incur cost.
+* ``media`` -- analyze_media, parse_document, image_prep,
+  image_generation. opt-in because they need provider API keys
+  (analyze_media / image_generation) or heavy optional deps
+  (parse_document needs PyMuPDF + OCR stack) and incur cost.
 * ``workspace`` -- the full 19-tool ``threetears.workspace.*`` bundle.
   opt-in because it mutates filesystem state under ``bind_root``.
 * ``workspace.fs`` / ``workspace.doc`` / ``workspace.lifecycle`` --
@@ -53,21 +55,34 @@ __all__ = [
 # matches whether the tool runs in-process or in a separate pod.
 
 STANDARD_TOOLS: frozenset[str] = frozenset({
-    "calculator",
-    "current_date",
-    "dictionary",
-    "unit_converter",
-    "timezone_converter",
+    "threetears.calculator",
+    "threetears.current_date",
+    "threetears.dictionary",
+    "threetears.unit_converter",
+    "threetears.timezone_converter",
 })
 
 WEB_TOOLS: frozenset[str] = frozenset({
-    "web_search",
-    "web_fetch",
+    "threetears.web_search",
+    "threetears.web_fetch",
 })
 
+# media tool name forms vary by registration path:
+# * ``threetears.analyze_media`` -- TearsTool subclass under ``builtin/``
+# * ``threetears.parse_document`` -- TearsTool subclass under
+#   ``document/`` (separate dir because PyMuPDF / pdfminer / OCR
+#   stack is an optional dependency; the tool registers only when
+#   the deps are installed, see ``agent.tools.serve``)
+# * ``threetears.image_prep`` -- TearsTool subclass under ``builtin/``;
+#   preprocessing / resizing for vision-input images, NOT generation
+# * ``image_generation`` -- StructuredTool factory path, registers
+#   under the bare ``image_generation`` name (no ``threetears.``
+#   prefix); creates new images via Anthropic / OpenAI / etc.
+# the alias matches whatever name actually appears in the registry.
 MEDIA_TOOLS: frozenset[str] = frozenset({
-    "analyze_media",
-    "parse_document",
+    "threetears.analyze_media",
+    "threetears.parse_document",
+    "threetears.image_prep",
     "image_generation",
 })
 

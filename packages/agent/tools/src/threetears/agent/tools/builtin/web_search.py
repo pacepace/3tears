@@ -74,7 +74,7 @@ def create_web_search_tool(config: dict[str, Any], description: str) -> Structur
     base_url = base_url.rstrip("/")
     return StructuredTool.from_function(
         func=_create_search_fn(base_url),
-        name="web_search",
+        name="threetears.web_search",
         description=description,
         args_schema=WebSearchInput,
     )

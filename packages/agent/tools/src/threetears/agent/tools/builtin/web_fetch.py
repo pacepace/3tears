@@ -150,7 +150,7 @@ def create_web_fetch_tool(config: dict[str, Any], description: str) -> Structure
 
     return StructuredTool.from_function(
         func=_create_fetch_fn(max_chars, credential_resolver),
-        name="web_fetch",
+        name="threetears.web_fetch",
         description=description,
         args_schema=WebFetchInput,
     )

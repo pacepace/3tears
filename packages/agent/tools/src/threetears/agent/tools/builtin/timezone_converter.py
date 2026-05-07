@@ -74,10 +74,16 @@ def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> st
 
 
 def create_timezone_converter_tool(config: dict[str, Any], description: str) -> StructuredTool:
-    """Factory: create a timezone converter tool."""
+    """Factory: create a timezone converter tool.
+
+    the StructuredTool ``func`` and the :class:`TimezoneConverterTool`
+    ``execute`` both call :func:`_convert_timezone`, so the logic lives
+    in one place. naming is uniform: both register as
+    ``threetears.timezone_converter``.
+    """
     return StructuredTool.from_function(
         func=_convert_timezone,
-        name="timezone_converter",
+        name="threetears.timezone_converter",
         description=description,
         args_schema=TimezoneConverterInput,
     )

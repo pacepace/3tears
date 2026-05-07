@@ -284,7 +284,15 @@ def create_image_generation_tool(
 
     return StructuredTool.from_function(
         coroutine=_generate,
-        name="image_generation",
+        # namespaced ``threetears.image_generation`` aligns with every
+        # other 3tears builtin (``threetears.calculator`` /
+        # ``threetears.current_date`` / etc.). previously bare
+        # ``image_generation`` because the StructuredTool factory path
+        # took a shortcut that the TearsTool subclass path
+        # (``mcp_name`` returns ``threetears.X``) never took.
+        # access-pattern matchers + group-alias resolvers expect the
+        # uniform shape; the rename closes that gap.
+        name="threetears.image_generation",
         description=description or _DEFAULT_DESCRIPTION,
         args_schema=ImageGenerationInput,
     )

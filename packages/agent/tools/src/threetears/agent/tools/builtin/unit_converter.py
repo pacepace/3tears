@@ -50,10 +50,16 @@ def _convert(value: float, from_unit: str, to_unit: str) -> str:
 
 
 def create_unit_converter_tool(config: dict[str, Any], description: str) -> StructuredTool:
-    """Factory: create a unit converter tool."""
+    """Factory: create a unit converter tool.
+
+    the StructuredTool ``func`` and the :class:`UnitConverterTool`
+    ``execute`` both call :func:`_convert`, so the logic lives in one
+    place. naming is uniform: both register as
+    ``threetears.unit_converter``.
+    """
     return StructuredTool.from_function(
         func=_convert,
-        name="unit_converter",
+        name="threetears.unit_converter",
         description=description,
         args_schema=UnitConverterInput,
     )

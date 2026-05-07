@@ -89,11 +89,17 @@ def _create_lookup_fn(language: str) -> Any:
 
 
 def create_dictionary_tool(config: dict[str, Any], description: str) -> StructuredTool:
-    """Factory: create a dictionary lookup tool."""
+    """Factory: create a dictionary lookup tool.
+
+    the StructuredTool ``func`` and the :class:`DictionaryTool`
+    ``execute`` both call the module-level :func:`_create_lookup_fn`
+    helper, so the actual lookup logic lives in one place. naming is
+    uniform: both register as ``threetears.dictionary``.
+    """
     language = config.get("language", "en")
     return StructuredTool.from_function(
         func=_create_lookup_fn(language),
-        name="dictionary",
+        name="threetears.dictionary",
         description=description,
         args_schema=DictionaryInput,
     )
