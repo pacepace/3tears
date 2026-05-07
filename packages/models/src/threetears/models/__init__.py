@@ -6,6 +6,18 @@ LangChain ``BaseChatModel`` and ``Embeddings`` instances. The legacy
 ``ChatProvider`` / ``EmbeddingProvider`` / ``TranscriptionProvider`` /
 ``SpeechProvider`` / ``RerankingProvider`` runtime protocols have been
 removed.
+
+Importing this package eagerly loads the builtin provider modules so
+their import-time :func:`register_capabilities` calls populate the
+shared registry. This makes :func:`create_chat_model` /
+:func:`create_embedding_model` work for every builtin model id without
+the caller manually importing ``threetears.models.providers.<name>``.
+The provider modules themselves keep ``langchain_<provider>`` imports
+inside ``TYPE_CHECKING`` and inside their factory bodies, so the
+eager-load only pulls capability metadata — actually instantiating a
+provider model still imports its langchain backend lazily, preserving
+the "install only the providers you use" property for production
+callers.
 """
 
 from __future__ import annotations
@@ -40,6 +52,19 @@ from threetears.models.tracking import (
     UsageRecord,
     UsageTracker,
     UsageTrackingCallback,
+)
+
+# Eager-import builtin provider modules so their import-time
+# `register_capabilities()` calls populate the shared registry. The
+# provider modules themselves do not import their respective
+# `langchain_<provider>` package at module scope (those imports live
+# inside TYPE_CHECKING + factory bodies) so this is metadata-only.
+from threetears.models.providers import (  # noqa: E402, F401
+    anthropic as _anthropic_caps,
+    openai as _openai_caps,
+    openrouter as _openrouter_caps,
+    voyageai as _voyageai_caps,
+    whisper as _whisper_caps,
 )
 
 __all__ = [

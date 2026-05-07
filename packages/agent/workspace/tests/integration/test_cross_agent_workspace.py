@@ -118,10 +118,20 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     minimal DDL here mirrors the v016 migration without the invariant
     checks so the test seeds directly into the new shape.
 
+    the session-scoped ``db_container`` is shared across every
+    integration test that uses it; sibling suites (notably
+    ``packages/core/tests/integration/test_migration_rollback.py``)
+    also create a ``platform`` schema with overlapping tables, so the
+    DDL here drops the schema first to guarantee a clean slate
+    (cascade cleans nested tables + foreign keys). without that, a
+    ``DuplicateTableError`` lands when this test runs after a sibling
+    that already populated the schema in the same session.
+
     :param conn: asyncpg connection
     :ptype conn: asyncpg.Connection
     """
-    await conn.execute("CREATE SCHEMA IF NOT EXISTS platform")
+    await conn.execute("DROP SCHEMA IF EXISTS platform CASCADE")
+    await conn.execute("CREATE SCHEMA platform")
     await conn.execute(
         """
         CREATE TABLE platform.namespaces (

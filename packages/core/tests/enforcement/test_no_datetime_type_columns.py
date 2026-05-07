@@ -53,16 +53,18 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 # leak. Closing the coverage gap here so the AST guard runs against
 # the entire 3tears workspace.
 _PACKAGE_SRC_ROOTS: list[Path] = [
-    _REPO_ROOT / "packages" / "agent-acl" / "src",
-    _REPO_ROOT / "packages" / "agent-audit" / "src",
-    _REPO_ROOT / "packages" / "agent-memory" / "src",
-    _REPO_ROOT / "packages" / "agent-tools" / "src",
-    _REPO_ROOT / "packages" / "agent-workspace" / "src",
+    _REPO_ROOT / "packages" / "agent" / "acl" / "src",
+    _REPO_ROOT / "packages" / "agent" / "audit" / "src",
+    _REPO_ROOT / "packages" / "agent" / "memory" / "src",
+    _REPO_ROOT / "packages" / "agent" / "tools" / "src",
+    _REPO_ROOT / "packages" / "agent" / "workspace" / "src",
     _REPO_ROOT / "packages" / "channels" / "src",
     _REPO_ROOT / "packages" / "conversations" / "src",
     _REPO_ROOT / "packages" / "core" / "src",
     _REPO_ROOT / "packages" / "enforcement" / "src",
+    _REPO_ROOT / "packages" / "epoch" / "src",
     _REPO_ROOT / "packages" / "langgraph" / "src",
+    _REPO_ROOT / "packages" / "mcp" / "src",
     _REPO_ROOT / "packages" / "models" / "src",
     _REPO_ROOT / "packages" / "nats" / "src",
     _REPO_ROOT / "packages" / "observe" / "src",

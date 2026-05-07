@@ -82,6 +82,22 @@ asyncio_mode = "auto"
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
 ]
+# Note on the `allowed_objects` warning:
+# `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
+# `LC_REVIVER = Reviver()` (`langchain_core.load.load.Reviver`) the
+# moment `JsonPlusSerializer` is imported. As of langchain-core 1.3.3
+# that emits a `LangChainPendingDeprecationWarning`. The trigger is
+# upstream library code at import time, and `langchain_core/__init__.py`
+# itself prepends a `default`-action filter for
+# `LangChainPendingDeprecationWarning` via
+# `surface_langchain_deprecation_warnings()` — which trumps a generic
+# pyproject-level `PendingDeprecationWarning` ignore. The filter that
+# actually catches it is installed in `conftest.py` against the exact
+# subclass after `langchain_core` has imported. Revisit when
+# langchain-core flips the `allowed_objects` default in a future
+# release. Our own `threetears.langgraph.serde.UUIDSafeSerializer`
+# constructs a `JsonPlusSerializer()` (no `Reviver` kwargs are exposed
+# on that surface), so there is nothing to fix at the call site.
 
 [tool.mypy]
 strict = true

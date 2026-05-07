@@ -154,7 +154,12 @@ def _resolve_uv_workspace_members(
 
     each entry is either a literal directory name or a glob (``packages/*``).
     relative entries are anchored to ``target``. results are sorted for
-    determinism.
+    determinism. when the workspace declares
+    ``[tool.uv.workspace].exclude = [...]``, paths matching any exclude
+    glob are dropped from the result; this matches uv's own resolution
+    semantics (parent grouping directories that hold no
+    ``pyproject.toml`` of their own get pulled in by ``packages/*``
+    globs but are not real members).
 
     :param target: directory the pyproject lives in
     :ptype target: Path
@@ -164,7 +169,8 @@ def _resolve_uv_workspace_members(
     :ptype pyproject_path: Path
     :return: sorted list of resolved workspace-member directories
     :rtype: list[Path]
-    :raises PyprojectError: ``members`` is present but not a list of strings
+    :raises PyprojectError: ``members``/``exclude`` is present but not
+        a list of strings
     """
     workspace = data.get("tool", {}).get("uv", {}).get("workspace")
     if workspace is None:
@@ -176,6 +182,21 @@ def _resolve_uv_workspace_members(
         return []
     if not isinstance(members, list):
         raise PyprojectError(f"{pyproject_path}: [tool.uv.workspace].members must be a list of strings")
+    excluded: set[Path] = set()
+    exclude_entries = workspace.get("exclude")
+    if exclude_entries is not None:
+        if not isinstance(exclude_entries, list):
+            raise PyprojectError(
+                f"{pyproject_path}: [tool.uv.workspace].exclude must be a list of strings"
+            )
+        for entry in exclude_entries:
+            if not isinstance(entry, str):
+                raise PyprojectError(
+                    f"{pyproject_path}: [tool.uv.workspace].exclude entries must be strings, got {entry!r}"
+                )
+            for match in target.glob(entry):
+                if match.is_dir():
+                    excluded.add(match.resolve())
     resolved: list[Path] = []
     seen: set[Path] = set()
     for entry in members:
@@ -187,6 +208,8 @@ def _resolve_uv_workspace_members(
             if not match.is_dir():
                 continue
             resolved_path = match.resolve()
+            if resolved_path in excluded:
+                continue
             if resolved_path in seen:
                 continue
             seen.add(resolved_path)

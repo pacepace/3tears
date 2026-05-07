@@ -22,8 +22,10 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
-# share the agent-tools test utilities (FakePool, make_context_metadata, make_nats_mock)
-_AGENT_TOOLS_TESTS = Path(__file__).resolve().parent.parent.parent.parent / "agent-tools" / "tests"
+# share the agent-tools test utilities (FakePool, make_context_metadata, make_nats_mock).
+# this file lives at packages/agent/workspace/tests/unit/test_pin.py; parents[4] is the
+# packages/ directory, so packages/agent/tools/tests is the agent-tools tests tree.
+_AGENT_TOOLS_TESTS = Path(__file__).resolve().parents[4] / "agent" / "tools" / "tests"
 if str(_AGENT_TOOLS_TESTS) not in sys.path:
     sys.path.insert(0, str(_AGENT_TOOLS_TESTS))
 

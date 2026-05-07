@@ -94,6 +94,52 @@ class TestUvWorkspace:
         assert (root / "packages" / "core" / "src").resolve() in roots
         assert (root / "packages" / "observe" / "src").resolve() in roots
 
+    def test_workspace_exclude_drops_matching_dirs(self, tmp_path: Path) -> None:
+        """parent grouping dirs flagged via exclude must be skipped.
+
+        models the 3tears workspace shape: ``packages/*`` glob picks up
+        every direct child including the bare ``packages/agent``
+        grouping directory which holds no pyproject of its own; the
+        ``exclude = ["packages/agent"]`` clause tells uv (and this
+        walker) to ignore it. without exclude support the walker would
+        try to read ``packages/agent/pyproject.toml`` and raise
+        :class:`PyprojectError`.
+        """
+        root = tmp_path / "monorepo"
+        root.mkdir()
+        (root / "pyproject.toml").write_text(
+            '[tool.uv.workspace]\n'
+            'members = ["packages/*", "packages/agent/*"]\n'
+            'exclude = ["packages/agent"]\n'
+        )
+        for name in ("core", "observe"):
+            pkg = root / "packages" / name
+            pkg.mkdir(parents=True)
+            (pkg / "src").mkdir()
+            (pkg / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
+        # bare grouping directory under packages/agent: no pyproject of its own.
+        agent_dir = root / "packages" / "agent"
+        agent_dir.mkdir(parents=True)
+        for name in ("acl", "tools"):
+            pkg = agent_dir / name
+            pkg.mkdir(parents=True)
+            (pkg / "src").mkdir()
+            (pkg / "pyproject.toml").write_text(f'[project]\nname = "agent-{name}"\n')
+        roots = discover_src_roots(root)
+        assert (root / "packages" / "core" / "src").resolve() in roots
+        assert (root / "packages" / "agent" / "acl" / "src").resolve() in roots
+        assert (root / "packages" / "agent" / "tools" / "src").resolve() in roots
+
+    def test_workspace_exclude_must_be_list(self, tmp_path: Path) -> None:
+        """malformed exclude raises rather than silently ignoring it."""
+        root = tmp_path / "monorepo"
+        root.mkdir()
+        (root / "pyproject.toml").write_text(
+            '[tool.uv.workspace]\nmembers = ["packages/*"]\nexclude = "not-a-list"\n'
+        )
+        with pytest.raises(PyprojectError, match="exclude must be a list"):
+            discover_src_roots(root)
+
 
 class TestUvSources:
     def test_workspace_true(self, tmp_path: Path) -> None:
