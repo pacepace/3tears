@@ -1,5 +1,11 @@
 [tool.uv.workspace]
-members = ["packages/*"]
+# packages/* picks up the top-level packages (core, models, mcp, etc.).
+# packages/agent/* picks up the agent-* family that lives under the
+# agent/ namespace dir for visual grouping. Both globs are required;
+# packages/agent itself is excluded because it has no pyproject.toml
+# of its own (it's just a parent directory, not a workspace member).
+members = ["packages/*", "packages/agent/*"]
+exclude = ["packages/agent"]
 
 [tool.uv]
 dev-dependencies = [
