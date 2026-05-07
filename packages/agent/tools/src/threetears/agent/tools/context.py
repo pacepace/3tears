@@ -118,12 +118,16 @@ class ToolContextManager:
                 self.conversation_id,
             )
             for ref in refs:
+                # entity.date_created post-v014 (was date_added pre-rename).
+                # the in-memory projection key stays "date_added" because
+                # the prompt-builder format references it; the in-memory
+                # dict shape is decoupled from the L3 column names.
                 self._memory_refs_projection.append(
                     {
                         "item_id": str(ref.item_id),
                         "item_type": ref.item_type,
                         "short_desc": ref.short_desc,
-                        "date_added": ref.date_added.isoformat() if ref.date_added else "",
+                        "date_added": ref.date_created.isoformat() if ref.date_created else "",
                     },
                 )
 
