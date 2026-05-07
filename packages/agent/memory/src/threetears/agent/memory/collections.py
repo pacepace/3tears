@@ -24,6 +24,9 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from uuid import UUID
 
+from sqlalchemy import Column as SAColumn
+from sqlalchemy import DateTime, MetaData, Table, Text
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -63,9 +66,44 @@ __all__ = [
     "MemoriesCollection",
     "MemoryChunkCollection",
     "MemoryRefsCollection",
+    "conversation_memory_refs_table",
 ]
 
 log = get_logger(__name__)
+
+
+def conversation_memory_refs_table(metadata: MetaData) -> Table:
+    """Register the ``conversation_memory_refs`` table on ``metadata``.
+
+    Mirrors the canonical schema created by
+    :func:`threetears.agent.memory.migrations.v002_create_conversation_memory_refs.create_conversation_memory_refs`
+    plus the v013 ``date_added`` -> ``TIMESTAMPTZ`` upgrade. Call this
+    factory before ``SQLiteCacheManager.initialize(metadata)`` so the
+    L1 cache builds with the full schema; without it,
+    :class:`MemoryRefsCollection.save_entity` fails at the L1 boundary
+    with ``no such table: conversation_memory_refs`` even though the
+    L3 Postgres write succeeds.
+
+    Idempotent: returns the existing table when the metadata already
+    has it registered. Same shape as
+    :func:`threetears.agent.tools.collections.context_items_table`.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``conversation_memory_refs`` :class:`Table`
+    :rtype: Table
+    """
+    if "conversation_memory_refs" in metadata.tables:
+        return metadata.tables["conversation_memory_refs"]
+    return Table(
+        "conversation_memory_refs",
+        metadata,
+        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("item_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("item_type", Text(), nullable=False),
+        SAColumn("short_desc", Text(), nullable=False),
+        SAColumn("date_added", DateTime(timezone=True), nullable=False),
+    )
 
 
 def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str | None:

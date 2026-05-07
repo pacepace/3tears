@@ -22,6 +22,7 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryChunkCollection,
     MemoryRefsCollection,
+    conversation_memory_refs_table,
 )
 from threetears.agent.memory.entities import (
     MediaContentEntity,
@@ -74,6 +75,7 @@ __all__ = [
     "RecallMemoryInput",
     "RetrievalResult",
     "authorize_memory_access",
+    "conversation_memory_refs_table",
     "ensure_memory_owner_assignment",
     "load_add_memory_tool",
     "load_memory_search_tool",
