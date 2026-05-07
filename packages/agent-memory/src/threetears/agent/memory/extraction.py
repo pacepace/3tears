@@ -27,8 +27,9 @@ from threetears.agent.memory.authorize import (
     MemoryAuthorizerDependencies,
     authorize_memory_access,
 )
+from langchain_core.embeddings import Embeddings
+
 from threetears.agent.memory.collections import MemoriesCollection
-from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.prompts import ExtractionPrompts
@@ -63,7 +64,7 @@ class MemoryExtractor:
     def __init__(
         self,
         config: MemoryConfig,
-        embedding_provider: EmbeddingProvider,
+        embedding_provider: Embeddings,
         chat_model_factory: ChatModelFactory,
         authorizer: MemoryAuthorizerDependencies,
         memories_collection: MemoriesCollection,
@@ -77,7 +78,7 @@ class MemoryExtractor:
         :param config: memory extraction configuration
         :ptype config: MemoryConfig
         :param embedding_provider: embedding provider for candidate vectors
-        :ptype embedding_provider: EmbeddingProvider
+        :ptype embedding_provider: Embeddings
         :param chat_model_factory: factory producing chat models for
             worthiness / extraction / resolution stages
         :ptype chat_model_factory: ChatModelFactory

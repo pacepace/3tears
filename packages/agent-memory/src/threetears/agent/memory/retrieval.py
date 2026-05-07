@@ -36,7 +36,8 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryChunkCollection,
 )
-from threetears.agent.memory.embedding import EmbeddingProvider
+from langchain_core.embeddings import Embeddings
+
 from threetears.agent.memory.embedding_utils import _estimate_tokens, _safe_aembed_query
 from threetears.agent.memory.types import MemoryConfig
 from threetears.observe import traced
@@ -321,7 +322,7 @@ class MemoryRetriever:
     def __init__(
         self,
         config: MemoryConfig,
-        embedding_provider: EmbeddingProvider,
+        embedding_provider: Embeddings,
         authorizer: MemoryAuthorizerDependencies,
         memories_collection: MemoriesCollection,
         media_content_collection: MediaContentCollection,
@@ -332,7 +333,7 @@ class MemoryRetriever:
         :param config: memory retrieval configuration
         :ptype config: MemoryConfig
         :param embedding_provider: embedding provider for query vectors
-        :ptype embedding_provider: EmbeddingProvider
+        :ptype embedding_provider: Embeddings
         :param authorizer: rbac authorizer dependency bundle; required.
             every retrieval call carrying ``caller_user_id`` evaluates
             ``memory.read`` on the per-(agent, customer) memory

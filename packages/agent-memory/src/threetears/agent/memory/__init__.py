@@ -23,7 +23,6 @@ from threetears.agent.memory.collections import (
     MemoryChunkCollection,
     MemoryRefsCollection,
 )
-from threetears.agent.memory.embedding import EmbeddingProvider
 from threetears.agent.memory.entities import (
     MediaContentEntity,
     MediaEntity,
@@ -50,7 +49,6 @@ __all__ = [
     "ACTION_MEMORY_WRITE",
     "AddMemoryInput",
     "ChatModelFactory",
-    "EmbeddingProvider",
     "ExtractionPrompts",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",

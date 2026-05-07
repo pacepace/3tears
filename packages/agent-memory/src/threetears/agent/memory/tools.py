@@ -40,7 +40,8 @@ from threetears.agent.memory.collections import (
     MemoriesCollection,
     MemoryChunkCollection,
 )
-from threetears.agent.memory.embedding import EmbeddingProvider
+from langchain_core.embeddings import Embeddings
+
 from threetears.agent.memory.embedding_utils import _safe_aembed_query
 from threetears.agent.memory.entities import MemoryEntity
 from threetears.agent.memory.types import MemoryType
@@ -320,7 +321,7 @@ async def _search_by_ids(
 
 async def load_memory_search_tool(
     user_id: UUID,
-    embedding_provider: EmbeddingProvider,
+    embedding_provider: Embeddings,
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
@@ -338,7 +339,7 @@ async def load_memory_search_tool(
         evaluator ``caller_user_id``)
     :ptype user_id: UUID
     :param embedding_provider: embedding provider for query vectors
-    :ptype embedding_provider: EmbeddingProvider
+    :ptype embedding_provider: Embeddings
     :param agent_id: owning agent UUID (memory namespace owner)
     :ptype agent_id: UUID
     :param customer_id: owning customer UUID
@@ -713,7 +714,7 @@ class AddMemoryInput(BaseModel):
 
 async def load_add_memory_tool(
     user_id: UUID,
-    embedding_provider: EmbeddingProvider,
+    embedding_provider: Embeddings,
     agent_id: UUID,
     customer_id: UUID,
     authorizer: MemoryAuthorizerDependencies,
@@ -738,7 +739,7 @@ async def load_add_memory_tool(
         ``caller_user_id``)
     :ptype user_id: UUID
     :param embedding_provider: provider for embedding vectors
-    :ptype embedding_provider: EmbeddingProvider
+    :ptype embedding_provider: Embeddings
     :param agent_id: owning agent UUID (memory namespace owner)
     :ptype agent_id: UUID
     :param customer_id: owning customer UUID
