@@ -64,7 +64,9 @@ def _l1_metadata() -> MetaData:
         Column("item_id", String(255), primary_key=True),
         Column("item_type", String(50)),
         Column("short_desc", String(150)),
-        Column("date_added", TIMESTAMP),
+        # v014 renamed date_added -> date_created (+ added date_updated)
+        # to match the standard 3tears (date_created, date_updated)
+        # convention.
         Column("date_created", TIMESTAMP),
         Column("date_updated", TIMESTAMP),
     )
@@ -234,7 +236,8 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": item_id,
                     "item_type": "memory",
                     "short_desc": "user prefers dark mode",
-                    "date_added": now,
+                    "date_created": now,
+                    "date_updated": now,
                 },
             )
             await coll.save_entity(entity)
@@ -284,7 +287,8 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": item_id,
                     "item_type": "chunk",
                     "short_desc": "page 3 intro",
-                    "date_added": now,
+                    "date_created": now,
+                    "date_updated": now,
                 },
             )
             await coll.save_entity(entity)
@@ -317,7 +321,8 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": item_id,
                     "item_type": "media",
                     "short_desc": "photo.jpg",
-                    "date_added": now,
+                    "date_created": now,
+                    "date_updated": now,
                 },
             )
             await coll_a.save_entity(entity)
@@ -367,7 +372,8 @@ class TestMemoryRefsCollectionThreeTier:
                         "item_id": item_id,
                         "item_type": "memory",
                         "short_desc": "seed v1",
-                        "date_added": now,
+                        "date_created": now,
+                        "date_updated": now,
                     },
                 )
                 await coll_a.save_entity(entity)
@@ -389,7 +395,8 @@ class TestMemoryRefsCollectionThreeTier:
                         "item_id": item_id,
                         "item_type": "memory",
                         "short_desc": "updated v2",
-                        "date_added": now,
+                        "date_created": now,
+                        "date_updated": now,
                     },
                 )
                 object.__setattr__(updated_entity, "_is_new", False)
@@ -433,7 +440,8 @@ class TestMemoryRefsCollectionThreeTier:
                         "item_id": item_id,
                         "item_type": "memory",
                         "short_desc": f"item {i}",
-                        "date_added": added,
+                        "date_created": added,
+                        "date_updated": added,
                     },
                 )
                 await coll.save_entity(entity)
@@ -446,7 +454,8 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": uuid.uuid4(),
                     "item_type": "memory",
                     "short_desc": "other",
-                    "date_added": base,
+                    "date_created": base,
+                    "date_updated": base,
                 },
             )
             await coll.save_entity(other_entity)
@@ -478,7 +487,8 @@ class TestMemoryRefsCollectionThreeTier:
                     "item_id": item_id,
                     "item_type": "memory",
                     "short_desc": long_text,
-                    "date_added": datetime.now(UTC),
+                    "date_created": datetime.now(UTC),
+                    "date_updated": datetime.now(UTC),
                 },
             )
             await coll.save_entity(entity)

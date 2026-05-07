@@ -108,6 +108,9 @@ from threetears.agent.memory.migrations.v012_memories_media_composite_fk import 
 from threetears.agent.memory.migrations.v013_datetime_to_datetimetz import (
     datetime_to_datetimetz,
 )
+from threetears.agent.memory.migrations.v014_memory_refs_date_columns import (
+    rename_memory_refs_date_columns,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -149,6 +152,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(11)(memory_chunks_composite_fk)
     pkg.version(12)(memories_media_composite_fk)
     pkg.version(13)(datetime_to_datetimetz)
+    pkg.version(14)(rename_memory_refs_date_columns)
     runner.register(pkg)
     return pkg
 
@@ -168,5 +172,6 @@ __all__ = [
     "memory_chunks_composite_fk",
     "reconcile_memory_columns",
     "register",
+    "rename_memory_refs_date_columns",
     "restore_memories_agent_customer_not_null",
 ]

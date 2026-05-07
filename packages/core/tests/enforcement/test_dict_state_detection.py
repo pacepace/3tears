@@ -28,8 +28,12 @@ _PACKAGES_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _SRC_ROOTS: list[tuple[str, Path]] = [
     ("core", _PACKAGES_ROOT / "core" / "src" / "threetears" / "core"),
     ("registry", _PACKAGES_ROOT / "registry" / "src" / "threetears" / "registry"),
-    ("agent-memory", _PACKAGES_ROOT / "agent-memory" / "src" / "threetears" / "agent" / "memory"),
-    ("agent-tools", _PACKAGES_ROOT / "agent-tools" / "src" / "threetears" / "agent" / "tools"),
+    # post-namespace-move (2026-05-06) the agent-* family lives under
+    # packages/agent/{name}/. The package_prefix labels keep the
+    # historical "agent-memory" / "agent-tools" form because it's
+    # what the allowlist below uses; only the disk path changed.
+    ("agent-memory", _PACKAGES_ROOT / "agent" / "memory" / "src" / "threetears" / "agent" / "memory"),
+    ("agent-tools", _PACKAGES_ROOT / "agent" / "tools" / "src" / "threetears" / "agent" / "tools"),
     ("langgraph", _PACKAGES_ROOT / "langgraph" / "src" / "threetears" / "langgraph"),
 ]
 

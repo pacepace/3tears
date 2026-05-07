@@ -869,9 +869,15 @@ class MemoryRefEntity(BaseEntity):
     so :class:`BaseCollection`'s tuple-aware pk path addresses L1 / L2
     / L3 uniformly.
 
-    columns mirror the migration-v002 DDL byte-for-byte:
-    ``conversation_id`` UUID, ``item_id`` UUID, ``item_type`` VARCHAR(50),
-    ``short_desc`` VARCHAR(150), ``date_added`` TIMESTAMP.
+    columns mirror the migration-v002 DDL with the v014 date-column
+    rename: ``conversation_id`` UUID, ``item_id`` UUID, ``item_type``
+    VARCHAR(50), ``short_desc`` VARCHAR(150), ``date_created``
+    TIMESTAMPTZ, ``date_updated`` TIMESTAMPTZ. The original column
+    name was ``date_added`` (v002) which read as "imported from
+    elsewhere" -- v014 renamed it to the standard ``date_created`` /
+    ``date_updated`` pair to match every other 3tears table and to
+    satisfy ``BaseCollection.save``'s unconditional ``date_created``
+    write at the L1 boundary.
     """
 
     primary_key_field: str = "conversation_id"
@@ -988,20 +994,50 @@ class MemoryRefEntity(BaseEntity):
         BaseEntity.__setattr__(self, "short_desc", value)
 
     @property
-    def date_added(self) -> datetime:
-        """get the timestamp when the reference was added.
+    def date_created(self) -> datetime:
+        """get the timestamp when the reference was created.
 
-        :return: added datetime
+        Renamed from ``date_added`` in v014 to match the standard
+        3tears ``date_created`` convention and to satisfy
+        ``BaseCollection.save``'s L1-write contract (which
+        unconditionally writes ``date_created`` for every new row).
+
+        :return: created datetime
         :rtype: datetime
         """
-        value: datetime = self._get_raw("date_added")
+        value: datetime = self._get_raw("date_created")
         return value
 
-    @date_added.setter
-    def date_added(self, value: datetime) -> None:
-        """set the added timestamp.
+    @date_created.setter
+    def date_created(self, value: datetime) -> None:
+        """set the created timestamp.
 
-        :param value: new added datetime
+        :param value: new created datetime
         :ptype value: datetime
         """
-        BaseEntity.__setattr__(self, "date_added", value)
+        BaseEntity.__setattr__(self, "date_created", value)
+
+    @property
+    def date_updated(self) -> datetime:
+        """get the timestamp when the reference was last updated.
+
+        Added in v014 alongside the ``date_added`` -> ``date_created``
+        rename to match the standard 3tears
+        ``(date_created, date_updated)`` convention. For an
+        append-only ledger this typically equals ``date_created``;
+        the framework still writes both on save.
+
+        :return: updated datetime
+        :rtype: datetime
+        """
+        value: datetime = self._get_raw("date_updated")
+        return value
+
+    @date_updated.setter
+    def date_updated(self, value: datetime) -> None:
+        """set the updated timestamp.
+
+        :param value: new updated datetime
+        :ptype value: datetime
+        """
+        BaseEntity.__setattr__(self, "date_updated", value)

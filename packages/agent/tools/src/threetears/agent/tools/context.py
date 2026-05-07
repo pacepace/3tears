@@ -670,6 +670,10 @@ class ToolContextManager:
                     (self.conversation_id, UUID(oldest["item_id"])),
                 )
 
+        # in-memory projection key (``date_added``) is preserved on
+        # purpose: the prompt-builder format already references this
+        # key and the in-memory dict is not the L3 schema. canonical
+        # storage uses ``date_created`` / ``date_updated`` per v014.
         self._memory_refs_projection.append(
             {
                 "item_id": item_id,
@@ -686,7 +690,8 @@ class ToolContextManager:
                     "item_id": UUID(item_id),
                     "item_type": item_type,
                     "short_desc": desc,
-                    "date_added": now,
+                    "date_created": now,
+                    "date_updated": now,
                 },
             )
             await self._memory_refs.save_entity(entity)

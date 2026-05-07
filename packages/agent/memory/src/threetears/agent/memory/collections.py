@@ -77,9 +77,11 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 
     Mirrors the canonical schema created by
     :func:`threetears.agent.memory.migrations.v002_create_conversation_memory_refs.create_conversation_memory_refs`
-    plus the v013 ``date_added`` -> ``TIMESTAMPTZ`` upgrade. Call this
-    factory before ``SQLiteCacheManager.initialize(metadata)`` so the
-    L1 cache builds with the full schema; without it,
+    plus the v013 ``date_added`` -> ``TIMESTAMPTZ`` upgrade and the
+    v014 ``date_added`` -> ``date_created`` rename + ``date_updated``
+    addition. Call this factory before
+    ``SQLiteCacheManager.initialize(metadata)`` so the L1 cache
+    builds with the full schema; without it,
     :class:`MemoryRefsCollection.save_entity` fails at the L1 boundary
     with ``no such table: conversation_memory_refs`` even though the
     L3 Postgres write succeeds.
@@ -102,7 +104,8 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
         SAColumn("item_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
         SAColumn("item_type", Text(), nullable=False),
         SAColumn("short_desc", Text(), nullable=False),
-        SAColumn("date_added", DateTime(timezone=True), nullable=False),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
     )
 
 
@@ -2063,7 +2066,12 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
             Column("item_id", UUID_TYPE),
             Column("item_type", STRING_TYPE),
             Column("short_desc", STRING_TYPE),
-            Column("date_added", DATETIMETZ_TYPE),
+            # v014 renamed date_added -> date_created and added
+            # date_updated to align with the standard 3tears
+            # (date_created, date_updated) convention and to satisfy
+            # BaseCollection.save's L1-write contract.
+            Column("date_created", DATETIMETZ_TYPE),
+            Column("date_updated", DATETIMETZ_TYPE),
         ],
     )
 
@@ -2101,7 +2109,8 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         than inside :class:`SchemaBackedCollection`.
 
         :param data: row data; must contain both pk columns plus
-            ``item_type`` / ``short_desc`` / ``date_added``
+            ``item_type`` / ``short_desc`` / ``date_created`` /
+            ``date_updated``
         :ptype data: dict[str, Any]
         :param original_timestamp: ignored (no CAS column on this table)
         :ptype original_timestamp: datetime | None
@@ -2122,7 +2131,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         self,
         conversation_id: UUID,
     ) -> list[MemoryRefEntity]:
-        """fetch every ref for a conversation, ordered by ``date_added`` asc.
+        """fetch every ref for a conversation, ordered by ``date_created`` asc.
 
         absorbs the former ``MemoryLedger.load(pool, conversation_id)``
         SQL into a Collection method. multi-row scan is not primary-
@@ -2147,10 +2156,11 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         # share L2 invalidation channels.
         rows = await self.l3_pool.fetch(
             """
-            SELECT conversation_id, item_id, item_type, short_desc, date_added
+            SELECT conversation_id, item_id, item_type, short_desc,
+                   date_created, date_updated
             FROM conversation_memory_refs
             WHERE conversation_id = $1
-            ORDER BY date_added ASC
+            ORDER BY date_created ASC
             """,
             conversation_id,
         )
