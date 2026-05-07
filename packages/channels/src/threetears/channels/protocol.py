@@ -67,6 +67,24 @@ class ChannelMessage:
     :ptype metadata: dict[str, Any]
     :param timestamp: message creation time in UTC
     :ptype timestamp: datetime
+    :param user_timezone: IANA timezone name for the sending user
+        (e.g. ``America/Los_Angeles``). populated by the channel
+        adapter from its native source: browser
+        ``Intl.DateTimeFormat().resolvedOptions().timeZone`` for
+        websocket, ``users.info.tz`` for slack, locale-based fallback
+        for discord. None when the adapter cannot resolve a
+        per-user timezone. consumers (e.g. the ``current_date``
+        builtin) read this off the agent ``CallContext`` to render
+        timestamps in the user's local time. per-message rather than
+        per-channel because users in shared channels have different
+        timezones and one user may travel between messages.
+    :ptype user_timezone: str | None
+    :param user_locale: BCP 47 locale tag for the sending user
+        (e.g. ``en-US``, ``ja-JP``). same per-user, per-message
+        semantics as ``user_timezone``: each adapter populates from
+        its native source. consumers can use this for number /
+        currency / date formatting hints in tool output.
+    :ptype user_locale: str | None
     """
 
     channel_type: str
@@ -80,6 +98,8 @@ class ChannelMessage:
     reply_to_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    user_timezone: str | None = None
+    user_locale: str | None = None
 
 
 @dataclass

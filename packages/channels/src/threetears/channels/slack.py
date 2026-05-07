@@ -7,6 +7,7 @@ without requiring public HTTP endpoints.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,10 +25,20 @@ from threetears.channels.protocol import (
     ChannelResponse,
     ChannelRouter,
 )
+from threetears.observe import get_logger
 
 __all__ = [
     "SlackAdapter",
 ]
+
+log = get_logger(__name__)
+
+# cache TTL for per-user locale info (timezone + BCP 47 locale tag).
+# Slack ``users.info`` is Tier 4 (~100 req/min); a 5-minute TTL keeps
+# fetches rare without serving stale tz to a user who just travelled
+# (Slack updates ``user.tz`` from the user's profile, which a user can
+# change mid-session).
+_USER_LOCALE_TTL_SECONDS = 300.0
 
 
 class SlackAdapter:
@@ -69,8 +80,61 @@ class SlackAdapter:
         self.router = router
         self.config: dict[str, Any] = config if config is not None else {}
         self._handler: AsyncSocketModeHandler | None = None
+        # per-user locale cache: maps slack user_id -> (cached_at_monotonic, tz, locale)
+        # invalidated when ``cached_at_monotonic`` is older than
+        # :data:`_USER_LOCALE_TTL_SECONDS`. populated lazily on first
+        # message from each user via :meth:`_resolve_user_locale`.
+        self._user_locale_cache: dict[str, tuple[float, str | None, str | None]] = {}
 
         self._app.event("message")(self.handle_message_event)
+
+    async def _resolve_user_locale(
+        self, user_id: str,
+    ) -> tuple[str | None, str | None]:
+        """resolve ``(tz, locale)`` for a slack user via ``users.info``.
+
+        consults the per-instance TTL cache first; on miss, calls
+        ``users.info(user=user_id, include_locale=True)`` and caches
+        the result. failures (network error, unknown user, missing
+        fields) are cached as ``(None, None)`` so a flapping user-info
+        endpoint does not hammer slack with retries inside the cache
+        window. callers consume the result as ``ChannelMessage``
+        ``user_timezone`` / ``user_locale`` fields.
+
+        :param user_id: slack platform user identifier (``U…`` form)
+        :ptype user_id: str
+        :return: tuple of (IANA timezone name, BCP 47 locale tag);
+            either may be ``None`` when slack does not surface a value
+            for this user
+        :rtype: tuple[str | None, str | None]
+        """
+        cached = self._user_locale_cache.get(user_id)
+        now = time.monotonic()
+        result: tuple[str | None, str | None]
+        if cached is not None and (now - cached[0]) < _USER_LOCALE_TTL_SECONDS:
+            result = (cached[1], cached[2])
+        else:
+            tz: str | None = None
+            locale: str | None = None
+            try:
+                response = await self._app.client.users_info(
+                    user=user_id,
+                    include_locale=True,
+                )
+                user_obj: dict[str, Any] = response.get("user", {}) if response else {}
+                raw_tz = user_obj.get("tz")
+                raw_locale = user_obj.get("locale")
+                tz = raw_tz if isinstance(raw_tz, str) and raw_tz else None
+                locale = raw_locale if isinstance(raw_locale, str) and raw_locale else None
+            except Exception as exc:
+                log.warning(
+                    "slack users.info lookup failed; caching empty locale "
+                    "to avoid hammering the API",
+                    extra={"extra_data": {"user_id": user_id, "error": str(exc)}},
+                )
+            self._user_locale_cache[user_id] = (now, tz, locale)
+            result = (tz, locale)
+        return result
 
     async def start(self) -> None:
         """start socket mode connection to slack.
@@ -130,9 +194,20 @@ class SlackAdapter:
         }
         metadata: dict[str, Any] = {k: v for k, v in event.items() if k not in consumed_keys}
 
+        # per-user locale info from slack profile -- looked up via
+        # ``users.info(include_locale=True)`` and cached for
+        # :data:`_USER_LOCALE_TTL_SECONDS`. populated even on cache
+        # miss so consumers (agent runtime stamping
+        # ``CallContext.user_timezone``) read uniformly.
+        sender_id = event.get("user", "")
+        user_tz: str | None = None
+        user_locale: str | None = None
+        if sender_id:
+            user_tz, user_locale = await self._resolve_user_locale(sender_id)
+
         channel_message = ChannelMessage(
             channel_type="slack",
-            sender_id=event.get("user", ""),
+            sender_id=sender_id,
             content=event.get("text", ""),
             channel_id=event.get("channel", ""),
             conversation_id=thread_ts if thread_ts else event.get("ts"),
@@ -141,6 +216,8 @@ class SlackAdapter:
             reply_to_id=thread_ts,
             metadata=metadata,
             timestamp=datetime.now(UTC),
+            user_timezone=user_tz,
+            user_locale=user_locale,
         )
 
         response = await self.router.route_inbound(channel_message)

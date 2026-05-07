@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from langchain_core.tools import StructuredTool
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.call_scope import current_scope
 
 __all__ = [
     "CurrentDateTool",
@@ -49,33 +50,76 @@ def create_current_date_tool(config: dict[str, Any], description: str) -> Struct
 class CurrentDateTool(TearsTool):
     """TearsTool wrapper for retrieving current date and time.
 
-    returns current UTC date/time and optionally converts to
-    specified timezone. always succeeds (no external dependencies).
+    returns current UTC date/time and, when an IANA timezone is
+    supplied (either at construction or per-call), also returns the
+    same instant rendered in that local zone. always succeeds (no
+    external dependencies).
     """
 
     _INPUT_SCHEMA: dict[str, Any] = {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "timezone": {
+                "type": "string",
+                "description": (
+                    "Optional IANA timezone name (e.g. 'America/Los_Angeles', "
+                    "'Europe/Berlin') to render local time alongside UTC. "
+                    "When omitted, the tool falls back to the timezone "
+                    "configured on the agent at construction time, and "
+                    "returns UTC only when neither is set. The agent's "
+                    "system prompt carries the user's resolved timezone "
+                    "so callers should pass it through verbatim when the "
+                    "user asks for 'local time' or 'my time'."
+                ),
+            },
+        },
     }
 
     def __init__(self, timezone: str | None = None) -> None:
-        """initialize current date tool with optional timezone.
+        """initialize current date tool with optional construction-time timezone.
 
-        :param timezone: IANA timezone name for local time display
+        :param timezone: IANA timezone name used as the fallback when a
+            call does not supply ``timezone``; the agent runtime sets
+            this from per-agent config, while per-message browser /
+            channel-supplied timezones flow through the call kwargs
         :ptype timezone: str | None
         """
         self._timezone = timezone
-        self._date_fn = _create_date_fn(timezone)
 
     async def execute(self, **kwargs: Any) -> ToolResult:
-        """return current date and time.
+        """return current date and time, optionally rendered in a local zone.
 
-        :param kwargs: ignored (no input parameters)
+        timezone resolution priority (highest to lowest):
+
+        1. ``timezone`` kwarg passed by the LLM in the tool call
+        2. :attr:`CallContext.user_timezone` on the current
+           :class:`~threetears.agent.tools.call_scope.ToolCallScope`
+           (channel-adapter-resolved per-message browser / slack
+           ``users.info`` / discord-locale value); this is the
+           authoritative source the agent runtime stamps on every
+           inbound chat
+        3. ``self._timezone`` (construction-time fallback when the
+           agent runtime configures a default)
+        4. ``None`` -- returns UTC only
+
+        the ``current_scope()`` read returns ``None`` when the tool is
+        invoked outside the NATS dispatch path (unit tests calling
+        ``execute()`` directly); that path falls through to kwargs +
+        construction default with no error.
+
+        :param kwargs: optional ``timezone`` IANA name overriding the
+            other sources. unknown kwargs are ignored
         :ptype kwargs: Any
-        :return: result containing current date/time string
+        :return: result containing UTC line and (when a tz is
+            available) a paired local-time line
         :rtype: ToolResult
         """
-        content = self._date_fn()
+        per_call_tz: str | None = kwargs.get("timezone")
+        scope = current_scope()
+        scope_tz = scope.context.user_timezone if scope is not None else None
+        effective_tz = per_call_tz or scope_tz or self._timezone
+        date_fn = _create_date_fn(effective_tz)
+        content = date_fn()
         result = ToolResult(success=True, content=content)
         return result
 
@@ -88,7 +132,13 @@ class CurrentDateTool(TearsTool):
         result = MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description="return current date and time in UTC and optional local timezone",
+            description=(
+                "return current date and time in UTC, plus the same "
+                "instant in a local timezone when ``timezone`` is "
+                "supplied. the agent system prompt carries the user's "
+                "resolved tz on every turn, so prefer passing it "
+                "through whenever the user references 'local time'."
+            ),
             input_schema=self._INPUT_SCHEMA,
         )
         return result

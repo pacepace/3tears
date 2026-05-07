@@ -395,11 +395,23 @@ class WebSocketHandler:
             content = data.get("content", "")
             metadata = data.get("metadata", {})
 
+            # browser-supplied per-message locale info -- mirrors the
+            # devx chat client pattern: top-level fields on the WS
+            # frame, populated from
+            # ``Intl.DateTimeFormat().resolvedOptions().timeZone`` and
+            # ``navigator.language``. fall back to ``metadata`` keys
+            # of the same names so a client that bundles the values
+            # under metadata still works.
+            user_tz: str | None = data.get("user_timezone") or metadata.get("user_timezone")
+            user_locale: str | None = data.get("user_locale") or metadata.get("user_locale")
+
             channel_message = ChannelMessage(
                 channel_type="websocket",
                 content=content,
                 sender_id=user_id,
                 metadata=metadata,
+                user_timezone=user_tz if isinstance(user_tz, str) and user_tz else None,
+                user_locale=user_locale if isinstance(user_locale, str) and user_locale else None,
             )
 
             if is_streaming:

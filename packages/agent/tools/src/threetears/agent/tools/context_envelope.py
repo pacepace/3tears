@@ -66,6 +66,21 @@ class CallContext(BaseModel):
         values. intentionally narrow: do NOT use for arbitrary per-call
         payload
     :ptype trace: dict[str, str]
+    :param user_timezone: IANA timezone name resolved per-message from
+        the calling channel adapter (browser
+        ``Intl.DateTimeFormat()`` for websocket, ``users.info.tz`` for
+        slack, locale-derived fallback for discord). per-message rather
+        than per-user-record so a user who travels mid-conversation gets
+        accurate local time on the next turn. tools key off this field
+        for tz-aware rendering (e.g.
+        :class:`~threetears.agent.tools.builtin.current_date.CurrentDateTool`)
+        without depending on the LLM to thread the value through the
+        tool call args
+    :ptype user_timezone: str | None
+    :param user_locale: BCP 47 locale tag (``en-US``, ``ja-JP``)
+        resolved from the same per-message channel-adapter source.
+        consumers use it for number / currency / date formatting hints
+    :ptype user_locale: str | None
     """
 
     model_config = ConfigDict(frozen=True)
@@ -76,6 +91,8 @@ class CallContext(BaseModel):
     correlation_id: UUID | None = None
     agent_id: UUID | None = None
     trace: dict[str, str] = Field(default_factory=dict)
+    user_timezone: str | None = None
+    user_locale: str | None = None
 
     def with_trace(self, overlay: dict[str, str]) -> "CallContext":
         """return a new :class:`CallContext` with ``overlay`` merged over ``trace``.
