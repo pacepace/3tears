@@ -76,14 +76,15 @@ def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> st
 def create_timezone_converter_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a timezone converter tool.
 
-    the StructuredTool ``func`` and the :class:`TimezoneConverterTool`
-    ``execute`` both call :func:`_convert_timezone`, so the logic lives
-    in one place. naming is uniform: both register as
-    ``threetears.timezone_converter``.
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`TimezoneConverterTool.execute` as their single
+    execution body. ``config`` is unused.
     """
-    return StructuredTool.from_function(
-        func=_convert_timezone,
-        name="threetears.timezone_converter",
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
+    return to_langchain_tool(
+        TimezoneConverterTool(),
         description=description,
         args_schema=TimezoneConverterInput,
     )

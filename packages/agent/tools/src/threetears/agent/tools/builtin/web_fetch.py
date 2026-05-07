@@ -141,16 +141,21 @@ def _create_fetch_fn(max_chars: int, credential_resolver: Any | None) -> Any:
 def create_web_fetch_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a web fetch tool.
 
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`WebFetchTool.execute` as their single
+    execution body.
+
     Optional config keys:
     - ``max_chars``: max output length (default 15000)
     - ``_credential_resolver``: callable(url) -> dict of extra headers
     """
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
     max_chars = config.get("max_chars", _MAX_CHARS)
     credential_resolver = config.get("_credential_resolver")
-
-    return StructuredTool.from_function(
-        func=_create_fetch_fn(max_chars, credential_resolver),
-        name="threetears.web_fetch",
+    return to_langchain_tool(
+        WebFetchTool(max_chars=max_chars, credential_resolver=credential_resolver),
         description=description,
         args_schema=WebFetchInput,
     )

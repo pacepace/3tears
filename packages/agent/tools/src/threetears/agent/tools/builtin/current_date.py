@@ -40,19 +40,20 @@ def _create_date_fn(user_timezone: str | None) -> Any:
 def create_current_date_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a current date/time tool.
 
-    the StructuredTool ``func`` and the :class:`CurrentDateTool`
-    ``execute`` both build their date string via
-    :func:`_create_date_fn`, so the formatting logic lives in one
-    place. construction-time ``timezone`` is read from
-    ``config["_user_timezone"]`` (legacy ``"timezone"`` also honoured)
-    for the StructuredTool path; the TearsTool path additionally reads
-    per-call tz off :class:`ToolCallScope` / :class:`CallContext`.
-    naming uniform: both register as ``threetears.current_date``.
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`CurrentDateTool.execute` as their single
+    execution body. construction-time ``timezone`` is read from
+    ``config["_user_timezone"]`` (legacy ``"timezone"`` also
+    honoured); per-call tz overrides flow through
+    :class:`ToolCallScope` / :class:`CallContext` regardless of
+    registration path.
     """
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
     user_timezone = config.get("_user_timezone") or config.get("timezone")
-    return StructuredTool.from_function(
-        func=_create_date_fn(user_timezone),
-        name="threetears.current_date",
+    return to_langchain_tool(
+        CurrentDateTool(timezone=user_timezone),
         description=description,
     )
 

@@ -83,6 +83,20 @@ def create_analyze_media_tool(
 ) -> StructuredTool:
     """Factory: create an analyze_media tool from protocol implementations.
 
+    NOTE on dual-codepath: unlike the other builtins where the
+    factory is a thin wrapper around the TearsTool subclass's
+    ``execute``, here the relationship is INVERTED --
+    :class:`AnalyzeMediaTool.execute` calls back into this factory
+    via ``ainvoke``. that is why this factory cannot use the
+    :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    pattern the other builtins migrated to in v0.6.x: doing so would
+    construct an :class:`AnalyzeMediaTool`, which on dispatch calls
+    this factory, which constructs another tool... infinite
+    recursion. the proper fix is to extract the 350-line
+    ``_analyze_media`` body into a module-level helper that BOTH
+    surfaces share; tracked as a follow-up shard. registers under
+    ``threetears.analyze_media`` matching the subclass mcp_name.
+
     Expected ``config`` keys:
 
     - ``storage`` — :class:`MediaStorage` implementation (**required**)

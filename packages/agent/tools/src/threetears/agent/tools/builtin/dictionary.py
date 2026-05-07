@@ -91,15 +91,17 @@ def _create_lookup_fn(language: str) -> Any:
 def create_dictionary_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a dictionary lookup tool.
 
-    the StructuredTool ``func`` and the :class:`DictionaryTool`
-    ``execute`` both call the module-level :func:`_create_lookup_fn`
-    helper, so the actual lookup logic lives in one place. naming is
-    uniform: both register as ``threetears.dictionary``.
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`DictionaryTool.execute` as their single
+    execution body. ``config["language"]`` (default ``"en"``) feeds
+    :class:`DictionaryTool`'s ``language`` ``__init__`` arg.
     """
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
     language = config.get("language", "en")
-    return StructuredTool.from_function(
-        func=_create_lookup_fn(language),
-        name="threetears.dictionary",
+    return to_langchain_tool(
+        DictionaryTool(language=language),
         description=description,
         args_schema=DictionaryInput,
     )

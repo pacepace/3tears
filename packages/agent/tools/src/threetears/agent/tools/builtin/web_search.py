@@ -65,16 +65,19 @@ def _create_search_fn(base_url: str) -> Any:
 def create_web_search_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a web search tool.
 
-    Config must include ``base_url`` pointing to a SearXNG instance.
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`WebSearchTool.execute` as their single
+    execution body. Config must include ``base_url`` pointing to a
+    SearXNG instance.
     """
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
     base_url = config.get("base_url")
     if not base_url:
         raise ValueError("web_search requires 'base_url' in config")
-    # Strip trailing slash
-    base_url = base_url.rstrip("/")
-    return StructuredTool.from_function(
-        func=_create_search_fn(base_url),
-        name="threetears.web_search",
+    return to_langchain_tool(
+        WebSearchTool(base_url=base_url),
         description=description,
         args_schema=WebSearchInput,
     )

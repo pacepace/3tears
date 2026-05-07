@@ -122,16 +122,17 @@ def _evaluate(expression: str) -> str:
 def create_calculator_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a calculator tool.
 
-    the StructuredTool ``func`` and the :class:`CalculatorTool`
-    ``execute`` both call the module-level :func:`_evaluate` helper, so
-    the actual logic lives in one place even though two registration
-    surfaces wrap it. naming is uniform: both register as
-    ``threetears.calculator``. follow-up shard tracks unifying the
-    wrapping shapes too (see :meth:`TearsTool.to_langchain_tool`).
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share one execution body (:meth:`CalculatorTool.execute`).
+    ``config`` is unused for calculator (no per-agent config); kept
+    in the signature for :func:`register_builtins` factory-shape
+    parity.
     """
-    return StructuredTool.from_function(
-        func=_evaluate,
-        name="threetears.calculator",
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
+    return to_langchain_tool(
+        CalculatorTool(),
         description=description,
         args_schema=CalculatorInput,
     )

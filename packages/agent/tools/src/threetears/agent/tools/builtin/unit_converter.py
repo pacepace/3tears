@@ -52,14 +52,15 @@ def _convert(value: float, from_unit: str, to_unit: str) -> str:
 def create_unit_converter_tool(config: dict[str, Any], description: str) -> StructuredTool:
     """Factory: create a unit converter tool.
 
-    the StructuredTool ``func`` and the :class:`UnitConverterTool`
-    ``execute`` both call :func:`_convert`, so the logic lives in one
-    place. naming is uniform: both register as
-    ``threetears.unit_converter``.
+    delegates to :func:`threetears.agent.tools.langchain_adapter.to_langchain_tool`
+    so the StructuredTool path and the NATS-dispatched ToolServer
+    path share :meth:`UnitConverterTool.execute` as their single
+    execution body. ``config`` is unused.
     """
-    return StructuredTool.from_function(
-        func=_convert,
-        name="threetears.unit_converter",
+    from threetears.agent.tools.langchain_adapter import to_langchain_tool
+
+    return to_langchain_tool(
+        UnitConverterTool(),
         description=description,
         args_schema=UnitConverterInput,
     )
