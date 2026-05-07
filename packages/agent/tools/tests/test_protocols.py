@@ -43,6 +43,7 @@ class TestGeneratedImage:
 # -- Protocol compliance via concrete implementations -------------------------
 
 
+# parity-with: threetears.agent.tools.protocols.ImageGenerationBackend
 class FakeImageBackend:
     async def generate(
         self,
@@ -55,6 +56,7 @@ class FakeImageBackend:
         return GeneratedImage(data=b"fake", mime_type="image/png")
 
 
+# parity-with: threetears.agent.tools.protocols.MediaStorage
 class FakeMediaStorage:
     async def get_media(self, media_id: UUID) -> Any:
         return None
@@ -82,16 +84,19 @@ class FakeMediaStorage:
         return "stored"
 
 
+# parity-with: threetears.agent.tools.protocols.VisionProvider
 class FakeVisionProvider:
     async def analyze(self, image_data: bytes, mime_type: str, prompt: str) -> str:
         return "analysis result"
 
 
+# parity-with: threetears.agent.tools.protocols.TextProvider
 class FakeTextProvider:
     async def answer(self, prompt: str) -> str:
         return "answer result"
 
 
+# parity-with: threetears.agent.tools.protocols.TranscriptionProvider
 class FakeTranscriptionProvider:
     async def transcribe(self, audio_data: bytes, mime_type: str) -> str:
         return "transcription"

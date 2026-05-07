@@ -22,10 +22,19 @@ import importlib
 
 materialize_module = importlib.import_module("threetears.agent.workspace.materialize")
 from threetears.agent.workspace.materialize import materialize  # noqa: E402
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 @dataclass
-class _FakeFile:
+class _FakeFile(FakeWorkspaceFile):
     """stand-in for :class:`WorkspaceFile` exposing just the fields materialize reads."""
 
     relative_path: str
@@ -34,7 +43,7 @@ class _FakeFile:
     version: int
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake :class:`WorkspaceFileCollection` exposing :meth:`find_by_workspace`."""
 
     def __init__(self, files: list[_FakeFile]) -> None:

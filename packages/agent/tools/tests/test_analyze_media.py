@@ -20,6 +20,7 @@ from threetears.agent.tools.protocols import MediaInfo
 # ---------------------------------------------------------------------------
 
 
+# parity-with: threetears.agent.tools.protocols.VisionProvider
 class FakeVisionProvider:
     """Records calls and returns canned responses."""
 
@@ -32,6 +33,7 @@ class FakeVisionProvider:
         return self.response
 
 
+# parity-with: threetears.agent.tools.protocols.TextProvider
 class FakeTextProvider:
     """Records calls and returns canned responses."""
 
@@ -44,6 +46,7 @@ class FakeTextProvider:
         return self.response
 
 
+# parity-with: threetears.agent.tools.protocols.TranscriptionProvider
 class FakeTranscriptionProvider:
     def __init__(self, response: str = "Hello world."):
         self.response = response
@@ -54,6 +57,7 @@ class FakeTranscriptionProvider:
         return self.response
 
 
+# parity-with: threetears.agent.tools.protocols.MediaStorage
 class FakeMediaStorage:
     """In-memory storage for testing."""
 

@@ -17,6 +17,15 @@ from threetears.core.security import SandboxDecision, SandboxDenied
 from threetears.agent.workspace.tools.workspace_history import (
     WorkspaceHistoryTool,
 )
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +34,7 @@ from threetears.agent.workspace.tools.workspace_history import (
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: Any = None
@@ -36,7 +45,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -66,11 +75,11 @@ class _FakeVersionRow:
     content: bytes
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """placeholder: history tool does not query this collection."""
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     def __init__(self, rows: list[_FakeVersionRow]) -> None:
         self._rows = rows
         self.by_workspace_calls: list[tuple[UUID, int]] = []
@@ -114,7 +123,7 @@ class _RecordingSandbox:
             raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

@@ -18,6 +18,16 @@ from threetears.agent.workspace.tools import (
 from threetears.agent.workspace.tools.workspace_rollback import (
     WorkspaceRollbackTool,
 )
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +36,7 @@ from threetears.agent.workspace.tools.workspace_rollback import (
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: Any = None
@@ -37,7 +47,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -55,14 +65,14 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     relative_path: str
     content: bytes = b""
     sha256: str = "s" * 64
     version: int = 1
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity]) -> None:
         self._files = files
 
@@ -78,7 +88,7 @@ class _FakeFileCollection:
         return None
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder -- rollback delegates writes to _write_file_atomic."""
 
 
@@ -94,7 +104,7 @@ class _RecordingSandbox:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: Any
 
     async def __aenter__(self) -> Any:
@@ -105,7 +115,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """pool with a single long-lived conn that scripts _resolve_ref lookups.
 
     scripts match by (relative_path, selector); selector is the last
@@ -129,7 +139,7 @@ class _FakePool:
         return self.script.get((relative_path, selector))
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

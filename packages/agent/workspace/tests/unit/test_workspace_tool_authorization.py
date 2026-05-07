@@ -41,6 +41,15 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.agent.workspace.authorize import WorkspaceAccessDenied
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +58,7 @@ from threetears.agent.workspace.authorize import WorkspaceAccessDenied
 
 
 @dataclass
-class _FakeWorkspace:
+class _FakeWorkspace(FakeWorkspaceEntity):
     """stand-in workspace entity with all WorkspaceLike attributes."""
 
     id: UUID
@@ -73,7 +82,7 @@ class _FakeWorkspace:
 
 
 @dataclass
-class _FakeFile:
+class _FakeFile(FakeWorkspaceFile):
     """stand-in head-state file entity."""
 
     relative_path: str
@@ -83,7 +92,7 @@ class _FakeFile:
     date_updated: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """minimal workspace collection servicing the common lookups."""
 
     def __init__(self, entries: list[_FakeWorkspace]) -> None:
@@ -151,7 +160,7 @@ class _FakeWorkspaceCollection:
         return list(self._entries)
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """minimal file collection servicing the head-state lookups."""
 
     def __init__(self, files: list[_FakeFile] | None = None) -> None:
@@ -197,7 +206,7 @@ class _FakeFileCollection:
         return list(self._files)
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """journal collection stub (never used for authorize-path tests)."""
 
     async def find_by_workspace(

@@ -15,6 +15,15 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.doc_get import DocGetTool
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -31,13 +40,13 @@ _FIXTURE_PATH = Path(__file__).parent.parent / "handlers" / "fixtures" / "audien
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: datetime | None = None
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -55,7 +64,7 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     relative_path: str
     content: bytes
     sha256: str
@@ -63,7 +72,7 @@ class _FakeFileEntity:
     date_updated: datetime = datetime.now(UTC)
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
         self._files = files or []
         self.find_calls: list[tuple[UUID, str]] = []
@@ -89,7 +98,7 @@ class _RecordingSandbox:
             raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

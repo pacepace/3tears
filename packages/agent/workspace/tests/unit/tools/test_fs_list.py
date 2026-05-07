@@ -15,6 +15,15 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.fs_list import FsListTool
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,13 +32,13 @@ from threetears.agent.workspace.tools.fs_list import FsListTool
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: datetime | None = None
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -47,7 +56,7 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     relative_path: str
     content: bytes = b""
     sha256: str = "a" * 64
@@ -55,7 +64,7 @@ class _FakeFileEntity:
     date_updated: datetime = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity]) -> None:
         self._files = files
 
@@ -82,7 +91,7 @@ class _FilteringSandbox:
             raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

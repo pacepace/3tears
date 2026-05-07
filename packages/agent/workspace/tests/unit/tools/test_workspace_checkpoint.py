@@ -15,6 +15,16 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.agent.workspace.tools.workspace_checkpoint import (
     WorkspaceCheckpointTool,
 )
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +33,7 @@ from threetears.agent.workspace.tools.workspace_checkpoint import (
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: Any = None
@@ -34,7 +44,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -52,14 +62,14 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     relative_path: str
     content: bytes
     sha256: str
     version: int
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity]) -> None:
         self._files = files
         self.calls: list[UUID] = []
@@ -69,12 +79,12 @@ class _FakeFileCollection:
         return list(self._files)
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder -- checkpoint writes journal rows through the pool conn."""
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     parent: _FakeConnection
     entered: bool = False
     exited: bool = False
@@ -90,7 +100,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     executions: list[tuple[str, tuple[Any, ...], bool]] = field(default_factory=list)
     transactions: list[_FakeTransaction] = field(default_factory=list)
     transaction_open: bool = False
@@ -128,7 +138,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -139,14 +149,14 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     conn: _FakeConnection = field(default_factory=_FakeConnection)
 
     def acquire(self) -> _FakeAcquireCM:
         return _FakeAcquireCM(conn=self.conn)
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

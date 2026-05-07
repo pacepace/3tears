@@ -29,6 +29,16 @@ from threetears.agent.workspace.tools.helpers import (
     _resolve_workspace,
     _write_file_atomic,
 )
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +47,7 @@ from threetears.agent.workspace.tools.helpers import (
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     """minimal stand-in for :class:`Workspace` exposing id, name, delete flag."""
 
     id: UUID
@@ -51,7 +61,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """records lookups and serves entities by either name or id."""
 
     def __init__(
@@ -77,7 +87,7 @@ class _FakeWorkspaceCollection:
         return None
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel context object passed into _resolve_workspace."""
 
 
@@ -185,7 +195,7 @@ async def test_resolve_workspace_soft_deleted_raises() -> None:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     parent: _FakeConnection
     entered: bool = False
     exited: bool = False
@@ -201,7 +211,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """records execute + fetchrow calls and captures transaction membership."""
 
     head_row: dict[str, Any] | None = None
@@ -235,7 +245,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -246,7 +256,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     conn: _FakeConnection = field(default_factory=_FakeConnection)
 
     def acquire(self) -> _FakeAcquireCM:

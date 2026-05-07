@@ -14,6 +14,16 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 from threetears.core.security import SandboxDenied
 
 from threetears.agent.workspace.tools.workspace_diff import WorkspaceDiffTool
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +32,7 @@ from threetears.agent.workspace.tools.workspace_diff import WorkspaceDiffTool
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: Any = None
@@ -33,7 +43,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -61,7 +71,7 @@ class _RecordingSandbox:
             raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 
@@ -85,7 +95,7 @@ class _JournalRow:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """scripts fetchrow by (relative_path, ref_selector) tuple."""
 
     script: dict[tuple[str, Any], dict[str, Any] | None] = field(default_factory=dict)
@@ -106,7 +116,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -117,7 +127,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     conn: _FakeConnection = field(default_factory=_FakeConnection)
 
     def acquire(self) -> _FakeAcquireCM:

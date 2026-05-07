@@ -14,6 +14,16 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools import workspace_reset as workspace_reset_module
 from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +32,7 @@ from threetears.agent.workspace.tools.workspace_reset import WorkspaceResetTool
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     """minimal stand-in for :class:`Workspace` for reset-target lookups."""
 
     @property
@@ -39,7 +49,7 @@ class _FakeWorkspaceEntity:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     """minimal stand-in for :class:`WorkspaceFile`."""
 
     relative_path: str
@@ -47,7 +57,7 @@ class _FakeFileEntity:
     sha256: str
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -58,7 +68,7 @@ class _FakeWorkspaceCollection:
         return None
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity]) -> None:
         self._files = files
         self.find_calls: list[UUID] = []
@@ -68,7 +78,7 @@ class _FakeFileCollection:
         return list(self._files)
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder; tool uses pool directly."""
 
 
@@ -95,7 +105,7 @@ class _NoTemplateSandbox:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     parent: _FakeConnection
     entered: bool = False
     exited: bool = False
@@ -111,7 +121,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     executions: list[tuple[str, tuple[Any, ...], bool]] = field(default_factory=list)
     transaction_calls: int = 0
     transactions: list[_FakeTransaction] = field(default_factory=list)
@@ -129,7 +139,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -140,7 +150,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     conn: _FakeConnection = field(default_factory=_FakeConnection)
     acquire_calls: int = 0
 
@@ -149,7 +159,7 @@ class _FakePool:
         return _FakeAcquireCM(conn=self.conn)
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

@@ -19,6 +19,16 @@ from uuid import UUID, uuid4, uuid7
 import pytest
 
 from threetears.agent.workspace.tools.workspace_refresh import WorkspaceRefreshTool
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 def _sha(content: bytes) -> str:
@@ -33,7 +43,7 @@ def _sha(content: bytes) -> str:
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     """stand-in for :class:`Workspace`.
 
     :ivar id: workspace identifier
@@ -53,7 +63,7 @@ class _FakeWorkspaceEntity:
         return f"workspace.{self.id}"
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """fake workspace collection serving _resolve_workspace."""
 
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
@@ -112,7 +122,7 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     """stand-in for :class:`WorkspaceFile`.
 
     :ivar relative_path: path within workspace
@@ -125,7 +135,7 @@ class _FakeFileEntity:
     version: int = 1
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake head-state file collection."""
 
     def __init__(self, files: list[_FakeFileEntity]) -> None:
@@ -153,11 +163,11 @@ class _FakeFileCollection:
         return list(self._files)
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder; tool uses pool directly."""
 
 
-class _FakeSandbox:
+class _FakeSandbox(FakeWorkspaceSandbox):
     """stand-in for :class:`WorkspaceSandbox` with optional root map."""
 
     def __init__(self, roots: dict[str, Path]) -> None:
@@ -184,7 +194,7 @@ class _FakeSandbox:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     """fake asyncpg transaction context manager."""
 
     parent: _FakeConnection
@@ -224,7 +234,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """fake asyncpg connection recording execute + fetchrow."""
 
     executions: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
@@ -283,7 +293,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     """asyncpg-shaped acquire CM."""
 
     conn: _FakeConnection
@@ -317,7 +327,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """asyncpg-shaped pool sharing a single connection."""
 
     conn: _FakeConnection = field(default_factory=_FakeConnection)
@@ -331,7 +341,7 @@ class _FakePool:
         return _FakeAcquireCM(conn=self.conn)
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel context manager; no methods invoked in these tests."""
 
 

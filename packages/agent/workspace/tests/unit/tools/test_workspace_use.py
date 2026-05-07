@@ -13,10 +13,19 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools import workspace_use as workspace_use_module
 from threetears.agent.workspace.tools.workspace_use import WorkspaceUseTool
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     """minimal stand-in for :class:`Workspace` exposing id and name."""
 
     id: UUID
@@ -66,7 +75,7 @@ class _RecordingPin:
         )
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel object returned by the context provider closure."""
 
 

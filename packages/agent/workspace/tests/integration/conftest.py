@@ -70,6 +70,7 @@ from threetears.agent.tools.call_scope import (
     enter_call_scope,
 )
 from threetears.agent.tools.context_envelope import CallContext
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +366,7 @@ def _version_to_dict(v: _StoredVersion) -> dict[str, Any]:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     """context-manager placeholder; the fake store is single-process."""
 
     parent: _FakeConnection
@@ -379,7 +380,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """asyncpg-shaped connection routed to the shared :class:`_FakeStore`."""
 
     store: _FakeStore
@@ -396,7 +397,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -407,7 +408,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """asyncpg-shaped pool sharing a single backing store across connections."""
 
     store: _FakeStore = field(default_factory=_FakeStore)

@@ -17,6 +17,16 @@ from threetears.agent.acl import (
 )
 from threetears.agent.tools.base_tool import TearsTool
 from threetears.agent.workspace.factory import _TOOL_BUILDERS, build_workspace_tools
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 class _FakeCollection:
@@ -32,15 +42,15 @@ class _FakeCollection:
         return []
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel context object returned by the provider closure."""
 
 
-class _FakeSandbox:
+class _FakeSandbox(FakeWorkspaceSandbox):
     """sandbox stub for tools that accept it but never invoke it in build."""
 
 
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """asyncpg pool stub for tools that accept it but never invoke it in build."""
 
 

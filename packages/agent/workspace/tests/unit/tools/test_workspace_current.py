@@ -35,9 +35,18 @@ from threetears.agent.workspace.pin import PinnedWorkspace
 
 from threetears.agent.workspace.tools import workspace_current as workspace_current_module
 from threetears.agent.workspace.tools.workspace_current import WorkspaceCurrentTool
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel context object returned by the provider closure."""
 
 

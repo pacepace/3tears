@@ -41,13 +41,23 @@ from _fake_kv import FakeNatsClient  # type: ignore[import-not-found]
 
 from threetears.agent.workspace.lease import WorkspaceFileLease
 from threetears.agent.workspace.materialize import bind
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 @dataclass
-class _FakeWorkspace:
+class _FakeWorkspace(FakeWorkspaceEntity):
     id: UUID
     name: str
     agent_id: UUID
@@ -65,7 +75,7 @@ class _FakeWorkspace:
         return self.agent_id
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, ws: _FakeWorkspace) -> None:
         self._ws = ws
 
@@ -79,16 +89,16 @@ class _FakeWorkspaceCollection:
         return self._ws
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     async def find_by_workspace(self, workspace_id: UUID) -> list[Any]:
         return []
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     pass
 
 
-class _FakeSandbox:
+class _FakeSandbox(FakeWorkspaceSandbox):
     def __init__(self, roots: dict[str, Path]) -> None:
         self._roots = roots
 
@@ -100,7 +110,7 @@ class _FakeSandbox:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     parent: Any
 
     async def __aenter__(self) -> _FakeTransaction:
@@ -111,7 +121,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     executions: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
 
     def transaction(self, namespace: Any = None) -> _FakeTransaction:
@@ -123,7 +133,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     conn: _FakeConnection
 
     async def __aenter__(self) -> _FakeConnection:
@@ -134,7 +144,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     conn: _FakeConnection = field(default_factory=_FakeConnection)
 
     def acquire(self) -> _FakeAcquireCM:

@@ -53,3 +53,9 @@ The `threetears/` and `threetears/agent/` directories must **never** have `__ini
 - Type checking: mypy (strict)
 - Testing: pytest
 - No poetry — uv only
+
+## Test Fakes
+
+Every test fake (a class named `Fake<Name>` or `_Fake<Name>` under any `tests/` directory) MUST declare what production protocol it stands in for, via subclass declaration, a `# parity-with: <fully.qualified.name>` marker comment, or an exemption with `# rationale:` line in `tests/enforcement/_fake_parity_exemptions.txt`. Workspace tests centralise their asyncpg + workspace-entity shells under `packages/agent/workspace/tests/_helpers/{asyncpg_shims,workspace_shims}.py` so per-test inline fakes only need a one-line subclass declaration.
+
+Enforced by `tests/enforcement/test_fake_protocol_parity.py` (thin shell over the canonical walker in `packages/enforcement/src/threetears/enforcement/fake_parity/`). Mode is controlled by `FAKE_PARITY_ENFORCEMENT_MODE` — defaults to `strict`. Catches the drift bug class where production protocols evolve while test fakes silently rot until a downstream test happens to call the missing method.

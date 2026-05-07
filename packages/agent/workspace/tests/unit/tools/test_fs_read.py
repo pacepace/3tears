@@ -16,6 +16,15 @@ from threetears.core.security import SandboxDecision, SandboxDenied
 
 from threetears.agent.workspace.tools import helpers as helpers_module
 from threetears.agent.workspace.tools.fs_read import FsReadTool
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -24,13 +33,13 @@ from threetears.agent.workspace.tools.fs_read import FsReadTool
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     id: UUID
     name: str
     date_deleted: datetime | None = None
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     def __init__(self, entities: list[_FakeWorkspaceEntity]) -> None:
         self._entities = entities
 
@@ -48,7 +57,7 @@ class _FakeWorkspaceCollection:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     relative_path: str
     content: bytes
     sha256: str
@@ -56,7 +65,7 @@ class _FakeFileEntity:
     date_updated: datetime = datetime.now(UTC)
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
         self._files = files or []
         self.find_calls: list[tuple[UUID, str]] = []
@@ -92,7 +101,7 @@ class _RecordingSandbox:
             raise SandboxDenied("access", target, "syntactic deny (test fixture)")
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     pass
 
 

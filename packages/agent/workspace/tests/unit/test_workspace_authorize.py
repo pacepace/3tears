@@ -47,6 +47,15 @@ from threetears.agent.workspace.authorize import (
     WorkspaceAccessDenied,
     authorize_workspace_access,
 )
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 class _EmptyMembershipLoader:
@@ -142,7 +151,7 @@ class _EmptyGrantLoader:
 
 
 @dataclass
-class _FakeWorkspace:
+class _FakeWorkspace(FakeWorkspaceEntity):
     """structural stand-in for :class:`Workspace` with the fields the helper reads."""
 
     id: UUID

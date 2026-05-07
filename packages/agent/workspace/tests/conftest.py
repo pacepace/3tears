@@ -18,3 +18,18 @@ _CORE_COORDINATION_TESTS = (
 )
 if str(_CORE_COORDINATION_TESTS) not in sys.path:
     sys.path.insert(0, str(_CORE_COORDINATION_TESTS))
+
+# expose ``_helpers.asyncpg_shims`` (and any future shared test-infra
+# packages) to every workspace test by adding this ``tests`` directory
+# to ``sys.path``. import sites use::
+#
+#     from _helpers.asyncpg_shims import FakeAsyncpgConnection
+#
+# centralised test fakes live under ``tests/_helpers/`` so the
+# fake-protocol-parity walker has a single canonical class per shell
+# type to subclass against (each per-test ``_FakePool`` /
+# ``_FakeConnection`` etc. inherits the matching shell to declare
+# parity).
+_WORKSPACE_TESTS_ROOT = Path(__file__).resolve().parent
+if str(_WORKSPACE_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKSPACE_TESTS_ROOT))

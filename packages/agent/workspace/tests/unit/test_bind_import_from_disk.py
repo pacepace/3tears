@@ -27,6 +27,18 @@ import pytest
 
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
 from threetears.agent.workspace.materialize import bind
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileLease,
+    FakeWorkspaceFileLeaseHandle,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 def _sha(content: bytes) -> str:
@@ -41,7 +53,7 @@ def _sha(content: bytes) -> str:
 
 
 @dataclass
-class _FakeWorkspace:
+class _FakeWorkspace(FakeWorkspaceEntity):
     """stand-in for :class:`Workspace` exposing fields bind reads.
 
     :ivar id: workspace identifier
@@ -63,7 +75,7 @@ class _FakeWorkspace:
 
 
 @dataclass
-class _FakeFile:
+class _FakeFile(FakeWorkspaceFile):
     """stand-in for :class:`WorkspaceFile` exposing fields bind reads.
 
     :ivar relative_path: workspace-relative path
@@ -78,7 +90,7 @@ class _FakeFile:
     version: int
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """fake :class:`WorkspaceCollection` exposing :meth:`find_by_id`."""
 
     def __init__(self, workspaces: list[_FakeWorkspace]) -> None:
@@ -113,7 +125,7 @@ class _FakeWorkspaceCollection:
         return result
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """fake :class:`WorkspaceFileCollection` exposing :meth:`find_by_workspace`.
 
     serves either the list passed at construction time or a live-view
@@ -177,11 +189,11 @@ class _FakeFileCollection:
         return result
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """fake :class:`WorkspaceFileVersionCollection` -- unused by bind."""
 
 
-class _FakeSandbox:
+class _FakeSandbox(FakeWorkspaceSandbox):
     """stand-in for :class:`WorkspaceSandbox` resolving to ``tmp_path``."""
 
     def __init__(self, roots: dict[str, Path]) -> None:
@@ -211,7 +223,7 @@ class _FakeSandbox:
 
 
 @dataclass
-class _FakeLeaseHandle:
+class _FakeLeaseHandle(FakeWorkspaceFileLeaseHandle):
     """async-context-manager handle modeling a :class:`LeaseHandle`.
 
     :ivar released: True once exit fired
@@ -249,7 +261,7 @@ class _FakeLeaseHandle:
 
 
 @dataclass
-class _FakeLease:
+class _FakeLease(FakeWorkspaceFileLease):
     """fake :class:`WorkspaceFileLease` recording acquire calls."""
 
     handles: list[_FakeLeaseHandle] = field(default_factory=list)
@@ -281,7 +293,7 @@ class _FakeLease:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     """fake asyncpg transaction context manager."""
 
     parent: _FakeConnection
@@ -317,7 +329,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """fake asyncpg connection recording execute + fetchrow calls."""
 
     executions: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
@@ -392,7 +404,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     """asyncpg-shaped acquire context manager."""
 
     conn: _FakeConnection
@@ -426,7 +438,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """asyncpg-shaped pool routing to a single shared connection."""
 
     conn: _FakeConnection = field(default_factory=_FakeConnection)

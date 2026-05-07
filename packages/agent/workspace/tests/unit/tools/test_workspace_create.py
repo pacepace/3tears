@@ -15,6 +15,16 @@ from threetears.agent.tools.base_tool import MCPToolDefinition
 
 from threetears.agent.workspace.tools import workspace_create as workspace_create_module
 from threetears.agent.workspace.tools.workspace_create import WorkspaceCreateTool
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +33,7 @@ from threetears.agent.workspace.tools.workspace_create import WorkspaceCreateToo
 
 
 @dataclass
-class _FakeWorkspaceEntity:
+class _FakeWorkspaceEntity(FakeWorkspaceEntity):
     """minimal stand-in for :class:`Workspace` for source-fork lookups."""
 
     id: UUID
@@ -33,7 +43,7 @@ class _FakeWorkspaceEntity:
 
 
 @dataclass
-class _FakeFileEntity:
+class _FakeFileEntity(FakeWorkspaceFile):
     """minimal stand-in for :class:`WorkspaceFile`."""
 
     relative_path: str
@@ -41,7 +51,7 @@ class _FakeFileEntity:
     sha256: str
 
 
-class _FakeWorkspaceCollection:
+class _FakeWorkspaceCollection(FakeWorkspaceCollection):
     """records lookup calls and serves entities by (agent_id, name)."""
 
     def __init__(self, entities: list[_FakeWorkspaceEntity] | None = None) -> None:
@@ -56,7 +66,7 @@ class _FakeWorkspaceCollection:
         return None
 
 
-class _FakeFileCollection:
+class _FakeFileCollection(FakeWorkspaceFileCollection):
     """records find_by_workspace calls and serves a fixed file list."""
 
     def __init__(self, files: list[_FakeFileEntity] | None = None) -> None:
@@ -68,7 +78,7 @@ class _FakeFileCollection:
         return list(self._files)
 
 
-class _FakeVersionCollection:
+class _FakeVersionCollection(FakeWorkspaceFileVersionCollection):
     """placeholder; tool wires INSERTs through db_pool, not this collection."""
 
 
@@ -110,7 +120,7 @@ class _NoTemplateSandbox:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     """async-context-manager recorder for conn.transaction()."""
 
     parent: _FakeConnection
@@ -128,7 +138,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """records execute calls and whether each occurred inside a transaction."""
 
     executions: list[tuple[str, tuple[Any, ...], bool]] = field(default_factory=list)
@@ -153,7 +163,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     """async-context-manager wrapper around a single connection."""
 
     conn: _FakeConnection
@@ -166,7 +176,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """records acquired connections and dispatches to a single in-test conn."""
 
     conn: _FakeConnection = field(default_factory=_FakeConnection)
@@ -200,7 +210,7 @@ class _RecordingPin:
         )
 
 
-class _FakeContext:
+class _FakeContext(FakeWorkspaceContext):
     """sentinel context returned by the context_provider closure."""
 
 

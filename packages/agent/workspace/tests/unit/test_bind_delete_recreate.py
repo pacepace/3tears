@@ -25,6 +25,16 @@ from uuid import UUID, uuid4
 import pytest
 
 from threetears.agent.workspace.materialize import _capture_back
+from _helpers.asyncpg_shims import FakeAsyncpgAcquireCM, FakeAsyncpgConnection, FakeAsyncpgPool, FakeAsyncpgTransaction
+from _helpers.workspace_shims import (
+    FakeWorkspaceCollection,
+    FakeWorkspaceContext,
+    FakeWorkspaceEntity,
+    FakeWorkspaceFile,
+    FakeWorkspaceFileCollection,
+    FakeWorkspaceFileVersionCollection,
+    FakeWorkspaceSandbox,
+)
 
 
 pytestmark = pytest.mark.asyncio
@@ -48,7 +58,7 @@ def _sha256(data: bytes) -> str:
 
 
 @dataclass
-class _FakeWorkspace:
+class _FakeWorkspace(FakeWorkspaceEntity):
     """minimal stand-in exposing only the ``id`` + ``agent_id`` attrs ``_capture_back`` reads."""
 
     @property
@@ -61,7 +71,7 @@ class _FakeWorkspace:
 
 
 @dataclass
-class _FakeTransaction:
+class _FakeTransaction(FakeAsyncpgTransaction):
     """records transaction enter/exit against the parent connection."""
 
     parent: _FakeConnection
@@ -80,7 +90,7 @@ class _FakeTransaction:
 
 
 @dataclass
-class _FakeConnection:
+class _FakeConnection(FakeAsyncpgConnection):
     """fake asyncpg connection: dispatches fetchrow by SQL shape.
 
     tracks every INSERT into ``workspace_file_versions`` so the per-path
@@ -129,7 +139,7 @@ class _FakeConnection:
 
 
 @dataclass
-class _FakeAcquireCM:
+class _FakeAcquireCM(FakeAsyncpgAcquireCM):
     """async-context-manager wrapper returning the configured connection."""
 
     conn: _FakeConnection
@@ -142,7 +152,7 @@ class _FakeAcquireCM:
 
 
 @dataclass
-class _FakePool:
+class _FakePool(FakeAsyncpgPool):
     """fake asyncpg pool dispatching every acquire to a single connection."""
 
     conn: _FakeConnection = field(default_factory=_FakeConnection)
