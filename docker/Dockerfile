@@ -25,8 +25,13 @@
 # ---------------------------------------------------------------------------
 # Stage 1: build every 3tears wheel
 # ---------------------------------------------------------------------------
-# Dynamic enumeration: every directory under packages/ is built. New 3tears
-# packages added to the workspace pick up automatically; no Dockerfile edit.
+# Dynamic enumeration: every directory under packages/ that contains a
+# pyproject.toml is built, regardless of nesting depth. New 3tears packages
+# added to the workspace pick up automatically; no Dockerfile edit.
+#
+# packages/ has two layout shapes: top-level packages (e.g. ``packages/core``)
+# and grouped packages (e.g. ``packages/agent/{acl,audit,memory,tools,workspace}``
+# after the agent reorg). ``find -name pyproject.toml`` covers both.
 FROM python:3.14-slim AS wheels
 
 RUN pip install --no-cache-dir --upgrade pip \
@@ -35,10 +40,11 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY packages /build/packages
 
 RUN set -e; \
-    for pkg in /build/packages/*/; do \
-      pkg_name=$(basename "$pkg"); \
-      echo "Building wheel for 3tears/${pkg_name}"; \
-      python -m build --wheel --outdir /wheels "$pkg"; \
+    find /build/packages -name pyproject.toml -type f | sort | while read -r toml; do \
+      pkg_dir=$(dirname "$toml"); \
+      pkg_rel=${pkg_dir#/build/packages/}; \
+      echo "Building wheel for 3tears/${pkg_rel}"; \
+      python -m build --wheel --outdir /wheels "$pkg_dir"; \
     done
 
 # ---------------------------------------------------------------------------
