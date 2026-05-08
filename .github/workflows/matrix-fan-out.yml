@@ -1,0 +1,185 @@
+name: Matrix Fan-Out
+
+# producer-side cross-repo gate: when a PR opens against 3tears/develop,
+# run hub + SDK + admin's unit + enforcement suites with the PR's 3tears
+# commit substituted for whatever ref the consumers pin today. catches
+# the bug class where a 3tears API change passes 3tears CI but breaks a
+# downstream consumer's tests. complements
+# packages/enforcement/src/threetears/enforcement/fake_parity (static
+# protocol parity) by running real consumer tests against the actual
+# producer commit.
+#
+# the gate is overrideable via the ``override-matrix-gate`` PR label for
+# coordinated cross-repo refactors where the producer change is
+# intentionally breaking the consumer's tests AND the consumer PR will
+# land in the same merge window. see
+# 14-eng-ai-bot/docs/runbook-matrix-gate.md for the failure-attribution
+# playbook.
+
+on:
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+
+jobs:
+  hub:
+    name: hub (14-eng-ai-bot)
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'override-matrix-gate') }}
+    steps:
+      - name: Checkout 3tears (PR commit; into workspace subdir)
+        uses: actions/checkout@v4
+        with:
+          path: 3tears-src
+
+      - name: Checkout hub (current develop HEAD)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot
+          ref: develop
+          path: 14-eng-ai-bot-src
+
+      - name: Relocate siblings to paths required by [tool.uv.sources]
+        run: |
+          mv "${GITHUB_WORKSPACE}/3tears-src" "${GITHUB_WORKSPACE}/../3tears"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install hub dependencies
+        working-directory: ../14-eng-ai-bot
+        run: uv sync --all-extras
+
+      - name: Hub lint
+        working-directory: ../14-eng-ai-bot
+        run: uv run ruff check src/
+
+      - name: Hub typecheck
+        working-directory: ../14-eng-ai-bot
+        run: uv run mypy src/aibots/
+
+      - name: Hub unit + enforcement tests
+        working-directory: ../14-eng-ai-bot
+        run: uv run pytest tests/unit/ tests/enforcement/ -v
+
+  agents:
+    name: SDK (14-eng-ai-bot-agents)
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'override-matrix-gate') }}
+    steps:
+      - name: Checkout 3tears (PR commit; into workspace subdir)
+        uses: actions/checkout@v4
+        with:
+          path: 3tears-src
+
+      - name: Checkout hub (current develop HEAD; SDK depends on hub)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot
+          ref: develop
+          path: 14-eng-ai-bot-src
+
+      - name: Checkout SDK (current develop HEAD)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot-agents
+          ref: develop
+          path: 14-eng-ai-bot-agents-src
+
+      - name: Relocate siblings to paths required by [tool.uv.sources]
+        run: |
+          mv "${GITHUB_WORKSPACE}/3tears-src" "${GITHUB_WORKSPACE}/../3tears"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-agents-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot-agents"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install SDK dependencies
+        working-directory: ../14-eng-ai-bot-agents
+        run: uv sync --all-extras
+
+      - name: SDK lint
+        working-directory: ../14-eng-ai-bot-agents
+        run: uv run ruff check src/ tests/
+
+      - name: SDK typecheck
+        working-directory: ../14-eng-ai-bot-agents
+        run: uv run mypy src/
+
+      - name: SDK unit + enforcement tests
+        working-directory: ../14-eng-ai-bot-agents
+        run: uv run pytest tests/unit/ tests/enforcement/ -v
+
+  admin:
+    name: admin (14-eng-ai-bot-agent-admin)
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'override-matrix-gate') }}
+    steps:
+      - name: Checkout 3tears (PR commit; into workspace subdir)
+        uses: actions/checkout@v4
+        with:
+          path: 3tears-src
+
+      - name: Checkout hub (current develop HEAD; admin depends on hub)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot
+          ref: develop
+          path: 14-eng-ai-bot-src
+
+      - name: Checkout SDK (current develop HEAD; admin depends on SDK)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot-agents
+          ref: develop
+          path: 14-eng-ai-bot-agents-src
+
+      - name: Checkout admin (current develop HEAD)
+        uses: actions/checkout@v4
+        with:
+          repository: bluelabsio/14-eng-ai-bot-agent-admin
+          ref: develop
+          path: 14-eng-ai-bot-agent-admin-src
+
+      - name: Relocate siblings to paths required by [tool.uv.sources]
+        run: |
+          mv "${GITHUB_WORKSPACE}/3tears-src" "${GITHUB_WORKSPACE}/../3tears"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-agents-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot-agents"
+          mv "${GITHUB_WORKSPACE}/14-eng-ai-bot-agent-admin-src" "${GITHUB_WORKSPACE}/../14-eng-ai-bot-agent-admin"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install admin dependencies
+        working-directory: ../14-eng-ai-bot-agent-admin
+        run: uv sync --all-extras
+
+      - name: Admin lint
+        working-directory: ../14-eng-ai-bot-agent-admin
+        run: uv run ruff check src/
+
+      - name: Admin typecheck
+        working-directory: ../14-eng-ai-bot-agent-admin
+        run: uv run mypy src/
+
+      - name: Admin unit + enforcement tests
+        working-directory: ../14-eng-ai-bot-agent-admin
+        run: uv run pytest tests/unit/ tests/enforcement/ -v
