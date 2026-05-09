@@ -231,7 +231,14 @@ def test_register_tool_builder_appends_to_registry() -> None:
             return None
 
         def mcp_name(self) -> str:
-            return "threetears.workspace._sentinel"
+            # Fake test tool name; uses the canonical dotted
+            # ``threetears.workspace.<segment>`` shape so the enforcement
+            # test's ``_NAMESPACE_PREFIX`` check accepts it. The bare
+            # ``sentinel`` segment is intentionally NOT prefixed with
+            # a leading underscore (the previous form was
+            # ``threetears.workspace._sentinel`` which read as a private
+            # dunder-style name to readers and was worth dropping).
+            return "threetears.workspace.sentinel"
 
         def mcp_version(self) -> str:
             return "0.0"
@@ -244,7 +251,7 @@ def test_register_tool_builder_appends_to_registry() -> None:
     register_tool_builder(_build)
     try:
         tools = build_workspace_tools(**_minimal_deps())
-        assert any(t.mcp_name() == "threetears.workspace._sentinel" for t in tools)
+        assert any(t.mcp_name() == "threetears.workspace.sentinel" for t in tools)
         assert len(sentinel_calls) == 1
     finally:
         # restore the registry so test ordering does not affect counts

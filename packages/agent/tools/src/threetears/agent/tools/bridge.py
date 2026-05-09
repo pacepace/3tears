@@ -27,13 +27,29 @@ def tears_tool_to_langchain(tool: TearsTool) -> BaseTool:
     :rtype: BaseTool
     """
     schema = tool.mcp_schema()
-    short_name = schema.name.split(".")[-1]
+    # Use the full canonical name (e.g. ``threetears.calculator``)
+    # rather than the short last-segment form. Earlier this code
+    # extracted ``short_name = schema.name.split(".")[-1]`` so a
+    # canonical ``threetears.calculator`` surfaced as ``calculator``;
+    # that short form was incompatible with consumers that match by
+    # the canonical name (metallm's ``_execute_service_tool``,
+    # 14-eng-ai-bot's ``compute_expected_tools`` glob matchers,
+    # registry catalog full_name -> tool entry lookups). Provider-side
+    # wire constraints (e.g. Bedrock's tool-name validator that
+    # rejects dots) are handled at the chat-model boundary by the
+    # OpenRouter factory's name-translating wrapper, not by
+    # mangling the canonical name here.
+    canonical_name = schema.name
 
-    # Build Pydantic args_schema from JSON Schema
-    args_model = _build_args_model(short_name, schema.input_schema)
+    # Build Pydantic args_schema from JSON Schema. Pydantic's
+    # ``create_model`` rejects dots in the model name, so the
+    # args-model name is sanitised separately -- this is internal-only
+    # and never appears on the LangChain ``BaseTool.name`` surface.
+    args_model_name = canonical_name.replace(".", "_")
+    args_model = _build_args_model(args_model_name, schema.input_schema)
 
     class WrappedTool(BaseTool):
-        name: str = short_name
+        name: str = canonical_name
         description: str = schema.description
         args_schema: type = args_model
 

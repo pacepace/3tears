@@ -122,6 +122,9 @@ def test_returns_structured_tool() -> None:
         context,
         default_model="sd",
     )
+    # Canonical name is the dotted ``threetears.X`` form -- uniform
+    # across all builtins; provider wire-format quirks live at the
+    # chat-model boundary, not in the tool definition.
     assert tool.name == "threetears.image_generation"
     assert tool.args_schema is ImageGenerationInput
 

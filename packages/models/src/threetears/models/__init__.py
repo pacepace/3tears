@@ -24,10 +24,15 @@ from __future__ import annotations
 
 from threetears.models.cache import ModelCache
 from threetears.models.capabilities import (
+    CapabilityOverride,
     ModelCapabilities,
+    clear_capability_overrides,
     get_capabilities,
+    get_capability_override,
     list_capabilities,
     register_capabilities,
+    register_capability_override,
+    unregister_capability_override,
 )
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
@@ -73,10 +78,15 @@ __all__ = [
     "ModelStatus",
     "ModelTier",
     # capabilities
+    "CapabilityOverride",
     "ModelCapabilities",
+    "clear_capability_overrides",
     "get_capabilities",
+    "get_capability_override",
     "list_capabilities",
     "register_capabilities",
+    "register_capability_override",
+    "unregister_capability_override",
     # factory
     "create_chat_model",
     "create_embedding_model",

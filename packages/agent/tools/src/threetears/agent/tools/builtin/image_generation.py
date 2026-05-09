@@ -284,14 +284,17 @@ def create_image_generation_tool(
 
     return StructuredTool.from_function(
         coroutine=_generate,
-        # namespaced ``threetears.image_generation`` aligns with every
-        # other 3tears builtin (``threetears.calculator`` /
-        # ``threetears.current_date`` / etc.). previously bare
-        # ``image_generation`` because the StructuredTool factory path
-        # took a shortcut that the TearsTool subclass path
-        # (``mcp_name`` returns ``threetears.X``) never took.
-        # access-pattern matchers + group-alias resolvers expect the
-        # uniform shape; the rename closes that gap.
+        # ``threetears.image_generation`` matches the uniform 3tears
+        # builtin naming (``threetears.calculator`` /
+        # ``threetears.current_date`` / etc.). The dotted form is
+        # canonical across the platform; provider-specific wire
+        # constraints (e.g. Bedrock's ``^[a-zA-Z0-9_-]{1,128}$``
+        # tool-name validator that rejects dots) are handled at the
+        # OpenRouter chat-model boundary by the name-translating
+        # wrapper in ``packages/models/.../providers/openrouter.py``,
+        # which swaps dots for underscores on the wire and back on
+        # the response so application code never sees the translated
+        # form.
         name="threetears.image_generation",
         description=description or _DEFAULT_DESCRIPTION,
         args_schema=ImageGenerationInput,

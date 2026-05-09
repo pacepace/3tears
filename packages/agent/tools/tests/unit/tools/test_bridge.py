@@ -93,11 +93,17 @@ class TestTearsToolToLangchain:
         wrapped = tears_tool_to_langchain(tool)
         assert isinstance(wrapped, BaseTool)
 
-    def test_short_name_from_mcp_name(self) -> None:
-        """wrapped tool name is short name from mcp_name (after last dot)."""
+    def test_full_canonical_name_from_mcp_name(self) -> None:
+        """wrapped tool name is the full canonical ``mcp_name()`` --
+        the same string consumers compare against when matching
+        LLM-emitted tool_calls. Earlier this code returned the short
+        last-segment form (``dummy`` from ``threetears.dummy``); see
+        the docstring on :func:`tears_tool_to_langchain` for why the
+        full canonical form is now the contract.
+        """
         tool = DummyTool()
         wrapped = tears_tool_to_langchain(tool)
-        assert wrapped.name == "dummy"
+        assert wrapped.name == "threetears.dummy"
 
     def test_description_from_schema(self) -> None:
         """wrapped tool description matches MCP schema description."""
@@ -171,7 +177,9 @@ class TestTearsToolToLangchain:
         calc = CalculatorTool()
         wrapped = tears_tool_to_langchain(calc)
         assert isinstance(wrapped, BaseTool)
-        assert wrapped.name == "calculator"
+        # ``CalculatorTool.mcp_name()`` returns the canonical dotted
+        # ``threetears.calculator``; the bridge preserves it verbatim.
+        assert wrapped.name == "threetears.calculator"
         # _arun is LangChain BaseTool's documented override hook; see
         # tests/enforcement/_underscore_exemptions.txt for rationale.
         result = asyncio.run(wrapped._arun(expression="1 + 1"))  # noqa: SLF001

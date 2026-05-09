@@ -67,7 +67,7 @@ WEB_TOOLS: frozenset[str] = frozenset({
     "threetears.web_fetch",
 })
 
-# media tool name forms vary by registration path:
+# media tool names all use the uniform dotted ``threetears.X`` form:
 # * ``threetears.analyze_media`` -- TearsTool subclass under ``builtin/``
 # * ``threetears.parse_document`` -- TearsTool subclass under
 #   ``document/`` (separate dir because PyMuPDF / pdfminer / OCR
@@ -75,15 +75,21 @@ WEB_TOOLS: frozenset[str] = frozenset({
 #   the deps are installed, see ``agent.tools.serve``)
 # * ``threetears.image_prep`` -- TearsTool subclass under ``builtin/``;
 #   preprocessing / resizing for vision-input images, NOT generation
-# * ``image_generation`` -- StructuredTool factory path, registers
-#   under the bare ``image_generation`` name (no ``threetears.``
-#   prefix); creates new images via Anthropic / OpenAI / etc.
-# the alias matches whatever name actually appears in the registry.
+# * ``threetears.image_generation`` -- StructuredTool factory under
+#   ``builtin/``; creates new images via Anthropic / OpenAI / etc.
+# the dotted form is canonical across the platform (matches NATS
+# subject hierarchy and module-path naming). when a downstream
+# provider rejects dots in tool names (notably Bedrock's
+# ``^[a-zA-Z0-9_-]{1,128}$`` validator), the OpenRouter chat model
+# factory translates dot to underscore on the wire and translates
+# back on the response so application code never sees the
+# underscored form. the alias matches whatever name actually
+# appears in the registry.
 MEDIA_TOOLS: frozenset[str] = frozenset({
     "threetears.analyze_media",
     "threetears.parse_document",
     "threetears.image_prep",
-    "image_generation",
+    "threetears.image_generation",
 })
 
 # workspace tool names match the keys
