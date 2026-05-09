@@ -6,18 +6,42 @@ for known Anthropic model ids is registered with the module-level
 :func:`~threetears.models.capabilities.register_capabilities` registry at
 import time so consumers can ``get_capabilities(model_id)`` without
 instantiating the provider.
+
+Tool-name translation: the Anthropic Messages API validates tool names
+against ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot. Canonical 3tears
+tool names use the dotted form (``threetears.calculator``,
+``aibots.admin.agent_management``), so :func:`create_anthropic_chat`
+returns a :class:`_NameTranslatingChatAnthropic` subclass that translates
+dot-to-underscore on outgoing tool specs and underscore-to-dot on
+incoming ``tool_calls``. Application code never sees the wire form. The
+translation primitives live in
+:mod:`threetears.models.tool_name_translation` and are shared across
+every provider whose validator forces the same rename (Anthropic-direct,
+OpenRouter-routed Bedrock, etc.).
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.tool_name_translation import (
+    build_name_translation,
+    reverse_translate_message,
+)
 
 if TYPE_CHECKING:
     from langchain_anthropic import ChatAnthropic
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+    from langchain_core.language_models.chat_models import LanguageModelInput
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
+    from langchain_core.runnables import Runnable
+    from langchain_core.tools import BaseTool
 
 __all__ = [
     "ANTHROPIC_PROVIDER_NAME",
@@ -47,6 +71,139 @@ def strip_v1_suffix(url: str) -> str:
     return url
 
 
+def _build_translating_chat_class() -> type[ChatAnthropic]:
+    """build the :class:`ChatAnthropic` subclass with name-translation hooks.
+
+    Defined inside a function so the langchain-anthropic import stays
+    lazy -- :mod:`threetears.models.providers.anthropic` is imported
+    eagerly at package load to populate the capability registry, and
+    we must not require ``langchain-anthropic`` to be installed for
+    that side-effect import to succeed (it is an optional dependency
+    selected via ``3tears-models[anthropic]``).
+
+    :return: name-translating ChatAnthropic subclass
+    :rtype: type[ChatAnthropic]
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    class _NameTranslatingChatAnthropic(ChatAnthropic):
+        """``ChatAnthropic`` that translates tool names dot<->underscore
+        at the wire boundary.
+
+        The Anthropic Messages API rejects tool names that fail
+        ``^[a-zA-Z0-9_-]{1,128}$``. Canonical 3tears tool names use
+        the dotted form. This subclass mangles names on outgoing
+        ``bind_tools`` and reverses them on every streaming /
+        non-streaming response so application code only ever sees
+        the canonical dotted form. See
+        :mod:`threetears.models.tool_name_translation` for the
+        primitives + the openrouter integration that wears the
+        same translation layer.
+
+        :ivar _name_reverse_map: populated at ``bind_tools`` time;
+            maps each tool's underscored wire name back to the
+            canonical dotted form so ``tool_call`` names in
+            streaming responses can be rewritten before they reach
+            the application's dispatch / logging / persistence
+            layers.
+        :ptype _name_reverse_map: dict[str, str]
+        """
+
+        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+        def bind_tools(
+            self,
+            tools: list[BaseTool],
+            **kwargs: Any,
+        ) -> Runnable[LanguageModelInput, BaseMessage]:
+            """bind tools after dot->underscore name translation for the wire.
+
+            :param tools: application-side tool list (canonical
+                dotted names)
+            :ptype tools: list[BaseTool]
+            :param kwargs: passthrough to ``super().bind_tools``
+            :ptype kwargs: Any
+            :return: runnable bound to wire-side proxy tools
+            :rtype: Runnable[LanguageModelInput, BaseMessage]
+            """
+            wire_tools, reverse_map = build_name_translation(tools)
+            # mutate the shared reverse_map rather than reassign so
+            # the ``_astream`` closure in concurrently-running
+            # streams still sees the same dict object.
+            self._name_reverse_map.clear()
+            self._name_reverse_map.update(reverse_map)
+            return super().bind_tools(wire_tools, **kwargs)
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """stream chunks with tool-call names un-translated to canonical form.
+
+            Walks the tool-call name fields on every ``AIMessageChunk``
+            and rewrites them through the reverse map populated at
+            ``bind_tools`` time, so application code reading
+            ``chunk.message.tool_calls[i]["name"]`` (or the merged
+            AIMessage that consumers accumulate from chunks) never
+            sees the wire form.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: async iterator of un-translated chunks
+            :rtype: AsyncIterator[ChatGenerationChunk]
+            """
+            async for chunk in super()._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs,
+            ):
+                target = getattr(chunk, "message", chunk)
+                reverse_translate_message(target, self._name_reverse_map)
+                yield chunk
+
+        async def _agenerate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            """non-streaming generate with tool-call names un-translated.
+
+            Mirrors :meth:`_astream` for the non-streaming code path
+            (``ainvoke`` and friends). Walks every generation in the
+            ``ChatResult`` and rewrites ``tool_calls`` /
+            ``invalid_tool_calls`` names back to the canonical form
+            before returning to the caller.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: chat result with un-translated tool-call names
+            :rtype: ChatResult
+            """
+            result = await super()._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs,
+            )
+            for generation in result.generations:
+                reverse_translate_message(generation.message, self._name_reverse_map)
+            return result
+
+    return _NameTranslatingChatAnthropic
+
+
 def create_anthropic_chat(
     model_name: str,
     api_key: str,
@@ -57,6 +214,13 @@ def create_anthropic_chat(
     **extra_kwargs: object,
 ) -> ChatAnthropic:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
+
+    Returns the :class:`_NameTranslatingChatAnthropic` subclass, not
+    a vanilla ``ChatAnthropic``. Application code interacts with it
+    exactly the same way (it IS a ``ChatAnthropic``); the only
+    difference is the wire-side tool-name translation that hides
+    Anthropic's strict tool-name regex from the rest of the
+    codebase.
 
     :param model_name: Anthropic model identifier (e.g. ``claude-sonnet-4-20250514``)
     :ptype model_name: str
@@ -70,10 +234,10 @@ def create_anthropic_chat(
     :ptype max_retries: int
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
     :ptype extra_kwargs: object
-    :return: configured ``ChatAnthropic`` instance
+    :return: configured ``ChatAnthropic`` (the name-translating subclass)
     :rtype: ChatAnthropic
     """
-    from langchain_anthropic import ChatAnthropic
+    chat_cls = _build_translating_chat_class()
 
     cleaned_base_url = strip_v1_suffix(base_url) if base_url else None
 
@@ -87,7 +251,7 @@ def create_anthropic_chat(
         kwargs["base_url"] = cleaned_base_url
     kwargs.update(extra_kwargs)
 
-    model: ChatAnthropic = ChatAnthropic(**kwargs)
+    model: ChatAnthropic = chat_cls(**kwargs)
     return model
 
 

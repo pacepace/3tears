@@ -13,10 +13,13 @@ from threetears.models.capabilities import get_capabilities
 from threetears.models.enums import ModelTier, ModelType
 from threetears.models.providers.openrouter import (
     OPENROUTER_PROVIDER_NAME,
-    _NameMangledToolProxy,
-    _build_name_translation,
-    _mangle_tool_name,
     create_openrouter_chat,
+)
+from threetears.models.tool_name_translation import (
+    NameMangledToolProxy,
+    build_name_translation,
+    mangle_tool_name,
+    reverse_translate_message,
 )
 
 
@@ -62,19 +65,19 @@ class _DottedTool(BaseTool):
 
 
 class TestMangleToolName:
-    """``_mangle_tool_name`` produces wire-safe names."""
+    """``mangle_tool_name`` produces wire-safe names."""
 
     def test_dot_replaced_with_underscore(self) -> None:
-        assert _mangle_tool_name("threetears.calculator") == "threetears_calculator"
+        assert mangle_tool_name("threetears.calculator") == "threetears_calculator"
 
     def test_nested_dots_all_replaced(self) -> None:
         assert (
-            _mangle_tool_name("threetears.workspace.fs_read")
+            mangle_tool_name("threetears.workspace.fs_read")
             == "threetears_workspace_fs_read"
         )
 
     def test_no_dots_passes_through(self) -> None:
-        assert _mangle_tool_name("plain_name") == "plain_name"
+        assert mangle_tool_name("plain_name") == "plain_name"
 
     def test_existing_underscores_preserved(self) -> None:
         """Underscores in the source are preserved -- the round-trip
@@ -84,18 +87,18 @@ class TestMangleToolName:
         unambiguously when one's wire form happens to collide with the
         other's canonical name.
         """
-        assert _mangle_tool_name("threetears.web_search") == "threetears_web_search"
+        assert mangle_tool_name("threetears.web_search") == "threetears_web_search"
 
 
 class TestBuildNameTranslation:
-    """``_build_name_translation`` returns proxies + reverse map."""
+    """``build_name_translation`` returns proxies + reverse map."""
 
     def test_dotted_tool_gets_proxy(self) -> None:
         tool = _DottedTool()
-        wire_tools, reverse_map = _build_name_translation([tool])
+        wire_tools, reverse_map = build_name_translation([tool])
         assert len(wire_tools) == 1
         assert wire_tools[0] is not tool
-        assert isinstance(wire_tools[0], _NameMangledToolProxy)
+        assert isinstance(wire_tools[0], NameMangledToolProxy)
         assert wire_tools[0].name == "threetears_calculator"
         assert reverse_map == {"threetears_calculator": "threetears.calculator"}
 
@@ -116,13 +119,13 @@ class TestBuildNameTranslation:
                 return "ok"
 
         tool = _Plain()
-        wire_tools, reverse_map = _build_name_translation([tool])
+        wire_tools, reverse_map = build_name_translation([tool])
         assert wire_tools == [tool]
         assert reverse_map == {}
 
     def test_proxy_preserves_description_and_args_schema(self) -> None:
         tool = _DottedTool()
-        wire_tools, _ = _build_name_translation([tool])
+        wire_tools, _ = build_name_translation([tool])
         proxy = wire_tools[0]
         assert proxy.description == tool.description
         assert proxy.args_schema is tool.args_schema
@@ -131,7 +134,7 @@ class TestBuildNameTranslation:
     async def test_proxy_arun_delegates_to_original(self) -> None:
         """Calling the proxy's ``_arun`` runs the dotted-named original."""
         tool = _DottedTool()
-        wire_tools, _ = _build_name_translation([tool])
+        wire_tools, _ = build_name_translation([tool])
         proxy = wire_tools[0]
         result = await proxy._arun(expression="1+1")
         assert result == "ok"
@@ -177,7 +180,7 @@ class TestNameTranslatingChatOpenRouter:
                 },
             ],
         )
-        model._reverse_translate_message(msg)
+        reverse_translate_message(msg, model._name_reverse_map)
         assert msg.tool_calls[0]["name"] == "threetears.calculator"
 
     def test_reverse_translate_message_rewrites_tool_call_chunks(self) -> None:
@@ -199,7 +202,7 @@ class TestNameTranslatingChatOpenRouter:
                 },
             ],
         )
-        model._reverse_translate_message(chunk)
+        reverse_translate_message(chunk, model._name_reverse_map)
         assert chunk.tool_call_chunks[0]["name"] == "threetears.calculator"
 
     def test_reverse_translate_message_rewrites_invalid_tool_calls(self) -> None:
@@ -221,7 +224,7 @@ class TestNameTranslatingChatOpenRouter:
                 },
             ],
         )
-        model._reverse_translate_message(msg)
+        reverse_translate_message(msg, model._name_reverse_map)
         assert msg.invalid_tool_calls[0]["name"] == "threetears.calculator"
 
     def test_reverse_translate_message_noop_when_no_tools_bound(self) -> None:
@@ -240,7 +243,7 @@ class TestNameTranslatingChatOpenRouter:
                 },
             ],
         )
-        model._reverse_translate_message(msg)
+        reverse_translate_message(msg, model._name_reverse_map)
         # No bind_tools means no translation map; the name stays as-is.
         assert msg.tool_calls[0]["name"] == "external_tool"
 
@@ -261,7 +264,7 @@ class TestNameTranslatingChatOpenRouter:
                 },
             ],
         )
-        model._reverse_translate_message(msg)
+        reverse_translate_message(msg, model._name_reverse_map)
         assert msg.tool_calls[0]["name"] == "some_other_tool"
 
     def test_rebind_replaces_reverse_map(self) -> None:

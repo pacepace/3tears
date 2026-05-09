@@ -75,6 +75,11 @@ select = ["SLF"]
 # because the only legitimate caller is this test fixture. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/agent-workspace/tests/unit/test_validators.py" = ["SLF001"]
+# NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
+# the proxy already executed the LangChain BaseTool wrapper chain
+# (callbacks, validation); calling delegate.arun/run would double-fire
+# that chain. paired entries in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/src/threetears/models/tool_name_translation.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

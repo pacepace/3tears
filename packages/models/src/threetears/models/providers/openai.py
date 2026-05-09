@@ -6,17 +6,39 @@ returns a configured ``OpenAIEmbeddings`` instance. Capability metadata
 for known OpenAI model ids is registered with the module-level
 :func:`~threetears.models.capabilities.register_capabilities` registry at
 import time.
+
+Tool-name translation: the OpenAI tools API validates tool names against
+``^[a-zA-Z0-9_-]{1,64}$`` and rejects the dot. Canonical 3tears tool
+names use the dotted form, so :func:`create_openai_chat` returns a
+:class:`_NameTranslatingChatOpenAI` subclass that translates
+dot-to-underscore on outgoing tool specs and underscore-to-dot on
+incoming ``tool_calls``. The same wrapper covers OpenRouter accessed
+via ``base_url`` (the gateway's standard OpenAI-compatible route).
+Application code never sees the wire form. Translation primitives live
+in :mod:`threetears.models.tool_name_translation`.
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.tool_name_translation import (
+    build_name_translation,
+    reverse_translate_message,
+)
 
 if TYPE_CHECKING:
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+    from langchain_core.language_models.chat_models import LanguageModelInput
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
+    from langchain_core.runnables import Runnable
+    from langchain_core.tools import BaseTool
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 __all__ = [
@@ -27,6 +49,108 @@ __all__ = [
 
 
 OPENAI_PROVIDER_NAME = "openai"
+
+
+def _build_translating_chat_class() -> type[ChatOpenAI]:
+    """build the :class:`ChatOpenAI` subclass with name-translation hooks.
+
+    Defined inside a function so ``langchain_openai`` stays a lazy
+    import; the openai capability registry can populate without the
+    optional dependency.
+
+    :return: name-translating ChatOpenAI subclass
+    :rtype: type[ChatOpenAI]
+    """
+    from langchain_openai import ChatOpenAI
+
+    class _NameTranslatingChatOpenAI(ChatOpenAI):
+        """``ChatOpenAI`` that translates tool names dot<->underscore at
+        the wire boundary, mirroring the Anthropic/OpenRouter shape.
+
+        :ivar _name_reverse_map: populated at ``bind_tools`` time;
+            maps each tool's underscored wire name back to the
+            canonical dotted form so ``tool_call`` names in
+            streaming responses can be rewritten before they reach
+            application code.
+        :ptype _name_reverse_map: dict[str, str]
+        """
+
+        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+        def bind_tools(
+            self,
+            tools: list[BaseTool],
+            **kwargs: Any,
+        ) -> Runnable[LanguageModelInput, BaseMessage]:
+            """bind tools after dot->underscore name translation for the wire.
+
+            :param tools: application-side tool list (canonical dotted names)
+            :ptype tools: list[BaseTool]
+            :param kwargs: passthrough to ``super().bind_tools``
+            :ptype kwargs: Any
+            :return: runnable bound to wire-side proxy tools
+            :rtype: Runnable[LanguageModelInput, BaseMessage]
+            """
+            wire_tools, reverse_map = build_name_translation(tools)
+            self._name_reverse_map.clear()
+            self._name_reverse_map.update(reverse_map)
+            return super().bind_tools(wire_tools, **kwargs)
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """stream chunks with tool-call names un-translated.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: async iterator of un-translated chunks
+            :rtype: AsyncIterator[ChatGenerationChunk]
+            """
+            async for chunk in super()._astream(
+                messages, stop=stop, run_manager=run_manager, **kwargs,
+            ):
+                target = getattr(chunk, "message", chunk)
+                reverse_translate_message(target, self._name_reverse_map)
+                yield chunk
+
+        async def _agenerate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            """non-streaming generate with tool-call names un-translated.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: chat result with un-translated tool-call names
+            :rtype: ChatResult
+            """
+            result = await super()._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs,
+            )
+            for generation in result.generations:
+                reverse_translate_message(generation.message, self._name_reverse_map)
+            return result
+
+    return _NameTranslatingChatOpenAI
 
 
 def create_openai_chat(
@@ -40,6 +164,11 @@ def create_openai_chat(
     **extra_kwargs: object,
 ) -> ChatOpenAI:
     """creates a configured ``ChatOpenAI`` for OpenAI-compatible providers.
+
+    Returns the :class:`_NameTranslatingChatOpenAI` subclass so dotted
+    canonical tool names round-trip through OpenAI's strict tool-name
+    validator. Application code interacts with it exactly the same way
+    as a vanilla ``ChatOpenAI``.
 
     :param model_name: OpenAI model identifier (e.g. ``gpt-4o``)
     :ptype model_name: str
@@ -55,10 +184,10 @@ def create_openai_chat(
     :ptype stream_usage: bool
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenAI``
     :ptype extra_kwargs: object
-    :return: configured ``ChatOpenAI`` instance
+    :return: configured ``ChatOpenAI`` (the name-translating subclass)
     :rtype: ChatOpenAI
     """
-    from langchain_openai import ChatOpenAI
+    chat_cls = _build_translating_chat_class()
 
     kwargs: dict[str, object] = {
         "model": model_name,
@@ -71,7 +200,7 @@ def create_openai_chat(
         kwargs["base_url"] = base_url
     kwargs.update(extra_kwargs)
 
-    model: ChatOpenAI = ChatOpenAI(**kwargs)
+    model: ChatOpenAI = chat_cls(**kwargs)
     return model
 
 

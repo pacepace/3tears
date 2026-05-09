@@ -32,6 +32,10 @@ packages/agent-tools/tests/unit/tools/test_bridge.py:162:_run
 packages/agent-tools/tests/unit/tools/test_bridge.py:177:_arun
 # rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes _arun directly to verify the success=False + None error fallback path (falls back to content string).
 packages/agent-tools/tests/unit/tools/test_bridge.py:231:_arun
+# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain — calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
+packages/models/src/threetears/models/tool_name_translation.py:140:_arun
+# rationale: same as line 140 above — the sync _run override forwards to delegate._run for the same double-wrapper reason.
+packages/models/src/threetears/models/tool_name_translation.py:154:_run
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
 packages/observe/tests/test_tracing.py:24:_otel_available
 # rationale: fixture restores module-level _otel_available cache between tests so import-order does not leak patched state.

@@ -24,10 +24,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from langchain_core.tools import BaseTool
-from pydantic import Field, PrivateAttr
+from pydantic import PrivateAttr
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
 from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.tool_name_translation import (
+    build_name_translation,
+    reverse_translate_message,
+)
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
@@ -44,93 +48,6 @@ __all__ = [
 
 
 OPENROUTER_PROVIDER_NAME = "openrouter"
-
-
-class _NameMangledToolProxy(BaseTool):
-    """LangChain BaseTool whose ``.name`` is the underscored wire form,
-    delegating execution to a dotted-named original tool.
-
-    Used by :class:`_NameTranslatingChatOpenRouter.bind_tools` to swap
-    each application-side tool for a wire-side proxy. The proxy keeps
-    the description and ``args_schema`` of the original (those flow to
-    the LLM unchanged) but exposes the dot-replaced name so the bound
-    tool spec passes Bedrock-style validators.
-
-    Application code never receives this proxy -- it lives only inside
-    the bound runnable's tool list, and the response un-translation
-    layer rewrites tool-call names back to the dotted form before any
-    consumer code sees them.
-    """
-
-    name: str
-    description: str
-    args_schema: type[Any] | None = None
-    _delegate: BaseTool = PrivateAttr()
-
-    def __init__(self, *, delegate: BaseTool, mangled_name: str) -> None:
-        # Pydantic v2 BaseModel constructor does not take positional
-        # args; route the proxy fields through ``model_construct`` and
-        # set ``_delegate`` after to keep this lean.
-        super().__init__(
-            name=mangled_name,
-            description=delegate.description,
-            args_schema=delegate.args_schema,
-        )
-        self._delegate = delegate
-
-    async def _arun(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._delegate._arun(*args, **kwargs)
-
-    def _run(self, *args: Any, **kwargs: Any) -> Any:
-        return self._delegate._run(*args, **kwargs)
-
-
-def _mangle_tool_name(name: str) -> str:
-    """Translate a dotted canonical tool name to its underscored wire form.
-
-    Applied before sending tool specs to OpenRouter so names pass
-    strict provider validators that reject dots.
-
-    :param name: canonical tool name (may contain dots)
-    :ptype name: str
-    :return: dot-replaced form suitable for ``^[a-zA-Z0-9_-]{1,128}$``
-        validators (Bedrock + Anthropic-direct + most OpenAI-compat
-        backends accept this)
-    :rtype: str
-    """
-    return name.replace(".", "_")
-
-
-def _build_name_translation(
-    tools: list[BaseTool],
-) -> tuple[list[BaseTool], dict[str, str]]:
-    """build the wire-side proxy list + reverse map for response un-translation.
-
-    Tools whose canonical name has no dot pass through unchanged (no
-    proxy needed). Tools with dots get a :class:`_NameMangledToolProxy`
-    wrapper carrying the underscored wire name. The reverse map keys
-    on the underscored form so :class:`_NameTranslatingChatOpenRouter`
-    can rewrite ``tool_call`` names in streaming responses.
-
-    :param tools: application-side bind_tools input (canonical dotted
-        names)
-    :ptype tools: list[BaseTool]
-    :return: tuple of (wire-side tool list, underscored -> dotted map)
-    :rtype: tuple[list[BaseTool], dict[str, str]]
-    """
-    wire_tools: list[BaseTool] = []
-    reverse_map: dict[str, str] = {}
-    for tool in tools:
-        canonical = tool.name
-        if "." not in canonical:
-            wire_tools.append(tool)
-            continue
-        mangled = _mangle_tool_name(canonical)
-        wire_tools.append(_NameMangledToolProxy(
-            delegate=tool, mangled_name=mangled,
-        ))
-        reverse_map[mangled] = canonical
-    return wire_tools, reverse_map
 
 
 def _build_translating_chat_class() -> type[ChatOpenRouter]:
@@ -180,7 +97,7 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             :return: runnable bound to wire-side proxy tools
             :rtype: Runnable[LanguageModelInput, BaseMessage]
             """
-            wire_tools, reverse_map = _build_name_translation(tools)
+            wire_tools, reverse_map = build_name_translation(tools)
             # Mutate the shared reverse_map rather than reassign so the
             # ``_astream`` closure in concurrently-running streams still
             # sees the same dict object (PrivateAttr is per-instance,
@@ -233,7 +150,7 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
                 # to the chunk itself when ``.message`` is absent so
                 # we cover both shapes without a special case.
                 target = getattr(chunk, "message", chunk)
-                self._reverse_translate_message(target)
+                reverse_translate_message(target, self._name_reverse_map)
                 yield chunk
 
         async def _agenerate(
@@ -255,43 +172,8 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
                 messages, stop=stop, run_manager=run_manager, **kwargs,
             )
             for generation in result.generations:
-                self._reverse_translate_message(generation.message)
+                reverse_translate_message(generation.message, self._name_reverse_map)
             return result
-
-        def _reverse_translate_message(self, message: Any) -> None:
-            """rewrite tool-call names on ``message`` from wire to canonical form.
-
-            Mutates in place. Called for every chunk yielded from
-            ``_astream`` and every message in ``_agenerate``'s result.
-            Touches three name-bearing fields:
-
-            * ``tool_call_chunks`` -- partial streamed tool calls; the
-              ``name`` field arrives once at the start of each call,
-              subsequent chunks carry only ``args``.
-            * ``tool_calls`` -- the merged, well-formed tool calls
-              consumers iterate.
-            * ``invalid_tool_calls`` -- the recovery target for
-              malformed streaming; metallm and aibots-agents both
-              attempt to re-parse them.
-
-            No-op when the message has no tool-call fields or when no
-            name matches the reverse map (empty map = no tools were
-            bound, so nothing to translate).
-            """
-            if not self._name_reverse_map:
-                return
-            for tc_chunk in getattr(message, "tool_call_chunks", None) or []:
-                name = tc_chunk.get("name")
-                if name and name in self._name_reverse_map:
-                    tc_chunk["name"] = self._name_reverse_map[name]
-            for tc in getattr(message, "tool_calls", None) or []:
-                name = tc.get("name")
-                if name and name in self._name_reverse_map:
-                    tc["name"] = self._name_reverse_map[name]
-            for tc in getattr(message, "invalid_tool_calls", None) or []:
-                name = tc.get("name")
-                if name and name in self._name_reverse_map:
-                    tc["name"] = self._name_reverse_map[name]
 
     return _NameTranslatingChatOpenRouter
 
