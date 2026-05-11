@@ -56,13 +56,11 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "glob": {
             "type": "string",
-            "description": (
-                "optional posix glob pattern; matches use PurePosixPath.full_match so ** anchors recursively"
-            ),
+            "description": "POSIX glob; ** anchors recursively.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": [],

@@ -136,13 +136,10 @@ class ImagePrepTool(TearsTool):
     _INPUT_SCHEMA: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "image_data_base64": {
-                "type": "string",
-                "description": "base64-encoded image bytes",
-            },
+            "image_data_base64": {"type": "string"},
             "mime_type": {
                 "type": "string",
-                "description": "MIME type of image (e.g. image/jpeg, image/png, image/heic)",
+                "description": "e.g. image/jpeg, image/png, image/heic.",
             },
         },
         "required": ["image_data_base64", "mime_type"],

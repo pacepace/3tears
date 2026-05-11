@@ -102,15 +102,15 @@ class TimezoneConverterTool(TearsTool):
         "properties": {
             "time_str": {
                 "type": "string",
-                "description": "time string to convert (e.g. '2024-01-15 14:30', '3:00 PM')",
+                "description": "e.g. '2024-01-15 14:30' or '3:00 PM'.",
             },
             "from_timezone": {
                 "type": "string",
-                "description": "source IANA timezone (e.g. 'America/New_York')",
+                "description": "IANA, e.g. America/New_York.",
             },
             "to_timezone": {
                 "type": "string",
-                "description": "target IANA timezone (e.g. 'Europe/London')",
+                "description": "IANA, e.g. Europe/London.",
             },
         },
         "required": ["time_str", "from_timezone", "to_timezone"],

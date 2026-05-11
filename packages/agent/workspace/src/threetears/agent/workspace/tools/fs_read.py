@@ -53,11 +53,11 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path of the file to read",
+            "description": "workspace-relative path",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path"],

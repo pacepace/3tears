@@ -63,22 +63,19 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path to write",
+            "description": "workspace-relative path",
         },
         "content": {
             "type": "string",
-            "description": "file content as UTF-8 text",
+            "description": "UTF-8 text.",
         },
         "expected_sha256": {
             "type": "string",
-            "description": (
-                "prior sha256 caller expects on head row; mismatch rejects "
-                "the write without mutating state (optimistic concurrency)"
-            ),
+            "description": "Optimistic concurrency. Mismatch rejects without mutating.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path", "content"],

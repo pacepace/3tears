@@ -77,17 +77,14 @@ class UnitConverterTool(TearsTool):
     _INPUT_SCHEMA: dict[str, Any] = {
         "type": "object",
         "properties": {
-            "value": {
-                "type": "number",
-                "description": "numeric value to convert",
-            },
+            "value": {"type": "number"},
             "from_unit": {
                 "type": "string",
-                "description": "source unit (e.g. 'miles', 'kg', 'celsius')",
+                "description": "e.g. miles, kg, celsius.",
             },
             "to_unit": {
                 "type": "string",
-                "description": "target unit (e.g. 'kilometers', 'pounds', 'fahrenheit')",
+                "description": "e.g. kilometers, pounds, fahrenheit.",
             },
         },
         "required": ["value", "from_unit", "to_unit"],

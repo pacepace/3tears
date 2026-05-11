@@ -62,26 +62,20 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path of the file to edit",
+            "description": "workspace-relative path",
         },
         "find": {
             "type": "string",
-            "description": "exact string to replace (not a regex)",
+            "description": "Exact string (not regex).",
         },
-        "replace": {
-            "type": "string",
-            "description": "replacement string for every match of find",
-        },
+        "replace": {"type": "string"},
         "expected_sha256": {
             "type": "string",
-            "description": (
-                "prior sha256 caller expects on head row; mismatch rejects "
-                "the edit without mutating state (optimistic concurrency)"
-            ),
+            "description": "Optimistic concurrency. Mismatch rejects without mutating.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path", "find", "replace"],

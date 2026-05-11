@@ -65,25 +65,19 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path of the document to merge into",
+            "description": "workspace-relative path",
         },
         "partial": {
             "type": "object",
-            "description": (
-                "partial mapping to deep-merge into the document; mapping-in-"
-                "mapping recurses, lists and scalars replace wholesale"
-            ),
+            "description": "Deep-merge: mappings recurse, lists/scalars replace.",
         },
         "expected_sha256": {
             "type": "string",
-            "description": (
-                "prior sha256 caller expects on head row; mismatch rejects "
-                "the write without mutating state (optimistic concurrency)"
-            ),
+            "description": "Optimistic concurrency. Mismatch rejects without mutating.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path", "partial"],

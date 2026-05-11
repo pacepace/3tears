@@ -65,25 +65,17 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path of the document to mutate",
+            "description": "workspace-relative path",
         },
-        "jsonpath": {
-            "type": "string",
-            "description": "jsonpath expression identifying the target location",
-        },
-        "value": {
-            "description": "value to set; any JSON type",
-        },
+        "jsonpath": {"type": "string"},
+        "value": {"description": "Any JSON type."},
         "expected_sha256": {
             "type": "string",
-            "description": (
-                "prior sha256 caller expects on head row; mismatch rejects "
-                "the write without mutating state (optimistic concurrency)"
-            ),
+            "description": "Optimistic concurrency. Mismatch rejects without mutating.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path", "jsonpath", "value"],

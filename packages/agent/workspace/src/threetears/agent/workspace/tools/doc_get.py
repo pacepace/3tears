@@ -59,18 +59,15 @@ _INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "relative_path": {
             "type": "string",
-            "description": "workspace-relative path of the document to read",
+            "description": "workspace-relative path",
         },
         "jsonpath": {
             "type": "string",
-            "description": (
-                "optional jsonpath expression; when supplied, returns the "
-                "subtree or scalar at that path instead of the whole document"
-            ),
+            "description": "Returns subtree/scalar at path instead of whole doc.",
         },
         "workspace": {
             "type": "string",
-            "description": "workspace name; defaults to pinned workspace",
+            "description": "Defaults to pinned workspace.",
         },
     },
     "required": ["relative_path"],
