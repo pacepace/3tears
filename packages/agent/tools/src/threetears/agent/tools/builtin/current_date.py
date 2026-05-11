@@ -72,16 +72,7 @@ class CurrentDateTool(TearsTool):
         "properties": {
             "timezone": {
                 "type": "string",
-                "description": (
-                    "Optional IANA timezone name (e.g. 'America/Los_Angeles', "
-                    "'Europe/Berlin') to render local time alongside UTC. "
-                    "When omitted, the tool falls back to the timezone "
-                    "configured on the agent at construction time, and "
-                    "returns UTC only when neither is set. The agent's "
-                    "system prompt carries the user's resolved timezone "
-                    "so callers should pass it through verbatim when the "
-                    "user asks for 'local time' or 'my time'."
-                ),
+                "description": "IANA timezone (e.g. America/Los_Angeles). Defaults to agent timezone.",
             },
         },
     }
@@ -143,13 +134,7 @@ class CurrentDateTool(TearsTool):
         result = MCPToolDefinition(
             name=self.mcp_name(),
             version=self.mcp_version(),
-            description=(
-                "return current date and time in UTC, plus the same "
-                "instant in a local timezone when ``timezone`` is "
-                "supplied. the agent system prompt carries the user's "
-                "resolved tz on every turn, so prefer passing it "
-                "through whenever the user references 'local time'."
-            ),
+            description="Current UTC date/time. Adds local time when timezone given.",
             input_schema=self._INPUT_SCHEMA,
         )
         return result
