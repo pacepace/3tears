@@ -386,6 +386,7 @@ class WebSocketHandler:
                     "received non-JSON websocket message from user %s",
                     user_id,
                 )
+                await websocket.send_text(json.dumps({"type": "error", "message": "invalid json"}))
                 continue
 
             msg_type = data.get("type", "")

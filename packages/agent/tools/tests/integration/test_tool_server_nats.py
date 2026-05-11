@@ -1,10 +1,12 @@
-"""integration tests for ToolServer with real NATS at localhost:4222.
+"""integration tests for ToolServer against a NATS testcontainer.
 
-requires NATS server running at nats://localhost:4222. skipif gate
-uses the canonical :func:`threetears.core.testing.containers
-.skip_without_nats_marker` (test-harness-task-01); replaces the
-hand-rolled ``_nats_reachable`` socket probe each integration test
-file used to ship.
+uses the canonical session-scoped ``nats_container`` fixture from
+:mod:`threetears.core.testing.fixtures` (registered at the workspace
+root conftest) so the test suite spins up its own JetStream-enabled
+NATS server rather than depending on a pre-running ``localhost:4222``.
+``check_docker_available`` inside the fixture gates the suite on the
+docker daemon -- a fresh checkout without docker still skips
+gracefully, but with docker (the normal case) the tests run.
 """
 
 from __future__ import annotations
@@ -19,7 +21,6 @@ import pytest
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
 from threetears.agent.tools.server import ToolServer
-from threetears.core.testing.containers import skip_without_nats_marker
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -28,9 +29,14 @@ from threetears.nats import (
     set_default_namespace,
 )
 
-pytestmark = skip_without_nats_marker()
-
-_NATS_URL = "nats://localhost:4222"
+# the canonical ``nats_container`` fixture is session-scoped on the
+# session event loop. align the test event loop with that scope so the
+# NATS connections established here land on the same loop that the
+# fixture set up the container on.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
 
 # -- helpers --
@@ -95,14 +101,22 @@ class IntegrationStubTool(TearsTool):
 class TestToolServerNatsIntegration:
     """integration tests for ToolServer with real NATS."""
 
-    @pytest.mark.asyncio
-    async def test_register_and_call_tool_via_nats(self) -> None:
-        """register tool, send call request via NATS, receive response."""
+    async def test_register_and_call_tool_via_nats(
+        self,
+        nats_container: str,
+    ) -> None:
+        """register tool, send call request via NATS, receive response.
+
+        :param nats_container: NATS URL from the canonical testcontainer fixture
+        :ptype nats_container: str
+        :return: nothing
+        :rtype: None
+        """
         pod_id = f"integ-{uuid4().hex[:8]}"
         namespace = f"integ_{uuid4().hex[:8]}"
 
         server = ToolServer(
-            nats_url=_NATS_URL,
+            nats_url=nats_container,
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=60.0,
@@ -117,7 +131,7 @@ class TestToolServerNatsIntegration:
         try:
             set_default_namespace(namespace)
             nc = await NatsClient.connect(
-                nats_url=_NATS_URL,
+                nats_url=nats_container,
                 nats_subject_namespace=namespace,
                 client_name="tool-server-itest",
             )
@@ -158,14 +172,22 @@ class TestToolServerNatsIntegration:
             except asyncio.CancelledError:
                 pass
 
-    @pytest.mark.asyncio
-    async def test_heartbeat_visible_on_nats(self) -> None:
-        """heartbeat messages are published and receivable on NATS."""
+    async def test_heartbeat_visible_on_nats(
+        self,
+        nats_container: str,
+    ) -> None:
+        """heartbeat messages are published and receivable on NATS.
+
+        :param nats_container: NATS URL from the canonical testcontainer fixture
+        :ptype nats_container: str
+        :return: nothing
+        :rtype: None
+        """
         pod_id = f"hb-integ-{uuid4().hex[:8]}"
         namespace = f"hb_{uuid4().hex[:8]}"
 
         server = ToolServer(
-            nats_url=_NATS_URL,
+            nats_url=nats_container,
             namespace=namespace,
             pod_id=pod_id,
             heartbeat_interval=0.1,
@@ -178,7 +200,7 @@ class TestToolServerNatsIntegration:
 
         set_default_namespace(namespace)
         nc = await NatsClient.connect(
-            nats_url=_NATS_URL,
+            nats_url=nats_container,
             nats_subject_namespace=namespace,
             client_name="tool-heartbeat-itest",
         )

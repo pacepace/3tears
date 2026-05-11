@@ -174,10 +174,25 @@ class TestUsageTrackerOTelAttributes:
 
     @classmethod
     def setup_class(cls) -> None:
-        """configures shared OTel TracerProvider with an in-memory exporter."""
+        """configures shared OTel TracerProvider with an in-memory exporter.
+
+        OTel SDK >=1.39 guards ``set_tracer_provider`` behind
+        ``_TRACER_PROVIDER_SET_ONCE``; if any other test class earlier
+        in the run already set a provider (including the implicit
+        ProxyTracerProvider via ``trace.get_tracer``), this call is
+        silently rejected and our spans land in the wrong exporter
+        (or nowhere). Reset the internal sentinel so this test class
+        always binds its own provider regardless of run order. The
+        same workaround is used in ``test_tracking.py`` and in the
+        ``threetears.observe.setup`` module.
+        """
         cls._exporter = _InMemorySpanExporter()
         cls._provider = TracerProvider()
         cls._provider.add_span_processor(SimpleSpanProcessor(cls._exporter))
+        try:
+            trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # noqa: SLF001
+        except AttributeError:
+            pass
         trace.set_tracer_provider(cls._provider)
 
     def setup_method(self) -> None:

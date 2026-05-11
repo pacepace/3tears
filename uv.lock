@@ -41,6 +41,7 @@ dev = [
     { name = "opentelemetry-sdk", specifier = ">=1.28" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pint", specifier = ">=0.25.2" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.3" },

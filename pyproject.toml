@@ -37,6 +37,13 @@ dev-dependencies = [
     # exercise real Postgres (rollback semantics cannot be verified
     # against the in-memory FakeDataStore).
     "testcontainers[postgres]>=4.0",
+    # prometheus-client installed in dev so packages/models tracking +
+    # callbacks tests exercise the real prometheus integration rather
+    # than getting skipped. declared in models as an optional extra
+    # (models[prometheus]); pinning it in dev-deps ensures the
+    # workspace pytest run never silently skips the metric-emitter
+    # contract.
+    "prometheus-client>=0.20",
 ]
 
 [tool.ruff]
