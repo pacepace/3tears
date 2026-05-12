@@ -98,7 +98,7 @@ provides-extras = ["tracing", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.1.0"
+version = "0.5.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -113,7 +113,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.1.0"
+version = "0.5.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears" },
@@ -128,7 +128,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.6.0"
+version = "0.5.0"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -151,7 +151,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.6.0"
+version = "0.5.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
@@ -239,7 +239,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.1.0"
+version = "0.5.0"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -396,7 +396,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-models"
-version = "0.6.0"
+version = "0.5.0"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-agent-tools" },
