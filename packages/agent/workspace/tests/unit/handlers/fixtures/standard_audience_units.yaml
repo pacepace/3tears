@@ -1,0 +1,9 @@
+audience_units:
+
+  - audience_unit: knowwho_all
+    facts_table: employment
+    where_filters:
+      - facts.source_name like '%knowwho%'
+
+  - audience_unit: donors
+    facts_table: contribution

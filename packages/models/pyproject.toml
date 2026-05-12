@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-models"
+version = "0.5.0"
+description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+dependencies = [
+    "3tears-observe",
+    "3tears-agent-tools",
+    "pydantic>=2.0",
+    "langchain-core>=0.3",
+    "langchain-anthropic>=1.4",
+    "langchain-openai>=1.1",
+    "langchain-openrouter>=0.1",
+]
+
+[project.optional-dependencies]
+voyageai = ["langchain-voyageai>=0.3"]
+whisper = ["httpx>=0.27"]
+image = ["httpx>=0.27"]
+prometheus = ["prometheus-client>=0.20"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-observe = { workspace = true }
+3tears-agent-tools = { workspace = true }

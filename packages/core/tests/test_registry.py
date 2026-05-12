@@ -95,8 +95,10 @@ class TestCollectionRegistry:
         assert registry.get_collection("t1") is None
         assert registry.get_collection("t2") is None
         # Defaults are NOT cleared by clear()
-        # Overrides are cleared
-        assert registry._overrides == {}
+        # Overrides are cleared: t1's per-table l1 override registered
+        # above must no longer win over the (absent) default; since no
+        # default is set, the public get_l1_backend returns None.
+        assert registry.get_l1_backend("t1") is None
 
     def test_configure_partial_update(self) -> None:
         """Calling configure multiple times only updates provided fields."""
@@ -116,3 +118,67 @@ class TestCollectionRegistry:
         assert registry.get_l1_backend("any") is None
         assert registry.get_l2_client("any") is None
         assert registry.get_l3_pool("any") is None
+
+
+class TestBindTable:
+    """tests for :meth:`CollectionRegistry.bind_table` (Phase C2)."""
+
+    def test_bind_table_l3_pool_overrides_default(self) -> None:
+        """per-table l3 override wins over the registry default."""
+        registry = CollectionRegistry()
+        default_l3 = MagicMock()
+        override_l3 = MagicMock()
+        registry.configure(l3_pool=default_l3)
+
+        registry.bind_table("groups", l3_pool=override_l3)
+
+        assert registry.get_l3_pool("groups") is override_l3
+        assert registry.get_l3_pool("conversations") is default_l3
+
+    def test_bind_table_accepts_pool_without_instance(self) -> None:
+        """bind_table pins a pool BEFORE any collection is constructed."""
+        registry = CollectionRegistry()
+        pool = MagicMock()
+
+        registry.bind_table("roles", l3_pool=pool)
+
+        # subsequent register() calls merge with the earlier binding
+        # rather than overwriting it
+        coll = _make_mock_collection("roles")
+        registry.register(coll)
+        assert registry.get_l3_pool("roles") is pool
+
+    def test_bind_table_layers_l1_and_l3_independently(self) -> None:
+        """l1 and l3 bindings on the same table are independent."""
+        registry = CollectionRegistry()
+        l1_override = MagicMock()
+        l3_override = MagicMock()
+
+        registry.bind_table("namespaces", l1_backend=l1_override)
+        registry.bind_table("namespaces", l3_pool=l3_override)
+
+        assert registry.get_l1_backend("namespaces") is l1_override
+        assert registry.get_l3_pool("namespaces") is l3_override
+
+    def test_bind_table_no_op_when_every_arg_none(self) -> None:
+        """bind_table with no overrides leaves existing overrides untouched."""
+        registry = CollectionRegistry()
+        pool = MagicMock()
+        registry.bind_table("roles", l3_pool=pool)
+
+        registry.bind_table("roles")
+
+        assert registry.get_l3_pool("roles") is pool
+
+    def test_bind_table_isolates_to_named_table(self) -> None:
+        """per-table binding never leaks onto an unrelated table."""
+        registry = CollectionRegistry()
+        default_l3 = MagicMock()
+        registry.configure(l3_pool=default_l3)
+        rbac_pool = MagicMock()
+
+        registry.bind_table("groups", l3_pool=rbac_pool)
+
+        assert registry.get_l3_pool("groups") is rbac_pool
+        assert registry.get_l3_pool("workspace_files") is default_l3
+        assert registry.get_l3_pool("memories") is default_l3

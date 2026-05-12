@@ -14,7 +14,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from threetears.core.logging import get_logger
+from threetears.observe import get_logger
+
+__all__ = [
+    "DuckDBBackend",
+]
 
 try:
     import duckdb
@@ -91,11 +95,47 @@ class DuckDBBackend:
             self._local.conn = conn
         return conn
 
-    def upsert(self, table: str, data: dict[str, Any], primary_key: str = "id") -> None:
-        """Insert or update a row.
+    @staticmethod
+    def _pk_columns(primary_key: str | tuple[str, ...]) -> tuple[str, ...]:
+        """normalize pk argument to tuple of column names."""
+        if isinstance(primary_key, tuple):
+            return primary_key
+        return (primary_key,)
 
-        DuckDB supports INSERT OR REPLACE INTO for tables with primary keys.
+    @staticmethod
+    def _pk_values(entity_id: Any, pk_cols: tuple[str, ...]) -> tuple[Any, ...]:
+        """normalize entity_id argument to tuple of pk values.
+
+        :raises ValueError: if tuple length does not match ``pk_cols``
         """
+        if isinstance(entity_id, tuple):
+            values = entity_id
+        else:
+            values = (entity_id,)
+        if len(values) != len(pk_cols):
+            raise ValueError(
+                f"primary key arity mismatch: got {len(values)} value(s) for {len(pk_cols)} column(s) {pk_cols}"
+            )
+        return values
+
+    def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
+        """insert or update row.
+
+        duckdb supports ``INSERT OR REPLACE INTO`` for tables with
+        primary keys; the statement honours whatever primary key (single
+        or composite) was declared on the table, so no conflict column
+        list is needed in the SQL.
+
+        :param table: destination table name
+        :ptype table: str
+        :param data: row data keyed by column name
+        :ptype data: dict[str, Any]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        _ = self._pk_columns(primary_key)  # validate shape, unused in SQL
         columns = list(data.keys())
         schema = self._schema_info.get(table, {})
 
@@ -108,17 +148,34 @@ class DuckDBBackend:
         column_names = ", ".join(columns)
         placeholders = ", ".join(["?" for _ in columns])
 
-        # DuckDB supports INSERT OR REPLACE for conflict handling
         sql = f"INSERT OR REPLACE INTO {table} ({column_names}) VALUES ({placeholders})"
 
         with self._db_lock:
             self._db.execute(sql, values)
 
-    def select_by_id(self, table: str, entity_id: str, primary_key: str = "id") -> dict[str, Any] | None:
-        """Select a single row by primary key with type deserialization."""
-        sql = f"SELECT * FROM {table} WHERE {primary_key} = ?"
+    def select_by_id(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> dict[str, Any] | None:
+        """select single row by primary key with type deserialization.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: row dict on hit, ``None`` on miss
+        :rtype: dict[str, Any] | None
+        """
+        pk_cols = self._pk_columns(primary_key)
+        pk_vals = self._pk_values(entity_id, pk_cols)
+        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
+        sql = f"SELECT * FROM {table} WHERE {where_clause}"
         with self._db_lock:
-            result = self._db.execute(sql, [entity_id])
+            result = self._db.execute(sql, list(pk_vals))
             columns = [desc[0] for desc in result.description]
             row = result.fetchone()
         if row is not None:
@@ -126,23 +183,66 @@ class DuckDBBackend:
             return self._deserialize_row(table, row_dict)
         return None
 
-    def select_batch(self, table: str, entity_ids: list[str], primary_key: str = "id") -> list[dict[str, Any]]:
-        """Select multiple rows by primary key with type deserialization."""
+    def select_batch(
+        self,
+        table: str,
+        entity_ids: list[Any],
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> list[dict[str, Any]]:
+        """select multiple rows by primary key with type deserialization.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_ids: list of pk values or list of tuples
+        :ptype entity_ids: list[Any]
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: list of row dicts
+        :rtype: list[dict[str, Any]]
+        """
         if not entity_ids:
             return []
-        placeholders = ", ".join(["?" for _ in entity_ids])
-        sql = f"SELECT * FROM {table} WHERE {primary_key} IN ({placeholders})"
+        pk_cols = self._pk_columns(primary_key)
+        if len(pk_cols) == 1:
+            placeholders = ", ".join(["?" for _ in entity_ids])
+            sql = f"SELECT * FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
+            params: list[Any] = list(entity_ids)
+        else:
+            per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
+            disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
+            sql = f"SELECT * FROM {table} WHERE {disjunct}"
+            params = []
+            for eid in entity_ids:
+                params.extend(self._pk_values(eid, pk_cols))
         with self._db_lock:
-            result = self._db.execute(sql, entity_ids)
+            result = self._db.execute(sql, params)
             columns = [desc[0] for desc in result.description]
             rows = result.fetchall()
         return [self._deserialize_row(table, dict(zip(columns, row))) for row in rows]
 
-    def delete_by_id(self, table: str, entity_id: str, primary_key: str = "id") -> None:
-        """Delete a single row by primary key."""
-        sql = f"DELETE FROM {table} WHERE {primary_key} = ?"
+    def delete_by_id(
+        self,
+        table: str,
+        entity_id: Any,
+        primary_key: str | tuple[str, ...] = "id",
+    ) -> None:
+        """delete single row by primary key.
+
+        :param table: target table name
+        :ptype table: str
+        :param entity_id: pk value or tuple of pk values in declared order
+        :ptype entity_id: Any
+        :param primary_key: pk column name or tuple of pk column names
+        :ptype primary_key: str | tuple[str, ...]
+        :return: nothing
+        :rtype: None
+        """
+        pk_cols = self._pk_columns(primary_key)
+        pk_vals = self._pk_values(entity_id, pk_cols)
+        where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {table} WHERE {where_clause}"
         with self._db_lock:
-            self._db.execute(sql, [entity_id])
+            self._db.execute(sql, list(pk_vals))
 
     def execute_query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         """Execute a generic SELECT query, returning list of row dicts."""

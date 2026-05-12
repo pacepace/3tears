@@ -1,0 +1,25 @@
+audience_units:
+    - audience_unit: knowwho_all
+      vb_candidates: 10
+      limit_to_working_age: True
+      relationships:
+        householders:
+          candidate_count: <= 4
+
+    - audience_unit: executive_coworkers_of_linkedin_execs
+      vb_candidates: 2
+      limit_to_working_age: True
+      relationships:
+        householders:
+
+    - audience_unit: exec_logic
+      vb_candidates: 2
+      limit_to_working_age: True
+
+    - audience_unit: donors
+      vb_candidates: 10
+      limit_to_working_age: True
+      relationships:
+        donors_to_candidate:
+          committee_transaction_amt: '>= 1000'
+          is_candidate_committee: = 0

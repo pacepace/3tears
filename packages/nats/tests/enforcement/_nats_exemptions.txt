@@ -1,0 +1,7 @@
+# NATS-wrapper enforcement exemptions
+#
+# Format: one repo-relative path per line, preceded by a `# rationale: <reason>` line.
+# Blanket rationales ("internal access needed", "tests need this", etc.) are REJECTED.
+#
+# This file is empty by default. Every entry should also be a candidate for follow-up
+# migration; exemption is not a long-term resting state.

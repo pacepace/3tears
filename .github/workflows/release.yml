@@ -30,10 +30,12 @@ jobs:
           uv run ruff format . --check
 
       - name: Typecheck
-        run: uv run mypy packages/core/src/ packages/agent-memory/src/ packages/agent-tools/src/
+        env:
+          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/tools/src
+        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.tools
 
-      - name: Test
-        run: uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ -v
+      - name: Test (unit + enforcement; integration excluded - no docker on the runner)
+        run: uv run pytest packages/ tests/ -m "not integration" -v
 
   release:
     needs: check
@@ -51,21 +53,29 @@ jobs:
       - name: Verify version matches tag
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          for PKG in core agent-memory agent-tools; do
-            PKG_VERSION=$(grep '^version = ' "packages/$PKG/pyproject.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # all 16 packages under packages/, including the agent-namespace
+          # move sub-paths (agent/acl, agent/audit, agent/memory, agent/tools,
+          # agent/workspace). every pyproject.toml under packages/ must be
+          # at the exact tag version; otherwise the release is mismatched.
+          MISMATCH=0
+          for PKG_TOML in $(find packages -maxdepth 4 -name pyproject.toml | sort); do
+            PKG_PATH="$(dirname "$PKG_TOML")"
+            PKG_VERSION=$(grep '^version = ' "$PKG_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
             if [ "$PKG_VERSION" != "$TAG" ]; then
-              echo "Version mismatch in packages/$PKG: expected $TAG, got $PKG_VERSION"
-              exit 1
+              echo "Version mismatch in $PKG_PATH: expected $TAG, got $PKG_VERSION"
+              MISMATCH=1
             fi
           done
+          [ "$MISMATCH" -eq 0 ] || exit 1
           echo "All packages at version $TAG"
 
       - name: Build packages
         run: |
           pip install build
-          for PKG in core agent-memory agent-tools; do
-            echo "Building packages/$PKG..."
-            python -m build "packages/$PKG" --outdir dist/
+          for PKG_TOML in $(find packages -maxdepth 4 -name pyproject.toml | sort); do
+            PKG_PATH="$(dirname "$PKG_TOML")"
+            echo "Building $PKG_PATH..."
+            python -m build "$PKG_PATH" --outdir dist/
           done
 
       - name: Create GitHub Release

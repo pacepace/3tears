@@ -1,5 +1,11 @@
 [tool.uv.workspace]
-members = ["packages/*"]
+# packages/* picks up the top-level packages (core, models, mcp, etc.).
+# packages/agent/* picks up the agent-* family that lives under the
+# agent/ namespace dir for visual grouping. Both globs are required;
+# packages/agent itself is excluded because it has no pyproject.toml
+# of its own (it's just a parent directory, not a workspace member).
+members = ["packages/*", "packages/agent/*"]
+exclude = ["packages/agent"]
 
 [tool.uv]
 dev-dependencies = [
@@ -7,21 +13,122 @@ dev-dependencies = [
     "pytest-asyncio>=0.23",
     "mypy>=1.8",
     "ruff>=0.3",
-    "opentelemetry-api>=1.20",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp>=1.28",
     "duckdb>=1.0",
     "simpleeval>=1.0.4",
     "pint>=0.25.2",
     "trafilatura>=2.0.0",
     "pillow>=10.0",
+    "anthropic>=0.94.0",
+    # optional model-provider adapters installed in dev so their test suites
+    # exercise the real langchain integrations rather than getting skipped.
+    "langchain-anthropic>=1.4",
+    "langchain-openai>=1.1",
+    "langchain-voyageai>=0.3",
+    # channel adapters installed in dev so the channels test suite exercises
+    # the real slack/discord libraries.
+    "slack-bolt>=1.28",
+    "slack-sdk>=3.41",
+    "aiohttp>=3.9",
+    "discord.py>=2.7",
+    # testcontainers used by the migration runner integration tests to
+    # exercise real Postgres (rollback semantics cannot be verified
+    # against the in-memory FakeDataStore).
+    "testcontainers[postgres]>=4.0",
+    # prometheus-client installed in dev so packages/models tracking +
+    # callbacks tests exercise the real prometheus integration rather
+    # than getting skipped. declared in models as an optional extra
+    # (models[prometheus]); pinning it in dev-deps ensures the
+    # workspace pytest run never silently skips the metric-emitter
+    # contract.
+    "prometheus-client>=0.20",
 ]
 
 [tool.ruff]
 line-length = 120
 target-version = "py314"
 
+[tool.ruff.lint]
+select = ["SLF"]
+
+[tool.ruff.lint.per-file-ignores]
+# OpenTelemetry SDK >=1.39 guards set_tracer_provider behind an internal
+# once-flag with no public reset; resetting _TRACER_PROVIDER_SET_ONCE._done
+# is the only way to re-init the provider (required for tests and re-init
+# flows). paired entry lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/setup.py" = ["SLF001"]
+# sys._getframe is the stdlib's documented API for call-site frame access;
+# the public sys.settrace alternative has different semantics. paired entry
+# lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/src/threetears/observe/logging.py" = ["SLF001"]
+# test monkeypatches module-level _otel_available cache sentinel to exercise
+# both the "otel installed" and "otel missing" branches; the sentinel is an
+# import-time implementation anchor with no public accessor (would become a
+# new public api surface just for tests; no library caller needs it). paired
+# entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/observe/tests/test_tracing.py" = ["SLF001"]
+# test monkeypatches module-level _HAS_DUCKDB import-availability sentinel to
+# force the ImportError branch without uninstalling the duckdb package.
+# Analogous to _otel_available above: a stable import-time anchor that tests
+# legitimately observe; no public accessor warranted. paired entry lives in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_duckdb_backend.py" = ["SLF001"]
+# autouse fixture clears the module-level _RESOLVED cache between tests so
+# import-order does not leak stub-resolved entries across cases. the cache
+# itself is an import-time implementation-stable anchor for the
+# import-at-most-once contract; no public clear-cache helper on the module
+# because the only legitimate caller is this test fixture. paired entry
+# lives in tests/enforcement/_underscore_exemptions.txt.
+"packages/agent/workspace/tests/unit/test_validators.py" = ["SLF001"]
+# NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
+# the proxy already executed the LangChain BaseTool wrapper chain
+# (callbacks, validation); calling delegate.arun/run would double-fire
+# that chain. paired entries in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/src/threetears/models/tool_name_translation.py" = ["SLF001"]
+# OpenRouter name-translation tests exercise the LangChain BaseTool proxy
+# and the ChatOpenRouter subclass: ``_arun`` / ``_astream`` are the
+# LangChain-internal entry points the production translation layer
+# overrides, and ``_name_reverse_map`` is the per-instance lookup table
+# the subclass populates on ``bind_tools`` and consults on every
+# stream chunk. tests assert the table is populated correctly and that
+# the overrides forward without double-firing the wrapper chain (same
+# rationale as ``tool_name_translation.py`` above). paired entries
+# live in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_provider_openrouter.py" = ["SLF001"]
+# UsageTracker tests reach into two import-time anchors with no public
+# accessors: OpenTelemetry's ``_TRACER_PROVIDER_SET_ONCE._done`` is the
+# only documented escape from OTel 1.39+'s once-flag guard so tests can
+# re-init the tracer provider (same rationale as the matching entry in
+# ``packages/observe/src/threetears/observe/setup.py``); and the
+# tracker's ``_prom`` field is the cached PromEmitter the tests assert
+# is shared per-registry to lock in the identity-by-registry contract.
+# paired entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_tracking.py" = ["SLF001"]
+
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that require docker-backed services; run with -m integration",
+]
+# Note on the `allowed_objects` warning:
+# `langgraph.checkpoint.serde.jsonplus` instantiates a module-level
+# `LC_REVIVER = Reviver()` (`langchain_core.load.load.Reviver`) the
+# moment `JsonPlusSerializer` is imported. As of langchain-core 1.3.3
+# that emits a `LangChainPendingDeprecationWarning`. The trigger is
+# upstream library code at import time, and `langchain_core/__init__.py`
+# itself prepends a `default`-action filter for
+# `LangChainPendingDeprecationWarning` via
+# `surface_langchain_deprecation_warnings()` — which trumps a generic
+# pyproject-level `PendingDeprecationWarning` ignore. The filter that
+# actually catches it is installed in `conftest.py` against the exact
+# subclass after `langchain_core` has imported. Revisit when
+# langchain-core flips the `allowed_objects` default in a future
+# release. Our own `threetears.langgraph.serde.UUIDSafeSerializer`
+# constructs a `JsonPlusSerializer()` (no `Reviver` kwargs are exposed
+# on that surface), so there is nothing to fix at the call site.
 
 [tool.mypy]
 strict = true
@@ -30,8 +137,44 @@ namespace_packages = true
 explicit_package_bases = true
 mypy_path = [
     "packages/core/src",
+    "packages/agent-acl/src",
+    "packages/agent-audit/src",
     "packages/agent-memory/src",
     "packages/agent-tools/src",
+    "packages/agent-workspace/src",
+    "packages/channels/src",
+    "packages/conversations/src",
+    "packages/enforcement/src",
+    "packages/epoch/src",
+    "packages/mcp/src",
+    "packages/models/src",
+    "packages/nats/src",
+    "packages/observe/src",
+    "packages/langgraph/src",
+    "packages/registry/src",
+]
+# default scope when invoked with no arguments; avoids duplicate-module errors
+# from the per-package tests/ trees (each has an enforcement/ package).
+files = [
+    "packages/core/src",
+    "packages/agent-acl/src",
+    "packages/agent-audit/src",
+    "packages/agent-memory/src",
+    "packages/agent-tools/src",
+    "packages/agent-workspace/src",
+    "packages/channels/src",
+    "packages/conversations/src",
+    "packages/enforcement/src",
+    "packages/epoch/src",
+    "packages/mcp/src",
+    "packages/models/src",
+    "packages/nats/src",
+    "packages/observe/src",
+    "packages/langgraph/src",
+    "packages/registry/src",
+]
+exclude = [
+    "^packages/[^/]+/tests/",
 ]
 
 [[tool.mypy.overrides]]
@@ -45,6 +188,24 @@ module = [
     "openpyxl",
     "openpyxl.*",
     "pint",
+    "slack_bolt.*",
+    "slack_sdk.*",
+    "discord",
+    "discord.*",
+    "asyncpg",
+    "asyncpg.*",
+    "langchain_anthropic",
+    "langchain_anthropic.*",
+    "langchain_openai",
+    "langchain_openai.*",
+    "langchain_openrouter",
+    "langchain_openrouter.*",
+    "langchain_voyageai",
+    "langchain_voyageai.*",
+    "jsonpath_ng",
+    "jsonpath_ng.*",
+    "testcontainers",
+    "testcontainers.*",
 ]
 ignore_missing_imports = true
 
@@ -57,3 +218,11 @@ module = [
     "threetears.agent.tools.builtin.calculator",
 ]
 disable_error_code = ["import-untyped"]
+
+# Suppress no-untyped-call for modules calling into untyped third-party channel libraries
+[[tool.mypy.overrides]]
+module = [
+    "threetears.channels.slack",
+    "threetears.channels.discord",
+]
+disable_error_code = ["no-untyped-call"]

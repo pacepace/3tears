@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-registry"
+version = "0.5.0"
+description = "MCP-compatible tool registry for 3tears tool system"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+dependencies = [
+    "nats-py>=2.0",
+    "3tears-agent-tools>=0.5.0",
+    "3tears-agent-acl>=0.1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears-agent-tools = { workspace = true }
+3tears-agent-acl = { workspace = true }

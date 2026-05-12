@@ -1,0 +1,545 @@
+"""registry server entry point.
+
+connects to NATS, initializes catalog from KV, starts all
+handlers (registration, heartbeat, discovery, call proxy),
+and waits for shutdown signal. all handlers subscribe with
+queue group for horizontal scaling.
+
+usage: python -m threetears.registry.server
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+from collections.abc import Awaitable, Callable
+
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
+from threetears.nats import NatsClient
+from threetears.observe import HealthCheck, HealthServer, get_logger
+from threetears.observe.resilience import retry_with_backoff
+from threetears.registry.catalog import ToolCatalog
+from threetears.registry.discovery import DiscoveryHandler
+from threetears.registry.health import HeartbeatSubscriber
+from threetears.registry.heartbeat_collection import HeartbeatCollection
+from threetears.registry.l1_cache import create_registry_l1_backend
+from threetears.registry.proxy import CallProxy
+from threetears.registry.auth import AgentToolAuthorizer
+from threetears.registry.registration import RegistrationHandler
+
+__all__ = [
+    "RegistryServer",
+    "nats_connect",
+]
+
+_logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# NATS connection helper (patched in tests)
+# ---------------------------------------------------------------------------
+
+
+async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+    """connect to NATS server via the canonical :class:`NatsClient` wrapper.
+
+    delegates to :meth:`NatsClient.connect` which handles dual-phase
+    reconnect, rate-limited error logging, and namespace binding on
+    :class:`Subjects`. tests patch this symbol to swap a fake
+    transport into :class:`RegistryServer.serve`.
+
+    :param url: NATS server URL
+    :ptype url: str
+    :param namespace: NATS subject namespace prefix bound on the wrapper
+    :ptype namespace: str
+    :return: connected canonical wrapper client
+    :rtype: NatsClient
+    """
+    return await NatsClient.connect(
+        nats_url=url,
+        nats_subject_namespace=namespace,
+        client_name="registry",
+    )
+
+
+# ---------------------------------------------------------------------------
+# RegistryServer
+# ---------------------------------------------------------------------------
+
+
+class RegistryServer:
+    """registry server managing all handler lifecycles.
+
+    connects to NATS, initializes tool catalog from KV store,
+    starts registration handler, heartbeat monitor, discovery
+    handler, and call proxy. handles graceful shutdown on
+    SIGINT/SIGTERM signals.
+    """
+
+    def __init__(
+        self,
+        authorizer: AgentToolAuthorizer,
+        nats_url: str | None = None,
+        namespace: str | None = None,
+        heartbeat_check_interval: float | None = None,
+        heartbeat_timeout: float | None = None,
+        call_timeout: float | None = None,
+        kv_bucket: str = "tool_catalog",
+        rbac_authorizer_factory: ("Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None") = None,
+        health_port: int | None = None,
+    ) -> None:
+        """initialize registry server.
+
+        :param nats_url: NATS server URL (defaults to THREETEARS_NATS_URL env var)
+        :ptype nats_url: str | None
+        :param namespace: NATS subject namespace prefix (defaults to FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE env var)
+        :ptype namespace: str | None
+        :param heartbeat_check_interval: seconds between heartbeat check sweeps.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL env var if not provided.
+        :ptype heartbeat_check_interval: float | None
+        :param heartbeat_timeout: seconds after which pod is considered dead.
+            sourced from THREETEARS_REGISTRY_HEARTBEAT_TIMEOUT env var if not provided.
+        :ptype heartbeat_timeout: float | None
+        :param call_timeout: timeout in seconds for forwarded tool calls.
+            sourced from THREETEARS_REGISTRY_CALL_TIMEOUT env var if not provided.
+        :ptype call_timeout: float | None
+        :param kv_bucket: NATS KV bucket name for catalog persistence
+        :ptype kv_bucket: str
+        :param authorizer: initial tool access authorizer; REQUIRED.
+            for the standalone production path the caller passes a
+            :class:`DenyAllAuthorizer` placeholder + a
+            ``rbac_authorizer_factory``; the placeholder denies any
+            tool dispatch that races the rbac wiring (a millisecond
+            cold-start window) and the server swaps in the factory's
+            return value once NATS is connected. fixed-mode callers
+            (allow-all dev sandboxes, force-deny kill switches) pass
+            the deterministic stub directly with
+            ``rbac_authorizer_factory=None`` and the swap step is
+            skipped.
+        :ptype authorizer: AgentToolAuthorizer
+        :param rbac_authorizer_factory: optional async factory taking
+            the connected :class:`NatsClient` and returning the
+            production authorizer. invoked from :meth:`serve` after
+            the NATS connection is up + before the catalog handlers
+            register their subscriptions, so by the time tool calls
+            arrive the authorizer slot already holds the rbac
+            implementation. ``None`` keeps the constructor-supplied
+            ``authorizer`` for the whole serve loop.
+        :ptype rbac_authorizer_factory: Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None
+        :param health_port: port the readiness HealthServer binds to;
+            defaults to THREETEARS_REGISTRY_HEALTH_PORT env var,
+            falling back to 8000. each container in the platform's
+            docker stack owns its own port namespace so 8000 is fine
+            there; honcho-driven dev runs every Procfile entry in the
+            host namespace and the hub uvicorn already binds host:8000,
+            so honcho callers MUST set THREETEARS_REGISTRY_HEALTH_PORT
+            to a distinct port.
+        :ptype health_port: int | None
+        """
+        from threetears.registry.config import get_call_timeout, get_heartbeat_check_interval, get_heartbeat_timeout
+
+        self._nats_url = nats_url or os.environ.get(
+            "THREETEARS_NATS_URL",
+            "nats://localhost:4222",
+        )
+        self._namespace = namespace or os.environ.get(
+            "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
+            "aibots",
+        )
+        self._heartbeat_check_interval = (
+            heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
+        )
+        self._heartbeat_timeout = heartbeat_timeout if heartbeat_timeout is not None else get_heartbeat_timeout()
+        self._call_timeout = call_timeout if call_timeout is not None else get_call_timeout()
+        self._kv_bucket = kv_bucket
+        self._authorizer = authorizer
+        self._rbac_authorizer_factory = rbac_authorizer_factory
+        if health_port is not None:
+            self._health_port = health_port
+        else:
+            env_port = os.environ.get("THREETEARS_REGISTRY_HEALTH_PORT")
+            self._health_port = int(env_port) if env_port else 8000
+        self._nc: "NatsClient | None" = None
+        self._catalog = ToolCatalog()
+        self._collection_registry: CollectionRegistry | None = None
+        self._heartbeat_collection: HeartbeatCollection | None = None
+        self._registration_handler: RegistrationHandler | None = None
+        self._heartbeat_subscriber: HeartbeatSubscriber | None = None
+        self._discovery_handler: DiscoveryHandler | None = None
+        self._call_proxy: CallProxy | None = None
+        self._health_server: HealthServer | None = None
+        self._shutdown_event = asyncio.Event()
+
+    async def apply_rbac_factory(
+        self,
+        nc: "NatsClient",
+    ) -> "AgentToolAuthorizer | None":
+        """swap the placeholder authorizer for the live rbac one.
+
+        the constructor receives a ``DenyAllAuthorizer`` placeholder
+        while the rbac stack waits for a connected NATS client to back
+        its proxy collections + invalidation subscriptions; the
+        ``rbac_authorizer_factory`` builds the stack against the live
+        connection and returns the live
+        :class:`RbacEvaluatorAuthorizer`. extracted from
+        :meth:`serve` so tests can exercise the swap without binding
+        to private state, and so any other caller assembling the
+        server out-of-band (e.g. an integration harness that
+        constructs its own NATS connection) can drive the same swap
+        through one canonical entry point.
+
+        no-op when the factory is None (fixed-mode authorizers like
+        ``AllowAllAuthorizer`` skip the swap because they have no
+        live-binding requirement).
+
+        :param nc: connected NATS client the factory needs to back its
+            proxy collections + invalidation subscriptions
+        :ptype nc: NatsClient
+        :return: the new authorizer (also stored on self) when a
+            factory was set, ``None`` when the placeholder was kept
+        :rtype: AgentToolAuthorizer | None
+        """
+        result: "AgentToolAuthorizer | None" = None
+        if self._rbac_authorizer_factory is not None:
+            result = await self._rbac_authorizer_factory(nc)
+            self._authorizer = result
+        return result
+
+    async def serve(self) -> None:
+        """start registry server and wait for shutdown signal.
+
+        connects to NATS, loads catalog from KV, starts all
+        handlers, installs signal handlers, and blocks until
+        shutdown is requested.
+        """
+        self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
+        _logger.info(
+            "connected to NATS",
+            extra={"extra_data": {"nats_url": self._nats_url}},
+        )
+
+        # swap in the production rbac authorizer now that NATS is up.
+        # extracted to a method so tests can drive the same code path
+        # without binding to private state.
+        await self.apply_rbac_factory(self._nc)
+
+        # the catalog KV bootstrap predates the wrapper's
+        # :meth:`NatsClient.kv_bucket` cache; we still go through the
+        # raw JetStream context here because the catalog persists JSON
+        # blobs keyed by tool full_name and is loaded with a custom
+        # iterator (``ToolCatalog.load_from_kv``) that expects a raw
+        # nats-py KeyValue handle. migrating the catalog persistence
+        # to NatsKvBucket is tracked as follow-up work.
+        js = self._nc.jetstream_context()
+
+        authorizer = self._authorizer
+        if authorizer is not None and hasattr(authorizer, "initialize"):
+
+            async def _initialize_authorizer() -> None:
+                """initialize authorizer with JetStream context."""
+                await authorizer.initialize(js, self._namespace)
+
+            await retry_with_backoff(
+                _initialize_authorizer,
+                "registry.authorizer_initialize",
+            )
+
+        async def _ensure_kv_and_load_catalog() -> None:
+            """ensure KV bucket exists and load catalog from it."""
+            nonlocal js
+            try:
+                kv = await js.key_value(bucket=self._kv_bucket)
+            except Exception:
+                kv = await js.create_key_value(bucket=self._kv_bucket)
+                _logger.info(
+                    "created KV bucket",
+                    extra={"extra_data": {"bucket": self._kv_bucket}},
+                )
+            await self._catalog.load_from_kv(kv)
+            _logger.info(
+                "catalog loaded from KV",
+                extra={"extra_data": {"bucket": self._kv_bucket}},
+            )
+
+        await retry_with_backoff(
+            _ensure_kv_and_load_catalog,
+            "registry.kv_catalog_load",
+        )
+
+        await self._start_handlers()
+
+        self._install_signal_handlers()
+
+        _logger.info(
+            "registry server started",
+            extra={"extra_data": {"namespace": self._namespace}},
+        )
+
+        await self._shutdown_event.wait()
+
+    async def _start_handlers(self) -> None:
+        """initialize and start all registry handlers.
+
+        starts registration handler, heartbeat monitor,
+        discovery handler, and call proxy. requires ``serve`` to have
+        connected NATS first.
+
+        :raises RuntimeError: when invoked before NATS is connected
+        """
+        if self._nc is None:
+            raise RuntimeError("_start_handlers invoked before NATS connected")
+        nc = self._nc
+        registration_handler = RegistrationHandler(
+            self._catalog,
+            namespace=self._namespace,
+        )
+        self._registration_handler = registration_handler
+        await retry_with_backoff(
+            lambda: registration_handler.start(nc),
+            "registry.registration_handler.start",
+        )
+
+        # wire the heartbeat collection + subscriber. L1 is a
+        # per-process SQLite tier; L2 is the shared NATS connection
+        # that also carries the cross-pod invalidation subject.
+        l1_backend = create_registry_l1_backend()
+        collection_registry = CollectionRegistry()
+        collection_registry.configure(l1_backend=l1_backend, l2_client=nc)
+        core_config = DefaultCoreConfig(
+            collection_flush="ALWAYS",
+            collection_flush_tables="",
+        )
+        heartbeat_collection = HeartbeatCollection(
+            collection_registry,
+            core_config,
+            nats_client=nc,
+        )
+        self._collection_registry = collection_registry
+        self._heartbeat_collection = heartbeat_collection
+        await collection_registry.start_invalidation_listener(nc)
+
+        heartbeat_subscriber = HeartbeatSubscriber(
+            self._catalog,
+            heartbeat_collection,
+            namespace=self._namespace,
+            check_interval=self._heartbeat_check_interval,
+            timeout=self._heartbeat_timeout,
+        )
+        self._heartbeat_subscriber = heartbeat_subscriber
+        await retry_with_backoff(
+            lambda: heartbeat_subscriber.start(nc),
+            "registry.heartbeat_subscriber.start",
+        )
+
+        discovery_handler = DiscoveryHandler(
+            self._catalog,
+            namespace=self._namespace,
+        )
+        self._discovery_handler = discovery_handler
+        await retry_with_backoff(
+            lambda: discovery_handler.start(nc),
+            "registry.discovery_handler.start",
+        )
+
+        call_proxy = CallProxy(
+            self._catalog,
+            namespace=self._namespace,
+            timeout=self._call_timeout,
+            authorizer=self._authorizer,
+        )
+        self._call_proxy = call_proxy
+        await retry_with_backoff(
+            lambda: call_proxy.start(nc),
+            "registry.call_proxy.start",
+        )
+
+        # canonical /healthz endpoint -- consumed by docker compose +
+        # k8s liveness probes + the aibots devx preflight. port 8000
+        # matches the inherited aibots-hub Dockerfile HEALTHCHECK so
+        # the same probe works whether the container runs as the hub,
+        # the registry, or any other consumer of that base.
+        health_server = HealthServer(
+            port=self._health_port,
+            service_name="registry",
+            checks=[
+                HealthCheck(
+                    name="nats",
+                    probe=lambda: self._nc is not None and self._nc.is_connected,
+                ),
+                HealthCheck(
+                    name="catalog",
+                    probe=lambda: self._catalog is not None,
+                ),
+                HealthCheck(
+                    name="registration_handler",
+                    probe=lambda: self._registration_handler is not None,
+                ),
+                HealthCheck(
+                    name="call_proxy",
+                    probe=lambda: self._call_proxy is not None,
+                ),
+            ],
+        )
+        await health_server.start()
+        self._health_server = health_server
+
+    def _install_signal_handlers(self) -> None:
+        """install SIGINT and SIGTERM handlers for graceful shutdown."""
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._request_shutdown)
+
+    def _request_shutdown(self) -> None:
+        """signal shutdown request from signal handler."""
+        _logger.info("shutdown signal received")
+        asyncio.ensure_future(self.shutdown())
+
+    async def shutdown(self) -> None:
+        """gracefully shut down registry server.
+
+        stops all handlers, drains NATS subscriptions, and
+        closes NATS connection.
+        """
+        _logger.info("shutting down registry server")
+
+        if self._health_server is not None:
+            await self._health_server.stop()
+        if self._call_proxy is not None:
+            await self._call_proxy.stop()
+        if self._discovery_handler is not None:
+            await self._discovery_handler.stop()
+        if self._heartbeat_subscriber is not None:
+            await self._heartbeat_subscriber.stop()
+        if self._registration_handler is not None:
+            await self._registration_handler.stop()
+
+        if self._nc is not None:
+            await self._nc.shutdown()
+
+        self._shutdown_event.set()
+        _logger.info("registry server stopped")
+
+
+def _run_server() -> None:
+    """create and run registry server in asyncio event loop.
+
+    authorization mode resolution:
+
+    1. ``FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true`` -> the
+       :class:`~threetears.registry.auth.AllowAllAuthorizer`. test
+       fixtures and dev sandboxes that intentionally bypass rbac.
+    2. otherwise -> the production
+       :class:`~threetears.registry.rbac_authorizer.RbacEvaluatorAuthorizer`
+       wired against a self-contained
+       :class:`~threetears.registry.rbac_stack.RegistryRbacStack`
+       (NATS-proxy backed Collections + ACL cache + invalidation
+       subscribers). the standalone registry no longer falls back
+       to ``DenyAllAuthorizer`` -- the previous fallback existed
+       only because the rbac wiring required hub-side loaders we
+       could not construct from the standalone entrypoint. now the
+       Collections snap a NATS-proxy L3 backend pinned to
+       :data:`PLATFORM_RBAC_READ_NAMESPACE` and read through the
+       hub broker's read-only carve-out, so the registry can
+       authorize tool calls in any deployment that has a reachable
+       hub broker (i.e. every real deployment).
+
+    note: the rbac-stack construction is synchronous; the
+    invalidation subscriptions are bound asynchronously after the
+    registry's NATS connection comes up (see
+    :meth:`RegistryServer._start_handlers` -- the rbac stack rides
+    the same client). returning ``DenyAllAuthorizer`` only happens
+    when the operator explicitly opts in via
+    ``FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true``, which exists
+    purely as a panic-button kill switch for misconfigured prod
+    deployments.
+    """
+    from threetears.observe import configure_logging
+
+    configure_logging(level="INFO")
+
+    allow_all = (
+        os.environ.get(
+            "FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS",
+            "",
+        ).lower()
+        == "true"
+    )
+    force_deny = (
+        os.environ.get(
+            "FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL",
+            "",
+        ).lower()
+        == "true"
+    )
+
+    authorizer: AgentToolAuthorizer
+    rbac_authorizer_factory: "Callable[[NatsClient], Awaitable[AgentToolAuthorizer]] | None" = None
+
+    if allow_all:
+        from threetears.registry.auth import AllowAllAuthorizer
+
+        authorizer = AllowAllAuthorizer()
+        _logger.warning(
+            "registry running in allow-all mode (FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true)",
+            extra={"extra_data": {"mode": "allow_all"}},
+        )
+    elif force_deny:
+        from threetears.registry.auth import DenyAllAuthorizer
+
+        authorizer = DenyAllAuthorizer()
+        _logger.warning(
+            "registry running in forced deny-all mode "
+            "(FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true). every tool "
+            "dispatch will be denied -- intentional kill-switch.",
+            extra={"extra_data": {"mode": "deny_all_forced"}},
+        )
+    else:
+        # default production path: deny-all placeholder *until* the
+        # NATS connection comes up + the rbac stack is constructed
+        # against it. the placeholder denies any dispatch that races
+        # the wiring (a cold-start window of milliseconds); once the
+        # rbac stack is live the server swaps in the real authorizer.
+        from threetears.registry.auth import DenyAllAuthorizer
+
+        authorizer = DenyAllAuthorizer()
+
+        async def _rbac_factory(nc: NatsClient) -> AgentToolAuthorizer:
+            from threetears.registry.l1_cache import (
+                create_registry_l1_backend,
+            )
+            from threetears.registry.rbac_authorizer import (
+                RbacEvaluatorAuthorizer,
+            )
+            from threetears.registry.rbac_stack import (
+                build_registry_rbac_stack,
+            )
+
+            namespace = os.environ.get(
+                "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
+                "aibots",
+            )
+            l1_backend = create_registry_l1_backend()
+            stack = build_registry_rbac_stack(
+                nats_client=nc,
+                subject_namespace=namespace,
+                l1_backend=l1_backend,
+            )
+            await stack.subscribe_invalidations()
+            _logger.info(
+                "registry running with RbacEvaluatorAuthorizer (rbac stack wired against system.platform.rbac proxy)",
+                extra={"extra_data": {"mode": "rbac"}},
+            )
+            return RbacEvaluatorAuthorizer(
+                acl_cache=stack.acl_cache,
+                namespace_collection=stack.namespace_collection,
+            )
+
+        rbac_authorizer_factory = _rbac_factory
+
+    server = RegistryServer(
+        authorizer=authorizer,
+        rbac_authorizer_factory=rbac_authorizer_factory,
+    )
+    asyncio.run(server.serve())

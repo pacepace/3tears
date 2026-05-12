@@ -1,0 +1,349 @@
+"""workspace access authorization helper.
+
+every workspace tool calls :func:`authorize_workspace_access` at the
+top of its ``execute`` method, immediately after resolving the target
+:class:`~threetears.agent.workspace.entities.Workspace`. rbac-task-01
+Phase 3 rewired the helper to delegate to the unified evaluator in
+:mod:`threetears.agent.acl` — one source of truth for every
+authorization decision across the broker, the agent runtime, and
+discovery.
+
+rules (in order):
+
+1. **missing customer on scope** — a tool call arriving without a
+   ``customer_id`` on its envelope is unroutable; raise.
+2. **cross-customer** — a caller belonging to customer ``A`` can never
+   touch a workspace owned by customer ``B``. categorical deny, never
+   overridable by an assignment (assignments within the same customer
+   only; the evaluator enforces this independently but we short-circuit
+   here to keep the cheap check cheap).
+3. **unified evaluator** — build an
+   :class:`~threetears.agent.acl.EvaluationContext` carrying the
+   workspace's :class:`~threetears.agent.acl.Namespace`, the intent
+   action (``read`` / ``write``), and the caller's user + agent ids.
+   :func:`~threetears.agent.acl.evaluate_decision` resolves owner
+   short-circuit + group / assignment / role chain in one call. a
+   deny lands here as :class:`WorkspaceAccessDenied`.
+
+the helper intentionally does NOT re-implement owner-path short-
+circuit: the evaluator already handles
+``namespace.owner_agent_id == agent_id`` inside
+:func:`~threetears.agent.acl.evaluator._resolve_side`. we keep the
+cross-customer guard as a belt-and-suspenders check because it is
+the one rule with zero cost to surface at the call site (no IO, no
+evaluator round-trip) — and a tool arriving with a ``customer_id`` of
+another customer is a programming error worth catching with a clear
+message before the evaluator's generic deny.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal, Protocol
+from uuid import UUID
+
+from threetears.agent.acl import (
+    AccessDenied,
+    AclCache,
+    Namespace as AclNamespace,
+    authorize_on_entity,
+    evaluate_file_access,
+)
+from threetears.agent.tools.call_scope import ToolCallScope
+from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.agent.tools.context_envelope import CallContext
+
+__all__ = [
+    "WorkspaceAccessDenied",
+    "WorkspaceLike",
+    "authorize_workspace_access",
+    "authorize_workspace_file_access",
+]
+
+log = get_logger(__name__)
+
+
+class WorkspaceAccessDenied(AccessDenied):
+    """raised when the current call is not allowed to touch the workspace.
+
+    every tool's ``execute`` catches this (or lets it propagate as a
+    tool-level error) so a single exception type covers every denial
+    path: missing customer, cross-customer, no assignment, wrong
+    action.
+    """
+
+
+class WorkspaceLike(Protocol):
+    """structural type for the workspace record the helper inspects.
+
+    attributes are declared as read-only properties so the concrete
+    :class:`~threetears.agent.workspace.entities.Workspace` entity
+    (whose shape uses read-only ``@property`` accessors) satisfies
+    the Protocol. ``customer_id`` is allowed to be ``None`` on the
+    entity until :func:`enrich_workspace_identity` stamps it; the
+    helper re-checks for None on every call, so the Protocol carries
+    the same ``UUID | None`` shape.
+
+    :ivar id: workspace UUID (also the matching namespace id)
+    :ivar customer_id: owning customer UUID or None before enrichment
+    :ivar owner_agent_id: UUID of the agent that owns the physical rows
+    :ivar created_by_user_id: UUID of the user who created the workspace
+    :ivar namespace_name: canonical name of the workspace's namespace
+        row; kept on the Protocol for logging / back-compat callers
+    """
+
+    @property
+    def id(self) -> UUID:
+        """workspace UUID."""
+
+    @property
+    def customer_id(self) -> UUID | None:
+        """owning customer UUID or None before enrichment."""
+
+    @property
+    def owner_agent_id(self) -> UUID:
+        """UUID of the agent that owns the physical rows."""
+
+    @property
+    def created_by_user_id(self) -> UUID:
+        """UUID of the user who created the workspace."""
+
+    @property
+    def namespace_name(self) -> str:
+        """canonical namespace name."""
+
+
+class _WorkspaceNamespaceAdapter:
+    """tiny adapter exposing the four fields :func:`authorize_on_entity` reads.
+
+    workspace records carry ``id``, ``customer_id``, ``owner_agent_id``
+    directly but do not surface ``namespace_type`` (it is always
+    ``"workspace"``). this adapter pins the type so the canonical
+    primitive can read every field from one handle.
+
+    :ivar id: workspace UUID (also the namespace id)
+    :ivar customer_id: owning customer UUID
+    :ivar namespace_type: pinned to ``"workspace"``
+    :ivar owner_agent_id: UUID of the agent that owns the rows
+    """
+
+    __slots__ = ("id", "customer_id", "namespace_type", "owner_agent_id")
+
+    def __init__(self, workspace: WorkspaceLike) -> None:
+        """capture the four namespace fields from a workspace record.
+
+        :param workspace: workspace record
+        :ptype workspace: WorkspaceLike
+        """
+        self.id = workspace.id
+        self.customer_id = workspace.customer_id
+        self.namespace_type = "workspace"
+        self.owner_agent_id = workspace.owner_agent_id
+
+
+async def authorize_workspace_access(
+    scope: ToolCallScope,
+    workspace: WorkspaceLike,
+    operation: Literal["read", "write"],
+    *,
+    acl_cache: AclCache,
+) -> None:
+    """authorize the current tool call's identity against ``workspace``.
+
+    delegates to :func:`~threetears.agent.acl.authorize_on_entity` after
+    the cheap missing-customer + cross-customer guards fire. the
+    canonical primitive builds the :class:`EvaluationContext`, calls
+    the unified evaluator, and raises :class:`AccessDenied` on a deny;
+    this wrapper translates that to :class:`WorkspaceAccessDenied`.
+
+    :param scope: live :class:`ToolCallScope` pushed by the tool
+        server for this dispatch; ``scope.context`` carries
+        ``customer_id`` / ``user_id`` / ``agent_id``
+    :ptype scope: ToolCallScope
+    :param workspace: workspace record being accessed; must expose
+        ``id``, ``customer_id``, ``owner_agent_id``,
+        ``created_by_user_id``, ``namespace_name`` attributes (see
+        :class:`WorkspaceLike`)
+    :ptype workspace: WorkspaceLike
+    :param operation: intent verb — ``"read"`` for retrieval,
+        ``"write"`` for mutation
+    :ptype operation: Literal["read", "write"]
+    :param acl_cache: shared :class:`~threetears.agent.acl.AclCache`
+        wired with membership + grant loaders at bootstrap; required,
+        no silent-bypass path
+    :ptype acl_cache: AclCache
+    :return: nothing
+    :rtype: None
+    :raises WorkspaceAccessDenied: on any denial path
+    """
+    if operation not in ("read", "write"):
+        raise WorkspaceAccessDenied(f"unknown workspace operation: {operation}")
+
+    ctx = scope.context
+    if ctx.customer_id is None:
+        raise WorkspaceAccessDenied("missing customer_id on scope")
+
+    if workspace.customer_id != ctx.customer_id:
+        _log_denial(
+            workspace=workspace,
+            operation=operation,
+            ctx=ctx,
+            reason="cross-customer",
+        )
+        raise WorkspaceAccessDenied(
+            "cross-customer access denied: "
+            f"workspace customer={workspace.customer_id}, "
+            f"caller customer={ctx.customer_id}",
+        )
+
+    try:
+        await authorize_on_entity(
+            ns_entity=_WorkspaceNamespaceAdapter(workspace),
+            action=operation,
+            user_id=ctx.user_id,
+            agent_id=ctx.agent_id,
+            cache=acl_cache,
+            namespace_name=workspace.namespace_name,
+        )
+    except AccessDenied as exc:
+        reason = f"evaluator denied access on namespace {workspace.namespace_name}"
+        _log_denial(
+            workspace=workspace,
+            operation=operation,
+            ctx=ctx,
+            reason=reason,
+        )
+        raise WorkspaceAccessDenied(reason) from exc
+    return None
+
+
+async def authorize_workspace_file_access(
+    scope: ToolCallScope,
+    workspace: WorkspaceLike,
+    relative_path: str,
+    direction: Literal["read", "write"],
+    *,
+    acl_cache: AclCache,
+) -> None:
+    """authorize a per-file read/write against ``workspace`` via rbac globs.
+
+    namespace-task-01 phase 7 replaces the legacy
+    ``WorkspaceSandbox.enforce("read"/"write", path)`` glob-list check
+    with a path-level rbac gate. the caller's grants on the workspace
+    namespace are resolved through the unified evaluator; granted
+    action strings with prefix ``read_file_matching:`` /
+    ``write_file_matching:`` are suffix-matched against ``relative_path``
+    via :meth:`pathlib.PurePosixPath.full_match`. allow iff any glob
+    matches.
+
+    the same customer-wall + missing-customer-on-scope guards that
+    :func:`authorize_workspace_access` applies run here too: a caller
+    from a different customer, or a scope missing its customer, is
+    denied before the rbac lookup to keep the cheap check cheap.
+
+    :param scope: live :class:`ToolCallScope` pushed by the tool
+        server for this dispatch; ``scope.context`` carries
+        ``customer_id`` / ``user_id`` / ``agent_id``
+    :ptype scope: ToolCallScope
+    :param workspace: workspace record being accessed
+    :ptype workspace: WorkspaceLike
+    :param relative_path: workspace-relative path to authorize
+    :ptype relative_path: str
+    :param direction: ``"read"`` for a read call, ``"write"`` for a
+        mutation
+    :ptype direction: Literal["read", "write"]
+    :param acl_cache: shared :class:`AclCache` wired with membership +
+        grant loaders at bootstrap; required, no silent-bypass path
+    :ptype acl_cache: AclCache
+    :return: None
+    :rtype: None
+    :raises WorkspaceAccessDenied: on any denial path (missing
+        customer, cross-customer, no matching glob)
+    """
+    if direction not in ("read", "write"):
+        raise WorkspaceAccessDenied(
+            f"unknown workspace file direction: {direction}",
+        )
+
+    ctx = scope.context
+    if ctx.customer_id is None:
+        raise WorkspaceAccessDenied("missing customer_id on scope")
+
+    if workspace.customer_id != ctx.customer_id:
+        _log_denial(
+            workspace=workspace,
+            operation=f"file.{direction}",
+            ctx=ctx,
+            reason="cross-customer",
+        )
+        raise WorkspaceAccessDenied(
+            "cross-customer access denied: "
+            f"workspace customer={workspace.customer_id}, "
+            f"caller customer={ctx.customer_id}",
+        )
+
+    namespace = AclNamespace(
+        id=workspace.id,
+        customer_id=workspace.customer_id,
+        namespace_type="workspace",
+        owner_agent_id=workspace.owner_agent_id,
+    )
+    decision = await evaluate_file_access(
+        namespace=namespace,
+        user_id=ctx.user_id,
+        agent_id=ctx.agent_id,
+        path=relative_path,
+        direction=direction,
+        cache=acl_cache,
+    )
+    if not decision:
+        _log_denial(
+            workspace=workspace,
+            operation=f"file.{direction}",
+            ctx=ctx,
+            reason=(
+                f"no {direction}_file_matching glob grants {relative_path!r} on namespace {workspace.namespace_name}"
+            ),
+        )
+        raise WorkspaceAccessDenied(
+            f"no {direction}_file_matching glob grants {relative_path!r} on namespace {workspace.namespace_name}",
+        )
+
+    return None
+
+
+def _log_denial(
+    *,
+    workspace: WorkspaceLike,
+    operation: str,
+    ctx: "CallContext",
+    reason: str,
+) -> None:
+    """emit a structured INFO log line for a denied workspace access.
+
+    :param workspace: workspace record that was targeted
+    :ptype workspace: WorkspaceLike
+    :param operation: intent verb from the caller
+    :ptype operation: str
+    :param ctx: call context carrying identity dimensions
+    :ptype ctx: CallContext
+    :param reason: short classification string
+    :ptype reason: str
+    :return: nothing
+    :rtype: None
+    """
+    log.info(
+        "workspace access denied",
+        extra={
+            "extra_data": {
+                "workspace_id": str(workspace.id),
+                "namespace_name": workspace.namespace_name,
+                "operation": operation,
+                "caller_agent_id": (str(ctx.agent_id) if ctx.agent_id is not None else None),
+                "caller_user_id": (str(ctx.user_id) if ctx.user_id is not None else None),
+                "caller_customer_id": (str(ctx.customer_id) if ctx.customer_id is not None else None),
+                "reason": reason,
+            }
+        },
+    )

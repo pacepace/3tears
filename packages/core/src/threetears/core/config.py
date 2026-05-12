@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+__all__ = [
+    "CoreConfig",
+    "DefaultCoreConfig",
+    "VALID_FLUSH_STRATEGIES",
+]
+
 VALID_FLUSH_STRATEGIES = frozenset({"ALWAYS", "ON_CHECKPOINT", "ON_SCHEDULE", "ON_SHUTDOWN"})
 
 

@@ -1,0 +1,29 @@
+# Build context hygiene for threetears-base.
+# Mirrors 14-eng-ai-bot/.dockerignore so cache invalidation is consistent
+# across repos.
+
+.venv/
+.git/
+.github/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.claude/
+tests/
+.env
+.env.*
+*.egg-info/
+dist/
+build/
+.eggs/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+.DS_Store
+docs/
+README.md
+uv.lock
