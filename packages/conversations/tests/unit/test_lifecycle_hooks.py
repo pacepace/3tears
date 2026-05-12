@@ -25,7 +25,7 @@ def _make_entity(**overrides: Any) -> Conversation:
     """
     from uuid import uuid7
 
-    now = datetime.now(UTC).replace(tzinfo=None)
+    now = datetime.now(UTC)
     data: dict[str, Any] = {
         "id": uuid7(),
         "agent_id": uuid7(),

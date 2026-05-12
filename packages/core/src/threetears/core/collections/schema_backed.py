@@ -49,7 +49,6 @@ __all__ = [
     "BOOL_TYPE",
     "BYTES_TYPE",
     "Column",
-    "DATETIME_TYPE",
     "DATETIMETZ_TYPE",
     "INT_TYPE",
     "JSONB_TYPE",
@@ -85,25 +84,16 @@ log = get_logger(__name__)
 # rather than by runtime ``isinstance`` checks.
 UUID_TYPE = "uuid"
 STRING_TYPE = "string"
-# DATETIME_TYPE: column declared as ``TIMESTAMP`` (timezone-naive
-# wall-clock) in the L3 DDL. asyncpg's TIMESTAMP codec accepts naive
-# datetimes only and rejects aware ones with ``DataError``; the write
-# coercion strips ``tzinfo`` (after projecting any aware input to UTC)
-# so callers that hold aware-UTC datetimes throughout the platform
-# (per CLAUDE.md datetime rule) round-trip cleanly.
-DATETIME_TYPE = "datetime"
 # DATETIMETZ_TYPE: column declared as ``TIMESTAMPTZ`` (timezone-aware
-# instant) in the L3 DDL. asyncpg's TIMESTAMPTZ codec calls
-# ``obj.astimezone(utc)`` on every value, which interprets a naive
-# datetime as the **client's local timezone** (not UTC). that means
-# stripping ``tzinfo`` before binding silently shifts the wire value
-# by the developer's local TZ offset on non-UTC hosts -- the row gets
-# stored as ``utc + local_offset``, the next read returns
-# ``utc + local_offset``, and any subsequent CAS predicate that strips
-# tzinfo again shifts a second time and fails to match. the write
-# coercion for this type ensures a tz-aware UTC datetime regardless of
-# input shape (naive inputs are wrapped with ``UTC``; aware inputs are
-# normalized via ``astimezone(UTC)``) so the codec's
+# instant) in the L3 DDL. This is the only datetime column type the
+# platform supports; ``DATETIME_TYPE`` (TIMESTAMP / naive) was removed
+# in collections-task-05 in favor of a single aware-UTC convention.
+# asyncpg's TIMESTAMPTZ codec calls ``obj.astimezone(utc)`` on every
+# value -- aware-UTC inputs round-trip cleanly; naive inputs would be
+# silently shifted by the host's local-TZ offset, so the write
+# coercion for this type ensures aware-UTC at the boundary regardless
+# of input shape (naive inputs are wrapped with ``UTC``; aware inputs
+# are normalized via ``astimezone(UTC)``) so the codec's
 # ``obj.astimezone(utc)`` is a no-op and the wire value is the true
 # UTC instant. read coercion ensures the returned value carries
 # ``tzinfo=UTC`` so downstream callers (and CAS predicates that
@@ -361,29 +351,6 @@ def _coerce_uuid(value: Any) -> UUID | None:
     return result
 
 
-def _coerce_datetime_for_write(value: Any) -> datetime | None:
-    """coerce a datetime to naive-UTC form for TIMESTAMP column writes.
-
-    belt-and-suspenders alongside
-    :meth:`BaseCollection.save_entity`: aware datetimes become naive
-    (UTC-projected), naive pass through. ``None`` pass-through.
-
-    :param value: datetime input (aware / naive) or ``None``
-    :ptype value: Any
-    :return: naive datetime or ``None``
-    :rtype: datetime | None
-    """
-    if value is None:
-        result: datetime | None = None
-    elif not isinstance(value, datetime):
-        result = value
-    elif value.tzinfo is None:
-        result = value
-    else:
-        result = value.astimezone(UTC).replace(tzinfo=None)
-    return result
-
-
 def _coerce_datetime_for_write_tz(value: Any) -> datetime | None:
     """coerce a datetime to aware-UTC form for TIMESTAMPTZ column writes.
 
@@ -599,8 +566,6 @@ def _decode_l2_value(column: Column, value: Any) -> Any:
         result: Any = None
     elif column.column_type == UUID_TYPE and isinstance(value, str):
         result = UUID(value)
-    elif column.column_type == DATETIME_TYPE and isinstance(value, str):
-        result = datetime.fromisoformat(value)
     elif column.column_type == DATETIMETZ_TYPE and isinstance(value, str):
         # isoformat strings carrying ``+00:00`` round-trip to aware UTC
         # naturally; strings without an offset (legacy L2 payloads from
@@ -815,8 +780,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 columns=[
                     Column("id", UUID_TYPE),
                     Column("name", STRING_TYPE),
-                    Column("date_created", DATETIME_TYPE, immutable=True),
-                    Column("date_updated", DATETIME_TYPE),
+                    Column("date_created", DATETIMETZ_TYPE, immutable=True),
+                    Column("date_updated", DATETIMETZ_TYPE),
                 ],
                 cas_column="date_updated",
             )
@@ -1058,8 +1023,6 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result: Any = None
         elif column.column_type == UUID_TYPE:
             result = _coerce_uuid(value)
-        elif column.column_type == DATETIME_TYPE:
-            result = _coerce_datetime_for_write(value)
         elif column.column_type == DATETIMETZ_TYPE:
             result = _coerce_datetime_for_write_tz(value)
         elif column.column_type == JSONB_TYPE:

@@ -1,16 +1,68 @@
-"""whisper transcription provider using OpenAI-compatible audio API via httpx."""
+"""whisper transcription provider using OpenAI-compatible audio API via httpx.
+
+Whisper has no LangChain ``BaseChatModel`` analog (it's audio
+transcription, not chat). This module keeps a regular async class that
+sends multipart audio to the OpenAI-compatible ``audio/transcriptions``
+endpoint and parses the ``verbose_json`` response into the result types
+defined here.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from threetears.models.results import TranscriptionResult, TranscriptionSegment
+from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.enums import ModelStatus, ModelTier, ModelType
 
 __all__ = [
+    "TranscriptionResult",
+    "TranscriptionSegment",
+    "WHISPER_PROVIDER_NAME",
     "WhisperTranscriptionProvider",
 ]
+
+
+WHISPER_PROVIDER_NAME = "whisper"
+
+
+@dataclass
+class TranscriptionSegment:
+    """time-aligned segment within transcription result.
+
+    :param start: segment start time in seconds
+    :ptype start: float
+    :param end: segment end time in seconds
+    :ptype end: float
+    :param text: transcribed text for segment
+    :ptype text: str
+    """
+
+    start: float
+    end: float
+    text: str
+
+
+@dataclass
+class TranscriptionResult:
+    """result from audio transcription provider.
+
+    :param text: full transcription text
+    :ptype text: str
+    :param language: detected or specified language code
+    :ptype language: str | None
+    :param duration_seconds: audio duration in seconds
+    :ptype duration_seconds: float | None
+    :param segments: time-aligned transcript segments
+    :ptype segments: list[TranscriptionSegment] | None
+    """
+
+    text: str
+    language: str | None = None
+    duration_seconds: float | None = None
+    segments: list[TranscriptionSegment] | None = None
 
 
 # MIME type to file extension mapping for multipart upload filename
@@ -29,7 +81,7 @@ _MIME_TO_EXT: dict[str, str] = {
 
 
 class WhisperTranscriptionProvider:
-    """transcription provider for OpenAI Whisper API via httpx.
+    """transcription provider for OpenAI-compatible Whisper API via httpx.
 
     sends multipart audio data to Whisper endpoint and parses
     verbose_json response into TranscriptionResult with segments.
@@ -129,3 +181,34 @@ def _parse_verbose_json(body: dict[str, Any]) -> TranscriptionResult:
         duration_seconds=body.get("duration"),
         segments=segments,
     )
+
+
+# -- capability registration -------------------------------------------------
+
+_WHISPER_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "whisper-1": ModelCapabilities(
+        model_name="whisper-1",
+        provider_name=WHISPER_PROVIDER_NAME,
+        model_type=ModelType.TRANSCRIPTION,
+        model_tier=ModelTier.MEDIUM,
+        model_status=ModelStatus.ACTIVE,
+        supported_audio_formats=[
+            "audio/mpeg",
+            "audio/mp3",
+            "audio/wav",
+            "audio/wave",
+            "audio/x-wav",
+            "audio/mp4",
+            "audio/x-m4a",
+            "audio/webm",
+            "audio/ogg",
+            "audio/flac",
+        ],
+        max_audio_duration_seconds=2_700.0,
+        supports_language_hint=True,
+    ),
+}
+
+
+for _model_id, _caps in _WHISPER_CAPABILITIES.items():
+    register_capabilities(_model_id, _caps)

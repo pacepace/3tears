@@ -29,7 +29,7 @@ from threetears.core.collections.registry import CollectionRegistry
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
 from threetears.core.collections.schema_backed import (
-    DATETIME_TYPE,
+    DATETIMETZ_TYPE,
     INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
@@ -93,11 +93,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("user_id", UUID_TYPE, immutable=True),
             Column("channel_type", STRING_TYPE, immutable=True),
             Column("conversation_ref", STRING_TYPE, nullable=True, immutable=True),
+            Column("name", STRING_TYPE, nullable=True),
             Column("status", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
-            Column("date_created", DATETIME_TYPE, immutable=True),
-            Column("date_updated", DATETIME_TYPE),
-            Column("date_last_message", DATETIME_TYPE, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+            Column("date_last_message", DATETIMETZ_TYPE, nullable=True),
             Column("metadata", JSONB_TYPE, nullable=True),
             Column("message_count", INT_TYPE),
         ],

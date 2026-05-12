@@ -32,6 +32,10 @@ packages/agent-tools/tests/unit/tools/test_bridge.py:162:_run
 packages/agent-tools/tests/unit/tools/test_bridge.py:177:_arun
 # rationale: LangChain BaseTool._arun is the documented subclass-implementable async-run hook; test invokes _arun directly to verify the success=False + None error fallback path (falls back to content string).
 packages/agent-tools/tests/unit/tools/test_bridge.py:231:_arun
+# rationale: NameMangledToolProxy implements LangChain's BaseTool override contract by defining _arun/_run; it forwards to the delegate's _arun/_run (NOT the public arun/run wrappers) because the proxy's own arun/run wrapper has already executed the callbacks/validation chain — calling delegate.arun would double-fire callbacks and re-process the input. The forwarding-to-_private pattern is required by LangChain's BaseTool design when proxying execution at the override layer.
+packages/models/src/threetears/models/tool_name_translation.py:140:_arun
+# rationale: same as line 140 above — the sync _run override forwards to delegate._run for the same double-wrapper reason.
+packages/models/src/threetears/models/tool_name_translation.py:154:_run
 # rationale: fixture reads module-level _otel_available to snapshot cache state before each test so monkeypatching does not leak.
 packages/observe/tests/test_tracing.py:24:_otel_available
 # rationale: fixture restores module-level _otel_available cache between tests so import-order does not leak patched state.
@@ -57,4 +61,40 @@ packages/core/tests/test_duckdb_backend.py:58:_HAS_DUCKDB
 # rationale: test restores module-level _HAS_DUCKDB to its original import-time value after the ImportError-branch assertion so subsequent tests see the real sentinel.
 packages/core/tests/test_duckdb_backend.py:62:_HAS_DUCKDB
 # rationale: autouse fixture clears the module-level _RESOLVED validators cache between tests so fake-stub resolvers from one case do not leak across cases; no public clear-cache helper exists because the only legitimate caller is this fixture.
-packages/agent-workspace/tests/unit/test_validators.py:138:_RESOLVED
+packages/agent/workspace/tests/unit/test_validators.py:149:_RESOLVED
+# rationale: test invokes NameMangledToolProxy._arun directly to verify the LangChain BaseTool override layer forwards to the delegate without double-firing the callbacks/validation wrapper chain; the proxy implements LangChain BaseTool by overriding _arun and the test exercises that override in isolation.
+packages/models/tests/unit/models/test_provider_openrouter.py:139:_arun
+# rationale: test reads ChatOpenRouter._name_reverse_map to assert bind_tools populates the per-instance dotted-to-wire-safe lookup table; the table is implementation-stable and the test pins the populate-on-bind contract.
+packages/models/tests/unit/models/test_provider_openrouter.py:164:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map to verify the wire-safe name keys round-trip through bind_tools; same reverse-map contract as line 164.
+packages/models/tests/unit/models/test_provider_openrouter.py:183:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map to confirm rebind_tools replaces the previous table contents; pins the table-is-instance-local contract.
+packages/models/tests/unit/models/test_provider_openrouter.py:205:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map after clear_bound_tools to assert the table is emptied; pins the clear-resets-table contract.
+packages/models/tests/unit/models/test_provider_openrouter.py:227:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map after a second bind_tools call to verify multi-bind merge semantics; pins the merge-on-rebind contract.
+packages/models/tests/unit/models/test_provider_openrouter.py:246:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map to verify dotted-name tools register their wire-safe form; pins the dotted-to-wire-safe translation contract.
+packages/models/tests/unit/models/test_provider_openrouter.py:267:_name_reverse_map
+# rationale: test reads ChatOpenRouter._name_reverse_map on a fresh subclass to verify the empty-by-default contract; pins the lazy-init shape.
+packages/models/tests/unit/models/test_provider_openrouter.py:283:_name_reverse_map
+# rationale: test patches ChatOpenRouter._astream to capture the wire payload and assert the translation layer rewrote tool-call names before they reach the upstream; the override is the only seam at the streaming layer.
+packages/models/tests/unit/models/test_provider_openrouter.py:346:_astream
+# rationale: test invokes the patched _astream to drive the rewrite assertion above; same rationale as line 346.
+packages/models/tests/unit/models/test_provider_openrouter.py:348:_astream
+# rationale: test reads from the captured _astream payload to verify the wire-safe name appears on the request; same rationale as line 346.
+packages/models/tests/unit/models/test_provider_openrouter.py:350:_astream
+# rationale: test asserts the dotted-name does NOT appear on the captured _astream wire payload, completing the name-translation round trip; same rationale as line 346.
+packages/models/tests/unit/models/test_provider_openrouter.py:353:_astream
+# rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
+packages/models/tests/unit/models/test_tracking.py:230:_TRACER_PROVIDER_SET_ONCE
+# rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test; same rationale as line 230.
+packages/models/tests/unit/models/test_tracking.py:412:_TRACER_PROVIDER_SET_ONCE
+# rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test; same rationale as line 230.
+packages/models/tests/unit/models/test_tracking.py:554:_TRACER_PROVIDER_SET_ONCE
+# rationale: test reads UsageTracker._prom (cached PromEmitter) to assert tracker-per-registry identity (two trackers with the same registry share the emitter); pins the cached-by-registry contract.
+packages/models/tests/unit/models/test_tracking.py:717:_prom
+# rationale: test reads UsageTracker._prom to assert two trackers with the same registry share the cached emitter; pins the share-by-identity contract.
+packages/models/tests/unit/models/test_tracking.py:762:_prom
+# rationale: test reads UsageTracker._prom to assert two trackers with distinct registries get distinct emitters; pins the distinct-by-identity contract.
+packages/models/tests/unit/models/test_tracking.py:779:_prom

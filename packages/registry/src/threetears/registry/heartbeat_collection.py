@@ -191,10 +191,12 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         if entity.is_new:
             data.setdefault("date_created", now)
         data["date_updated"] = now
-        # Convert aware -> naive at the L1/L2 border (TIMESTAMP columns)
-        for key, val in list(data.items()):
-            if isinstance(val, datetime) and val.tzinfo is not None:
-                data[key] = val.replace(tzinfo=None)
+        # Datetimes flow aware-UTC end to end (collections-task-05).
+        # The L1 schema in :mod:`threetears.registry.l1_cache` declares
+        # ``TIMESTAMP(timezone=True)`` for date columns so SQLAlchemy
+        # round-trips the offset; the L2 JSON serializer renders the
+        # ``+00:00`` suffix and ``deserialize`` re-coerces naive
+        # legacy payloads to aware-UTC at the boundary.
         if self._l1 is not None:
             self._l1.upsert(self.table_name, data, self.primary_key_column)
         await self._save_to_l2(entity.id, data)
@@ -300,12 +302,16 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         """deserialize JSON bytes from L2 back into row dict.
 
         hydrates ``date_last_heartbeat`` / ``date_created`` /
-        ``date_updated`` ISO strings back to naive
-        :class:`datetime` so L1 pull-through writes typed values.
+        ``date_updated`` ISO strings back to aware-UTC
+        :class:`datetime`. Naive ISO strings (legacy payloads written
+        before collections-task-05) are coerced to aware-UTC at the
+        boundary so the rest of the pipeline can rely on aware
+        comparisons (e.g. ``health.py`` does
+        ``datetime.now(UTC) - entity.date_last_heartbeat``).
 
         :param data: JSON-encoded bytes
         :ptype data: bytes
-        :return: row dict with typed datetime columns
+        :return: row dict with aware-UTC datetime columns
         :rtype: dict[str, Any]
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
@@ -313,8 +319,8 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
             value = raw.get(field_name)
             if isinstance(value, str):
                 parsed = datetime.fromisoformat(value)
-                if parsed.tzinfo is not None:
-                    parsed = parsed.replace(tzinfo=None)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
                 raw[field_name] = parsed
         tools = raw.get("tools")
         if isinstance(tools, str):

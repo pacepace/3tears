@@ -26,7 +26,16 @@ jobs:
           uv run ruff format . --check
 
       - name: Typecheck
-        run: uv run mypy packages/core/src/ packages/agent-memory/src/ packages/agent-tools/src/
+        env:
+          # the agent-namespace move (packages/agent-memory -> packages/agent/memory)
+          # nests src/ two levels deep which mypy cannot resolve from file
+          # paths without --explicit-package-bases + an MYPYPATH that lists
+          # each src/ root. addressing the modules by ``-p threetears.<x>``
+          # is the documented escape and matches the layout that
+          # ``uv run mypy`` resolves from the installed-editable
+          # environment.
+          MYPYPATH: packages/core/src:packages/agent/memory/src:packages/agent/tools/src
+        run: uv run mypy --explicit-package-bases -p threetears.core -p threetears.agent.memory -p threetears.agent.tools
 
-      - name: Test
-        run: uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ -v
+      - name: Test (unit + enforcement; integration excluded - no docker on the runner)
+        run: uv run pytest packages/ tests/ -m "not integration" -v

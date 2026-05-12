@@ -1,157 +1,273 @@
-"""openrouter chat provider adapter wrapping langchain-openrouter."""
+"""OpenRouter chat factory backed by ``langchain_openrouter``.
+
+LangChain-native shape (3tears v0.6.0+): :func:`create_openrouter_chat`
+returns a fully-configured ``ChatOpenRouter`` instance. ``ChatOpenRouter``
+expects the request timeout in milliseconds — the factory accepts seconds
+to match the rest of the API surface and converts internally.
+
+Tool-name translation: OpenRouter routes some upstream models through
+backends with strict tool-name validators (Bedrock requires
+``^[a-zA-Z0-9_-]{1,128}$`` -- no dots), but the canonical 3tears tool
+name is the dotted ``threetears.X`` form. The factory returns a
+:class:`_NameTranslatingChatOpenRouter` subclass that translates
+dot-to-underscore on outgoing tool specs and underscore-to-dot on
+incoming ``tool_calls``, so application code (3tears core, metallm,
+14-eng-ai-bot, 14-eng-ai-bot-agents) never sees the wire form. The
+translation is keyed by the dotted -> underscored mapping built at
+``bind_tools`` time, so it round-trips losslessly even for tools whose
+names contain underscores already (e.g. ``threetears.web_search`` ->
+``threetears_web_search`` and back).
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from threetears.models.messages import ChatMessage, ToolDefinition
-from threetears.models.providers._conversions import (
-    ai_chunk_to_chat_chunk,
-    ai_message_to_result,
-    messages_to_lc,
-    tool_def_to_lc,
+from langchain_core.tools import BaseTool
+from pydantic import PrivateAttr
+
+from threetears.models.capabilities import ModelCapabilities, register_capabilities
+from threetears.models.enums import ModelStatus, ModelTier, ModelType
+from threetears.models.tool_name_translation import (
+    build_name_translation,
+    reverse_translate_message,
 )
-from threetears.models.results import ChatChunk, ChatResult
+
+if TYPE_CHECKING:
+    from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+    from langchain_core.language_models.chat_models import LanguageModelInput
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatGenerationChunk, ChatResult
+    from langchain_core.runnables import Runnable, RunnableConfig
+    from langchain_openrouter import ChatOpenRouter
 
 __all__ = [
-    "OpenRouterChatProvider",
+    "OPENROUTER_PROVIDER_NAME",
+    "create_openrouter_chat",
 ]
 
 
-class OpenRouterChatProvider:
-    """chat provider adapter for OpenRouter models via langchain-openrouter.
+OPENROUTER_PROVIDER_NAME = "openrouter"
 
-    wraps ChatOpenRouter with lazy instantiation, converting between
-    threetears message types and LangChain message types at boundaries.
-    accepts timeout in seconds and converts to milliseconds for
-    ChatOpenRouter which expects millisecond values.
 
-    :param model_name: OpenRouter model identifier (e.g. deepseek/deepseek-chat-v3-0324)
+def _build_translating_chat_class() -> type[ChatOpenRouter]:
+    """build the :class:`ChatOpenRouter` subclass with name-translation hooks.
+
+    Defined inside a function so the langchain-openrouter import is
+    lazy -- :mod:`threetears.models.providers.openrouter` is imported
+    eagerly at package load to populate the capability registry, and we
+    must not require ``langchain-openrouter`` to be installed for that
+    side-effect import to succeed (it is an optional dependency,
+    selected via ``3tears-models[openrouter]``).
+    """
+    from langchain_openrouter import ChatOpenRouter
+
+    class _NameTranslatingChatOpenRouter(ChatOpenRouter):
+        """``ChatOpenRouter`` that translates tool names dot<->underscore
+        at the wire boundary, hiding the wire form from application code.
+
+        :ivar _name_reverse_map: populated at ``bind_tools`` time;
+            maps each tool's underscored wire name back to the
+            canonical dotted form so ``tool_call`` names in streaming
+            responses can be rewritten before they reach the
+            application's dispatch / logging / persistence layers.
+        :ptype _name_reverse_map: dict[str, str]
+        """
+
+        _name_reverse_map: dict[str, str] = PrivateAttr(default_factory=dict)
+
+        def bind_tools(
+            self,
+            tools: list[BaseTool],
+            **kwargs: Any,
+        ) -> Runnable[LanguageModelInput, BaseMessage]:
+            """bind tools after dot->underscore name translation for the wire.
+
+            Application-side tools keep their canonical dotted names;
+            the bound runnable holds wire-side proxies whose ``.name``
+            is the underscored form. The reverse map for response
+            un-translation is stored on this instance so ``_astream``
+            and ``_agenerate`` can rewrite tool-call names.
+
+            :param tools: application-side tool list (canonical dotted
+                names)
+            :ptype tools: list[BaseTool]
+            :param kwargs: passthrough to ``super().bind_tools``
+            :ptype kwargs: Any
+            :return: runnable bound to wire-side proxy tools
+            :rtype: Runnable[LanguageModelInput, BaseMessage]
+            """
+            wire_tools, reverse_map = build_name_translation(tools)
+            # Mutate the shared reverse_map rather than reassign so the
+            # ``_astream`` closure in concurrently-running streams still
+            # sees the same dict object (PrivateAttr is per-instance,
+            # and this instance is request-scoped in every consumer
+            # observed -- metallm's ``build_chat_model_from_config``
+            # constructs a fresh model per resolve_chat_model call).
+            self._name_reverse_map.clear()
+            self._name_reverse_map.update(reverse_map)
+            return super().bind_tools(wire_tools, **kwargs)
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            """stream chunks with tool-call names un-translated to canonical form.
+
+            ``ChatOpenRouter._astream`` yields
+            :class:`ChatGenerationChunk` whose ``.message`` is an
+            ``AIMessageChunk`` carrying ``tool_call_chunks`` (partial,
+            during streaming) and ``tool_calls`` (post-merge). We
+            rewrite each tool-call name on ``chunk.message`` back to
+            the canonical dotted form using the reverse map populated
+            at ``bind_tools`` time, so application code reading
+            ``chunk.message.tool_calls[i]["name"]`` (or the merged
+            AIMessage that consumers accumulate from chunks) never
+            sees the wire form.
+
+            :param messages: chat messages
+            :ptype messages: list[BaseMessage]
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param run_manager: LangChain run manager
+            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
+            :param kwargs: passthrough
+            :ptype kwargs: Any
+            :return: async iterator of un-translated chunks
+            :rtype: AsyncIterator[ChatGenerationChunk]
+            """
+            async for chunk in super()._astream(
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
+            ):
+                # ``ChatGenerationChunk.message`` is the AIMessageChunk
+                # carrying tool-call fields. Some upstream paths wrap
+                # the message in a different shape (LangChain has
+                # historically vacillated between yielding raw
+                # AIMessageChunks vs ChatGenerationChunks); fall back
+                # to the chunk itself when ``.message`` is absent so
+                # we cover both shapes without a special case.
+                target = getattr(chunk, "message", chunk)
+                reverse_translate_message(target, self._name_reverse_map)
+                yield chunk
+
+        async def _agenerate(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            """non-streaming generate with tool-call names un-translated.
+
+            Mirrors :meth:`_astream` for the non-streaming code path
+            (``ainvoke`` and friends). Walks every generation in the
+            ``ChatResult`` and rewrites ``tool_calls`` /
+            ``invalid_tool_calls`` names back to the canonical form
+            before returning to the caller.
+            """
+            result = await super()._agenerate(
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
+            )
+            for generation in result.generations:
+                reverse_translate_message(generation.message, self._name_reverse_map)
+            return result
+
+    return _NameTranslatingChatOpenRouter
+
+
+def create_openrouter_chat(
+    model_name: str,
+    api_key: str,
+    *,
+    timeout: int = 120,
+    max_retries: int = 2,
+    **extra_kwargs: object,
+) -> ChatOpenRouter:
+    """creates a configured ``ChatOpenRouter`` for OpenRouter-routed models.
+
+    Returns the :class:`_NameTranslatingChatOpenRouter` subclass, not
+    a vanilla ``ChatOpenRouter``. Application code interacts with it
+    exactly the same way (it IS a ``ChatOpenRouter``); the only
+    difference is the wire-side tool-name translation that hides
+    Bedrock-style provider quirks from the rest of the codebase.
+
+    :param model_name: OpenRouter model identifier (e.g. ``deepseek/deepseek-chat-v3-0324``)
     :ptype model_name: str
-    :param api_key: OpenRouter API key for authentication
+    :param api_key: OpenRouter API key
     :ptype api_key: str
-    :param timeout: request timeout in seconds (converted to milliseconds internally)
+    :param timeout: request timeout in seconds (converted to ms internally)
     :ptype timeout: int
     :param max_retries: maximum retry attempts for failed requests
     :ptype max_retries: int
+    :param extra_kwargs: additional keyword arguments forwarded to ``ChatOpenRouter``
+    :ptype extra_kwargs: object
+    :return: configured ``ChatOpenRouter`` (the name-translating subclass)
+    :rtype: ChatOpenRouter
     """
+    chat_cls = _build_translating_chat_class()
 
-    def __init__(
-        self,
-        model_name: str,
-        api_key: str,
-        *,
-        timeout: int = 120,
-        max_retries: int = 2,
-    ) -> None:
-        self.model_name = model_name
-        self._api_key = api_key
-        self.timeout = timeout
-        self._max_retries = max_retries
-        self.model: Any = None
-        self.tools: list[ToolDefinition] | None = None
+    # langchain-openrouter 0.1.0 defaults app_title="langchain" and forwards
+    # it as `x_title` to the underlying openrouter SDK. openrouter 0.8+
+    # renamed that kwarg to `x_open_router_title`, so the old name now
+    # raises TypeError. setting both to None restores compatibility until
+    # langchain-openrouter ships a fix; callers that need attribution can
+    # pass app_title/app_url via extra_kwargs.
+    kwargs: dict[str, object] = {
+        "model": model_name,
+        "api_key": api_key,
+        "timeout": timeout * 1000,
+        "max_retries": max_retries,
+        "app_title": None,
+        "app_url": None,
+    }
+    kwargs.update(extra_kwargs)
 
-    def _get_model(self) -> Any:
-        """lazily creates and caches ChatOpenRouter instance.
+    model: ChatOpenRouter = chat_cls(**kwargs)
+    return model
 
-        imports langchain_openrouter on first call to avoid module-level
-        dependency on optional package. converts stored timeout from
-        seconds to milliseconds as required by ChatOpenRouter.
 
-        :return: configured ChatOpenRouter instance, optionally with tools bound
-        :rtype: Any
-        """
-        if self.model is not None:
-            return self.model
+# -- capability registration -------------------------------------------------
 
-        from langchain_openrouter import ChatOpenRouter
+# representative OpenRouter ids. additional ids can be registered by host
+# apps at boot via register_capabilities().
+_OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "deepseek/deepseek-chat-v3-0324": ModelCapabilities(
+        model_name="deepseek/deepseek-chat-v3-0324",
+        provider_name=OPENROUTER_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        context_window=64_000,
+        max_output_tokens=8_192,
+        supports_streaming=True,
+        supports_tools=True,
+        supports_vision=False,
+        requires_alternating_roles=True,
+    ),
+    "deepseek/deepseek-r1": ModelCapabilities(
+        model_name="deepseek/deepseek-r1",
+        provider_name=OPENROUTER_PROVIDER_NAME,
+        model_type=ModelType.CHAT,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        context_window=64_000,
+        max_output_tokens=8_192,
+        supports_streaming=True,
+        supports_tools=False,
+        supports_vision=False,
+        requires_alternating_roles=True,
+    ),
+}
 
-        kwargs: dict[str, Any] = {
-            "model": self.model_name,
-            "api_key": self._api_key,
-            "timeout": self.timeout * 1000,
-            "max_retries": self._max_retries,
-        }
 
-        base_model: Any = ChatOpenRouter(**kwargs)
-
-        if self.tools:
-            lc_tools = [tool_def_to_lc(t) for t in self.tools]
-            base_model = base_model.bind_tools(lc_tools)
-
-        self.model = base_model
-        return self.model
-
-    async def complete(self, messages: list[ChatMessage], **kwargs: Any) -> ChatResult:
-        """generates chat completion from message history.
-
-        converts threetears messages to LangChain format, invokes model,
-        and converts response back to ChatResult.
-
-        :param messages: ordered list of conversation messages
-        :ptype messages: list[ChatMessage]
-        :param kwargs: additional parameters passed to LangChain ainvoke
-        :ptype kwargs: Any
-        :return: chat completion result with content, tool calls, and usage
-        :rtype: ChatResult
-        """
-        lc_messages = messages_to_lc(messages)
-        response = await self._get_model().ainvoke(lc_messages, **kwargs)
-        result = ai_message_to_result(response)
-        return result
-
-    async def stream(self, messages: list[ChatMessage], **kwargs: Any) -> AsyncIterator[ChatChunk]:
-        """streams chat completion chunks from message history.
-
-        converts threetears messages to LangChain format and yields
-        converted chunks from async stream.
-
-        :param messages: ordered list of conversation messages
-        :ptype messages: list[ChatMessage]
-        :param kwargs: additional parameters passed to LangChain astream
-        :ptype kwargs: Any
-        :return: async iterator of chat completion chunks
-        :rtype: AsyncIterator[ChatChunk]
-        """
-        lc_messages = messages_to_lc(messages)
-        async for chunk in self._get_model().astream(lc_messages, **kwargs):
-            yield ai_chunk_to_chat_chunk(chunk)
-
-    def bind_tools(self, tools: list[ToolDefinition]) -> None:
-        """binds tool definitions for subsequent completions.
-
-        stores tools and clears cached model instance so next call
-        recreates model with tools bound.
-
-        :param tools: tool definitions available to model
-        :ptype tools: list[ToolDefinition]
-        """
-        self.tools = list(tools)
-        self.model = None
-
-    def preprocess(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """preprocesses messages before sending to OpenRouter model.
-
-        applies capability-based transforms via preprocessing pipeline.
-        OpenRouter models do not require alternating roles by default,
-        so this is effectively passthrough for standard configurations.
-
-        :param messages: raw conversation messages
-        :ptype messages: list[ChatMessage]
-        :return: preprocessed messages ready for model
-        :rtype: list[ChatMessage]
-        """
-        from threetears.models.capabilities import ModelCapabilities
-        from threetears.models.enums import ModelStatus, ModelTier, ModelType
-        from threetears.models.preprocessing import preprocess_messages
-
-        capabilities = ModelCapabilities(
-            model_name=self.model_name,
-            model_type=ModelType.CHAT,
-            model_tier=ModelTier.LARGE,
-            model_status=ModelStatus.ACTIVE,
-            requires_alternating_roles=False,
-        )
-        result = preprocess_messages(messages, capabilities)
-        return result
+for _model_id, _caps in _OPENROUTER_CAPABILITIES.items():
+    register_capabilities(_model_id, _caps)

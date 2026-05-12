@@ -140,6 +140,20 @@ class DiscordAdapter:
 def _build_channel_message(message: Any) -> ChannelMessage:
     """normalize discord message to platform ChannelMessage.
 
+    locale plumbing on discord is intentionally lossy compared to
+    slack / websocket: the Discord API exposes a user locale only on
+    :class:`discord.Interaction` objects (slash command invocations),
+    NOT on regular :class:`discord.Message` objects. for guild
+    messages we fall back to ``guild.preferred_locale`` (the
+    server-wide default the guild owner set) which is a coarser
+    signal than slack's per-user ``users.info`` lookup but is the
+    best discord exposes for free-form chat. user timezone is
+    ``None`` -- Discord does not expose a user tz field on any
+    object today, and locale-to-timezone inference is too lossy to
+    fake (``en-US`` covers four+ US timezones). a future
+    interaction-context adapter, or a bot-side ``/settz`` slash
+    command, would be the canonical path to per-user tz here.
+
     :param message: discord message object
     :ptype message: Any
     :return: normalized channel message
@@ -157,6 +171,16 @@ def _build_channel_message(message: Any) -> ChannelMessage:
         "message_id": str(message.id),
     }
 
+    # locale: best-effort from guild.preferred_locale when the message
+    # is in a guild; ``None`` for DMs (no guild context). discord
+    # locales are already BCP 47 ("en-US", "ja-JP").
+    guild_locale: str | None = None
+    if message.guild is not None:
+        raw_locale = getattr(message.guild, "preferred_locale", None)
+        if raw_locale is not None:
+            # discord.py exposes Locale as a str-able enum; coerce to str
+            guild_locale = str(raw_locale)
+
     result = ChannelMessage(
         channel_type="discord",
         sender_id=str(message.author.id),
@@ -169,6 +193,8 @@ def _build_channel_message(message: Any) -> ChannelMessage:
         reply_to_id=reply_to_id,
         metadata=metadata,
         timestamp=datetime.now(UTC),
+        user_timezone=None,
+        user_locale=guild_locale,
     )
     return result
 

@@ -1,5 +1,8 @@
-"""provider implementations subpackage.
+"""provider factory functions returning configured LangChain models.
 
-concrete provider implementations for specific AI model APIs
-are organized under this namespace.
+Each provider module exposes one or more ``create_*`` factory functions
+that return configured LangChain ``BaseChatModel`` or ``Embeddings``
+instances. Whisper is the exception — transcription has no
+``BaseChatModel`` analog and exposes :class:`WhisperTranscriptionProvider`
+directly.
 """

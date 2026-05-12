@@ -1,15 +1,26 @@
-"""per-provider circuit breaker for fault isolation in model routing."""
+"""per-provider circuit breaker for fault isolation in model routing.
+
+Exposes both a thread-safe :class:`CircuitBreaker` and a LangChain
+``BaseCallbackHandler`` factory (``CircuitBreaker.make_callback()``) that
+fires the breaker's success/failure transitions in response to the
+``on_llm_start`` / ``on_llm_end`` / ``on_llm_error`` hooks.
+"""
 
 from __future__ import annotations
 
 import threading
 import time
 from enum import StrEnum
+from typing import Any
+from uuid import UUID
+
+from langchain_core.callbacks import BaseCallbackHandler
 
 from threetears.observe import get_logger
 
 __all__ = [
     "CircuitBreaker",
+    "CircuitBreakerCallback",
     "CircuitBreakerRegistry",
     "CircuitOpenError",
     "CircuitState",
@@ -172,6 +183,137 @@ class CircuitBreaker:
                 "circuit breaker manually reset for %s",
                 self._provider_name,
             )
+
+    def make_callback(self) -> BaseCallbackHandler:
+        """builds a LangChain callback that drives this breaker.
+
+        the callback short-circuits ``on_llm_start`` by calling
+        :meth:`check`, records a success in ``on_llm_end``, and records a
+        failure in ``on_llm_error``.
+
+        :return: callback handler suitable for ``model.with_config(callbacks=[...])``
+        :rtype: BaseCallbackHandler
+        """
+        return CircuitBreakerCallback(self)
+
+
+class CircuitBreakerCallback(BaseCallbackHandler):
+    """LangChain callback that wires a :class:`CircuitBreaker` into model events.
+
+    fast-fails ``on_llm_start`` by raising :class:`CircuitOpenError` when
+    the breaker is open. on success records via
+    :meth:`CircuitBreaker.record_success`; on error via
+    :meth:`CircuitBreaker.record_failure`.
+    """
+
+    def __init__(self, breaker: CircuitBreaker) -> None:
+        """initialises the callback with the breaker it should drive.
+
+        :param breaker: backing circuit breaker
+        :ptype breaker: CircuitBreaker
+        """
+        super().__init__()
+        self._breaker = breaker
+
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        *,
+        run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """raises :class:`CircuitOpenError` when the breaker is open.
+
+        :param serialized: serialized LLM definition (unused)
+        :ptype serialized: dict[str, Any]
+        :param prompts: prompt strings (unused)
+        :ptype prompts: list[str]
+        :param run_id: optional run identifier supplied by LangChain
+        :ptype run_id: UUID | None
+        :param kwargs: additional LangChain context (ignored)
+        :ptype kwargs: Any
+        :raises CircuitOpenError: if the breaker is currently OPEN
+        """
+        _ = serialized
+        _ = prompts
+        _ = run_id
+        _ = kwargs
+        self._breaker.check()
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
+        *,
+        run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """raises :class:`CircuitOpenError` for chat models when breaker is open.
+
+        :param serialized: serialized model definition (unused)
+        :ptype serialized: dict[str, Any]
+        :param messages: input messages (unused)
+        :ptype messages: list[list[Any]]
+        :param run_id: optional run identifier supplied by LangChain
+        :ptype run_id: UUID | None
+        :param kwargs: additional LangChain context (ignored)
+        :ptype kwargs: Any
+        :raises CircuitOpenError: if the breaker is currently OPEN
+        """
+        _ = serialized
+        _ = messages
+        _ = run_id
+        _ = kwargs
+        self._breaker.check()
+
+    def on_llm_end(
+        self,
+        response: Any,
+        *,
+        run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """records a success on the breaker.
+
+        :param response: LangChain LLM result (unused)
+        :ptype response: Any
+        :param run_id: optional run identifier supplied by LangChain
+        :ptype run_id: UUID | None
+        :param kwargs: additional LangChain context (ignored)
+        :ptype kwargs: Any
+        """
+        _ = response
+        _ = run_id
+        _ = kwargs
+        self._breaker.record_success()
+
+    def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """records a failure on the breaker.
+
+        :class:`CircuitOpenError` itself does not count as a provider
+        failure — it's the breaker fast-failing the request, not a real
+        upstream error. swallow it here so a tripped breaker doesn't
+        keep racking up its own failure count.
+
+        :param error: raised exception
+        :ptype error: BaseException
+        :param run_id: optional run identifier supplied by LangChain
+        :ptype run_id: UUID | None
+        :param kwargs: additional LangChain context (ignored)
+        :ptype kwargs: Any
+        """
+        _ = run_id
+        _ = kwargs
+        if isinstance(error, CircuitOpenError):
+            return
+        self._breaker.record_failure()
 
 
 class CircuitBreakerRegistry:

@@ -1,11 +1,26 @@
-"""message preprocessing utilities for AI model provider communication."""
+"""message preprocessing utilities for AI model provider communication.
+
+Operates on LangChain ``BaseMessage`` instances directly so the
+preprocessing pipeline composes cleanly with the LangChain-native provider
+factories. The alternating-roles transform is the only widely-applicable
+preprocessing step: providers like DeepSeek (and some other OpenAI-
+compatible APIs) reject consecutive same-role messages.
+"""
 
 from __future__ import annotations
 
 import base64
 
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+
 from threetears.models.capabilities import ModelCapabilities
-from threetears.models.messages import ChatMessage, MessageRole
 
 __all__ = [
     "enforce_alternating_roles",
@@ -14,29 +29,73 @@ __all__ = [
 ]
 
 
+def _is_system(msg: BaseMessage) -> bool:
+    """returns whether ``msg`` is a system message.
+
+    :param msg: LangChain message to inspect
+    :ptype msg: BaseMessage
+    :return: True for ``SystemMessage`` instances
+    :rtype: bool
+    """
+    return isinstance(msg, SystemMessage)
+
+
+def _is_tool(msg: BaseMessage) -> bool:
+    """returns whether ``msg`` is a tool result message.
+
+    :param msg: LangChain message to inspect
+    :ptype msg: BaseMessage
+    :return: True for ``ToolMessage`` instances
+    :rtype: bool
+    """
+    return isinstance(msg, ToolMessage)
+
+
+def _role_of(msg: BaseMessage) -> str:
+    """returns a canonical role string for ``msg``.
+
+    used to detect consecutive same-role messages without relying on
+    LangChain's ``type`` attribute (which has variants for chunk classes).
+
+    :param msg: LangChain message to inspect
+    :ptype msg: BaseMessage
+    :return: ``"system" | "user" | "assistant" | "tool"``
+    :rtype: str
+    """
+    if isinstance(msg, SystemMessage):
+        return "system"
+    if isinstance(msg, HumanMessage):
+        return "user"
+    if isinstance(msg, (AIMessage, AIMessageChunk)):
+        return "assistant"
+    if isinstance(msg, ToolMessage):
+        return "tool"
+    return "unknown"
+
+
 def enforce_alternating_roles(
-    messages: list[ChatMessage],
-) -> list[ChatMessage]:
+    messages: list[BaseMessage],
+) -> list[BaseMessage]:
     """ensures user/assistant messages alternate, as required by some models.
 
     system messages are preserved at start. tool messages are preserved in
-    position. consecutive same-role user or assistant messages are merged by
-    joining string content with newline. if last message is not user role,
-    appends continuation user message.
+    position. consecutive same-role user or assistant messages are merged
+    by joining string content with newline. if last message is not user
+    role, appends continuation user message.
 
-    :param messages: list of chat messages to process
-    :ptype messages: list[ChatMessage]
+    :param messages: list of LangChain messages to process
+    :ptype messages: list[BaseMessage]
     :return: new list with alternating roles enforced
-    :rtype: list[ChatMessage]
+    :rtype: list[BaseMessage]
     """
     if not messages:
         return []
 
-    result: list[ChatMessage] = []
+    result: list[BaseMessage] = []
 
     # preserve leading system messages
     idx = 0
-    while idx < len(messages) and messages[idx].role == MessageRole.SYSTEM:
+    while idx < len(messages) and _is_system(messages[idx]):
         result.append(messages[idx])
         idx += 1
 
@@ -45,18 +104,17 @@ def enforce_alternating_roles(
         msg = messages[idx]
 
         # tool messages pass through untouched
-        if msg.role == MessageRole.TOOL:
+        if _is_tool(msg):
             result.append(msg)
             idx += 1
             continue
 
-        # collect consecutive messages with same role (user or assistant)
-        run: list[ChatMessage] = [msg]
+        run: list[BaseMessage] = [msg]
+        current_role = _role_of(msg)
         while (
             idx + 1 < len(messages)
-            and messages[idx + 1].role == msg.role
-            and messages[idx + 1].role != MessageRole.TOOL
-            and messages[idx + 1].role != MessageRole.SYSTEM
+            and _role_of(messages[idx + 1]) == current_role
+            and current_role in ("user", "assistant")
         ):
             idx += 1
             run.append(messages[idx])
@@ -73,37 +131,38 @@ def enforce_alternating_roles(
         idx += 1
 
     # ensure last message is user role
-    if result and result[-1].role != MessageRole.USER:
-        result.append(ChatMessage(role=MessageRole.USER, content="Continue."))
+    if result and _role_of(result[-1]) != "user":
+        result.append(HumanMessage(content="Continue."))
 
     return result
 
 
-def _merge_message_run(run: list[ChatMessage]) -> ChatMessage | None:
+def _merge_message_run(run: list[BaseMessage]) -> BaseMessage | None:
     """merges consecutive same-role messages into single message.
 
     only merges string content by joining with newline. if any message
-    in run has list content, returns None to signal caller should keep
-    messages separate. preserves tool_calls from last message and name
-    from first message.
+    in run has non-string content, returns None to signal caller should
+    keep messages separate. preserves tool_calls from last message in
+    the run for assistant-role merges.
 
     :param run: consecutive messages with same role to merge
-    :ptype run: list[ChatMessage]
+    :ptype run: list[BaseMessage]
     :return: merged message, or None if content types prevent merging
-    :rtype: ChatMessage | None
+    :rtype: BaseMessage | None
     """
     if not all(isinstance(m.content, str) for m in run):
         return None
 
     merged_content = "\n".join(str(m.content) for m in run)
+    role = _role_of(run[0])
 
-    return ChatMessage(
-        role=run[0].role,
-        content=merged_content,
-        tool_calls=run[-1].tool_calls,
-        tool_call_id=None,
-        name=run[0].name,
-    )
+    if role == "user":
+        return HumanMessage(content=merged_content)
+    if role == "assistant":
+        last = run[-1]
+        tool_calls = getattr(last, "tool_calls", None) or []
+        return AIMessage(content=merged_content, tool_calls=list(tool_calls))
+    return None
 
 
 def format_vision_content(
@@ -114,7 +173,7 @@ def format_vision_content(
     """constructs multipart content blocks for vision messages.
 
     encodes image bytes as base64 data URI and pairs with text prompt
-    for use as ChatMessage content in vision-capable model requests.
+    for use as ``HumanMessage`` content in vision-capable model requests.
 
     :param image_bytes: raw image bytes to encode
     :ptype image_bytes: bytes
@@ -140,23 +199,23 @@ def format_vision_content(
 
 
 def preprocess_messages(
-    messages: list[ChatMessage],
+    messages: list[BaseMessage],
     capabilities: ModelCapabilities,
-) -> list[ChatMessage]:
+) -> list[BaseMessage]:
     """applies preprocessing pipeline based on model capabilities.
 
-    inspects capability flags and applies relevant transforms to message
-    list. currently supports alternating role enforcement for models that
-    require it.
+    inspects capability flags and applies relevant transforms to the
+    message list. currently supports alternating-role enforcement for
+    models that require it.
 
-    :param messages: list of chat messages to preprocess
-    :ptype messages: list[ChatMessage]
+    :param messages: list of LangChain messages to preprocess
+    :ptype messages: list[BaseMessage]
     :param capabilities: model capabilities determining which transforms apply
     :ptype capabilities: ModelCapabilities
     :return: preprocessed message list
-    :rtype: list[ChatMessage]
+    :rtype: list[BaseMessage]
     """
-    result: list[ChatMessage] = list(messages)
+    result: list[BaseMessage] = list(messages)
 
     if capabilities.requires_alternating_roles is True:
         result = enforce_alternating_roles(result)

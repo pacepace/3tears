@@ -70,11 +70,13 @@ _PACKAGE_MIGRATION_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "conversations" / "src" / "threetears" / "conversations" / "migrations",  # noqa: E501
 ]
 
-_DATETIME_TYPE_NAMES = frozenset({"DATETIME_TYPE", "DATETIMETZ_TYPE"})
+_DATETIME_TYPE_NAMES = frozenset({"DATETIMETZ_TYPE"})
 
 # expected SQL type tag per Column type name.
+# collections-task-05 eliminated DATETIME_TYPE / TIMESTAMP from the
+# platform; DATETIMETZ_TYPE / TIMESTAMPTZ is now the only datetime
+# column type 3tears recognises.
 _EXPECTED_SQL_TYPE: dict[str, str] = {
-    "DATETIME_TYPE": "TIMESTAMP",
     "DATETIMETZ_TYPE": "TIMESTAMPTZ",
 }
 

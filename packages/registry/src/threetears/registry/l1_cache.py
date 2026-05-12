@@ -80,13 +80,13 @@ pod_heartbeats_table = Table(
     "pod_heartbeats",
     REGISTRY_L1_METADATA,
     Column("pod_id", String(255), primary_key=True),
-    Column("date_last_heartbeat", TIMESTAMP, nullable=False),
+    Column("date_last_heartbeat", TIMESTAMP(timezone=True), nullable=False),
     Column("tools", JSONB, nullable=False),
     Column("tools_count", Integer, nullable=False),
     Column("status", String(32), nullable=False),
     Column("consecutive_misses", Integer, nullable=False),
-    Column("date_created", TIMESTAMP, nullable=False),
-    Column("date_updated", TIMESTAMP, nullable=False),
+    Column("date_created", TIMESTAMP(timezone=True), nullable=False),
+    Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
 )
 
 
@@ -115,8 +115,8 @@ namespaces_table = Table(
     Column("schema_name", String(100), nullable=True),
     Column("customer_id", UUID, nullable=True),
     Column("metadata", JSONB, nullable=True),
-    Column("date_created", TIMESTAMP, nullable=False),
-    Column("date_updated", TIMESTAMP, nullable=False),
+    Column("date_created", TIMESTAMP(timezone=True), nullable=False),
+    Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
 )
 
 groups_table = Table(
@@ -127,8 +127,8 @@ groups_table = Table(
     Column("customer_id", UUID, nullable=True),
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=True),
-    Column("date_created", TIMESTAMP, nullable=False),
-    Column("date_updated", TIMESTAMP, nullable=False),
+    Column("date_created", TIMESTAMP(timezone=True), nullable=False),
+    Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
 )
 
 group_members_table = Table(
@@ -139,7 +139,7 @@ group_members_table = Table(
     Column("member_type", String(10), nullable=False),
     Column("member_id", UUID, nullable=False),
     Column("customer_id", UUID, nullable=True),
-    Column("date_added", TIMESTAMP, nullable=False),
+    Column("date_added", TIMESTAMP(timezone=True), nullable=False),
     CheckConstraint("member_type IN ('user', 'agent')"),
 )
 
@@ -151,8 +151,8 @@ roles_table = Table(
     Column("description", Text, nullable=False),
     Column("permissions", JSONB, nullable=False),
     Column("is_builtin", Boolean, nullable=False),
-    Column("date_created", TIMESTAMP, nullable=False),
-    Column("date_updated", TIMESTAMP, nullable=False),
+    Column("date_created", TIMESTAMP(timezone=True), nullable=False),
+    Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
 )
 
 role_assignments_table = Table(
@@ -167,7 +167,7 @@ role_assignments_table = Table(
     Column("scope_namespace_type", String(255), nullable=True),
     Column("scope_customer_id", UUID, nullable=True),
     Column("granted_by", UUID, nullable=True),
-    Column("date_granted", TIMESTAMP, nullable=False),
+    Column("date_granted", TIMESTAMP(timezone=True), nullable=False),
     Column("managed_by", String(64), nullable=True),
 )
 

@@ -95,6 +95,15 @@ class _FakeNatsPyClient:
     async def close(self) -> None:
         self.is_closed = True
 
+    async def flush(self, timeout: float = 2.0) -> None:
+        self.flush_calls: list[float]
+        if not hasattr(self, "flush_calls"):
+            self.flush_calls = []
+        self.flush_calls.append(timeout)
+        flush_error = getattr(self, "flush_error", None)
+        if flush_error is not None:
+            raise flush_error
+
 
 class _Hello(BaseModel):
     """sample message type for typed publish/subscribe tests."""
@@ -469,3 +478,33 @@ async def test_connect_validates_namespace() -> None:
             client_name="x",
             nats_subject_namespace="",
         )
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_true_when_flush_succeeds() -> None:
+    """ping forwards to nats-py flush and returns True on success."""
+    client, fake = _make_client()
+    fake.is_connected = True
+    result = await client.ping(timeout=1.5)
+    assert result is True
+    assert fake.flush_calls == [1.5]
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_false_when_disconnected() -> None:
+    """ping short-circuits when the local socket reports disconnected."""
+    client, fake = _make_client()
+    fake.is_connected = False
+    result = await client.ping()
+    assert result is False
+    assert not hasattr(fake, "flush_calls") or fake.flush_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ping_returns_false_when_flush_raises() -> None:
+    """ping converts a flush exception (timeout / broker error) into False."""
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.flush_error = TimeoutError("server slow")
+    result = await client.ping(timeout=0.1)
+    assert result is False

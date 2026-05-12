@@ -1,0 +1,139 @@
+# exemptions for fake-protocol-parity enforcement.
+#
+# every entry MUST be preceded by `# rationale: <specific reason>`.
+# blanket phrases ("test fixture", "tests need this", "internal access",
+# "needed", "necessary", "temporary", "todo", "fixme", "required")
+# are rejected by the parser. each exemption names what the fake is
+# and why neither subclass declaration nor `# parity-with:` marker
+# fits its case.
+
+# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
+packages/agent/workspace/tests/_helpers/asyncpg_shims.py:43:FakeAsyncpgTransaction
+# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
+packages/agent/workspace/tests/_helpers/asyncpg_shims.py:55:FakeAsyncpgConnection
+# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
+packages/agent/workspace/tests/_helpers/asyncpg_shims.py:69:FakeAsyncpgAcquireCM
+# rationale: parity bases ARE the canonical shims that per-test workspace fakes subclass; they have no further parity to declare against asyncpg
+packages/agent/workspace/tests/_helpers/asyncpg_shims.py:77:FakeAsyncpgPool
+# rationale: parity base for workspace test subclasses; the production WorkspaceFileLease surface is a partial subset the bases canonicalize
+packages/agent/workspace/tests/_helpers/workspace_shims.py:43:FakeWorkspaceFileLease
+# rationale: parity base for workspace test subclasses; the production LeaseHandle async-CM surface is dunder-only with no public parity to assert
+packages/agent/workspace/tests/_helpers/workspace_shims.py:54:FakeWorkspaceFileLeaseHandle
+# rationale: parity base for workspace test subclasses; the production Workspace entity has many fields tests do not read, so the base is attribute-shape only
+packages/agent/workspace/tests/_helpers/workspace_shims.py:64:FakeWorkspaceEntity
+# rationale: parity base for workspace test subclasses; the production WorkspaceFile entity has many fields tests do not read, so the base is attribute-shape only
+packages/agent/workspace/tests/_helpers/workspace_shims.py:75:FakeWorkspaceFile
+# rationale: parity base for workspace test subclasses; the production WorkspaceCollection has many lookup methods tests never exercise so subset parity is intentional
+packages/agent/workspace/tests/_helpers/workspace_shims.py:85:FakeWorkspaceCollection
+# rationale: parity base for workspace test subclasses; the production WorkspaceFileCollection has many lookup methods tests never exercise so subset parity is intentional
+packages/agent/workspace/tests/_helpers/workspace_shims.py:95:FakeWorkspaceFileCollection
+# rationale: parity base for workspace test subclasses; the production WorkspaceFileVersionCollection has many lookup methods tests never exercise so subset parity is intentional
+packages/agent/workspace/tests/_helpers/workspace_shims.py:104:FakeWorkspaceFileVersionCollection
+# rationale: parity base for workspace test subclasses; production ToolContextManager is heavy and tests use only the pin-namespace surface
+packages/agent/workspace/tests/_helpers/workspace_shims.py:115:FakeWorkspaceContext
+# rationale: parity base for workspace test subclasses; production WorkspaceSandbox has path-resolution behaviour tests short-circuit to tmp_path
+packages/agent/workspace/tests/_helpers/workspace_shims.py:125:FakeWorkspaceSandbox
+
+# canonical shared fakes under packages/core/tests
+# rationale: subset shim for nats.js.KeyValue exposing only the get/put/create/update/delete surface KVLease + workspace tests exercise; full nats-py KeyValue carries history/watch/purge methods unrelated to KVLease
+packages/core/tests/unit/coordination/_fake_kv.py:32:FakeKvBucket
+# rationale: subset shim for nats.aio.Client exposing only the kv_bucket+publish surface workspace tests exercise; full nats-py Client carries dozens of unrelated methods
+packages/core/tests/unit/coordination/_fake_kv.py:154:FakeNatsClient
+# rationale: in-memory DataStore for migration runner tests; carries execute+query only because migration code never reads other store methods
+packages/core/tests/unit/data/migrations/_fake_store.py:14:FakeDataStore
+# rationale: yaml format-handler stand-in; FormatHandler Protocol surface is parse+dump only and the fake exercises both, but we exempt rather than mark because the test is the format-handler-registry test itself
+packages/core/tests/unit/test_format_handler_registry.py:23:_FakeYamlHandler
+# rationale: toml format-handler stand-in; same shape as yaml fake above and same exemption rationale
+packages/core/tests/unit/test_format_handler_registry.py:91:_FakeTomlHandler
+
+# langgraph chat-model caching tests
+# rationale: subset shim for langchain_anthropic.ChatAnthropic carrying _generate plus the cache_control attribute the cache-injection test inspects; full ChatAnthropic surface is the LangChain BaseChatModel hierarchy and out of scope
+packages/langgraph/tests/test_agent_node_caching.py:60:_FakeAnthropicChatModel
+# rationale: subset shim for langchain_openai.ChatOpenAI same shape and rationale as the anthropic fake above
+packages/langgraph/tests/test_agent_node_caching.py:132:_FakeOpenAIChatModel
+# rationale: deliberately-unrecognized chat model used to test the cache-injection fallback path; no production class to declare parity with
+packages/langgraph/tests/test_agent_node_caching.py:186:_FakeUnknownChatModel
+
+# nats unit tests
+# rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
+packages/nats/tests/unit/test_client.py:38:_FakeSubscription
+# rationale: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
+packages/nats/tests/unit/test_client.py:60:_FakeMsg
+# rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
+packages/nats/tests/unit/test_client.py:69:_FakeNatsPyClient
+# rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
+packages/nats/tests/unit/test_kv.py:20:_FakeEntry
+# rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
+packages/nats/tests/unit/test_kv.py:26:_FakeKv
+
+# mcp http transport
+# rationale: httpx.AsyncBaseTransport stand-in for unit-testing the MCP http client; full transport surface includes connection-pool primitives the tests do not exercise
+packages/mcp/tests/unit/test_http_client.py:17:_FakeTransport
+
+# audit + acl
+# rationale: NATS wrapper subset for the audit-publish unit test; the test only needs the publish surface, no full NatsClient parity to declare
+packages/agent/audit/tests/unit/test_publish.py:21:_FakeWrapper
+# rationale: combined in-memory store satisfying both MembershipLoader and GrantLoader Protocols; the parity walker supports one marker per class so we exempt with both target Protocols named here
+packages/agent/acl/tests/unit/_fake_loaders.py:62:FakeStore
+
+# registry rbac authorizer
+# rationale: subset shim for the post-discovery NamespaceCollection exposing only the get_by_name lookup the rbac authorizer evaluates against
+packages/registry/tests/unit/registry/test_rbac_authorizer.py:94:_FakeNamespaceCollection
+
+# channels (discord)
+# rationale: discord.Thread stand-in for unit testing the discord adapter routing logic; full discord.py Thread carries dozens of message/member/permission methods the tests do not exercise
+packages/channels/tests/unit/channels/test_discord.py:49:_FakeThread
+# rationale: discord.DMChannel stand-in for the same routing tests with the same out-of-scope discord.py surface
+packages/channels/tests/unit/channels/test_discord.py:53:_FakeDMChannel
+
+# conversations migration runner
+# rationale: in-memory DataStore for the conversations migration runner unit test; identical shape to core's _fake_store with the same execute+query subset
+packages/conversations/tests/unit/test_migrations.py:30:_FakeDataStore
+
+# agent/tools test-support classes
+# rationale: TearsTool subset shim covering the tool-server registration flow under unit test; full TearsTool surface includes mcp_schema/mcp_name/etc. but the test only exercises register+call
+packages/agent/tools/tests/unit/test_bootstrap.py:14:_FakeToolServer
+# rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
+packages/agent/tools/tests/unit/test_migrations.py:31:_FakeDataStore
+# rationale: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
+packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
+# rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
+packages/agent/tools/tests/unit/tools/test_tool_server_baseline_audit.py:37:_FakeNats
+# rationale: MediaStorage subset for one utility tools test that needs only get_media; the analyze_media + protocols tests have markers for the full surface
+packages/agent/tools/tests/unit/tools/test_utility_tools_mcp.py:18:_FakeMediaStorage
+# rationale: asyncpg Pool subset shim used by the agent-tools test_helpers module; the test_helpers shim returns rows from a dict the agent-tools collection tests share
+packages/agent/tools/tests/testing_utils.py:66:FakePool
+
+# workspace integration conftest fakes (already extensively migrated; remaining edge cases)
+# rationale: the integration-conftest store is the dispatch table for every workspace integration test; its execute+fetchrow surface is exactly what the integration tests need and does not align with any single production class
+packages/agent/workspace/tests/integration/conftest.py:141:_FakeStore
+# rationale: nats-py Msg shape for audit subscriber fixtures; minimal subject+data carrier matching the canonical NATS Msg the workspace audit consumer reads
+packages/agent/workspace/tests/integration/conftest.py:588:_FakeMsg
+# rationale: ToolContextManager subset for workspace integration tests; the integration suite exercises pin namespaces only and the production manager has additional context surfaces out of scope
+packages/agent/workspace/tests/integration/conftest.py:637:_FakeToolContextManager
+
+# workspace unit-test one-offs (each fake stands in for a single production interface and the test exercises a small subset)
+# rationale: NatsClient subset for the audit-publish unit covering bind in test_bind; the bind audit emitter calls publish so the test only models that surface
+packages/agent/workspace/tests/unit/test_bind.py:601:_FakeNats
+# rationale: NatsClient subset for the workspace-collection unit test exercising namespace-emit publish flows; the production NatsClient surface is huge and out of scope
+packages/agent/workspace/tests/unit/test_collections.py:135:_FakeNatsBus
+# rationale: NatsClient subset for the discovery-client unit test; production NatsClient is the full canonical wrapper but the discovery client only uses request_typed
+packages/agent/workspace/tests/unit/test_discovery_client.py:35:_FakeNatsClient
+# rationale: in-memory DataStore for the workspace migration runner unit test; identical shape to the core+conversations migration fakes
+packages/agent/workspace/tests/unit/test_migrations.py:24:_FakeDataStore
+# rationale: workspace-collection subset for the workspace tools factory test; the test exercises factory wiring only and does not call collection methods directly
+packages/agent/workspace/tests/unit/tools/test_factory.py:32:_FakeCollection
+# rationale: NamespaceCollection subset for the workspace tools factory test exposing only the get_by_name lookup the namespace-emit surface uses
+packages/agent/workspace/tests/unit/tools/test_factory.py:110:_FakeNamespaceCollection
+# rationale: workspace pin-namespace stand-in for test_helpers; the pin model is dataclass-shaped and the test reads only the pinned name attribute
+packages/agent/workspace/tests/unit/tools/test_helpers.py:95:_FakePin
+# rationale: NatsClient subset for the tool-audit-injection unit; the audit emitter publishes a single subject and the wrapper's full surface is out of scope
+packages/agent/workspace/tests/unit/tools/test_tool_audit_injection.py:61:_FakeNats
+# rationale: workspace discovery-client subset for the workspace_current tool unit; the discovery client carries multiple find methods and the test only exercises one
+packages/agent/workspace/tests/unit/tools/test_workspace_current.py:54:_FakeDiscoveryClient
+# rationale: workspace version-row stand-in for the workspace_history tool unit; the production VersionRow has more attributes than the test reads
+packages/agent/workspace/tests/unit/tools/test_workspace_history.py:66:_FakeVersionRow
+# rationale: workspace discovery-client subset for the workspace_list tool unit; same shape as workspace_current's discovery-client fake above
+packages/agent/workspace/tests/unit/tools/test_workspace_list.py:34:_FakeDiscoveryClient
+# rationale: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
+packages/agent/workspace/tests/unit/tools/test_workspace_use.py:35:_FakeCollection

@@ -121,6 +121,31 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
         if ctx_prompt:
             system_prompt = system_prompt + "\n\n" + ctx_prompt
 
+    # browser-supplied per-message locale info -- the channel adapter
+    # populated ``ChannelMessage.user_timezone`` / ``user_locale`` from
+    # its native source, the runtime stamped them on
+    # ``configurable["_user_timezone"]`` / ``["_user_locale"]``. surface
+    # them to the LLM as a non-persisted system-prompt suffix so the
+    # model can render timestamps in user-local time and pass the tz
+    # along to tools that accept one (e.g. ``current_date``) without
+    # asking the user. injected per-turn so a user who travels mid-
+    # conversation gets fresh values. NOT persisted into ``state.messages``
+    # because the value can change between turns; persisting would
+    # leave stale tz lines pinned in history.
+    user_tz = configurable.get("_user_timezone")
+    user_locale = configurable.get("_user_locale")
+    locale_lines: list[str] = []
+    if user_tz:
+        locale_lines.append(f"User's local timezone: {user_tz}")
+    if user_locale:
+        locale_lines.append(f"User's locale: {user_locale}")
+    if locale_lines:
+        locale_block = "\n".join(locale_lines)
+        if system_prompt:
+            system_prompt = system_prompt + "\n\n" + locale_block
+        else:
+            system_prompt = locale_block
+
     if system_prompt and (not messages or not isinstance(messages[0], SystemMessage)):
         messages.insert(0, SystemMessage(content=system_prompt))
 

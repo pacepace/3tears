@@ -125,6 +125,7 @@ class _FakeNamespaceCollection:
         return self._entity
 
 
+# parity-with: threetears.agent.acl.loader.MembershipLoader
 class _FakeMembershipLoader:
     """in-memory membership loader keyed on actor UUID."""
 
@@ -171,6 +172,7 @@ class _FakeMembershipLoader:
         return self._agents.get(agent_id, ())
 
 
+# parity-with: threetears.agent.acl.loader.GrantLoader
 class _FakeGrantLoader:
     """in-memory grant loader keyed on group UUID."""
 

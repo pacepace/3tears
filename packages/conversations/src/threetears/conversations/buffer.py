@@ -246,7 +246,7 @@ class ConversationWriteBuffer:
         """
         if self._stopped:
             return
-        normalized = at.astimezone(UTC).replace(tzinfo=None) if at.tzinfo else at
+        normalized = at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
         key = (agent_id, conversation_id)
         async with self._lock:
             delta = self._deltas.get(key)

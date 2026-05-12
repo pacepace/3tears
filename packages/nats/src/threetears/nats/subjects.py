@@ -207,6 +207,8 @@ class Subjects:
     - **namespace**: namespace catalog discovery
     - **datasource**: datasource query routing
     - **cache**: cross-pod cache invalidation
+    - **config epochs**: per-domain generation-stamped reload signals
+      (metallm capabilities, gateway catalog, MCP RBAC)
     - **deadletter**: catch-all for failed callbacks
     """
 
@@ -626,6 +628,87 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(path="threetears.cache.invalidate", kind="point")
+
+    # ------------------------------------------------------------------
+    # config epochs (cross-pod cache reload coherence)
+    # ------------------------------------------------------------------
+    #
+    # epoch subjects live in the publishing product's namespace --
+    # subscribers are always sibling pods of the same product, never
+    # cross-product, so the standard namespace-prefixed shape applies.
+    # multi-env deployments on a shared NATS cluster get partitioned by
+    # the prefix.
+    #
+    # the path shape is asymmetric between metallm and aibots-family
+    # builders BY DESIGN: metallm uses its own namespace
+    # (``metallm``) and is single-product per namespace, so its
+    # subjects have nothing after the namespace to disambiguate
+    # against (``metallm.capabilities.epoch``). the aibots namespace
+    # multiplexes hub / gateway / agents / tools / channels / MCP
+    # under one prefix, so aibots subjects always include a product
+    # segment as the second token (``aibots.gateway.catalog.epoch``).
+    # the asymmetry mirrors the underlying namespace shape; do not
+    # "normalize" it. consumed by :class:`threetears.epoch.client.
+    # EpochClient` and :class:`threetears.epoch.listener.EpochListener`.
+
+    @classmethod
+    def metallm_capabilities_epoch(cls) -> Subject:
+        """publish + subscribe subject for metallm capabilities-registry epoch.
+
+        bumped by metallm admin POST/PATCH on the ``models`` table
+        after the in-process ``register_model_capabilities_bulk(...)``
+        call. metallm sibling pods subscribe to reload their local
+        :class:`threetears.models.tracking.ModelCapabilities` registry
+        from the row in the next read. intended call site: metallm
+        process bound to namespace ``metallm``.
+
+        constraint (single-product-per-namespace): the path has no
+        product segment after ``{ns}`` because the metallm namespace
+        is single-product. if a second product ever joins the
+        metallm namespace, this subject must be renamed to
+        ``{ns}.metallm.capabilities.epoch`` and every subscriber
+        must roll forward together — a coordinated wire-protocol
+        break, not a hot-deploy change. the constraint is documented
+        here at the call site (not just in the section header) so
+        the implication is visible from the builder's own docstring.
+
+        :return: subject ``{ns}.capabilities.epoch`` (metallm-bound:
+            ``metallm.capabilities.epoch``)
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.capabilities.epoch", kind="point")
+
+    @classmethod
+    def gateway_catalog_epoch(cls) -> Subject:
+        """publish + subscribe subject for aibots-gateway catalog epoch.
+
+        bumped by hub admin endpoints that mutate ``gateway_models``,
+        ``gateway_providers``, or ``gateway_credit_rates``. gateway
+        sibling pods subscribe to re-run ``_load_catalog`` immediately
+        rather than waiting for the next ``cache_ttl_seconds`` tick.
+        intended call site: aibots-bound process (hub or gateway).
+
+        :return: subject ``{ns}.gateway.catalog.epoch`` (aibots-bound:
+            ``aibots.gateway.catalog.epoch``)
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.gateway.catalog.epoch", kind="point")
+
+    @classmethod
+    def mcp_rbac_epoch(cls) -> Subject:
+        """publish + subscribe subject for MCP per-tool RBAC epoch.
+
+        bumped by MCP admin endpoints that grant or revoke per-tool
+        access. MCP-host sibling pods subscribe to reload their RBAC
+        view from the row before the next tool-call authorization
+        check, so a revoked grant cannot ride a stale cache forward.
+        intended call site: aibots-bound MCP-host process.
+
+        :return: subject ``{ns}.mcp.rbac.epoch`` (aibots-bound:
+            ``aibots.mcp.rbac.epoch``)
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.mcp.rbac.epoch", kind="point")
 
     # ------------------------------------------------------------------
     # deadletter

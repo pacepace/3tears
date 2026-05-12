@@ -84,8 +84,8 @@ async def pg_pool(pg_url: str) -> AsyncIterator[asyncpg.Pool]:
                     item_id TEXT NOT NULL,
                     score INTEGER,
                     note TEXT,
-                    date_created TIMESTAMP,
-                    date_updated TIMESTAMP,
+                    date_created TIMESTAMPTZ,
+                    date_updated TIMESTAMPTZ,
                     PRIMARY KEY (conversation_id, item_id)
                 )
                 """
@@ -106,8 +106,8 @@ def _metadata() -> MetaData:
         Column("item_id", String(255), primary_key=True),
         Column("score", Integer),
         Column("note", String(255)),
-        Column("date_created", DateTime),
-        Column("date_updated", DateTime),
+        Column("date_created", DateTime(timezone=True)),
+        Column("date_updated", DateTime(timezone=True)),
     )
     return md
 

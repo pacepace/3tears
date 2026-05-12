@@ -31,6 +31,9 @@ otel = [
     "opentelemetry-sdk>=1.28",
     "opentelemetry-exporter-otlp>=1.28",
 ]
+asgi = [
+    "uuid-utils",
+]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
