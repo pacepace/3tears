@@ -225,8 +225,6 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
                 "calling load_all_grants",
             )
         rows = await self.l3_pool.fetch(
-            "SELECT grant_id, principal_type, principal_id, "
-            "tool_name, permission, date_created "
-            "FROM mcp_tool_grants",
+            "SELECT grant_id, principal_type, principal_id, tool_name, permission, date_created FROM mcp_tool_grants",
         )
         return [dict(row) for row in rows]

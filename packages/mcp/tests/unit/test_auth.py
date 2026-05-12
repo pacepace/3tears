@@ -145,9 +145,11 @@ class TestLocalGrantAuthorizer:
     async def test_principal_grant_allows(self) -> None:
         """direct principal_id+permission grant authorizes the call."""
         principal_id = uuid4()
-        loader = AsyncMock(return_value=[
-            {"principal_id": principal_id, "permission": "metallm.conv.read"},
-        ])
+        loader = AsyncMock(
+            return_value=[
+                {"principal_id": principal_id, "permission": "metallm.conv.read"},
+            ]
+        )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
@@ -160,9 +162,11 @@ class TestLocalGrantAuthorizer:
     async def test_group_grant_allows_via_membership(self) -> None:
         """grant on a group_id allows when identity carries that group."""
         group_id = uuid4()
-        loader = AsyncMock(return_value=[
-            {"principal_id": group_id, "permission": "hub.audit.read"},
-        ])
+        loader = AsyncMock(
+            return_value=[
+                {"principal_id": group_id, "permission": "hub.audit.read"},
+            ]
+        )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(
@@ -178,9 +182,11 @@ class TestLocalGrantAuthorizer:
     async def test_role_grant_allows_via_assignment(self) -> None:
         """grant on a role_id allows when identity carries that role."""
         role_id = uuid4()
-        loader = AsyncMock(return_value=[
-            {"principal_id": role_id, "permission": "hub.audit.read"},
-        ])
+        loader = AsyncMock(
+            return_value=[
+                {"principal_id": role_id, "permission": "hub.audit.read"},
+            ]
+        )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(
@@ -207,6 +213,7 @@ class TestLocalGrantAuthorizer:
         try:
             listener.subscribe.assert_awaited_once()
             from threetears.nats import Subjects
+
             called_subject = listener.subscribe.await_args.args[0]
             assert called_subject == Subjects.mcp_rbac_epoch()
         finally:
@@ -216,10 +223,12 @@ class TestLocalGrantAuthorizer:
     async def test_epoch_bump_reloads_cache(self) -> None:
         """on rbac bump, reload pulls current grants and replaces cache."""
         principal_id = uuid4()
-        loader = AsyncMock(side_effect=[
-            [],
-            [{"principal_id": principal_id, "permission": "metallm.conv.read"}],
-        ])
+        loader = AsyncMock(
+            side_effect=[
+                [],
+                [{"principal_id": principal_id, "permission": "metallm.conv.read"}],
+            ]
+        )
         authz, captured = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
@@ -233,10 +242,12 @@ class TestLocalGrantAuthorizer:
     async def test_loader_failure_keeps_prior_cache(self) -> None:
         """transient L3 hiccup logs + leaves prior cache in place."""
         principal_id = uuid4()
-        loader = AsyncMock(side_effect=[
-            [{"principal_id": principal_id, "permission": "hub.audit.read"}],
-            RuntimeError("L3 down"),
-        ])
+        loader = AsyncMock(
+            side_effect=[
+                [{"principal_id": principal_id, "permission": "hub.audit.read"}],
+                RuntimeError("L3 down"),
+            ]
+        )
         authz, captured = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
@@ -250,9 +261,11 @@ class TestLocalGrantAuthorizer:
     async def test_uuid_string_in_loader_row_is_normalised(self) -> None:
         """rows with stringified UUIDs (e.g. asyncpg .Record edge) match."""
         principal_id = uuid4()
-        loader = AsyncMock(return_value=[
-            {"principal_id": str(principal_id), "permission": "metallm.conv.read"},
-        ])
+        loader = AsyncMock(
+            return_value=[
+                {"principal_id": str(principal_id), "permission": "metallm.conv.read"},
+            ]
+        )
         authz, _ = await _build_started_authorizer(loader=loader)
         try:
             identity = Identity(principal_type="user", principal_id=principal_id)
@@ -319,6 +332,7 @@ class TestLocalGrantAuthorizerCatchupTick:
             assert listener.catch_up.await_count >= 1
             # the tick uses Subjects.mcp_rbac_epoch as the subject.
             from threetears.nats import Subjects
+
             for call in listener.catch_up.await_args_list:
                 assert call.args[0] == Subjects.mcp_rbac_epoch()
         finally:
@@ -336,12 +350,14 @@ class TestLocalGrantAuthorizerCatchupTick:
         loader = AsyncMock(return_value=[])
         client, listener, _ = _make_listener_capturing_subscribe()
         # first catch_up raises; subsequent ones return 0.
-        listener.catch_up = AsyncMock(side_effect=[
-            RuntimeError("transient"),
-            0,
-            0,
-            0,
-        ])
+        listener.catch_up = AsyncMock(
+            side_effect=[
+                RuntimeError("transient"),
+                0,
+                0,
+                0,
+            ]
+        )
         authz = LocalGrantAuthorizer(
             grant_loader=loader,
             epoch_client=client,
@@ -374,8 +390,7 @@ class TestLocalGrantAuthorizerAdminLogging:
                 # caplog accumulates records; one of them carries the ids.
                 joined = " ".join(rec.message for rec in caplog.records)
                 assert str(admin_id) in joined or any(
-                    str(admin_id) in str(rec.__dict__.get("extra_data", ""))
-                    for rec in caplog.records
+                    str(admin_id) in str(rec.__dict__.get("extra_data", "")) for rec in caplog.records
                 )
             finally:
                 await authz.stop()

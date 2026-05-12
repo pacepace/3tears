@@ -186,9 +186,7 @@ def _resolve_uv_workspace_members(
     exclude_entries = workspace.get("exclude")
     if exclude_entries is not None:
         if not isinstance(exclude_entries, list):
-            raise PyprojectError(
-                f"{pyproject_path}: [tool.uv.workspace].exclude must be a list of strings"
-            )
+            raise PyprojectError(f"{pyproject_path}: [tool.uv.workspace].exclude must be a list of strings")
         for entry in exclude_entries:
             if not isinstance(entry, str):
                 raise PyprojectError(

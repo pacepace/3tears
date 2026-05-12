@@ -116,7 +116,10 @@ class CorrelationMiddleware:
         self._app = app
 
     async def __call__(
-        self, scope: Scope, receive: Receive, send: Send,
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
     ) -> None:
         """Process request through middleware.
 
@@ -210,7 +213,10 @@ class OTelMiddleware:
         self._app = app
 
     async def __call__(
-        self, scope: Scope, receive: Receive, send: Send,
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
     ) -> None:
         """Wrap WebSocket scope in a root SERVER span; pass others through.
 
@@ -244,7 +250,8 @@ class OTelMiddleware:
 
         tracer = trace.get_tracer("threetears.observe.middleware")
         with tracer.start_as_current_span(
-            f"WS {path}", kind=SpanKind.SERVER,
+            f"WS {path}",
+            kind=SpanKind.SERVER,
         ) as span:
             span.set_attribute("http.route", path)
             try:

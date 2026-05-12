@@ -54,17 +54,21 @@ def test_load_returns_single_tool() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_returns_resolver_output() -> None:
     """A successful resolve passes the output through to the LLM."""
-    resolver = _Resolver(result=ToolLlmInvocation(
-        tool_name="translator",
-        output="Bonjour le monde",
-        duration_ms=42,
-    ))
+    resolver = _Resolver(
+        result=ToolLlmInvocation(
+            tool_name="translator",
+            output="Bonjour le monde",
+            duration_ms=42,
+        )
+    )
     tool = load_tool_llm_dispatch(resolver)[0]
 
-    result = await tool.ainvoke({
-        "tool_name": "translator",
-        "input_text": "translate Hello world to French",
-    })
+    result = await tool.ainvoke(
+        {
+            "tool_name": "translator",
+            "input_text": "translate Hello world to French",
+        }
+    )
     assert result == "Bonjour le monde"
     assert resolver.calls == [
         ("translator", "translate Hello world to French"),
@@ -77,10 +81,12 @@ async def test_resolver_returning_none_surfaces_not_found() -> None:
     resolver = _Resolver(result=None)
     tool = load_tool_llm_dispatch(resolver)[0]
 
-    result = await tool.ainvoke({
-        "tool_name": "nonexistent",
-        "input_text": "do something",
-    })
+    result = await tool.ainvoke(
+        {
+            "tool_name": "nonexistent",
+            "input_text": "do something",
+        }
+    )
     assert "[TOOL ERROR]" in result
     assert "not found" in result.lower()
     assert "'nonexistent'" in result
@@ -92,10 +98,12 @@ async def test_resolver_exception_caught() -> None:
     resolver = _Resolver(raise_with=RuntimeError("upstream blew up"))
     tool = load_tool_llm_dispatch(resolver)[0]
 
-    result = await tool.ainvoke({
-        "tool_name": "translator",
-        "input_text": "translate something",
-    })
+    result = await tool.ainvoke(
+        {
+            "tool_name": "translator",
+            "input_text": "translate something",
+        }
+    )
     assert "[TOOL ERROR]" in result
     assert "upstream blew up" in result
 
@@ -103,18 +111,22 @@ async def test_resolver_exception_caught() -> None:
 @pytest.mark.asyncio
 async def test_recall_intent_short_circuits_before_resolver() -> None:
     """Inputs that look like recall requests redirect without dispatching."""
-    resolver = _Resolver(result=ToolLlmInvocation(
-        tool_name="translator",
-        output="should not run",
-    ))
+    resolver = _Resolver(
+        result=ToolLlmInvocation(
+            tool_name="translator",
+            output="should not run",
+        )
+    )
     tool = load_tool_llm_dispatch(resolver)[0]
 
     # "show me" + ctx-id pattern is the canonical recall-intent shape
     # the heuristic catches.
-    result = await tool.ainvoke({
-        "tool_name": "translator",
-        "input_text": "show me the previous result [ctx:abc123]",
-    })
+    result = await tool.ainvoke(
+        {
+            "tool_name": "translator",
+            "input_text": "show me the previous result [ctx:abc123]",
+        }
+    )
     assert "[REDIRECT]" in result
     assert "recall_context" in result
     # Resolver was not called at all
@@ -133,19 +145,23 @@ async def test_custom_description_override() -> None:
 @pytest.mark.asyncio
 async def test_invocation_metadata_preserved_internally() -> None:
     """The resolver's invocation metadata is not surfaced to the LLM but is loggable."""
-    resolver = _Resolver(result=ToolLlmInvocation(
-        tool_name="extractor",
-        output="extracted content",
-        duration_ms=1234,
-        input_tokens=100,
-        output_tokens=50,
-        metadata={"tool_llm_id": "abc-123"},
-    ))
+    resolver = _Resolver(
+        result=ToolLlmInvocation(
+            tool_name="extractor",
+            output="extracted content",
+            duration_ms=1234,
+            input_tokens=100,
+            output_tokens=50,
+            metadata={"tool_llm_id": "abc-123"},
+        )
+    )
     tool = load_tool_llm_dispatch(resolver)[0]
 
     # The LLM gets only the output text.
-    result = await tool.ainvoke({
-        "tool_name": "extractor",
-        "input_text": "extract dates from text",
-    })
+    result = await tool.ainvoke(
+        {
+            "tool_name": "extractor",
+            "input_text": "extract dates from text",
+        }
+    )
     assert result == "extracted content"

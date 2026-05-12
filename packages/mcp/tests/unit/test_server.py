@@ -55,8 +55,10 @@ def _make_tool(
 ) -> McpTool:
     """build a sample McpTool descriptor."""
     if handler is None:
+
         async def _h(**kwargs: Any) -> str:  # noqa: ARG001
             return "default-result"
+
         handler = _h
     return McpTool(
         name=name,
@@ -88,6 +90,7 @@ class TestDispatchHappyPath:
     @pytest.mark.asyncio
     async def test_allowed_dispatch_returns_text_content_list(self) -> None:
         """authorizer-allowed call returns list[TextContent] (SDK wraps isError=False)."""
+
         async def handler(**kwargs: Any) -> str:
             return f"called with {kwargs}"
 
@@ -109,6 +112,7 @@ class TestDispatchHappyPath:
     @pytest.mark.asyncio
     async def test_dict_handler_result_is_json_serialised(self) -> None:
         """dict result is rendered as pretty JSON in the text content."""
+
         async def handler(**_kwargs: Any) -> dict[str, Any]:
             return {"status": "ok", "count": 3}
 
@@ -231,6 +235,7 @@ class TestDispatchErrorPaths:
     @pytest.mark.asyncio
     async def test_handler_exception_returns_handler_error(self) -> None:
         """handler raise -> CallToolResult(isError=True, code=HANDLER_ERROR), no traceback leaked."""
+
         async def handler(**_kwargs: Any) -> str:
             raise ValueError("kaboom")
 

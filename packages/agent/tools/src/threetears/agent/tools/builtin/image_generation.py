@@ -77,17 +77,11 @@ class ImageGenerationInput(BaseModel):
     )
     model: str | None = Field(
         default=None,
-        description=(
-            "Display name of the image-generation model to use. If omitted, "
-            "the default model is used."
-        ),
+        description=("Display name of the image-generation model to use. If omitted, the default model is used."),
     )
     style: str | None = Field(
         default=None,
-        description=(
-            "Optional style hint for the image (e.g. 'natural', 'vivid', "
-            "'anime', 'photorealistic')"
-        ),
+        description=("Optional style hint for the image (e.g. 'natural', 'vivid', 'anime', 'photorealistic')"),
     )
     use_attached_image: bool = Field(
         default=False,
@@ -192,8 +186,7 @@ def create_image_generation_tool(
     """
     if default_model not in backends:
         raise ValueError(
-            f"default_model {default_model!r} is not registered in backends; "
-            f"available: {sorted(backends.keys())!r}",
+            f"default_model {default_model!r} is not registered in backends; available: {sorted(backends.keys())!r}",
         )
 
     async def _generate(
@@ -209,18 +202,19 @@ def create_image_generation_tool(
             return tool_error(
                 "image_generation",
                 "resolve model",
-                f"Unknown model {selected_model!r}. Available models: "
-                f"{', '.join(sorted(backends.keys()))}",
+                f"Unknown model {selected_model!r}. Available models: {', '.join(sorted(backends.keys()))}",
             )
 
         _log.debug(
             "image_generation invoked",
-            extra={"extra_data": {
-                "prompt_preview": prompt[:100],
-                "model": selected_model,
-                "style": style,
-                "use_attached_image": use_attached_image,
-            }},
+            extra={
+                "extra_data": {
+                    "prompt_preview": prompt[:100],
+                    "model": selected_model,
+                    "style": style,
+                    "use_attached_image": use_attached_image,
+                }
+            },
         )
 
         # -- img2img source loading ----------------------------------------
@@ -239,8 +233,7 @@ def create_image_generation_tool(
                 return tool_error(
                     "image_generation",
                     "img2img",
-                    "No downloadable source image found. Ask the user to "
-                    "attach an image first.",
+                    "No downloadable source image found. Ask the user to attach an image first.",
                 )
             source_image, source_mime_type = loaded
 
@@ -255,10 +248,12 @@ def create_image_generation_tool(
         except Exception as exc:
             _log.error(
                 "image_generation backend failed",
-                extra={"extra_data": {
-                    "model": selected_model,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "model": selected_model,
+                        "error": str(exc),
+                    }
+                },
             )
             return tool_error("image_generation", "generate", str(exc))
 
@@ -273,10 +268,12 @@ def create_image_generation_tool(
         except Exception as exc:
             _log.error(
                 "image_generation persistence failed",
-                extra={"extra_data": {
-                    "model": selected_model,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "model": selected_model,
+                        "error": str(exc),
+                    }
+                },
             )
             return tool_error("image_generation", "save", str(exc))
 

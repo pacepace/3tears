@@ -358,9 +358,7 @@ class TestCapabilityOverride:
     def test_override_does_not_mutate_registry_entry(self) -> None:
         """registering an override leaves the underlying registry entry untouched."""
         baseline = self._registered("test-immutable")
-        register_capability_override(
-            "test-immutable", CapabilityOverride(context_window=500)
-        )
+        register_capability_override("test-immutable", CapabilityOverride(context_window=500))
         # canonical entry, accessed via list_capabilities (also override-aware),
         # confirms the registry still holds the original; we re-fetch via the
         # override-aware getter and check that the registered baseline object
@@ -370,9 +368,7 @@ class TestCapabilityOverride:
     def test_unregister_restores_registry_value(self) -> None:
         """after unregister_capability_override the registry value returns."""
         self._registered("test-unregister")
-        register_capability_override(
-            "test-unregister", CapabilityOverride(context_window=500)
-        )
+        register_capability_override("test-unregister", CapabilityOverride(context_window=500))
         unregister_capability_override("test-unregister")
         result = get_capabilities("test-unregister")
         assert result is not None
@@ -417,21 +413,15 @@ class TestCapabilityOverride:
         """unknown model_id returns None even when an override exists for it
         (override layer cannot synthesise capabilities out of thin air).
         """
-        register_capability_override(
-            "never-registered", CapabilityOverride(context_window=500)
-        )
+        register_capability_override("never-registered", CapabilityOverride(context_window=500))
         assert get_capabilities("never-registered") is None
 
     def test_clear_capability_overrides_drops_all(self) -> None:
         """clear_capability_overrides removes every registered override."""
         self._registered("test-clear-a")
         self._registered("test-clear-b")
-        register_capability_override(
-            "test-clear-a", CapabilityOverride(context_window=500)
-        )
-        register_capability_override(
-            "test-clear-b", CapabilityOverride(context_window=600)
-        )
+        register_capability_override("test-clear-a", CapabilityOverride(context_window=500))
+        register_capability_override("test-clear-b", CapabilityOverride(context_window=600))
         clear_capability_overrides()
         a = get_capabilities("test-clear-a")
         b = get_capabilities("test-clear-b")
@@ -507,9 +497,7 @@ class TestCapabilityOverride:
         """list_capabilities returns override-applied snapshots."""
         self._registered("test-list-a")
         self._registered("test-list-b")
-        register_capability_override(
-            "test-list-a", CapabilityOverride(context_window=500)
-        )
+        register_capability_override("test-list-a", CapabilityOverride(context_window=500))
         snapshot = list_capabilities()
         assert snapshot["test-list-a"].context_window == 500
         assert snapshot["test-list-b"].context_window == 200_000

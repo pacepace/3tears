@@ -55,8 +55,7 @@ class TestDiscovery:
     def test_skips_non_fake_classes(self, tmp_path: Path) -> None:
         _write(
             tmp_path / "test_thing.py",
-            "class RealThing:\n    pass\n\n"
-            "class StubThing:\n    pass\n",
+            "class RealThing:\n    pass\n\nclass StubThing:\n    pass\n",
         )
         fakes = find_fakes_in_tree(tmp_path)
         assert fakes == []
@@ -64,9 +63,7 @@ class TestDiscovery:
     def test_collects_inner_classes(self, tmp_path: Path) -> None:
         _write(
             tmp_path / "test_thing.py",
-            "class Outer:\n"
-            "    class _FakeInner:\n"
-            "        pass\n",
+            "class Outer:\n    class _FakeInner:\n        pass\n",
         )
         fakes = find_fakes_in_tree(tmp_path)
         assert [f.name for f in fakes] == ["_FakeInner"]
@@ -162,9 +159,7 @@ class TestMarkerComment:
     def test_unimportable_marker_target(self, tmp_path: Path) -> None:
         _write(
             tmp_path / "test_thing.py",
-            "# parity-with: nonexistent.module.GhostClass\n"
-            "class _FakeGhost:\n"
-            "    pass\n",
+            "# parity-with: nonexistent.module.GhostClass\nclass _FakeGhost:\n    pass\n",
         )
         violations = fake_parity_violations((tmp_path,), tmp_path)
         assert len(violations) == 1
@@ -175,11 +170,7 @@ class TestMarkerComment:
         # marker should still be readable across decorator lines
         _write(
             tmp_path / "test_thing.py",
-            "import dataclasses\n"
-            "# parity-with: pathlib.PurePath\n"
-            "@dataclasses.dataclass\n"
-            "class _FakePath:\n"
-            "    pass\n",
+            "import dataclasses\n# parity-with: pathlib.PurePath\n@dataclasses.dataclass\nclass _FakePath:\n    pass\n",
         )
         fakes = find_fakes_in_tree(tmp_path)
         assert len(fakes) == 1
@@ -226,10 +217,7 @@ class TestMethodSurface:
         target = _install_production_fixture(tmp_path)
         _write(
             tmp_path / "test_thing.py",
-            f"# parity-with: {target}\n"
-            "class _FakeDouble:\n"
-            "    def required_method(self, alpha, beta):\n"
-            "        pass\n",
+            f"# parity-with: {target}\nclass _FakeDouble:\n    def required_method(self, alpha, beta):\n        pass\n",
         )
         # `optional_method` is missing on the fake; should violate
         violations = fake_parity_violations((tmp_path,), tmp_path)

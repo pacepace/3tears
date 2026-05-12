@@ -100,7 +100,7 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
         try:
             source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
-        except (OSError, SyntaxError):
+        except OSError, SyntaxError:
             continue
         source_lines = source.splitlines()
         for node in ast.walk(tree):
@@ -182,7 +182,7 @@ def _read_marker(source_lines: list[str], class_lineno: int) -> str | None:
         if line.startswith("@"):
             continue
         if line.startswith(_PARITY_MARKER_PREFIX):
-            return line[len(_PARITY_MARKER_PREFIX):].strip() or None
+            return line[len(_PARITY_MARKER_PREFIX) :].strip() or None
         return None
     return None
 
@@ -393,7 +393,7 @@ def _public_methods(
             continue
         try:
             methods[name] = inspect.signature(member)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return methods
 

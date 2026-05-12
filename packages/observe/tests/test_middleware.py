@@ -385,15 +385,13 @@ class TestFrameworkAgnosticContract:
                 for alias in node.names:
                     for banned in banned_prefixes:
                         assert not alias.name.startswith(banned), (
-                            f"middleware.py imports {alias.name}; "
-                            f"observe must remain framework-agnostic."
+                            f"middleware.py imports {alias.name}; observe must remain framework-agnostic."
                         )
             elif isinstance(node, ast.ImportFrom):
                 if node.module is not None:
                     for banned in banned_prefixes:
                         assert not node.module.startswith(banned), (
-                            f"middleware.py imports from {node.module}; "
-                            f"observe must remain framework-agnostic."
+                            f"middleware.py imports from {node.module}; observe must remain framework-agnostic."
                         )
 
     def test_no_starlette_import(self) -> None:

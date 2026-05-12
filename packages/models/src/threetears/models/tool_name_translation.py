@@ -202,9 +202,12 @@ def build_name_translation(
             wire_tools.append(tool)
             continue
         mangled = mangle_tool_name(canonical)
-        wire_tools.append(NameMangledToolProxy(
-            delegate=tool, mangled_name=mangled,
-        ))
+        wire_tools.append(
+            NameMangledToolProxy(
+                delegate=tool,
+                mangled_name=mangled,
+            )
+        )
         reverse_map[mangled] = canonical
     return wire_tools, reverse_map
 

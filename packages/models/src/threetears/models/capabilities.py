@@ -233,9 +233,7 @@ def register_capabilities(model_id: str, capabilities: ModelCapabilities) -> Non
         _REGISTRY[model_id] = capabilities
 
 
-def register_capability_override(
-    model_id: str, override: CapabilityOverride
-) -> None:
+def register_capability_override(model_id: str, override: CapabilityOverride) -> None:
     """register a deployment-scoped override that layers on top of ``model_id``'s capabilities.
 
     every field set on ``override`` (i.e. fields the caller passed

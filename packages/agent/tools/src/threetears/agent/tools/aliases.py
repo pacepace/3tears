@@ -54,18 +54,22 @@ __all__ = [
 # under the same names via the registry, so a pattern like ``calculator``
 # matches whether the tool runs in-process or in a separate pod.
 
-STANDARD_TOOLS: frozenset[str] = frozenset({
-    "threetears.calculator",
-    "threetears.current_date",
-    "threetears.dictionary",
-    "threetears.unit_converter",
-    "threetears.timezone_converter",
-})
+STANDARD_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.calculator",
+        "threetears.current_date",
+        "threetears.dictionary",
+        "threetears.unit_converter",
+        "threetears.timezone_converter",
+    }
+)
 
-WEB_TOOLS: frozenset[str] = frozenset({
-    "threetears.web_search",
-    "threetears.web_fetch",
-})
+WEB_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.web_search",
+        "threetears.web_fetch",
+    }
+)
 
 # media tool names all use the uniform dotted ``threetears.X`` form:
 # * ``threetears.analyze_media`` -- TearsTool subclass under ``builtin/``
@@ -85,12 +89,14 @@ WEB_TOOLS: frozenset[str] = frozenset({
 # back on the response so application code never sees the
 # underscored form. the alias matches whatever name actually
 # appears in the registry.
-MEDIA_TOOLS: frozenset[str] = frozenset({
-    "threetears.analyze_media",
-    "threetears.parse_document",
-    "threetears.image_prep",
-    "threetears.image_generation",
-})
+MEDIA_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.analyze_media",
+        "threetears.parse_document",
+        "threetears.image_prep",
+        "threetears.image_generation",
+    }
+)
 
 # workspace tool names match the keys
 # :func:`threetears.agent.workspace.tool_factories.build_workspace_tools`
@@ -98,37 +104,41 @@ MEDIA_TOOLS: frozenset[str] = frozenset({
 # the wire but the short form (without the namespace prefix) is what
 # selector matchers compare against.
 
-WORKSPACE_FS_TOOLS: frozenset[str] = frozenset({
-    "threetears.workspace.fs_read",
-    "threetears.workspace.fs_write",
-    "threetears.workspace.fs_edit",
-    "threetears.workspace.fs_list",
-})
-
-WORKSPACE_DOC_TOOLS: frozenset[str] = frozenset({
-    "threetears.workspace.doc_get",
-    "threetears.workspace.doc_set",
-    "threetears.workspace.doc_merge",
-})
-
-WORKSPACE_LIFECYCLE_TOOLS: frozenset[str] = frozenset({
-    "threetears.workspace.create",
-    "threetears.workspace.delete",
-    "threetears.workspace.use",
-    "threetears.workspace.list",
-    "threetears.workspace.current",
-    "threetears.workspace.refresh_from_disk",
-    "threetears.workspace.flush_to_disk",
-    "threetears.workspace.checkpoint",
-    "threetears.workspace.history",
-    "threetears.workspace.diff",
-    "threetears.workspace.reset",
-    "threetears.workspace.rollback_to",
-})
-
-WORKSPACE_TOOLS: frozenset[str] = (
-    WORKSPACE_FS_TOOLS | WORKSPACE_DOC_TOOLS | WORKSPACE_LIFECYCLE_TOOLS
+WORKSPACE_FS_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.workspace.fs_read",
+        "threetears.workspace.fs_write",
+        "threetears.workspace.fs_edit",
+        "threetears.workspace.fs_list",
+    }
 )
+
+WORKSPACE_DOC_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.workspace.doc_get",
+        "threetears.workspace.doc_set",
+        "threetears.workspace.doc_merge",
+    }
+)
+
+WORKSPACE_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
+    {
+        "threetears.workspace.create",
+        "threetears.workspace.delete",
+        "threetears.workspace.use",
+        "threetears.workspace.list",
+        "threetears.workspace.current",
+        "threetears.workspace.refresh_from_disk",
+        "threetears.workspace.flush_to_disk",
+        "threetears.workspace.checkpoint",
+        "threetears.workspace.history",
+        "threetears.workspace.diff",
+        "threetears.workspace.reset",
+        "threetears.workspace.rollback_to",
+    }
+)
+
+WORKSPACE_TOOLS: frozenset[str] = WORKSPACE_FS_TOOLS | WORKSPACE_DOC_TOOLS | WORKSPACE_LIFECYCLE_TOOLS
 
 
 # group alias -> set of concrete tool names. keys are the bare words

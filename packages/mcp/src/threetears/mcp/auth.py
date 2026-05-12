@@ -174,8 +174,7 @@ class EnvVarIdentityProvider:
             raw = os.environ.get(self._env_var)
             if not raw:
                 raise RuntimeError(
-                    f"identity provider requires {self._env_var} "
-                    "or an explicit principal_id at construction",
+                    f"identity provider requires {self._env_var} or an explicit principal_id at construction",
                 )
             try:
                 principal_id = UUID(raw)
@@ -334,8 +333,7 @@ class LocalGrantAuthorizer:
         """
         if (epoch_client is None) != (epoch_listener is None):
             raise ValueError(
-                "epoch_client and epoch_listener must be provided "
-                "together; passing exactly one is a usage error",
+                "epoch_client and epoch_listener must be provided together; passing exactly one is a usage error",
             )
         self._grant_loader = grant_loader
         self._epoch_client = epoch_client
@@ -380,12 +378,9 @@ class LocalGrantAuthorizer:
         if epoch_mode:
             log_extras["catchup_interval_seconds"] = self._catchup_interval_seconds
         if self._admin_principal_ids:
-            log_extras["admin_principal_ids"] = sorted(
-                str(pid) for pid in self._admin_principal_ids
-            )
+            log_extras["admin_principal_ids"] = sorted(str(pid) for pid in self._admin_principal_ids)
             log.info(
-                "MCP authorizer started; admin principals auto-granted in memory "
-                "(not persisted to mcp_tool_grants)",
+                "MCP authorizer started; admin principals auto-granted in memory (not persisted to mcp_tool_grants)",
                 extra={"extra_data": log_extras},
             )
         else:

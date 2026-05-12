@@ -186,10 +186,12 @@ def load_tool_llm_dispatch(
         if is_recall_intent(input_text):
             _log.info(
                 "invoke_tool_llm: recall intent detected, redirecting",
-                extra={"extra_data": {
-                    "tool_name": tool_name,
-                    "input_preview": input_text[:120],
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "input_preview": input_text[:120],
+                    }
+                },
             )
             return _RECALL_REDIRECT
 
@@ -198,26 +200,27 @@ def load_tool_llm_dispatch(
         except Exception as exc:
             _log.warning(
                 "invoke_tool_llm: resolver raised",
-                extra={"extra_data": {
-                    "tool_name": tool_name,
-                    "error": str(exc),
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "error": str(exc),
+                    }
+                },
             )
             return f"[TOOL ERROR] invoke_tool_llm: {exc}"
 
         if result is None:
-            return (
-                f"[TOOL ERROR] invoke_tool_llm: Tool-LLM {tool_name!r} "
-                "not found or not enabled."
-            )
+            return f"[TOOL ERROR] invoke_tool_llm: Tool-LLM {tool_name!r} not found or not enabled."
 
         _log.info(
             "invoke_tool_llm completed",
-            extra={"extra_data": {
-                "tool_name": result.tool_name,
-                "duration_ms": result.duration_ms,
-                "output_length": len(result.output),
-            }},
+            extra={
+                "extra_data": {
+                    "tool_name": result.tool_name,
+                    "duration_ms": result.duration_ms,
+                    "output_length": len(result.output),
+                }
+            },
         )
         return result.output
 

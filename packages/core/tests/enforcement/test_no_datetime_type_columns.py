@@ -106,7 +106,7 @@ def _collect_violations(path: Path) -> list[tuple[Path, int]]:
     """return ``[(path, lineno), ...]`` for every Column(...DATETIME_TYPE) call."""
     try:
         source = path.read_text()
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return []
     try:
         tree = ast.parse(source, filename=str(path))
@@ -128,10 +128,7 @@ def test_no_datetime_type_in_column_declarations(src_root: Path) -> None:
     for source_file in _walk_source_files(src_root):
         violations.extend(_collect_violations(source_file))
     if violations:
-        formatted = "\n".join(
-            f"  {path.relative_to(_REPO_ROOT)}:{lineno}"
-            for path, lineno in violations
-        )
+        formatted = "\n".join(f"  {path.relative_to(_REPO_ROOT)}:{lineno}" for path, lineno in violations)
         pytest.fail(
             "DATETIME_TYPE was eliminated by collections-task-05; use "
             "DATETIMETZ_TYPE instead. The following Column declarations "

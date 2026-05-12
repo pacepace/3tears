@@ -89,10 +89,7 @@ class MediaAnalysisInput(BaseModel):
         description="List of media UUID strings to analyze",
     )
     question: str = Field(
-        description=(
-            "What to ask about the media, e.g. 'Describe this image' "
-            "or 'What is said in this audio?'"
-        ),
+        description=("What to ask about the media, e.g. 'Describe this image' or 'What is said in this audio?'"),
     )
     analyzer: str = Field(
         description=(

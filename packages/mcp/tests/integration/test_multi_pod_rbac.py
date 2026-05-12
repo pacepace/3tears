@@ -163,7 +163,10 @@ def _build_collection(pool: asyncpg.Pool) -> McpToolGrantCollection:
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
     return McpToolGrantCollection(
-        registry, DefaultCoreConfig(), None, None,
+        registry,
+        DefaultCoreConfig(),
+        None,
+        None,
     )
 
 
@@ -210,14 +213,17 @@ async def test_grant_added_on_pod_a_propagates_to_pod_b(
     RBAC propagation via the ``mcp.rbac`` epoch broadcast.
     """
     set_default_namespace("itest")
-    async with await _connect_pod(nats_container, "pod-a") as pod_a_nc, \
-            await _connect_pod(nats_container, "pod-b") as pod_b_nc:
-
+    async with (
+        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
+        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
+    ):
         pod_a, pod_a_collection, _ = await _build_started_authorizer(
-            pool=pg_pool, nats_client=pod_a_nc,
+            pool=pg_pool,
+            nats_client=pod_a_nc,
         )
         pod_b, _, _ = await _build_started_authorizer(
-            pool=pg_pool, nats_client=pod_b_nc,
+            pool=pg_pool,
+            nats_client=pod_b_nc,
         )
         try:
             principal_id = uuid4()
@@ -271,14 +277,17 @@ async def test_grant_removed_on_pod_a_propagates_to_pod_b(
     revoked operator must lose access on every pod, fast.
     """
     set_default_namespace("itest")
-    async with await _connect_pod(nats_container, "pod-a") as pod_a_nc, \
-            await _connect_pod(nats_container, "pod-b") as pod_b_nc:
-
+    async with (
+        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
+        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
+    ):
         pod_a, pod_a_collection, _ = await _build_started_authorizer(
-            pool=pg_pool, nats_client=pod_a_nc,
+            pool=pg_pool,
+            nats_client=pod_a_nc,
         )
         pod_b, _, _ = await _build_started_authorizer(
-            pool=pg_pool, nats_client=pod_b_nc,
+            pool=pg_pool,
+            nats_client=pod_b_nc,
         )
         try:
             principal_id = uuid4()
@@ -343,9 +352,10 @@ async def test_missed_broadcast_recovers_via_catchup(
     higher durable epoch and reloads. no NATS-dispatch race.
     """
     set_default_namespace("itest")
-    async with await _connect_pod(nats_container, "pod-a") as pod_a_nc, \
-            await _connect_pod(nats_container, "pod-b") as pod_b_nc:
-
+    async with (
+        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
+        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
+    ):
         pod_a_epoch_client = EpochClient(pg_pool, pod_a_nc)
         pod_a_collection = _build_collection(pg_pool)
 

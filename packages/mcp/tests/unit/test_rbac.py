@@ -102,12 +102,16 @@ class TestAddGrant:
         try:
             principal_id = uuid4()
             await coll.add_grant(
-                principal_type="user", principal_id=principal_id,
-                tool_name="t", permission="p",
+                principal_type="user",
+                principal_id=principal_id,
+                tool_name="t",
+                permission="p",
             )
             await coll.add_grant(
-                principal_type="user", principal_id=principal_id,
-                tool_name="t", permission="p",
+                principal_type="user",
+                principal_id=principal_id,
+                tool_name="t",
+                permission="p",
             )
         finally:
             McpToolGrantCollection.entity_class = original_property  # type: ignore[assignment]
@@ -161,16 +165,18 @@ class TestLoadAllGrants:
         grant_id = uuid4()
         # asyncpg.Record-like: dict() coerces to dict; MagicMock won't,
         # so we use plain dicts and the dict(row) call passes through.
-        pool.fetch = AsyncMock(return_value=[
-            {
-                "grant_id": grant_id,
-                "principal_type": "user",
-                "principal_id": principal_id,
-                "tool_name": "list_conversations",
-                "permission": "metallm.conversations.read",
-                "date_created": "2026-05-05T00:00:00+00:00",
-            },
-        ])
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "grant_id": grant_id,
+                    "principal_type": "user",
+                    "principal_id": principal_id,
+                    "tool_name": "list_conversations",
+                    "permission": "metallm.conversations.read",
+                    "date_created": "2026-05-05T00:00:00+00:00",
+                },
+            ]
+        )
 
         rows = await coll.load_all_grants()
 

@@ -48,14 +48,10 @@ CREATE TABLE IF NOT EXISTS mcp_tool_grants (
 """
 
 _CREATE_PRINCIPAL_LOOKUP_INDEX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mcp_tool_grants_principal "
-    "ON mcp_tool_grants (principal_id, permission)"
+    "CREATE INDEX IF NOT EXISTS idx_mcp_tool_grants_principal ON mcp_tool_grants (principal_id, permission)"
 )
 
-_CREATE_TOOL_LOOKUP_INDEX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_mcp_tool_grants_tool "
-    "ON mcp_tool_grants (tool_name)"
-)
+_CREATE_TOOL_LOOKUP_INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_mcp_tool_grants_tool ON mcp_tool_grants (tool_name)"
 
 
 async def create_mcp_tool_grants_table(store: DataStore) -> None:

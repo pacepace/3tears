@@ -110,7 +110,7 @@ def _resolve_enum(value: Any, enum_cls: Any, default: Any) -> Any:
         return value
     try:
         return enum_cls(value)
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return default
 
 
@@ -168,11 +168,7 @@ def register_model_capabilities_bulk(
         # metallm column name first, then alternates, so the same
         # helper works for both metallm and the hub without a
         # per-product adapter.
-        name_value = (
-            row.get("model_name")
-            or row.get("name_api")
-            or row.get("model_id")
-        )
+        name_value = row.get("model_name") or row.get("name_api") or row.get("model_id")
         if not name_value:
             continue
         model_name = str(name_value)
@@ -180,30 +176,31 @@ def register_model_capabilities_bulk(
         caps = ModelCapabilities(
             model_name=model_name,
             model_type=_resolve_enum(
-                row.get("model_type"), ModelType, default_model_type,
+                row.get("model_type"),
+                ModelType,
+                default_model_type,
             ),
             model_tier=_resolve_enum(
-                row.get("model_tier"), ModelTier, default_model_tier,
+                row.get("model_tier"),
+                ModelTier,
+                default_model_tier,
             ),
             model_status=_resolve_enum(
-                row.get("model_status"), ModelStatus, default_model_status,
+                row.get("model_status"),
+                ModelStatus,
+                default_model_status,
             ),
             provider_name=row.get("provider_name"),
-            context_window=(
-                row.get("context_window")
-                or row.get("context_window_tokens")
-            ),
+            context_window=(row.get("context_window") or row.get("context_window_tokens")),
             max_output_tokens=row.get("max_output_tokens"),
             supports_streaming=row.get("supports_streaming"),
             supports_tools=row.get("supports_tools"),
             supports_vision=row.get("supports_vision"),
             cost_per_input_token=_per_token(
-                row.get("cost_per_1m_input_tokens")
-                or row.get("cost_per_1m_prompt_tokens"),
+                row.get("cost_per_1m_input_tokens") or row.get("cost_per_1m_prompt_tokens"),
             ),
             cost_per_output_token=_per_token(
-                row.get("cost_per_1m_output_tokens")
-                or row.get("cost_per_1m_completion_tokens"),
+                row.get("cost_per_1m_output_tokens") or row.get("cost_per_1m_completion_tokens"),
             ),
         )
         register_capabilities(model_name, caps)

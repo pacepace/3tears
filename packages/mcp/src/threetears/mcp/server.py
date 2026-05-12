@@ -210,11 +210,13 @@ class McpServer:
             log.warning(
                 "MCP dispatch: authorizer raised; denying by default",
                 exc_info=True,
-                extra={"extra_data": {
-                    "tool_name": tool_name,
-                    "principal_id": str(identity.principal_id),
-                    "required_permission": tool.required_permission,
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "principal_id": str(identity.principal_id),
+                        "required_permission": tool.required_permission,
+                    }
+                },
             )
             return self._error_result(
                 tool_name=tool_name,
@@ -225,19 +227,18 @@ class McpServer:
         if not allowed:
             log.info(
                 "MCP dispatch: denied",
-                extra={"extra_data": {
-                    "tool_name": tool_name,
-                    "principal_id": str(identity.principal_id),
-                    "required_permission": tool.required_permission,
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "principal_id": str(identity.principal_id),
+                        "required_permission": tool.required_permission,
+                    }
+                },
             )
             return self._error_result(
                 tool_name=tool_name,
                 code="PERMISSION_DENIED",
-                message=(
-                    f"identity lacks required permission "
-                    f"{tool.required_permission!r}"
-                ),
+                message=(f"identity lacks required permission {tool.required_permission!r}"),
             )
 
         try:
@@ -246,10 +247,12 @@ class McpServer:
             log.warning(
                 "MCP dispatch: handler exception",
                 exc_info=True,
-                extra={"extra_data": {
-                    "tool_name": tool_name,
-                    "principal_id": str(identity.principal_id),
-                }},
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "principal_id": str(identity.principal_id),
+                    }
+                },
             )
             return self._error_result(
                 tool_name=tool_name,
@@ -261,9 +264,7 @@ class McpServer:
         # single TextContent, a list of TextContent (already wire-
         # ready), or something JSON-serialisable. the SDK wraps
         # the returned list in CallToolResult(isError=False, ...).
-        if isinstance(result, list) and all(
-            isinstance(item, mcp_types.TextContent) for item in result
-        ):
+        if isinstance(result, list) and all(isinstance(item, mcp_types.TextContent) for item in result):
             return result
         if isinstance(result, mcp_types.TextContent):
             return [result]

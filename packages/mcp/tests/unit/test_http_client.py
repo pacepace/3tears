@@ -49,6 +49,7 @@ class TestLogin:
     @pytest.mark.asyncio
     async def test_login_caches_token_from_default_field(self) -> None:
         """successful login captures access_token from the response."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/v1/auth/login"
             body = json.loads(request.content)
@@ -67,6 +68,7 @@ class TestLogin:
     @pytest.mark.asyncio
     async def test_login_failure_raises_PlatformHttpError(self) -> None:
         """401 from login surfaces as PlatformHttpError with status."""
+
         def responder(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"detail": "bad creds"})
 
@@ -83,6 +85,7 @@ class TestLogin:
     @pytest.mark.asyncio
     async def test_login_missing_token_field_raises(self) -> None:
         """200 response without access_token surfaces as PlatformHttpError."""
+
         def responder(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"refresh_token": "x"})
 
@@ -150,6 +153,7 @@ class TestRequestWithRefreshOn401:
     @pytest.mark.asyncio
     async def test_persistent_401_after_refresh_raises(self) -> None:
         """second 401 after refresh -> PlatformHttpError(status=401)."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/auth/login":
                 return httpx.Response(200, json={"access_token": "x"})
@@ -168,6 +172,7 @@ class TestRequestWithRefreshOn401:
     @pytest.mark.asyncio
     async def test_non_401_status_passed_through_unraised(self) -> None:
         """500 etc. is returned to the caller, NOT raised by .request."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/auth/login":
                 return httpx.Response(200, json={"access_token": "x"})
@@ -188,6 +193,7 @@ class TestVerbHelpers:
     @pytest.mark.asyncio
     async def test_post_sends_json_body(self) -> None:
         """post(path, json=...) puts the body on the wire."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/auth/login":
                 return httpx.Response(200, json={"access_token": "x"})
@@ -206,6 +212,7 @@ class TestVerbHelpers:
     @pytest.mark.asyncio
     async def test_get_sends_query_params(self) -> None:
         """get(path, params=...) puts the params on the wire."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/auth/login":
                 return httpx.Response(200, json={"access_token": "x"})
@@ -314,6 +321,7 @@ class TestUpload:
     @pytest.mark.asyncio
     async def test_upload_persistent_401_raises(self) -> None:
         """a second 401 after refresh raises PlatformHttpError."""
+
         def responder(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/v1/auth/login":
                 return httpx.Response(200, json={"access_token": "x"})

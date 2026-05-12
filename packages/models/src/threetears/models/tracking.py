@@ -349,7 +349,7 @@ class _PrometheusEmitter:
                 continue
             try:
                 self._resolved_registry.unregister(collector)
-            except (KeyError, ValueError):
+            except KeyError, ValueError:
                 continue
 
         self._counter_input = None

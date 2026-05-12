@@ -39,12 +39,14 @@ class _StubBackend:
         source_image: bytes | None = None,
         source_mime_type: str | None = None,
     ) -> GeneratedImage:
-        self.calls.append({
-            "prompt": prompt,
-            "style": style,
-            "source_image": source_image,
-            "source_mime_type": source_mime_type,
-        })
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "style": style,
+                "source_image": source_image,
+                "source_mime_type": source_mime_type,
+            }
+        )
         if self._raise is not None:
             raise self._raise
         return self._output
@@ -82,12 +84,14 @@ class _StubContext:
         model_name: str,
         style: str | None,
     ) -> str:
-        self.persist_calls.append({
-            "image": image,
-            "prompt": prompt,
-            "model_name": model_name,
-            "style": style,
-        })
+        self.persist_calls.append(
+            {
+                "image": image,
+                "prompt": prompt,
+                "model_name": model_name,
+                "style": style,
+            }
+        )
         if self._persist_raises is not None:
             raise self._persist_raises
         return self._persist_returns
@@ -193,10 +197,12 @@ async def test_img2img_loads_attached_image() -> None:
         default_model="sd",
     )
 
-    await tool.ainvoke({
-        "prompt": "make it sepia",
-        "use_attached_image": True,
-    })
+    await tool.ainvoke(
+        {
+            "prompt": "make it sepia",
+            "use_attached_image": True,
+        }
+    )
     assert context.attached_calls == 1
     assert len(backend.calls) == 1
     assert backend.calls[0]["source_image"] == b"source-bytes"
@@ -214,10 +220,12 @@ async def test_img2img_no_source_returns_tool_error() -> None:
         default_model="sd",
     )
 
-    result = await tool.ainvoke({
-        "prompt": "make it sepia",
-        "use_attached_image": True,
-    })
+    result = await tool.ainvoke(
+        {
+            "prompt": "make it sepia",
+            "use_attached_image": True,
+        }
+    )
     assert "[TOOL ERROR]" in result
     assert "attach an image first" in result
     assert len(backend.calls) == 0
@@ -233,10 +241,12 @@ async def test_img2img_loader_exception_returns_tool_error() -> None:
         context,
         default_model="sd",
     )
-    result = await tool.ainvoke({
-        "prompt": "x",
-        "use_attached_image": True,
-    })
+    result = await tool.ainvoke(
+        {
+            "prompt": "x",
+            "use_attached_image": True,
+        }
+    )
     assert "[TOOL ERROR]" in result
     assert "S3 timeout" in result
     assert len(backend.calls) == 0
@@ -285,11 +295,13 @@ async def test_persist_callback_receives_full_context() -> None:
         context,
         default_model="flux",
     )
-    await tool.ainvoke({
-        "prompt": "a city skyline",
-        "model": "flux",
-        "style": "vivid",
-    })
+    await tool.ainvoke(
+        {
+            "prompt": "a city skyline",
+            "model": "flux",
+            "style": "vivid",
+        }
+    )
     assert len(context.persist_calls) == 1
     call = context.persist_calls[0]
     assert call["prompt"] == "a city skyline"

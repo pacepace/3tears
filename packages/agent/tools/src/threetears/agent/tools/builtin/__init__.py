@@ -6,7 +6,8 @@ missing, that tool is skipped with a warning log.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
 
 from threetears.observe import get_logger
 
@@ -69,7 +70,7 @@ def _build_unit_converter() -> TearsTool:
 # in that frozenset MUST appear here, and every key here MUST appear
 # in that frozenset. callers that need a slice (e.g. registering only
 # the names matching an access pattern) iterate this map and filter.
-STANDARD_BUILTIN_FACTORIES: dict[str, callable] = {  # type: ignore[type-arg]
+STANDARD_BUILTIN_FACTORIES: dict[str, Callable[[], TearsTool]] = {
     "threetears.calculator": _build_calculator,
     "threetears.current_date": _build_current_date,
     "threetears.dictionary": _build_dictionary,

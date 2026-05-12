@@ -47,7 +47,8 @@ def _find_offenders(tree: ast.AST) -> list[tuple[int, str]]:
                 # sys.stdout.write / sys.stderr.write
                 value = func.value
                 if isinstance(value, ast.Attribute) and value.attr in (
-                    "stdout", "stderr",
+                    "stdout",
+                    "stderr",
                 ):
                     inner = value.value
                     if isinstance(inner, ast.Name) and inner.id == "sys":
@@ -71,6 +72,5 @@ class TestNoStdioWrites:
                 violations.append(f"{rel}:{line} -- {msg}")
         assert not violations, (
             "stdio MCP servers cannot tolerate stdout / stderr writes; "
-            "log to a file or NATS instead. Offenders:\n  "
-            + "\n  ".join(violations)
+            "log to a file or NATS instead. Offenders:\n  " + "\n  ".join(violations)
         )

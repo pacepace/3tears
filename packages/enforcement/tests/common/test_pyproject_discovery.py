@@ -108,9 +108,7 @@ class TestUvWorkspace:
         root = tmp_path / "monorepo"
         root.mkdir()
         (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\n'
-            'members = ["packages/*", "packages/agent/*"]\n'
-            'exclude = ["packages/agent"]\n'
+            '[tool.uv.workspace]\nmembers = ["packages/*", "packages/agent/*"]\nexclude = ["packages/agent"]\n'
         )
         for name in ("core", "observe"):
             pkg = root / "packages" / name
@@ -134,9 +132,7 @@ class TestUvWorkspace:
         """malformed exclude raises rather than silently ignoring it."""
         root = tmp_path / "monorepo"
         root.mkdir()
-        (root / "pyproject.toml").write_text(
-            '[tool.uv.workspace]\nmembers = ["packages/*"]\nexclude = "not-a-list"\n'
-        )
+        (root / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = ["packages/*"]\nexclude = "not-a-list"\n')
         with pytest.raises(PyprojectError, match="exclude must be a list"):
             discover_src_roots(root)
 

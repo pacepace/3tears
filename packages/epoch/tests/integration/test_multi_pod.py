@@ -140,10 +140,11 @@ async def test_two_pods_receive_bump_via_broadcast(
     """happy path: bump from a writer fires both listeners' callbacks."""
     set_default_namespace("itest")
 
-    async with await _connect_pod(nats_container, "writer") as writer_nc, \
-            await _connect_pod(nats_container, "pod-a") as pod_a_nc, \
-            await _connect_pod(nats_container, "pod-b") as pod_b_nc:
-
+    async with (
+        await _connect_pod(nats_container, "writer") as writer_nc,
+        await _connect_pod(nats_container, "pod-a") as pod_a_nc,
+        await _connect_pod(nats_container, "pod-b") as pod_b_nc,
+    ):
         writer = EpochClient(pg_pool, writer_nc)
         listener_a = EpochListener(pod_a_nc, EpochClient(pg_pool, pod_a_nc))
         listener_b = EpochListener(pod_b_nc, EpochClient(pg_pool, pod_b_nc))
@@ -189,9 +190,10 @@ async def test_pull_on_stale_recovers_missed_broadcast(
     """
     set_default_namespace("itest")
 
-    async with await _connect_pod(nats_container, "writer") as writer_nc, \
-            await _connect_pod(nats_container, "pod-b-no-sub") as pod_b_nc:
-
+    async with (
+        await _connect_pod(nats_container, "writer") as writer_nc,
+        await _connect_pod(nats_container, "pod-b-no-sub") as pod_b_nc,
+    ):
         writer = EpochClient(pg_pool, writer_nc)
         listener_b = EpochListener(pod_b_nc, EpochClient(pg_pool, pod_b_nc))
 
@@ -238,9 +240,10 @@ async def test_per_message_echo_recovers_missed_broadcast(
     """
     set_default_namespace("itest")
 
-    async with await _connect_pod(nats_container, "writer") as writer_nc, \
-            await _connect_pod(nats_container, "pod") as pod_nc:
-
+    async with (
+        await _connect_pod(nats_container, "writer") as writer_nc,
+        await _connect_pod(nats_container, "pod") as pod_nc,
+    ):
         writer = EpochClient(pg_pool, writer_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
 
@@ -276,10 +279,11 @@ async def test_monotonicity_under_concurrent_writers(
     """
     set_default_namespace("itest")
 
-    async with await _connect_pod(nats_container, "writer-1") as w1_nc, \
-            await _connect_pod(nats_container, "writer-2") as w2_nc, \
-            await _connect_pod(nats_container, "pod") as pod_nc:
-
+    async with (
+        await _connect_pod(nats_container, "writer-1") as w1_nc,
+        await _connect_pod(nats_container, "writer-2") as w2_nc,
+        await _connect_pod(nats_container, "pod") as pod_nc,
+    ):
         w1 = EpochClient(pg_pool, w1_nc)
         w2 = EpochClient(pg_pool, w2_nc)
         listener = EpochListener(pod_nc, EpochClient(pg_pool, pod_nc))
@@ -294,6 +298,7 @@ async def test_monotonicity_under_concurrent_writers(
         await pod_nc.flush()
 
         rng = random.Random(42)
+
         async def _flurry(client: EpochClient, count: int) -> None:
             """fire `count` bumps with random small jitter."""
             for _ in range(count):

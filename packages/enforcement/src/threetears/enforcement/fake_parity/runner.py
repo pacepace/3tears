@@ -59,8 +59,7 @@ def run_fake_parity_enforcement(config: FakeParityConfig) -> None:
         return
     if filtered:
         pytest.fail(
-            f"fake-protocol-parity enforcement found {len(filtered)} "
-            f"violation(s):\n{report}",
+            f"fake-protocol-parity enforcement found {len(filtered)} violation(s):\n{report}",
         )
 
 

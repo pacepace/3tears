@@ -71,10 +71,7 @@ class TestMangleToolName:
         assert mangle_tool_name("threetears.calculator") == "threetears_calculator"
 
     def test_nested_dots_all_replaced(self) -> None:
-        assert (
-            mangle_tool_name("threetears.workspace.fs_read")
-            == "threetears_workspace_fs_read"
-        )
+        assert mangle_tool_name("threetears.workspace.fs_read") == "threetears_workspace_fs_read"
 
     def test_no_dots_passes_through(self) -> None:
         assert mangle_tool_name("plain_name") == "plain_name"
@@ -335,7 +332,8 @@ class TestNameTranslatingChatOpenRouter:
             )
 
         model = create_openrouter_chat(
-            "deepseek/deepseek-chat-v3-0324", "sk-test",
+            "deepseek/deepseek-chat-v3-0324",
+            "sk-test",
         )
         model.bind_tools([_DottedTool()])
 
@@ -355,7 +353,7 @@ class TestNameTranslatingChatOpenRouter:
         assert len(chunks) == 1
         nested = chunks[0].message
         assert nested.tool_call_chunks[0]["name"] == "threetears.calculator", (
-            "_astream did not translate ``chunk.message.tool_call_chunks[i][\"name\"]``;"
+            '_astream did not translate ``chunk.message.tool_call_chunks[i]["name"]``;'
             " regression to operating on the ChatGenerationChunk wrapper"
             " instead of its nested AIMessageChunk."
         )

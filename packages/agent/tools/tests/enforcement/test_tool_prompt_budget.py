@@ -33,13 +33,17 @@ from pathlib import Path
 import pytest
 
 _BUILTIN_TOOLS_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "src" / "threetears" / "agent" / "tools" / "builtin"
+    Path(__file__).resolve().parent.parent.parent / "src" / "threetears" / "agent" / "tools" / "builtin"
 )
 
 _WORKSPACE_TOOLS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent
-    / "workspace" / "src" / "threetears" / "agent" / "workspace" / "tools"
+    / "workspace"
+    / "src"
+    / "threetears"
+    / "agent"
+    / "workspace"
+    / "tools"
 )
 
 _PER_TOOL_BUDGET_CHARS = 900
@@ -63,13 +67,11 @@ _BLOAT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\(required\s+for\s+\w+", re.IGNORECASE),
-        "field description has '(required for X)' couplings; "
-        "use the top-level required[] array instead",
+        "field description has '(required for X)' couplings; use the top-level required[] array instead",
     ),
     (
         re.compile(r"\(optional\s+for\s+\w+", re.IGNORECASE),
-        "field description has '(optional for X)' couplings; "
-        "the required[] array already documents what is mandatory",
+        "field description has '(optional for X)' couplings; the required[] array already documents what is mandatory",
     ),
 ]
 
@@ -79,10 +81,7 @@ def _iter_tool_modules(directory: Path) -> list[Path]:
     if not directory.exists():
         return []
     skip = {"__init__", "helpers", "image_prep"}  # image_prep has no schema-only test target
-    return sorted(
-        p for p in directory.glob("*.py")
-        if p.stem not in {"__init__", "helpers"}
-    )
+    return sorted(p for p in directory.glob("*.py") if p.stem not in {"__init__", "helpers"})
 
 
 def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:
@@ -90,24 +89,16 @@ def _extract_class_level_input_schema(class_node: ast.ClassDef) -> dict | None:
     for stmt in class_node.body:
         target_name: str | None = None
         value_node: ast.AST | None = None
-        if (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.value is not None
-        ):
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
             target_name = stmt.target.id
             value_node = stmt.value
-        elif (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-        ):
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
             target_name = stmt.targets[0].id
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
                 return ast.literal_eval(value_node)  # type: ignore[arg-type]
-            except (ValueError, SyntaxError):
+            except ValueError, SyntaxError:
                 return None
     return None
 
@@ -117,24 +108,16 @@ def _extract_module_level_input_schema(tree: ast.Module) -> dict | None:
     for stmt in tree.body:
         target_name: str | None = None
         value_node: ast.AST | None = None
-        if (
-            isinstance(stmt, ast.AnnAssign)
-            and isinstance(stmt.target, ast.Name)
-            and stmt.value is not None
-        ):
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
             target_name = stmt.target.id
             value_node = stmt.value
-        elif (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-        ):
+        elif isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
             target_name = stmt.targets[0].id
             value_node = stmt.value
         if target_name == "_INPUT_SCHEMA" and value_node is not None:
             try:
                 return ast.literal_eval(value_node)  # type: ignore[arg-type]
-            except (ValueError, SyntaxError):
+            except ValueError, SyntaxError:
                 return None
     return None
 
@@ -150,9 +133,8 @@ def _extract_mcp_schema_description(tree: ast.AST) -> str | None:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        is_target = (
-            (isinstance(func, ast.Name) and func.id == "MCPToolDefinition")
-            or (isinstance(func, ast.Attribute) and func.attr == "MCPToolDefinition")
+        is_target = (isinstance(func, ast.Name) and func.id == "MCPToolDefinition") or (
+            isinstance(func, ast.Attribute) and func.attr == "MCPToolDefinition"
         )
         if not is_target:
             continue
@@ -161,7 +143,7 @@ def _extract_mcp_schema_description(tree: ast.AST) -> str | None:
                 continue
             try:
                 value = ast.literal_eval(kw.value)
-            except (ValueError, SyntaxError):
+            except ValueError, SyntaxError:
                 value = None
             if isinstance(value, str):
                 return value
@@ -198,9 +180,7 @@ class TestBuiltinToolPromptBudget:
 
     def test_builtin_tools_dir_present(self) -> None:
         """guard the test itself: if the directory moves, fail loudly."""
-        assert _BUILTIN_TOOLS_DIR.exists(), (
-            f"builtin tools directory not found at {_BUILTIN_TOOLS_DIR}"
-        )
+        assert _BUILTIN_TOOLS_DIR.exists(), f"builtin tools directory not found at {_BUILTIN_TOOLS_DIR}"
 
     def test_per_tool_under_budget(self) -> None:
         """each builtin tool fits inside the per-tool char budget."""
@@ -209,12 +189,12 @@ class TestBuiltinToolPromptBudget:
             input_json = json.dumps(schema, separators=(",", ":"))
             total = len(desc) + len(input_json)
             budget = _PROMPT_BUDGET_EXEMPTIONS.get(
-                tool_id, (_PER_TOOL_BUDGET_CHARS, ""),
+                tool_id,
+                (_PER_TOOL_BUDGET_CHARS, ""),
             )[0]
             if total > budget:
                 violations.append(
-                    f"  {tool_id}: {total} chars > {budget} budget "
-                    f"(desc={len(desc)} input_schema={len(input_json)})",
+                    f"  {tool_id}: {total} chars > {budget} budget (desc={len(desc)} input_schema={len(input_json)})",
                 )
         if violations:
             pytest.fail(
@@ -229,12 +209,16 @@ class TestBuiltinToolPromptBudget:
             for pattern, label in _BLOAT_PATTERNS:
                 if pattern.search(desc):
                     violations.append(
-                        f"  {tool_id}.description: {label!r} -- "
-                        f"matched: {pattern.search(desc).group(0)!r}",
+                        f"  {tool_id}.description: {label!r} -- matched: {pattern.search(desc).group(0)!r}",
                     )
-            for field_name, field_def in (schema or {}).get(
-                "properties", {},
-            ).items():
+            for field_name, field_def in (
+                (schema or {})
+                .get(
+                    "properties",
+                    {},
+                )
+                .items()
+            ):
                 if not isinstance(field_def, dict):
                     continue
                 field_desc = field_def.get("description", "")
@@ -243,8 +227,7 @@ class TestBuiltinToolPromptBudget:
                 for pattern, label in _BLOAT_PATTERNS:
                     if pattern.search(field_desc):
                         violations.append(
-                            f"  {tool_id}.{field_name}: {label!r} -- "
-                            f"matched: {pattern.search(field_desc).group(0)!r}",
+                            f"  {tool_id}.{field_name}: {label!r} -- matched: {pattern.search(field_desc).group(0)!r}",
                         )
         if violations:
             pytest.fail("Bloat patterns:\n" + "\n".join(violations))
@@ -255,9 +238,7 @@ class TestWorkspaceToolPromptBudget:
 
     def test_workspace_tools_dir_present(self) -> None:
         """guard the test itself: if the directory moves, fail loudly."""
-        assert _WORKSPACE_TOOLS_DIR.exists(), (
-            f"workspace tools directory not found at {_WORKSPACE_TOOLS_DIR}"
-        )
+        assert _WORKSPACE_TOOLS_DIR.exists(), f"workspace tools directory not found at {_WORKSPACE_TOOLS_DIR}"
 
     def test_per_tool_under_budget(self) -> None:
         """each workspace tool fits inside the per-tool char budget."""
@@ -266,12 +247,12 @@ class TestWorkspaceToolPromptBudget:
             input_json = json.dumps(schema, separators=(",", ":"))
             total = len(desc) + len(input_json)
             budget = _PROMPT_BUDGET_EXEMPTIONS.get(
-                tool_id, (_PER_TOOL_BUDGET_CHARS, ""),
+                tool_id,
+                (_PER_TOOL_BUDGET_CHARS, ""),
             )[0]
             if total > budget:
                 violations.append(
-                    f"  {tool_id}: {total} chars > {budget} budget "
-                    f"(desc={len(desc)} input_schema={len(input_json)})",
+                    f"  {tool_id}: {total} chars > {budget} budget (desc={len(desc)} input_schema={len(input_json)})",
                 )
         if violations:
             pytest.fail(
@@ -286,12 +267,16 @@ class TestWorkspaceToolPromptBudget:
             for pattern, label in _BLOAT_PATTERNS:
                 if pattern.search(desc):
                     violations.append(
-                        f"  {tool_id}.description: {label!r} -- "
-                        f"matched: {pattern.search(desc).group(0)!r}",
+                        f"  {tool_id}.description: {label!r} -- matched: {pattern.search(desc).group(0)!r}",
                     )
-            for field_name, field_def in (schema or {}).get(
-                "properties", {},
-            ).items():
+            for field_name, field_def in (
+                (schema or {})
+                .get(
+                    "properties",
+                    {},
+                )
+                .items()
+            ):
                 if not isinstance(field_def, dict):
                     continue
                 field_desc = field_def.get("description", "")
@@ -300,8 +285,7 @@ class TestWorkspaceToolPromptBudget:
                 for pattern, label in _BLOAT_PATTERNS:
                     if pattern.search(field_desc):
                         violations.append(
-                            f"  {tool_id}.{field_name}: {label!r} -- "
-                            f"matched: {pattern.search(field_desc).group(0)!r}",
+                            f"  {tool_id}.{field_name}: {label!r} -- matched: {pattern.search(field_desc).group(0)!r}",
                         )
         if violations:
             pytest.fail("Bloat patterns:\n" + "\n".join(violations))

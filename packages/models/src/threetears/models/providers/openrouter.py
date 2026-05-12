@@ -140,7 +140,10 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             :rtype: AsyncIterator[ChatGenerationChunk]
             """
             async for chunk in super()._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs,
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
             ):
                 # ``ChatGenerationChunk.message`` is the AIMessageChunk
                 # carrying tool-call fields. Some upstream paths wrap
@@ -169,7 +172,10 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             before returning to the caller.
             """
             result = await super()._agenerate(
-                messages, stop=stop, run_manager=run_manager, **kwargs,
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
             )
             for generation in result.generations:
                 reverse_translate_message(generation.message, self._name_reverse_map)

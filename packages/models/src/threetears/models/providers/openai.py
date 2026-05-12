@@ -117,7 +117,10 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             :rtype: AsyncIterator[ChatGenerationChunk]
             """
             async for chunk in super()._astream(
-                messages, stop=stop, run_manager=run_manager, **kwargs,
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
             ):
                 target = getattr(chunk, "message", chunk)
                 reverse_translate_message(target, self._name_reverse_map)
@@ -144,7 +147,10 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             :rtype: ChatResult
             """
             result = await super()._agenerate(
-                messages, stop=stop, run_manager=run_manager, **kwargs,
+                messages,
+                stop=stop,
+                run_manager=run_manager,
+                **kwargs,
             )
             for generation in result.generations:
                 reverse_translate_message(generation.message, self._name_reverse_map)

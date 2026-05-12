@@ -89,7 +89,8 @@ class SlackAdapter:
         self._app.event("message")(self.handle_message_event)
 
     async def _resolve_user_locale(
-        self, user_id: str,
+        self,
+        user_id: str,
     ) -> tuple[str | None, str | None]:
         """resolve ``(tz, locale)`` for a slack user via ``users.info``.
 
@@ -128,8 +129,7 @@ class SlackAdapter:
                 locale = raw_locale if isinstance(raw_locale, str) and raw_locale else None
             except Exception as exc:
                 log.warning(
-                    "slack users.info lookup failed; caching empty locale "
-                    "to avoid hammering the API",
+                    "slack users.info lookup failed; caching empty locale to avoid hammering the API",
                     extra={"extra_data": {"user_id": user_id, "error": str(exc)}},
                 )
             self._user_locale_cache[user_id] = (now, tz, locale)
