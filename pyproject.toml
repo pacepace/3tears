@@ -81,12 +81,31 @@ select = ["SLF"]
 # import-at-most-once contract; no public clear-cache helper on the module
 # because the only legitimate caller is this test fixture. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
-"packages/agent-workspace/tests/unit/test_validators.py" = ["SLF001"]
+"packages/agent/workspace/tests/unit/test_validators.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
 # (callbacks, validation); calling delegate.arun/run would double-fire
 # that chain. paired entries in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/src/threetears/models/tool_name_translation.py" = ["SLF001"]
+# OpenRouter name-translation tests exercise the LangChain BaseTool proxy
+# and the ChatOpenRouter subclass: ``_arun`` / ``_astream`` are the
+# LangChain-internal entry points the production translation layer
+# overrides, and ``_name_reverse_map`` is the per-instance lookup table
+# the subclass populates on ``bind_tools`` and consults on every
+# stream chunk. tests assert the table is populated correctly and that
+# the overrides forward without double-firing the wrapper chain (same
+# rationale as ``tool_name_translation.py`` above). paired entries
+# live in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_provider_openrouter.py" = ["SLF001"]
+# UsageTracker tests reach into two import-time anchors with no public
+# accessors: OpenTelemetry's ``_TRACER_PROVIDER_SET_ONCE._done`` is the
+# only documented escape from OTel 1.39+'s once-flag guard so tests can
+# re-init the tracer provider (same rationale as the matching entry in
+# ``packages/observe/src/threetears/observe/setup.py``); and the
+# tracker's ``_prom`` field is the cached PromEmitter the tests assert
+# is shared per-registry to lock in the identity-by-registry contract.
+# paired entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_tracking.py" = ["SLF001"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
