@@ -86,6 +86,12 @@ packages/models/tests/unit/models/test_provider_openrouter.py:348:_astream
 packages/models/tests/unit/models/test_provider_openrouter.py:350:_astream
 # rationale: test asserts the dotted-name does NOT appear on the captured _astream wire payload, completing the name-translation round trip; same rationale as line 346.
 packages/models/tests/unit/models/test_provider_openrouter.py:353:_astream
+# rationale: Anthropic-wrapper streaming regression test monkey-patches ChatAnthropic._astream to yield fixed fake chunks so astream_events(v2) can be exercised without a real Anthropic HTTP call; assertion is that the wrapper's astream override emits on_chat_model_stream events for each yielded chunk (the metallm 2026-05-13 callback-chain regression watchdog).
+packages/models/tests/unit/models/test_provider_anthropic.py:141:_astream
+# rationale: test installs the fake _astream onto ChatAnthropic so the wrapper's astream override iterates fake chunks instead of real upstream calls; same rationale as line 141.
+packages/models/tests/unit/models/test_provider_anthropic.py:143:_astream
+# rationale: test restores the original _astream after the patched run completes, so other tests in the same process are not affected; same rationale as line 141.
+packages/models/tests/unit/models/test_provider_anthropic.py:151:_astream
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test (OTel 1.39+ guards set_tracer_provider behind this once-flag; resetting _done is the only documented escape). Mirrors the matching exemption in observe/setup.py.
 packages/models/tests/unit/models/test_tracking.py:230:_TRACER_PROVIDER_SET_ONCE
 # rationale: test resets opentelemetry's _TRACER_PROVIDER_SET_ONCE._done so set_tracer_provider can re-install the in-memory exporter per-test; same rationale as line 230.
