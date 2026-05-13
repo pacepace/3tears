@@ -157,3 +157,90 @@ class TestAnthropicWrapperStreaming:
             f" the callback chain that drives astream_events(v2)."
         )
         assert collected_text == "anthropic wrapper ok"
+
+    @pytest.mark.asyncio
+    async def test_astream_events_survives_with_config_callbacks(self) -> None:
+        """``with_config(callbacks=[...])`` must not strip the event_streamer.
+
+        Same production failure mode as the OpenRouter wrapper -- when
+        wrapped by ``model.with_config(callbacks=[UsageTracker,
+        CircuitBreaker])`` (as ``threetears.models.factory.create_chat_model``
+        does), the wrapper used to forward its incoming ``config``
+        verbatim to ``super().astream(...)``, causing
+        ``BaseChatModel.astream``'s ``ensure_config(config)`` to replace
+        the contextvar's ``AsyncCallbackManager`` (carrying
+        ``astream_events``' event_streamer) with the bound list of
+        handlers. The fix pre-merges via
+        :func:`merge_configs(ensure_config(None), config)` so both the
+        event_streamer AND the bound list propagate.
+
+        Anthropic shares the failure mode with OpenRouter / OpenAI
+        because all three wrappers use the same override shape. The
+        OpenRouter case is the one metallm reproduced in production
+        (2026-05-13 conv ``019e2243-de0c``); this test pins the same
+        contract on the Anthropic wrapper so any future divergence in
+        wrapper behavior fails CI on this provider too.
+        """
+        from langchain_core.callbacks import AsyncCallbackHandler
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, kwargs
+            for text in ("anthro", "pic ", "wrapper ", "ok"):
+                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
+                yield chunk
+
+        class _RecordingCallback(AsyncCallbackHandler):
+            def __init__(self) -> None:
+                self.start_seen = 0
+                self.token_seen = 0
+
+            async def on_chat_model_start(
+                self,
+                serialized: Any,
+                messages: Any,
+                **_: Any,
+            ) -> None:
+                del serialized, messages
+                self.start_seen += 1
+
+            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+                del token
+                self.token_seen += 1
+
+        bound_cb = _RecordingCallback()
+        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+        bound_model = model.with_config(callbacks=[bound_cb])
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            stream_event_count = 0
+            async for event in bound_model.astream_events("hi", version="v2"):
+                if event["event"] == "on_chat_model_stream":
+                    stream_event_count += 1
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        assert stream_event_count >= 4, (
+            "with_config-bound list callbacks REPLACED the contextvar's"
+            " event_streamer manager — `on_chat_model_stream` events"
+            f" never reached astream_events. Got {stream_event_count}."
+        )
+        assert bound_cb.start_seen >= 1, (
+            "Bound callback's on_chat_model_start never fired — the"
+            " fix dropped the with_config list when preserving the"
+            " contextvar manager. Both must propagate."
+        )
+        assert bound_cb.token_seen >= 4, (
+            f"Bound callback's on_llm_new_token fired {bound_cb.token_seen}"
+            " times — expected >=4 (one per fake chunk). The fix"
+            " silently dropped the list of bound handlers."
+        )

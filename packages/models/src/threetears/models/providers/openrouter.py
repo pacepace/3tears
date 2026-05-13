@@ -144,6 +144,40 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             chunk; event emission still works because we're outside
             the callback-firing loop.
 
+            CRITICAL — config merge (2026-05-13 fix): when this method
+            is called via ``RunnableBinding.astream`` (the wrapper
+            produced by ``model.with_config(callbacks=[...])`` inside
+            :func:`threetears.models.factory.create_chat_model`), the
+            ``config`` argument we receive holds the bound
+            ``callbacks=[UsageTracker, CircuitBreaker]`` as a plain
+            list. The contextvar ``var_child_runnable_config`` --
+            populated by LangGraph's node wrapper with the parent's
+            run-manager-as-``AsyncCallbackManager`` -- carries the
+            ``astream_events`` event_streamer. If we forward
+            ``config=config`` verbatim to ``super().astream(...)``,
+            ``BaseChatModel.astream``'s ``ensure_config(config)``
+            performs a plain ``dict.update`` that REPLACES the
+            contextvar's manager (with event_streamer inside) with the
+            input's list -- silently dropping the event_streamer for
+            the entire stream. Result: chunks reach the personality
+            node and get persisted, but no ``on_chat_model_stream``
+            events fire and the live UI stays blank (the exact
+            ``saved_content_length > 0`` /
+            ``tokens_dispatched_count == 0`` fingerprint metallm hit
+            with the post-tool-executor sonnet/openrouter call on
+            2026-05-13 conv ``019e2243-de0c``).
+
+            The fix is to pre-merge with
+            :func:`merge_configs(ensure_config(None), config)`, which
+            uses the smart per-key callbacks merge in
+            ``merge_configs`` -- a list-into-manager merge clones the
+            manager and adds each list callback as a handler with
+            ``inherit=True``. The resulting merged config has
+            ``callbacks`` as a single manager that holds both the
+            event_streamer AND the bound tracking callbacks, so
+            ``ensure_config(merged)`` inside ``BaseChatModel.astream``
+            preserves everything.
+
             :param input: chat input (messages or string)
             :ptype input: LanguageModelInput
             :param config: optional runnable config
@@ -155,9 +189,12 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             :return: async iterator of un-translated AIMessageChunks
             :rtype: AsyncIterator[AIMessageChunk]
             """
+            from langchain_core.runnables.config import ensure_config, merge_configs
+
+            merged_config = merge_configs(ensure_config(None), config)
             async for chunk in super().astream(
                 input,
-                config=config,
+                config=merged_config,
                 stop=stop,
                 **kwargs,
             ):
