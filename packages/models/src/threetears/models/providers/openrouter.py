@@ -36,8 +36,8 @@ from threetears.models.tool_name_translation import (
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
     from langchain_core.language_models.chat_models import LanguageModelInput
-    from langchain_core.messages import BaseMessage
-    from langchain_core.outputs import ChatGenerationChunk, ChatResult
+    from langchain_core.messages import AIMessageChunk, BaseMessage
+    from langchain_core.outputs import ChatResult
     from langchain_core.runnables import Runnable, RunnableConfig
     from langchain_openrouter import ChatOpenRouter
 
@@ -108,52 +108,64 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             self._name_reverse_map.update(reverse_map)
             return super().bind_tools(wire_tools, **kwargs)
 
-        async def _astream(
+        async def astream(
             self,
-            messages: list[BaseMessage],
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
             stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
             **kwargs: Any,
-        ) -> AsyncIterator[ChatGenerationChunk]:
-            """stream chunks with tool-call names un-translated to canonical form.
+        ) -> AsyncIterator[AIMessageChunk]:
+            """stream AIMessageChunks with tool-call names un-translated.
 
-            ``ChatOpenRouter._astream`` yields
-            :class:`ChatGenerationChunk` whose ``.message`` is an
-            ``AIMessageChunk`` carrying ``tool_call_chunks`` (partial,
-            during streaming) and ``tool_calls`` (post-merge). We
-            rewrite each tool-call name on ``chunk.message`` back to
-            the canonical dotted form using the reverse map populated
-            at ``bind_tools`` time, so application code reading
-            ``chunk.message.tool_calls[i]["name"]`` (or the merged
-            AIMessage that consumers accumulate from chunks) never
-            sees the wire form.
+            We override ``astream`` (the public Runnable method) and
+            NOT ``_astream`` (the protected hook) on purpose. Wrapping
+            ``_astream`` in our own async generator -- even as a
+            pass-through -- breaks LangGraph's
+            ``astream_events(version="v2")`` event tap: chunks reach
+            the consumer's ``async for`` loop but the framework's
+            ``on_chat_model_stream`` callbacks never fire, leaving
+            event-driven UIs (e.g. metallm's WS handler) with the saved
+            DB content but a blank live stream. The cause: the
+            callback-firing path lives inside ``BaseChatModel.astream``
+            and depends on the unaltered ``self._astream`` async
+            generator to drive ``run_manager.on_llm_new_token`` calls
+            per chunk; routing chunks through an extra generator layer
+            in our override silently dropped those callbacks for some
+            downstream consumers (observed in metallm conv
+            ``019e1f3d`` on 2026-05-13, 190 chunks delivered, 0 stream
+            events emitted).
 
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
+            Overriding ``astream`` instead means
+            ``BaseChatModel.astream``'s callback wiring runs unchanged
+            against the parent's ``_astream`` output, and we post-
+            process the ``AIMessageChunk`` objects as they're yielded
+            to us. Tool-call name translation still happens on every
+            chunk; event emission still works because we're outside
+            the callback-firing loop.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
             :param stop: optional stop sequences
             :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
-            :param kwargs: passthrough
+            :param kwargs: passthrough to ``super().astream``
             :ptype kwargs: Any
-            :return: async iterator of un-translated chunks
-            :rtype: AsyncIterator[ChatGenerationChunk]
+            :return: async iterator of un-translated AIMessageChunks
+            :rtype: AsyncIterator[AIMessageChunk]
             """
-            async for chunk in super()._astream(
-                messages,
+            async for chunk in super().astream(
+                input,
+                config=config,
                 stop=stop,
-                run_manager=run_manager,
                 **kwargs,
             ):
-                # ``ChatGenerationChunk.message`` is the AIMessageChunk
-                # carrying tool-call fields. Some upstream paths wrap
-                # the message in a different shape (LangChain has
-                # historically vacillated between yielding raw
-                # AIMessageChunks vs ChatGenerationChunks); fall back
-                # to the chunk itself when ``.message`` is absent so
-                # we cover both shapes without a special case.
-                target = getattr(chunk, "message", chunk)
-                reverse_translate_message(target, self._name_reverse_map)
+                # ``BaseChatModel.astream`` yields ``AIMessageChunk``
+                # directly (it unwraps ``ChatGenerationChunk.message``
+                # before yielding). The AIMessageChunk carries the
+                # tool-call fields ``reverse_translate_message`` rewrites.
+                reverse_translate_message(chunk, self._name_reverse_map)
                 yield chunk
 
         async def _agenerate(

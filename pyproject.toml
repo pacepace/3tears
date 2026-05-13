@@ -97,6 +97,17 @@ select = ["SLF"]
 # rationale as ``tool_name_translation.py`` above). paired entries
 # live in tests/enforcement/_underscore_exemptions.txt.
 "packages/models/tests/unit/models/test_provider_openrouter.py" = ["SLF001"]
+# Anthropic-wrapper streaming regression test monkey-patches
+# ``ChatAnthropic._astream`` to yield fake chunks so the test does not
+# need a real Anthropic HTTP call. Same exemption rationale as the
+# OpenRouter test above. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_provider_anthropic.py" = ["SLF001"]
+# OpenAI-wrapper streaming regression test monkey-patches
+# ``ChatOpenAI._astream`` for the same reason as the Anthropic /
+# OpenRouter tests above. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/models/tests/unit/models/test_provider_openai.py" = ["SLF001"]
 # UsageTracker tests reach into two import-time anchors with no public
 # accessors: OpenTelemetry's ``_TRACER_PROVIDER_SET_ONCE._done`` is the
 # only documented escape from OTel 1.39+'s once-flag guard so tests can
