@@ -35,9 +35,9 @@ from threetears.models.tool_name_translation import (
 if TYPE_CHECKING:
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
     from langchain_core.language_models.chat_models import LanguageModelInput
-    from langchain_core.messages import BaseMessage
-    from langchain_core.outputs import ChatGenerationChunk, ChatResult
-    from langchain_core.runnables import Runnable
+    from langchain_core.messages import AIMessageChunk, BaseMessage
+    from langchain_core.outputs import ChatResult
+    from langchain_core.runnables import Runnable, RunnableConfig
     from langchain_core.tools import BaseTool
     from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
@@ -96,34 +96,50 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             self._name_reverse_map.update(reverse_map)
             return super().bind_tools(wire_tools, **kwargs)
 
-        async def _astream(
+        async def astream(
             self,
-            messages: list[BaseMessage],
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
             stop: list[str] | None = None,
-            run_manager: AsyncCallbackManagerForLLMRun | None = None,
             **kwargs: Any,
-        ) -> AsyncIterator[ChatGenerationChunk]:
-            """stream chunks with tool-call names un-translated.
+        ) -> AsyncIterator[AIMessageChunk]:
+            """stream AIMessageChunks with tool-call names un-translated.
 
-            :param messages: chat messages
-            :ptype messages: list[BaseMessage]
+            Parity fix with the OpenRouter / Anthropic wrappers: we
+            override ``astream`` (the public Runnable method), NOT
+            ``_astream``. Wrapping ``_astream`` in our own async
+            generator -- even as a pass-through -- breaks LangGraph's
+            ``astream_events(version="v2")`` event tap: chunks reach
+            the consumer's ``async for`` loop but
+            ``on_chat_model_stream`` callbacks never fire. See the
+            OpenRouter wrapper module for the full incident write-up
+            (metallm 2026-05-13). Today's gateway path drives
+            ``astream`` not ``astream_events``, so this isn't currently
+            biting -- this fix lands the same parity contract so the
+            next consumer to drive the v2 event tap through the
+            OpenAI-compat wrapper (e.g. metallm switching its OpenAI
+            provider to ``create_openai_chat``) doesn't repeat the
+            saga.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
             :param stop: optional stop sequences
             :ptype stop: list[str] | None
-            :param run_manager: LangChain run manager
-            :ptype run_manager: AsyncCallbackManagerForLLMRun | None
-            :param kwargs: passthrough
+            :param kwargs: passthrough to ``super().astream``
             :ptype kwargs: Any
-            :return: async iterator of un-translated chunks
-            :rtype: AsyncIterator[ChatGenerationChunk]
+            :return: async iterator of un-translated AIMessageChunks
+            :rtype: AsyncIterator[AIMessageChunk]
             """
-            async for chunk in super()._astream(
-                messages,
+            async for chunk in super().astream(
+                input,
+                config=config,
                 stop=stop,
-                run_manager=run_manager,
                 **kwargs,
             ):
-                target = getattr(chunk, "message", chunk)
-                reverse_translate_message(target, self._name_reverse_map)
+                reverse_translate_message(chunk, self._name_reverse_map)
                 yield chunk
 
         async def _agenerate(
