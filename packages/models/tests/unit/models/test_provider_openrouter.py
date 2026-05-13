@@ -432,6 +432,120 @@ class TestNameTranslatingChatOpenRouter:
             f" parent's content as-yielded; got {collected_text!r}."
         )
 
+    @pytest.mark.asyncio
+    async def test_astream_events_survives_with_config_callbacks(self) -> None:
+        """``with_config(callbacks=[...])`` must not strip the event_streamer.
+
+        Production failure mode from 2026-05-13 (metallm conv
+        ``019e2243-de0c``): the previous ``astream`` override took its
+        ``config`` argument and forwarded it verbatim to
+        ``super().astream(...)``. When the wrapper instance was wrapped
+        again by ``model.with_config(callbacks=[UsageTracker,
+        CircuitBreaker])`` (which ``threetears.models.factory.create_chat_model``
+        does for every chat model), ``RunnableBinding._merge_configs``
+        produced a config whose ``callbacks`` was a plain list of those
+        bound handlers. Inside ``BaseChatModel.astream``,
+        ``ensure_config(config)`` then performed a key-by-key
+        ``dict.update`` that REPLACED the contextvar's
+        ``AsyncCallbackManager`` (which carries
+        ``astream_events``' event_streamer as an inheritable handler)
+        with the bound list. The event_streamer disappeared for the
+        duration of the model run, no ``on_chat_model_*`` events fired,
+        and the live UI stream stayed blank while the saved DB message
+        was complete -- the exact ``saved_content_length > 0`` /
+        ``tokens_dispatched_count == 0`` fingerprint metallm hit.
+
+        The previous regression test (above) only exercises the bare
+        wrapper instance, so it passed CI while production was broken.
+        This test mirrors what ``create_chat_model`` actually does --
+        wrap the model with ``with_config(callbacks=[...])`` -- so the
+        contextvar-vs-bound-callbacks merge path is on the test surface.
+        """
+        from langchain_core.callbacks import AsyncCallbackHandler
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, kwargs
+            for text in ("hello ", "world", "!"):
+                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
+                yield chunk
+
+        class _RecordingCallback(AsyncCallbackHandler):
+            """Stand in for ``UsageTrackingCallback`` /
+            ``CircuitBreakerCallback`` -- the bound, list-form callbacks
+            ``create_chat_model`` attaches via ``with_config``."""
+
+            def __init__(self) -> None:
+                self.start_seen = 0
+                self.token_seen = 0
+
+            async def on_chat_model_start(
+                self,
+                serialized: Any,
+                messages: Any,
+                **_: Any,
+            ) -> None:
+                del serialized, messages
+                self.start_seen += 1
+
+            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+                del token
+                self.token_seen += 1
+
+        bound_cb = _RecordingCallback()
+        model = create_openrouter_chat(
+            "deepseek/deepseek-chat-v3-0324",
+            "sk-test",
+        )
+        # Mirror ``threetears.models.factory.create_chat_model``'s
+        # ``model.with_config(callbacks=[...])`` step.
+        bound_model = model.with_config(callbacks=[bound_cb])
+
+        original_astream = ChatOpenRouter._astream
+        try:
+            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
+            stream_event_count = 0
+            async for event in bound_model.astream_events("hi", version="v2"):
+                if event["event"] == "on_chat_model_stream":
+                    stream_event_count += 1
+        finally:
+            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+
+        # Event_streamer must still see chat-model-stream events even
+        # though the bound list of callbacks is also present.
+        assert stream_event_count >= 3, (
+            "with_config-bound list callbacks REPLACED the contextvar's"
+            " event_streamer manager — `on_chat_model_stream` events"
+            f" never reached astream_events. Got {stream_event_count}"
+            " events (need >=3 from three fake chunks plus framework's"
+            " trailing empty chunk). This is the metallm 2026-05-13"
+            " production fingerprint — fix the wrapper's `astream`"
+            " override (do not forward `config` verbatim; pre-merge it"
+            " with the contextvar via merge_configs)."
+        )
+        # And the bound callbacks must STILL fire — the fix can't"
+        # silently drop UsageTracker / CircuitBreaker either.
+        assert bound_cb.start_seen >= 1, (
+            "Bound callback's on_chat_model_start never fired —"
+            " the fix dropped the with_config list when preserving the"
+            " contextvar manager. Both must propagate."
+        )
+        assert bound_cb.token_seen >= 3, (
+            "Bound callback's on_llm_new_token fired"
+            f" {bound_cb.token_seen} times — expected >=3 (one per"
+            " fake chunk). The fix silently dropped the list of bound"
+            " handlers somewhere in the merge."
+        )
+
 
 class TestVanillaChatAnthropicBaseline:
     """Baseline confirming vanilla ``ChatAnthropic`` -- with no wrapper

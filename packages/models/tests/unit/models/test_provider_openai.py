@@ -133,3 +133,77 @@ class TestOpenAIWrapperStreaming:
             f" callback chain that drives astream_events(v2)."
         )
         assert collected_text == "openai wrapper ok"
+
+    @pytest.mark.asyncio
+    async def test_astream_events_survives_with_config_callbacks(self) -> None:
+        """``with_config(callbacks=[...])`` must not strip the event_streamer.
+
+        Same production failure mode as the OpenRouter wrapper. See
+        :class:`TestNameTranslatingChatOpenRouter` (or the OpenRouter
+        wrapper docstring) for the full incident write-up. This pins
+        the contract on the OpenAI wrapper so the bug can't reappear
+        here either.
+        """
+        from langchain_core.callbacks import AsyncCallbackHandler
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, kwargs
+            for text in ("open", "ai ", "wrapper ", "ok"):
+                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
+                yield chunk
+
+        class _RecordingCallback(AsyncCallbackHandler):
+            def __init__(self) -> None:
+                self.start_seen = 0
+                self.token_seen = 0
+
+            async def on_chat_model_start(
+                self,
+                serialized: Any,
+                messages: Any,
+                **_: Any,
+            ) -> None:
+                del serialized, messages
+                self.start_seen += 1
+
+            async def on_llm_new_token(self, token: str, **_: Any) -> None:
+                del token
+                self.token_seen += 1
+
+        bound_cb = _RecordingCallback()
+        model = create_openai_chat("gpt-4o", "sk-test")
+        bound_model = model.with_config(callbacks=[bound_cb])
+
+        original_astream = ChatOpenAI._astream
+        try:
+            ChatOpenAI._astream = _fake_super_astream  # type: ignore[method-assign]
+            stream_event_count = 0
+            async for event in bound_model.astream_events("hi", version="v2"):
+                if event["event"] == "on_chat_model_stream":
+                    stream_event_count += 1
+        finally:
+            ChatOpenAI._astream = original_astream  # type: ignore[method-assign]
+
+        assert stream_event_count >= 4, (
+            "with_config-bound list callbacks REPLACED the contextvar's"
+            " event_streamer manager — `on_chat_model_stream` events"
+            f" never reached astream_events. Got {stream_event_count}."
+        )
+        assert bound_cb.start_seen >= 1, (
+            "Bound callback's on_chat_model_start never fired — the"
+            " fix dropped the with_config list when preserving the"
+            " contextvar manager. Both must propagate."
+        )
+        assert bound_cb.token_seen >= 4, (
+            f"Bound callback's on_llm_new_token fired {bound_cb.token_seen}"
+            " times — expected >=4 (one per fake chunk). The fix"
+            " silently dropped the list of bound handlers."
+        )

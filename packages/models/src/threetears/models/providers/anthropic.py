@@ -172,9 +172,18 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             :return: async iterator of un-translated AIMessageChunks
             :rtype: AsyncIterator[AIMessageChunk]
             """
+            # Pre-merge with the contextvar config so the
+            # ``astream_events`` event_streamer (carried in the
+            # contextvar's AsyncCallbackManager) survives
+            # BaseChatModel.astream's ensure_config replace-by-key step.
+            # See the OpenRouter wrapper for the full incident write-up
+            # (metallm 2026-05-13, conv ``019e2243-de0c``).
+            from langchain_core.runnables.config import ensure_config, merge_configs
+
+            merged_config = merge_configs(ensure_config(None), config)
             async for chunk in super().astream(
                 input,
-                config=config,
+                config=merged_config,
                 stop=stop,
                 **kwargs,
             ):
