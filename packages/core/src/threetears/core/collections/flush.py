@@ -7,6 +7,7 @@ import json
 from enum import StrEnum
 from typing import Any, NamedTuple, TYPE_CHECKING
 
+import asyncpg
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 
 from threetears.observe import get_logger
@@ -37,7 +38,40 @@ _write_buffer_table = Table(
     Column("date_updated", String, nullable=True),
 )
 
+# Retry budget for general flush failures (transient DB errors,
+# serialization, etc.). Once a write fails this many times it is
+# dropped from the buffer and a permanent-failure event logged.
 _MAX_FLUSH_RETRIES = 10
+
+# Retry budget for foreign-key-violation failures specifically. FK
+# violations almost always mean "my parent hasn't reached Postgres
+# yet" -- the parent is either later in the toposort within this
+# drain (already addressed) or pending in a separate drain batch.
+# In the latter case the child just needs to wait for the parent
+# to land before retrying. The pre-2026-05-13 behavior of capping
+# FK retries at 10 (~5 minutes at the 30s default flush interval)
+# was too tight: a single dropped parent message permanently
+# orphaned every descendant in the conversation, producing the
+# cascading "messages dropped, half conversation missing"
+# fingerprint in production (metallm conv ``019e2372-fcdd``,
+# 2026-05-13 incident). 100 retries at the same interval = ~50min,
+# enough headroom for any realistic transient. Beyond that the
+# parent genuinely failed and the child is unreachable -- drop
+# with a clear "orphan chain" log so operators can investigate.
+_FK_RETRY_LIMIT = 100
+
+
+def _is_fk_violation(exc: BaseException) -> bool:
+    """Detect whether an exception is a Postgres foreign-key violation.
+
+    Two signals are checked: ``isinstance`` against the asyncpg
+    typed exception, AND a substring match in the exception message
+    (covers cases where the violation was raised through a wrapper
+    or re-raised as a different class). Either match counts.
+    """
+    if isinstance(exc, asyncpg.exceptions.ForeignKeyViolationError):
+        return True
+    return "violates foreign key constraint" in str(exc)
 
 
 class FlushStrategy(StrEnum):
@@ -217,27 +251,46 @@ async def flush_pending(
             await collection.persist_to_postgres(pw.data)
             flushed += 1
         except Exception as exc:
+            # FK violations are "my parent hasn't landed yet" -- treat
+            # them as deferral, not failure: re-enqueue with the
+            # generous _FK_RETRY_LIMIT budget so the parent has time
+            # to land in a subsequent drain. All other errors use the
+            # original _MAX_FLUSH_RETRIES budget.
+            fk_violation = _is_fk_violation(exc)
+            retry_limit = _FK_RETRY_LIMIT if fk_violation else _MAX_FLUSH_RETRIES
             next_retry = pw.retries + 1
-            if next_retry >= _MAX_FLUSH_RETRIES:
+            if next_retry >= retry_limit:
+                # Permanent drop. For FK violations, this means the
+                # parent will never land -- log as an "orphan chain"
+                # event so operators can run the conversation repair
+                # endpoint (or otherwise reset the cache).
                 log.error(
-                    "Flush write permanently failed after max retries, dropping",
+                    "Orphan chain — FK violation exhausted retries, dropping"
+                    if fk_violation
+                    else "Flush write permanently failed after max retries, dropping",
                     extra={
                         "extra_data": {
                             "table": pw.table_name,
                             "entity_id": str(pw.entity_id),
                             "retries": next_retry,
+                            "retry_limit": retry_limit,
+                            "fk_violation": fk_violation,
                             "error": str(exc),
                         }
                     },
                 )
             else:
                 log.warning(
-                    "Flush write failed, re-adding to buffer for retry",
+                    "Flush write deferred (FK parent pending), re-adding to buffer"
+                    if fk_violation
+                    else "Flush write failed, re-adding to buffer for retry",
                     extra={
                         "extra_data": {
                             "table": pw.table_name,
                             "entity_id": str(pw.entity_id),
                             "retry": next_retry,
+                            "retry_limit": retry_limit,
+                            "fk_violation": fk_violation,
                             "error": str(exc),
                         }
                     },
