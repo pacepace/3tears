@@ -138,11 +138,101 @@ class TestFriendlyApiError:
         assert "server-side outage" in result
 
     def test_status_400_returns_unexpected_error_with_code(self) -> None:
-        """APIStatusError 400 returns unexpected error with HTTP code."""
+        """APIStatusError 400 with no body returns generic unexpected-error line.
+
+        Without a structured ``{"error": {"message": "..."}}`` body we
+        have nothing actionable to surface; the generic "HTTP 400"
+        message at least tells the user this was a client-class error
+        and isn't worth retrying without a config change.
+        """
         exc = _make_status_error(400)
         result = friendly_api_error(exc)
         assert "unexpected error" in result
         assert "HTTP 400" in result
+
+    def test_status_400_with_body_message_returns_provider_message(self) -> None:
+        """APIStatusError 400 with body.error.message surfaces the provider's own
+        message verbatim — the post-2026-05-13 fix for the
+        ``credit balance too low`` symptom on Anthropic-direct.
+
+        The provider's own message is the most actionable thing we can
+        show the user; substituting our own ``unexpected error (HTTP
+        400)`` line throws away the diagnostic and leaves the user
+        staring at a generic stub when the actual answer ("top up your
+        credits") was sitting right there in the response body.
+        """
+        credit_msg = (
+            "Your credit balance is too low to access the Anthropic API. "
+            "Please go to Plans & Billing to upgrade or purchase credits."
+        )
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": credit_msg}}
+        exc = _make_status_error(400, body=body)
+        result = friendly_api_error(exc)
+        assert "Anthropic" in result
+        assert credit_msg in result
+        # Generic fallback strings must not appear when we have the real message.
+        assert "unexpected error" not in result
+        assert "HTTP 400" not in result
+
+    def test_status_402_with_body_message_returns_provider_message(self) -> None:
+        """APIStatusError 402 (payment required) with body surfaces provider message."""
+        body = {"error": {"message": "Payment required. Upgrade your plan to continue."}}
+        exc = _make_status_error(402, body=body)
+        result = friendly_api_error(exc)
+        assert "Payment required" in result
+        assert "Anthropic" in result
+
+    def test_status_403_with_body_message_returns_provider_message(self) -> None:
+        """APIStatusError 403 with body surfaces provider message instead of generic."""
+        body = {"error": {"message": "Access denied: content policy violation."}}
+        exc = _make_status_error(403, body=body)
+        result = friendly_api_error(exc)
+        assert "content policy violation" in result
+        # Sanity: generic 4xx fallback must be replaced by the body message
+        assert "unexpected error" not in result
+
+    def test_status_400_with_body_message_empty_falls_through_to_generic(self) -> None:
+        """APIStatusError 400 with body whose error.message is empty/whitespace
+        falls through to the generic line (no useful message to surface).
+        """
+        body = {"error": {"message": "   "}}
+        exc = _make_status_error(400, body=body)
+        result = friendly_api_error(exc)
+        assert "unexpected error" in result
+        assert "HTTP 400" in result
+
+    def test_status_401_with_body_message_keeps_api_key_message(self) -> None:
+        """APIStatusError 401 keeps our ``rejected our API key`` message even when
+        the body has its own ``error.message``: 401 is a server-side config
+        problem, not something the end user can fix, so the provider's own
+        wording (typically "Invalid x-api-key") is less actionable than telling
+        the user to contact an administrator.
+        """
+        body = {"error": {"message": "Invalid x-api-key"}}
+        exc = _make_status_error(401, body=body)
+        result = friendly_api_error(exc)
+        assert "rejected our API key" in result
+        assert "administrator" in result
+
+    def test_status_429_with_body_message_keeps_rate_limit_message(self) -> None:
+        """APIStatusError 429 keeps our ``rate-limited`` retry guidance even when
+        the body has its own ``error.message`` — the categorized retry-in-30s
+        advice is more useful than whatever wording the provider used.
+        """
+        body = {"error": {"message": "Number of requests has exceeded your plan's rate limit"}}
+        exc = _make_status_error(429, body=body)
+        result = friendly_api_error(exc)
+        assert "rate-limited" in result
+        assert "30 seconds" in result
+
+    def test_status_500_with_body_message_keeps_outage_message(self) -> None:
+        """APIStatusError 5xx keeps our ``server-side outage`` retry guidance
+        even when the body has its own ``error.message``.
+        """
+        body = {"error": {"message": "Internal Server Error"}}
+        exc = _make_status_error(500, body=body)
+        result = friendly_api_error(exc)
+        assert "server-side outage" in result
 
     def test_timeout_error_returns_timeout_message(self) -> None:
         """APITimeoutError returns timeout message."""

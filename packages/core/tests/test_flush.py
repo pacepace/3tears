@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from threetears.core.collections.flush import (
+    _FK_RETRY_LIMIT,
+    _MAX_FLUSH_RETRIES,
     PendingWrite,
     WriteBuffer,
+    _is_fk_violation,
     _toposort_pending,
     flush_pending,
 )
@@ -254,3 +258,149 @@ class TestFlushPending:
         flushed = await flush_pending(buf, registry)
 
         assert flushed == 2
+
+
+class TestIsFkViolation:
+    """Tests for ``_is_fk_violation`` — detection of FK errors so the
+    retry policy can grant them the generous ``_FK_RETRY_LIMIT``
+    budget instead of dropping after ``_MAX_FLUSH_RETRIES``.
+    """
+
+    def test_typed_asyncpg_exception_returns_true(self) -> None:
+        """asyncpg.exceptions.ForeignKeyViolationError is the canonical
+        match -- detected via isinstance, no string fallback needed.
+        """
+        exc = asyncpg.exceptions.ForeignKeyViolationError(
+            "insert or update on table violates foreign key constraint",
+        )
+        assert _is_fk_violation(exc) is True
+
+    def test_substring_match_in_generic_exception_returns_true(self) -> None:
+        """A non-asyncpg exception whose ``str()`` contains the marker
+        text still counts -- defense-in-depth for wrappers or re-raised
+        exceptions that lose the typed class but preserve the message.
+        """
+        exc = RuntimeError(
+            'insert or update on table "messages" violates foreign key constraint "messages_parent_message_id_fkey"',
+        )
+        assert _is_fk_violation(exc) is True
+
+    def test_unrelated_exception_returns_false(self) -> None:
+        """Generic exceptions whose message lacks the marker substring
+        are NOT FK violations -- the normal retry budget applies.
+        """
+        assert _is_fk_violation(RuntimeError("db connection lost")) is False
+        assert _is_fk_violation(ValueError("bad input")) is False
+
+    def test_empty_message_returns_false(self) -> None:
+        """An exception with no useful message string returns False (no
+        substring match) — exercises the substring branch's empty case.
+        """
+        assert _is_fk_violation(Exception()) is False
+
+
+class TestFkAwareRetryPolicy:
+    """Tests for the FK-aware retry policy in ``flush_pending``: FK
+    violations use the generous ``_FK_RETRY_LIMIT`` budget while all
+    other failures use ``_MAX_FLUSH_RETRIES``. Critic 2026-05-13
+    flagged the lack of direct coverage as block-worthy; this class
+    closes the gap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fk_violation_uses_extended_retry_budget(self) -> None:
+        """A pending write that fails with an FK violation re-enqueues
+        even when ``retries`` is at the GENERAL ``_MAX_FLUSH_RETRIES``
+        boundary -- because FK errors get the larger ``_FK_RETRY_LIMIT``
+        budget. Otherwise a single Anthropic-class outage would orphan
+        every descendant in the conversation tree (the 2026-05-13
+        metallm incident fingerprint).
+        """
+        buf = WriteBuffer()
+        # Sit exactly at the general retry boundary -- one more failure
+        # would drop under the OLD policy, but the FK-specific budget
+        # should still allow re-enqueue.
+        await buf.add(
+            "messages",
+            "m1",
+            {"id": "m1"},
+            retries=_MAX_FLUSH_RETRIES - 1,
+        )
+
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "messages"
+        mock_coll.persist_to_postgres = AsyncMock(
+            side_effect=asyncpg.exceptions.ForeignKeyViolationError(
+                "violates foreign key constraint",
+            ),
+        )
+        registry.register(mock_coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        # Re-enqueued, NOT dropped -- the FK budget hasn't been
+        # exhausted (still well below _FK_RETRY_LIMIT).
+        assert buf.pending_count() == 1
+        items = await buf.drain()
+        assert items[0].retries == _MAX_FLUSH_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_fk_violation_drops_at_fk_retry_limit(self) -> None:
+        """Once the FK-specific budget is exhausted the write IS dropped
+        permanently with the ``Orphan chain`` log signal so operators
+        can run the metallm conversation-repair endpoint. Verifies the
+        upper bound of the new policy.
+        """
+        buf = WriteBuffer()
+        await buf.add(
+            "messages",
+            "m1",
+            {"id": "m1"},
+            retries=_FK_RETRY_LIMIT - 1,
+        )
+
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "messages"
+        mock_coll.persist_to_postgres = AsyncMock(
+            side_effect=asyncpg.exceptions.ForeignKeyViolationError(
+                "violates foreign key constraint",
+            ),
+        )
+        registry.register(mock_coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        assert buf.pending_count() == 0  # permanently dropped
+
+    @pytest.mark.asyncio
+    async def test_non_fk_violation_keeps_general_retry_budget(self) -> None:
+        """A non-FK exception (e.g. connection lost) drops at the
+        existing ``_MAX_FLUSH_RETRIES`` boundary, NOT the extended FK
+        budget. Confirms the FK branch is narrow and doesn't accidentally
+        grant unbounded retries to every transient failure class.
+        """
+        buf = WriteBuffer()
+        # One short of the general boundary -- last legitimate retry.
+        await buf.add(
+            "users",
+            "u1",
+            {"id": "u1"},
+            retries=_MAX_FLUSH_RETRIES - 1,
+        )
+
+        registry = CollectionRegistry()
+        mock_coll = MagicMock()
+        mock_coll.table_name = "users"
+        mock_coll.persist_to_postgres = AsyncMock(
+            side_effect=RuntimeError("connection refused"),
+        )
+        registry.register(mock_coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        assert buf.pending_count() == 0  # dropped at _MAX_FLUSH_RETRIES
