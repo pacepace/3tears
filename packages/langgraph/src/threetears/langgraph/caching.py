@@ -14,6 +14,34 @@ the hook that wires these helpers into the node lives in
 :mod:`threetears.langgraph.hooks` (class
 :class:`threetears.langgraph.hooks.PromptCachingHook`).
 
+capability provider registry
+============================
+
+consumers whose runtime chat model is not a direct LangChain provider
+class -- for example, agent SDKs that route through a custom proxy
+class such as ``NatsChatModel`` -- can register a callable via
+:func:`register_capability_provider` that maps their proxy instance to
+a :class:`ChatModelCapabilities` record. :func:`detect_capabilities`
+walks every registered provider in registration order BEFORE the
+built-in class-name dispatch; the first non-``None`` return wins. when
+every registered provider returns ``None`` the function falls through
+to the built-in dispatch, so the registry is purely additive.
+
+concurrency contract: the registry is guarded by contract, not by a
+lock. callers MUST register providers during framework bootstrap,
+before any agent invocation runs ``detect_capabilities``. concurrent
+registration + read from different threads is out of contract --
+:func:`detect_capabilities` is called from the asyncio event loop
+inside ``PromptCachingHook`` / ``agent_node`` / ``tool_node``, and
+that loop is single-threaded. consumers that need broader concurrency
+(sync-callback dispatch on a thread pool, for example) should wrap
+``detect_capabilities`` locally with their own lock. the sibling
+:mod:`threetears.models.capabilities` registry uses
+``threading.Lock`` because it has a broader read surface (sync
+``UsageTrackingCallback`` reads via thread-pool dispatch); the
+langgraph caching registry has a narrower surface and does not
+need to pay that cost.
+
 anthropic prompt caching contract
 =================================
 
@@ -47,6 +75,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,11 +84,14 @@ from langchain_core.messages import SystemMessage
 __all__ = [
     "ANTHROPIC_MIN_CACHEABLE_TOKENS",
     "ANTHROPIC_EPHEMERAL_TTL_SECONDS",
+    "CapabilityProvider",
     "ChatModelCapabilities",
     "annotate_system_prompt",
+    "clear_capability_providers",
     "compute_tool_key",
     "detect_capabilities",
     "extract_cache_usage",
+    "register_capability_provider",
     "should_bind_tools_fresh",
 ]
 
@@ -173,6 +205,68 @@ _NO_CACHE_CAPABILITIES: ChatModelCapabilities = ChatModelCapabilities(
 )
 
 
+# -- capability provider registry --------------------------------------------
+
+CapabilityProvider = Callable[[Any], "ChatModelCapabilities | None"]
+"""callable signature for the registry hook.
+
+a provider receives the chat-model instance and returns a
+:class:`ChatModelCapabilities` record when it recognizes the instance,
+or ``None`` to defer to the next provider (or the built-in
+class-name dispatch when every provider has returned ``None``).
+"""
+
+
+_capability_providers: list[CapabilityProvider] = []
+
+
+def register_capability_provider(provider: CapabilityProvider) -> None:
+    """register a callable that maps custom chat-model proxies to capabilities.
+
+    providers run in registration order from inside
+    :func:`detect_capabilities` BEFORE the built-in class-name
+    dispatch. the first provider to return a non-``None`` record
+    wins; when every provider returns ``None`` the function falls
+    through to the built-in dispatch.
+
+    registration is idempotent by callable identity: registering
+    the same function twice has no effect, so consumers can call
+    this from a bootstrap phase that may run more than once per
+    process (e.g. supervisor restarts) without piling up duplicate
+    entries.
+
+    intended use: an agent SDK whose runtime chat model is a NATS
+    proxy class (``NatsChatModel``) registers a provider that
+    resolves the proxy's model identifier through
+    :func:`threetears.models.capabilities.get_capabilities` and
+    returns the corresponding :class:`ChatModelCapabilities`
+    record. the proxy then participates in prompt caching exactly
+    like a direct LangChain provider would.
+
+    concurrency: callers MUST register during framework bootstrap,
+    before any concurrent reads of :func:`detect_capabilities`.
+    see the module docstring for the full concurrency contract.
+
+    :param provider: callable receiving the chat-model instance and
+        returning a :class:`ChatModelCapabilities` record or ``None``
+    :ptype provider: CapabilityProvider
+    """
+    for existing in _capability_providers:
+        if existing is provider:
+            return
+    _capability_providers.append(provider)
+
+
+def clear_capability_providers() -> None:
+    """drop every registered capability provider.
+
+    intended for test-suite cleanup; production code should not
+    clear the registry mid-run. matches the pattern of
+    :func:`threetears.models.capabilities.clear_capability_overrides`.
+    """
+    _capability_providers.clear()
+
+
 def _extract_model_name(chat_model: Any) -> str:
     """read the model identifier off a langchain chat-model instance.
 
@@ -220,6 +314,12 @@ def detect_capabilities(chat_model: Any) -> ChatModelCapabilities:
 
     detection strategy:
 
+    0. consult every callable registered via
+       :func:`register_capability_provider` in registration order.
+       the first non-``None`` return wins. this seam lets agent SDKs
+       resolve proxy-class chat models (e.g. ``NatsChatModel``)
+       without having to ship a langchain class lookup for every
+       upstream provider they tunnel.
     1. read the adapter class name (``type(chat_model).__name__``).
     2. read the model identifier via :func:`_extract_model_name`.
     3. map ``(class_name, model_name)`` onto a capability record.
@@ -243,17 +343,21 @@ def detect_capabilities(chat_model: Any) -> ChatModelCapabilities:
       record for prompt-construction purposes; cache pricing
       differs and is the caller's concern.
 
-    detection is conservative: when neither the class name nor the
-    slug prefix matches, the function returns the all-False record
-    so the node path emits a bare system message and no cache
-    annotations. this is the deliberate cross-provider-degradation
-    behavior the shard pins.
+    detection is conservative: when neither a registered provider,
+    the class name, nor the slug prefix matches, the function
+    returns the all-False record so the node path emits a bare
+    system message and no cache annotations. this is the deliberate
+    cross-provider-degradation behavior the shard pins.
 
     :param chat_model: langchain chat-model instance to inspect
     :ptype chat_model: Any
     :return: capability record for this model
     :rtype: ChatModelCapabilities
     """
+    for provider in _capability_providers:
+        custom = provider(chat_model)
+        if custom is not None:
+            return custom
     class_name = type(chat_model).__name__
     model_name = _extract_model_name(chat_model)
     caps: ChatModelCapabilities = _NO_CACHE_CAPABILITIES

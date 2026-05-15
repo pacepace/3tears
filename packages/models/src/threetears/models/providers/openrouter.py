@@ -301,6 +301,14 @@ _OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_tools=True,
         supports_vision=False,
         requires_alternating_roles=True,
+        # DeepSeek's direct API runs automatic context caching and surfaces
+        # ``cached_tokens`` on the response without an opt-in marker; the
+        # ``deepseek/`` slug routed through OpenRouter inherits the same
+        # behavior. Same request shape as OpenAI auto-cache.
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
     ),
     "deepseek/deepseek-r1": ModelCapabilities(
         model_name="deepseek/deepseek-r1",
@@ -314,6 +322,10 @@ _OPENROUTER_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_tools=False,
         supports_vision=False,
         requires_alternating_roles=True,
+        supports_anthropic_cache_control=False,
+        supports_openai_auto_cache=True,
+        min_cacheable_tokens=0,
+        cache_ttl_seconds=0,
     ),
 }
 
