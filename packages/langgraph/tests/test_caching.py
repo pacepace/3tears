@@ -16,9 +16,11 @@ from threetears.langgraph.caching import (
     ANTHROPIC_MIN_CACHEABLE_TOKENS,
     ChatModelCapabilities,
     annotate_system_prompt,
+    clear_capability_providers,
     compute_tool_key,
     detect_capabilities,
     extract_cache_usage,
+    register_capability_provider,
     should_bind_tools_fresh,
 )
 
@@ -306,6 +308,186 @@ class TestDetectCapabilities:
         )
         assert caps.supports_anthropic_cache_control is False
         assert caps.supports_openai_auto_cache is False
+
+
+class _StubNatsChatModel:
+    """Stand-in for the agent SDK's ``NatsChatModel`` proxy class.
+
+    Class name doesn't match any built-in dispatch case, so
+    :func:`detect_capabilities` falls through to the all-False
+    record unless a registered provider intercepts. Carries a
+    ``model`` attribute so a registered provider can read the
+    underlying model identifier just like
+    :func:`_extract_model_name` would.
+    """
+
+    def __init__(self, model: str) -> None:
+        """capture the underlying model identifier the SDK proxies for.
+
+        :param model: model name the proxy was constructed with
+        :ptype model: str
+        """
+        self.model = model
+
+
+class TestRegisterCapabilityProvider:
+    """``register_capability_provider`` seam for proxy chat-model classes.
+
+    The seam exists so an agent SDK whose runtime chat model is a
+    proxy class (NATS-routed, HTTP-routed, etc.) can resolve its
+    instances to a capability record without forking
+    :func:`detect_capabilities`. Tests clear the registry between
+    cases via :func:`clear_capability_providers` so registrations
+    don't leak across tests.
+    """
+
+    def setup_method(self) -> None:
+        """clear the registry before each test."""
+        clear_capability_providers()
+
+    def teardown_method(self) -> None:
+        """clear the registry after each test so production code paths
+        elsewhere in the suite don't see leftover providers."""
+        clear_capability_providers()
+
+    def test_registered_provider_intercepts_unknown_class(self) -> None:
+        """a registered provider takes precedence over the built-in fall-through.
+
+        Without the provider, a ``_StubNatsChatModel`` falls through
+        the built-in class-name dispatch and returns the all-False
+        record. With a provider registered that recognizes the proxy,
+        ``detect_capabilities`` returns the provider's record instead.
+        """
+        target_caps = ChatModelCapabilities(
+            supports_anthropic_cache_control=True,
+            supports_openai_auto_cache=False,
+            min_cacheable_tokens=ANTHROPIC_MIN_CACHEABLE_TOKENS,
+            cache_ttl_seconds=ANTHROPIC_EPHEMERAL_TTL_SECONDS,
+        )
+
+        def _provider(chat_model: Any) -> ChatModelCapabilities | None:
+            if isinstance(chat_model, _StubNatsChatModel):
+                return target_caps
+            return None
+
+        baseline = detect_capabilities(_StubNatsChatModel("claude-sonnet"))
+        assert baseline.supports_anthropic_cache_control is False
+
+        register_capability_provider(_provider)
+
+        result = detect_capabilities(_StubNatsChatModel("claude-sonnet"))
+        assert result is target_caps
+
+    def test_provider_returning_none_falls_through(self) -> None:
+        """a provider returning ``None`` defers to the next provider / built-in.
+
+        Confirms the contract that ``None`` means "I don't recognize
+        this instance" rather than "force the no-cache record".
+        """
+
+        def _provider_returning_none(chat_model: Any) -> ChatModelCapabilities | None:
+            del chat_model
+            return None
+
+        register_capability_provider(_provider_returning_none)
+
+        # Built-in dispatch still resolves ChatAnthropic correctly when
+        # the registered provider defers.
+        result = detect_capabilities(_StubChatAnthropic("claude-sonnet-4-5"))
+        assert result.supports_anthropic_cache_control is True
+
+    def test_providers_run_in_registration_order(self) -> None:
+        """first non-``None`` return wins; later providers don't run.
+
+        Pin the contract that registration order matters and that
+        subsequent providers don't get a chance to override an earlier
+        recognized record. This protects consumers that register
+        broad-then-narrow handlers from being silently overridden by
+        an unrelated narrow handler registered later.
+        """
+        first_caps = ChatModelCapabilities(
+            supports_anthropic_cache_control=True,
+            supports_openai_auto_cache=False,
+            min_cacheable_tokens=1024,
+            cache_ttl_seconds=300,
+        )
+        second_caps = ChatModelCapabilities(
+            supports_anthropic_cache_control=False,
+            supports_openai_auto_cache=True,
+            min_cacheable_tokens=0,
+            cache_ttl_seconds=0,
+        )
+        second_called = False
+
+        def _first(chat_model: Any) -> ChatModelCapabilities | None:
+            del chat_model
+            return first_caps
+
+        def _second(chat_model: Any) -> ChatModelCapabilities | None:
+            nonlocal second_called
+            second_called = True
+            return second_caps
+
+        register_capability_provider(_first)
+        register_capability_provider(_second)
+
+        result = detect_capabilities(_StubNatsChatModel("anything"))
+        assert result is first_caps
+        assert second_called is False
+
+    def test_registration_is_idempotent_by_callable_identity(self) -> None:
+        """registering the same callable twice is a no-op.
+
+        Lets bootstrap phases that may run more than once per process
+        (supervisor restarts, test fixture re-entry) call
+        :func:`register_capability_provider` unconditionally without
+        piling up duplicates.
+        """
+        call_count = 0
+
+        def _provider(chat_model: Any) -> ChatModelCapabilities | None:
+            nonlocal call_count
+            call_count += 1
+            return None
+
+        register_capability_provider(_provider)
+        register_capability_provider(_provider)
+        register_capability_provider(_provider)
+
+        detect_capabilities(_StubNatsChatModel("anything"))
+        # Only one entry in the registry, so the callable runs exactly once.
+        assert call_count == 1
+
+    def test_clear_removes_all_providers(self) -> None:
+        """``clear_capability_providers`` empties the registry.
+
+        Test-suite cleanup; also confirms that after clear the proxy
+        falls back through to the all-False built-in record.
+        """
+
+        def _provider(chat_model: Any) -> ChatModelCapabilities | None:
+            return ChatModelCapabilities(
+                supports_anthropic_cache_control=True,
+                supports_openai_auto_cache=False,
+                min_cacheable_tokens=1024,
+                cache_ttl_seconds=300,
+            )
+
+        register_capability_provider(_provider)
+        assert (
+            detect_capabilities(
+                _StubNatsChatModel("anything"),
+            ).supports_anthropic_cache_control
+            is True
+        )
+
+        clear_capability_providers()
+        assert (
+            detect_capabilities(
+                _StubNatsChatModel("anything"),
+            ).supports_anthropic_cache_control
+            is False
+        )
 
 
 class TestAnnotateSystemPrompt:

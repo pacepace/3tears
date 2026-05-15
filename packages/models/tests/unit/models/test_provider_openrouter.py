@@ -44,6 +44,32 @@ class TestOpenRouterCapabilityRegistration:
         assert caps.model_tier == ModelTier.LARGE
         assert caps.requires_alternating_roles is True
 
+    def test_deepseek_chat_cache_fields(self) -> None:
+        """``deepseek/deepseek-chat-v3-0324`` carries auto-cache fields.
+
+        DeepSeek's direct API runs automatic context caching and
+        surfaces ``cached_tokens`` on the response. The ``deepseek/``
+        slug routed through OpenRouter inherits the same behavior,
+        so the capability record matches OpenAI's auto-cache shape
+        (cache_control not supported, openai-auto-cache supported,
+        no minimum, no TTL).
+        """
+        caps = get_capabilities("deepseek/deepseek-chat-v3-0324")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is True
+        assert caps.min_cacheable_tokens == 0
+        assert caps.cache_ttl_seconds == 0
+
+    def test_deepseek_r1_cache_fields(self) -> None:
+        """``deepseek/deepseek-r1`` carries auto-cache fields."""
+        caps = get_capabilities("deepseek/deepseek-r1")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is True
+        assert caps.min_cacheable_tokens == 0
+        assert caps.cache_ttl_seconds == 0
+
 
 # -- name translation --------------------------------------------------------
 

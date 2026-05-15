@@ -66,6 +66,60 @@ class TestModelCapabilities:
         assert caps.supports_vision is None
         assert caps.requires_alternating_roles is None
 
+    def test_model_capabilities_cache_fields_default_none(self) -> None:
+        """ModelCapabilities cache fields default to None (tri-state).
+
+        the four cache fields are tri-state: None means "not declared
+        by the provider entry", True/False means "explicitly supports /
+        does not support", and the int fields use 0 for "no minimum /
+        no TTL" (auto-cache shape) vs None for "not declared".
+        """
+        caps = ModelCapabilities(
+            model_name="test-model",
+            model_type=ModelType.CHAT,
+            model_tier=ModelTier.SMALL,
+        )
+        assert caps.supports_anthropic_cache_control is None
+        assert caps.supports_openai_auto_cache is None
+        assert caps.min_cacheable_tokens is None
+        assert caps.cache_ttl_seconds is None
+
+    def test_model_capabilities_cache_fields_accept_explicit_values(self) -> None:
+        """cache fields accept explicit bool / int values.
+
+        anthropic-shape: cache_control supported, 1024 token minimum,
+        300 second ephemeral TTL. openai-shape: auto-cache supported,
+        no minimum, no TTL. explicit False for the unsupported flag
+        is distinguishable from None (not declared).
+        """
+        anthropic = ModelCapabilities(
+            model_name="claude-test",
+            model_type=ModelType.CHAT,
+            model_tier=ModelTier.LARGE,
+            supports_anthropic_cache_control=True,
+            supports_openai_auto_cache=False,
+            min_cacheable_tokens=1024,
+            cache_ttl_seconds=300,
+        )
+        assert anthropic.supports_anthropic_cache_control is True
+        assert anthropic.supports_openai_auto_cache is False
+        assert anthropic.min_cacheable_tokens == 1024
+        assert anthropic.cache_ttl_seconds == 300
+
+        openai = ModelCapabilities(
+            model_name="gpt-test",
+            model_type=ModelType.CHAT,
+            model_tier=ModelTier.LARGE,
+            supports_anthropic_cache_control=False,
+            supports_openai_auto_cache=True,
+            min_cacheable_tokens=0,
+            cache_ttl_seconds=0,
+        )
+        assert openai.supports_anthropic_cache_control is False
+        assert openai.supports_openai_auto_cache is True
+        assert openai.min_cacheable_tokens == 0
+        assert openai.cache_ttl_seconds == 0
+
     def test_model_capabilities_embedding_fields_default_none(self) -> None:
         """ModelCapabilities embedding-specific fields default to None."""
         caps = ModelCapabilities(
