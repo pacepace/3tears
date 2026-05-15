@@ -74,6 +74,24 @@ class ModelCapabilities(BaseModel):
     :ptype supports_vision: bool | None
     :param requires_alternating_roles: whether model requires alternating user/assistant roles
     :ptype requires_alternating_roles: bool | None
+    :param supports_anthropic_cache_control: whether model accepts
+        ``cache_control={"type": "ephemeral"}`` on structured system content
+        and honors it on the provider request (Anthropic-shape prompt caching)
+    :ptype supports_anthropic_cache_control: bool | None
+    :param supports_openai_auto_cache: whether model participates in OpenAI-shape
+        automatic prompt caching (no opt-in markers; response surfaces
+        ``prompt_tokens_details.cached_tokens``)
+    :ptype supports_openai_auto_cache: bool | None
+    :param min_cacheable_tokens: shortest prefix length at which the provider
+        actually caches; prefixes shorter than this pay full price even when
+        ``cache_control`` is attached. ``0`` means the provider has no minimum
+        (auto-cache providers); ``None`` means the field has not been set for
+        this model
+    :ptype min_cacheable_tokens: int | None
+    :param cache_ttl_seconds: provider-side ephemeral cache lifetime in seconds.
+        ``0`` means the provider does not expose a TTL (auto-cache); ``None``
+        means the field has not been set
+    :ptype cache_ttl_seconds: int | None
     :param embedding_dimensions: dimensionality of embedding vectors
     :ptype embedding_dimensions: int | None
     :param max_embedding_tokens: maximum input length for embedding
@@ -125,6 +143,16 @@ class ModelCapabilities(BaseModel):
     supports_tools: bool | None = None
     supports_vision: bool | None = None
     requires_alternating_roles: bool | None = None
+
+    # chat caching fields. tri-state ``bool | None`` for the support flags
+    # so unset (None) is distinguishable from "explicitly does not support".
+    # the two int fields use the same convention: ``0`` means
+    # "no minimum / no TTL" (auto-cache provider shape); ``None`` means
+    # "not declared by the provider entry".
+    supports_anthropic_cache_control: bool | None = None
+    supports_openai_auto_cache: bool | None = None
+    min_cacheable_tokens: int | None = None
+    cache_ttl_seconds: int | None = None
 
     # embedding fields
     embedding_dimensions: int | None = None

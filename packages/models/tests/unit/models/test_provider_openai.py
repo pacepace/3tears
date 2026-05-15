@@ -74,6 +74,53 @@ class TestOpenAICapabilityRegistration:
         assert caps.model_type == ModelType.EMBEDDING
         assert caps.embedding_dimensions == 1536
 
+    def test_gpt4o_cache_fields(self) -> None:
+        """``gpt-4o`` carries openai auto-cache fields.
+
+        Every OpenAI chat-model registration declares the auto-cache
+        shape (cache_control not supported, openai-auto-cache supported,
+        no token minimum, no TTL) so consumers that resolve through
+        ``get_capabilities`` get the right caching record.
+        """
+        caps = get_capabilities("gpt-4o")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is True
+        assert caps.min_cacheable_tokens == 0
+        assert caps.cache_ttl_seconds == 0
+
+    def test_gpt4o_mini_cache_fields(self) -> None:
+        """``gpt-4o-mini`` carries openai auto-cache fields."""
+        caps = get_capabilities("gpt-4o-mini")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is True
+        assert caps.min_cacheable_tokens == 0
+        assert caps.cache_ttl_seconds == 0
+
+    def test_embedding_models_have_no_cache_fields(self) -> None:
+        """embedding-model entries leave cache fields at None (tri-state).
+
+        Cache fields are chat-specific; embedding models don't
+        participate in prompt caching, so their entries explicitly
+        leave the fields unset. This protects callers that filter
+        by ``supports_anthropic_cache_control is None`` to skip
+        non-chat models.
+        """
+        small = get_capabilities("text-embedding-3-small")
+        assert small is not None
+        assert small.supports_anthropic_cache_control is None
+        assert small.supports_openai_auto_cache is None
+        assert small.min_cacheable_tokens is None
+        assert small.cache_ttl_seconds is None
+
+        large = get_capabilities("text-embedding-3-large")
+        assert large is not None
+        assert large.supports_anthropic_cache_control is None
+        assert large.supports_openai_auto_cache is None
+        assert large.min_cacheable_tokens is None
+        assert large.cache_ttl_seconds is None
+
 
 class TestOpenAIWrapperStreaming:
     """Regression coverage for the wrapper-_astream callback-chain bug.

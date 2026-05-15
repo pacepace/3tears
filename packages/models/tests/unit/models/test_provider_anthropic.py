@@ -97,6 +97,40 @@ class TestAnthropicCapabilityRegistration:
         assert caps.provider_name == ANTHROPIC_PROVIDER_NAME
         assert caps.model_tier == ModelTier.SMALL
 
+    def test_sonnet_cache_fields(self) -> None:
+        """``claude-sonnet-4-20250514`` carries anthropic-shape cache fields.
+
+        Every Anthropic chat-model registration declares the anthropic
+        cache shape (cache_control supported, 1024-token minimum,
+        300-second ephemeral TTL) so consumers that resolve through
+        ``get_capabilities`` get the right caching record without
+        having to maintain a parallel per-provider table.
+        """
+        caps = get_capabilities("claude-sonnet-4-20250514")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is True
+        assert caps.supports_openai_auto_cache is False
+        assert caps.min_cacheable_tokens == 1024
+        assert caps.cache_ttl_seconds == 300
+
+    def test_opus_cache_fields(self) -> None:
+        """``claude-opus-4-5-20251101`` carries anthropic-shape cache fields."""
+        caps = get_capabilities("claude-opus-4-5-20251101")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is True
+        assert caps.supports_openai_auto_cache is False
+        assert caps.min_cacheable_tokens == 1024
+        assert caps.cache_ttl_seconds == 300
+
+    def test_haiku_cache_fields(self) -> None:
+        """``claude-3-5-haiku-20241022`` carries anthropic-shape cache fields."""
+        caps = get_capabilities("claude-3-5-haiku-20241022")
+        assert caps is not None
+        assert caps.supports_anthropic_cache_control is True
+        assert caps.supports_openai_auto_cache is False
+        assert caps.min_cacheable_tokens == 1024
+        assert caps.cache_ttl_seconds == 300
+
 
 class TestAnthropicWrapperStreaming:
     """Regression coverage for the wrapper-_astream callback-chain bug.
