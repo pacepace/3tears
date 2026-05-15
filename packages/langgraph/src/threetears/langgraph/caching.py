@@ -104,6 +104,35 @@ _OPENAI_CHAT_MODEL_CLASSES: frozenset[str] = frozenset(
     }
 )
 
+# OpenRouter routes requests to many upstream providers; the wire
+# provider is OpenRouter but the cache-capability of the request
+# follows the upstream the OpenRouter slug names. The factory ships
+# a ``_NameTranslatingChatOpenRouter`` subclass (see
+# :mod:`threetears.models.providers.openrouter`) that does tool-name
+# translation; production traffic flows through the subclass.
+_OPENROUTER_CHAT_MODEL_CLASSES: frozenset[str] = frozenset(
+    {
+        "ChatOpenRouter",
+        "_NameTranslatingChatOpenRouter",
+    }
+)
+
+# OpenRouter slug prefixes (namespaced ``upstream/model-id``). When
+# the chat-model class is OpenRouter the upstream is inferred from
+# the slug prefix and the capability record matches what the
+# upstream provider's direct API would have produced.
+_OPENROUTER_ANTHROPIC_PREFIX: str = "anthropic/"
+_OPENROUTER_OPENAI_PREFIX: str = "openai/"
+# DeepSeek's direct API runs automatic context caching (response
+# surfaces ``cached_tokens`` without an opt-in marker); the
+# ``deepseek/`` slug routed through OpenRouter inherits the same
+# behavior. Same shape as OpenAI auto-cache from the request side
+# (stable prefix, no ``cache_control`` markers needed), so it gets
+# the OpenAI auto-cache capability record. Cache pricing differs by
+# provider and is the caller's concern; capability detection is
+# only about what cache hints the request body should carry.
+_OPENROUTER_DEEPSEEK_PREFIX: str = "deepseek/"
+
 
 @dataclass(frozen=True)
 class ChatModelCapabilities:
@@ -195,10 +224,30 @@ def detect_capabilities(chat_model: Any) -> ChatModelCapabilities:
     2. read the model identifier via :func:`_extract_model_name`.
     3. map ``(class_name, model_name)`` onto a capability record.
 
-    detection is conservative: when the class name is unknown, the
-    function returns the all-False record so the node path emits a
-    bare system message and no cache annotations. this is the
-    deliberate cross-provider-degradation behavior the shard pins.
+    direct adapters (``ChatAnthropic``, ``ChatOpenAI``) are detected
+    by class name. ``ChatOpenRouter`` (and the
+    :class:`_NameTranslatingChatOpenRouter` subclass that
+    :func:`~threetears.models.providers.openrouter.create_openrouter_chat`
+    returns) routes to many upstream providers; for those the
+    capability record is inferred from the model slug prefix:
+
+    - ``anthropic/...`` -- Anthropic ``cache_control`` directives;
+      OpenRouter forwards them to the upstream Anthropic API.
+    - ``openai/...`` -- OpenAI automatic prefix caching (no
+      ``cache_control`` markers needed; response surfaces
+      ``cached_tokens`` automatically).
+    - ``deepseek/...`` -- DeepSeek automatic context caching, same
+      shape as OpenAI from the request side (stable prefix, no
+      cache markers); response surfaces ``cached_tokens``
+      automatically. Treated as the OpenAI auto-cache capability
+      record for prompt-construction purposes; cache pricing
+      differs and is the caller's concern.
+
+    detection is conservative: when neither the class name nor the
+    slug prefix matches, the function returns the all-False record
+    so the node path emits a bare system message and no cache
+    annotations. this is the deliberate cross-provider-degradation
+    behavior the shard pins.
 
     :param chat_model: langchain chat-model instance to inspect
     :ptype chat_model: Any
@@ -223,6 +272,24 @@ def detect_capabilities(chat_model: Any) -> ChatModelCapabilities:
             min_cacheable_tokens=0,
             cache_ttl_seconds=0,
         )
+    elif class_name in _OPENROUTER_CHAT_MODEL_CLASSES:
+        lowered = model_name.lower()
+        if lowered.startswith(_OPENROUTER_ANTHROPIC_PREFIX):
+            caps = ChatModelCapabilities(
+                supports_anthropic_cache_control=True,
+                supports_openai_auto_cache=False,
+                min_cacheable_tokens=ANTHROPIC_MIN_CACHEABLE_TOKENS,
+                cache_ttl_seconds=ANTHROPIC_EPHEMERAL_TTL_SECONDS,
+            )
+        elif lowered.startswith(
+            (_OPENROUTER_OPENAI_PREFIX, _OPENROUTER_DEEPSEEK_PREFIX),
+        ):
+            caps = ChatModelCapabilities(
+                supports_anthropic_cache_control=False,
+                supports_openai_auto_cache=True,
+                min_cacheable_tokens=0,
+                cache_ttl_seconds=0,
+            )
     return caps
 
 
