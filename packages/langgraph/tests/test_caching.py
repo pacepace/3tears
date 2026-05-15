@@ -72,6 +72,48 @@ class _StubUnknownChatModel:
         self.model = model
 
 
+class _StubChatOpenRouter:
+    """lookalike for :class:`langchain_openrouter.ChatOpenRouter`.
+
+    ``ChatOpenRouter`` uses ``model`` for the OpenRouter slug
+    (``upstream/model-id`` form). Renamed to match the class name
+    :func:`detect_capabilities` recognizes.
+    """
+
+    def __init__(self, model: str) -> None:
+        """capture the openrouter slug.
+
+        :param model: openrouter slug (e.g. ``"anthropic/claude-sonnet-4.6"``)
+        :ptype model: str
+        """
+        self.model = model
+
+
+_StubChatOpenRouter.__name__ = "ChatOpenRouter"
+
+
+class _StubNameTranslatingChatOpenRouter:
+    """lookalike for the 3tears ``_NameTranslatingChatOpenRouter`` subclass.
+
+    The factory at :func:`threetears.models.providers.openrouter.create_openrouter_chat`
+    returns this subclass to add tool-name dot/underscore translation.
+    Production traffic flows through the subclass, not the bare
+    ``ChatOpenRouter``, so capability detection must recognize both
+    class names.
+    """
+
+    def __init__(self, model: str) -> None:
+        """capture the openrouter slug.
+
+        :param model: openrouter slug
+        :ptype model: str
+        """
+        self.model = model
+
+
+_StubNameTranslatingChatOpenRouter.__name__ = "_NameTranslatingChatOpenRouter"
+
+
 class _StubPydanticArgsSchema:
     """minimal ``args_schema`` exposing ``model_json_schema``.
 
@@ -181,6 +223,89 @@ class TestDetectCapabilities:
         assert caps.supports_openai_auto_cache is False
         assert caps.min_cacheable_tokens == 0
         assert caps.cache_ttl_seconds == 0
+
+    def test_openrouter_anthropic_slug_supports_cache_control(self) -> None:
+        """openrouter routed to anthropic supports cache_control directives.
+
+        the wire provider is openrouter; the upstream is anthropic
+        (the slug carries ``anthropic/...``). OpenRouter forwards
+        ``cache_control`` markers in the request body to the
+        upstream Anthropic API; the response surfaces the same
+        cache-usage telemetry as a direct Anthropic call.
+
+        :raises AssertionError: when openrouter-anthropic is not
+            mapped to the anthropic capability record
+        """
+        caps = detect_capabilities(
+            _StubChatOpenRouter("anthropic/claude-sonnet-4.6"),
+        )
+        assert caps.supports_anthropic_cache_control is True
+        assert caps.supports_openai_auto_cache is False
+        assert caps.min_cacheable_tokens == 1024
+        assert caps.cache_ttl_seconds > 0
+
+    def test_openrouter_anthropic_subclass_supports_cache_control(self) -> None:
+        """the metallm-side ``_NameTranslatingChatOpenRouter`` subclass is recognized.
+
+        production traffic flows through the tool-name-translating
+        subclass returned by
+        :func:`threetears.models.providers.openrouter.create_openrouter_chat`;
+        the bare ``ChatOpenRouter`` is not the runtime class.
+        capability detection must check both names.
+
+        :raises AssertionError: when the subclass falls through to
+            the all-False record
+        """
+        caps = detect_capabilities(
+            _StubNameTranslatingChatOpenRouter("anthropic/claude-opus-4.5"),
+        )
+        assert caps.supports_anthropic_cache_control is True
+
+    def test_openrouter_openai_slug_supports_auto_cache(self) -> None:
+        """openrouter routed to openai gets the openai auto-cache record.
+
+        :raises AssertionError: when openrouter-openai is not
+            mapped to the openai capability record
+        """
+        caps = detect_capabilities(_StubChatOpenRouter("openai/gpt-4o"))
+        assert caps.supports_openai_auto_cache is True
+        assert caps.supports_anthropic_cache_control is False
+
+    def test_openrouter_deepseek_slug_supports_auto_cache(self) -> None:
+        """openrouter routed to deepseek gets the openai-style auto-cache record.
+
+        deepseek's direct API runs automatic context caching and
+        surfaces ``cached_tokens`` on the response; from the request
+        side it is the same shape as openai auto-cache (stable
+        prefix, no ``cache_control`` markers). Cache pricing differs
+        and is the caller's concern; capability detection is only
+        about what cache hints the request body should carry.
+
+        :raises AssertionError: when openrouter-deepseek is not
+            mapped to the auto-cache capability record
+        """
+        caps = detect_capabilities(
+            _StubChatOpenRouter("deepseek/deepseek-v4-pro:nitro"),
+        )
+        assert caps.supports_openai_auto_cache is True
+        assert caps.supports_anthropic_cache_control is False
+
+    def test_openrouter_unknown_upstream_degrades(self) -> None:
+        """openrouter routing to an unrecognized slug returns the all-False record.
+
+        Conservative degradation: when the upstream prefix is not in
+        the known set (``anthropic/``, ``openai/``, ``deepseek/``)
+        the function falls through to the no-cache record so the
+        node path emits a bare system message instead of guessing
+        cache support that the upstream may not honor.
+
+        :raises AssertionError: when an unknown slug is not degraded
+        """
+        caps = detect_capabilities(
+            _StubChatOpenRouter("meta-llama/llama-3-70b"),
+        )
+        assert caps.supports_anthropic_cache_control is False
+        assert caps.supports_openai_auto_cache is False
 
 
 class TestAnnotateSystemPrompt:
