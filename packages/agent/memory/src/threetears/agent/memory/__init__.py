@@ -1,6 +1,6 @@
 """Agent memory package -- memory entities, collections, and embedding protocol."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.agent.memory.access import MemoryAccessService
 from threetears.agent.memory.authorize import (
@@ -35,12 +35,12 @@ from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
 from threetears.agent.memory.tools import (
-    AddMemoryInput,
+    MemoryAddInput,
+    MemoryRecallInput,
     MemorySearchInput,
-    RecallMemoryInput,
-    load_add_memory_tool,
+    load_memory_add_tool,
+    load_memory_recall_tool,
     load_memory_search_tool,
-    load_recall_memory_tool,
 )
 from threetears.agent.memory.types import MemoryConfig, MemoryType
 
@@ -48,7 +48,6 @@ __all__ = [
     "ACTION_MEMORY_EXTRACT",
     "ACTION_MEMORY_READ",
     "ACTION_MEMORY_WRITE",
-    "AddMemoryInput",
     "ChatModelFactory",
     "ExtractionPrompts",
     "MEMORY_NAMESPACE_TYPE",
@@ -61,24 +60,25 @@ __all__ = [
     "MemoriesCollection",
     "MemoryAccessDenied",
     "MemoryAccessService",
+    "MemoryAddInput",
     "MemoryAuthorizerDependencies",
     "MemoryChunkCollection",
     "MemoryChunkEntity",
     "MemoryConfig",
     "MemoryEntity",
     "MemoryExtractor",
+    "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
     "MemoryRetriever",
     "MemorySearchInput",
     "MemoryType",
-    "RecallMemoryInput",
     "RetrievalResult",
     "authorize_memory_access",
     "conversation_memory_refs_table",
     "ensure_memory_owner_assignment",
-    "load_add_memory_tool",
+    "load_memory_add_tool",
+    "load_memory_recall_tool",
     "load_memory_search_tool",
-    "load_recall_memory_tool",
     "memory_namespace_name",
 ]

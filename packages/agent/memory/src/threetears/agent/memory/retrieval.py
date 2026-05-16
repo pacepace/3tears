@@ -286,7 +286,7 @@ def _format_memory_context(
         lines.append("")
         lines.append(
             "Items marked (detailed) contain full content above. For summary-only items, "
-            "use the recall_memory tool with the item ID and type (memory/media/chunk) "
+            "use the memory_recall tool with the item ID and type (memory/media/chunk) "
             "to retrieve full content when needed."
         )
 

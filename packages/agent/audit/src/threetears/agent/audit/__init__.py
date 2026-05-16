@@ -17,7 +17,7 @@ from __future__ import annotations
 from threetears.agent.audit.envelope import AuditEvent
 from threetears.agent.audit.publish import publish_audit
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "AuditEvent",

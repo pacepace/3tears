@@ -52,10 +52,7 @@ def _make_metadata() -> MetaData:
         Column("type_memory", String(50)),
         Column("content", Text),
         Column("embedding", Text),
-        Column("media_id", String(255)),
-        Column("is_deleted", Boolean),
         Column("date_created", DateTime),
-        Column("date_deleted", DateTime),
         Column("date_updated", DateTime),
     )
     return metadata
@@ -77,10 +74,7 @@ def _sample_data() -> dict:
         "type_memory": "preference",
         "content": "User prefers dark mode",
         "embedding": [0.1, 0.2, 0.3],
-        "media_id": None,
-        "is_deleted": False,
         "date_created": datetime.now(UTC),
-        "date_deleted": None,
         "date_updated": None,
     }
 
@@ -140,10 +134,7 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
                 "type_memory",
                 "content",
                 "embedding",
-                "is_deleted",
-                "media_id",
                 "date_created",
-                "date_deleted",
                 "date_updated",
             ]
             data = dict(zip(data_keys, args))
@@ -161,13 +152,11 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
             cas_fence = args[-1]
             if cas_fence is not None and existing.get("date_updated") != cas_fence:
                 return "UPDATE 0"
-            # mutable columns in declared order:
-            # content, embedding, is_deleted, date_deleted, date_updated
+            # mutable columns in declared order (unified model: only
+            # content + embedding mutate; date_updated is the CAS fence):
             existing["content"] = args[2]
             existing["embedding"] = args[3]
-            existing["is_deleted"] = args[4]
-            existing["date_deleted"] = args[5]
-            existing["date_updated"] = args[6]
+            existing["date_updated"] = args[4]
             return "UPDATE 1"
         elif "DELETE" in query:
             # composite-pk delete: $1=agent_id, $2=memory_id
@@ -180,12 +169,10 @@ def _make_pg_mock(store: dict[str, dict] | None = None) -> AsyncMock:
         # find_by_user: agent_id $1, customer_id $2, user_id $3
         agent_id = str(args[0]) if args else None
         user_id = str(args[2]) if len(args) > 2 else None
-        include_deleted = "is_deleted" not in query
         results = []
         for row in store.values():
             if str(row.get("agent_id")) == agent_id and str(row.get("user_id")) == user_id:
-                if include_deleted or not row.get("is_deleted", False):
-                    results.append(dict(row))
+                results.append(dict(row))
         return results
 
     pg.fetchrow = AsyncMock(side_effect=_fetchrow)
@@ -418,32 +405,6 @@ class TestMemoriesCollectionDelete:
         assert str(data["memory_id"]) not in pg_store
 
 
-class TestMemoriesCollectionSoftDelete:
-    async def test_soft_delete_sets_flags(
-        self,
-        registry: CollectionRegistry,
-        config_always: DefaultCoreConfig,
-        permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ) -> None:
-        data = _sample_data()
-        pg_store = {str(data["memory_id"]): dict(data)}
-        pg = _make_pg_mock(pg_store)
-        _rebind_pool(registry, pg)
-        coll = MemoriesCollection(
-            registry,
-            config_always,
-            authorizer=permissive_memory_authorizer,
-        )
-
-        entity = await coll.get((data["agent_id"], data["memory_id"]))
-        assert entity is not None
-
-        await coll.soft_delete(entity)
-
-        assert entity.is_deleted is True
-        assert entity.date_deleted is not None
-
-
 class TestMemoriesCollectionFindByUser:
     async def test_find_by_user_returns_entities(
         self,
@@ -483,86 +444,6 @@ class TestMemoriesCollectionFindByUser:
         assert len(entities) == 2
         assert all(isinstance(e, MemoryEntity) for e in entities)
 
-    async def test_find_by_user_excludes_deleted(
-        self,
-        registry: CollectionRegistry,
-        config_always: DefaultCoreConfig,
-        permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ) -> None:
-        user_id = uuid.uuid7()
-        agent_id = uuid.uuid7()
-        customer_id = uuid.uuid7()
-        data1 = _sample_data()
-        data1["user_id"] = user_id
-        data1["agent_id"] = agent_id
-        data1["customer_id"] = customer_id
-        data1["is_deleted"] = False
-        data2 = _sample_data()
-        data2["user_id"] = user_id
-        data2["agent_id"] = agent_id
-        data2["customer_id"] = customer_id
-        data2["is_deleted"] = True
-        pg_store = {
-            str(data1["memory_id"]): data1,
-            str(data2["memory_id"]): data2,
-        }
-        pg = _make_pg_mock(pg_store)
-        _rebind_pool(registry, pg)
-        coll = MemoriesCollection(
-            registry,
-            config_always,
-            authorizer=permissive_memory_authorizer,
-        )
-
-        entities = await coll.find_by_user(
-            user_id,
-            include_deleted=False,
-            agent_id=agent_id,
-            customer_id=customer_id,
-        )
-
-        assert len(entities) == 1
-
-    async def test_find_by_user_includes_deleted(
-        self,
-        registry: CollectionRegistry,
-        config_always: DefaultCoreConfig,
-        permissive_memory_authorizer: MemoryAuthorizerDependencies,
-    ) -> None:
-        user_id = uuid.uuid7()
-        agent_id = uuid.uuid7()
-        customer_id = uuid.uuid7()
-        data1 = _sample_data()
-        data1["user_id"] = user_id
-        data1["agent_id"] = agent_id
-        data1["customer_id"] = customer_id
-        data1["is_deleted"] = False
-        data2 = _sample_data()
-        data2["user_id"] = user_id
-        data2["agent_id"] = agent_id
-        data2["customer_id"] = customer_id
-        data2["is_deleted"] = True
-        pg_store = {
-            str(data1["memory_id"]): data1,
-            str(data2["memory_id"]): data2,
-        }
-        pg = _make_pg_mock(pg_store)
-        _rebind_pool(registry, pg)
-        coll = MemoriesCollection(
-            registry,
-            config_always,
-            authorizer=permissive_memory_authorizer,
-        )
-
-        entities = await coll.find_by_user(
-            user_id,
-            include_deleted=True,
-            agent_id=agent_id,
-            customer_id=customer_id,
-        )
-
-        assert len(entities) == 2
-
 
 class TestMemoriesCollectionSerialization:
     def test_serialize_deserialize_roundtrip(
@@ -590,8 +471,6 @@ class TestMemoriesCollectionSerialization:
         assert deserialized["user_id"] == data["user_id"]
         assert deserialized["type_memory"] == "preference"
         assert deserialized["embedding"] == [0.1, 0.2, 0.3]
-        assert deserialized["is_deleted"] is False
-        assert deserialized["media_id"] is None
         assert isinstance(deserialized["date_created"], datetime)
 
     def test_deserialize_handles_none_values(
@@ -609,14 +488,14 @@ class TestMemoriesCollectionSerialization:
         raw = json.dumps(
             {
                 "memory_id": str(uuid.uuid7()),
-                "media_id": None,
-                "date_deleted": None,
+                "content": None,
+                "embedding": None,
             }
         ).encode("utf-8")
 
         result = coll.deserialize(raw)
-        assert result["media_id"] is None
-        assert result["date_deleted"] is None
+        assert result["content"] is None
+        assert result["embedding"] is None
 
 
 class TestMemoriesCollectionTableName:

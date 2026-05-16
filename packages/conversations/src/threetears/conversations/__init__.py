@@ -10,7 +10,7 @@ key off ``conversation_id`` but none of them is the natural owner.
 
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.conversations.authorize import (
     ACTION_CONVERSATION_DELETE,

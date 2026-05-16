@@ -44,6 +44,14 @@ class MemoryEntity(BaseEntity):
     constructor sets ``_id`` to that tuple so
     :meth:`BaseCollection.normalize_pk` and :meth:`BaseCollection.l2_key`
     address the row uniformly across L1 / L2 / L3.
+
+    Memory is the cognitive anchor under the unified data model:
+    :class:`MediaEntity` rows hang off via ``media.memory_id`` and
+    :class:`MemoryChunkEntity` rows hang off via
+    ``memory_chunks.memory_id`` (both NOT NULL FKs with CASCADE on
+    memory delete after v017). Deletion is hard-only — the legacy
+    ``is_deleted`` / ``date_deleted`` columns were removed in v018.
+    ``conversation_id`` is NOT NULL after v019.
     """
 
     primary_key_field: str = "memory_id"
@@ -162,41 +170,6 @@ class MemoryEntity(BaseEntity):
         BaseEntity.__setattr__(self, "embedding", value)
 
     @property
-    def media_id(self) -> UUID | None:
-        """Get the associated media ID, if any."""
-        value = self._get_raw("media_id")
-        if value is None:
-            return None
-        return _as_uuid(value)
-
-    @media_id.setter
-    def media_id(self, value: UUID | None) -> None:
-        """Set the associated media ID."""
-        BaseEntity.__setattr__(self, "media_id", value)
-
-    @property
-    def is_deleted(self) -> bool:
-        """Get the soft-delete flag."""
-        value: bool = self._get_raw("is_deleted")
-        return value
-
-    @is_deleted.setter
-    def is_deleted(self, value: bool) -> None:
-        """Set the soft-delete flag."""
-        BaseEntity.__setattr__(self, "is_deleted", value)
-
-    @property
-    def date_deleted(self) -> datetime | None:
-        """Get the deletion timestamp."""
-        value: datetime | None = self._get_raw("date_deleted")
-        return value
-
-    @date_deleted.setter
-    def date_deleted(self, value: datetime | None) -> None:
-        """Set the deletion timestamp."""
-        BaseEntity.__setattr__(self, "date_deleted", value)
-
-    @property
     def date_updated(self) -> datetime | None:
         """Get the last-updated timestamp."""
         value: datetime | None = self._get_raw("date_updated")
@@ -211,9 +184,14 @@ class MemoryEntity(BaseEntity):
 class MediaEntity(BaseEntity):
     """cache proxy entity for the ``media`` parent table (v006).
 
-    columns match ``CREATE TABLE media`` in
-    :mod:`threetears.agent.memory.migrations.v006_memory_media_content`:
-    ``media_id`` PK, nullable ``agent_id`` / ``customer_id``, required
+    Under the unified memory model media is an attachment under a
+    memory: ``memory_id`` is a NOT NULL FK to :class:`MemoryEntity`
+    with CASCADE on parent delete (v017). The memory wraps the
+    cognitive description; the media row carries the raw artifact;
+    :class:`MediaContentEntity` rows carry the extracted text.
+
+    columns: ``media_id`` PK, ``memory_id`` parent (NOT NULL after
+    v017), nullable ``agent_id`` / ``customer_id``, required
     ``user_id``, ``media_category`` discriminator, ``metadata_json``
     blob, plus ``date_created`` / ``date_updated``.
     """
@@ -256,6 +234,29 @@ class MediaEntity(BaseEntity):
         :rtype: UUID
         """
         return _as_uuid(self._get_raw("media_id"))
+
+    @property
+    def memory_id(self) -> UUID:
+        """get the parent memory ID.
+
+        Every media row is an attachment under a memory; the parent
+        memory is the cognitive anchor and the media row carries
+        the raw artifact. NOT NULL after v017 enforces the FK with
+        CASCADE on memory delete.
+
+        :return: parent memory UUID
+        :rtype: UUID
+        """
+        return _as_uuid(self._get_raw("memory_id"))
+
+    @memory_id.setter
+    def memory_id(self, value: UUID) -> None:
+        """set the parent memory ID.
+
+        :param value: new parent memory UUID
+        :ptype value: UUID
+        """
+        BaseEntity.__setattr__(self, "memory_id", value)
 
     @property
     def agent_id(self) -> UUID | None:
@@ -617,10 +618,23 @@ class MediaContentEntity(BaseEntity):
 class MemoryChunkEntity(BaseEntity):
     """cache proxy entity for the ``memory_chunks`` table (v007).
 
-    document-style chunks with location metadata (``heading_context``,
-    ``page_number``) joined back to a parent :class:`MediaEntity`
-    through optional ``media_id``. same embedding / FTS shape as
-    :class:`MediaContentEntity`.
+    chunks are the verbatim source layer under the unified memory
+    model. every chunk parents to exactly one :class:`MemoryEntity`
+    via ``memory_id`` (NOT NULL FK with CASCADE after v017). there
+    are two shapes:
+
+    - document chunks: ``heading_context`` / ``page_number`` from
+      the source artifact; ``message_id_start`` / ``message_id_end``
+      are NULL. parent memory wraps a :class:`MediaEntity` carrying
+      the original file.
+    - transcript chunks: ``message_id_start`` / ``message_id_end``
+      back-reference the message range the chunk summarizes;
+      ``heading_context`` / ``page_number`` are NULL. parent memory
+      is created by ``conversation_summarize``.
+
+    same embedding / FTS shape as :class:`MediaContentEntity`. the
+    cascading delete chain is memory -> chunk (this entity) and
+    memory -> media -> media_content.
     """
 
     primary_key_field: str = "chunk_id"
@@ -663,25 +677,80 @@ class MemoryChunkEntity(BaseEntity):
         return _as_uuid(self._get_raw("chunk_id"))
 
     @property
-    def media_id(self) -> UUID | None:
-        """get optional parent media ID.
+    def memory_id(self) -> UUID:
+        """get the parent memory ID.
 
-        :return: media UUID or ``None``
+        Every chunk parents to exactly one memory under the unified
+        model. Document chunks parent to the memory that wraps the
+        source media; transcript chunks parent to the memory created
+        by ``conversation_summarize``. NOT NULL after v017 enforces
+        the FK with CASCADE on memory delete.
+
+        :return: parent memory UUID
+        :rtype: UUID
+        """
+        return _as_uuid(self._get_raw("memory_id"))
+
+    @memory_id.setter
+    def memory_id(self, value: UUID) -> None:
+        """set the parent memory ID.
+
+        :param value: new parent memory UUID
+        :ptype value: UUID
+        """
+        BaseEntity.__setattr__(self, "memory_id", value)
+
+    @property
+    def message_id_start(self) -> UUID | None:
+        """get the first-message backlink for transcript chunks.
+
+        NULL on document chunks (no source message range). On
+        transcript chunks, points at the first message in the
+        summarized range. No FK — the messages table is owned by a
+        sibling system and may be hard-deleted; dangling refs are
+        intentional.
+
+        :return: first-message UUID or ``None``
         :rtype: UUID | None
         """
-        value = self._get_raw("media_id")
+        value = self._get_raw("message_id_start")
         if value is None:
             return None
         return _as_uuid(value)
 
-    @media_id.setter
-    def media_id(self, value: UUID | None) -> None:
-        """set optional parent media ID.
+    @message_id_start.setter
+    def message_id_start(self, value: UUID | None) -> None:
+        """set the first-message backlink.
 
-        :param value: new media UUID or ``None``
+        :param value: new first-message UUID or ``None``
         :ptype value: UUID | None
         """
-        BaseEntity.__setattr__(self, "media_id", value)
+        BaseEntity.__setattr__(self, "message_id_start", value)
+
+    @property
+    def message_id_end(self) -> UUID | None:
+        """get the last-message backlink for transcript chunks.
+
+        NULL on document chunks; on transcript chunks, points at the
+        last message in the summarized range. No FK (same reasoning
+        as ``message_id_start``).
+
+        :return: last-message UUID or ``None``
+        :rtype: UUID | None
+        """
+        value = self._get_raw("message_id_end")
+        if value is None:
+            return None
+        return _as_uuid(value)
+
+    @message_id_end.setter
+    def message_id_end(self, value: UUID | None) -> None:
+        """set the last-message backlink.
+
+        :param value: new last-message UUID or ``None``
+        :ptype value: UUID | None
+        """
+        BaseEntity.__setattr__(self, "message_id_end", value)
 
     @property
     def agent_id(self) -> UUID | None:

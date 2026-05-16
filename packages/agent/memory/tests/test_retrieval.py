@@ -236,7 +236,7 @@ class TestFormatMemoryContext:
         result = _format_memory_context(memories, detail_threshold=0.85)
         assert "Things you remember about this user:" in result
         assert "likes cats" in result
-        assert "recall_memory" in result
+        assert "memory_recall" in result
 
     def test_media_section(self) -> None:
         media = [
@@ -308,7 +308,7 @@ class TestFormatMemoryContext:
     def test_footer_present(self) -> None:
         memories = [{"memory_id": uuid.uuid7(), "content": "x", "summary": None, "hybrid_score": 0.5}]
         result = _format_memory_context(memories, detail_threshold=0.85)
-        assert "recall_memory" in result
+        assert "memory_recall" in result
 
     def test_empty_returns_empty(self) -> None:
         result = _format_memory_context([])

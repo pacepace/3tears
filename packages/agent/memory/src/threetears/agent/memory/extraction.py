@@ -5,10 +5,13 @@ LLM-driven extraction, embedding, similar-memory lookup, and LLM resolution
 (ADD/UPDATE/DELETE/NOOP). Fire-and-forget safe: extract() never raises.
 
 All memory-table writes go through :class:`MemoriesCollection` (save
-new via the entity lifecycle; updates / soft-deletes through
-:meth:`MemoriesCollection.save_entity`); similar-memory lookups use
-:meth:`MemoriesCollection.find_similar_for_dedup`. The extractor holds
-no pool reference — Collections carry their pool internally.
+new via the entity lifecycle; updates through
+:meth:`MemoriesCollection.save_entity`; deletes through
+:meth:`MemoriesCollection.delete` — hard-delete only under the
+unified model, CASCADE FKs propagate to chunks + media); similar-
+memory lookups use :meth:`MemoriesCollection.find_similar_for_dedup`.
+The extractor holds no pool reference — Collections carry their pool
+internally.
 """
 
 from __future__ import annotations
@@ -623,10 +626,7 @@ class MemoryExtractor:
                         "type_memory": candidate["type"],
                         "content": candidate["content"],
                         "embedding": candidate["embedding"],
-                        "is_deleted": False,
-                        "media_id": None,
                         "date_created": now,
-                        "date_deleted": None,
                         "date_updated": now,
                     }
                     new_entity: MemoryEntity = self._memories.create(new_data)
@@ -649,7 +649,7 @@ class MemoryExtractor:
                         update_entity: MemoryEntity | None = await self._memories.get(
                             (agent_id, memory_uuid),
                         )
-                        if update_entity is None or update_entity.user_id != user_id or update_entity.is_deleted:
+                        if update_entity is None or update_entity.user_id != user_id:
                             continue
                         update_entity.content = updated_content
                         update_entity.type_memory = updated_type
@@ -666,9 +666,11 @@ class MemoryExtractor:
                     delete_entity: MemoryEntity | None = await self._memories.get(
                         (agent_id, memory_uuid),
                     )
-                    if delete_entity is None or delete_entity.user_id != user_id or delete_entity.is_deleted:
+                    if delete_entity is None or delete_entity.user_id != user_id:
                         continue
-                    await self._memories.soft_delete(delete_entity)
+                    # Hard-delete under the unified model; v017's CASCADE
+                    # FKs propagate to any chunks + media attached.
+                    await self._memories.delete((agent_id, memory_uuid))
 
             except Exception as exc:
                 log.warning(
