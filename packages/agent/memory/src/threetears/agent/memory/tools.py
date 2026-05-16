@@ -59,10 +59,14 @@ from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
 
 __all__ = [
+    "ChunkRecallInput",
+    "ChunkSearchInput",
     "LedgerCallback",
     "MemoryAddInput",
     "MemoryRecallInput",
     "MemorySearchInput",
+    "load_chunk_recall_tool",
+    "load_chunk_search_tool",
     "load_memory_add_tool",
     "load_memory_recall_tool",
     "load_memory_search_tool",
@@ -950,3 +954,253 @@ async def load_memory_add_tool(
     )
 
     return [memory_add]
+
+
+# ---------------------------------------------------------------------------
+# chunk_recall + chunk_search (v0.7.0 / transcript-chunks shard C)
+# ---------------------------------------------------------------------------
+
+
+class ChunkRecallInput(BaseModel):
+    """Input schema for the ``chunk_recall`` tool.
+
+    Single-chunk lookup by ID. Distinct from ``memory_recall`` which
+    returns a memory plus its constituent chunks; this tool is for
+    when the agent has already identified one specific chunk (e.g.
+    from a prior ``chunk_search`` result) and wants its full content
+    plus parent-memory context.
+    """
+
+    chunk_id: str = Field(
+        description="UUID of the chunk to recall.",
+    )
+
+
+class ChunkSearchInput(BaseModel):
+    """Input schema for the ``chunk_search`` tool.
+
+    Cross-memory chunk hybrid search. Distinct from ``memory_search``
+    (which searches at the memory level); this tool reaches into the
+    chunks belonging to every memory the user owns and returns the
+    most relevant chunks regardless of which memory they belong to.
+    """
+
+    query: str = Field(
+        description=("Natural language search query for finding relevant chunks across every memory the user owns."),
+    )
+    limit: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of chunks to return (default 5, max 20).",
+    )
+
+
+async def load_chunk_recall_tool(
+    user_id: UUID,
+    agent_id: UUID,
+    customer_id: UUID,
+    authorizer: MemoryAuthorizerDependencies,
+    memories_collection: MemoriesCollection,
+    memory_chunk_collection: MemoryChunkCollection,
+) -> list[BaseTool]:
+    """create a ``chunk_recall`` tool that returns a chunk + parent memory.
+
+    auth: the chunk's parent memory's user_id must match ``user_id``.
+    enforced at the SQL level by ``MemoryChunkCollection.fetch_content_for_recall``
+    which scopes by ``(agent_id, user_id)``. an unauthorized chunk
+    surfaces as ``None`` → tool returns a graceful "not found" message
+    rather than leaking existence.
+
+    the return shape is a formatted text block: chunk content +
+    ``[parent memory: <memory_id>]`` footer so the agent can chain to
+    ``memory_recall`` if it needs the surrounding memory.
+
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: agent UUID for rbac namespace lookup
+    :ptype agent_id: UUID
+    :param customer_id: customer UUID for rbac namespace lookup
+    :ptype customer_id: UUID
+    :param authorizer: rbac authorizer dependency bundle
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :param memories_collection: three-tier memories collection (for
+        the parent-memory metadata join)
+    :ptype memories_collection: MemoriesCollection
+    :param memory_chunk_collection: three-tier memory_chunks collection
+    :ptype memory_chunk_collection: MemoryChunkCollection
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+
+    @tool("chunk_recall", args_schema=ChunkRecallInput)
+    async def chunk_recall(chunk_id: str) -> str:
+        """retrieve the full content of one chunk plus its parent memory id."""
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=agent_id,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("chunk_recall", "authorize", str(exc))
+
+        try:
+            cid = UUID(chunk_id)
+        except ValueError:
+            return f"Invalid chunk_id format: {chunk_id}"
+
+        content = await memory_chunk_collection.fetch_content_for_recall(
+            chunk_id=cid,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+        if content is None:
+            return "Chunk not found or access denied."
+
+        # parent-memory metadata: look up memory_id via the chunk row's
+        # ``memory_id`` column. cache-bypass fetchrow keyed by composite
+        # PK (agent_id, chunk_id) -- the same security predicates as
+        # the recall path above.
+        parent_memory_id: str | None = None
+        l3_pool = getattr(memory_chunk_collection, "l3_pool", None)
+        if l3_pool is not None:
+            row = await l3_pool.fetchrow(
+                "SELECT memory_id FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
+                agent_id,
+                cid,
+                user_id,
+            )
+            if row is not None and row.get("memory_id") is not None:
+                parent_memory_id = str(row["memory_id"])
+
+        if parent_memory_id is None:
+            return content
+        return f"{content}\n\n[parent memory: {parent_memory_id}]"
+
+    chunk_recall.description = (
+        "Retrieve the full content of a single document/transcript chunk by "
+        "ID, plus the ID of the memory it belongs to. Use this when you "
+        "have a specific chunk_id (e.g. from a previous chunk_search result) "
+        "and need the full text. The footer ``[parent memory: <id>]`` lets "
+        "you chain to memory_recall for the surrounding context."
+    )
+
+    return [chunk_recall]
+
+
+async def load_chunk_search_tool(
+    user_id: UUID,
+    agent_id: UUID,
+    customer_id: UUID,
+    embedding_provider: Embeddings,
+    authorizer: MemoryAuthorizerDependencies,
+    memory_chunk_collection: MemoryChunkCollection,
+    ledger_callback: LedgerCallback | None = None,
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
+) -> list[BaseTool]:
+    """create a ``chunk_search`` tool: cross-memory chunk hybrid search.
+
+    delegates to :meth:`MemoryChunkCollection.hybrid_search` which is
+    the same path the memory-retrieval node uses for grounding.
+    optionally records each surfaced chunk via ``ledger_callback`` so
+    the host application can dedup chunks already shown in the
+    current conversation (the metallm-ledger pattern).
+
+    :param user_id: caller's user UUID
+    :ptype user_id: UUID
+    :param agent_id: agent UUID for rbac namespace lookup
+    :ptype agent_id: UUID
+    :param customer_id: customer UUID for rbac namespace lookup
+    :ptype customer_id: UUID
+    :param embedding_provider: embedding provider for the query vector
+    :ptype embedding_provider: Embeddings
+    :param authorizer: rbac authorizer dependency bundle
+    :ptype authorizer: MemoryAuthorizerDependencies
+    :param memory_chunk_collection: three-tier memory_chunks collection
+    :ptype memory_chunk_collection: MemoryChunkCollection
+    :param ledger_callback: optional async callback invoked with
+        ``(chunk_id, "chunk", content_preview)`` for every surfaced
+        chunk; the host application uses this to mark chunks as seen
+        within the current conversation so subsequent invocations can
+        exclude them
+    :ptype ledger_callback: LedgerCallback | None
+    :param similarity_threshold: floor on hybrid score
+    :ptype similarity_threshold: float
+    :return: list with one LangChain tool
+    :rtype: list[BaseTool]
+    """
+
+    @tool("chunk_search", args_schema=ChunkSearchInput)
+    async def chunk_search(query: str, limit: int = 5) -> str:
+        """search across every chunk the user owns by relevance to query."""
+        try:
+            await authorize_memory_access(
+                action=ACTION_MEMORY_READ,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                caller_user_id=user_id,
+                caller_agent_id=agent_id,
+                deps=authorizer,
+            )
+        except MemoryAccessDenied as exc:
+            return _tool_error("chunk_search", "authorize", str(exc))
+
+        if not query or not query.strip():
+            return "Empty query. Provide a search term."
+
+        embedding = await _safe_aembed_query(embedding_provider, query)
+        if embedding is None:
+            return "Embedding unavailable; cannot search chunks."
+
+        try:
+            results = await memory_chunk_collection.hybrid_search(
+                user_id=user_id,
+                agent_id=agent_id,
+                customer_id=customer_id,
+                embedding=embedding,
+                user_text=query,
+                candidate_k=max(limit * 4, 20),
+                similarity_threshold=similarity_threshold,
+                chunk_signal_weights={"semantic": 0.6, "keyword": 0.4},
+            )
+        except Exception as exc:
+            return _tool_error("chunk_search", "search", str(exc))
+
+        if not results:
+            return "No chunks matched."
+
+        results = results[:limit]
+        lines: list[str] = []
+        for r in results:
+            chunk_id = str(r.get("chunk_id", ""))
+            memory_id = r.get("memory_id")
+            memory_id_str = str(memory_id) if memory_id is not None else "?"
+            content = str(r.get("content", "") or "")
+            preview = content[:200]
+            score = r.get("hybrid_score") or r.get("similarity") or 0.0
+            lines.append(f"[chunk:{chunk_id}] (memory:{memory_id_str}, score={score:.3f})\n{preview}")
+            if ledger_callback is not None:
+                try:
+                    await ledger_callback(chunk_id, "chunk", preview[:80])
+                except Exception as cb_exc:
+                    log.debug(
+                        "chunk_search ledger_callback failed for chunk %s: %s",
+                        chunk_id,
+                        cb_exc,
+                    )
+
+        return "\n\n".join(lines)
+
+    chunk_search.description = (
+        "Search every document / transcript chunk the user owns for content "
+        "relevant to a natural-language query. Returns up to ``limit`` "
+        "chunks (default 5) ordered by hybrid score (semantic + keyword). "
+        "Each result carries the chunk_id, parent memory_id, score, and a "
+        "preview. Use chunk_recall to fetch a chunk's full text."
+    )
+
+    return [chunk_search]

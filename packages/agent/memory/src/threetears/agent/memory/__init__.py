@@ -39,9 +39,13 @@ from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
 from threetears.agent.memory.prompts import ExtractionPrompts
 from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
 from threetears.agent.memory.tools import (
+    ChunkRecallInput,
+    ChunkSearchInput,
     MemoryAddInput,
     MemoryRecallInput,
     MemorySearchInput,
+    load_chunk_recall_tool,
+    load_chunk_search_tool,
     load_memory_add_tool,
     load_memory_recall_tool,
     load_memory_search_tool,
@@ -53,6 +57,8 @@ __all__ = [
     "ACTION_MEMORY_READ",
     "ACTION_MEMORY_WRITE",
     "ChatModelFactory",
+    "ChunkRecallInput",
+    "ChunkSearchInput",
     "ExtractionPrompts",
     "MEMORY_NAMESPACE_TYPE",
     "MEMORY_OWNER_GROUP_PREFIX",
@@ -83,6 +89,8 @@ __all__ = [
     "authorize_memory_access",
     "conversation_memory_refs_table",
     "ensure_memory_owner_assignment",
+    "load_chunk_recall_tool",
+    "load_chunk_search_tool",
     "load_memory_add_tool",
     "load_memory_recall_tool",
     "load_memory_search_tool",
