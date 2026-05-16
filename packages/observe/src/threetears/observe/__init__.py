@@ -10,7 +10,7 @@ Provides three modules:
   applications (TracerProvider, LoggerProvider, OTLP exporters).
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.observe.background import spawn_background
 from threetears.observe.health import HealthCheck, HealthServer

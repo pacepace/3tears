@@ -1,6 +1,6 @@
 """agent workspace package -- workspace entities, sandbox, format handlers, and tools."""
 
-__version__ = "0.1.0"
+__version__ = "0.6.0"
 
 from threetears.agent.workspace import handlers as handlers  # noqa: F401
 from threetears.agent.workspace.bind_policy import BindConflictPolicy

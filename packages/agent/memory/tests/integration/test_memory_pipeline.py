@@ -11,7 +11,7 @@ the package must function against the reconciled schema:
 - :class:`MemoryExtractor` — extract candidates, resolve ADD, insert
   into memories with trigger-maintained search_vector.
 - tool factories — :func:`load_memory_search_tool`,
-  :func:`load_recall_memory_tool`, :func:`load_add_memory_tool` all
+  :func:`load_memory_recall_tool`, :func:`load_memory_add_tool` all
   execute their SQL paths against the real schema.
 
 the LLM side of :class:`MemoryExtractor` is stubbed (no network). the
@@ -40,9 +40,9 @@ from threetears.agent.memory.extraction import MemoryExtractor
 from threetears.agent.memory.migrations import register as register_memory
 from threetears.agent.memory.retrieval import MemoryRetriever
 from threetears.agent.memory.tools import (
-    load_add_memory_tool,
+    load_memory_add_tool,
     load_memory_search_tool,
-    load_recall_memory_tool,
+    load_memory_recall_tool,
 )
 from threetears.agent.memory.types import MemoryConfig
 from threetears.conversations.migrations import register as register_conversations
@@ -293,10 +293,7 @@ class TestMemoriesCollectionAgainstLiveSchema:
                 "message_id_source": uuid.uuid4(),
                 "type_memory": "fact",
                 "embedding": vec,
-                "is_deleted": False,
-                "media_id": None,
                 "date_created": now,
-                "date_deleted": None,
                 "date_updated": now,
             }
 
@@ -321,14 +318,20 @@ class TestMemoriesCollectionAgainstLiveSchema:
         finally:
             await pool.close()
 
-    async def test_soft_delete_excludes_from_find(
+    async def test_collection_delete_removes_row(
         self,
         applied_schema: tuple[str, str],
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        """
-        soft-delete sets ``is_deleted`` + ``date_deleted`` and excludes the
-        row from default find.
+        """:meth:`MemoriesCollection.delete` removes the row.
+
+        Under transcript-chunks-task-A the legacy soft-delete columns
+        (``is_deleted`` / ``date_deleted``) are gone — deleting a
+        memory is a single ``DELETE FROM memories`` that drops the
+        row. The CASCADE FK semantics (memory delete → chunks +
+        media + media_content) are pinned by
+        ``test_migration_chain.TestUnifiedMemoryParentFks`` —
+        this test is the narrow Collection-API contract.
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
@@ -358,37 +361,31 @@ class TestMemoriesCollectionAgainstLiveSchema:
                 "type_memory": "fact",
                 "content": "to be deleted",
                 "embedding": [0.1] * 1024,
-                "is_deleted": False,
-                "media_id": None,
                 "date_created": now,
-                "date_deleted": None,
                 "date_updated": now,
             }
             entity = coll.create(data)
             await coll.save_entity(entity)
 
-            # direct UPDATE to set is_deleted (bypassing entity lifecycle)
-            later = datetime.now(UTC)
-            await pool.execute(
-                "UPDATE memories SET is_deleted = TRUE, date_deleted = $2 WHERE memory_id = $1",
-                mid,
-                later,
-            )
-
-            visible = await coll.find_by_user(
+            # confirm the row exists before delete
+            pre = await coll.find_by_user(
                 user_id,
                 agent_id=agent_id,
                 customer_id=customer_id,
             )
-            assert visible == []
+            assert len(pre) == 1
 
-            all_mem = await coll.find_by_user(
+            # hard delete via the canonical Collection.delete entry point
+            removed = await coll.delete((agent_id, mid))
+            assert removed is True
+
+            # row is gone
+            post = await coll.find_by_user(
                 user_id,
-                include_deleted=True,
                 agent_id=agent_id,
                 customer_id=customer_id,
             )
-            assert len(all_mem) == 1
+            assert post == []
         finally:
             await pool.close()
 
@@ -427,9 +424,9 @@ class TestMemoryRetrieverAgainstLiveSchema:
                 "INSERT INTO memories ("
                 "memory_id, agent_id, customer_id, user_id, "
                 "conversation_id, message_id_source, type_memory, content, "
-                "summary, embedding, is_deleted, date_created, date_updated"
+                "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'preference', $7, NULL, "
-                "$8::vector, FALSE, $9, $9)",
+                "$8::vector, $9, $9)",
                 uuid.uuid4(),
                 agent_id,
                 customer_id,
@@ -540,13 +537,13 @@ class TestMemoryExtractorAgainstLiveSchema:
 class TestMemoryToolsAgainstLiveSchema:
     """tool factories produce tools whose SQL executes successfully."""
 
-    async def test_add_memory_tool_inserts_row(
+    async def test_memory_add_tool_inserts_row(
         self,
         applied_schema: tuple[str, str],
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
-        ``add_memory`` tool inserts a new row when no similar memory
+        ``memory_add`` tool inserts a new row when no similar memory
         exists and populates trigger-maintained ``search_vector``.
 
         :param applied_schema: (url, schema)
@@ -572,7 +569,7 @@ class TestMemoryToolsAgainstLiveSchema:
                     self.conversation_id = c
                     self.correlation_id = m
 
-            tools = await load_add_memory_tool(
+            tools = await load_memory_add_tool(
                 user_id,
                 _StubEmbedding(),
                 agent_id,
@@ -627,7 +624,7 @@ class TestMemoryToolsAgainstLiveSchema:
                     self.conversation_id = c
                     self.correlation_id = m
 
-            add_tools = await load_add_memory_tool(
+            add_tools = await load_memory_add_tool(
                 user_id,
                 _StubEmbedding(),
                 agent_id,
@@ -655,13 +652,13 @@ class TestMemoryToolsAgainstLiveSchema:
         finally:
             await pool.close()
 
-    async def test_recall_memory_tool_fetches_content(
+    async def test_memory_recall_tool_fetches_content(
         self,
         applied_schema: tuple[str, str],
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         """
-        recall_memory fetches content for a known memory_id.
+        memory_recall fetches content for a known memory_id.
 
         :param applied_schema: (url, schema)
         :ptype applied_schema: tuple[str, str]
@@ -680,9 +677,9 @@ class TestMemoryToolsAgainstLiveSchema:
                 "INSERT INTO memories ("
                 "memory_id, agent_id, customer_id, user_id, "
                 "conversation_id, message_id_source, type_memory, content, "
-                "embedding, is_deleted, date_created, date_updated"
+                "embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, "
-                "$8::vector, FALSE, $9, $9)",
+                "$8::vector, $9, $9)",
                 mid,
                 agent_id,
                 customer_id,
@@ -698,7 +695,7 @@ class TestMemoryToolsAgainstLiveSchema:
                 pool,
                 permissive_memory_authorizer,
             )
-            tools = await load_recall_memory_tool(
+            tools = await load_memory_recall_tool(
                 user_id,
                 agent_id,
                 customer_id,

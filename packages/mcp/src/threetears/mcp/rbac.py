@@ -27,7 +27,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
+
+from uuid_utils import uuid7
 
 from sqlalchemy import Column as SAColumn
 from sqlalchemy import DateTime, MetaData, Table, Text
@@ -161,7 +163,10 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         :return: created grant entity
         :rtype: McpToolGrantEntity
         """
-        grant_id = uuid4()
+        # uuid_utils.uuid7() returns a uuid_utils.UUID; cast to stdlib
+        # UUID so downstream callers / type checks see the canonical
+        # type (rest of 3tears typing is built on stdlib UUID).
+        grant_id = UUID(str(uuid7()))
         entity = self.entity_class(
             {
                 "grant_id": grant_id,

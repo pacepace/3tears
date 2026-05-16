@@ -718,7 +718,7 @@ class ToolContextManager:
         """
         if not self._memory_refs_projection:
             return ""
-        lines = ["Previously recalled in this conversation (use recall_memory with the ID and type shown):"]
+        lines = ["Previously recalled in this conversation (use memory_recall with the ID and type shown):"]
         for ref in self._memory_refs_projection:
             itype = ref["item_type"]
             tag = f"[{itype}:{ref['item_id']}]"

@@ -8,8 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.agent.memory.tools import (
+    MemoryRecallInput,
     MemorySearchInput,
-    RecallMemoryInput,
     _fmt_dt,
     _tool_error,
 )
@@ -48,9 +48,9 @@ class TestMemorySearchInput:
         assert inp.type_filter == "preference"
 
 
-class TestRecallMemoryInput:
+class TestMemoryRecallInput:
     def test_valid(self):
-        inp = RecallMemoryInput(id="some-uuid", type="memory")
+        inp = MemoryRecallInput(id="some-uuid", type="memory")
         assert inp.id == "some-uuid"
         assert inp.type == "memory"
 
@@ -64,9 +64,9 @@ class TestToolError:
         assert result == "[TOOL ERROR] memory_search: embed failed — connection timeout"
 
     def test_format_consistency(self):
-        result = _tool_error("recall_memory", "fetch", "not found")
+        result = _tool_error("memory_recall", "fetch", "not found")
         assert result.startswith("[TOOL ERROR]")
-        assert "recall_memory" in result
+        assert "memory_recall" in result
         assert "fetch failed" in result
 
 

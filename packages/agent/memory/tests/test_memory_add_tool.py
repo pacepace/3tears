@@ -1,4 +1,4 @@
-"""Tests for the add_memory tool.
+"""Tests for the memory_add tool.
 
 Collection-parameterised (namespace-task-01 phase 8.5b): the factory
 takes a :class:`MemoriesCollection` as a required parameter. tests
@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
-from threetears.agent.memory.tools import AddMemoryInput, load_add_memory_tool
+from threetears.agent.memory.tools import MemoryAddInput, load_memory_add_tool
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
@@ -29,7 +29,7 @@ class _StubContext:
     """minimal stand-in for :class:`CallContext` in unit tests.
 
     exposes ``conversation_id`` and ``correlation_id`` attributes
-    consumed by the per-call resolver in ``load_add_memory_tool``.
+    consumed by the per-call resolver in ``load_memory_add_tool``.
 
     :param conversation_id: conversation UUID
     :ptype conversation_id: UUID
@@ -103,21 +103,21 @@ def _make_collection(
     )
 
 
-class TestAddMemoryInput:
-    """Input validation for AddMemoryInput."""
+class TestMemoryAddInput:
+    """Input validation for MemoryAddInput."""
 
     def test_valid_input(self):
-        inp = AddMemoryInput(content="User likes Rust", memory_type="preference")
+        inp = MemoryAddInput(content="User likes Rust", memory_type="preference")
         assert inp.content == "User likes Rust"
         assert inp.memory_type == "preference"
 
     def test_default_type(self):
-        inp = AddMemoryInput(content="something")
+        inp = MemoryAddInput(content="something")
         assert inp.memory_type == "preference"
 
 
 class TestLoadAddMemoryTool:
-    """add_memory tool behavior."""
+    """memory_add tool behavior."""
 
     async def test_creates_tool(
         self,
@@ -126,7 +126,7 @@ class TestLoadAddMemoryTool:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -136,7 +136,7 @@ class TestLoadAddMemoryTool:
             context_resolver=_resolver,
         )
         assert len(tools) == 1
-        assert tools[0].name == "add_memory"
+        assert tools[0].name == "memory_add"
 
     async def test_stores_new_memory(
         self,
@@ -145,7 +145,7 @@ class TestLoadAddMemoryTool:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -169,7 +169,7 @@ class TestLoadAddMemoryTool:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -233,7 +233,7 @@ class TestLoadAddMemoryTool:
         pool.fetchrow.side_effect = _fetchrow
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -267,7 +267,7 @@ class TestLoadAddMemoryTool:
         pool.fetch.side_effect = _fetch
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -293,7 +293,7 @@ class TestLoadAddMemoryTool:
         provider = _make_embedding_provider()
         provider.aembed_query.side_effect = RuntimeError("embedding service down")
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,
@@ -315,7 +315,7 @@ class TestLoadAddMemoryTool:
         pool = _make_pool()
         provider = _make_embedding_provider()
         memories = _make_collection(pool, permissive_memory_authorizer)
-        tools = await load_add_memory_tool(
+        tools = await load_memory_add_tool(
             _TEST_UID,
             provider,
             _TEST_AID,

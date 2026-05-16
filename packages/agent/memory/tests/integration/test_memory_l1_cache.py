@@ -72,10 +72,7 @@ def _build_l1_metadata() -> MetaData:
         Column("type_memory", String(50)),
         Column("content", Text),
         Column("embedding", Text),
-        Column("media_id", String(255)),
-        Column("is_deleted", Boolean),
         Column("date_created", DateTime),
-        Column("date_deleted", DateTime),
         Column("date_updated", DateTime),
     )
     Table(
@@ -83,6 +80,7 @@ def _build_l1_metadata() -> MetaData:
         meta,
         Column("agent_id", String(255), primary_key=True),
         Column("media_id", String(255), primary_key=True),
+        Column("memory_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("media_category", String(64)),
@@ -109,7 +107,7 @@ def _build_l1_metadata() -> MetaData:
         meta,
         Column("agent_id", String(255), primary_key=True),
         Column("chunk_id", String(255), primary_key=True),
-        Column("media_id", String(255)),
+        Column("memory_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
         Column("content", Text),
@@ -117,6 +115,8 @@ def _build_l1_metadata() -> MetaData:
         Column("heading_context", Text),
         Column("page_number", Integer),
         Column("embedding", Text),
+        Column("message_id_start", String(255)),
+        Column("message_id_end", String(255)),
         Column("date_created", DateTime),
     )
     return meta
@@ -221,10 +221,7 @@ class TestMemoryCollectionsL1:
                 "type_memory": "fact",
                 "content": "cached content",
                 "embedding": [0.1] * 1024,
-                "is_deleted": False,
-                "media_id": None,
                 "date_created": now,
-                "date_deleted": None,
                 "date_updated": now,
             }
             entity = memories.create(data)
@@ -251,23 +248,50 @@ class TestMemoryCollectionsL1:
         applied_schema: tuple[str, str],
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        """MediaCollection saves through to L1 + .get() hits L1."""
+        """MediaCollection saves through to L1 + .get() hits L1.
+
+        Under the unified model media has a NOT NULL parent memory_id
+        (CASCADE FK to memories); the test seeds the parent memory
+        before the media row.
+        """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            _, l1, _, media, _, _ = _build_stack(
+            _, l1, memories, media, _, _ = _build_stack(
                 pool,
                 permissive_memory_authorizer,
             )
 
             media_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
             agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
             now = datetime.now(UTC)
+
+            parent_memory = memories.create(
+                {
+                    "memory_id": memory_id,
+                    "agent_id": agent_id,
+                    "customer_id": customer_id,
+                    "user_id": user_id,
+                    "conversation_id": uuid.uuid4(),
+                    "message_id_source": uuid.uuid4(),
+                    "type_memory": "topical_context",
+                    "content": "parent memory",
+                    "embedding": [0.1] * 1024,
+                    "date_created": now,
+                    "date_updated": now,
+                }
+            )
+            await memories.save_entity(parent_memory)
+
             data = {
                 "media_id": media_id,
+                "memory_id": memory_id,
                 "agent_id": agent_id,
-                "customer_id": uuid.uuid4(),
-                "user_id": uuid.uuid4(),
+                "customer_id": customer_id,
+                "user_id": user_id,
                 "media_category": "image",
                 "metadata_json": {"document_title": "photo.jpg"},
                 "date_created": now,
@@ -299,21 +323,43 @@ class TestMemoryCollectionsL1:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            _, l1, _, media, media_content, _ = _build_stack(
+            _, l1, memories, media, media_content, _ = _build_stack(
                 pool,
                 permissive_memory_authorizer,
             )
 
-            # seed a media parent first (FK)
+            # seed a parent memory + media (FK chain)
             media_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
             agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
             now = datetime.now(UTC)
+
+            parent_memory = memories.create(
+                {
+                    "memory_id": memory_id,
+                    "agent_id": agent_id,
+                    "customer_id": customer_id,
+                    "user_id": user_id,
+                    "conversation_id": uuid.uuid4(),
+                    "message_id_source": uuid.uuid4(),
+                    "type_memory": "topical_context",
+                    "content": "parent memory",
+                    "embedding": [0.1] * 1024,
+                    "date_created": now,
+                    "date_updated": now,
+                }
+            )
+            await memories.save_entity(parent_memory)
+
             media_entity = media.create(
                 {
                     "media_id": media_id,
+                    "memory_id": memory_id,
                     "agent_id": agent_id,
-                    "customer_id": uuid.uuid4(),
-                    "user_id": uuid.uuid4(),
+                    "customer_id": customer_id,
+                    "user_id": user_id,
                     "media_category": "document",
                     "metadata_json": None,
                     "date_created": now,
@@ -327,8 +373,8 @@ class TestMemoryCollectionsL1:
                 "content_id": content_id,
                 "media_id": media_id,
                 "agent_id": agent_id,
-                "customer_id": uuid.uuid4(),
-                "user_id": uuid.uuid4(),
+                "customer_id": customer_id,
+                "user_id": user_id,
                 "content_type": "ocr",
                 "content": "cached media content",
                 "summary": None,
@@ -357,24 +403,49 @@ class TestMemoryCollectionsL1:
         applied_schema: tuple[str, str],
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        """MemoryChunkCollection saves through to L1 + .get() hits L1."""
+        """MemoryChunkCollection saves through to L1 + .get() hits L1.
+
+        Under the unified model every chunk has a NOT NULL parent
+        memory_id; seed the parent memory first.
+        """
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            _, l1, _, _, _, chunks = _build_stack(
+            _, l1, memories, _, _, chunks = _build_stack(
                 pool,
                 permissive_memory_authorizer,
             )
 
             chunk_id = uuid.uuid4()
+            memory_id = uuid.uuid4()
             agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
             now = datetime.now(UTC)
+
+            parent_memory = memories.create(
+                {
+                    "memory_id": memory_id,
+                    "agent_id": agent_id,
+                    "customer_id": customer_id,
+                    "user_id": user_id,
+                    "conversation_id": uuid.uuid4(),
+                    "message_id_source": uuid.uuid4(),
+                    "type_memory": "topical_context",
+                    "content": "parent memory",
+                    "embedding": [0.1] * 1024,
+                    "date_created": now,
+                    "date_updated": now,
+                }
+            )
+            await memories.save_entity(parent_memory)
+
             chunk_data = {
                 "chunk_id": chunk_id,
-                "media_id": None,
+                "memory_id": memory_id,
                 "agent_id": agent_id,
-                "customer_id": uuid.uuid4(),
-                "user_id": uuid.uuid4(),
+                "customer_id": customer_id,
+                "user_id": user_id,
                 "content": "cached chunk content",
                 "summary": None,
                 "heading_context": "Intro",
@@ -436,10 +507,7 @@ class TestHybridSearchRegression:
                     "type_memory": "fact",
                     "content": f"memory {i} content",
                     "embedding": vec,
-                    "is_deleted": False,
-                    "media_id": None,
                     "date_created": now,
-                    "date_deleted": None,
                     "date_updated": now,
                 }
                 entity = memories.create(data)

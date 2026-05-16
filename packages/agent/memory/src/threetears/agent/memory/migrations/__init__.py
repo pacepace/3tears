@@ -111,6 +111,21 @@ from threetears.agent.memory.migrations.v013_datetime_to_datetimetz import (
 from threetears.agent.memory.migrations.v014_memory_refs_date_columns import (
     rename_memory_refs_date_columns,
 )
+from threetears.agent.memory.migrations.v015_unified_memory_columns import (
+    add_unified_memory_columns,
+)
+from threetears.agent.memory.migrations.v016_backfill_memory_ids import (
+    backfill_memory_ids,
+)
+from threetears.agent.memory.migrations.v017_memory_fk_flip import (
+    flip_memory_parent_fks,
+)
+from threetears.agent.memory.migrations.v018_drop_legacy_memory_columns import (
+    drop_legacy_memory_columns,
+)
+from threetears.agent.memory.migrations.v019_conversation_id_not_null import (
+    enforce_conversation_id_not_null,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -153,6 +168,11 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(12)(memories_media_composite_fk)
     pkg.version(13)(datetime_to_datetimetz)
     pkg.version(14)(rename_memory_refs_date_columns)
+    pkg.version(15)(add_unified_memory_columns)
+    pkg.version(16)(backfill_memory_ids)
+    pkg.version(17)(flip_memory_parent_fks)
+    pkg.version(18)(drop_legacy_memory_columns)
+    pkg.version(19)(enforce_conversation_id_not_null)
     runner.register(pkg)
     return pkg
 
@@ -161,11 +181,16 @@ __all__ = [
     "PACKAGE_NAME",
     "add_lifecycle_columns",
     "add_memory_fts",
+    "add_unified_memory_columns",
+    "backfill_memory_ids",
     "create_conversation_memory_refs",
     "create_media_tables",
     "create_memories_table",
     "create_memory_chunks",
     "datetime_to_datetimetz",
+    "drop_legacy_memory_columns",
+    "enforce_conversation_id_not_null",
+    "flip_memory_parent_fks",
     "media_composite_fk",
     "media_content_composite_fk",
     "memories_media_composite_fk",

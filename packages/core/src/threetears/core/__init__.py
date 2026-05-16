@@ -3,7 +3,7 @@
 Public API re-exports for convenient top-level imports.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
