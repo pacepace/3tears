@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-conversations"
-version = "0.6.0"
+version = "0.7.0"
 description = "Conversation entity, three-tier collection, and per-agent schema migrations shared by memory and tool packages"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-agent-acl",
+    "3tears-langgraph",
 ]
 
 [project.urls]
@@ -32,6 +33,7 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
+3tears-langgraph = { workspace = true }
 
 [tool.mypy]
 strict = true

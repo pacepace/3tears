@@ -10,7 +10,7 @@ key off ``conversation_id`` but none of them is the natural owner.
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from threetears.conversations.authorize import (
     ACTION_CONVERSATION_DELETE,
@@ -28,6 +28,7 @@ from threetears.conversations.authorize import (
 from threetears.conversations.buffer import ConversationWriteBuffer
 from threetears.conversations.collection import ConversationsCollection
 from threetears.conversations.entity import Conversation, ConversationStatus
+from threetears.conversations.events import ConversationSummarizedEvent
 from threetears.conversations.migrations import register
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "ConversationAccessDenied",
     "ConversationAuthorizerDependencies",
     "ConversationStatus",
+    "ConversationSummarizedEvent",
     "ConversationWriteBuffer",
     "ConversationsCollection",
     "authorize_conversation_access",

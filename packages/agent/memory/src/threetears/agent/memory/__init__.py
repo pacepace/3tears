@@ -1,8 +1,12 @@
 """Agent memory package -- memory entities, collections, and embedding protocol."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from threetears.agent.memory.access import MemoryAccessService
+from threetears.agent.memory.events import (
+    MemoryCreatedEvent,
+    MemoryRetrievedEvent,
+)
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
     ACTION_MEMORY_READ,
@@ -65,11 +69,13 @@ __all__ = [
     "MemoryChunkCollection",
     "MemoryChunkEntity",
     "MemoryConfig",
+    "MemoryCreatedEvent",
     "MemoryEntity",
     "MemoryExtractor",
     "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
+    "MemoryRetrievedEvent",
     "MemoryRetriever",
     "MemorySearchInput",
     "MemoryType",

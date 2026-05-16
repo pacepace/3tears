@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
+from threetears.agent.tools.events import TodosChangedEvent
 from threetears.agent.tools.registry import ToolRegistry
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.entities import ContextItemEntity
@@ -96,13 +97,14 @@ __all__ = [
     "TextProvider",
     "ParseDocumentInput",
     "ToolContextManager",
+    "TodoStorage",
+    "TodosChangedEvent",
     "ToolExecutionResult",
     "ToolExecutor",
     "ToolLlmInvocation",
     "ToolLlmResolver",
     "ToolRegistry",
     "ToolRouter",
-    "TodoStorage",
     "ToolRoutingDecision",
     "TranscriptionProvider",
     "VisionProvider",

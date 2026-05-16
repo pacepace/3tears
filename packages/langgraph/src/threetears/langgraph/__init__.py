@@ -4,7 +4,7 @@ provides checkpoint savers, graph builders, and context management
 for building LangGraph agents backed by 3tears infrastructure.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from threetears.langgraph.builders import build_chat_agent, build_tool_agent
 from threetears.langgraph.caching import (
@@ -16,6 +16,23 @@ from threetears.langgraph.caching import (
     should_bind_tools_fresh,
 )
 from threetears.langgraph.checkpoint import ThreeTierCheckpointSaver
+from threetears.langgraph.events import (
+    FrameworkEvent,
+    FrameworkEventRegistry,
+    ImageGeneratedEvent,
+    PromptBuiltEvent,
+    ReasoningStreamedEvent,
+    ResponseCompletedEvent,
+    ResponseFailedEvent,
+    ToolCompletedEvent,
+    ToolDispatchedEvent,
+    ToolStartedEvent,
+    WorkflowCompletedEvent,
+    WorkflowStartedEvent,
+    WorkflowStepCompletedEvent,
+    default_registry,
+    dispatch_event,
+)
 from threetears.langgraph.hooks import (
     AgentNodeHook,
     PromptCachingHook,
@@ -56,7 +73,14 @@ __all__ = [
     "CheckpointL1Cache",
     "CheckpointL2Cache",
     "FlushCallback",
+    "FrameworkEvent",
+    "FrameworkEventRegistry",
+    "ImageGeneratedEvent",
+    "PromptBuiltEvent",
     "PromptCachingHook",
+    "ReasoningStreamedEvent",
+    "ResponseCompletedEvent",
+    "ResponseFailedEvent",
     "StreamEndEvent",
     "StreamErrorEvent",
     "StreamEvent",
@@ -69,8 +93,14 @@ __all__ = [
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
     "ToolCallStartEvent",
+    "ToolCompletedEvent",
+    "ToolDispatchedEvent",
     "ToolNodeHook",
+    "ToolStartedEvent",
     "UUIDSafeSerializer",
+    "WorkflowCompletedEvent",
+    "WorkflowStartedEvent",
+    "WorkflowStepCompletedEvent",
     "agent_node",
     "annotate_system_prompt",
     "build_chat_agent",
@@ -78,7 +108,9 @@ __all__ = [
     "compose_agent_node_hooks",
     "compose_tool_node_hooks",
     "compute_tool_key",
+    "default_registry",
     "detect_capabilities",
+    "dispatch_event",
     "extract_cache_usage",
     "has_tool_calls",
     "parse_stream_event",

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-tools"
-version = "0.6.0"
+version = "0.7.0"
 description = "Tool framework for LLM agents — routing, execution, and builtin tools"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -27,6 +27,7 @@ dependencies = [
     "3tears-agent-audit",
     "3tears-agent-memory",
     "3tears-conversations",
+    "3tears-langgraph",
     "langchain-core",
     "httpx",
 ]
@@ -56,3 +57,4 @@ packages = ["src/threetears"]
 3tears-agent-audit = { workspace = true }
 3tears-agent-memory = { workspace = true }
 3tears-conversations = { workspace = true }
+3tears-langgraph = { workspace = true }

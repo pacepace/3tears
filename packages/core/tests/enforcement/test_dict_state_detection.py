@@ -125,6 +125,14 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_entries",
         "synced from NATS KV on load, not a local-only cache",
     ),
+    # -- langgraph: typed framework-event class registry --
+    (
+        "langgraph/events.py",
+        "FrameworkEventRegistry",
+        "_by_name",
+        "static config, FrameworkEvent class objects registered once at "
+        "import time; non-serializable (stores Python class refs, not data)",
+    ),
 ]
 
 # ---------------------------------------------------------------------------
