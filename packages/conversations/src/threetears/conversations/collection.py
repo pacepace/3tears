@@ -215,6 +215,104 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         """
         return Conversation
 
+    async def search(
+        self,
+        agent_id: UUID,
+        user_id: UUID,
+        query: str,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        include_closed: bool = False,
+    ) -> list[Conversation]:
+        """full-text search across conversations the user participates in.
+
+        delegates to postgres' ``search_vector @@ websearch_to_tsquery``
+        on the ``conversations.search_vector`` column populated by the
+        v005 trigger. results come from L3 ordered by ``ts_rank_cd``
+        descending (most relevant first) with ``date_updated`` desc as
+        a stable secondary order.
+
+        the FTS query uses ``websearch_to_tsquery`` (not
+        ``plainto_tsquery`` or ``to_tsquery``) so user-typed input
+        survives the boundary without breaking on operators -- spaces
+        become AND, ``OR`` becomes OR, leading ``-`` becomes NOT,
+        double-quoted phrases become phrase queries. matches postgres'
+        documented "search-engine-style" parser. queries shorter than
+        the minimum useful tokenization length (2 chars) return empty;
+        callers that want substring matching on shorter inputs use
+        their own ILIKE fallback.
+
+        scope: the WHERE clause pins ``user_id = $2`` so cross-user
+        leakage is impossible at the SQL boundary. ``agent_id`` is the
+        partition column on ``conversations``; supplying it explicitly
+        keeps the lookup inside one agent's slice (matches
+        :meth:`find_by_user`). closed conversations are excluded by
+        default to match the typical "search my open chats" UX; pass
+        ``include_closed=True`` to widen the scan.
+
+        product consumers that need a wider search (also FTS into
+        message bodies, hybrid with vector similarity, etc.) compose
+        this method's result with their own per-product joins -- 3tears
+        does not pin a canonical ``messages`` table so the framework
+        cannot do the join itself.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param user_id: user whose conversations to scope the search to
+        :ptype user_id: UUID
+        :param query: free-text search query (passed to
+            ``websearch_to_tsquery``)
+        :ptype query: str
+        :param limit: maximum rows to return (default 20)
+        :ptype limit: int
+        :param offset: pagination offset (default 0)
+        :ptype offset: int
+        :param include_closed: include closed / archived conversations
+            in the search scope (default False)
+        :ptype include_closed: bool
+        :return: matching conversations, most-relevant-first
+        :rtype: list[Conversation]
+        """
+        # Defensive: an empty / whitespace-only query would match every
+        # row via FTS' empty-query semantics. Return [] explicitly so
+        # callers do not accidentally surface every conversation.
+        if not query or not query.strip():
+            return []
+
+        if include_closed:
+            status_predicate = ""
+            params: tuple[Any, ...] = (agent_id, user_id, query, limit, offset)
+        else:
+            status_predicate = " AND status != $6"
+            params = (agent_id, user_id, query, limit, offset, "closed")
+
+        rows = await self.l3_pool.fetch(
+            "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery('english', $3)) AS rank "
+            "FROM conversations "
+            "WHERE agent_id = $1 "
+            "  AND user_id = $2 "
+            "  AND search_vector @@ websearch_to_tsquery('english', $3)"
+            + status_predicate
+            + " ORDER BY rank DESC, date_updated DESC "
+            "LIMIT $4 OFFSET $5",
+            *params,
+        )
+        entities: list[Conversation] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            # ``rank`` is a derived projection from the SELECT, not a
+            # column on the entity -- strip it before the entity builds
+            # itself so a future entity-level audit doesn't think
+            # ``rank`` is supposed to be there.
+            data.pop("rank", None)
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            pk = (data["agent_id"], data["id"])
+            await self._save_to_l2(pk, data)
+            entities.append(entity)
+        return entities
+
     async def find_by_user(
         self,
         agent_id: UUID,

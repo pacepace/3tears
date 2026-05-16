@@ -165,6 +165,7 @@ def _make_extractor(
     embedding: StubEmbeddingProvider | None = None,
     nats_client: Any = None,
     summary_callback: Any = None,
+    on_memory_created: Any = None,
 ) -> MemoryExtractor:
     """build a :class:`MemoryExtractor` with a registry-bound Collection."""
     real_pool = pool or _make_pool()
@@ -177,6 +178,7 @@ def _make_extractor(
         memories_collection=memories,
         nats_client=nats_client,
         summary_callback=summary_callback,
+        on_memory_created=on_memory_created,
     )
 
 
@@ -761,6 +763,128 @@ class TestSummaryCallback:
             pool=pool,
             factory=factory,
             summary_callback=None,
+        )
+
+        await ext.extract(
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="x" * 50,
+            assistant_response="y" * 200,
+            turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+        )
+
+
+# -- on_memory_created callback tests ----------------------------------------
+
+
+class TestOnMemoryCreatedCallback:
+    """The ``on_memory_created`` callback fires exactly once per committed
+    ADD action and receives the full ``MemoryEntity``. Catches regressions
+    in the BG-task -> WS-push wiring that the memory-page-doesn't-refresh
+    fix (#44) depends on."""
+
+    async def test_callback_called_with_memory_entity_after_add(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        from threetears.agent.memory.entities import MemoryEntity
+
+        extraction_result = [{"type": "fact", "content": "Saoirse drinks coffee black"}]
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}),
+            extraction_content=json.dumps(extraction_result),
+        )
+        pool = _make_pool()
+        captured: list[MemoryEntity] = []
+
+        async def _on_created(entity: MemoryEntity) -> None:
+            captured.append(entity)
+
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            pool=pool,
+            factory=factory,
+            on_memory_created=_on_created,
+        )
+
+        await ext.extract(
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="x" * 50,
+            assistant_response="y" * 200,
+            turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+        )
+
+        assert len(captured) == 1
+        entity = captured[0]
+        assert isinstance(entity, MemoryEntity)
+        assert entity.content == "Saoirse drinks coffee black"
+        # The callback receives a fully-formed entity with identifying
+        # fields the consumer needs to scope a push (user_id +
+        # conversation_id).
+        assert entity.memory_id is not None
+        assert entity.user_id is not None
+        assert entity.conversation_id is not None
+
+    async def test_callback_exception_does_not_break_extraction(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """A failing callback must not break the extraction pipeline.
+        The row is already committed at this point; the push is
+        best-effort."""
+        extraction_result = [{"type": "fact", "content": "Saoirse codes at 3am"}]
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}),
+            extraction_content=json.dumps(extraction_result),
+        )
+        pool = _make_pool()
+
+        async def _flaky_callback(entity: Any) -> None:
+            raise RuntimeError("downstream WS bridge went sideways")
+
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            pool=pool,
+            factory=factory,
+            on_memory_created=_flaky_callback,
+        )
+
+        # Must not raise.
+        await ext.extract(
+            user_id=uuid.uuid7(),
+            conversation_id=uuid.uuid7(),
+            message_id_source=uuid.uuid7(),
+            user_message="x" * 50,
+            assistant_response="y" * 200,
+            turn_count=10,
+            agent_id=_TEST_AID,
+            customer_id=_TEST_CUID,
+        )
+
+    async def test_no_callback_no_error(
+        self,
+        permissive_memory_authorizer: MemoryAuthorizerDependencies,
+    ) -> None:
+        """An extractor constructed without ``on_memory_created``
+        completes the ADD path normally."""
+        extraction_result = [{"type": "fact", "content": "Saoirse loves K-pop"}]
+        factory = StubChatModelFactory(
+            worthiness_content=json.dumps({"worthy": True}),
+            extraction_content=json.dumps(extraction_result),
+        )
+        pool = _make_pool()
+        ext = _make_extractor(
+            permissive_memory_authorizer,
+            pool=pool,
+            factory=factory,
+            on_memory_created=None,
         )
 
         await ext.extract(

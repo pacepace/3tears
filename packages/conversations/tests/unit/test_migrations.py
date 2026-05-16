@@ -15,6 +15,7 @@ import pytest
 
 from threetears.conversations.migrations import (
     PACKAGE_NAME,
+    add_conversation_search_vector,
     add_name_column,
     create_conversations_table,
     datetime_to_datetimetz,
@@ -131,21 +132,22 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_two_three_and_four(self) -> None:
-        """register wires v001 (create), v002 (message_count), v003 (name), v004 (datetimetz)."""
+    async def test_register_populates_versions_one_through_five(self) -> None:
+        """register wires v001 (create), v002 (message_count), v003
+        (name), v004 (datetimetz), v005 (search_vector + trigger)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5}
 
-    async def test_apply_runs_four_versions_then_idempotent(self) -> None:
-        """apply records v1+v2+v3+v4 and re-running is a no-op."""
+    async def test_apply_runs_five_versions_then_idempotent(self) -> None:
+        """apply records v1+v2+v3+v4+v5 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 4
+        assert first_count == 5
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -290,6 +292,81 @@ class TestDatetimeToDatetimetzMigration:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAddConversationSearchVectorMigration:
+    """tests for v005: search_vector tsvector + trigger + GIN index for
+    postgres FTS on conversation display titles. mirrors the metallm
+    alembic-057 conversation-side DDL shape, lifted to 3tears so other
+    consumers don't reinvent the column + trigger pair locally.
+    """
+
+    async def test_direct_call_issues_six_statements(self) -> None:
+        """one ALTER + one CREATE INDEX + one CREATE FUNCTION + one
+        DROP TRIGGER + one CREATE TRIGGER + one backfill UPDATE."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 6
+
+    async def test_direct_call_adds_search_vector_column(self) -> None:
+        """ADD COLUMN IF NOT EXISTS search_vector tsvector."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"ALTER TABLE conversations\s+ADD COLUMN IF NOT EXISTS search_vector tsvector",
+            joined,
+            re.IGNORECASE,
+        )
+
+    async def test_direct_call_creates_gin_index(self) -> None:
+        """GIN index on the new tsvector column for FTS lookups."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"CREATE INDEX IF NOT EXISTS idx_conversations_search_vector "
+            r"ON conversations USING gin\(search_vector\)",
+            joined,
+        )
+
+    async def test_direct_call_uses_drop_create_trigger_pattern(self) -> None:
+        """postgres has no ``CREATE TRIGGER IF NOT EXISTS``; the
+        migration uses DROP-then-CREATE for replay safety."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "DROP TRIGGER IF EXISTS trg_conversations_search_vector ON conversations" in joined
+        assert "CREATE TRIGGER trg_conversations_search_vector" in joined
+        # The trigger fires on INSERT or UPDATE OF name -- pinning the
+        # column dependency so a future schema change that renames
+        # ``name`` breaks the build instead of silently breaking FTS.
+        assert "BEFORE INSERT OR UPDATE OF name ON conversations" in joined
+
+    async def test_direct_call_uses_setweight_a_on_name(self) -> None:
+        """the trigger weights ``name`` at 'A' so future multi-source
+        FTS (e.g. summary at 'B') can layer in without changing the
+        read query shape."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "setweight(to_tsvector('english', coalesce(NEW.name, '')), 'A')" in joined
+
+    async def test_direct_call_backfill_is_idempotent(self) -> None:
+        """backfill UPDATE carries a replay guard so a re-run on a
+        fully-populated table is a clean no-op."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "UPDATE conversations SET search_vector" in joined
+        assert "WHERE search_vector IS NULL" in joined
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await add_conversation_search_vector(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

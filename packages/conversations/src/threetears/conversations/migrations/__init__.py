@@ -26,6 +26,11 @@ version history:
   ``Column(...)`` declarations in ``collection.py`` flip from
   DATETIME_TYPE to DATETIMETZ_TYPE in the same commit so the
   Column<->migration alignment enforcement test stays green.
+- v005 -- v0.7.0 framework promotion: add ``search_vector`` tsvector +
+  trigger + GIN index for postgres FTS on conversation display titles.
+  lifted from metallm migration 057 (conversation-side only -- the
+  messages-side FTS in that migration stays product-side because
+  3tears has no canonical messages table).
 """
 
 from __future__ import annotations
@@ -41,6 +46,9 @@ from threetears.conversations.migrations.v003_add_name_column import (
 )
 from threetears.conversations.migrations.v004_datetime_to_datetimetz import (
     datetime_to_datetimetz,
+)
+from threetears.conversations.migrations.v005_conversation_search_vector import (
+    add_conversation_search_vector,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -72,12 +80,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(add_message_count)
     pkg.version(3)(add_name_column)
     pkg.version(4)(datetime_to_datetimetz)
+    pkg.version(5)(add_conversation_search_vector)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_conversation_search_vector",
     "add_message_count",
     "add_name_column",
     "create_conversations_table",
