@@ -49,7 +49,7 @@ on every call. evaluation logic itself never opens a database
 connection or publishes a NATS message.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.6.0"
 
 from threetears.agent.acl.audit_vocabulary import (
     RBAC_AUDIT_ACTIONS,

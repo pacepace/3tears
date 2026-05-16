@@ -159,7 +159,10 @@ class TestFullChainApplies:
             count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
             assert count > 0
 
-            # memories table reconciled
+            # memories table reconciled — transcript-chunks-task-A
+            # unified-memory shape after v018 (drop media_id +
+            # is_deleted + date_deleted) and v019 (NOT NULL
+            # conversation_id).
             memory_cols = await _columns(conn, schema, "memories")
             assert "memory_id" in memory_cols
             assert "type_memory" in memory_cols
@@ -171,18 +174,23 @@ class TestFullChainApplies:
             assert "date_accessed" not in memory_cols
             assert "conversation_id" in memory_cols
             assert "message_id_source" in memory_cols
-            assert "is_deleted" in memory_cols
-            assert "media_id" in memory_cols
-            assert "date_deleted" in memory_cols
+            # v018 dropped the soft-delete + reverse-FK columns; the
+            # unified model is hard-delete only and media now parents
+            # memory via media.memory_id (NOT the reverse).
+            assert "is_deleted" not in memory_cols
+            assert "media_id" not in memory_cols
+            assert "date_deleted" not in memory_cols
             assert "summary" in memory_cols
             assert "search_vector" in memory_cols
 
             # conversation_memory_refs table
             assert await _table_exists(conn, schema, "conversation_memory_refs")
 
-            # media + media_content tables
+            # media + media_content tables — v015 added media.memory_id,
+            # v017 made it NOT NULL + CASCADE FK to memories.
             media_cols = await _columns(conn, schema, "media")
             assert "media_id" in media_cols
+            assert "memory_id" in media_cols
             assert "media_category" in media_cols
             assert "metadata_json" in media_cols
             mc_cols = await _columns(conn, schema, "media_content")
@@ -190,9 +198,14 @@ class TestFullChainApplies:
             assert "embedding" in mc_cols
             assert "search_vector" in mc_cols
 
-            # memory_chunks table
+            # memory_chunks table — v015 added memory_id +
+            # message_id_start + message_id_end, v018 dropped media_id.
             chunk_cols = await _columns(conn, schema, "memory_chunks")
             assert "chunk_id" in chunk_cols
+            assert "memory_id" in chunk_cols
+            assert "message_id_start" in chunk_cols
+            assert "message_id_end" in chunk_cols
+            assert "media_id" not in chunk_cols
             assert "heading_context" in chunk_cols
             assert "page_number" in chunk_cols
             assert "embedding" in chunk_cols
@@ -203,11 +216,30 @@ class TestFullChainApplies:
             assert await _index_exists(conn, schema, "idx_mc_search_vector")
             assert await _index_exists(conn, schema, "idx_chunks_search_vector")
 
-            # v012 composite FK from memories to media on (agent_id, media_id)
+            # unified-memory parent FKs (v017) — chunks -> memories and
+            # media -> memories, both CASCADE on memory delete.
             assert await _constraint_exists(
                 conn,
                 schema,
+                "memory_chunks_memory_fk",
+            )
+            assert await _constraint_exists(
+                conn,
+                schema,
+                "media_memory_fk",
+            )
+
+            # v018 dropped the reverse-direction FKs alongside the
+            # columns they referenced.
+            assert not await _constraint_exists(
+                conn,
+                schema,
                 "memories_media_composite_fk",
+            )
+            assert not await _constraint_exists(
+                conn,
+                schema,
+                "memory_chunks_media_fk",
             )
 
             # re-apply is a no-op
@@ -217,23 +249,19 @@ class TestFullChainApplies:
             await conn.close()
 
 
-class TestV012MemoriesMediaCompositeFK:
-    """v012 composite FK semantics: SET NULL on media delete + reject orphans."""
+class TestUnifiedMemoryParentFks:
+    """v017 parent FK semantics: memory delete CASCADEs to chunks + media."""
 
-    async def test_v012_fk_declares_on_delete_set_null(
+    async def test_chunks_fk_declares_on_delete_cascade(
         self,
         pg_schema: tuple[str, str],
     ) -> None:
-        """v012 FK metadata declares ``ON DELETE SET NULL`` semantics.
+        """``memory_chunks_memory_fk`` declares ``ON DELETE CASCADE``.
 
-        memory-references-media is a soft relationship: deleting the
-        source media should null the memory's reference, not cascade-
-        delete the memory itself. ``ON DELETE CASCADE`` would drop
-        extracted facts whenever the source artifact was removed --
-        the wrong data semantic. this test verifies the constraint
-        in pg_constraint declares the expected delete action, locking
-        the choice against accidental migration to CASCADE on a
-        future rewrite.
+        The unified model treats memory as the cognitive anchor;
+        deleting it discards every chunk parented to it. CASCADE is
+        the correct delete action — anything else would leave dangling
+        chunks pointing at a vanished memory.
 
         :param pg_schema: (url, schema) tuple
         :ptype pg_schema: tuple[str, str]
@@ -247,42 +275,62 @@ class TestV012MemoriesMediaCompositeFK:
             await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
 
             # confdeltype: 'a' = NO ACTION, 'r' = RESTRICT, 'c' = CASCADE,
-            # 'n' = SET NULL, 'd' = SET DEFAULT. asyncpg returns this
-            # postgres ``"char"`` column as a single-byte ``bytes`` object.
+            # 'n' = SET NULL, 'd' = SET DEFAULT.
             row = await conn.fetchrow(
                 """
                 SELECT confdeltype
                   FROM pg_constraint c
                   JOIN pg_namespace ns ON ns.oid = c.connamespace
                  WHERE ns.nspname = $1
-                   AND c.conname = 'memories_media_composite_fk'
+                   AND c.conname = 'memory_chunks_memory_fk'
                 """,
                 schema,
             )
             assert row is not None
-            assert row["confdeltype"] == b"n", f"expected SET NULL (b'n') ON DELETE; got {row['confdeltype']!r}"
+            assert row["confdeltype"] == b"c", (
+                f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
+            )
         finally:
             await conn.close()
 
-    async def test_media_delete_nulls_referencing_memory(
+    async def test_media_fk_declares_on_delete_cascade(
         self,
         pg_schema: tuple[str, str],
     ) -> None:
-        """deleting a media row flips referencing ``memories.media_id`` to NULL.
+        """``media_memory_fk`` declares ``ON DELETE CASCADE``."""
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
 
-        the v012 FK declares ``ON DELETE SET NULL`` matching the
-        memory-references-media semantic: the extracted memory still
-        exists after the source media is removed. test inserts a
-        media + memory pair, deletes the media, observes the memory
-        survives with media_id = NULL.
+            row = await conn.fetchrow(
+                """
+                SELECT confdeltype
+                  FROM pg_constraint c
+                  JOIN pg_namespace ns ON ns.oid = c.connamespace
+                 WHERE ns.nspname = $1
+                   AND c.conname = 'media_memory_fk'
+                """,
+                schema,
+            )
+            assert row is not None
+            assert row["confdeltype"] == b"c", (
+                f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
+            )
+        finally:
+            await conn.close()
 
-        the metadata-shape leg of this contract is pinned by
-        :meth:`test_v012_fk_declares_on_delete_set_null` -- this
-        method exercises the runtime behaviour over an actual
-        ``DELETE FROM media``.
+    async def test_memory_delete_cascades_to_chunk(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """Deleting a memory cascades to every chunk parented to it.
 
-        :param pg_schema: (url, schema) tuple
-        :ptype pg_schema: tuple[str, str]
+        Inserts a memory + chunk pair, deletes the memory, observes
+        the chunk has vanished.
         """
         url, schema = pg_schema
         runner = _build_runner()
@@ -299,83 +347,68 @@ class TestV012MemoriesMediaCompositeFK:
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
-            media_id = uuid.uuid4()
             memory_id = uuid.uuid4()
-
-            await conn.execute(
-                "INSERT INTO media ("
-                "media_id, agent_id, customer_id, user_id, "
-                "media_category, date_created, date_updated"
-                ") VALUES ($1, $2, $3, $4, 'document', $5, $5)",
-                media_id,
-                agent_id,
-                customer_id,
-                user_id,
-                now,
-            )
+            chunk_id = uuid.uuid4()
 
             await conn.execute(
                 "INSERT INTO memories ("
                 "memory_id, agent_id, customer_id, user_id, "
                 "conversation_id, message_id_source, type_memory, content, "
-                "summary, embedding, is_deleted, media_id, "
-                "date_created, date_updated"
-                ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
-                "$9::vector, FALSE, $10, $11, $11)",
+                "summary, embedding, date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, $6, 'topical_context', $7, $8, "
+                "$9::vector, $10, $10)",
                 memory_id,
                 agent_id,
                 customer_id,
                 user_id,
                 uuid.uuid4(),
                 uuid.uuid4(),
-                "fact text content body",
-                "fact summary",
+                "memory content",
+                "memory summary",
                 "[" + ",".join(["0.1"] * 1024) + "]",
-                media_id,
                 now,
             )
 
-            # confirm the link is present before the delete
-            pre_row = await conn.fetchrow(
-                "SELECT media_id FROM memories WHERE agent_id = $1 AND memory_id = $2",
+            await conn.execute(
+                "INSERT INTO memory_chunks ("
+                "chunk_id, memory_id, agent_id, customer_id, user_id, "
+                "content, summary, embedding, date_created"
+                ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)",
+                chunk_id,
+                memory_id,
+                agent_id,
+                customer_id,
+                user_id,
+                "chunk text",
+                "chunk summary",
+                "[" + ",".join(["0.1"] * 1024) + "]",
+                now,
+            )
+
+            await conn.execute(
+                "DELETE FROM memories WHERE agent_id = $1 AND memory_id = $2",
                 agent_id,
                 memory_id,
-            )
-            assert pre_row is not None
-            assert pre_row["media_id"] == media_id
-
-            # deleting the media row fires ON DELETE SET NULL on
-            # ``media_id`` only (PG 15+ column-list form) -- agent_id
-            # stays populated so the partition discipline holds.
-            await conn.execute(
-                "DELETE FROM media WHERE agent_id = $1 AND media_id = $2",
-                agent_id,
-                media_id,
             )
 
             row = await conn.fetchrow(
-                "SELECT agent_id, media_id FROM memories WHERE agent_id = $1 AND memory_id = $2",
-                agent_id,
-                memory_id,
+                "SELECT chunk_id FROM memory_chunks WHERE chunk_id = $1",
+                chunk_id,
             )
-            assert row is not None
-            assert row["media_id"] is None
-            assert row["agent_id"] == agent_id  # partition not nulled
+            assert row is None, "memory delete must cascade-delete its chunks"
         finally:
             await conn.close()
 
-    async def test_orphan_media_id_rejected(
+    async def test_memory_delete_cascades_through_media_chain(
         self,
         pg_schema: tuple[str, str],
     ) -> None:
-        """inserting a memory with non-existent ``(agent_id, media_id)`` fails.
+        """Deleting a memory cascades to its media + media_content.
 
-        the v012 composite FK rejects orphan ``media_id`` references
-        at INSERT time. test attempts to insert a memory pointing at
-        a never-existed media row and observes the FK violation.
-
-        :param pg_schema: (url, schema) tuple
-        :ptype pg_schema: tuple[str, str]
+        Chain: memory --(media.memory_id CASCADE)--> media --(media_
+        content.media_id CASCADE, v006)--> media_content. Seeds the
+        full chain, deletes the root memory, observes both descendant
+        rows vanish.
         """
         url, schema = pg_schema
         runner = _build_runner()
@@ -390,30 +423,122 @@ class TestV012MemoriesMediaCompositeFK:
 
             now = datetime.now(UTC)
             agent_id = uuid.uuid4()
-            ghost_media_id = uuid.uuid4()  # never inserted
-
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
             memory_id = uuid.uuid4()
+            media_id = uuid.uuid4()
+            content_id = uuid.uuid4()
+
+            await conn.execute(
+                "INSERT INTO memories ("
+                "memory_id, agent_id, customer_id, user_id, "
+                "conversation_id, message_id_source, type_memory, content, "
+                "summary, embedding, date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, $6, 'topical_context', $7, $8, "
+                "$9::vector, $10, $10)",
+                memory_id,
+                agent_id,
+                customer_id,
+                user_id,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "wraps a media artifact",
+                "memory summary",
+                "[" + ",".join(["0.1"] * 1024) + "]",
+                now,
+            )
+
+            await conn.execute(
+                "INSERT INTO media ("
+                "media_id, memory_id, agent_id, customer_id, user_id, "
+                "media_category, metadata_json, date_created, date_updated"
+                ") VALUES ($1, $2, $3, $4, $5, 'document', NULL, $6, $6)",
+                media_id,
+                memory_id,
+                agent_id,
+                customer_id,
+                user_id,
+                now,
+            )
+
+            await conn.execute(
+                "INSERT INTO media_content ("
+                "content_id, media_id, agent_id, customer_id, user_id, "
+                "content_type, content, summary, embedding, date_created"
+                ") VALUES ($1, $2, $3, $4, $5, 'ocr', $6, NULL, $7::vector, $8)",
+                content_id,
+                media_id,
+                agent_id,
+                customer_id,
+                user_id,
+                "extracted text",
+                "[" + ",".join(["0.1"] * 1024) + "]",
+                now,
+            )
+
+            # delete the root memory; the entire chain should vanish
+            await conn.execute(
+                "DELETE FROM memories WHERE agent_id = $1 AND memory_id = $2",
+                agent_id,
+                memory_id,
+            )
+
+            media_row = await conn.fetchrow(
+                "SELECT media_id FROM media WHERE media_id = $1", media_id
+            )
+            assert media_row is None, "memory delete must cascade-delete its media"
+
+            content_row = await conn.fetchrow(
+                "SELECT content_id FROM media_content WHERE content_id = $1",
+                content_id,
+            )
+            assert content_row is None, (
+                "memory delete must cascade through media to media_content"
+            )
+        finally:
+            await conn.close()
+
+    async def test_orphan_memory_id_rejected(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """Inserting a chunk with non-existent parent memory_id fails.
+
+        The CASCADE FK rejects orphan ``memory_id`` references at
+        INSERT time.
+        """
+        url, schema = pg_schema
+        runner = _build_runner()
+        conn = await asyncpg.connect(url)
+        try:
+            await conn.execute(f'SET search_path TO "{schema}", public')
+            store = AsyncpgStore(conn)
+            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+
+            import uuid
+            from datetime import UTC, datetime
+
+            now = datetime.now(UTC)
+            agent_id = uuid.uuid4()
+            customer_id = uuid.uuid4()
+            user_id = uuid.uuid4()
+            chunk_id = uuid.uuid4()
+            ghost_memory_id = uuid.uuid4()  # never inserted
+
             with pytest.raises(asyncpg.exceptions.ForeignKeyViolationError):
                 await conn.execute(
-                    "INSERT INTO memories ("
-                    "memory_id, agent_id, customer_id, user_id, "
-                    "conversation_id, message_id_source, type_memory, "
-                    "content, summary, embedding, is_deleted, media_id, "
-                    "date_created, date_updated"
-                    ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
-                    "$9::vector, FALSE, $10, $11, $11)",
-                    memory_id,
+                    "INSERT INTO memory_chunks ("
+                    "chunk_id, memory_id, agent_id, customer_id, user_id, "
+                    "content, summary, embedding, date_created"
+                    ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)",
+                    chunk_id,
+                    ghost_memory_id,
                     agent_id,
                     customer_id,
                     user_id,
-                    uuid.uuid4(),
-                    uuid.uuid4(),
-                    "fact text",
-                    "fact summary",
+                    "orphan chunk",
+                    "orphan summary",
                     "[" + ",".join(["0.1"] * 1024) + "]",
-                    ghost_media_id,
                     now,
                 )
         finally:
@@ -447,9 +572,9 @@ class TestFtsTriggerPopulatesVector:
                 "INSERT INTO memories ("
                 "memory_id, agent_id, customer_id, user_id, "
                 "conversation_id, message_id_source, type_memory, content, "
-                "summary, embedding, is_deleted, date_created, date_updated"
+                "summary, embedding, date_created, date_updated"
                 ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, $8, "
-                "$9::vector, FALSE, $10, $10)",
+                "$9::vector, $10, $10)",
                 mem_id,
                 uuid.uuid4(),
                 uuid.uuid4(),

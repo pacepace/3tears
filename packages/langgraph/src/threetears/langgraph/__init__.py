@@ -4,7 +4,7 @@ provides checkpoint savers, graph builders, and context management
 for building LangGraph agents backed by 3tears infrastructure.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from threetears.langgraph.builders import build_chat_agent, build_tool_agent
 from threetears.langgraph.caching import (

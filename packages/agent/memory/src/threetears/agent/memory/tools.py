@@ -1,8 +1,10 @@
-"""Memory tools -- LangChain tools for searching and recalling memories.
+"""Memory tools -- LangChain tools for searching, recalling, and adding memories.
 
-Provides ``load_memory_search_tool``, ``load_recall_memory_tool``, and
-``load_add_memory_tool`` as reusable factories. Callers supply the four
-memory-package Collections (:class:`MemoriesCollection`,
+Provides ``load_memory_search_tool``, ``load_memory_recall_tool``, and
+``load_memory_add_tool`` as reusable factories — all in canonical
+``noun_verb`` form (the LangChain tool names are ``memory_search``,
+``memory_recall``, ``memory_add``). Callers supply the four memory-
+package Collections (:class:`MemoriesCollection`,
 :class:`MediaCollection`, :class:`MediaContentCollection`,
 :class:`MemoryChunkCollection`) plus user_id, agent_id, customer_id, and
 an authorizer. Every SQL site that used to live raw on a pool is now a
@@ -11,6 +13,13 @@ reference.
 
 Optional ``ledger_callback`` lets the host application track which items
 the LLM has seen.
+
+``memory_add`` requires a ``conversation_id`` for every persisted row;
+it is read from a per-call ``context_resolver`` (the canonical
+``CallContext`` shape) so the live conversation attribution is never
+bound at factory construction (a frozen attribution is a multiplex
+violation). The LLM never sees ``conversation_id`` in the Pydantic
+tool schema — the runtime injects it, full stop.
 """
 
 from __future__ import annotations
@@ -20,7 +29,9 @@ import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
+
+from uuid_utils import uuid7
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, model_validator
@@ -48,13 +59,13 @@ from threetears.agent.memory.types import MemoryType
 from threetears.observe import get_logger
 
 __all__ = [
-    "AddMemoryInput",
     "LedgerCallback",
+    "MemoryAddInput",
+    "MemoryRecallInput",
     "MemorySearchInput",
-    "RecallMemoryInput",
-    "load_add_memory_tool",
+    "load_memory_add_tool",
+    "load_memory_recall_tool",
     "load_memory_search_tool",
-    "load_recall_memory_tool",
 ]
 
 
@@ -102,8 +113,8 @@ class MemorySearchInput(BaseModel):
         return self
 
 
-class RecallMemoryInput(BaseModel):
-    """Input schema for recall_memory tool."""
+class MemoryRecallInput(BaseModel):
+    """Input schema for memory_recall tool."""
 
     id: str = Field(description="The UUID of the item to recall full content for")
     type: str = Field(description="Type of item: 'memory', 'media', or 'chunk'")
@@ -590,7 +601,7 @@ async def load_memory_search_tool(
     return [memory_search]
 
 
-async def load_recall_memory_tool(
+async def load_memory_recall_tool(
     user_id: UUID,
     agent_id: UUID,
     customer_id: UUID,
@@ -599,7 +610,7 @@ async def load_recall_memory_tool(
     media_content_collection: MediaContentCollection,
     memory_chunk_collection: MemoryChunkCollection,
 ) -> list[BaseTool]:
-    """create a recall_memory tool for full-content retrieval by ID.
+    """create a memory_recall tool for full-content retrieval by ID.
 
     :param user_id: user whose memories to recall (row filter +
         evaluator ``caller_user_id``)
@@ -620,8 +631,8 @@ async def load_recall_memory_tool(
     :rtype: list[BaseTool]
     """
 
-    @tool("recall_memory", args_schema=RecallMemoryInput)
-    async def recall_memory(id: str, type: str) -> str:
+    @tool("memory_recall", args_schema=MemoryRecallInput)
+    async def memory_recall(id: str, type: str) -> str:
         """retrieve full content of a memory, media description, or chunk."""
         try:
             await authorize_memory_access(
@@ -633,7 +644,7 @@ async def load_recall_memory_tool(
                 deps=authorizer,
             )
         except MemoryAccessDenied as exc:
-            return _tool_error("recall_memory", "authorize", str(exc))
+            return _tool_error("memory_recall", "authorize", str(exc))
 
         try:
             item_uuid = UUID(id)
@@ -677,22 +688,29 @@ async def load_recall_memory_tool(
         else:
             return f"Unknown type '{type}'. Use 'memory', 'media', or 'chunk'."
 
-    recall_memory.description = (
+    memory_recall.description = (
         "Retrieve the full content of a memory, media description, or document chunk. "
         "Use this when the system prompt shows a summary-only item (without '(detailed)' marker) "
         "and you need the complete content to answer the user's question accurately. "
         "Pass the ID from the [mem:ID], [media:ID], or [chunk:ID] tag and the type."
     )
 
-    return [recall_memory]
+    return [memory_recall]
 
 
 _VALID_MEMORY_TYPES = frozenset(t.value for t in MemoryType)
 _ = MediaCollection  # imported for public symbol availability; factory users pass it via __init__ wiring
 
 
-class AddMemoryInput(BaseModel):
-    """Input schema for add_memory tool."""
+class MemoryAddInput(BaseModel):
+    """Input schema for memory_add tool.
+
+    Note: ``conversation_id`` is intentionally NOT in this schema —
+    the LLM never sees or sets it. The tool runner reads it per-call
+    from the live :class:`CallContext` via the factory's
+    ``context_resolver`` so the memory is always attributed to the
+    actively-running conversation.
+    """
 
     content: str = Field(
         description=(
@@ -712,7 +730,7 @@ class AddMemoryInput(BaseModel):
     )
 
 
-async def load_add_memory_tool(
+async def load_memory_add_tool(
     user_id: UUID,
     embedding_provider: Embeddings,
     agent_id: UUID,
@@ -723,7 +741,7 @@ async def load_add_memory_tool(
     context_resolver: Callable[[], Any],
     similarity_dedup_threshold: float = 0.90,
 ) -> list[BaseTool]:
-    """create an add_memory tool for explicit memory storage.
+    """create a memory_add tool for explicit memory storage.
 
     data-layer-task-01 sub-task 4: ``conversation_id`` + ``message_id``
     are resolved per-call via ``context_resolver`` rather than bound at
@@ -765,8 +783,8 @@ async def load_add_memory_tool(
     """
     dedup_threshold = similarity_dedup_threshold
 
-    @tool("add_memory", args_schema=AddMemoryInput)
-    async def add_memory(content: str, memory_type: str = "preference") -> str:
+    @tool("memory_add", args_schema=MemoryAddInput)
+    async def memory_add(content: str, memory_type: str = "preference") -> str:
         """store a memory about the user for future conversations."""
         # data-layer-task-01 sub-task 4: read live identity from
         # CallContext via the resolver. binding these at factory
@@ -777,7 +795,7 @@ async def load_add_memory_tool(
             live_ctx = context_resolver()
         except Exception as exc:
             return _tool_error(
-                "add_memory",
+                "memory_add",
                 "context",
                 f"context_resolver raised {type(exc).__name__}: {exc}",
             )
@@ -785,7 +803,7 @@ async def load_add_memory_tool(
         live_message_id = getattr(live_ctx, "correlation_id", None)
         if live_conversation_id is None:
             return _tool_error(
-                "add_memory",
+                "memory_add",
                 "context",
                 "context_resolver returned no conversation_id",
             )
@@ -793,7 +811,10 @@ async def load_add_memory_tool(
             # source attribution falls back to a fresh UUID when no
             # correlation is available (smoke fixtures, hub-direct
             # calls without an envelope)
-            live_message_id = uuid4()
+            # uuid_utils.uuid7() returns a uuid_utils.UUID; cast so
+            # downstream stores see stdlib UUID (the canonical type
+            # across 3tears).
+            live_message_id = UUID(str(uuid7()))
         try:
             ns_entity = await authorizer.namespace_collection.get_by_owner_and_customer(
                 namespace_type=MEMORY_NAMESPACE_TYPE,
@@ -802,13 +823,13 @@ async def load_add_memory_tool(
             )
         except Exception as exc:
             return _tool_error(
-                "add_memory",
+                "memory_add",
                 "authorize",
                 f"memory namespace lookup for agent={agent_id} customer={customer_id} failed: {exc}",
             )
         if ns_entity is None:
             return _tool_error(
-                "add_memory",
+                "memory_add",
                 "authorize",
                 f"memory namespace for agent={agent_id} customer={customer_id} could not be resolved",
             )
@@ -821,7 +842,7 @@ async def load_add_memory_tool(
             )
         except Exception as exc:
             log.warning(
-                "add_memory: first-write assignment ensure failed",
+                "memory_add: first-write assignment ensure failed",
                 extra={"extra_data": {"error": str(exc)}},
             )
         try:
@@ -834,7 +855,7 @@ async def load_add_memory_tool(
                 deps=authorizer,
             )
         except MemoryAccessDenied as exc:
-            return _tool_error("add_memory", "authorize", str(exc))
+            return _tool_error("memory_add", "authorize", str(exc))
 
         mt = memory_type.lower().strip()
         if mt not in _VALID_MEMORY_TYPES:
@@ -842,7 +863,7 @@ async def load_add_memory_tool(
 
         embedding = await _safe_aembed_query(embedding_provider, content)
         if embedding is None:
-            return _tool_error("add_memory", "embed", "embedding provider returned None")
+            return _tool_error("memory_add", "embed", "embedding provider returned None")
 
         try:
             similar_rows = await memories_collection.find_similar_for_dedup(
@@ -865,7 +886,7 @@ async def load_add_memory_tool(
                     existing_entity.embedding = embedding
                     await memories_collection.save_entity(existing_entity)
                     log.info(
-                        "add_memory: updated existing similar memory",
+                        "memory_add: updated existing similar memory",
                         extra={
                             "extra_data": {
                                 "memory_id": str(existing_id),
@@ -877,13 +898,13 @@ async def load_add_memory_tool(
                     return f"Updated existing memory (was similar at {float(row['similarity']):.0%}): {content}"
         except Exception as exc:
             log.warning(
-                "add_memory: dedup check failed, inserting new",
+                "memory_add: dedup check failed, inserting new",
                 extra={"extra_data": {"error": str(exc)}},
             )
 
         try:
             now = datetime.now(UTC)
-            memory_id = uuid4()
+            memory_id = UUID(str(uuid7()))
             new_data: dict[str, Any] = {
                 "memory_id": memory_id,
                 "agent_id": agent_id,
@@ -894,17 +915,14 @@ async def load_add_memory_tool(
                 "type_memory": mt,
                 "content": content,
                 "embedding": embedding,
-                "is_deleted": False,
-                "media_id": None,
                 "date_created": now,
-                "date_deleted": None,
                 "date_updated": now,
             }
             entity: MemoryEntity = memories_collection.create(new_data)
             await memories_collection.save_entity(entity)
 
             log.info(
-                "add_memory: stored new memory",
+                "memory_add: stored new memory",
                 extra={
                     "extra_data": {
                         "memory_id": str(memory_id),
@@ -917,12 +935,12 @@ async def load_add_memory_tool(
 
         except Exception as exc:
             log.warning(
-                "add_memory: insert failed",
+                "memory_add: insert failed",
                 extra={"extra_data": {"error": str(exc)}},
             )
-            return _tool_error("add_memory", "store", str(exc))
+            return _tool_error("memory_add", "store", str(exc))
 
-    add_memory.description = (
+    memory_add.description = (
         "Store a memory about the user for future conversations. "
         "Use this when the user explicitly asks you to remember something "
         "(e.g., 'remember that I prefer...', 'my X is Y', 'don't forget...'). "
@@ -931,4 +949,4 @@ async def load_add_memory_tool(
         "exists, it will be updated instead of creating a duplicate."
     )
 
-    return [add_memory]
+    return [memory_add]

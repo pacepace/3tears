@@ -397,9 +397,9 @@ def _seed_memory(
         "INSERT INTO memories ("
         "memory_id, agent_id, customer_id, user_id, "
         "conversation_id, message_id_source, type_memory, content, "
-        "summary, embedding, is_deleted, date_created, date_updated"
+        "summary, embedding, date_created, date_updated"
         ") VALUES ($1, $2, $3, $4, $5, $6, 'fact', $7, NULL, "
-        "$8::vector, FALSE, $9, $9)",
+        "$8::vector, $9, $9)",
         uuid.uuid4(),
         agent_id,
         customer_id,
