@@ -118,10 +118,94 @@ class MemorySearchInput(BaseModel):
 
 
 class MemoryRecallInput(BaseModel):
-    """Input schema for memory_recall tool."""
+    """Input schema for ``memory_recall`` tool.
 
-    id: str = Field(description="The UUID of the item to recall full content for")
-    type: str = Field(description="Type of item: 'memory', 'media', or 'chunk'")
+    v0.7.0 (transcript-chunks shard C) rewrote this from the old
+    ``(id, type)`` discriminator into a memory-centric surface: the
+    tool returns the parent memory + a window into its chunks, with
+    four mutually-exclusive chunk-selection modes.
+
+    Mode resolution:
+
+    - none of ``chunk_query`` / ``chunk_indexes`` / ``chunk_id_after``
+      / ``chunk_id_before`` set → memory + first ``limit`` chunks in
+      ``chunk_id`` ASC order (creation order, since chunk_id is
+      UUIDv7).
+    - ``chunk_query`` set → memory + top ``limit`` chunks via
+      hybrid (vector + FTS) search restricted to this memory.
+    - ``chunk_indexes`` set → memory + exactly those chunks (by
+      ``chunk_index`` column). Out-of-range indexes silently skipped.
+    - ``chunk_id_after`` set → memory + ``limit`` chunks with
+      ``chunk_id > cursor`` (forward paging).
+    - ``chunk_id_before`` set → memory + ``limit`` chunks with
+      ``chunk_id < cursor`` (backward paging; reversed to ASC for
+      the caller).
+
+    Passing more than one mode raises ValidationError before the
+    tool body runs.
+
+    Recalls of media or by-chunk-id moved to other tools:
+    ``chunk_recall(chunk_id)`` is the single-chunk by-id read;
+    media is reached via the parent memory's ``media.memory_id`` link.
+    """
+
+    memory_id: str = Field(
+        description="UUID of the parent memory to recall, with its chunks.",
+    )
+    chunk_query: str | None = Field(
+        default=None,
+        description=(
+            "Optional hybrid (vector + FTS) search restricted to "
+            "this memory's chunks. Mutually exclusive with the "
+            "other chunk_* modes."
+        ),
+    )
+    chunk_indexes: list[int] | None = Field(
+        default=None,
+        description=(
+            "Optional list of chunk_index ints to fetch exactly. Mutually exclusive with the other chunk_* modes."
+        ),
+    )
+    chunk_id_after: str | None = Field(
+        default=None,
+        description=(
+            "Optional forward-cursor chunk_id UUID. Returns up to "
+            "``limit`` chunks with chunk_id strictly greater. "
+            "Mutually exclusive with the other chunk_* modes."
+        ),
+    )
+    chunk_id_before: str | None = Field(
+        default=None,
+        description=(
+            "Optional backward-cursor chunk_id UUID. Returns up to "
+            "``limit`` chunks with chunk_id strictly less, reversed "
+            "to ASC order before returning. Mutually exclusive with "
+            "the other chunk_* modes."
+        ),
+    )
+    limit: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Maximum chunks to return (default 5, max 50).",
+    )
+
+    @model_validator(mode="after")
+    def _modes_are_mutually_exclusive(self) -> "MemoryRecallInput":
+        """Reject ambiguous calls that pass more than one chunk mode."""
+        modes_set = sum(
+            1
+            for m in (
+                self.chunk_query,
+                self.chunk_indexes,
+                self.chunk_id_after,
+                self.chunk_id_before,
+            )
+            if m is not None and m != ""
+        )
+        if modes_set > 1:
+            raise ValueError("Pass at most one of chunk_query / chunk_indexes / chunk_id_after / chunk_id_before.")
+        return self
 
 
 def _tool_error(tool_name: str, action: str, error: str) -> str:
@@ -613,11 +697,37 @@ async def load_memory_recall_tool(
     memories_collection: MemoriesCollection,
     media_content_collection: MediaContentCollection,
     memory_chunk_collection: MemoryChunkCollection,
+    embedding_provider: Embeddings | None = None,
+    similarity_threshold: float = _DEFAULT_SIMILARITY_THRESHOLD,
 ) -> list[BaseTool]:
-    """create a memory_recall tool for full-content retrieval by ID.
+    """create a memory_recall tool that returns a memory + its chunks.
 
-    :param user_id: user whose memories to recall (row filter +
-        evaluator ``caller_user_id``)
+    v0.7.0 (transcript-chunks shard C) replaced the old ``(id, type)``
+    discriminator surface with a memory-centric one: the tool takes
+    one ``memory_id`` plus an optional chunk-selection mode and
+    returns the parent memory's content + a window into its chunks.
+
+    Mode resolution (mutually exclusive; enforced by the Pydantic
+    ``model_validator`` on :class:`MemoryRecallInput`):
+
+    - none → memory + first ``limit`` chunks in chunk_id ASC order.
+    - ``chunk_query`` → memory + top ``limit`` chunks via hybrid
+      (vector + FTS) search restricted to this memory. Requires
+      ``embedding_provider`` at factory construction; the tool
+      gracefully degrades to the default mode (warns once) when no
+      embedding is wired.
+    - ``chunk_indexes`` → memory + exactly those chunks (by
+      ``chunk_index`` column). Out-of-range indexes silently skipped.
+    - ``chunk_id_after`` → memory + ``limit`` chunks paged forward.
+    - ``chunk_id_before`` → memory + ``limit`` chunks paged
+      backward, reversed to ASC for the caller.
+
+    Recalls of media moved to no separate tool: media is reached
+    via the parent memory's ``media.memory_id`` link, surfaced by
+    the system prompt's media-context block. Single-chunk by-id
+    lookup moved to :func:`load_chunk_recall_tool`.
+
+    :param user_id: user whose memories to recall
     :ptype user_id: UUID
     :param agent_id: owning agent UUID for rbac namespace lookup
     :ptype agent_id: UUID
@@ -627,17 +737,35 @@ async def load_memory_recall_tool(
     :ptype authorizer: MemoryAuthorizerDependencies
     :param memories_collection: three-tier memories collection
     :ptype memories_collection: MemoriesCollection
-    :param media_content_collection: three-tier media_content collection
+    :param media_content_collection: kept for signature parity with
+        v0.6.x callers; no longer consumed by this tool. media now
+        recalls via the parent memory's ``media.memory_id`` link
     :ptype media_content_collection: MediaContentCollection
     :param memory_chunk_collection: three-tier memory_chunks collection
     :ptype memory_chunk_collection: MemoryChunkCollection
+    :param embedding_provider: optional embeddings provider for the
+        ``chunk_query`` mode. When omitted, ``chunk_query`` requests
+        gracefully degrade to default-mode output with a warning
+    :ptype embedding_provider: Embeddings | None
+    :param similarity_threshold: floor on hybrid score for
+        ``chunk_query`` mode
+    :ptype similarity_threshold: float
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
+    # kept for signature parity; no consumer in the v0.7.0 body.
+    _ = media_content_collection
 
     @tool("memory_recall", args_schema=MemoryRecallInput)
-    async def memory_recall(id: str, type: str) -> str:
-        """retrieve full content of a memory, media description, or chunk."""
+    async def memory_recall(
+        memory_id: str,
+        chunk_query: str | None = None,
+        chunk_indexes: list[int] | None = None,
+        chunk_id_after: str | None = None,
+        chunk_id_before: str | None = None,
+        limit: int = 5,
+    ) -> str:
+        """recall a memory + a window into its chunks."""
         try:
             await authorize_memory_access(
                 action=ACTION_MEMORY_READ,
@@ -651,56 +779,158 @@ async def load_memory_recall_tool(
             return _tool_error("memory_recall", "authorize", str(exc))
 
         try:
-            item_uuid = UUID(id)
+            mem_uuid = UUID(memory_id)
         except ValueError:
-            return f"Invalid ID format: {id}"
+            return f"Invalid memory_id format: {memory_id}"
 
-        item_type = type.lower().strip()
+        # ── memory content ──────────────────────────────────────
+        memory_content = await memories_collection.fetch_content_for_recall(
+            memory_id=mem_uuid,
+            user_id=user_id,
+            agent_id=agent_id,
+        )
+        if memory_content is None:
+            return "Memory not found or access denied."
 
-        if item_type == "memory":
-            content = await memories_collection.fetch_content_for_recall(
-                memory_id=item_uuid,
-                user_id=user_id,
-                agent_id=agent_id,
-            )
-            if content is None:
-                return "Memory not found or access denied."
-            return content
+        # ── chunks (mode dispatch) ──────────────────────────────
+        chunks: list[dict[str, Any]] = []
+        mode_name = "default"
+        try:
+            if chunk_query is not None and chunk_query.strip():
+                mode_name = "chunk_query"
+                if embedding_provider is None:
+                    log.warning(
+                        "memory_recall chunk_query mode requested without "
+                        "embedding_provider; falling back to default mode",
+                    )
+                    chunks = await memory_chunk_collection.find_by_memory_id(
+                        mem_uuid,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        customer_id=customer_id,
+                        limit=limit,
+                    )
+                else:
+                    embedding = await _safe_aembed_query(
+                        embedding_provider,
+                        chunk_query,
+                    )
+                    if embedding is None:
+                        return _tool_error(
+                            "memory_recall",
+                            "embed",
+                            "embedding unavailable for chunk_query mode",
+                        )
+                    chunks = await memory_chunk_collection.hybrid_search_within_memory(
+                        memory_id=mem_uuid,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        customer_id=customer_id,
+                        embedding=embedding,
+                        user_text=chunk_query,
+                        candidate_k=max(limit * 4, 20),
+                        similarity_threshold=similarity_threshold,
+                        chunk_signal_weights={"semantic": 0.6, "keyword": 0.4},
+                    )
+                    chunks = chunks[:limit]
 
-        elif item_type == "media":
-            content = await media_content_collection.fetch_content_for_recall(
-                content_id=item_uuid,
-                user_id=user_id,
-                agent_id=agent_id,
-            )
-            if content is None:
-                return "Media content not found or access denied."
-            if len(content) > 12000:
-                content = content[:12000] + "\n\n[Content truncated — full text is longer]"
-            return content
+            elif chunk_indexes is not None and chunk_indexes:
+                mode_name = "chunk_indexes"
+                # Inline cache-bypass fetch: the by-index access
+                # pattern isn't exposed on the Collection today, so
+                # the SELECT lives here. Auth triple (agent_id,
+                # user_id) pinned at the SQL boundary; chunk_indexes
+                # is the only caller-supplied filter.
+                l3_pool = getattr(memory_chunk_collection, "l3_pool", None)
+                if l3_pool is None:
+                    chunks = []
+                else:
+                    rows = await l3_pool.fetch(
+                        "SELECT chunk_id, chunk_index, content, summary, "
+                        "       message_id_start, message_id_end, "
+                        "       token_count, date_created "
+                        "FROM memory_chunks "
+                        "WHERE agent_id = $1 AND memory_id = $2 "
+                        "  AND user_id = $3 "
+                        "  AND chunk_index = ANY($4) "
+                        "ORDER BY chunk_index ASC",
+                        agent_id,
+                        mem_uuid,
+                        user_id,
+                        list(chunk_indexes),
+                    )
+                    chunks = [dict(r) for r in rows]
 
-        elif item_type == "chunk":
-            chunk_row = await memory_chunk_collection.fetch_content_for_recall(
-                chunk_id=item_uuid,
-                user_id=user_id,
-                agent_id=agent_id,
-            )
-            if chunk_row is None:
-                return "Document chunk not found or access denied."
-            # the memory_recall path renders just the chunk content; the
-            # parent memory_id is available in chunk_row[1] but
-            # uninteresting here (caller already knows the chunk
-            # belongs to some memory). chunk_recall uses both fields.
-            return chunk_row[0]
+            elif chunk_id_after is not None and chunk_id_after.strip():
+                mode_name = "chunk_id_after"
+                try:
+                    cur = UUID(chunk_id_after)
+                except ValueError:
+                    return f"Invalid chunk_id_after format: {chunk_id_after}"
+                chunks = await memory_chunk_collection.find_by_memory_id(
+                    mem_uuid,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    limit=limit,
+                    chunk_id_after=cur,
+                )
 
+            elif chunk_id_before is not None and chunk_id_before.strip():
+                mode_name = "chunk_id_before"
+                try:
+                    cur = UUID(chunk_id_before)
+                except ValueError:
+                    return f"Invalid chunk_id_before format: {chunk_id_before}"
+                chunks = await memory_chunk_collection.find_by_memory_id(
+                    mem_uuid,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    limit=limit,
+                    chunk_id_before=cur,
+                )
+
+            else:
+                # Default mode: first ``limit`` chunks chronologically.
+                chunks = await memory_chunk_collection.find_by_memory_id(
+                    mem_uuid,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    customer_id=customer_id,
+                    limit=limit,
+                )
+        except Exception as exc:
+            return _tool_error("memory_recall", f"fetch chunks ({mode_name})", str(exc))
+
+        # ── render ──────────────────────────────────────────────
+        lines: list[str] = [
+            f"[memory:{mem_uuid}]",
+            memory_content,
+        ]
+        if chunks:
+            lines.append("")
+            lines.append(f"Chunks ({len(chunks)} returned, mode={mode_name}):")
+            for ch in chunks:
+                cid = ch.get("chunk_id", "?")
+                idx = ch.get("chunk_index", "?")
+                preview = (ch.get("content") or "")[:200]
+                lines.append(f"  [chunk:{cid}] (index={idx})\n  {preview}")
         else:
-            return f"Unknown type '{type}'. Use 'memory', 'media', or 'chunk'."
+            lines.append("")
+            lines.append("(no chunks)")
+        return "\n".join(lines)
 
     memory_recall.description = (
-        "Retrieve the full content of a memory, media description, or document chunk. "
-        "Use this when the system prompt shows a summary-only item (without '(detailed)' marker) "
-        "and you need the complete content to answer the user's question accurately. "
-        "Pass the ID from the [mem:ID], [media:ID], or [chunk:ID] tag and the type."
+        "Recall a memory's full content plus a window into its chunks. "
+        "Pass ``memory_id`` (from [memory:ID] tags surfaced by "
+        "memory_search / conversation_summarize). Optional chunk-mode "
+        "args are mutually exclusive: ``chunk_query`` for hybrid "
+        "search within the memory, ``chunk_indexes`` for exact-index "
+        "lookup, ``chunk_id_after`` / ``chunk_id_before`` for cursor "
+        "paging. Default returns the first ``limit`` chunks (default 5) "
+        "in creation order. Use chunk_recall(chunk_id) for a single "
+        "chunk's full text."
     )
 
     return [memory_recall]

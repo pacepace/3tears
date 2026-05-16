@@ -226,10 +226,13 @@ class TestDefaultMemoryCreatedDispatcher:
         async def _raise_no_manager(event: Any, *, config: Any = None) -> None:
             raise RuntimeError("Unable to find run manager")
 
-        with patch(
-            "threetears.agent.memory.events.dispatch_event",
-            new=_raise_no_manager,
-        ), caplog.at_level(logging.DEBUG, logger="threetears.agent.memory.events"):
+        with (
+            patch(
+                "threetears.agent.memory.events.dispatch_event",
+                new=_raise_no_manager,
+            ),
+            caplog.at_level(logging.DEBUG, logger="threetears.agent.memory.events"),
+        ):
             # Should NOT raise.
             await default_memory_created_dispatcher(
                 _StubMemoryEntity(
@@ -242,13 +245,9 @@ class TestDefaultMemoryCreatedDispatcher:
             )
 
         assert any(
-            "memory_created event dropped" in record.message
-            and "memory_id=m-99" in record.message
+            "memory_created event dropped" in record.message and "memory_id=m-99" in record.message
             for record in caplog.records
-        ), (
-            "expected a DEBUG log line naming the dropped memory_id; "
-            f"got {[r.message for r in caplog.records]!r}"
-        )
+        ), f"expected a DEBUG log line naming the dropped memory_id; got {[r.message for r in caplog.records]!r}"
 
     @pytest.mark.asyncio
     async def test_propagates_non_runtime_errors(self) -> None:

@@ -51,10 +51,72 @@ class TestMemorySearchInput:
 
 
 class TestMemoryRecallInput:
-    def test_valid(self):
-        inp = MemoryRecallInput(id="some-uuid", type="memory")
-        assert inp.id == "some-uuid"
-        assert inp.type == "memory"
+    """v0.7.0 (shard C) reshape: ``(memory_id, chunk_mode...)`` with
+    four mutually-exclusive chunk-selection modes."""
+
+    def test_minimum_fields(self) -> None:
+        inp = MemoryRecallInput(memory_id="some-uuid")
+        assert inp.memory_id == "some-uuid"
+        assert inp.chunk_query is None
+        assert inp.chunk_indexes is None
+        assert inp.chunk_id_after is None
+        assert inp.chunk_id_before is None
+        assert inp.limit == 5
+
+    def test_chunk_query_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_query="needle",
+            limit=10,
+        )
+        assert inp.chunk_query == "needle"
+        assert inp.limit == 10
+
+    def test_chunk_indexes_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_indexes=[0, 2, 5],
+        )
+        assert inp.chunk_indexes == [0, 2, 5]
+
+    def test_chunk_id_after_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_id_after="cursor-uuid",
+        )
+        assert inp.chunk_id_after == "cursor-uuid"
+
+    def test_chunk_id_before_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_id_before="cursor-uuid",
+        )
+        assert inp.chunk_id_before == "cursor-uuid"
+
+    def test_modes_are_mutually_exclusive(self) -> None:
+        # Two modes set at once → ValidationError.
+        with pytest.raises(ValidationError, match="at most one"):
+            MemoryRecallInput(
+                memory_id="any",
+                chunk_query="q",
+                chunk_indexes=[1],
+            )
+        with pytest.raises(ValidationError, match="at most one"):
+            MemoryRecallInput(
+                memory_id="any",
+                chunk_id_after="a",
+                chunk_id_before="b",
+            )
+
+    def test_missing_memory_id_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryRecallInput()  # type: ignore[call-arg]
+
+    def test_limit_clamping(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryRecallInput(memory_id="any", limit=0)
+        with pytest.raises(ValidationError):
+            MemoryRecallInput(memory_id="any", limit=51)
 
 
 # -- Helper functions ---------------------------------------------------------
