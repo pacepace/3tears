@@ -205,43 +205,27 @@ class TestChunkRowToDict:
             "embedding": None,
         }
 
-    def test_transcript_chunk_fields_round_trip(
-        self, base_row: dict[str, object]
-    ) -> None:
+    def test_transcript_chunk_fields_round_trip(self, base_row: dict[str, object]) -> None:
         start = uuid.uuid7()
         end = uuid.uuid7()
         base_row["message_id_start"] = start
         base_row["message_id_end"] = end
-        result = _chunk_row_to_dict(
-            _FakeRow(**base_row), score_key="similarity", score_value=0.5
-        )
+        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.5)
         assert result["message_id_start"] == str(start)
         assert result["message_id_end"] == str(end)
         assert result["memory_id"] == str(base_row["memory_id"])
 
-    def test_document_chunk_has_null_message_backlinks(
-        self, base_row: dict[str, object]
-    ) -> None:
-        result = _chunk_row_to_dict(
-            _FakeRow(**base_row), score_key="similarity", score_value=0.5
-        )
+    def test_document_chunk_has_null_message_backlinks(self, base_row: dict[str, object]) -> None:
+        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.5)
         assert result["message_id_start"] is None
         assert result["message_id_end"] is None
 
-    def test_score_key_semantic_seeds_similarity(
-        self, base_row: dict[str, object]
-    ) -> None:
-        result = _chunk_row_to_dict(
-            _FakeRow(**base_row), score_key="similarity", score_value=0.42
-        )
+    def test_score_key_semantic_seeds_similarity(self, base_row: dict[str, object]) -> None:
+        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="similarity", score_value=0.42)
         assert result["similarity"] == 0.42
         assert result["fts_rank"] == 0.0
 
-    def test_score_key_fts_rank_seeds_fts_rank(
-        self, base_row: dict[str, object]
-    ) -> None:
-        result = _chunk_row_to_dict(
-            _FakeRow(**base_row), score_key="fts_rank", score_value=0.71
-        )
+    def test_score_key_fts_rank_seeds_fts_rank(self, base_row: dict[str, object]) -> None:
+        result = _chunk_row_to_dict(_FakeRow(**base_row), score_key="fts_rank", score_value=0.71)
         assert result["fts_rank"] == 0.71
         assert result["similarity"] == 0.0

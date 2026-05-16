@@ -66,25 +66,16 @@ __all__ = [
 log = get_logger(__name__)
 
 
-_ADD_CHUNK_MEMORY_ID_SQL = (
-    "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS memory_id UUID NULL"
-)
+_ADD_CHUNK_MEMORY_ID_SQL = "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS memory_id UUID NULL"
 
-_ADD_CHUNK_MESSAGE_ID_START_SQL = (
-    "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS message_id_start UUID NULL"
-)
+_ADD_CHUNK_MESSAGE_ID_START_SQL = "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS message_id_start UUID NULL"
 
-_ADD_CHUNK_MESSAGE_ID_END_SQL = (
-    "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS message_id_end UUID NULL"
-)
+_ADD_CHUNK_MESSAGE_ID_END_SQL = "ALTER TABLE memory_chunks ADD COLUMN IF NOT EXISTS message_id_end UUID NULL"
 
-_ADD_MEDIA_MEMORY_ID_SQL = (
-    "ALTER TABLE media ADD COLUMN IF NOT EXISTS memory_id UUID NULL"
-)
+_ADD_MEDIA_MEMORY_ID_SQL = "ALTER TABLE media ADD COLUMN IF NOT EXISTS memory_id UUID NULL"
 
 _CREATE_CHUNK_MEMORY_ID_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_chunks_memory_id "
-    "ON memory_chunks (memory_id) WHERE memory_id IS NOT NULL"
+    "CREATE INDEX IF NOT EXISTS idx_chunks_memory_id ON memory_chunks (memory_id) WHERE memory_id IS NOT NULL"
 )
 
 _CREATE_CHUNK_MEMORY_ID_CHUNK_ID_IDX_SQL = (
@@ -103,8 +94,7 @@ _CREATE_CHUNK_MSG_END_IDX_SQL = (
 )
 
 _CREATE_MEDIA_MEMORY_ID_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_media_memory_id "
-    "ON media (memory_id) WHERE memory_id IS NOT NULL"
+    "CREATE INDEX IF NOT EXISTS idx_media_memory_id ON media (memory_id) WHERE memory_id IS NOT NULL"
 )
 
 

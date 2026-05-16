@@ -169,9 +169,7 @@ class TestFindByMemoryId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -213,9 +211,7 @@ class TestFindByMemoryId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -288,9 +284,7 @@ class TestFindByMemoryId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             owner_user = uuid.uuid4()
@@ -328,9 +322,7 @@ class TestFindByMemoryId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -368,9 +360,7 @@ class TestFindByMemoryId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -411,9 +401,7 @@ class TestFindByConversationId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -477,9 +465,7 @@ class TestFindByConversationId:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             owner_user = uuid.uuid4()
@@ -522,9 +508,7 @@ class TestHybridSearchWithinMemory:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             user_id = uuid.uuid4()
@@ -586,9 +570,7 @@ class TestHybridSearchWithinMemory:
         url, schema = applied_schema
         pool = await _make_pool(url, schema)
         try:
-            memories, chunks = _build_collections(
-                pool, permissive_memory_authorizer
-            )
+            memories, chunks = _build_collections(pool, permissive_memory_authorizer)
             agent_id = uuid.uuid4()
             customer_id = uuid.uuid4()
             owner_user = uuid.uuid4()

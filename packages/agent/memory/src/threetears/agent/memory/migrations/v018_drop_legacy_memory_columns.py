@@ -134,21 +134,13 @@ $$
 # drop the legacy parent / lifecycle columns from memories +
 # memory_chunks. CASCADE on DROP COLUMN handles the implicit indexes
 # (idx_chunks_media on memory_chunks (media_id)).
-_DROP_MEMORIES_MEDIA_ID_COLUMN_SQL = (
-    "ALTER TABLE memories DROP COLUMN IF EXISTS media_id"
-)
+_DROP_MEMORIES_MEDIA_ID_COLUMN_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS media_id"
 
-_DROP_MEMORIES_IS_DELETED_COLUMN_SQL = (
-    "ALTER TABLE memories DROP COLUMN IF EXISTS is_deleted"
-)
+_DROP_MEMORIES_IS_DELETED_COLUMN_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS is_deleted"
 
-_DROP_MEMORIES_DATE_DELETED_COLUMN_SQL = (
-    "ALTER TABLE memories DROP COLUMN IF EXISTS date_deleted"
-)
+_DROP_MEMORIES_DATE_DELETED_COLUMN_SQL = "ALTER TABLE memories DROP COLUMN IF EXISTS date_deleted"
 
-_DROP_CHUNKS_MEDIA_ID_COLUMN_SQL = (
-    "ALTER TABLE memory_chunks DROP COLUMN IF EXISTS media_id"
-)
+_DROP_CHUNKS_MEDIA_ID_COLUMN_SQL = "ALTER TABLE memory_chunks DROP COLUMN IF EXISTS media_id"
 
 
 async def drop_legacy_memory_columns(store: DataStore) -> None:

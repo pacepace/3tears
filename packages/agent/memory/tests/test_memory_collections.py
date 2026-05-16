@@ -444,6 +444,7 @@ class TestMemoriesCollectionFindByUser:
         assert len(entities) == 2
         assert all(isinstance(e, MemoryEntity) for e in entities)
 
+
 class TestMemoriesCollectionSerialization:
     def test_serialize_deserialize_roundtrip(
         self,

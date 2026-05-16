@@ -44,18 +44,14 @@ class TestChunkCollectionAuthScoping:
         """Every chunk method must accept ``user_id`` so the SQL can scope on it."""
         method = getattr(MemoryChunkCollection, method_name)
         sig = inspect.signature(method)
-        assert "user_id" in sig.parameters, (
-            f"MemoryChunkCollection.{method_name} is missing user_id parameter"
-        )
+        assert "user_id" in sig.parameters, f"MemoryChunkCollection.{method_name} is missing user_id parameter"
 
     @pytest.mark.parametrize("method_name", _METHODS_REQUIRING_AUTH_TRIPLE)
     def test_method_signature_takes_agent_id(self, method_name: str) -> None:
         """Every chunk method must accept ``agent_id`` (partition column)."""
         method = getattr(MemoryChunkCollection, method_name)
         sig = inspect.signature(method)
-        assert "agent_id" in sig.parameters, (
-            f"MemoryChunkCollection.{method_name} is missing agent_id parameter"
-        )
+        assert "agent_id" in sig.parameters, f"MemoryChunkCollection.{method_name} is missing agent_id parameter"
 
     @pytest.mark.parametrize(
         "method_name",
@@ -77,9 +73,7 @@ class TestChunkCollectionAuthScoping:
         """
         method = getattr(MemoryChunkCollection, method_name)
         sig = inspect.signature(method)
-        assert "customer_id" in sig.parameters, (
-            f"MemoryChunkCollection.{method_name} is missing customer_id parameter"
-        )
+        assert "customer_id" in sig.parameters, f"MemoryChunkCollection.{method_name} is missing customer_id parameter"
 
     @pytest.mark.parametrize("method_name", _METHODS_REQUIRING_AUTH_TRIPLE)
     def test_method_source_references_user_id(self, method_name: str) -> None:

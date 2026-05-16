@@ -45,16 +45,12 @@ def _collect_entity_source_files() -> list[Path]:
     that may use ``gen_random_uuid()`` per the documented carve-out.
     """
     return sorted(
-        p
-        for p in _PACKAGES_ROOT.rglob("src/**/*.py")
-        if "migrations" not in p.parts and "__pycache__" not in p.parts
+        p for p in _PACKAGES_ROOT.rglob("src/**/*.py") if "migrations" not in p.parts and "__pycache__" not in p.parts
     )
 
 
 _ENTITY_SOURCE_FILES = _collect_entity_source_files()
-_ENTITY_SOURCE_IDS = [
-    str(p.relative_to(_REPO_ROOT)) for p in _ENTITY_SOURCE_FILES
-]
+_ENTITY_SOURCE_IDS = [str(p.relative_to(_REPO_ROOT)) for p in _ENTITY_SOURCE_FILES]
 
 
 def _imports_uuid4(tree: ast.Module) -> list[int]:
@@ -91,14 +87,10 @@ def _calls_uuid4(tree: ast.Module) -> list[tuple[int, str]]:
 class TestUUIDv7Enforcement:
     """Pin the UUIDv7 invariant across every workspace package."""
 
-    @pytest.mark.parametrize(
-        "src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS
-    )
+    @pytest.mark.parametrize("src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS)
     def test_no_uuid4_imports(self, src_file: Path) -> None:
         """No production source under packages/*/src/ imports stdlib uuid4."""
-        tree = ast.parse(
-            src_file.read_text(encoding="utf-8"), filename=str(src_file)
-        )
+        tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
         hits = _imports_uuid4(tree)
         if hits:
             relpath = src_file.relative_to(_REPO_ROOT)
@@ -109,22 +101,15 @@ class TestUUIDv7Enforcement:
                 f"see learnings on the metallm uuid4-fallback regression."
             )
 
-    @pytest.mark.parametrize(
-        "src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS
-    )
+    @pytest.mark.parametrize("src_file", _ENTITY_SOURCE_FILES, ids=_ENTITY_SOURCE_IDS)
     def test_no_uuid4_call_sites(self, src_file: Path) -> None:
         """No production source under packages/*/src/ calls uuid4()."""
-        tree = ast.parse(
-            src_file.read_text(encoding="utf-8"), filename=str(src_file)
-        )
+        tree = ast.parse(src_file.read_text(encoding="utf-8"), filename=str(src_file))
         hits = _calls_uuid4(tree)
         if hits:
             relpath = src_file.relative_to(_REPO_ROOT)
             details = ", ".join(f"line {line}: {shape}" for line, shape in hits)
-            pytest.fail(
-                f"{relpath}: calls uuid4 ({details}). "
-                f"Use uuid_utils.uuid7() for every entity-ID generation."
-            )
+            pytest.fail(f"{relpath}: calls uuid4 ({details}). Use uuid_utils.uuid7() for every entity-ID generation.")
 
     def test_uuid_utils_uuid7_returns_version_7(self) -> None:
         """uuid_utils.uuid7() must produce a UUID whose version byte is 7."""

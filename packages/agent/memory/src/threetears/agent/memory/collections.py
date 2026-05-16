@@ -251,12 +251,8 @@ def _chunk_row_to_dict(row: Any, score_key: str, score_value: float) -> dict[str
         "page_number": row["page_number"],
         "memory_id": str(row["memory_id"]),
         "media_id": str(row["media_id"]) if row["media_id"] else None,
-        "message_id_start": (
-            str(row["message_id_start"]) if row["message_id_start"] else None
-        ),
-        "message_id_end": (
-            str(row["message_id_end"]) if row["message_id_end"] else None
-        ),
+        "message_id_start": (str(row["message_id_start"]) if row["message_id_start"] else None),
+        "message_id_end": (str(row["message_id_end"]) if row["message_id_end"] else None),
         "title": title,
         "similarity": score_value if score_key == "similarity" else 0.0,
         "fts_rank": score_value if score_key == "fts_rank" else 0.0,
@@ -295,17 +291,13 @@ def _merge_chunk_search_rows(
     """
     merged: dict[Any, dict[str, Any]] = {}
     for row in vec_rows:
-        merged[row["chunk_id"]] = _chunk_row_to_dict(
-            row, score_key="similarity", score_value=float(row["similarity"])
-        )
+        merged[row["chunk_id"]] = _chunk_row_to_dict(row, score_key="similarity", score_value=float(row["similarity"]))
     for row in fts_rows:
         ckid = row["chunk_id"]
         if ckid in merged:
             merged[ckid]["fts_rank"] = float(row["fts_rank"])
         else:
-            merged[ckid] = _chunk_row_to_dict(
-                row, score_key="fts_rank", score_value=float(row["fts_rank"])
-            )
+            merged[ckid] = _chunk_row_to_dict(row, score_key="fts_rank", score_value=float(row["fts_rank"]))
 
     candidates = list(merged.values())
     if not candidates:
@@ -315,8 +307,7 @@ def _merge_chunk_search_rows(
 
     for c in candidates:
         c["hybrid_score"] = round(
-            chunk_signal_weights["semantic"] * c["similarity"]
-            + chunk_signal_weights["keyword"] * c["fts_rank"],
+            chunk_signal_weights["semantic"] * c["similarity"] + chunk_signal_weights["keyword"] * c["fts_rank"],
             4,
         )
 
@@ -1123,8 +1114,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # L1 row cache cannot enforce. the authoritative read must
         # stay at the database.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM memories "
-            "WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3",
+            "SELECT content FROM memories WHERE agent_id = $1 AND memory_id = $2 AND user_id = $3",
             agent_id,
             memory_id,
             user_id,
@@ -1185,9 +1175,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # AST walker treats agent_id as deliberately fanned-out.
         if customer_id is None:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM memories "
-                "WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 "
-                "ORDER BY date_created DESC",
+                "SELECT * FROM memories WHERE agent_id = ANY($1::uuid[]) AND user_id = $2 ORDER BY date_created DESC",
                 list(agent_ids),
                 user_id,
             )
@@ -1843,9 +1831,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :raises ValueError: if both cursors are provided
         """
         if chunk_id_after is not None and chunk_id_before is not None:
-            raise ValueError(
-                "hybrid_search: pass at most one of chunk_id_after / chunk_id_before"
-            )
+            raise ValueError("hybrid_search: pass at most one of chunk_id_after / chunk_id_before")
         if self.l3_pool is None:
             return []
         embedding_str = json.dumps(embedding)
@@ -2055,14 +2041,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                     "content": row["content"],
                     "heading_context": row["heading_context"],
                     "page_number": row["page_number"],
-                    "message_id_start": (
-                        str(row["message_id_start"])
-                        if row["message_id_start"]
-                        else None
-                    ),
-                    "message_id_end": (
-                        str(row["message_id_end"]) if row["message_id_end"] else None
-                    ),
+                    "message_id_start": (str(row["message_id_start"]) if row["message_id_start"] else None),
+                    "message_id_end": (str(row["message_id_end"]) if row["message_id_end"] else None),
                     "metadata_json": row["metadata_json"],
                     "similarity": sim,
                 },
@@ -2154,9 +2134,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :raises ValueError: if both cursors are provided
         """
         if chunk_id_after is not None and chunk_id_before is not None:
-            raise ValueError(
-                "find_by_memory_id: pass at most one of chunk_id_after / chunk_id_before"
-            )
+            raise ValueError("find_by_memory_id: pass at most one of chunk_id_after / chunk_id_before")
         if self.l3_pool is None:
             return []
 
@@ -2245,10 +2223,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :raises ValueError: if both cursors are provided
         """
         if chunk_id_after is not None and chunk_id_before is not None:
-            raise ValueError(
-                "find_by_conversation_id: pass at most one of "
-                "chunk_id_after / chunk_id_before"
-            )
+            raise ValueError("find_by_conversation_id: pass at most one of chunk_id_after / chunk_id_before")
         if self.l3_pool is None:
             return []
 

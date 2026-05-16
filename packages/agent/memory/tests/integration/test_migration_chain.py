@@ -287,9 +287,7 @@ class TestUnifiedMemoryParentFks:
                 schema,
             )
             assert row is not None
-            assert row["confdeltype"] == b"c", (
-                f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
-            )
+            assert row["confdeltype"] == b"c", f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
         finally:
             await conn.close()
 
@@ -317,9 +315,7 @@ class TestUnifiedMemoryParentFks:
                 schema,
             )
             assert row is not None
-            assert row["confdeltype"] == b"c", (
-                f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
-            )
+            assert row["confdeltype"] == b"c", f"expected CASCADE (b'c'); got {row['confdeltype']!r}"
         finally:
             await conn.close()
 
@@ -483,18 +479,14 @@ class TestUnifiedMemoryParentFks:
                 memory_id,
             )
 
-            media_row = await conn.fetchrow(
-                "SELECT media_id FROM media WHERE media_id = $1", media_id
-            )
+            media_row = await conn.fetchrow("SELECT media_id FROM media WHERE media_id = $1", media_id)
             assert media_row is None, "memory delete must cascade-delete its media"
 
             content_row = await conn.fetchrow(
                 "SELECT content_id FROM media_content WHERE content_id = $1",
                 content_id,
             )
-            assert content_row is None, (
-                "memory delete must cascade through media to media_content"
-            )
+            assert content_row is None, "memory delete must cascade through media to media_content"
         finally:
             await conn.close()
 
