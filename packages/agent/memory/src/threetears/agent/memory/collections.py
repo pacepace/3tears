@@ -2055,8 +2055,19 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         chunk_id: UUID,
         user_id: UUID,
         agent_id: UUID,
-    ) -> str | None:
-        """fetch ``content`` for the memory_recall tool (chunk leg).
+    ) -> tuple[str, UUID] | None:
+        """fetch ``content`` + parent ``memory_id`` for the recall tools.
+
+        returns both columns in one SELECT so the ``chunk_recall``
+        tool can render ``[parent memory: <memory_id>]`` footer
+        without a second by-ID fetch (the prior shape returned just
+        ``content`` and the tool followed up with its own
+        ``SELECT memory_id`` -- two round-trips for one row).
+
+        callers that need only the content (the ``memory_recall``
+        tool's chunks leg) read ``result[0]`` and discard
+        ``result[1]``; the extra column is essentially free since the
+        same row is being fetched either way.
 
         :param chunk_id: chunk primary-key value
         :ptype chunk_id: UUID
@@ -2064,23 +2075,22 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         :ptype user_id: UUID
         :param agent_id: partition column on memory_chunks; required
         :ptype agent_id: UUID
-        :return: chunk text or ``None``
-        :rtype: str | None
+        :return: ``(content, memory_id)`` tuple or ``None`` if not found
+        :rtype: tuple[str, UUID] | None
         """
         if self.l3_pool is None:
             return None
         # cache-bypass: by-ID fetch scoped by (agent_id, user_id) —
         # both are security predicates the L1 cache cannot enforce.
         row = await self.l3_pool.fetchrow(
-            "SELECT content FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
+            "SELECT content, memory_id FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
             agent_id,
             chunk_id,
             user_id,
         )
         if row is None:
             return None
-        result: str = row["content"]
-        return result
+        return (row["content"], row["memory_id"])
 
     async def find_by_memory_id(
         self,

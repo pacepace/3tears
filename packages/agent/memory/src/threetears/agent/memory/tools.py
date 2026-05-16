@@ -680,14 +680,18 @@ async def load_memory_recall_tool(
             return content
 
         elif item_type == "chunk":
-            content = await memory_chunk_collection.fetch_content_for_recall(
+            chunk_row = await memory_chunk_collection.fetch_content_for_recall(
                 chunk_id=item_uuid,
                 user_id=user_id,
                 agent_id=agent_id,
             )
-            if content is None:
+            if chunk_row is None:
                 return "Document chunk not found or access denied."
-            return content
+            # the memory_recall path renders just the chunk content; the
+            # parent memory_id is available in chunk_row[1] but
+            # uninteresting here (caller already knows the chunk
+            # belongs to some memory). chunk_recall uses both fields.
+            return chunk_row[0]
 
         else:
             return f"Unknown type '{type}'. Use 'memory', 'media', or 'chunk'."
@@ -1053,33 +1057,19 @@ async def load_chunk_recall_tool(
         except ValueError:
             return f"Invalid chunk_id format: {chunk_id}"
 
-        content = await memory_chunk_collection.fetch_content_for_recall(
+        # ``fetch_content_for_recall`` returns both content + memory_id
+        # in one SELECT (the parent_memory_id is what makes chunk_recall
+        # chainable into memory_recall — the footer below names it so
+        # the agent can pull the surrounding memory in a follow-up turn).
+        chunk_row = await memory_chunk_collection.fetch_content_for_recall(
             chunk_id=cid,
             user_id=user_id,
             agent_id=agent_id,
         )
-        if content is None:
+        if chunk_row is None:
             return "Chunk not found or access denied."
-
-        # parent-memory metadata: look up memory_id via the chunk row's
-        # ``memory_id`` column. cache-bypass fetchrow keyed by composite
-        # PK (agent_id, chunk_id) -- the same security predicates as
-        # the recall path above.
-        parent_memory_id: str | None = None
-        l3_pool = getattr(memory_chunk_collection, "l3_pool", None)
-        if l3_pool is not None:
-            row = await l3_pool.fetchrow(
-                "SELECT memory_id FROM memory_chunks WHERE agent_id = $1 AND chunk_id = $2 AND user_id = $3",
-                agent_id,
-                cid,
-                user_id,
-            )
-            if row is not None and row.get("memory_id") is not None:
-                parent_memory_id = str(row["memory_id"])
-
-        if parent_memory_id is None:
-            return content
-        return f"{content}\n\n[parent memory: {parent_memory_id}]"
+        content, parent_memory_id = chunk_row
+        return f"{content}\n\n[parent memory: {parent_memory_id!s}]"
 
     chunk_recall.description = (
         "Retrieve the full content of a single document/transcript chunk by "

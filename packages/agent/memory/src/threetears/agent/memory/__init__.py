@@ -6,6 +6,7 @@ from threetears.agent.memory.access import MemoryAccessService
 from threetears.agent.memory.events import (
     MemoryCreatedEvent,
     MemoryRetrievedEvent,
+    default_memory_created_dispatcher,
 )
 from threetears.agent.memory.authorize import (
     ACTION_MEMORY_EXTRACT,
@@ -88,6 +89,7 @@ __all__ = [
     "RetrievalResult",
     "authorize_memory_access",
     "conversation_memory_refs_table",
+    "default_memory_created_dispatcher",
     "ensure_memory_owner_assignment",
     "load_chunk_recall_tool",
     "load_chunk_search_tool",

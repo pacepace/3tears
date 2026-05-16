@@ -23,21 +23,42 @@ events defined here:
   panel rendering the user's memories (the memory-page-doesn't-refresh
   fix v0.14.0).
 
+helpers defined here:
+
+- :func:`default_memory_created_dispatcher` -- opt-in default for
+  :attr:`MemoryExtractor.on_memory_created`. builds and dispatches a
+  :class:`MemoryCreatedEvent` from the just-committed memory entity,
+  with a graceful no-op when called outside a langgraph run.
+  consumers using the canonical extraction path wire this as their
+  default callback; product-specific push (websocket, slack) wraps
+  this helper rather than re-implementing the build+dispatch shape.
+
 naming follows the framework convention: ``noun_verb`` with past-tense
 verb. see :mod:`threetears.langgraph.events` for the registry semantics.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
-from threetears.langgraph.events import FrameworkEvent, default_registry
+from threetears.langgraph.events import (
+    FrameworkEvent,
+    default_registry,
+    dispatch_event,
+)
+from threetears.observe import get_logger
+
+if TYPE_CHECKING:
+    from threetears.agent.memory.entities import MemoryEntity
 
 __all__ = [
     "MemoryCreatedEvent",
     "MemoryRetrievedEvent",
+    "default_memory_created_dispatcher",
 ]
+
+log = get_logger(__name__)
 
 
 class MemoryRetrievedEvent(FrameworkEvent):
@@ -94,6 +115,91 @@ class MemoryCreatedEvent(FrameworkEvent):
     conversation_id: str
     type_memory: str
     content_preview: str = ""
+
+
+_CONTENT_PREVIEW_LEN: int = 120
+"""maximum chars carried in the event payload's content preview.
+
+trims the ``content_preview`` field on :class:`MemoryCreatedEvent` to
+match the field's docstring (~120 chars). callers that need the full
+content re-fetch from storage by the ``memory_id`` on the event.
+"""
+
+
+async def default_memory_created_dispatcher(entity: MemoryEntity) -> None:
+    """opt-in default callback for :attr:`MemoryExtractor.on_memory_created`.
+
+    builds a :class:`MemoryCreatedEvent` from the just-committed memory
+    entity and dispatches it through the langchain custom-event channel
+    so consumers reading ``astream_events('v2')`` see the
+    ``memory_created`` event on their stream. the wire payload carries
+    the user binding + identifying fields needed for client-side
+    scoping; the full content stays in storage and the
+    ``content_preview`` field is truncated to
+    :data:`_CONTENT_PREVIEW_LEN` chars.
+
+    graceful no-op when called outside a langgraph run (no run manager
+    in scope, e.g. cli / background-job harnesses that call
+    :meth:`MemoryExtractor.run_extraction` directly without compiling
+    a graph). the row is already committed; the missing stream event
+    is logged at debug for ops visibility but the dispatcher does not
+    raise.
+
+    consumers that want product-specific push (websocket frame,
+    slack message, sse delta) on top of the v2 stream event wrap
+    this helper in their own callback and call it first so the framework
+    dispatch always happens before the product push::
+
+        async def my_callback(entity: MemoryEntity) -> None:
+            await default_memory_created_dispatcher(entity)
+            await my_product_push(entity)
+
+        extractor = MemoryExtractor(
+            on_memory_created=my_callback,
+            ...,
+        )
+
+    consumers that want ONLY the v2 stream event (no product-specific
+    push) pass the helper directly as the callback.
+
+    :param entity: the :class:`MemoryEntity` that was just committed
+        by :meth:`MemoryExtractor.run_extraction`. all required fields
+        (``user_id``, ``memory_id``, ``conversation_id``, ``type_memory``)
+        must be populated -- the extractor pipeline guarantees this
+        post-``save_entity``, so callers wiring the helper outside that
+        path are responsible for the same guarantee
+    :ptype entity: MemoryEntity
+    :return: nothing
+    :rtype: None
+    """
+    content = getattr(entity, "content", None) or ""
+    preview = content[:_CONTENT_PREVIEW_LEN]
+    event = MemoryCreatedEvent(
+        user_id=str(entity.user_id),
+        memory_id=str(entity.memory_id),
+        conversation_id=str(entity.conversation_id),
+        type_memory=str(entity.type_memory),
+        content_preview=preview,
+    )
+
+    try:
+        await dispatch_event(event)
+    except RuntimeError as exc:
+        # ``adispatch_custom_event`` raises ``RuntimeError`` when no
+        # run manager is in scope -- i.e. the extractor was called
+        # outside a langgraph node (cli / background job / test
+        # harness). the row is committed; the stream event is a
+        # best-effort surface. log at debug so ops can see it if
+        # they care; warning would be too loud for the normal-case
+        # cli path. narrowing the catch to ``RuntimeError``
+        # preserves the bug-surfacing property for other failures
+        # inside ``dispatch_event`` (e.g. a pydantic schema regression).
+        log.debug(
+            "default_memory_created_dispatcher: no run manager in scope; "
+            "memory_created event dropped (memory_id=%s, reason=%s)",
+            event.memory_id,
+            exc,
+        )
 
 
 def _register() -> None:

@@ -309,6 +309,16 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
             pk = (data["agent_id"], data["id"])
+            # Populate L2 only, not L1. Search results are derived
+            # (caller's intent is "find conversations matching X",
+            # not "warm the L1 row cache"), and the typical follow-up
+            # is the user clicking through to one specific result --
+            # a single L1 miss + L2 pull-through is the right cost
+            # profile for that access pattern. Filling L1 with every
+            # search result would evict actively-used rows for cold
+            # data the user may never revisit. Callers that need an
+            # L1-hot row for one specific result do ``get(pk)`` after
+            # picking from the search hits, which warms L1 lazily.
             await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
