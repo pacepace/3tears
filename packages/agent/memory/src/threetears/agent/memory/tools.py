@@ -79,7 +79,7 @@ log = get_logger(__name__)
 _MAX_RESULTS = 10
 _DEFAULT_SIMILARITY_THRESHOLD = 0.2
 
-# v0.7.4: alias validation. Letters, digits, hyphen, underscore. 1-64.
+# v0.7.5: alias validation. Letters, digits, hyphen, underscore. 1-64.
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # Type alias for the optional ledger callback
@@ -474,7 +474,7 @@ async def load_memory_search_tool(
         except MemoryAccessDenied as exc:
             return _tool_error("memory_search", "authorize", str(exc))
 
-        # v0.7.4: alias is a direct-lookup short-circuit. Returns at
+        # v0.7.5: alias is a direct-lookup short-circuit. Returns at
         # most one memory by its per-user-unique named anchor.
         if alias:
             try:
@@ -511,7 +511,7 @@ async def load_memory_search_tool(
         if not query:
             return "Provide one of 'query', 'ids', or 'alias'."
 
-        # v0.7.4: parse ISO date filters. Either bound may stand alone.
+        # v0.7.5: parse ISO date filters. Either bound may stand alone.
         def _parse_iso(label: str, raw: str | None) -> tuple[datetime | None, str | None]:
             if not raw:
                 return None, None
@@ -530,7 +530,7 @@ async def load_memory_search_tool(
         if err_b:
             return _tool_error("memory_search", "filter", err_b)
 
-        # v0.7.4: ``mode`` selects which legs to run.
+        # v0.7.5: ``mode`` selects which legs to run.
         #   precise → FTS only (keyword wins)
         #   fuzzy   → semantic only (concepts win)
         #   balanced (default) → both legs, merged
@@ -839,7 +839,7 @@ async def load_memory_recall_tool(
         except MemoryAccessDenied as exc:
             return _tool_error("memory_recall", "authorize", str(exc))
 
-        # v0.7.4: alias resolves to a memory_id via the per-user-unique
+        # v0.7.5: alias resolves to a memory_id via the per-user-unique
         # ``alias`` column. The validator on MemoryRecallInput already
         # ensures at least one of memory_id / alias is present.
         if alias and not memory_id:
@@ -1108,7 +1108,7 @@ async def load_memory_add_tool(
         alias: str | None = None,
     ) -> str:
         """store a memory about the user for future conversations."""
-        # v0.7.4: validate alias format early. Per-user uniqueness is
+        # v0.7.5: validate alias format early. Per-user uniqueness is
         # enforced at the DB level (alembic 088 partial unique index);
         # we surface a graceful error on UniqueViolation below.
         normalised_alias: str | None = None
@@ -1289,7 +1289,7 @@ async def load_memory_add_tool(
             )
 
         except Exception as exc:
-            # v0.7.4: surface alias-uniqueness collisions cleanly. The
+            # v0.7.5: surface alias-uniqueness collisions cleanly. The
             # partial unique index ``ix_memories_user_alias`` raises a
             # UniqueViolation from asyncpg; we don't import asyncpg
             # here (the memory pkg stays driver-agnostic), so match by
@@ -1517,7 +1517,7 @@ async def load_chunk_search_tool(
         if embedding is None:
             return "Embedding unavailable; cannot search chunks."
 
-        # v0.7.4: ``mode`` remaps the semantic/keyword blend so the
+        # v0.7.5: ``mode`` remaps the semantic/keyword blend so the
         # agent can self-correct between "I want similar concepts"
         # (fuzzy) and "I want exact wording" (precise). Default
         # ``balanced`` preserves prior 60/40 semantic-leaning behavior.

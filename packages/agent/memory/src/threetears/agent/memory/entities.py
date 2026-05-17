@@ -182,7 +182,7 @@ class MemoryEntity(BaseEntity):
 
     @property
     def alias(self) -> str | None:
-        """Optional named anchor for direct-lookup retrieval (v0.7.4).
+        """Optional named anchor for direct-lookup retrieval (v0.7.5).
 
         Per-user unique on the metallm DB side via the partial unique
         index ``ix_memories_user_alias ON memories(agent_id, user_id,
