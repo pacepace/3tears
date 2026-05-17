@@ -150,44 +150,53 @@ class MemoryRecallInput(BaseModel):
     """
 
     memory_id: str = Field(
-        description="UUID of the parent memory to recall, with its chunks.",
+        description=(
+            "Which memory to read. Pass the full id from a "
+            "``[memory:<id>]`` or ``[mem:<id>]`` line returned by "
+            "``memory_search`` or ``chunk_search``. Example: "
+            "``019e2e4e-0239-74b3-a5dc-ec019d219784``."
+        ),
     )
     chunk_query: str | None = Field(
         default=None,
         description=(
-            "Optional hybrid (vector + FTS) search restricted to "
-            "this memory's chunks. Mutually exclusive with the "
-            "other chunk_* modes."
+            "Search inside this memory's chunks. Returns the most "
+            "relevant chunks. Pass at most ONE of: ``chunk_query``, "
+            "``chunk_indexes``, ``chunk_id_after``, ``chunk_id_before``. "
+            "Example: ``deployment runbook``."
         ),
     )
     chunk_indexes: list[int] | None = Field(
         default=None,
         description=(
-            "Optional list of chunk_index ints to fetch exactly. Mutually exclusive with the other chunk_* modes."
+            "Specific chunk positions to fetch (zero-based). "
+            "Example: ``[0, 1, 2]`` for the first three chunks. "
+            "Out-of-range indexes are silently skipped. "
+            "See ``chunk_query`` for mutual-exclusion rule."
         ),
     )
     chunk_id_after: str | None = Field(
         default=None,
         description=(
-            "Optional forward-cursor chunk_id UUID. Returns up to "
-            "``limit`` chunks with chunk_id strictly greater. "
-            "Mutually exclusive with the other chunk_* modes."
+            "Forward cursor. Returns chunks newer than this id. "
+            "Pass a full chunk UUID from a ``[chunk:<id>]`` line. "
+            "Example: ``019e2e4e-1234-7890-abcd-ef0123456789``. "
+            "See ``chunk_query`` for mutual-exclusion rule."
         ),
     )
     chunk_id_before: str | None = Field(
         default=None,
         description=(
-            "Optional backward-cursor chunk_id UUID. Returns up to "
-            "``limit`` chunks with chunk_id strictly less, reversed "
-            "to ASC order before returning. Mutually exclusive with "
-            "the other chunk_* modes."
+            "Backward cursor. Returns chunks older than this id. "
+            "Same id format as ``chunk_id_after``. "
+            "See ``chunk_query`` for mutual-exclusion rule."
         ),
     )
     limit: int = Field(
         default=5,
         ge=1,
         le=50,
-        description="Maximum chunks to return (default 5, max 50).",
+        description="How many chunks to return. Range 1-50. Default 5.",
     )
 
     @model_validator(mode="after")
@@ -922,15 +931,17 @@ async def load_memory_recall_tool(
         return "\n".join(lines)
 
     memory_recall.description = (
-        "Recall a memory's full content plus a window into its chunks. "
-        "Pass ``memory_id`` (from [memory:ID] tags surfaced by "
-        "memory_search / conversation_summarize). Optional chunk-mode "
-        "args are mutually exclusive: ``chunk_query`` for hybrid "
-        "search within the memory, ``chunk_indexes`` for exact-index "
-        "lookup, ``chunk_id_after`` / ``chunk_id_before`` for cursor "
-        "paging. Default returns the first ``limit`` chunks (default 5) "
-        "in creation order. Use chunk_recall(chunk_id) for a single "
-        "chunk's full text."
+        "Read one memory in full, plus a window into its chunks. "
+        "Pass ``memory_id`` from a ``[memory:<id>]`` or ``[mem:<id>]`` "
+        "line returned by ``memory_search``, ``chunk_search``, or "
+        "``conversation_summarize``. "
+        "Default returns the memory + first 5 chunks in creation "
+        "order. To narrow the chunk window, pass exactly one of: "
+        "``chunk_query`` (search inside this memory), "
+        "``chunk_indexes`` (specific positions), ``chunk_id_after`` / "
+        "``chunk_id_before`` (cursor paging). "
+        "Returns ``[memory:<id>]`` followed by chunk previews. "
+        "For one chunk's full text by id, use ``chunk_recall`` instead."
     )
 
     return [memory_recall]
@@ -1206,7 +1217,11 @@ class ChunkRecallInput(BaseModel):
     """
 
     chunk_id: str = Field(
-        description="UUID of the chunk to recall.",
+        description=(
+            "Which chunk to read. Pass the full id from a "
+            "``[chunk:<id>]`` line returned by ``chunk_search``. "
+            "Example: ``019e2e4e-1234-7890-abcd-ef0123456789``."
+        ),
     )
 
 
@@ -1220,13 +1235,18 @@ class ChunkSearchInput(BaseModel):
     """
 
     query: str = Field(
-        description=("Natural language search query for finding relevant chunks across every memory the user owns."),
+        description=(
+            "Search text. Matched against every chunk the user owns, "
+            "across all their memories. Returns the most relevant. "
+            "Examples: ``Python async patterns``, ``Saoirse personality "
+            "settings``."
+        ),
     )
     limit: int = Field(
         default=5,
         ge=1,
         le=20,
-        description="Maximum number of chunks to return (default 5, max 20).",
+        description="How many chunks to return. Range 1-20. Default 5.",
     )
 
 
@@ -1297,16 +1317,26 @@ async def load_chunk_recall_tool(
             agent_id=agent_id,
         )
         if chunk_row is None:
-            return "Chunk not found or access denied."
+            return (
+                "Chunk not found or access denied. Verify the "
+                "``chunk_id`` came from a recent ``chunk_search`` "
+                "result in this user's namespace."
+            )
         content, parent_memory_id = chunk_row
-        return f"{content}\n\n[parent memory: {parent_memory_id!s}]"
+        return (
+            f"{content}\n\n"
+            f"[parent memory: {parent_memory_id!s}]\n"
+            f"Next step: call ``memory_recall('{parent_memory_id!s}')`` "
+            f"to read the parent memory and its other chunks for "
+            f"surrounding context."
+        )
 
     chunk_recall.description = (
-        "Retrieve the full content of a single document/transcript chunk by "
-        "ID, plus the ID of the memory it belongs to. Use this when you "
-        "have a specific chunk_id (e.g. from a previous chunk_search result) "
-        "and need the full text. The footer ``[parent memory: <id>]`` lets "
-        "you chain to memory_recall for the surrounding context."
+        "Read one chunk's full text by id. Pass ``chunk_id`` from a "
+        "``[chunk:<id>]`` line returned by ``chunk_search``. Returns "
+        "the chunk's content followed by ``[parent memory: <id>]`` -- "
+        "pass that id to ``memory_recall`` if you need surrounding "
+        "context."
     )
 
     return [chunk_recall]
@@ -1402,7 +1432,13 @@ async def load_chunk_search_tool(
             content = str(r.get("content", "") or "")
             preview = content[:200]
             score = r.get("hybrid_score") or r.get("similarity") or 0.0
-            lines.append(f"[chunk:{chunk_id}] (memory:{memory_id_str}, score={score:.3f})\n{preview}")
+            lines.append(
+                f"[chunk:{chunk_id}] (memory:{memory_id_str}, "
+                f"score={score:.3f})\n{preview}\n"
+                f"Next step: ``chunk_recall('{chunk_id}')`` for full "
+                f"text, or ``memory_recall('{memory_id_str}')`` for "
+                f"the parent memory."
+            )
             if ledger_callback is not None:
                 try:
                     await ledger_callback(chunk_id, "chunk", preview[:80])
@@ -1416,11 +1452,13 @@ async def load_chunk_search_tool(
         return "\n\n".join(lines)
 
     chunk_search.description = (
-        "Search every document / transcript chunk the user owns for content "
-        "relevant to a natural-language query. Returns up to ``limit`` "
-        "chunks (default 5) ordered by hybrid score (semantic + keyword). "
-        "Each result carries the chunk_id, parent memory_id, score, and a "
-        "preview. Use chunk_recall to fetch a chunk's full text."
+        "Find chunks across all of this user's memories that match "
+        "a search. Pass a ``query`` (semantic + keyword search). "
+        "Returns one block per chunk: ``[chunk:<id>] (memory:<id>, "
+        "score=X.XXX) <preview>``. "
+        "Next steps: pass a ``[chunk:<id>]`` value to ``chunk_recall`` "
+        "for full text, or pass a ``(memory:<id>)`` value to "
+        "``memory_recall`` for the parent memory + its other chunks."
     )
 
     return [chunk_search]
