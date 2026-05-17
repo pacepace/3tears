@@ -689,10 +689,15 @@ async def load_memory_search_tool(
         return "\n".join(parts)
 
     memory_search.description = (
-        "Search the user's stored memories and uploaded documents by semantic similarity. "
-        "Use this to recall user preferences, past facts, decisions, and document content. "
-        "Memories include preferences, facts, decisions, and topical context extracted from previous conversations. "
-        "You can also pass 'ids' for direct batch lookup by UUID (bypasses embedding search)."
+        "**When to use:** First reach for past context about the user "
+        "(preferences, facts, decisions you've stored). For finding "
+        "past CONVERSATIONS instead, use ``conversation_search``; for "
+        "specific text inside a known stored memory, use ``chunk_search``.\n\n"
+        "Searches the user's stored memories and uploaded documents "
+        "by semantic similarity. Returns memories include preferences, "
+        "facts, decisions, and topical context extracted from previous "
+        "conversations. Pass ``ids`` for direct batch lookup by UUID "
+        "(bypasses embedding search)."
     )
 
     return [memory_search]
@@ -925,13 +930,29 @@ async def load_memory_recall_tool(
                 idx = ch.get("chunk_index", "?")
                 preview = (ch.get("content") or "")[:200]
                 lines.append(f"  [chunk:{cid}] (index={idx})\n  {preview}")
+            # v0.7.2 visibility hint: tell the agent how to drill INTO
+            # the chunks via search rather than re-paging the same
+            # window. Only shows when chunks were actually returned --
+            # the hint is noise on memories with no chunks.
+            lines.append("")
+            lines.append(
+                "To search inside this memory's chunks by topic, call "
+                f"``memory_recall('{mem_uuid}', chunk_query='<your text>')``. "
+                "For semantic search across ALL chunks the user owns, "
+                "use ``chunk_search``."
+            )
         else:
             lines.append("")
             lines.append("(no chunks)")
         return "\n".join(lines)
 
     memory_recall.description = (
-        "Read one memory in full, plus a window into its chunks. "
+        "**When to use:** You already know a ``memory_id`` (from a "
+        "``[memory:<id>]`` line in another tool's output) and want "
+        "its content + a window of its chunks. For unknown-id "
+        "semantic lookup, use ``memory_search``. For one chunk by "
+        "id, use ``chunk_recall``. For finding chunks across ALL "
+        "memories by topic, use ``chunk_search``.\n\n"
         "Pass ``memory_id`` from a ``[memory:<id>]`` or ``[mem:<id>]`` "
         "line returned by ``memory_search``, ``chunk_search``, or "
         "``conversation_summarize``. "
@@ -940,8 +961,7 @@ async def load_memory_recall_tool(
         "``chunk_query`` (search inside this memory), "
         "``chunk_indexes`` (specific positions), ``chunk_id_after`` / "
         "``chunk_id_before`` (cursor paging). "
-        "Returns ``[memory:<id>]`` followed by chunk previews. "
-        "For one chunk's full text by id, use ``chunk_recall`` instead."
+        "Returns ``[memory:<id>]`` followed by chunk previews."
     )
 
     return [memory_recall]
@@ -1144,7 +1164,17 @@ async def load_memory_add_tool(
                             }
                         },
                     )
-                    return f"Updated existing memory (was similar at {float(row['similarity']):.0%}): {content}"
+                    # v0.7.2: surface ``[memory:<id>]`` on the dedup
+                    # path so the agent can chain to memory_recall
+                    # without a separate memory_search round-trip.
+                    return (
+                        f"Updated existing memory "
+                        f"[memory:{existing_id}] "
+                        f"(was similar at {float(row['similarity']):.0%}): "
+                        f"{content}. "
+                        f"Use ``memory_recall('{existing_id}')`` to "
+                        f"read the full updated record."
+                    )
         except Exception as exc:
             log.warning(
                 "memory_add: dedup check failed, inserting new",
@@ -1180,7 +1210,13 @@ async def load_memory_add_tool(
                     }
                 },
             )
-            return f"Remembered: {content}"
+            # v0.7.2: surface ``[memory:<id>]`` so the agent can chain
+            # to memory_recall without a follow-up memory_search.
+            return (
+                f"Stored as [memory:{memory_id}]: {content}. "
+                f"Use ``memory_recall('{memory_id}')`` to read it back "
+                f"in any future conversation."
+            )
 
         except Exception as exc:
             log.warning(
@@ -1190,12 +1226,17 @@ async def load_memory_add_tool(
             return _tool_error("memory_add", "store", str(exc))
 
     memory_add.description = (
-        "Store a memory about the user for future conversations. "
-        "Use this when the user explicitly asks you to remember something "
-        "(e.g., 'remember that I prefer...', 'my X is Y', 'don't forget...'). "
+        "**When to use:** The user told you a fact, preference, or "
+        "decision worth remembering across conversations (e.g., "
+        "'remember that I prefer...', 'my X is Y', 'don't forget...'). "
+        "For storing a range of OLDER conversation messages as "
+        "durable searchable memory, use ``conversation_summarize`` "
+        "instead.\n\n"
         "Write the memory as a concise, standalone fact. "
-        "Duplicate detection is automatic — if a very similar memory already "
-        "exists, it will be updated instead of creating a duplicate."
+        "Dedup is automatic at ≥90% semantic similarity -- the return "
+        "tells you whether you stored a new memory or updated an "
+        "existing one, and gives you the ``[memory:<id>]`` for either "
+        "case so you can chain to ``memory_recall``."
     )
 
     return [memory_add]
@@ -1332,11 +1373,15 @@ async def load_chunk_recall_tool(
         )
 
     chunk_recall.description = (
-        "Read one chunk's full text by id. Pass ``chunk_id`` from a "
-        "``[chunk:<id>]`` line returned by ``chunk_search``. Returns "
-        "the chunk's content followed by ``[parent memory: <id>]`` -- "
-        "pass that id to ``memory_recall`` if you need surrounding "
-        "context."
+        "**When to use:** You have a specific ``chunk_id`` (e.g. from "
+        "a ``chunk_search`` result) and want its full text. For "
+        "semantic search across all chunks the user owns, use "
+        "``chunk_search``. For the parent memory + window of chunks, "
+        "use ``memory_recall``.\n\n"
+        "Pass ``chunk_id`` from a ``[chunk:<id>]`` line returned by "
+        "``chunk_search``. Returns the chunk's content followed by "
+        "``[parent memory: <id>]`` -- pass that id to ``memory_recall`` "
+        "if you need surrounding context."
     )
 
     return [chunk_recall]
@@ -1452,8 +1497,13 @@ async def load_chunk_search_tool(
         return "\n\n".join(lines)
 
     chunk_search.description = (
-        "Find chunks across all of this user's memories that match "
-        "a search. Pass a ``query`` (semantic + keyword search). "
+        "**When to use:** Looking for specific text inside stored "
+        "memories -- documents, transcripts, prior conversation "
+        "summaries. Faster than ``memory_recall`` for "
+        "needle-in-haystack across many memories. For high-level "
+        "memories about the user (preferences, facts), use "
+        "``memory_search`` instead.\n\n"
+        "Pass a ``query`` (semantic + keyword hybrid search). "
         "Returns one block per chunk: ``[chunk:<id>] (memory:<id>, "
         "score=X.XXX) <preview>``. "
         "Next steps: pass a ``[chunk:<id>]`` value to ``chunk_recall`` "
