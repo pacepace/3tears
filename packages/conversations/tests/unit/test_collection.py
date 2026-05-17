@@ -42,6 +42,8 @@ def _sample_data() -> dict[str, Any]:
         "date_last_message": now,
         "metadata": {"source": "test"},
         "message_count": 0,
+        # v006: per-row FTS language column.
+        "language": "english",
     }
 
 
@@ -107,6 +109,8 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "date_last_message",
                 "metadata",
                 "message_count",
+                # v006: per-row FTS language column.
+                "language",
             ]
             row = dict(zip(keys, args, strict=False))
             store[str(row["id"])] = row
@@ -126,6 +130,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             existing["date_last_message"] = args[6]
             existing["metadata"] = args[7]
             existing["message_count"] = args[8]
+            # v006: language is a mutable column (changing it
+            # re-tokenizes the search_vector via the trigger).
+            existing["language"] = args[9]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:
@@ -269,3 +276,145 @@ class TestTableAndEntityClass:
         """collection.entity_class returns :class:`Conversation`."""
         collection = ConversationsCollection.__new__(ConversationsCollection)
         assert collection.entity_class is Conversation
+
+
+class TestSearch:
+    """tests for :meth:`ConversationsCollection.search` FTS contract.
+
+    Mocks the L3 ``fetch`` to assert the SQL skeleton stays aligned with
+    the v005 migration's column / index / trigger shape. A real
+    end-to-end FTS exercise lives in the integration suite under
+    ``tests/integration/`` because it requires a live postgres + the
+    migration runner.
+    """
+
+    async def test_empty_query_returns_empty_list(self) -> None:
+        """An empty / whitespace query short-circuits before hitting the
+        pool. Without this guard, postgres FTS' empty-query semantics
+        would match every row."""
+        pg = _make_pg_mock()
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        result_empty = await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="",
+        )
+        result_whitespace = await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="   ",
+        )
+        assert result_empty == []
+        assert result_whitespace == []
+        pg.fetch.assert_not_called()
+
+    async def test_query_uses_websearch_to_tsquery_with_user_scope(self) -> None:
+        """The SQL must use ``websearch_to_tsquery`` (not plainto / to)
+        and pin ``user_id`` at the WHERE clause so cross-user leakage is
+        impossible at the SQL boundary."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        user_id = uuid7()
+        await collection.search(
+            agent_id=agent_id,
+            user_id=user_id,
+            query="kerning argument",
+            limit=10,
+            offset=0,
+        )
+
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "websearch_to_tsquery" in sql
+        assert "ts_rank_cd" in sql
+        assert "search_vector @@" in sql
+        assert "agent_id = $1" in sql
+        assert "user_id = $2" in sql
+        # v006: the FTS config is passed as the $6 bind param cast to
+        # regconfig so the trigger and the query agree on language.
+        assert "$6::regconfig" in sql
+        # status != 'closed' excluded by default (shifted to $7 now
+        # that $6 carries the language).
+        assert "status != $7" in sql
+        # Bound params (positional): (agent_id, user_id, query, limit,
+        # offset, query_language, "closed")
+        assert params[0] == agent_id
+        assert params[1] == user_id
+        assert params[2] == "kerning argument"
+        assert params[3] == 10
+        assert params[4] == 0
+        assert params[5] == "english"  # default query_language
+        assert params[6] == "closed"
+
+    async def test_include_closed_widens_scope(self) -> None:
+        """``include_closed=True`` drops the status filter from the SQL."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="anything",
+            include_closed=True,
+        )
+
+        sql, *params = pg.fetch.call_args.args
+        assert "status !=" not in sql
+        # 6 bound params: agent_id, user_id, query, limit, offset, query_language.
+        # No "closed" sentinel (include_closed widens the scope).
+        assert len(params) == 6
+        assert params[5] == "english"
+
+    async def test_query_language_passed_through_to_sql(self) -> None:
+        """v006: callers in polyglot products pass query_language so
+        the tsquery tokenizer matches the conversation's stored
+        tsvector tokenization. The parameter flows through to the
+        $6 bind."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="trabajo",
+            query_language="spanish",
+        )
+
+        sql, *params = pg.fetch.call_args.args
+        # Language flows through as a bind, not interpolated -- a typo
+        # surfaces as a postgres error, never a wrong-tokenization
+        # silent match.
+        assert "$6::regconfig" in sql
+        assert params[5] == "spanish"
+
+    async def test_select_projects_rank_for_ordering(self) -> None:
+        """The SELECT projects ``ts_rank_cd(...) AS rank`` so the ORDER
+        BY can sort by relevance. ``rank`` is stripped before entity
+        construction (exercised in the integration test that runs the
+        full migration); this unit test just pins the SQL shape so a
+        future refactor doesn't break the relevance-ordered semantics."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="kerning",
+        )
+
+        sql, *_ = pg.fetch.call_args.args
+        assert "ts_rank_cd(search_vector," in sql
+        assert "AS rank" in sql
+        assert "ORDER BY rank DESC" in sql

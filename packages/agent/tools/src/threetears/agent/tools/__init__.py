@@ -2,8 +2,22 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+# Version derived from pyproject.toml so the metadata is the single
+# source of truth -- a future release that bumps pyproject without
+# updating ``__init__.py`` can't drift the runtime ``__version__``.
+# The except guard handles the rare case where the package isn't
+# installed via importlib.metadata (e.g. running directly from a
+# checked-out source tree without ``uv sync``); the fallback keeps
+# imports working but reports ``unknown`` rather than crashing.
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _version
 
+try:
+    __version__ = _version("3tears-agent-tools")
+except _PackageNotFoundError:  # pragma: no cover - dev fallback
+    __version__ = "unknown"
+
+from threetears.agent.tools.events import TodosChangedEvent
 from threetears.agent.tools.registry import ToolRegistry
 from threetears.agent.tools.context import ToolContextManager
 from threetears.agent.tools.entities import ContextItemEntity
@@ -96,13 +110,14 @@ __all__ = [
     "TextProvider",
     "ParseDocumentInput",
     "ToolContextManager",
+    "TodoStorage",
+    "TodosChangedEvent",
     "ToolExecutionResult",
     "ToolExecutor",
     "ToolLlmInvocation",
     "ToolLlmResolver",
     "ToolRegistry",
     "ToolRouter",
-    "TodoStorage",
     "ToolRoutingDecision",
     "TranscriptionProvider",
     "VisionProvider",

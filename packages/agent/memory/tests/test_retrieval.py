@@ -256,7 +256,7 @@ class TestFormatMemoryContext:
             {
                 "chunk_id": uuid.uuid7(),
                 "content": "doc text",
-                "summary": None,
+                "summary": "doc summary",
                 "media_id": None,
                 "title": "My Doc",
                 "page_number": 5,
@@ -269,6 +269,10 @@ class TestFormatMemoryContext:
         assert '"My Doc"' in result
         assert "p.5" in result
         assert '"Chapter 1"' in result
+        # v0.7.0 Shard D: chunk headlines carry the recall affordance
+        # so the agent knows how to escalate from headline to full
+        # content.
+        assert "chunk_recall(" in result
 
     def test_ledger_dedup(self) -> None:
         mid = uuid.uuid7()
@@ -304,6 +308,202 @@ class TestFormatMemoryContext:
         result = _format_memory_context([], media_content=media, memory_chunks=chunks, detail_threshold=0.85)
         assert "chunk from same media" not in result
         assert "media desc" in result
+
+    def test_chunk_pull_not_push_high_score_does_not_render_content(self) -> None:
+        """v0.7.0 Shard D D-02: chunk SUMMARIES are pushed, chunk
+        CONTENT is pulled. Even when a chunk's hybrid_score is at the
+        maximum, the retrieval rendering must NEVER include the chunk's
+        ``content`` field in the system prompt -- only ``summary`` +
+        ``chunk_id`` + the chunk_recall affordance.
+
+        Pins the architectural invariant against a future refactor
+        tempted to "include the content when score is super high."
+        """
+        sentinel = "VERBATIM-CONTENT-MUST-NOT-LEAK-INTO-SYSTEM-PROMPT"
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": sentinel,
+                "summary": "the chunk's safe-to-surface headline",
+                "media_id": None,
+                "title": "Big Doc",
+                "page_number": 1,
+                "heading_context": None,
+                # Maximum score. detail_threshold=0.85 default; the
+                # 1.0 score would tip the legacy ``_get_display_text``
+                # branch into returning ``content``. The chunk branch
+                # must NOT use that path.
+                "hybrid_score": 1.0,
+            },
+        ]
+        result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
+        # Summary surfaces.
+        assert "the chunk's safe-to-surface headline" in result
+        # chunk_id + affordance surface.
+        assert "[chunk:" in result
+        assert "chunk_recall(" in result
+        # CRITICAL INVARIANT: content sentinel never appears.
+        assert sentinel not in result, (
+            "Pull-not-push violation: chunk content leaked into the "
+            "rendered memory_context. The retrieval rendering must "
+            "only push summaries; the agent pulls full content via "
+            "chunk_recall(chunk_id)."
+        )
+
+    def test_chunk_surfaced_cap_max_three(self) -> None:
+        """The retrieval rendering surfaces at most MAX_SURFACED_CHUNKS=3
+        chunk headlines per retrieval. A larger result must NOT inflate
+        the system prompt; the agent reaches the rest via chunk_search."""
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "c",
+                "summary": f"headline-{i}",
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.9 - (i * 0.01),
+            }
+            for i in range(10)
+        ]
+        result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
+        # First three headlines present.
+        assert "headline-0" in result
+        assert "headline-1" in result
+        assert "headline-2" in result
+        # Fourth+ headlines suppressed.
+        assert "headline-3" not in result
+        assert "headline-9" not in result
+
+    def test_chunk_summary_truncated_at_max_chars(self) -> None:
+        """Pinning MAX_CHUNK_SUMMARY_CHARS=150 so a runaway summary
+        (e.g., a chunk whose summary callback wrote the full content)
+        can't single-handedly blow the prompt budget."""
+        long_summary = "x" * 500
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "c",
+                "summary": long_summary,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.5,
+            },
+        ]
+        result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
+        # The ``xxxx...`` truncation marker is present + the full
+        # 500-char string is not.
+        assert "..." in result
+        assert long_summary not in result
+
+    def test_chunk_parent_memory_anchor_surfaces_summary(self) -> None:
+        """v0.7.0 Shard D D-05: every chunk surfaces with its parent
+        memory's summary so the agent has the cognitive anchor + the
+        source fragment. When the parent memory is present in the
+        retrieval set with a summary, the chunk headline carries
+        ``(of memory <id>: "<summary>")`` in addition to the chunk_recall
+        affordance."""
+        parent_id = uuid.uuid7()
+        parent_summary = "user's policy on weekend deployments"
+        memories = [
+            {
+                "memory_id": parent_id,
+                "content": "long content",
+                "summary": parent_summary,
+                "hybrid_score": 0.7,
+            },
+        ]
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "verbatim chunk text",
+                "summary": "chunk headline",
+                "memory_id": parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        assert f"of memory {parent_id}" in result
+        assert parent_summary in result
+        assert "chunk headline" in result
+        assert "chunk_recall(" in result
+
+    def test_chunk_parent_memory_anchor_falls_back_to_id_only(self) -> None:
+        """When a chunk references a parent memory not in the retrieval
+        set (or the parent has no summary), the anchor falls back to
+        ``(of memory <id>)`` so the agent at least knows the link
+        exists and can memory_recall the parent if it needs more."""
+        orphan_parent_id = uuid.uuid7()
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "verbatim chunk text",
+                "summary": "chunk headline",
+                "memory_id": orphan_parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
+        assert f"of memory {orphan_parent_id}" in result
+        # No quoted summary present.
+        assert f'of memory {orphan_parent_id}: "' not in result
+
+    def test_chunk_parent_memory_anchor_truncates_long_summary(self) -> None:
+        """A runaway parent-memory summary cannot blow the prompt budget
+        through the anchor channel. The parent summary is truncated to
+        MAX_CHUNK_SUMMARY_CHARS just like the chunk headline. Asserted
+        against the chunk line specifically because the parent memory
+        also renders in the memories block (where summaries are not
+        truncated -- that's a separate cap)."""
+        parent_id = uuid.uuid7()
+        long_parent_summary = "y" * 500
+        memories = [
+            {
+                "memory_id": parent_id,
+                "content": "c",
+                "summary": long_parent_summary,
+                "hybrid_score": 0.7,
+            },
+        ]
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "c",
+                "summary": "chunk headline",
+                "memory_id": parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        # Find the chunk line (starts with ``- [chunk:``).
+        chunk_lines = [line for line in result.split("\n") if line.startswith("- [chunk:")]
+        assert len(chunk_lines) == 1
+        chunk_line = chunk_lines[0]
+        # Within the chunk line, the parent-summary segment must be
+        # truncated -- the full 500-char string MUST NOT appear.
+        assert long_parent_summary not in chunk_line
+        # Truncation marker present in the parent-anchor segment.
+        assert "..." in chunk_line
+        # The y-run inside the anchor is capped at the truncation
+        # budget (MAX_CHUNK_SUMMARY_CHARS - 3 = 147 y's).
+        anchor_start = chunk_line.index("of memory")
+        anchor_segment = chunk_line[anchor_start:]
+        assert "y" * 148 not in anchor_segment
 
     def test_footer_present(self) -> None:
         memories = [{"memory_id": uuid.uuid7(), "content": "x", "summary": None, "hybrid_score": 0.5}]
