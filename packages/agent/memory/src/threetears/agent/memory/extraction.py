@@ -75,6 +75,7 @@ class MemoryExtractor:
         prompts: ExtractionPrompts | None = None,
         rate_limit_bucket: str = "ratelimits",
         summary_callback: Callable[[str, str], Awaitable[None]] | None = None,
+        on_memory_created: Callable[["MemoryEntity"], Awaitable[None]] | None = None,
     ) -> None:
         """initialize the extractor with the memories Collection + rbac authorizer.
 
@@ -102,6 +103,19 @@ class MemoryExtractor:
         :param summary_callback: optional coroutine invoked with
             ``(memory_id, content)`` after each ADD / UPDATE
         :ptype summary_callback: Callable[[str, str], Awaitable[None]] | None
+        :param on_memory_created: optional coroutine invoked once per
+            newly-committed memory, after ``save_entity`` returns. fires
+            ONLY for the ADD action -- not UPDATE / DELETE -- so a
+            consumer subscribed to "new memory created" sees one
+            invocation per row that lands in storage. the consumer
+            receives the full :class:`MemoryEntity` so it can build a
+            push notification (server-sent event, websocket frame,
+            slack message, etc.) with no follow-up database read. an
+            exception inside the callback is logged at WARNING and
+            swallowed so a flaky downstream push doesn't break the
+            extraction pipeline (the row is already committed; the
+            push is best-effort)
+        :ptype on_memory_created: Callable[[MemoryEntity], Awaitable[None]] | None
         """
         self._config = config
         self._embedding_provider = embedding_provider
@@ -110,6 +124,7 @@ class MemoryExtractor:
         self._prompts = prompts or ExtractionPrompts()
         self._rate_limit_bucket = rate_limit_bucket
         self._summary_callback = summary_callback
+        self._on_memory_created = on_memory_created
         self._authorizer = authorizer
         self._memories = memories_collection
 
@@ -636,6 +651,38 @@ class MemoryExtractor:
                             str(memory_id),
                             candidate["content"],
                         )
+                    if self._on_memory_created:
+                        # Best-effort push: the row is already committed,
+                        # so a failing callback (downstream WS down,
+                        # transport flake, consumer bug) must not break
+                        # the extraction pipeline. Log + swallow.
+                        #
+                        # The log shape (event key + structured fields)
+                        # is the metric surface for ops: Loki LogQL like
+                        # ``rate(count_over_time({container="..."}
+                        # |= "on_memory_created callback failed"
+                        # [5m]))`` aggregates failures into a per-minute
+                        # rate, sub-categorizable by ``error_type``.
+                        # Keeps the framework dep-free of Prometheus
+                        # while giving metric-grade observability --
+                        # downstream products that prefer
+                        # prometheus-client wrap the callback and
+                        # increment their own Counter on the exception.
+                        try:
+                            await self._on_memory_created(new_entity)
+                        except Exception as cb_exc:
+                            log.warning(
+                                "on_memory_created callback failed",
+                                extra={
+                                    "extra_data": {
+                                        "memory_id": str(memory_id),
+                                        "user_id": str(user_id),
+                                        "conversation_id": str(conversation_id),
+                                        "error_type": type(cb_exc).__name__,
+                                        "error": str(cb_exc),
+                                    },
+                                },
+                            )
 
                 elif action == "UPDATE":
                     updated_content = act["content"]

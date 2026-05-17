@@ -54,7 +54,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -98,7 +98,7 @@ provides-extras = ["tracing", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -113,7 +113,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears" },
@@ -128,13 +128,14 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
     { name = "3tears-conversations" },
+    { name = "3tears-langgraph" },
     { name = "langchain-core" },
     { name = "pgvector" },
 ]
@@ -145,19 +146,21 @@ requires-dist = [
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
     { name = "3tears-conversations", editable = "packages/conversations" },
+    { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "langchain-core" },
     { name = "pgvector" },
 ]
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
     { name = "3tears-conversations" },
+    { name = "3tears-langgraph" },
     { name = "httpx" },
     { name = "langchain-core" },
 ]
@@ -211,6 +214,7 @@ requires-dist = [
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
     { name = "3tears-conversations", editable = "packages/conversations" },
+    { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "openpyxl", marker = "extra == 'all'" },
@@ -239,7 +243,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -266,7 +270,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears-observe" },
@@ -298,22 +302,24 @@ provides-extras = ["slack", "discord", "websocket"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
+    { name = "3tears-langgraph" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
+    { name = "3tears-langgraph", editable = "packages/langgraph" },
 ]
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -333,7 +339,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -352,7 +358,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "asyncpg" },
@@ -371,7 +377,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-mcp"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears" },
@@ -396,7 +402,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-models"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-agent-tools" },
@@ -440,7 +446,7 @@ provides-extras = ["voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -457,7 +463,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -481,7 +487,7 @@ provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears-agent-acl" },

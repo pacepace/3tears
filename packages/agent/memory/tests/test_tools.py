@@ -8,6 +8,8 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.agent.memory.tools import (
+    ChunkRecallInput,
+    ChunkSearchInput,
     MemoryRecallInput,
     MemorySearchInput,
     _fmt_dt,
@@ -49,10 +51,72 @@ class TestMemorySearchInput:
 
 
 class TestMemoryRecallInput:
-    def test_valid(self):
-        inp = MemoryRecallInput(id="some-uuid", type="memory")
-        assert inp.id == "some-uuid"
-        assert inp.type == "memory"
+    """v0.7.0 (shard C) reshape: ``(memory_id, chunk_mode...)`` with
+    four mutually-exclusive chunk-selection modes."""
+
+    def test_minimum_fields(self) -> None:
+        inp = MemoryRecallInput(memory_id="some-uuid")
+        assert inp.memory_id == "some-uuid"
+        assert inp.chunk_query is None
+        assert inp.chunk_indexes is None
+        assert inp.chunk_id_after is None
+        assert inp.chunk_id_before is None
+        assert inp.limit == 5
+
+    def test_chunk_query_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_query="needle",
+            limit=10,
+        )
+        assert inp.chunk_query == "needle"
+        assert inp.limit == 10
+
+    def test_chunk_indexes_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_indexes=[0, 2, 5],
+        )
+        assert inp.chunk_indexes == [0, 2, 5]
+
+    def test_chunk_id_after_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_id_after="cursor-uuid",
+        )
+        assert inp.chunk_id_after == "cursor-uuid"
+
+    def test_chunk_id_before_mode(self) -> None:
+        inp = MemoryRecallInput(
+            memory_id="some-uuid",
+            chunk_id_before="cursor-uuid",
+        )
+        assert inp.chunk_id_before == "cursor-uuid"
+
+    def test_modes_are_mutually_exclusive(self) -> None:
+        # Two modes set at once → ValidationError.
+        with pytest.raises(ValidationError, match="at most one"):
+            MemoryRecallInput(
+                memory_id="any",
+                chunk_query="q",
+                chunk_indexes=[1],
+            )
+        with pytest.raises(ValidationError, match="at most one"):
+            MemoryRecallInput(
+                memory_id="any",
+                chunk_id_after="a",
+                chunk_id_before="b",
+            )
+
+    def test_missing_memory_id_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryRecallInput()  # type: ignore[call-arg]
+
+    def test_limit_clamping(self) -> None:
+        with pytest.raises(ValidationError):
+            MemoryRecallInput(memory_id="any", limit=0)
+        with pytest.raises(ValidationError):
+            MemoryRecallInput(memory_id="any", limit=51)
 
 
 # -- Helper functions ---------------------------------------------------------
@@ -82,4 +146,48 @@ class TestFmtDt:
 
     def test_non_datetime_falls_through_to_str(self):
         assert _fmt_dt("some string") == "some string"
+
+
+# -- Shard C input schemas (v0.7.0 transcript-chunks tools) ------------------
+
+
+class TestChunkRecallInput:
+    """``chunk_recall(chunk_id)`` -- single-chunk lookup by ID. The
+    schema is minimal because the LLM only needs to supply the chunk_id;
+    auth + parent-memory lookup happen inside the tool."""
+
+    def test_valid(self):
+        inp = ChunkRecallInput(chunk_id="some-uuid")
+        assert inp.chunk_id == "some-uuid"
+
+    def test_missing_chunk_id_raises(self):
+        with pytest.raises(ValidationError):
+            ChunkRecallInput()  # type: ignore[call-arg]
+
+
+class TestChunkSearchInput:
+    """``chunk_search(query, limit=5)`` -- cross-memory chunk hybrid
+    search. The schema pins ``limit`` between 1 and 20 so the LLM
+    can't request a runaway result set, and defaults to 5."""
+
+    def test_valid_with_default_limit(self):
+        inp = ChunkSearchInput(query="kerning argument")
+        assert inp.query == "kerning argument"
+        assert inp.limit == 5
+
+    def test_custom_limit(self):
+        inp = ChunkSearchInput(query="anything", limit=10)
+        assert inp.limit == 10
+
+    def test_limit_zero_raises(self):
+        with pytest.raises(ValidationError):
+            ChunkSearchInput(query="anything", limit=0)
+
+    def test_limit_above_max_raises(self):
+        with pytest.raises(ValidationError):
+            ChunkSearchInput(query="anything", limit=21)
+
+    def test_missing_query_raises(self):
+        with pytest.raises(ValidationError):
+            ChunkSearchInput()  # type: ignore[call-arg]
         assert _fmt_dt(42) == "42"
