@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-enforcement"
-version = "0.7.0"
+version = "0.7.1"
 description = "Static-analysis enforcement scanners for the 3tears ecosystem (cache primitive contract, underscore-access discipline, codebase conventions, etc.)"
 readme = "README.md"
 requires-python = ">=3.14"
