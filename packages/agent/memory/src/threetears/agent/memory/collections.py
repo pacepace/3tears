@@ -47,7 +47,7 @@ try:
     # require pgvector so they raise at call time if it's missing.
     from pgvector.sqlalchemy import Vector as _PGVector
 except ImportError:  # pragma: no cover - pgvector should always be installed
-    _PGVector = None  # type: ignore[assignment, misc]
+    _PGVector = None
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
