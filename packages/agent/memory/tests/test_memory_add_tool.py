@@ -157,7 +157,10 @@ class TestLoadAddMemoryTool:
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
-        assert "Remembered" in result
+        # v0.7.2: new-memory return now surfaces ``[memory:<id>]``
+        # so the agent can chain to ``memory_recall`` without a
+        # follow-up search.
+        assert "Stored as [memory:" in result
         assert "Rust" in result
         provider.aembed_query.assert_called_once_with("User prefers Rust")
         pool.execute.assert_called_once()
@@ -279,7 +282,7 @@ class TestLoadAddMemoryTool:
 
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
-        assert "Remembered" in result
+        assert "Stored as [memory:" in result
         # the Collection's save_to_postgres emitted an INSERT via execute
         pool.execute.assert_called()
         call_sql = pool.execute.call_args[0][0]
@@ -331,4 +334,4 @@ class TestLoadAddMemoryTool:
             pool.fetch.return_value = []
             pool.fetchval.return_value = False
             result = await tools[0].ainvoke({"content": f"test {mt}", "memory_type": mt})
-            assert "Remembered" in result, f"Failed for type {mt}"
+            assert "Stored as [memory:" in result, f"Failed for type {mt}"
