@@ -125,6 +125,101 @@ class TestRegistryParse:
 # ---------------------------------------------------------------------------
 
 
+class TestRegistryClearAndReset:
+    """v0.7.0 review item #5: registry test ergonomics.
+
+    Tests that mutate the shared ``default_registry`` need a way to
+    restore the production state. Constructing a fresh
+    ``FrameworkEventRegistry()`` works for testing the registry's own
+    mechanics, but a consumer that needs to test against the actual
+    ``default_registry`` (e.g. checking that a custom event class
+    they registered is reachable through the canonical default)
+    needs reset semantics.
+    """
+
+    def test_clear_wipes_all_registered_classes(self) -> None:
+        # The shared default_registry has the framework defaults
+        # populated by import time. clear() must wipe them.
+        reg = FrameworkEventRegistry()
+        reg.register(PromptBuiltEvent)
+        assert reg.names() == ["prompt_built"]
+        reg.clear()
+        assert reg.names() == []
+        # parse() returns None for everything after clear.
+        assert reg.parse("prompt_built", {"system_prompt": "x"}) is None
+
+    def test_clear_preserves_framework_defaults_providers(self) -> None:
+        """clear() wipes the registered classes but keeps the
+        framework-default provider list, so reset_to_framework_defaults
+        can rebuild after."""
+        reg = FrameworkEventRegistry()
+
+        captured: list[str] = []
+
+        def provider(r: FrameworkEventRegistry) -> None:
+            captured.append("called")
+            r.register(PromptBuiltEvent)
+
+        reg.add_framework_defaults_provider(provider)
+        # provider ran immediately on registration.
+        assert captured == ["called"]
+        assert "prompt_built" in reg.names()
+
+        reg.clear()
+        assert reg.names() == []
+        # Provider list survives the clear.
+        reg.reset_to_framework_defaults()
+        assert captured == ["called", "called"]
+        assert "prompt_built" in reg.names()
+
+    def test_reset_clears_then_reruns_providers(self) -> None:
+        """reset_to_framework_defaults clears the class table and
+        reruns every registered provider. Net effect: registry
+        returns to its post-import state."""
+        # Use a fresh registry so we don't disturb the shared
+        # default_registry's state across test runs.
+        reg = FrameworkEventRegistry()
+        from threetears.langgraph.events import _register_langgraph_events
+
+        reg.add_framework_defaults_provider(_register_langgraph_events)
+        baseline = reg.names()
+
+        # Mutate the registry by adding a custom event.
+        from typing import Literal as _Lit
+
+        class TestOnlyEvent(FrameworkEvent):
+            type: _Lit["test_only_event"] = "test_only_event"  # type: ignore[assignment]
+
+        reg.register(TestOnlyEvent)
+        assert "test_only_event" in reg.names()
+
+        reg.reset_to_framework_defaults()
+        assert reg.names() == baseline
+        assert "test_only_event" not in reg.names()
+
+    def test_default_registry_has_provider_for_every_framework_package(self) -> None:
+        """The shared default_registry must restore the FULL set --
+        langgraph events + memory events + tools events + conversations
+        events -- after reset. Catches a future package that forgets to
+        call add_framework_defaults_provider."""
+        # Trigger memory/tools/conversations registration by importing
+        # their events modules.
+        import threetears.agent.memory.events  # noqa: F401
+        import threetears.agent.tools.events  # noqa: F401
+        import threetears.conversations.events  # noqa: F401
+
+        baseline = set(default_registry.names())
+        # Every framework category should be represented.
+        assert "prompt_built" in baseline  # langgraph
+        assert "memory_created" in baseline  # memory
+        assert "todos_changed" in baseline  # tools
+        assert "conversation_summarized" in baseline  # conversations
+
+        default_registry.reset_to_framework_defaults()
+        after = set(default_registry.names())
+        assert after == baseline
+
+
 class TestRegistryRegister:
     def test_register_class_without_type_field_raises(self) -> None:
         class NoType(FrameworkEvent):

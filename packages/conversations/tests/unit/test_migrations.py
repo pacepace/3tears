@@ -15,6 +15,7 @@ import pytest
 
 from threetears.conversations.migrations import (
     PACKAGE_NAME,
+    add_conversation_language_column,
     add_conversation_search_vector,
     add_name_column,
     create_conversations_table,
@@ -132,22 +133,23 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_five(self) -> None:
+    async def test_register_populates_versions_one_through_six(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
-        (name), v004 (datetimetz), v005 (search_vector + trigger)."""
+        (name), v004 (datetimetz), v005 (search_vector + trigger),
+        v006 (language column + trigger update)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6}
 
-    async def test_apply_runs_five_versions_then_idempotent(self) -> None:
-        """apply records v1+v2+v3+v4+v5 and re-running is a no-op."""
+    async def test_apply_runs_six_versions_then_idempotent(self) -> None:
+        """apply records v1..v6 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 5
+        assert first_count == 6
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -367,6 +369,65 @@ class TestAddConversationSearchVectorMigration:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await add_conversation_search_vector(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAddConversationLanguageColumnMigration:
+    """tests for v006: per-row language column + trigger update.
+
+    Future polyglot consumers set conversations.language to whatever
+    pg_ts_config supports (``simple``, ``spanish``, ``french``, ...)
+    and the trigger rebuilds the search_vector with that tokenizer.
+    """
+
+    async def test_direct_call_issues_four_statements(self) -> None:
+        """ADD COLUMN + CREATE FUNCTION + DROP TRIGGER + CREATE TRIGGER."""
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 4
+
+    async def test_direct_call_adds_language_column_with_english_default(self) -> None:
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"ALTER TABLE conversations\s+ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'english'",
+            joined,
+            re.IGNORECASE,
+        )
+
+    async def test_direct_call_trigger_reads_new_language(self) -> None:
+        """Trigger function uses ``NEW.language`` (with COALESCE to
+        'english' as defensive fallback) instead of hard-coding
+        'english'. This is the load-bearing change behind v0.7.0
+        review item #7."""
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "COALESCE(NEW.language, 'english')" in joined
+        # The function MUST use the per-row config now, not the bare
+        # 'english' literal of v005.
+        assert "to_tsvector(cfg, coalesce(NEW.name, ''))" in joined
+
+    async def test_direct_call_trigger_fires_on_language_updates(self) -> None:
+        """Updating ``language`` on an existing row must re-tokenize
+        the search_vector. Pin the trigger's UPDATE OF list."""
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "BEFORE INSERT OR UPDATE OF name, language ON conversations" in joined
+
+    async def test_direct_call_uses_drop_create_trigger_pattern(self) -> None:
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "DROP TRIGGER IF EXISTS trg_conversations_search_vector ON conversations" in joined
+        assert "CREATE TRIGGER trg_conversations_search_vector" in joined
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        store = _FakeDataStore()
+        await add_conversation_language_column(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

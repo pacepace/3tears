@@ -656,13 +656,32 @@ class MemoryExtractor:
                         # so a failing callback (downstream WS down,
                         # transport flake, consumer bug) must not break
                         # the extraction pipeline. Log + swallow.
+                        #
+                        # The log shape (event key + structured fields)
+                        # is the metric surface for ops: Loki LogQL like
+                        # ``rate(count_over_time({container="..."}
+                        # |= "on_memory_created callback failed"
+                        # [5m]))`` aggregates failures into a per-minute
+                        # rate, sub-categorizable by ``error_type``.
+                        # Keeps the framework dep-free of Prometheus
+                        # while giving metric-grade observability --
+                        # downstream products that prefer
+                        # prometheus-client wrap the callback and
+                        # increment their own Counter on the exception.
                         try:
                             await self._on_memory_created(new_entity)
                         except Exception as cb_exc:
                             log.warning(
-                                "on_memory_created callback failed for memory_id=%s: %s",
-                                memory_id,
-                                cb_exc,
+                                "on_memory_created callback failed",
+                                extra={
+                                    "extra_data": {
+                                        "memory_id": str(memory_id),
+                                        "user_id": str(user_id),
+                                        "conversation_id": str(conversation_id),
+                                        "error_type": type(cb_exc).__name__,
+                                        "error": str(cb_exc),
+                                    },
+                                },
                             )
 
                 elif action == "UPDATE":

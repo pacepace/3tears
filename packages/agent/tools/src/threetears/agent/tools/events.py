@@ -52,17 +52,24 @@ class TodosChangedEvent(FrameworkEvent):
     message_id_source: str | None = None
 
 
-def _register() -> None:
-    """register tool-surface events into the shared default registry.
+def _register_tools_events(registry: Any) -> None:
+    """register tool-surface events into ``registry``.
 
-    runs at import time so a consumer that imports this module sees
-    :class:`TodosChangedEvent` in
-    :data:`threetears.langgraph.events.default_registry`.
+    invoked at import time against
+    :data:`threetears.langgraph.events.default_registry` via
+    :meth:`FrameworkEventRegistry.add_framework_defaults_provider`.
+    accepts the registry as an argument so it can also be reused by
+    :meth:`FrameworkEventRegistry.reset_to_framework_defaults` after a
+    test clears the registry.
 
+    :param registry: registry to populate
+    :ptype registry: FrameworkEventRegistry
     :return: nothing
     :rtype: None
     """
-    default_registry.register(TodosChangedEvent)
+    if TodosChangedEvent.model_fields["type"].default in registry.names():
+        return
+    registry.register(TodosChangedEvent)
 
 
-_register()
+default_registry.add_framework_defaults_provider(_register_tools_events)

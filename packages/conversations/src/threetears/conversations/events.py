@@ -49,17 +49,24 @@ class ConversationSummarizedEvent(FrameworkEvent):
     summary_text: str | None = None
 
 
-def _register() -> None:
-    """register conversation-lifecycle events into the shared default registry.
+def _register_conversations_events(registry: object) -> None:
+    """register conversation-lifecycle events into ``registry``.
 
-    runs at import time so a consumer that imports this module sees
-    :class:`ConversationSummarizedEvent` in
-    :data:`threetears.langgraph.events.default_registry`.
+    invoked at import time against
+    :data:`threetears.langgraph.events.default_registry` via
+    :meth:`FrameworkEventRegistry.add_framework_defaults_provider`.
+    accepts the registry as an argument so it can also be reused by
+    :meth:`FrameworkEventRegistry.reset_to_framework_defaults` after a
+    test clears the registry.
 
+    :param registry: registry to populate
+    :ptype registry: FrameworkEventRegistry
     :return: nothing
     :rtype: None
     """
-    default_registry.register(ConversationSummarizedEvent)
+    if ConversationSummarizedEvent.model_fields["type"].default in registry.names():
+        return
+    registry.register(ConversationSummarizedEvent)
 
 
-_register()
+default_registry.add_framework_defaults_provider(_register_conversations_events)

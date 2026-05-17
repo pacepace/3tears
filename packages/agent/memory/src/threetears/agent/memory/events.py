@@ -202,13 +202,18 @@ async def default_memory_created_dispatcher(entity: MemoryEntity) -> None:
         )
 
 
-def _register() -> None:
-    """register memory events into the shared default registry.
+def _register_memory_events(registry: Any) -> None:
+    """register memory events into ``registry``.
 
-    runs at import time so a consumer that imports this module sees
-    every memory event class in
-    :data:`threetears.langgraph.events.default_registry`.
+    invoked at import time against
+    :data:`threetears.langgraph.events.default_registry` via
+    :meth:`FrameworkEventRegistry.add_framework_defaults_provider`.
+    accepts the registry as an argument so it can also be reused by
+    :meth:`FrameworkEventRegistry.reset_to_framework_defaults` after a
+    test clears the registry.
 
+    :param registry: registry to populate
+    :ptype registry: FrameworkEventRegistry
     :return: nothing
     :rtype: None
     """
@@ -216,7 +221,9 @@ def _register() -> None:
         MemoryRetrievedEvent,
         MemoryCreatedEvent,
     ):
-        default_registry.register(cls)
+        if cls.model_fields["type"].default in registry.names():
+            continue
+        registry.register(cls)
 
 
-_register()
+default_registry.add_framework_defaults_provider(_register_memory_events)

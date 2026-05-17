@@ -101,6 +101,14 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("date_last_message", DATETIMETZ_TYPE, nullable=True),
             Column("metadata", JSONB_TYPE, nullable=True),
             Column("message_count", INT_TYPE),
+            # v006: postgres FTS tokenizer config for the conversation
+            # name (and any future name-derived tsvector signals).
+            # Default ``'english'``; valid values are any installed
+            # ``pg_ts_config`` entry (``simple``, ``spanish``, ``french``,
+            # ``german``, etc.). The trigger function rebuilds the
+            # search_vector on UPDATE OF this column too, so flipping
+            # language re-tokenizes lazily.
+            Column("language", STRING_TYPE),
         ],
         cas_column="date_updated",
     )
@@ -224,6 +232,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         limit: int = 20,
         offset: int = 0,
         include_closed: bool = False,
+        query_language: str = "english",
     ) -> list[Conversation]:
         """full-text search across conversations the user participates in.
 
@@ -271,6 +280,20 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :param include_closed: include closed / archived conversations
             in the search scope (default False)
         :ptype include_closed: bool
+        :param query_language: postgres FTS config name used to
+            tokenize the query (``'english'``, ``'spanish'``, ``'french'``,
+            etc.; default ``'english'``). The conversations' stored
+            search_vector is tokenized per-row via the language column
+            (v006 migration). For mono-language deployments leave the
+            default and both sides match. For polyglot deployments the
+            caller passes the user's preferred language; matches
+            against same-language rows are precise, cross-language
+            matches are tokenized differently and may degrade in
+            quality but don't crash. The parameter is intentionally
+            not validated against ``pg_ts_config`` here -- a typo
+            surfaces as a clean postgres error rather than a silent
+            wrong-tokenization match
+        :ptype query_language: str
         :return: matching conversations, most-relevant-first
         :rtype: list[Conversation]
         """
@@ -282,17 +305,32 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
 
         if include_closed:
             status_predicate = ""
-            params: tuple[Any, ...] = (agent_id, user_id, query, limit, offset)
+            params: tuple[Any, ...] = (
+                agent_id,
+                user_id,
+                query,
+                limit,
+                offset,
+                query_language,
+            )
         else:
-            status_predicate = " AND status != $6"
-            params = (agent_id, user_id, query, limit, offset, "closed")
+            status_predicate = " AND status != $7"
+            params = (
+                agent_id,
+                user_id,
+                query,
+                limit,
+                offset,
+                query_language,
+                "closed",
+            )
 
         rows = await self.l3_pool.fetch(
-            "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery('english', $3)) AS rank "
+            "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery($6::regconfig, $3)) AS rank "
             "FROM conversations "
             "WHERE agent_id = $1 "
             "  AND user_id = $2 "
-            "  AND search_vector @@ websearch_to_tsquery('english', $3)"
+            "  AND search_vector @@ websearch_to_tsquery($6::regconfig, $3)"
             + status_predicate
             + " ORDER BY rank DESC, date_updated DESC "
             "LIMIT $4 OFFSET $5",

@@ -1,6 +1,19 @@
 """agent workspace package -- workspace entities, sandbox, format handlers, and tools."""
 
-__version__ = "0.7.0"
+# Version derived from pyproject.toml so the metadata is the single
+# source of truth -- a future release that bumps pyproject without
+# updating ``__init__.py`` can't drift the runtime ``__version__``.
+# The except guard handles the rare case where the package isn't
+# installed via importlib.metadata (e.g. running directly from a
+# checked-out source tree without ``uv sync``); the fallback keeps
+# imports working but reports ``unknown`` rather than crashing.
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _version
+
+try:
+    __version__ = _version("3tears-agent-workspace")
+except _PackageNotFoundError:  # pragma: no cover - dev fallback
+    __version__ = "unknown"
 
 from threetears.agent.workspace import handlers as handlers  # noqa: F401
 from threetears.agent.workspace.bind_policy import BindConflictPolicy

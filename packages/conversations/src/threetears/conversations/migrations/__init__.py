@@ -31,6 +31,11 @@ version history:
   lifted from metallm migration 057 (conversation-side only -- the
   messages-side FTS in that migration stays product-side because
   3tears has no canonical messages table).
+- v006 -- v0.7.0 review item #7: add per-row ``language`` column +
+  update the FTS trigger to read it instead of hard-coding ``english``.
+  Future polyglot consumers set the per-conversation language without
+  another migration; existing rows backfill to ``'english'`` via
+  the column default.
 """
 
 from __future__ import annotations
@@ -49,6 +54,9 @@ from threetears.conversations.migrations.v004_datetime_to_datetimetz import (
 )
 from threetears.conversations.migrations.v005_conversation_search_vector import (
     add_conversation_search_vector,
+)
+from threetears.conversations.migrations.v006_conversation_language_column import (
+    add_conversation_language_column,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -81,12 +89,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(add_name_column)
     pkg.version(4)(datetime_to_datetimetz)
     pkg.version(5)(add_conversation_search_vector)
+    pkg.version(6)(add_conversation_language_column)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_conversation_language_column",
     "add_conversation_search_vector",
     "add_message_count",
     "add_name_column",

@@ -4,7 +4,20 @@ provides checkpoint savers, graph builders, and context management
 for building LangGraph agents backed by 3tears infrastructure.
 """
 
-__version__ = "0.7.0"
+# Version derived from pyproject.toml so the metadata is the single
+# source of truth -- a future release that bumps pyproject without
+# updating ``__init__.py`` can't drift the runtime ``__version__``.
+# The except guard handles the rare case where the package isn't
+# installed via importlib.metadata (e.g. running directly from a
+# checked-out source tree without ``uv sync``); the fallback keeps
+# imports working but reports ``unknown`` rather than crashing.
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _version
+
+try:
+    __version__ = _version("3tears-langgraph")
+except _PackageNotFoundError:  # pragma: no cover - dev fallback
+    __version__ = "unknown"
 
 from threetears.langgraph.builders import build_chat_agent, build_tool_agent
 from threetears.langgraph.caching import (

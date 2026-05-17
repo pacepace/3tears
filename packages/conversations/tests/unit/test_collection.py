@@ -42,6 +42,8 @@ def _sample_data() -> dict[str, Any]:
         "date_last_message": now,
         "metadata": {"source": "test"},
         "message_count": 0,
+        # v006: per-row FTS language column.
+        "language": "english",
     }
 
 
@@ -107,6 +109,8 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "date_last_message",
                 "metadata",
                 "message_count",
+                # v006: per-row FTS language column.
+                "language",
             ]
             row = dict(zip(keys, args, strict=False))
             store[str(row["id"])] = row
@@ -126,6 +130,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
             existing["date_last_message"] = args[6]
             existing["metadata"] = args[7]
             existing["message_count"] = args[8]
+            # v006: language is a mutable column (changing it
+            # re-tokenizes the search_vector via the trigger).
+            existing["language"] = args[9]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:
@@ -329,15 +336,21 @@ class TestSearch:
         assert "search_vector @@" in sql
         assert "agent_id = $1" in sql
         assert "user_id = $2" in sql
-        # status != 'closed' excluded by default
-        assert "status != $6" in sql
-        # Bound params (positional): (agent_id, user_id, query, limit, offset, "closed")
+        # v006: the FTS config is passed as the $6 bind param cast to
+        # regconfig so the trigger and the query agree on language.
+        assert "$6::regconfig" in sql
+        # status != 'closed' excluded by default (shifted to $7 now
+        # that $6 carries the language).
+        assert "status != $7" in sql
+        # Bound params (positional): (agent_id, user_id, query, limit,
+        # offset, query_language, "closed")
         assert params[0] == agent_id
         assert params[1] == user_id
         assert params[2] == "kerning argument"
         assert params[3] == 10
         assert params[4] == 0
-        assert params[5] == "closed"
+        assert params[5] == "english"  # default query_language
+        assert params[6] == "closed"
 
     async def test_include_closed_widens_scope(self) -> None:
         """``include_closed=True`` drops the status filter from the SQL."""
@@ -355,8 +368,34 @@ class TestSearch:
 
         sql, *params = pg.fetch.call_args.args
         assert "status !=" not in sql
-        # Only 5 bound params now (no "closed" sentinel).
-        assert len(params) == 5
+        # 6 bound params: agent_id, user_id, query, limit, offset, query_language.
+        # No "closed" sentinel (include_closed widens the scope).
+        assert len(params) == 6
+        assert params[5] == "english"
+
+    async def test_query_language_passed_through_to_sql(self) -> None:
+        """v006: callers in polyglot products pass query_language so
+        the tsquery tokenizer matches the conversation's stored
+        tsvector tokenization. The parameter flows through to the
+        $6 bind."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="trabajo",
+            query_language="spanish",
+        )
+
+        sql, *params = pg.fetch.call_args.args
+        # Language flows through as a bind, not interpolated -- a typo
+        # surfaces as a postgres error, never a wrong-tokenization
+        # silent match.
+        assert "$6::regconfig" in sql
+        assert params[5] == "spanish"
 
     async def test_select_projects_rank_for_ordering(self) -> None:
         """The SELECT projects ``ts_rank_cd(...) AS rank`` so the ORDER

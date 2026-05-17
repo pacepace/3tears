@@ -33,6 +33,7 @@ events from tools, which use ``noun_verb`` with imperative verbs (e.g.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal
 
 from langchain_core.callbacks import adispatch_custom_event
@@ -340,6 +341,12 @@ class FrameworkEventRegistry:
     def __init__(self) -> None:
         """initialize an empty registry."""
         self._by_name: dict[str, type[FrameworkEvent]] = {}
+        # Framework-default providers. Each one is a callable that takes
+        # the registry and registers its package's event classes. Called
+        # at provider-registration time (so the import-time
+        # populate-on-load behavior is unchanged) AND retained for
+        # :meth:`reset_to_framework_defaults` to rerun.
+        self._framework_defaults: list[Callable[["FrameworkEventRegistry"], None]] = []
 
     def register(self, event_cls: type[FrameworkEvent]) -> None:
         """register one typed event class by its ``type`` discriminator.
@@ -413,6 +420,73 @@ class FrameworkEventRegistry:
         """
         return sorted(self._by_name.keys())
 
+    def add_framework_defaults_provider(
+        self,
+        provider: Callable[["FrameworkEventRegistry"], None],
+    ) -> None:
+        """register a callable that populates this registry with one
+        framework package's default event classes.
+
+        each framework package (langgraph, agent/memory, agent/tools,
+        conversations) calls this at import time with its own
+        provider function. the provider is:
+
+        1. invoked immediately so the package's events are registered
+           the first time the events module loads -- matches the
+           pre-PR import-time-side-effect behavior consumers rely on.
+        2. retained on the registry so :meth:`reset_to_framework_defaults`
+           can rerun every provider to restore a clean framework-
+           defaults state.
+
+        the typical product consumer never calls this method; it's
+        meant for the framework's own events modules. but a product
+        that ships its own typed events and wants them to survive a
+        test-side ``reset_to_framework_defaults`` call would register
+        a provider here too.
+
+        :param provider: callable accepting the registry and
+            registering the package's event classes via
+            :meth:`register`. idempotent on re-invocation: provider
+            functions should be safe to call multiple times against
+            the same registry (the ``register`` method's "already
+            registered" check makes the idempotency natural)
+        :ptype provider: Callable[[FrameworkEventRegistry], None]
+        :return: nothing
+        :rtype: None
+        """
+        self._framework_defaults.append(provider)
+        provider(self)
+
+    def clear(self) -> None:
+        """wipe every registered event class.
+
+        primarily a test helper. after :meth:`clear`, :meth:`parse`
+        returns ``None`` for every name. the framework-default
+        provider list is preserved so :meth:`reset_to_framework_defaults`
+        can rebuild from clean state; if you also want to drop the
+        provider list, construct a fresh ``FrameworkEventRegistry()``
+        instead.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._by_name.clear()
+
+    def reset_to_framework_defaults(self) -> None:
+        """clear, then re-register every framework default provider.
+
+        primarily a test helper. tests that mutate ``default_registry``
+        (registering custom event classes, exercising rebind error
+        paths, etc.) call this in a teardown to restore the production
+        state for the next test.
+
+        :return: nothing
+        :rtype: None
+        """
+        self._by_name.clear()
+        for provider in self._framework_defaults:
+            provider(self)
+
 
 default_registry = FrameworkEventRegistry()
 """shared registry pre-populated with every framework event class.
@@ -425,12 +499,17 @@ regardless of which package owns it.
 """
 
 
-def _register_langgraph_events() -> None:
-    """internal: register every event class defined in this module.
+def _register_langgraph_events(registry: FrameworkEventRegistry) -> None:
+    """register every event class defined in this module into ``registry``.
 
-    called at import time so :data:`default_registry` is populated before
-    any consumer imports it.
+    accepts the registry as an argument so it can be reused by
+    :meth:`FrameworkEventRegistry.reset_to_framework_defaults` after a
+    test clears the registry. invoked at import time against
+    :data:`default_registry` via
+    :meth:`FrameworkEventRegistry.add_framework_defaults_provider`.
 
+    :param registry: registry to populate
+    :ptype registry: FrameworkEventRegistry
     :return: nothing
     :rtype: None
     """
@@ -447,7 +526,14 @@ def _register_langgraph_events() -> None:
         WorkflowCompletedEvent,
         ImageGeneratedEvent,
     ):
-        default_registry.register(cls)
+        # The provider runs at import time AND on
+        # :meth:`reset_to_framework_defaults`. Skip silently when a
+        # class is already registered (the reset path clears first,
+        # so this only triggers when a different code path registered
+        # the same class concurrently).
+        if cls.model_fields["type"].default in registry.names():
+            continue
+        registry.register(cls)
 
 
-_register_langgraph_events()
+default_registry.add_framework_defaults_provider(_register_langgraph_events)
