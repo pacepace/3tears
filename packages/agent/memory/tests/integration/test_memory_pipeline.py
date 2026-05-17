@@ -580,7 +580,10 @@ class TestMemoryToolsAgainstLiveSchema:
             )
             assert len(tools) == 1
             result = await tools[0].ainvoke({"content": "User prefers Python", "memory_type": "preference"})
-            assert "Remembered" in result
+            # v0.7.2: return shape switched from "Remembered: ..."
+            # to "Stored as [memory:<id>]: ...". memory_id surfacing
+            # was the whole point of the change.
+            assert "Stored as [memory:" in result
 
             row = await pool.fetchrow(
                 "SELECT content, type_memory, search_vector FROM memories WHERE user_id = $1",

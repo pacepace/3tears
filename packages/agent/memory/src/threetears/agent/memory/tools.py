@@ -85,35 +85,20 @@ LedgerCallback = Callable[[str, str, str], Awaitable[None]]
 class MemorySearchInput(BaseModel):
     """Input schema for memory_search tool."""
 
-    query: str = Field(
-        default="",
-        description="Natural language search query to find relevant memories",
-    )
+    query: str = Field(default="", description="Search text.")
     type_filter: str | None = Field(
         default=None,
-        description=(
-            "Optional filter by memory type: 'preference', 'fact', 'decision', or 'topical_context'. "
-            "If omitted, searches all types."
-        ),
+        description="Filter by type: preference, fact, decision, topical_context.",
     )
     ids: list[str] | None = Field(
         default=None,
-        description=(
-            "Optional list of item IDs (UUIDs) for direct lookup. "
-            "Retrieves memories, media content, and document chunks by exact ID. "
-            "Bypasses semantic search — use this when you know specific IDs from the conversation ledger."
-        ),
+        description="Direct lookup by [memory:<id>]. Bypasses search.",
     )
 
     @model_validator(mode="after")
     def _require_query_or_ids(self) -> "MemorySearchInput":
-        """raise ValidationError unless at least one of ``query`` / ``ids`` is set.
-
-        :return: self
-        :rtype: MemorySearchInput
-        """
         if not self.query and not self.ids:
-            raise ValueError("At least one of 'query' or 'ids' must be provided.")
+            raise ValueError("Provide at least one of 'query' or 'ids'.")
         return self
 
 
@@ -149,55 +134,18 @@ class MemoryRecallInput(BaseModel):
     media is reached via the parent memory's ``media.memory_id`` link.
     """
 
-    memory_id: str = Field(
-        description=(
-            "Which memory to read. Pass the full id from a "
-            "``[memory:<id>]`` or ``[mem:<id>]`` line returned by "
-            "``memory_search`` or ``chunk_search``. Example: "
-            "``019e2e4e-0239-74b3-a5dc-ec019d219784``."
-        ),
-    )
+    memory_id: str = Field(description="[memory:<id>] UUID.")
     chunk_query: str | None = Field(
         default=None,
-        description=(
-            "Search inside this memory's chunks. Returns the most "
-            "relevant chunks. Pass at most ONE of: ``chunk_query``, "
-            "``chunk_indexes``, ``chunk_id_after``, ``chunk_id_before``. "
-            "Example: ``deployment runbook``."
-        ),
+        description="Search inside chunks. Mutually exclusive with chunk_indexes / chunk_id_after / chunk_id_before.",
     )
     chunk_indexes: list[int] | None = Field(
         default=None,
-        description=(
-            "Specific chunk positions to fetch (zero-based). "
-            "Example: ``[0, 1, 2]`` for the first three chunks. "
-            "Out-of-range indexes are silently skipped. "
-            "See ``chunk_query`` for mutual-exclusion rule."
-        ),
+        description="Specific chunk positions (zero-based).",
     )
-    chunk_id_after: str | None = Field(
-        default=None,
-        description=(
-            "Forward cursor. Returns chunks newer than this id. "
-            "Pass a full chunk UUID from a ``[chunk:<id>]`` line. "
-            "Example: ``019e2e4e-1234-7890-abcd-ef0123456789``. "
-            "See ``chunk_query`` for mutual-exclusion rule."
-        ),
-    )
-    chunk_id_before: str | None = Field(
-        default=None,
-        description=(
-            "Backward cursor. Returns chunks older than this id. "
-            "Same id format as ``chunk_id_after``. "
-            "See ``chunk_query`` for mutual-exclusion rule."
-        ),
-    )
-    limit: int = Field(
-        default=5,
-        ge=1,
-        le=50,
-        description="How many chunks to return. Range 1-50. Default 5.",
-    )
+    chunk_id_after: str | None = Field(default=None, description="Forward cursor. [chunk:<id>] UUID.")
+    chunk_id_before: str | None = Field(default=None, description="Backward cursor. Same format.")
+    limit: int = Field(default=5, ge=1, le=50, description="Max chunks. 1-50.")
 
     @model_validator(mode="after")
     def _modes_are_mutually_exclusive(self) -> "MemoryRecallInput":
@@ -689,15 +637,10 @@ async def load_memory_search_tool(
         return "\n".join(parts)
 
     memory_search.description = (
-        "**When to use:** First reach for past context about the user "
-        "(preferences, facts, decisions you've stored). For finding "
-        "past CONVERSATIONS instead, use ``conversation_search``; for "
-        "specific text inside a known stored memory, use ``chunk_search``.\n\n"
-        "Searches the user's stored memories and uploaded documents "
-        "by semantic similarity. Returns memories include preferences, "
-        "facts, decisions, and topical context extracted from previous "
-        "conversations. Pass ``ids`` for direct batch lookup by UUID "
-        "(bypasses embedding search)."
+        "Search stored memories by meaning or keyword. Use first "
+        "when resuming a topic. Returns [memory:<id>] matches with "
+        "relevance scores. Pass ``ids`` to bypass search and fetch "
+        "by exact id."
     )
 
     return [memory_search]
@@ -947,21 +890,9 @@ async def load_memory_recall_tool(
         return "\n".join(lines)
 
     memory_recall.description = (
-        "**When to use:** You already know a ``memory_id`` (from a "
-        "``[memory:<id>]`` line in another tool's output) and want "
-        "its content + a window of its chunks. For unknown-id "
-        "semantic lookup, use ``memory_search``. For one chunk by "
-        "id, use ``chunk_recall``. For finding chunks across ALL "
-        "memories by topic, use ``chunk_search``.\n\n"
-        "Pass ``memory_id`` from a ``[memory:<id>]`` or ``[mem:<id>]`` "
-        "line returned by ``memory_search``, ``chunk_search``, or "
-        "``conversation_summarize``. "
-        "Default returns the memory + first 5 chunks in creation "
-        "order. To narrow the chunk window, pass exactly one of: "
-        "``chunk_query`` (search inside this memory), "
-        "``chunk_indexes`` (specific positions), ``chunk_id_after`` / "
-        "``chunk_id_before`` (cursor paging). "
-        "Returns ``[memory:<id>]`` followed by chunk previews."
+        "Pull full content + chunk previews for a known "
+        "[memory:<id>]. Pass chunk_query to narrow inside it, or "
+        "chunk_indexes / chunk_id_after / chunk_id_before to page."
     )
 
     return [memory_recall]
@@ -981,21 +912,10 @@ class MemoryAddInput(BaseModel):
     actively-running conversation.
     """
 
-    content: str = Field(
-        description=(
-            "The memory to store. Write as a concise, standalone fact about the user. "
-            "Example: 'User prefers Rust as their primary programming language.'"
-        ),
-    )
+    content: str = Field(description="Concise standalone fact about the user.")
     memory_type: str = Field(
         default="preference",
-        description=(
-            "Memory category: 'preference' (likes, dislikes, style choices), "
-            "'fact' (biographical facts, skills, background), "
-            "'decision' (choices the user has made), "
-            "'topical_context' (ongoing projects, current focus areas), "
-            "or 'relational_context' (relationship dynamics, communication preferences)."
-        ),
+        description=("One of: preference, fact, decision, topical_context, relational_context."),
     )
 
 
@@ -1226,17 +1146,9 @@ async def load_memory_add_tool(
             return _tool_error("memory_add", "store", str(exc))
 
     memory_add.description = (
-        "**When to use:** The user told you a fact, preference, or "
-        "decision worth remembering across conversations (e.g., "
-        "'remember that I prefer...', 'my X is Y', 'don't forget...'). "
-        "For storing a range of OLDER conversation messages as "
-        "durable searchable memory, use ``conversation_summarize`` "
-        "instead.\n\n"
-        "Write the memory as a concise, standalone fact. "
-        "Dedup is automatic at ≥90% semantic similarity -- the return "
-        "tells you whether you stored a new memory or updated an "
-        "existing one, and gives you the ``[memory:<id>]`` for either "
-        "case so you can chain to ``memory_recall``."
+        "Store a fact, preference, decision, or context. "
+        "Deduplicates automatically at 90% similarity. Use liberally. "
+        "Returns [memory:<id>]."
     )
 
     return [memory_add]
@@ -1257,13 +1169,7 @@ class ChunkRecallInput(BaseModel):
     plus parent-memory context.
     """
 
-    chunk_id: str = Field(
-        description=(
-            "Which chunk to read. Pass the full id from a "
-            "``[chunk:<id>]`` line returned by ``chunk_search``. "
-            "Example: ``019e2e4e-1234-7890-abcd-ef0123456789``."
-        ),
-    )
+    chunk_id: str = Field(description="[chunk:<id>] UUID.")
 
 
 class ChunkSearchInput(BaseModel):
@@ -1275,20 +1181,18 @@ class ChunkSearchInput(BaseModel):
     most relevant chunks regardless of which memory they belong to.
     """
 
-    query: str = Field(
-        description=(
-            "Search text. Matched against every chunk the user owns, "
-            "across all their memories. Returns the most relevant. "
-            "Examples: ``Python async patterns``, ``Saoirse personality "
-            "settings``."
-        ),
+    query: str = Field(description="Search text.")
+    limit: int = Field(default=5, ge=1, le=20, description="Max chunks. 1-20.")
+    mode: str = Field(
+        default="balanced",
+        description=("Search blend: precise (favor exact wording), balanced (default), fuzzy (favor concepts)."),
     )
-    limit: int = Field(
-        default=5,
-        ge=1,
-        le=20,
-        description="How many chunks to return. Range 1-20. Default 5.",
-    )
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "ChunkSearchInput":
+        if self.mode not in {"precise", "balanced", "fuzzy"}:
+            raise ValueError(f"mode must be 'precise', 'balanced', or 'fuzzy'; got {self.mode!r}.")
+        return self
 
 
 async def load_chunk_recall_tool(
@@ -1373,15 +1277,7 @@ async def load_chunk_recall_tool(
         )
 
     chunk_recall.description = (
-        "**When to use:** You have a specific ``chunk_id`` (e.g. from "
-        "a ``chunk_search`` result) and want its full text. For "
-        "semantic search across all chunks the user owns, use "
-        "``chunk_search``. For the parent memory + window of chunks, "
-        "use ``memory_recall``.\n\n"
-        "Pass ``chunk_id`` from a ``[chunk:<id>]`` line returned by "
-        "``chunk_search``. Returns the chunk's content followed by "
-        "``[parent memory: <id>]`` -- pass that id to ``memory_recall`` "
-        "if you need surrounding context."
+        "Read exact text of one chunk by [chunk:<id>]. Returns the slice verbatim plus its parent [memory:<id>]."
     )
 
     return [chunk_recall]
@@ -1430,7 +1326,7 @@ async def load_chunk_search_tool(
     """
 
     @tool("chunk_search", args_schema=ChunkSearchInput)
-    async def chunk_search(query: str, limit: int = 5) -> str:
+    async def chunk_search(query: str, limit: int = 5, mode: str = "balanced") -> str:
         """search across every chunk the user owns by relevance to query."""
         try:
             await authorize_memory_access(
@@ -1451,6 +1347,16 @@ async def load_chunk_search_tool(
         if embedding is None:
             return "Embedding unavailable; cannot search chunks."
 
+        # v0.7.3: ``mode`` remaps the semantic/keyword blend so the
+        # agent can self-correct between "I want similar concepts"
+        # (fuzzy) and "I want exact wording" (precise). Default
+        # ``balanced`` preserves prior 60/40 semantic-leaning behavior.
+        weights = {
+            "precise": {"semantic": 0.2, "keyword": 0.8},
+            "balanced": {"semantic": 0.6, "keyword": 0.4},
+            "fuzzy": {"semantic": 0.85, "keyword": 0.15},
+        }.get(mode, {"semantic": 0.6, "keyword": 0.4})
+
         try:
             results = await memory_chunk_collection.hybrid_search(
                 user_id=user_id,
@@ -1460,7 +1366,7 @@ async def load_chunk_search_tool(
                 user_text=query,
                 candidate_k=max(limit * 4, 20),
                 similarity_threshold=similarity_threshold,
-                chunk_signal_weights={"semantic": 0.6, "keyword": 0.4},
+                chunk_signal_weights=weights,
             )
         except Exception as exc:
             return _tool_error("chunk_search", "search", str(exc))
@@ -1497,18 +1403,11 @@ async def load_chunk_search_tool(
         return "\n\n".join(lines)
 
     chunk_search.description = (
-        "**When to use:** Looking for specific text inside stored "
-        "memories -- documents, transcripts, prior conversation "
-        "summaries. Faster than ``memory_recall`` for "
-        "needle-in-haystack across many memories. For high-level "
-        "memories about the user (preferences, facts), use "
-        "``memory_search`` instead.\n\n"
-        "Pass a ``query`` (semantic + keyword hybrid search). "
-        "Returns one block per chunk: ``[chunk:<id>] (memory:<id>, "
-        "score=X.XXX) <preview>``. "
-        "Next steps: pass a ``[chunk:<id>]`` value to ``chunk_recall`` "
-        "for full text, or pass a ``(memory:<id>)`` value to "
-        "``memory_recall`` for the parent memory + its other chunks."
+        "Hybrid vector + keyword search across every stored memory's "
+        "text. Use when you need a specific line or detail, not just "
+        "a topic. Pass mode='precise' to favor exact wording, "
+        "'fuzzy' for concepts (default 'balanced'). "
+        "Returns [chunk:<id>] (memory:<id>, score=X) previews."
     )
 
     return [chunk_search]
