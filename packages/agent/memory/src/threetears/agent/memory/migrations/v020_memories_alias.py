@@ -1,7 +1,7 @@
 """
 agent-memory v020: add ``memories.alias`` column + per-user unique index.
 
-v0.7.4 (named-anchor feature). Adds an optional TEXT column
+v0.7.5 (named-anchor feature). Adds an optional TEXT column
 ``alias`` to ``memories`` plus a partial unique index
 ``ix_memories_user_alias ON memories(agent_id, user_id, alias)
 WHERE alias IS NOT NULL`` so each user can reserve a short name

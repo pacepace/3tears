@@ -25,8 +25,29 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from sqlalchemy import Column as SAColumn
-from sqlalchemy import DateTime, MetaData, Table, Text
+from sqlalchemy import (
+    DateTime,
+    Enum as SAEnum,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    Numeric,
+    Table,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
+
+try:
+    # pgvector.sqlalchemy ships the canonical Vector column type.
+    # Importing inside a try block keeps the package importable in
+    # environments where pgvector is unavailable (tests that exercise
+    # non-memory packages); the four memory-table factories below
+    # require pgvector so they raise at call time if it's missing.
+    from pgvector.sqlalchemy import Vector as _PGVector
+except ImportError:  # pragma: no cover - pgvector should always be installed
+    _PGVector = None
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -66,6 +87,10 @@ __all__ = [
     "MemoryChunkCollection",
     "MemoryRefsCollection",
     "conversation_memory_refs_table",
+    "media_content_table",
+    "media_table",
+    "memories_table",
+    "memory_chunks_table",
 ]
 
 log = get_logger(__name__)
@@ -105,6 +130,342 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
         SAColumn("short_desc", Text(), nullable=False),
         SAColumn("date_created", DateTime(timezone=True), nullable=False),
         SAColumn("date_updated", DateTime(timezone=True), nullable=False),
+    )
+
+
+# ---------------------------------------------------------------------------
+# v0.7.5 cross-package table factories.
+#
+# Mirrors the ``conversation_memory_refs_table`` /
+# ``threetears.agent.tools.collections.context_items_table`` pattern: a
+# package-owned SQLAlchemy Table declaration that any host application
+# (metallm, future consumers) can register on its own ``MetaData`` so
+# both the L1 SQLite cache and Alembic auto-generate see the same shape
+# the Collection writes to.
+#
+# Before v0.7.5, metallm carried its own ``MemoryModel`` /
+# ``MediaModel`` / ``MediaContentModel`` / ``MemoryChunkModel``
+# declarations in ``api/src/data/models.py`` that duplicated the column
+# set declared on each Collection's ``TableSchema``. Adding a column
+# (the v0.14.6 ``memories.alias`` rollout) required updating BOTH
+# places; missing the metallm side meant the L1 SQLite cache initialized
+# without the column and every cache-through write failed at L1 with
+# ``table memories has no column named alias`` before asyncpg ever saw
+# the INSERT. The factories below put the canonical shape in one place
+# so the divergence trap closes.
+#
+# The factories declare the FULL SQLAlchemy shape (FKs, indexes,
+# generated tsvector columns, Vector dimension, Enum-style CHECK
+# constraints) rather than the lossy projection that ``TableSchema``
+# would produce. A future 3tears v0.8.0 initiative tracked in the
+# v0.8.0 task shards enriches ``TableSchema`` with FK / Index / Enum
+# semantics so the duplication-within-this-file can be eliminated; for
+# v0.7.5 the manual-mirror approach keeps the blast radius small and
+# matches the existing ``conversation_memory_refs_table`` precedent.
+# ---------------------------------------------------------------------------
+
+
+# Single source of truth for the embedding dimension carried by memory
+# tables. The value matches every Vector column in this file -- bump
+# here to bump everywhere if an embedding provider with a different
+# native dim is ever adopted. The 1024 value matches Voyage AI's
+# voyage-3-large default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
+# the metallm declarations.
+_MEMORY_VECTOR_DIM = 1024
+
+
+def _require_pgvector() -> Any:
+    """return the ``Vector`` class, or raise if pgvector is unavailable.
+
+    keeps the import-time soft failure path tidy: a host that doesn't
+    install pgvector can still import ``threetears.agent.memory`` for
+    the entities + collection methods that don't touch the vector
+    column, but the factories below raise on call so the failure is
+    legible at registration time rather than at first INSERT.
+
+    :raises ImportError: when pgvector is not installed
+    :return: pgvector's ``Vector`` column type class
+    :rtype: type
+    """
+    if _PGVector is None:
+        raise ImportError(
+            "pgvector is required to declare memory table factories; install ``pgvector`` or remove the factory call",
+        )
+    return _PGVector
+
+
+def memories_table(metadata: MetaData) -> Table:
+    """Register the ``memories`` table on the given SA metadata (v0.7.5).
+
+    Replaces the hand-maintained ``MemoryModel`` declarative class on
+    the metallm side. Call this before
+    ``SQLiteBackend.initialize(metadata)`` so the L1 cache gets the
+    correct schema, and before Alembic ``target_metadata`` reflection
+    so auto-generate sees the same shape.
+
+    Idempotent: returns the existing table when the metadata already
+    has it registered.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``memories`` :class:`Table`
+    :rtype: Table
+    """
+    if "memories" in metadata.tables:
+        return metadata.tables["memories"]
+    vector_cls = _require_pgvector()
+    return Table(
+        "memories",
+        metadata,
+        SAColumn("memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        # v0.14.0 unification (metallm alembic 082): conversation_id is
+        # NOT NULL but no longer carries an FK -- it survives
+        # conversation hard-delete with a dangling reference.
+        SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "message_id_source",
+            PgUUID(as_uuid=True),
+            ForeignKey("messages.message_id"),
+            nullable=True,
+        ),
+        # ``type_memory`` uses a string-literal Enum (not the
+        # threetears.agent.memory.types.MemoryType class) because the
+        # metallm enum names are lowercase while threetears' are
+        # uppercase; the wire values match so a literal-name Enum
+        # declaration is the lossless lowest common denominator.
+        SAColumn(
+            "type_memory",
+            SAEnum(
+                "preference",
+                "fact",
+                "decision",
+                "topical_context",
+                "relational_context",
+                name="memory_type",
+                create_constraint=True,
+            ),
+            nullable=False,
+        ),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        # v0.7.5 / metallm alembic 088: per-user named-anchor for
+        # direct ``memory_recall(alias=...)`` lookup. Uniqueness is
+        # enforced by the partial unique index
+        # ``ix_memories_user_alias`` declared in metallm alembic 088
+        # (3tears doesn't declare the index in this Table because the
+        # partial-WHERE shape is metallm-deploy-specific; the column
+        # itself is the universal piece).
+        SAColumn("alias", Text(), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=True),
+        Index("ix_memories_user_date", "user_id", "date_created"),
+    )
+
+
+def media_table(metadata: MetaData) -> Table:
+    """Register the ``media`` table on the given SA metadata (v0.7.5).
+
+    Replaces the hand-maintained ``MediaModel`` declarative class on
+    the metallm side. Includes the v0.14.0-unified ``memory_id`` FK
+    (every media row attaches to a memory) with CASCADE-on-memory-
+    delete and the four indexes the metallm model declared.
+
+    Idempotent.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``media`` :class:`Table`
+    :rtype: Table
+    """
+    if "media" in metadata.tables:
+        return metadata.tables["media"]
+    return Table(
+        "media",
+        metadata,
+        # Composite PK ``(agent_id, media_id)`` matches prod (set by
+        # 3tears v009_media_composite_fk). The pre-v0.7.5 metallm
+        # MediaModel declared single PK on ``media_id`` only and was
+        # silently divergent from prod -- the ORM-driven Alembic
+        # auto-gen would have wanted to drop the composite PK every
+        # run. Composite-PK + ``agent_id`` partition matches what
+        # MediaCollection expects.
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("media_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("s3_key", Text(), nullable=True),
+        SAColumn("mime_type", Text(), nullable=False),
+        SAColumn("size_bytes", Integer(), nullable=False),
+        SAColumn("source", Text(), nullable=False),
+        SAColumn("metadata_json", JSONB(), nullable=False, server_default="{}"),
+        SAColumn("generation_prompt", Text(), nullable=True),
+        SAColumn("media_category", Text(), nullable=False, server_default="image"),
+        SAColumn("extraction_status", Text(), nullable=False, server_default="none"),
+        SAColumn("thumbnail_s3_key", Text(), nullable=True),
+        SAColumn(
+            "cloud_connection_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("cloud_connections.cloud_connection_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        SAColumn("cloud_file_id", Text(), nullable=True),
+        SAColumn("cloud_file_url", Text(), nullable=True),
+        SAColumn(
+            "memory_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("memories.memory_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        Index("ix_media_user_date", "user_id", "date_created"),
+        Index("ix_media_mime_type", "mime_type"),
+        Index("ix_media_memory_id", "memory_id"),
+        Index(
+            "uq_media_cloud_connection_file",
+            "cloud_connection_id",
+            "cloud_file_id",
+            unique=True,
+        ),
+    )
+
+
+def media_content_table(metadata: MetaData) -> Table:
+    """Register the ``media_content`` table on the given SA metadata (v0.7.5).
+
+    Replaces the hand-maintained ``MediaContentModel`` declarative class
+    on the metallm side. Carries derived content (descriptions,
+    transcripts, OCR text) for ``media`` rows with its own embedding +
+    search_vector columns.
+
+    Idempotent.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``media_content`` :class:`Table`
+    :rtype: Table
+    """
+    if "media_content" in metadata.tables:
+        return metadata.tables["media_content"]
+    vector_cls = _require_pgvector()
+    return Table(
+        "media_content",
+        metadata,
+        # Composite PK ``(agent_id, content_id)`` matches prod (set by
+        # 3tears v010_media_content_composite_fk). The pre-v0.7.5
+        # metallm MediaContentModel was silently divergent.
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("content_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        # ``media_id`` FK is composite ``(agent_id, media_id) -> media
+        # (agent_id, media_id)`` in prod (v010). SQLAlchemy expresses
+        # composite FKs via ``ForeignKeyConstraint`` at table level;
+        # the column declaration drops the inline ``ForeignKey``.
+        SAColumn("media_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("content_type", Text(), nullable=False),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        SAColumn(
+            "model_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("models.model_id"),
+            nullable=True,
+        ),
+        SAColumn(
+            "provider_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("providers.provider_id"),
+            nullable=True,
+        ),
+        SAColumn("model_name", Text(), nullable=True),
+        SAColumn("provider_name", Text(), nullable=True),
+        SAColumn("token_count_prompt", Integer(), nullable=True),
+        SAColumn("token_count_completion", Integer(), nullable=True),
+        SAColumn("cost", Numeric(12, 8), nullable=True),
+        SAColumn("metadata_json", JSONB(), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        Index("ix_media_content_media_type", "media_id", "content_type"),
+        Index("ix_media_content_user", "user_id"),
+    )
+
+
+def memory_chunks_table(metadata: MetaData) -> Table:
+    """Register the ``memory_chunks`` table on the given SA metadata (v0.7.5).
+
+    Replaces the hand-maintained ``MemoryChunkModel`` declarative class
+    on the metallm side. Carries chunked text + embeddings parented to
+    a ``memories`` row, plus the v0.14.0 transcript-chunk
+    ``message_id_start`` / ``message_id_end`` provenance columns.
+
+    Idempotent.
+
+    :param metadata: SQLAlchemy metadata to attach the table to
+    :ptype metadata: MetaData
+    :return: the ``memory_chunks`` :class:`Table`
+    :rtype: Table
+    """
+    if "memory_chunks" in metadata.tables:
+        return metadata.tables["memory_chunks"]
+    vector_cls = _require_pgvector()
+    return Table(
+        "memory_chunks",
+        metadata,
+        # Composite PK ``(agent_id, chunk_id)`` matches prod (set by
+        # 3tears v011_memory_chunks_composite_fk). The pre-v0.7.5
+        # metallm MemoryChunkModel was silently divergent.
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("chunk_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        # ``memory_id`` FK is composite ``(agent_id, memory_id) ->
+        # memories(agent_id, memory_id)`` in prod (v011). Drop the
+        # inline ``ForeignKey``; the composite is documented for the
+        # eventual v0.8.0 TableSchema-driven approach to express
+        # natively.
+        SAColumn("memory_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            ForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("chunk_index", Integer(), nullable=False),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn("heading_context", Text(), nullable=True),
+        SAColumn("page_number", Integer(), nullable=True),
+        SAColumn("token_count", Integer(), nullable=False),
+        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        # Transcript-chunk message provenance (metallm alembic 084).
+        # Document chunks leave both NULL; transcript chunks populate
+        # them so the agent can navigate chunk -> source messages.
+        SAColumn("message_id_start", PgUUID(as_uuid=True), nullable=True),
+        SAColumn("message_id_end", PgUUID(as_uuid=True), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        Index("ix_memory_chunks_memory", "memory_id", "chunk_index"),
+        Index("ix_memory_chunks_user", "user_id"),
     )
 
 
@@ -360,7 +721,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("type_memory", STRING_TYPE, immutable=True),
             Column("content", STRING_TYPE),
             Column("embedding", VECTOR_TYPE),
-            # v0.7.4: optional named anchor for direct lookup. Per-user
+            # v0.7.5: optional named anchor for direct lookup. Per-user
             # unique on the metallm DB side via alembic 088 (partial
             # unique index ``ix_memories_user_alias ON
             # memories(agent_id, user_id, alias) WHERE alias IS NOT
@@ -749,7 +1110,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         agent_id: UUID,
         alias: str,
     ) -> dict[str, Any] | None:
-        """Look up a memory by its named alias (v0.7.4).
+        """Look up a memory by its named alias (v0.7.5).
 
         Per-user unique on the metallm DB side (alembic 088 adds a
         partial unique index on ``(agent_id, user_id, alias) WHERE
@@ -798,7 +1159,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         queries on ``memory_id``, recency-decayed, score-combined, and
         threshold-filtered.
 
-        v0.7.4: optional ``date_after`` / ``date_before`` (inclusive)
+        v0.7.5: optional ``date_after`` / ``date_before`` (inclusive)
         narrow the candidate pool to memories created within the
         range. The filter applies to BOTH the vector and the FTS
         sub-queries so paginated retrieval stays consistent.
@@ -841,7 +1202,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             customer_id=customer_id,
             start_param=2,
         )
-        # v0.7.4 date filter: append ``AND date_created >= $X`` /
+        # v0.7.5 date filter: append ``AND date_created >= $X`` /
         # ``AND date_created <= $Y`` to both the vector and FTS sub-
         # queries. Bound parameters are appended after the existing
         # scope params + the limit param. Each filter uses its own
@@ -893,7 +1254,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 customer_id=customer_id,
                 start_param=2,
             )
-            # v0.7.4 date filter on FTS sub-query.
+            # v0.7.5 date filter on FTS sub-query.
             fts_date_clause = ""
             fts_extra_params: list[Any] = []
             if date_after is not None:
@@ -1051,7 +1412,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         equality predicate. ``agent_id`` is the partition column on
         memories and is required.
 
-        v0.7.4: ``date_after`` / ``date_before`` (inclusive) narrow the
+        v0.7.5: ``date_after`` / ``date_before`` (inclusive) narrow the
         candidate pool by ``date_created``; either may be supplied
         independently.
 
@@ -1137,7 +1498,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         and merge on ``memory_id``. ``agent_id`` is the partition
         column on memories and is required.
 
-        v0.7.4: ``date_after`` / ``date_before`` (inclusive) narrow by
+        v0.7.5: ``date_after`` / ``date_before`` (inclusive) narrow by
         ``date_created`` — mirrors the equivalent filter on
         :meth:`search_by_semantic` so the two legs return a consistent
         window when run in parallel.
