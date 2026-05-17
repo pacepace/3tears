@@ -707,12 +707,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # addressable; L1 row cache cannot serve. keeping the query
         # on the Collection preserves single entry point for uniformity
         # + audit hooks + future observability.
+        # ``embedding IS NOT NULL`` filter for the same reason as
+        # :meth:`hybrid_search`: ``NULL <=> vector`` is NULL, which
+        # breaks the downstream ``float(similarity)`` cast.
         rows = await self.l3_pool.fetch(
             """
             SELECT memory_id, content, type_memory,
                    1 - (embedding <=> $1::vector) AS similarity
             FROM memories
-            WHERE agent_id = $2 AND user_id = $3
+            WHERE agent_id = $2 AND user_id = $3 AND embedding IS NOT NULL
             ORDER BY embedding <=> $1::vector
             LIMIT $4
             """,
@@ -802,6 +805,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         # addressable; see :meth:`find_similar_for_dedup` for the same
         # justification. method on Collection preserves single entry
         # point for rbac + audit.
+        # Filter out rows with NULL ``embedding`` before computing
+        # cosine distance: ``NULL <=> vector`` is NULL, and the
+        # downstream ``float(row["similarity"])`` chokes on it. Rows
+        # with NULL embeddings exist when the embedding provider was
+        # absent / failed at write time -- they're recoverable on a
+        # re-embed pass, but until then they must not enter the
+        # similarity-ranked candidate set.
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT memory_id, content, summary, type_memory, date_created,
@@ -809,6 +819,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                    1 - (embedding <=> $1::vector) AS similarity
             FROM memories
             {vec_where}
+              AND embedding IS NOT NULL
             ORDER BY embedding <=> $1::vector
             LIMIT {limit_param}
             """,
@@ -996,7 +1007,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             conditions.append(f"type_memory = ${param_idx}")
             params.append(type_filter)
             param_idx += 1
+        conditions.append("embedding IS NOT NULL")
         where_clause = " AND ".join(conditions)
+        # ``embedding IS NOT NULL`` guard: ``NULL <=> vector`` is NULL,
+        # which trips ``float(similarity)`` downstream.
         query_sql = f"""
             SELECT memory_id, type_memory, content, date_created,
                    1 - (embedding <=> $1::vector) AS similarity
@@ -1862,6 +1876,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         # i.e. the chunk's parent memory IS the media's parent memory.
         # Transcript chunks naturally LEFT JOIN to NULL because their
         # parent memory has no media child.
+        # ``mc.embedding IS NOT NULL`` guard: ``NULL <=> vector`` is
+        # NULL, which trips ``float(similarity)`` downstream.
         vec_coro = self.l3_pool.fetch(
             f"""
             SELECT mc.chunk_id, mc.content, mc.summary, mc.heading_context,
@@ -1874,6 +1890,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
               ON mc.agent_id = med.agent_id
              AND mc.memory_id = med.memory_id
             WHERE {scope_conditions}
+              AND mc.embedding IS NOT NULL
               {cursor_clause}
             ORDER BY mc.embedding <=> $1::vector
             LIMIT {limit_param}
@@ -2009,6 +2026,8 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
         embedding_str = json.dumps(embedding)
         # cache-bypass: vector-distance search joining memory_chunks
         # -> media via the memory_id parent FK. see :meth:`hybrid_search`.
+        # ``mc.embedding IS NOT NULL`` guard: same NULL-cosine
+        # rationale as :meth:`hybrid_search`.
         rows = await self.l3_pool.fetch(
             """
             SELECT mc.chunk_id, mc.content, mc.heading_context, mc.page_number,
@@ -2021,6 +2040,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
              AND mc.memory_id = med.memory_id
             WHERE mc.agent_id = $2
               AND mc.user_id = $3
+              AND mc.embedding IS NOT NULL
             ORDER BY mc.embedding <=> $1::vector
             LIMIT $4
             """,
