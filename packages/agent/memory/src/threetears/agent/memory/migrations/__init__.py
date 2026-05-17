@@ -126,6 +126,9 @@ from threetears.agent.memory.migrations.v018_drop_legacy_memory_columns import (
 from threetears.agent.memory.migrations.v019_conversation_id_not_null import (
     enforce_conversation_id_not_null,
 )
+from threetears.agent.memory.migrations.v020_memories_alias import (
+    add_memories_alias,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -173,6 +176,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(17)(flip_memory_parent_fks)
     pkg.version(18)(drop_legacy_memory_columns)
     pkg.version(19)(enforce_conversation_id_not_null)
+    pkg.version(20)(add_memories_alias)
     runner.register(pkg)
     return pkg
 
@@ -180,6 +184,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "add_lifecycle_columns",
+    "add_memories_alias",
     "add_memory_fts",
     "add_unified_memory_columns",
     "backfill_memory_ids",

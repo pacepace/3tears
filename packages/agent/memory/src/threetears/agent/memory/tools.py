@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -78,6 +79,9 @@ log = get_logger(__name__)
 _MAX_RESULTS = 10
 _DEFAULT_SIMILARITY_THRESHOLD = 0.2
 
+# v0.7.4: alias validation. Letters, digits, hyphen, underscore. 1-64.
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
 # Type alias for the optional ledger callback
 LedgerCallback = Callable[[str, str, str], Awaitable[None]]
 
@@ -94,11 +98,29 @@ class MemorySearchInput(BaseModel):
         default=None,
         description="Direct lookup by [memory:<id>]. Bypasses search.",
     )
+    alias: str | None = Field(
+        default=None,
+        description="Direct lookup by named alias set via memory_add.",
+    )
+    mode: str = Field(
+        default="balanced",
+        description="precise (exact wording) / balanced (default) / fuzzy (concepts).",
+    )
+    date_after: str | None = Field(
+        default=None,
+        description="ISO date or datetime. Only memories on/after.",
+    )
+    date_before: str | None = Field(
+        default=None,
+        description="ISO date or datetime. Only memories on/before.",
+    )
 
     @model_validator(mode="after")
-    def _require_query_or_ids(self) -> "MemorySearchInput":
-        if not self.query and not self.ids:
-            raise ValueError("Provide at least one of 'query' or 'ids'.")
+    def _validate(self) -> "MemorySearchInput":
+        if not self.query and not self.ids and not self.alias:
+            raise ValueError("Provide at least one of 'query', 'ids', or 'alias'.")
+        if self.mode not in {"precise", "balanced", "fuzzy"}:
+            raise ValueError(f"mode must be 'precise', 'balanced', or 'fuzzy'; got {self.mode!r}.")
         return self
 
 
@@ -134,7 +156,14 @@ class MemoryRecallInput(BaseModel):
     media is reached via the parent memory's ``media.memory_id`` link.
     """
 
-    memory_id: str = Field(description="[memory:<id>] UUID.")
+    memory_id: str = Field(
+        default="",
+        description="[memory:<id>] UUID. Required unless alias is set.",
+    )
+    alias: str | None = Field(
+        default=None,
+        description="Named alias set via memory_add. Alternative to memory_id.",
+    )
     chunk_query: str | None = Field(
         default=None,
         description="Search inside chunks. Mutually exclusive with chunk_indexes / chunk_id_after / chunk_id_before.",
@@ -148,8 +177,10 @@ class MemoryRecallInput(BaseModel):
     limit: int = Field(default=5, ge=1, le=50, description="Max chunks. 1-50.")
 
     @model_validator(mode="after")
-    def _modes_are_mutually_exclusive(self) -> "MemoryRecallInput":
-        """Reject ambiguous calls that pass more than one chunk mode."""
+    def _validate(self) -> "MemoryRecallInput":
+        """Require memory_id or alias + reject ambiguous chunk modes."""
+        if not self.memory_id and not self.alias:
+            raise ValueError("Provide memory_id or alias.")
         modes_set = sum(
             1
             for m in (
@@ -425,6 +456,10 @@ async def load_memory_search_tool(
         query: str = "",
         type_filter: str | None = None,
         ids: list[str] | None = None,
+        alias: str | None = None,
+        mode: str = "balanced",
+        date_after: str | None = None,
+        date_before: str | None = None,
     ) -> str:
         """search the user's memories and document knowledge base."""
         try:
@@ -439,6 +474,29 @@ async def load_memory_search_tool(
         except MemoryAccessDenied as exc:
             return _tool_error("memory_search", "authorize", str(exc))
 
+        # v0.7.4: alias is a direct-lookup short-circuit. Returns at
+        # most one memory by its per-user-unique named anchor.
+        if alias:
+            try:
+                row = await memories_collection.find_by_alias(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    alias=alias,
+                )
+            except Exception as exc:
+                return _tool_error("memory_search", "alias", str(exc))
+            if row is None:
+                return f"No memory found with alias '{alias}'."
+            mid = str(row["memory_id"])
+            ts = _fmt_dt(row.get("date_created"))
+            preview = f"[mem:{mid}] [{row['type_memory']}]"
+            if ts:
+                preview += f" [{ts}]"
+            preview += f" {row['content']}"
+            if ledger_callback:
+                await ledger_callback(mid, "memory", row["content"])
+            return f"Found memory by alias '{alias}':\n- {preview}"
+
         if ids:
             return await _search_by_ids(
                 memories_collection,
@@ -451,11 +509,45 @@ async def load_memory_search_tool(
             )
 
         if not query:
-            return "Either 'query' or 'ids' must be provided."
+            return "Provide one of 'query', 'ids', or 'alias'."
 
-        embedding = await _safe_aembed_query(embedding_provider, query)
-        if embedding is None:
-            return _tool_error("memory_search", "embed", "Embedding API request failed")
+        # v0.7.4: parse ISO date filters. Either bound may stand alone.
+        def _parse_iso(label: str, raw: str | None) -> tuple[datetime | None, str | None]:
+            if not raw:
+                return None, None
+            try:
+                value = datetime.fromisoformat(raw)
+            except ValueError:
+                return None, f"Invalid {label} '{raw}'. Use ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)."
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value, None
+
+        date_after_dt, err_a = _parse_iso("date_after", date_after)
+        if err_a:
+            return _tool_error("memory_search", "filter", err_a)
+        date_before_dt, err_b = _parse_iso("date_before", date_before)
+        if err_b:
+            return _tool_error("memory_search", "filter", err_b)
+
+        # v0.7.4: ``mode`` selects which legs to run.
+        #   precise → FTS only (keyword wins)
+        #   fuzzy   → semantic only (concepts win)
+        #   balanced (default) → both legs, merged
+        if mode not in {"precise", "balanced", "fuzzy"}:
+            return _tool_error(
+                "memory_search",
+                "filter",
+                f"Invalid mode '{mode}'. Must be one of: precise, balanced, fuzzy.",
+            )
+        run_semantic = mode in {"balanced", "fuzzy"}
+        run_fts = mode in {"balanced", "precise"}
+
+        embedding = None
+        if run_semantic:
+            embedding = await _safe_aembed_query(embedding_provider, query)
+            if embedding is None:
+                return _tool_error("memory_search", "embed", "Embedding API request failed")
 
         fts_text = query.strip()[:500] if len(query.strip()) >= 3 else None
 
@@ -468,21 +560,25 @@ async def load_memory_search_tool(
                     f"Invalid type_filter '{type_filter}'. Must be one of: {', '.join(sorted(valid_types))}",
                 )
 
-        try:
-            memories = await memories_collection.search_by_semantic(
-                user_id=user_id,
-                agent_id=agent_id,
-                embedding=embedding,
-                max_results=max_results,
-                similarity_threshold=sim_threshold,
-                type_filter=type_filter,
-            )
-        except Exception as exc:
-            return _tool_error("memory_search", "query", str(exc))
+        memories: list[dict[str, Any]] = []
+        if run_semantic and embedding is not None:
+            try:
+                memories = await memories_collection.search_by_semantic(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    embedding=embedding,
+                    max_results=max_results,
+                    similarity_threshold=sim_threshold,
+                    type_filter=type_filter,
+                    date_after=date_after_dt,
+                    date_before=date_before_dt,
+                )
+            except Exception as exc:
+                return _tool_error("memory_search", "query", str(exc))
 
         seen_ids = {m["memory_id"] for m in memories}
 
-        if fts_text:
+        if run_fts and fts_text:
             try:
                 fts_rows = await memories_collection.search_by_fts(
                     user_id=user_id,
@@ -490,6 +586,8 @@ async def load_memory_search_tool(
                     fts_text=fts_text,
                     max_results=max_results,
                     type_filter=type_filter,
+                    date_after=date_after_dt,
+                    date_before=date_before_dt,
                 )
                 for row in fts_rows:
                     mid = row["memory_id"]
@@ -508,31 +606,32 @@ async def load_memory_search_tool(
                 pass
 
         media_results: list[dict[str, Any]] = []
+        mc_seen: set[str] = set()
         try:
-            mc_rows = await media_content_collection.search_by_semantic(
-                user_id=user_id,
-                agent_id=agent_id,
-                embedding=embedding,
-                max_results=5,
-                similarity_threshold=sim_threshold,
-            )
-            mc_seen: set[str] = set()
-            for row in mc_rows:
-                cid = row["content_id"]
-                mc_seen.add(cid)
-                title = _extract_title(row["metadata_json"])
-                media_results.append(
-                    {
-                        "content_id": cid,
-                        "content": row["content"],
-                        "media_id": row["media_id"],
-                        "media_category": row["media_category"],
-                        "title": title,
-                        "date_created": row["date_created"],
-                        "similarity": row["similarity"],
-                    }
+            if embedding is not None:
+                mc_rows = await media_content_collection.search_by_semantic(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    embedding=embedding,
+                    max_results=5,
+                    similarity_threshold=sim_threshold,
                 )
-            if fts_text:
+                for row in mc_rows:
+                    cid = row["content_id"]
+                    mc_seen.add(cid)
+                    title = _extract_title(row["metadata_json"])
+                    media_results.append(
+                        {
+                            "content_id": cid,
+                            "content": row["content"],
+                            "media_id": row["media_id"],
+                            "media_category": row["media_category"],
+                            "title": title,
+                            "date_created": row["date_created"],
+                            "similarity": row["similarity"],
+                        }
+                    )
+            if run_fts and fts_text:
                 fts_mc_rows = await media_content_collection.search_by_fts(
                     user_id=user_id,
                     agent_id=agent_id,
@@ -560,25 +659,26 @@ async def load_memory_search_tool(
 
         doc_chunks: list[dict[str, Any]] = []
         try:
-            chunk_rows = await memory_chunk_collection.search_by_semantic(
-                user_id=user_id,
-                agent_id=agent_id,
-                embedding=embedding,
-                max_results=5,
-                similarity_threshold=sim_threshold,
-            )
-            for row in chunk_rows:
-                title = _extract_title(row["metadata_json"])
-                doc_chunks.append(
-                    {
-                        "chunk_id": row["chunk_id"],
-                        "content": row["content"],
-                        "title": title,
-                        "heading": row["heading_context"],
-                        "page": row["page_number"],
-                        "similarity": row["similarity"],
-                    }
+            if embedding is not None:
+                chunk_rows = await memory_chunk_collection.search_by_semantic(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    embedding=embedding,
+                    max_results=5,
+                    similarity_threshold=sim_threshold,
                 )
+                for row in chunk_rows:
+                    title = _extract_title(row["metadata_json"])
+                    doc_chunks.append(
+                        {
+                            "chunk_id": row["chunk_id"],
+                            "content": row["content"],
+                            "title": title,
+                            "heading": row["heading_context"],
+                            "page": row["page_number"],
+                            "similarity": row["similarity"],
+                        }
+                    )
         except Exception:
             pass
 
@@ -639,8 +739,11 @@ async def load_memory_search_tool(
     memory_search.description = (
         "Search stored memories by meaning or keyword. Use first "
         "when resuming a topic. Returns [memory:<id>] matches with "
-        "relevance scores. Pass ``ids`` to bypass search and fetch "
-        "by exact id."
+        "relevance scores.\n\n"
+        "- `ids` — direct fetch by [memory:<id>], bypasses search\n"
+        "- `alias` — direct fetch by named anchor (set via memory_add)\n"
+        "- `mode` — precise (exact wording) / balanced (default) / fuzzy (concepts)\n"
+        "- `date_after`, `date_before` — narrow by ISO date range"
     )
 
     return [memory_search]
@@ -715,7 +818,8 @@ async def load_memory_recall_tool(
 
     @tool("memory_recall", args_schema=MemoryRecallInput)
     async def memory_recall(
-        memory_id: str,
+        memory_id: str = "",
+        alias: str | None = None,
         chunk_query: str | None = None,
         chunk_indexes: list[int] | None = None,
         chunk_id_after: str | None = None,
@@ -734,6 +838,22 @@ async def load_memory_recall_tool(
             )
         except MemoryAccessDenied as exc:
             return _tool_error("memory_recall", "authorize", str(exc))
+
+        # v0.7.4: alias resolves to a memory_id via the per-user-unique
+        # ``alias`` column. The validator on MemoryRecallInput already
+        # ensures at least one of memory_id / alias is present.
+        if alias and not memory_id:
+            try:
+                row = await memories_collection.find_by_alias(
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    alias=alias,
+                )
+            except Exception as exc:
+                return _tool_error("memory_recall", "alias", str(exc))
+            if row is None:
+                return f"No memory found with alias '{alias}'."
+            memory_id = str(row["memory_id"])
 
         try:
             mem_uuid = UUID(memory_id)
@@ -890,9 +1010,9 @@ async def load_memory_recall_tool(
         return "\n".join(lines)
 
     memory_recall.description = (
-        "Pull full content + chunk previews for a known "
-        "[memory:<id>]. Pass chunk_query to narrow inside it, or "
-        "chunk_indexes / chunk_id_after / chunk_id_before to page."
+        "Pull full content + chunk previews for a known [memory:<id>] "
+        "(or a named alias). Pass chunk_query to narrow inside it, "
+        "or chunk_indexes / chunk_id_after / chunk_id_before to page."
     )
 
     return [memory_recall]
@@ -912,10 +1032,19 @@ class MemoryAddInput(BaseModel):
     actively-running conversation.
     """
 
-    content: str = Field(description="Concise standalone fact about the user.")
+    content: str = Field(
+        description="What's worth preserving. About the user, yourself, or a moment.",
+    )
     memory_type: str = Field(
         default="preference",
-        description=("One of: preference, fact, decision, topical_context, relational_context."),
+        description="One of: preference, fact, decision, topical_context, relational_context.",
+    )
+    alias: str | None = Field(
+        default=None,
+        description=(
+            "Optional named anchor (e.g. 'cave-altar'). 1-64 chars, "
+            "letters/digits/hyphens/underscores. Unique per user."
+        ),
     )
 
 
@@ -973,8 +1102,26 @@ async def load_memory_add_tool(
     dedup_threshold = similarity_dedup_threshold
 
     @tool("memory_add", args_schema=MemoryAddInput)
-    async def memory_add(content: str, memory_type: str = "preference") -> str:
+    async def memory_add(
+        content: str,
+        memory_type: str = "preference",
+        alias: str | None = None,
+    ) -> str:
         """store a memory about the user for future conversations."""
+        # v0.7.4: validate alias format early. Per-user uniqueness is
+        # enforced at the DB level (alembic 088 partial unique index);
+        # we surface a graceful error on UniqueViolation below.
+        normalised_alias: str | None = None
+        if alias is not None:
+            stripped = alias.strip()
+            if stripped:
+                if not _ALIAS_RE.match(stripped):
+                    return _tool_error(
+                        "memory_add",
+                        "alias",
+                        f"Invalid alias '{alias}'. Use 1-64 letters, digits, hyphens, or underscores.",
+                    )
+                normalised_alias = stripped
         # data-layer-task-01 sub-task 4: read live identity from
         # CallContext via the resolver. binding these at factory
         # construction would attribute every memory to whatever
@@ -1114,6 +1261,7 @@ async def load_memory_add_tool(
                 "type_memory": mt,
                 "content": content,
                 "embedding": embedding,
+                "alias": normalised_alias,
                 "date_created": now,
                 "date_updated": now,
             }
@@ -1127,27 +1275,49 @@ async def load_memory_add_tool(
                         "memory_id": str(memory_id),
                         "type": mt,
                         "content": content[:100],
+                        "alias": normalised_alias,
                     }
                 },
             )
             # v0.7.2: surface ``[memory:<id>]`` so the agent can chain
             # to memory_recall without a follow-up memory_search.
+            alias_clause = f" with alias '{normalised_alias}'" if normalised_alias is not None else ""
             return (
-                f"Stored as [memory:{memory_id}]: {content}. "
+                f"Stored as [memory:{memory_id}]{alias_clause}: {content}. "
                 f"Use ``memory_recall('{memory_id}')`` to read it back "
                 f"in any future conversation."
             )
 
         except Exception as exc:
+            # v0.7.4: surface alias-uniqueness collisions cleanly. The
+            # partial unique index ``ix_memories_user_alias`` raises a
+            # UniqueViolation from asyncpg; we don't import asyncpg
+            # here (the memory pkg stays driver-agnostic), so match by
+            # name + by the SQLSTATE substring in the message body.
+            exc_name = type(exc).__name__
+            exc_msg = str(exc)
+            if normalised_alias and (
+                exc_name == "UniqueViolationError" or "ix_memories_user_alias" in exc_msg or "23505" in exc_msg
+            ):
+                return _tool_error(
+                    "memory_add",
+                    "alias",
+                    f"Alias '{normalised_alias}' already used. Pick a different name or "
+                    f"call memory_search(alias='{normalised_alias}') to find the existing one.",
+                )
             log.warning(
                 "memory_add: insert failed",
-                extra={"extra_data": {"error": str(exc)}},
+                extra={"extra_data": {"error": exc_msg}},
             )
-            return _tool_error("memory_add", "store", str(exc))
+            return _tool_error("memory_add", "store", exc_msg)
 
     memory_add.description = (
-        "Store a fact, preference, decision, or context. "
-        "Deduplicates automatically at 90% similarity. Use liberally. "
+        "Store something worth preserving across conversations — "
+        "about the user, yourself, or anything you want to remember. "
+        "Preferences, facts, decisions, observations, moments — "
+        "use liberally. Deduplicates automatically at 90% similarity.\n\n"
+        "- `memory_type` — preference / fact / decision / topical_context / relational_context\n"
+        "- `alias` — optional named anchor for direct lookup later (e.g. 'cave-altar')\n\n"
         "Returns [memory:<id>]."
     )
 
@@ -1347,7 +1517,7 @@ async def load_chunk_search_tool(
         if embedding is None:
             return "Embedding unavailable; cannot search chunks."
 
-        # v0.7.3: ``mode`` remaps the semantic/keyword blend so the
+        # v0.7.4: ``mode`` remaps the semantic/keyword blend so the
         # agent can self-correct between "I want similar concepts"
         # (fuzzy) and "I want exact wording" (precise). Default
         # ``balanced`` preserves prior 60/40 semantic-leaning behavior.

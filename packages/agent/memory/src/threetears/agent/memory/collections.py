@@ -360,6 +360,13 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("type_memory", STRING_TYPE, immutable=True),
             Column("content", STRING_TYPE),
             Column("embedding", VECTOR_TYPE),
+            # v0.7.4: optional named anchor for direct lookup. Per-user
+            # unique on the metallm DB side via alembic 088 (partial
+            # unique index ``ix_memories_user_alias ON
+            # memories(agent_id, user_id, alias) WHERE alias IS NOT
+            # NULL``). Lets the agent ``memory_recall(alias='cave-altar')``
+            # without a search round-trip.
+            Column("alias", STRING_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
@@ -735,6 +742,35 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             if float(row["similarity"]) >= threshold
         ]
 
+    async def find_by_alias(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        alias: str,
+    ) -> dict[str, Any] | None:
+        """Look up a memory by its named alias (v0.7.4).
+
+        Per-user unique on the metallm DB side (alembic 088 adds a
+        partial unique index on ``(agent_id, user_id, alias) WHERE
+        alias IS NOT NULL``), so the lookup returns at most one row.
+        """
+        if self.l3_pool is None or not alias:
+            return None
+        row = await self.l3_pool.fetchrow(
+            """
+            SELECT memory_id, agent_id, customer_id, user_id, conversation_id,
+                   message_id_source, type_memory, content, alias,
+                   date_created, date_updated
+            FROM memories
+            WHERE agent_id = $1 AND user_id = $2 AND alias = $3
+            """,
+            agent_id,
+            user_id,
+            alias,
+        )
+        return dict(row) if row else None
+
     async def hybrid_search(
         self,
         *,
@@ -750,6 +786,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         signal_weights: dict[str, float],
         fts_min_len: int = 3,
         fts_max_len: int = 500,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """parallel vector + FTS hybrid search across the memories table.
 
@@ -759,6 +797,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         ordering; candidates are merged across the two parallel
         queries on ``memory_id``, recency-decayed, score-combined, and
         threshold-filtered.
+
+        v0.7.4: optional ``date_after`` / ``date_before`` (inclusive)
+        narrow the candidate pool to memories created within the
+        range. The filter applies to BOTH the vector and the FTS
+        sub-queries so paginated retrieval stays consistent.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
@@ -798,6 +841,19 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             customer_id=customer_id,
             start_param=2,
         )
+        # v0.7.4 date filter: append ``AND date_created >= $X`` /
+        # ``AND date_created <= $Y`` to both the vector and FTS sub-
+        # queries. Bound parameters are appended after the existing
+        # scope params + the limit param. Each filter uses its own
+        # parameter slot so both can fire independently.
+        vec_date_clause = ""
+        vec_extra_params: list[Any] = []
+        if date_after is not None:
+            vec_date_clause += f" AND date_created >= ${param_offset + 2}"
+            vec_extra_params.append(date_after)
+        if date_before is not None:
+            vec_date_clause += f" AND date_created <= ${param_offset + 2 + len(vec_extra_params)}"
+            vec_extra_params.append(date_before)
         vec_where = f"WHERE {scope_conditions}"
         limit_param = f"${param_offset + 1}"
 
@@ -819,13 +875,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                    1 - (embedding <=> $1::vector) AS similarity
             FROM memories
             {vec_where}
-              AND embedding IS NOT NULL
+              AND embedding IS NOT NULL{vec_date_clause}
             ORDER BY embedding <=> $1::vector
             LIMIT {limit_param}
             """,
             embedding_str,
             *scope_params,
             candidate_limit,
+            *vec_extra_params,
         )
 
         fts_text = _build_fts_text(user_text, fts_min_len, fts_max_len)
@@ -836,6 +893,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 customer_id=customer_id,
                 start_param=2,
             )
+            # v0.7.4 date filter on FTS sub-query.
+            fts_date_clause = ""
+            fts_extra_params: list[Any] = []
+            if date_after is not None:
+                fts_date_clause += f" AND date_created >= ${fts_param_offset + 2}"
+                fts_extra_params.append(date_after)
+            if date_before is not None:
+                fts_date_clause += f" AND date_created <= ${fts_param_offset + 2 + len(fts_extra_params)}"
+                fts_extra_params.append(date_before)
             fts_where = f"WHERE {fts_scope_conditions}"
             fts_limit_param = f"${fts_param_offset + 1}"
             # cache-bypass: FTS rank query is not primary-key-
@@ -847,13 +913,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                        ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS fts_rank
                 FROM memories
                 {fts_where}
-                  AND search_vector @@ websearch_to_tsquery('english', $1)
+                  AND search_vector @@ websearch_to_tsquery('english', $1){fts_date_clause}
                 ORDER BY fts_rank DESC
                 LIMIT {fts_limit_param}
                 """,
                 fts_text,
                 *fts_scope_params,
                 candidate_limit,
+                *fts_extra_params,
             )
             vec_rows, fts_rows = await asyncio.gather(vec_coro, fts_coro)
         else:
@@ -971,6 +1038,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         max_results: int,
         similarity_threshold: float,
         type_filter: str | None = None,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """semantic (vector-only) search for the add/search memory tools.
 
@@ -981,6 +1050,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         caller; this method trusts the value and applies it as an
         equality predicate. ``agent_id`` is the partition column on
         memories and is required.
+
+        v0.7.4: ``date_after`` / ``date_before`` (inclusive) narrow the
+        candidate pool by ``date_created``; either may be supplied
+        independently.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
@@ -994,6 +1067,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype similarity_threshold: float
         :param type_filter: optional ``type_memory`` equality filter
         :ptype type_filter: str | None
+        :param date_after: inclusive lower bound on ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on ``date_created``
+        :ptype date_before: datetime | None
         :return: list of row dicts with ``similarity`` field
         :rtype: list[dict[str, Any]]
         """
@@ -1006,6 +1083,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if type_filter:
             conditions.append(f"type_memory = ${param_idx}")
             params.append(type_filter)
+            param_idx += 1
+        if date_after is not None:
+            conditions.append(f"date_created >= ${param_idx}")
+            params.append(date_after)
+            param_idx += 1
+        if date_before is not None:
+            conditions.append(f"date_created <= ${param_idx}")
+            params.append(date_before)
             param_idx += 1
         conditions.append("embedding IS NOT NULL")
         where_clause = " AND ".join(conditions)
@@ -1043,12 +1128,19 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         fts_text: str,
         max_results: int,
         type_filter: str | None = None,
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """FTS keyword search for the add/search memory tools.
 
         complements :meth:`search_by_semantic` — run both in parallel
         and merge on ``memory_id``. ``agent_id`` is the partition
         column on memories and is required.
+
+        v0.7.4: ``date_after`` / ``date_before`` (inclusive) narrow by
+        ``date_created`` — mirrors the equivalent filter on
+        :meth:`search_by_semantic` so the two legs return a consistent
+        window when run in parallel.
 
         :param user_id: owning user UUID (row filter)
         :ptype user_id: UUID
@@ -1060,6 +1152,10 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         :ptype max_results: int
         :param type_filter: optional ``type_memory`` equality filter
         :ptype type_filter: str | None
+        :param date_after: inclusive lower bound on ``date_created``
+        :ptype date_after: datetime | None
+        :param date_before: inclusive upper bound on ``date_created``
+        :ptype date_before: datetime | None
         :return: list of row dicts
         :rtype: list[dict[str, Any]]
         """
@@ -1075,6 +1171,14 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
         if type_filter:
             conditions.append(f"type_memory = ${idx}")
             params.append(type_filter)
+            idx += 1
+        if date_after is not None:
+            conditions.append(f"date_created >= ${idx}")
+            params.append(date_after)
+            idx += 1
+        if date_before is not None:
+            conditions.append(f"date_created <= ${idx}")
+            params.append(date_before)
             idx += 1
         where = " AND ".join(conditions)
         query_sql = f"""
