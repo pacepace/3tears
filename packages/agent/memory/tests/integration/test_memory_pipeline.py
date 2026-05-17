@@ -705,7 +705,16 @@ class TestMemoryToolsAgainstLiveSchema:
                 chunks,
             )
             assert len(tools) == 1
-            result = await tools[0].ainvoke({"id": str(mid), "type": "memory"})
-            assert result == "Seattle resident"
+            # v0.14.0 tool surface: memory_recall takes ``memory_id``
+            # directly (the legacy unified ``recall`` tool with
+            # ``id`` + ``type`` discriminator is gone -- chunks have
+            # their own ``chunk_recall`` tool now). The return shape
+            # is also structured now: ``[memory:<id>]\n<content>\n\n
+            # (no chunks)`` or with a chunk listing when present, not
+            # a bare content string.
+            result = await tools[0].ainvoke({"memory_id": str(mid)})
+            assert f"[memory:{mid}]" in result
+            assert "Seattle resident" in result
+            assert "(no chunks)" in result
         finally:
             await pool.close()

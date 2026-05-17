@@ -245,6 +245,22 @@ def _format_memory_context(
                 continue
             deduped_chunks.append(chunk)
 
+    # COGNITIVE ANCHOR (Shard D D-05): build a parent-memory-summary
+    # lookup so each surfaced chunk can render the cognitive takeaway
+    # of its parent memory alongside the source fragment headline. The
+    # agent sees both "what this memory means" (parent summary) and
+    # "where in the source it came from" (chunk headline + recall
+    # affordance). Without the anchor the agent has only the raw chunk
+    # fragment and has to infer the wider memory context every turn.
+    parent_summary_by_id: dict[str, str] = {}
+    if memories:
+        for mem in memories:
+            mid_raw = mem.get("memory_id")
+            mem_summary = mem.get("summary")
+            if mid_raw is None or not mem_summary:
+                continue
+            parent_summary_by_id[str(mid_raw)] = mem_summary
+
     if memories:
         lines.append("Things you remember about this user:")
         for mem in memories:
@@ -304,10 +320,30 @@ def _format_memory_context(
             if heading:
                 loc_parts.append(f'"{heading}"')
             location = (" " + " ".join(loc_parts)) if loc_parts else ""
+            # Parent-memory cognitive anchor (D-05): when the chunk
+            # carries a memory_id reference, surface the parent
+            # memory's summary alongside the chunk headline. Truncate
+            # the parent summary to the same headline budget so a
+            # runaway summary callback can't single-handedly blow the
+            # prompt budget through the anchor channel.
+            parent_memory_id_raw = chunk.get("memory_id")
+            parent_anchor = ""
+            if parent_memory_id_raw is not None:
+                parent_id_str = str(parent_memory_id_raw)
+                parent_summary = parent_summary_by_id.get(parent_id_str)
+                if parent_summary:
+                    if len(parent_summary) > _MAX_CHUNK_SUMMARY_CHARS:
+                        parent_summary = parent_summary[: _MAX_CHUNK_SUMMARY_CHARS - 3] + "..."
+                    parent_anchor = f' (of memory {parent_id_str}: "{parent_summary}")'
+                else:
+                    parent_anchor = f" (of memory {parent_id_str})"
             # The recall-affordance parenthetical is intentional --
             # without it the agent has no way to know it can pull the
             # verbatim chunk content if needed.
-            lines.append(f"- [chunk:{chunk_id}{location}] {headline} (call chunk_recall('{chunk_id}') to read in full)")
+            lines.append(
+                f"- [chunk:{chunk_id}{location}]{parent_anchor} {headline} "
+                f"(call chunk_recall('{chunk_id}') to read in full)"
+            )
 
     if lines:
         lines.append("")

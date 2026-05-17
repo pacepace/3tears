@@ -399,6 +399,112 @@ class TestFormatMemoryContext:
         assert "..." in result
         assert long_summary not in result
 
+    def test_chunk_parent_memory_anchor_surfaces_summary(self) -> None:
+        """v0.7.0 Shard D D-05: every chunk surfaces with its parent
+        memory's summary so the agent has the cognitive anchor + the
+        source fragment. When the parent memory is present in the
+        retrieval set with a summary, the chunk headline carries
+        ``(of memory <id>: "<summary>")`` in addition to the chunk_recall
+        affordance."""
+        parent_id = uuid.uuid7()
+        parent_summary = "user's policy on weekend deployments"
+        memories = [
+            {
+                "memory_id": parent_id,
+                "content": "long content",
+                "summary": parent_summary,
+                "hybrid_score": 0.7,
+            },
+        ]
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "verbatim chunk text",
+                "summary": "chunk headline",
+                "memory_id": parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        assert f"of memory {parent_id}" in result
+        assert parent_summary in result
+        assert "chunk headline" in result
+        assert "chunk_recall(" in result
+
+    def test_chunk_parent_memory_anchor_falls_back_to_id_only(self) -> None:
+        """When a chunk references a parent memory not in the retrieval
+        set (or the parent has no summary), the anchor falls back to
+        ``(of memory <id>)`` so the agent at least knows the link
+        exists and can memory_recall the parent if it needs more."""
+        orphan_parent_id = uuid.uuid7()
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "verbatim chunk text",
+                "summary": "chunk headline",
+                "memory_id": orphan_parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context([], memory_chunks=chunks, detail_threshold=0.85)
+        assert f"of memory {orphan_parent_id}" in result
+        # No quoted summary present.
+        assert f'of memory {orphan_parent_id}: "' not in result
+
+    def test_chunk_parent_memory_anchor_truncates_long_summary(self) -> None:
+        """A runaway parent-memory summary cannot blow the prompt budget
+        through the anchor channel. The parent summary is truncated to
+        MAX_CHUNK_SUMMARY_CHARS just like the chunk headline. Asserted
+        against the chunk line specifically because the parent memory
+        also renders in the memories block (where summaries are not
+        truncated -- that's a separate cap)."""
+        parent_id = uuid.uuid7()
+        long_parent_summary = "y" * 500
+        memories = [
+            {
+                "memory_id": parent_id,
+                "content": "c",
+                "summary": long_parent_summary,
+                "hybrid_score": 0.7,
+            },
+        ]
+        chunks = [
+            {
+                "chunk_id": uuid.uuid7(),
+                "content": "c",
+                "summary": "chunk headline",
+                "memory_id": parent_id,
+                "media_id": None,
+                "title": None,
+                "page_number": None,
+                "heading_context": None,
+                "hybrid_score": 0.6,
+            },
+        ]
+        result = _format_memory_context(memories, memory_chunks=chunks, detail_threshold=0.85)
+        # Find the chunk line (starts with ``- [chunk:``).
+        chunk_lines = [line for line in result.split("\n") if line.startswith("- [chunk:")]
+        assert len(chunk_lines) == 1
+        chunk_line = chunk_lines[0]
+        # Within the chunk line, the parent-summary segment must be
+        # truncated -- the full 500-char string MUST NOT appear.
+        assert long_parent_summary not in chunk_line
+        # Truncation marker present in the parent-anchor segment.
+        assert "..." in chunk_line
+        # The y-run inside the anchor is capped at the truncation
+        # budget (MAX_CHUNK_SUMMARY_CHARS - 3 = 147 y's).
+        anchor_start = chunk_line.index("of memory")
+        anchor_segment = chunk_line[anchor_start:]
+        assert "y" * 148 not in anchor_segment
+
     def test_footer_present(self) -> None:
         memories = [{"memory_id": uuid.uuid7(), "content": "x", "summary": None, "hybrid_score": 0.5}]
         result = _format_memory_context(memories, detail_threshold=0.85)
