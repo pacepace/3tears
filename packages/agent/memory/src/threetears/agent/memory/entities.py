@@ -180,6 +180,23 @@ class MemoryEntity(BaseEntity):
         """Set the last-updated timestamp."""
         BaseEntity.__setattr__(self, "date_updated", value)
 
+    @property
+    def alias(self) -> str | None:
+        """Optional named anchor for direct-lookup retrieval (v0.7.4).
+
+        Per-user unique on the metallm DB side via the partial unique
+        index ``ix_memories_user_alias ON memories(agent_id, user_id,
+        alias) WHERE alias IS NOT NULL`` (alembic 088). NULL on
+        legacy rows.
+        """
+        value: str | None = self._get_raw("alias")
+        return value
+
+    @alias.setter
+    def alias(self, value: str | None) -> None:
+        """Set the named-anchor alias."""
+        BaseEntity.__setattr__(self, "alias", value)
+
 
 class MediaEntity(BaseEntity):
     """cache proxy entity for the ``media`` parent table (v006).
