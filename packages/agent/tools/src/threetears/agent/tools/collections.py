@@ -12,13 +12,10 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Column as SAColumn
-from sqlalchemy import DateTime, MetaData, Table, Text
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy import MetaData, Table
 
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -47,34 +44,20 @@ log = get_logger(__name__)
 def context_items_table(metadata: MetaData) -> Table:
     """register the ``context_items`` table on the given SA metadata.
 
-    call this before ``SQLiteBackend.initialize(metadata)`` so the L1
-    cache gets the correct schema. safe to call multiple times -- returns
-    the existing table if already registered. composite primary key on
-    ``(conversation_id, context_id)`` mirrors the L3 partition layout
-    so cache rows are isolated per partition.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`ContextItemCollection.schema.to_sqlalchemy_table`. Call this
+    before ``SQLiteBackend.initialize(metadata)`` so the L1 cache gets
+    the correct schema. composite primary key on ``(conversation_id,
+    context_id)`` mirrors the L3 partition layout so cache rows are
+    isolated per partition.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``context_items`` :class:`Table`
     :rtype: Table
     """
-    if "context_items" in metadata.tables:
-        return metadata.tables["context_items"]
-    return Table(
-        "context_items",
-        metadata,
-        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("context_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("context_type", Text(), nullable=False),
-        SAColumn("key", Text(), nullable=False),
-        SAColumn("short_desc", Text(), nullable=False),
-        SAColumn("long_desc", Text(), nullable=False, server_default=""),
-        SAColumn("content", Text(), nullable=False),
-        SAColumn("metadata", JSONB(), nullable=True),
-        SAColumn("date_accessed", DateTime(timezone=True), nullable=False),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
-    )
+    return cast(Table, ContextItemCollection.schema.to_sqlalchemy_table(metadata))
 
 
 class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):

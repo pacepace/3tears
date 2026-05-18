@@ -1,13 +1,26 @@
 """Unit + parity tests for :meth:`TableSchema.to_sqlalchemy_table`.
 
 The shape conformance bar: feeding a hand-enriched :class:`TableSchema`
-that mirrors one of the v0.7.5 hand-written SQLAlchemy table factories
-through :meth:`TableSchema.to_sqlalchemy_table` MUST produce a Table
-that is structurally identical (column types, PK, FKs, indexes,
-server defaults) to what the factory produces. The parity tests are
-the load-bearing regression net for the v0.8.0 release: if any of
-them passes when the conversion regresses, the test isn't doing its
-job.
+that mirrors one of the v0.7.x factory shapes through
+:meth:`TableSchema.to_sqlalchemy_table` MUST produce a Table that is
+structurally identical (column types, PK, FKs, indexes, server
+defaults) to a hand-written reference fixture encoding the v0.8.0
+canonical shape. The parity tests are the load-bearing regression net
+for the v0.8.0 release: if any of them passes when the conversion
+regresses, the test isn't doing its job.
+
+v0.8.0 shard 04 rewrote the parity tests to compare against
+**hand-written reference fixtures** (the ``_reference_<table>_table``
+functions in this module), NOT against the v0.7.5 factory output.
+Reason: after shard 04 collapses each factory body to a one-line
+delegation to :meth:`TableSchema.to_sqlalchemy_table`, comparing
+factory output against ``to_sqlalchemy_table`` output is comparing
+the framework to itself -- a trivially-passing test with zero
+regression protection. The hand-written reference fixtures are
+FROZEN at the v0.8.0 canonical shape. If prod schema legitimately
+changes, add a NEW reference function (e.g.
+``_reference_memories_table_v090``) and run parity against the new
+one in addition to the old.
 
 Per shard 02 design, the equivalence helper reads Index
 ``postgresql_where`` via ``dialect_kwargs`` (public, stable) NOT
@@ -21,16 +34,23 @@ from typing import Any
 
 import pytest
 import sqlalchemy as sa
-
-from threetears.agent.memory.collections import (
-    conversation_memory_refs_table,
-    media_content_table,
-    media_table,
-    memories_table,
-    memory_chunks_table,
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    Boolean,
+    Column as SAColumn,
+    DateTime,
+    Enum as SAEnum,
+    ForeignKey as SAForeignKey,
+    ForeignKeyConstraint as SAForeignKeyConstraint,
+    Index as SAIndex,
+    Integer,
+    Numeric,
+    Text,
 )
-from threetears.agent.tools.collections import context_items_table
-from threetears.mcp.rbac import mcp_tool_grants_table
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
+
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
@@ -48,6 +68,13 @@ from threetears.core.collections.schema_backed import (
     Index,
     TableSchema,
 )
+
+# Embedding dimension carried by ``memories`` / ``media_content`` /
+# ``memory_chunks`` reference fixtures. Mirrors
+# ``threetears.agent.memory.collections._MEMORY_VECTOR_DIM``; duplicated
+# here so the reference fixtures remain a self-contained, frozen
+# regression net independent of the source-under-test module.
+_REFERENCE_MEMORY_VECTOR_DIM = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -204,12 +231,7 @@ def _column_signature(
     )
 
 
-def _assert_tables_equivalent(
-    a: sa.Table,
-    b: sa.Table,
-    *,
-    extra_fks_in_b: frozenset[tuple[tuple[str, ...], str, tuple[str, ...], str | None]] = frozenset(),
-) -> None:
+def _assert_tables_equivalent(a: sa.Table, b: sa.Table) -> None:
     """assert two SQLAlchemy Tables are structurally identical.
 
     compares column names, types, primary-key columns, indexes,
@@ -217,19 +239,15 @@ def _assert_tables_equivalent(
     metadata identity (the Tables are intentionally registered on
     different :class:`MetaData` instances).
 
-    :param a: reference Table (typically the v0.7.5 hand-written
-        factory output)
+    Reference fixtures (``_reference_<table>_table``) encode the
+    v0.8.0 canonical shape directly, so the assertion is a strict
+    structural equality — no augmentation-FK escape hatch.
+
+    :param a: reference Table (typically the hand-written
+        ``_reference_<table>_table`` fixture output)
     :ptype a: sqlalchemy.Table
     :param b: candidate Table (typically ``to_sqlalchemy_table`` output)
     :ptype b: sqlalchemy.Table
-    :param extra_fks_in_b: FK signatures that are EXPECTED to appear
-        only on ``b`` because the v0.7.5 factory documented but did
-        NOT emit them. Used by ``media_content`` / ``memory_chunks``
-        whose composite FKs to ``media`` / ``memories`` live only in
-        factory comments. Per shard-02 §"Critical correctness note
-        for composite FKs": enrichment MUST surface these so prod
-        Alembic auto-gen produces zero phantom migrations.
-    :ptype extra_fks_in_b: frozenset[tuple]
     :return: nothing
     :rtype: None
     :raises AssertionError: when any structural field diverges
@@ -271,58 +289,20 @@ def _assert_tables_equivalent(
     # table-level FK constraints
     a_fk_sigs = {_fk_constraint_signature(c) for c in a.constraints if isinstance(c, sa.ForeignKeyConstraint)}
     b_fk_sigs = {_fk_constraint_signature(c) for c in b.constraints if isinstance(c, sa.ForeignKeyConstraint)}
-    # extra FKs in b are expected (factory comments → real DDL).
-    # everything else must match.
-    expected_a = a_fk_sigs
-    expected_b = a_fk_sigs | set(extra_fks_in_b)
-    assert expected_b == b_fk_sigs, (
+    assert a_fk_sigs == b_fk_sigs, (
         f"FK-constraint sets differ on {a.name}: "
-        f"only-in-factory={expected_a - b_fk_sigs!r}, "
-        f"only-in-to_sqla-unexpected={b_fk_sigs - expected_b!r}"
+        f"only-in-factory={a_fk_sigs - b_fk_sigs!r}, "
+        f"only-in-to_sqla={b_fk_sigs - a_fk_sigs!r}"
     )
 
-    # inline FK signatures -- compare only the FKs that are NOT part
-    # of an extra (composite-augmentation) FK. SQLAlchemy attaches an
-    # inline ``ForeignKey`` to each column participating in a
-    # table-level ``ForeignKeyConstraint``; those bleed into
-    # _inline_fk_signatures(b) and would falsely diverge from a.
-    a_inline = {sig for sig in _inline_fk_signatures(a) if not _inline_in_extra(sig, extra_fks_in_b)}
-    b_inline = {sig for sig in _inline_fk_signatures(b) if not _inline_in_extra(sig, extra_fks_in_b)}
+    # inline FK signatures
+    a_inline = set(_inline_fk_signatures(a))
+    b_inline = set(_inline_fk_signatures(b))
     assert a_inline == b_inline, (
         f"inline FK sets differ on {a.name}: "
         f"only-in-factory={a_inline - b_inline!r}, "
         f"only-in-to_sqla={b_inline - a_inline!r}"
     )
-
-
-def _inline_in_extra(
-    sig: tuple[str, str, str | None],
-    extra: frozenset[tuple[tuple[str, ...], str, tuple[str, ...], str | None]],
-) -> bool:
-    """true iff inline-FK ``sig`` is part of one of the composite
-    augmentation FKs in ``extra``.
-
-    SQLAlchemy attaches an inline ``ForeignKey`` record to each local
-    column participating in a composite ``ForeignKeyConstraint``; the
-    parity helper must filter those out so the augmentation FKs
-    don't bleed into the per-column inline-FK comparison.
-
-    :param sig: ``(local_col, target_fullname, ondelete)``
-    :param extra: known composite augmentation FK signatures
-    :return: True when ``sig`` is part of any augmentation
-    """
-    local_col, target_fullname, ondelete = sig
-    target_table, _, target_col = target_fullname.partition(".")
-    for ex_locals, ex_table, ex_cols, ex_ondelete in extra:
-        if ex_table != target_table:
-            continue
-        if ex_ondelete != ondelete:
-            continue
-        # local_col must be one of ex_locals at the same position as
-        # target_col is in ex_cols.
-        if local_col in ex_locals and target_col in ex_cols:
-            return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +376,17 @@ def _memories_schema() -> TableSchema:
                 on_delete="SET NULL",
             ),
         ),
-        indexes=(Index("ix_memories_user_date", "user_id", "date_created"),),
+        indexes=(
+            Index("ix_memories_user_date", "user_id", "date_created"),
+            Index(
+                "ix_memories_user_alias",
+                "agent_id",
+                "user_id",
+                "alias",
+                unique=True,
+                where="alias IS NOT NULL",
+            ),
+        ),
     )
 
 
@@ -430,18 +420,18 @@ def _media_schema() -> TableSchema:
             Column(
                 "metadata_json",
                 JSONB_TYPE,
-                server_default="{}",
+                server_default="'{}'::jsonb",
             ),
             Column("generation_prompt", STRING_TYPE, nullable=True),
             Column(
                 "media_category",
                 STRING_TYPE,
-                server_default="image",
+                server_default="'image'::text",
             ),
             Column(
                 "extraction_status",
                 STRING_TYPE,
-                server_default="none",
+                server_default="'none'::text",
             ),
             Column("thumbnail_s3_key", STRING_TYPE, nullable=True),
             Column(
@@ -626,26 +616,15 @@ def _memory_chunks_schema() -> TableSchema:
 
 
 def _conversation_memory_refs_schema() -> TableSchema:
-    """build the enriched TableSchema mirroring
-    ``conversation_memory_refs_table``.
+    """build the enriched TableSchema mirroring the v0.8.0 canonical
+    ``conversation_memory_refs`` shape.
 
-    Shape mirrors prod (FK on ``conversation_id`` with CASCADE, lookup
-    index on ``conversation_id``, ``date_created`` immutable with
-    ``server_default="now()"``). The hand-written factory does not
-    emit these directly — they live in prod metallm Alembic.
-
-    Production ``conversation_memory_refs.date_created`` is
-    ``TIMESTAMPTZ NOT NULL DEFAULT now()`` and the FK has
-    ``ON DELETE CASCADE`` (alembic
-    ``conversation_memory_refs_conversation_id_fkey``); the v0.8.0
-    ``MemoryRefsCollection.schema`` carries the same shape, and v021
-    pins the ``date_created`` server default.
+    Carries FK on ``conversation_id`` with CASCADE, lookup index on
+    ``conversation_id``, ``date_created`` immutable with
+    ``server_default="now()"`` -- matches
+    :class:`MemoryRefsCollection.schema` and the v002 + v021 prod
+    migrations.
     """
-    # TODO(v0.8.0 shard 04): replace with
-    # _reference_<table>_table per shard 04 §"Concrete steps per
-    # factory". Production schema now carries FK + indexes this
-    # helper does not — keep this helper in sync until shard 04
-    # collapses every factory onto :meth:`TableSchema.to_sqlalchemy_table`.
     return TableSchema(
         name="conversation_memory_refs",
         primary_key=("conversation_id", "item_id"),
@@ -715,11 +694,17 @@ def _mcp_tool_grants_schema() -> TableSchema:
 
 
 def _context_items_schema() -> TableSchema:
-    """build the enriched TableSchema mirroring ``context_items_table``."""
-    # TODO(v0.8.0 shard 04): replace with
-    # _reference_<table>_table per shard 04 §"Concrete steps per
-    # factory". Production schema now carries FK + indexes this
-    # helper does not.
+    """build the enriched TableSchema mirroring the v0.8.0 canonical
+    ``context_items`` shape.
+
+    Carries the FK on ``conversation_id`` with CASCADE, four indexes
+    (``ix_context_items_conv``, ``ix_context_items_type``,
+    ``ix_context_items_lru``, partial-unique
+    ``ix_context_items_var_key`` keyed on
+    ``context_type = 'variable'``), and ``long_desc`` server default
+    of ``''::text`` -- matches :class:`ContextItemCollection.schema`
+    and the v001 prod migration.
+    """
     return TableSchema(
         name="context_items",
         primary_key=("conversation_id", "context_id"),
@@ -732,7 +717,7 @@ def _context_items_schema() -> TableSchema:
             Column(
                 "long_desc",
                 STRING_TYPE,
-                server_default="",
+                server_default="''::text",
             ),
             Column("content", STRING_TYPE),
             Column("metadata", JSONB_TYPE, nullable=True),
@@ -740,58 +725,477 @@ def _context_items_schema() -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        foreign_keys=(
+            ForeignKey(
+                "conversation_id",
+                "conversations",
+                "conversation_id",
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            Index("ix_context_items_conv", "conversation_id"),
+            Index(
+                "ix_context_items_type",
+                "conversation_id",
+                "context_type",
+            ),
+            Index(
+                "ix_context_items_lru",
+                "conversation_id",
+                "date_accessed",
+            ),
+            Index(
+                "ix_context_items_var_key",
+                "conversation_id",
+                "key",
+                unique=True,
+                where="context_type = 'variable'",
+            ),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# hand-written reference fixtures (FROZEN v0.8.0 canonical shape)
+# ---------------------------------------------------------------------------
+#
+# Each ``_reference_<table>_table(metadata)`` function below encodes
+# the v0.8.0 canonical SQLAlchemy shape for one of the seven 3tears
+# tables registered on metallm's ``sa_metadata`` (the parity-gate
+# scope from ``docs/table-schema/v0.8.0/README.md``). These fixtures
+# are the regression-protection counterparty that the parity tests
+# compare ``TableSchema.to_sqlalchemy_table`` output against -- after
+# shard 04 collapsed each factory body to a one-line delegation, the
+# v0.7.5 factory output stopped being an independent reference (it
+# IS ``to_sqlalchemy_table`` output). The fixtures below restore the
+# regression-protection property.
+#
+# FROZEN: do NOT modify these functions when prod schema changes. If
+# prod schema legitimately changes, add a NEW reference function
+# (e.g. ``_reference_memories_table_v090``) and run parity against
+# the new one in addition to the old.
+
+
+def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_memories_table_v090``) and run parity against the
+    new one in addition to the old.
+    """
+    if "memories" in metadata.tables:
+        return metadata.tables["memories"]
+    return sa.Table(
+        "memories",
+        metadata,
+        SAColumn("memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
+        # message_id_source FK is table-level (below) with
+        # ON DELETE SET NULL to match prod metallm.
+        SAColumn("message_id_source", PgUUID(as_uuid=True), nullable=True),
+        SAColumn(
+            "type_memory",
+            SAEnum(
+                "preference",
+                "fact",
+                "decision",
+                "topical_context",
+                "relational_context",
+                name="memory_type",
+                create_constraint=True,
+            ),
+            nullable=False,
+        ),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn(
+            "embedding",
+            Vector(_REFERENCE_MEMORY_VECTOR_DIM),
+            nullable=True,
+        ),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        SAColumn("alias", Text(), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=True),
+        SAForeignKeyConstraint(
+            ["message_id_source"],
+            ["messages.message_id"],
+            ondelete="SET NULL",
+        ),
+        SAIndex("ix_memories_user_date", "user_id", "date_created"),
+        SAIndex(
+            "ix_memories_user_alias",
+            "agent_id",
+            "user_id",
+            "alias",
+            unique=True,
+            postgresql_where=sa_text("alias IS NOT NULL"),
+        ),
+    )
+
+
+def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_media_table_v090``) and run parity against the new
+    one in addition to the old.
+    """
+    if "media" in metadata.tables:
+        return metadata.tables["media"]
+    return sa.Table(
+        "media",
+        metadata,
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("media_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("s3_key", Text(), nullable=True),
+        SAColumn("mime_type", Text(), nullable=False),
+        SAColumn("size_bytes", Integer(), nullable=False),
+        SAColumn("source", Text(), nullable=False),
+        SAColumn(
+            "metadata_json",
+            JSONB(),
+            nullable=False,
+            server_default="'{}'::jsonb",
+        ),
+        SAColumn("generation_prompt", Text(), nullable=True),
+        SAColumn(
+            "media_category",
+            Text(),
+            nullable=False,
+            server_default="'image'::text",
+        ),
+        SAColumn(
+            "extraction_status",
+            Text(),
+            nullable=False,
+            server_default="'none'::text",
+        ),
+        SAColumn("thumbnail_s3_key", Text(), nullable=True),
+        SAColumn("cloud_connection_id", PgUUID(as_uuid=True), nullable=True),
+        SAColumn("cloud_file_id", Text(), nullable=True),
+        SAColumn("cloud_file_url", Text(), nullable=True),
+        SAColumn("memory_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAForeignKeyConstraint(
+            ["cloud_connection_id"],
+            ["cloud_connections.cloud_connection_id"],
+            ondelete="SET NULL",
+        ),
+        SAForeignKeyConstraint(
+            ["memory_id"],
+            ["memories.memory_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("ix_media_user_date", "user_id", "date_created"),
+        SAIndex("ix_media_mime_type", "mime_type"),
+        SAIndex("ix_media_memory_id", "memory_id"),
+        SAIndex(
+            "uq_media_cloud_connection_file",
+            "cloud_connection_id",
+            "cloud_file_id",
+            unique=True,
+        ),
+    )
+
+
+def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_media_content_table_v090``) and run parity against
+    the new one in addition to the old.
+    """
+    if "media_content" in metadata.tables:
+        return metadata.tables["media_content"]
+    return sa.Table(
+        "media_content",
+        metadata,
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("content_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        # media_id FK is composite at table level (below)
+        SAColumn("media_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("content_type", Text(), nullable=False),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn(
+            "embedding",
+            Vector(_REFERENCE_MEMORY_VECTOR_DIM),
+            nullable=True,
+        ),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        SAColumn(
+            "model_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("models.model_id"),
+            nullable=True,
+        ),
+        SAColumn(
+            "provider_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("providers.provider_id"),
+            nullable=True,
+        ),
+        SAColumn("model_name", Text(), nullable=True),
+        SAColumn("provider_name", Text(), nullable=True),
+        SAColumn("token_count_prompt", Integer(), nullable=True),
+        SAColumn("token_count_completion", Integer(), nullable=True),
+        SAColumn("cost", Numeric(12, 8), nullable=True),
+        SAColumn("metadata_json", JSONB(), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAForeignKeyConstraint(
+            ["agent_id", "media_id"],
+            ["media.agent_id", "media.media_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("ix_media_content_media_type", "media_id", "content_type"),
+        SAIndex("ix_media_content_user", "user_id"),
+    )
+
+
+def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_memory_chunks_table_v090``) and run parity against
+    the new one in addition to the old.
+    """
+    if "memory_chunks" in metadata.tables:
+        return metadata.tables["memory_chunks"]
+    return sa.Table(
+        "memory_chunks",
+        metadata,
+        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("chunk_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
+        # memory_id FK is composite at table level (below)
+        SAColumn("memory_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn(
+            "user_id",
+            PgUUID(as_uuid=True),
+            SAForeignKey("users.user_id"),
+            nullable=False,
+        ),
+        SAColumn("chunk_index", Integer(), nullable=False),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("summary", Text(), nullable=True),
+        SAColumn("heading_context", Text(), nullable=True),
+        SAColumn("page_number", Integer(), nullable=True),
+        SAColumn("token_count", Integer(), nullable=False),
+        SAColumn(
+            "embedding",
+            Vector(_REFERENCE_MEMORY_VECTOR_DIM),
+            nullable=True,
+        ),
+        SAColumn("search_vector", TSVECTOR(), nullable=True),
+        SAColumn("message_id_start", PgUUID(as_uuid=True), nullable=True),
+        SAColumn("message_id_end", PgUUID(as_uuid=True), nullable=True),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAForeignKeyConstraint(
+            ["agent_id", "memory_id"],
+            ["memories.agent_id", "memories.memory_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("ix_memory_chunks_memory", "memory_id", "chunk_index"),
+        SAIndex("ix_memory_chunks_user", "user_id"),
+    )
+
+
+def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_conversation_memory_refs_table_v090``) and run
+    parity against the new one in addition to the old.
+    """
+    if "conversation_memory_refs" in metadata.tables:
+        return metadata.tables["conversation_memory_refs"]
+    return sa.Table(
+        "conversation_memory_refs",
+        metadata,
+        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("item_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("item_type", Text(), nullable=False),
+        SAColumn("short_desc", Text(), nullable=False),
+        SAColumn(
+            "date_created",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=sa_text("now()"),
+        ),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
+        SAForeignKeyConstraint(
+            ["conversation_id"],
+            ["conversations.conversation_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("ix_conversation_memory_refs_cid", "conversation_id"),
+    )
+
+
+def _reference_mcp_tool_grants_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_mcp_tool_grants_table_v090``) and run parity against
+    the new one in addition to the old.
+    """
+    if "mcp_tool_grants" in metadata.tables:
+        return metadata.tables["mcp_tool_grants"]
+    return sa.Table(
+        "mcp_tool_grants",
+        metadata,
+        SAColumn("grant_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("principal_type", Text(), nullable=False),
+        SAColumn("principal_id", PgUUID(as_uuid=True), nullable=False),
+        SAColumn("tool_name", Text(), nullable=False),
+        SAColumn("permission", Text(), nullable=False),
+        SAColumn(
+            "date_created",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=sa_text("now()"),
+        ),
+        SAIndex(
+            "idx_mcp_tool_grants_principal",
+            "principal_id",
+            "permission",
+        ),
+        SAIndex("idx_mcp_tool_grants_tool", "tool_name"),
+    )
+
+
+def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
+    """Hand-written reference Table for parity testing.
+
+    Frozen v0.8.0 canonical shape. If prod schema legitimately
+    changes, add a NEW reference function (e.g.
+    ``_reference_context_items_table_v090``) and run parity against
+    the new one in addition to the old.
+    """
+    if "context_items" in metadata.tables:
+        return metadata.tables["context_items"]
+    return sa.Table(
+        "context_items",
+        metadata,
+        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("context_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
+        SAColumn("context_type", Text(), nullable=False),
+        SAColumn("key", Text(), nullable=False),
+        SAColumn("short_desc", Text(), nullable=False),
+        SAColumn("long_desc", Text(), nullable=False, server_default="''::text"),
+        SAColumn("content", Text(), nullable=False),
+        SAColumn("metadata", JSONB(), nullable=True),
+        SAColumn("date_accessed", DateTime(timezone=True), nullable=False),
+        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
+        SAForeignKeyConstraint(
+            ["conversation_id"],
+            ["conversations.conversation_id"],
+            ondelete="CASCADE",
+        ),
+        SAIndex("ix_context_items_conv", "conversation_id"),
+        SAIndex(
+            "ix_context_items_type",
+            "conversation_id",
+            "context_type",
+        ),
+        SAIndex(
+            "ix_context_items_lru",
+            "conversation_id",
+            "date_accessed",
+        ),
+        SAIndex(
+            "ix_context_items_var_key",
+            "conversation_id",
+            "key",
+            unique=True,
+            postgresql_where=sa_text("context_type = 'variable'"),
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # parity tests (REGRESSION NET for the v0.8.0 release)
 # ---------------------------------------------------------------------------
+#
+# Each parity test builds the table TWO ways:
+#
+#   1. via the hand-written reference fixture (``_reference_<table>_table``)
+#      -- the FROZEN v0.8.0 canonical shape.
+#   2. via ``<enriched_schema>.to_sqlalchemy_table(metadata)`` -- the
+#      framework's auto-generated output.
+#
+# ``_assert_tables_equivalent`` confirms they are structurally identical.
+# If a future change to ``to_sqlalchemy_table`` regresses, one or more
+# of these tests breaks loudly. Reference fixtures are frozen and DO
+# NOT track prod schema drift -- if prod legitimately changes, add a
+# new reference function and run parity against both.
 
 
 def test_parity_memories_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``memories_table``.
+    """``MemoriesCollection.schema``-shaped ``TableSchema`` produces a
+    Table structurally equal to ``_reference_memories_table``.
     """
-    via_factory = memories_table(sa.MetaData())
+    via_reference = _reference_memories_table(sa.MetaData())
     via_to_sqla = _memories_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(via_factory, via_to_sqla)
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
 
 def test_parity_media_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``media_table``.
+    """``MediaCollection.schema``-shaped ``TableSchema`` produces a
+    Table structurally equal to ``_reference_media_table``.
     """
-    via_factory = media_table(sa.MetaData())
+    via_reference = _reference_media_table(sa.MetaData())
     via_to_sqla = _media_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(via_factory, via_to_sqla)
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
 
 def test_parity_media_content_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``media_content_table`` AND carries the composite FK that the
-    factory only documents in a comment.
+    """``MediaContentCollection.schema``-shaped ``TableSchema``
+    produces a Table structurally equal to
+    ``_reference_media_content_table`` AND carries the composite FK
+    ``(agent_id, media_id) → media``.
     """
-    via_factory = media_content_table(sa.MetaData())
+    via_reference = _reference_media_content_table(sa.MetaData())
     via_to_sqla = _media_content_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(
-        via_factory,
-        via_to_sqla,
-        extra_fks_in_b=frozenset(
-            {
-                (
-                    ("agent_id", "media_id"),
-                    "media",
-                    ("agent_id", "media_id"),
-                    "CASCADE",
-                ),
-            },
-        ),
-    )
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
-    # ground-truth augmentation: the v0.7.5 factory documents the
-    # composite FK in a comment but does NOT emit it. enrichment MUST
-    # carry the composite FK so prod auto-gen produces zero phantom
-    # migrations.
+    # ground-truth augmentation: confirm the composite FK is emitted
+    # on the to_sqla side. The reference fixture already encodes it,
+    # so _assert_tables_equivalent above would catch a regression --
+    # this explicit assertion belt-and-braces the
+    # "v0.7.5 comment → v0.8.0 real DDL" promotion documented in
+    # shard-02 §"Critical correctness note for composite FKs".
     composite_fks = [
         c for c in via_to_sqla.constraints if isinstance(c, sa.ForeignKeyConstraint) and len(c.column_keys) > 1
     ]
@@ -804,26 +1208,14 @@ def test_parity_media_content_table() -> None:
 
 
 def test_parity_memory_chunks_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``memory_chunks_table`` AND carries the composite FK that the
-    factory only documents in a comment.
+    """``MemoryChunkCollection.schema``-shaped ``TableSchema``
+    produces a Table structurally equal to
+    ``_reference_memory_chunks_table`` AND carries the composite FK
+    ``(agent_id, memory_id) → memories``.
     """
-    via_factory = memory_chunks_table(sa.MetaData())
+    via_reference = _reference_memory_chunks_table(sa.MetaData())
     via_to_sqla = _memory_chunks_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(
-        via_factory,
-        via_to_sqla,
-        extra_fks_in_b=frozenset(
-            {
-                (
-                    ("agent_id", "memory_id"),
-                    "memories",
-                    ("agent_id", "memory_id"),
-                    "CASCADE",
-                ),
-            },
-        ),
-    )
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
     composite_fks = [
         c for c in via_to_sqla.constraints if isinstance(c, sa.ForeignKeyConstraint) and len(c.column_keys) > 1
@@ -837,32 +1229,35 @@ def test_parity_memory_chunks_table() -> None:
 
 
 def test_parity_conversation_memory_refs_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``conversation_memory_refs_table``.
+    """``MemoryRefsCollection.schema``-shaped ``TableSchema`` produces
+    a Table structurally equal to
+    ``_reference_conversation_memory_refs_table``.
     """
-    via_factory = conversation_memory_refs_table(sa.MetaData())
+    via_reference = _reference_conversation_memory_refs_table(sa.MetaData())
     via_to_sqla = _conversation_memory_refs_schema().to_sqlalchemy_table(
         sa.MetaData(),
     )
-    _assert_tables_equivalent(via_factory, via_to_sqla)
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
 
 def test_parity_mcp_tool_grants_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``mcp_tool_grants_table``.
+    """``McpToolGrantCollection.schema``-shaped ``TableSchema``
+    produces a Table structurally equal to
+    ``_reference_mcp_tool_grants_table``.
     """
-    via_factory = mcp_tool_grants_table(sa.MetaData())
+    via_reference = _reference_mcp_tool_grants_table(sa.MetaData())
     via_to_sqla = _mcp_tool_grants_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(via_factory, via_to_sqla)
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
 
 def test_parity_context_items_table() -> None:
-    """enriched TableSchema produces a Table structurally equal to
-    ``context_items_table``.
+    """``ContextItemCollection.schema``-shaped ``TableSchema``
+    produces a Table structurally equal to
+    ``_reference_context_items_table``.
     """
-    via_factory = context_items_table(sa.MetaData())
+    via_reference = _reference_context_items_table(sa.MetaData())
     via_to_sqla = _context_items_schema().to_sqlalchemy_table(sa.MetaData())
-    _assert_tables_equivalent(via_factory, via_to_sqla)
+    _assert_tables_equivalent(via_reference, via_to_sqla)
 
 
 # ---------------------------------------------------------------------------

@@ -21,25 +21,10 @@ import asyncio
 import json
 import math
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
-from sqlalchemy import Column as SAColumn
-from sqlalchemy import (
-    DateTime,
-    Enum as SAEnum,
-    ForeignKey,
-    ForeignKeyConstraint,
-    Index,
-    Integer,
-    MetaData,
-    Numeric,
-    Table,
-    Text,
-)
-from sqlalchemy import text as sa_text
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy import MetaData, Table
 
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
@@ -58,7 +43,6 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
-    _require_pgvector,
     spans_partitions,
 )
 from threetears.core.config import CoreConfig
@@ -98,89 +82,44 @@ log = get_logger(__name__)
 def conversation_memory_refs_table(metadata: MetaData) -> Table:
     """Register the ``conversation_memory_refs`` table on ``metadata``.
 
-    Mirrors the canonical schema created by
-    :func:`threetears.agent.memory.migrations.v002_create_conversation_memory_refs.create_conversation_memory_refs`
-    plus the v013 ``date_added`` -> ``TIMESTAMPTZ`` upgrade and the
-    v014 ``date_added`` -> ``date_created`` rename + ``date_updated``
-    addition. Call this factory before
-    ``SQLiteCacheManager.initialize(metadata)`` so the L1 cache
-    builds with the full schema; without it,
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`MemoryRefsCollection.schema.to_sqlalchemy_table`. Call this
+    factory before ``SQLiteCacheManager.initialize(metadata)`` so the
+    L1 cache builds with the full schema; without it,
     :class:`MemoryRefsCollection.save_entity` fails at the L1 boundary
     with ``no such table: conversation_memory_refs`` even though the
     L3 Postgres write succeeds.
-
-    Idempotent: returns the existing table when the metadata already
-    has it registered. Same shape as
-    :func:`threetears.agent.tools.collections.context_items_table`.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``conversation_memory_refs`` :class:`Table`
     :rtype: Table
     """
-    if "conversation_memory_refs" in metadata.tables:
-        return metadata.tables["conversation_memory_refs"]
-    return Table(
-        "conversation_memory_refs",
-        metadata,
-        SAColumn("conversation_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("item_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("item_type", Text(), nullable=False),
-        SAColumn("short_desc", Text(), nullable=False),
-        # ``date_created`` carries ``server_default=text("now()")`` to
-        # match prod metallm (alembic confirms the default). v021 pins
-        # the same default on the migrations side.
-        SAColumn(
-            "date_created",
-            DateTime(timezone=True),
-            nullable=False,
-            server_default=sa_text("now()"),
-        ),
-        SAColumn("date_updated", DateTime(timezone=True), nullable=False),
-        # FK on ``conversation_id`` with CASCADE matches prod
-        # (alembic ``conversation_memory_refs_conversation_id_fkey``).
-        # Table-level + ondelete because inline form cannot express
-        # on_delete.
-        ForeignKeyConstraint(
-            ["conversation_id"],
-            ["conversations.conversation_id"],
-            ondelete="CASCADE",
-        ),
-        # lookup index on conversation_id for the
-        # ``find_by_conversation`` scan.
-        Index("ix_conversation_memory_refs_cid", "conversation_id"),
-    )
+    return cast(Table, MemoryRefsCollection.schema.to_sqlalchemy_table(metadata))
 
 
 # ---------------------------------------------------------------------------
-# v0.7.5 cross-package table factories.
+# v0.8.0 cross-package table factories.
 #
-# Mirrors the ``conversation_memory_refs_table`` /
-# ``threetears.agent.tools.collections.context_items_table`` pattern: a
-# package-owned SQLAlchemy Table declaration that any host application
-# (metallm, future consumers) can register on its own ``MetaData`` so
-# both the L1 SQLite cache and Alembic auto-generate see the same shape
-# the Collection writes to.
+# Each factory below is a thin idempotency wrapper around
+# ``<Collection>.schema.to_sqlalchemy_table(metadata)``. The
+# ``TableSchema`` declaration on the Collection is the single source
+# of truth for the SQLAlchemy shape (columns, types, primary key,
+# foreign keys, indexes, enum constraints, vector dimensions, server
+# defaults).
 #
-# Before v0.7.5, metallm carried its own ``MemoryModel`` /
-# ``MediaModel`` / ``MediaContentModel`` / ``MemoryChunkModel``
-# declarations in ``api/src/data/models.py`` that duplicated the column
-# set declared on each Collection's ``TableSchema``. Adding a column
-# (the v0.14.6 ``memories.alias`` rollout) required updating BOTH
-# places; missing the metallm side meant the L1 SQLite cache initialized
-# without the column and every cache-through write failed at L1 with
-# ``table memories has no column named alias`` before asyncpg ever saw
-# the INSERT. The factories below put the canonical shape in one place
-# so the divergence trap closes.
+# Before v0.8.0, each factory hand-wrote the SQLAlchemy
+# ``Table(...)`` declaration alongside the Collection's
+# ``TableSchema`` — two declarations of the same shape inside one
+# file. v0.8.0 enriched ``TableSchema`` (shards 01-03) so the factory
+# bodies can delegate to ``to_sqlalchemy_table`` (shard 04), closing
+# the duplication trap that the v0.7.5 factories themselves were
+# introduced to close at the cross-package boundary.
 #
-# The factories declare the FULL SQLAlchemy shape (FKs, indexes,
-# generated tsvector columns, Vector dimension, Enum-style CHECK
-# constraints) rather than the lossy projection that ``TableSchema``
-# would produce. A future 3tears v0.8.0 initiative tracked in the
-# v0.8.0 task shards enriches ``TableSchema`` with FK / Index / Enum
-# semantics so the duplication-within-this-file can be eliminated; for
-# v0.7.5 the manual-mirror approach keeps the blast radius small and
-# matches the existing ``conversation_memory_refs_table`` precedent.
+# Public factory signatures are unchanged so host applications
+# (metallm, future consumers) keep calling ``memories_table(metadata)``
+# etc. without modification.
 # ---------------------------------------------------------------------------
 
 
@@ -194,283 +133,73 @@ _MEMORY_VECTOR_DIM = 1024
 
 
 def memories_table(metadata: MetaData) -> Table:
-    """Register the ``memories`` table on the given SA metadata (v0.7.5).
+    """Register the ``memories`` table on the given SA metadata.
 
-    Replaces the hand-maintained ``MemoryModel`` declarative class on
-    the metallm side. Call this before
-    ``SQLiteBackend.initialize(metadata)`` so the L1 cache gets the
-    correct schema, and before Alembic ``target_metadata`` reflection
-    so auto-generate sees the same shape.
-
-    Idempotent: returns the existing table when the metadata already
-    has it registered.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`MemoriesCollection.schema.to_sqlalchemy_table`. Call this
+    before ``SQLiteBackend.initialize(metadata)`` so the L1 cache gets
+    the correct schema, and before Alembic ``target_metadata``
+    reflection so auto-generate sees the same shape.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``memories`` :class:`Table`
     :rtype: Table
     """
-    if "memories" in metadata.tables:
-        return metadata.tables["memories"]
-    vector_cls = _require_pgvector()
-    return Table(
-        "memories",
-        metadata,
-        SAColumn("memory_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn(
-            "user_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("users.user_id"),
-            nullable=False,
-        ),
-        # v0.14.0 unification (metallm alembic 082): conversation_id is
-        # NOT NULL but no longer carries an FK -- it survives
-        # conversation hard-delete with a dangling reference.
-        SAColumn("conversation_id", PgUUID(as_uuid=True), nullable=False),
-        # FK with ON DELETE SET NULL to match prod metallm
-        # (alembic ``memories_message_id_source_fkey``). The hand-
-        # written factory had no ``ondelete`` (NO ACTION) which
-        # diverged from prod; v0.8.0 closes the gap so the parity
-        # gate stays clean.
-        SAColumn(
-            "message_id_source",
-            PgUUID(as_uuid=True),
-            ForeignKey("messages.message_id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        # ``type_memory`` uses a string-literal Enum (not the
-        # threetears.agent.memory.types.MemoryType class) because the
-        # metallm enum names are lowercase while threetears' are
-        # uppercase; the wire values match so a literal-name Enum
-        # declaration is the lossless lowest common denominator.
-        SAColumn(
-            "type_memory",
-            SAEnum(
-                "preference",
-                "fact",
-                "decision",
-                "topical_context",
-                "relational_context",
-                name="memory_type",
-                create_constraint=True,
-            ),
-            nullable=False,
-        ),
-        SAColumn("content", Text(), nullable=False),
-        SAColumn("summary", Text(), nullable=True),
-        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
-        SAColumn("search_vector", TSVECTOR(), nullable=True),
-        # v0.7.5 / metallm alembic 088: per-user named-anchor for
-        # direct ``memory_recall(alias=...)`` lookup. Uniqueness is
-        # enforced by the partial unique index
-        # ``ix_memories_user_alias`` declared in metallm alembic 088
-        # (3tears doesn't declare the index in this Table because the
-        # partial-WHERE shape is metallm-deploy-specific; the column
-        # itself is the universal piece).
-        SAColumn("alias", Text(), nullable=True),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        SAColumn("date_updated", DateTime(timezone=True), nullable=True),
-        Index("ix_memories_user_date", "user_id", "date_created"),
-    )
+    return cast(Table, MemoriesCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def media_table(metadata: MetaData) -> Table:
-    """Register the ``media`` table on the given SA metadata (v0.7.5).
+    """Register the ``media`` table on the given SA metadata.
 
-    Replaces the hand-maintained ``MediaModel`` declarative class on
-    the metallm side. Includes the v0.14.0-unified ``memory_id`` FK
-    (every media row attaches to a memory) with CASCADE-on-memory-
-    delete and the four indexes the metallm model declared.
-
-    Idempotent.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`MediaCollection.schema.to_sqlalchemy_table`. Includes the
+    v0.14.0-unified ``memory_id`` FK (every media row attaches to a
+    memory) with CASCADE-on-memory-delete and the four indexes.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``media`` :class:`Table`
     :rtype: Table
     """
-    if "media" in metadata.tables:
-        return metadata.tables["media"]
-    return Table(
-        "media",
-        metadata,
-        # Composite PK ``(agent_id, media_id)`` matches prod (set by
-        # 3tears v009_media_composite_fk). The pre-v0.7.5 metallm
-        # MediaModel declared single PK on ``media_id`` only and was
-        # silently divergent from prod -- the ORM-driven Alembic
-        # auto-gen would have wanted to drop the composite PK every
-        # run. Composite-PK + ``agent_id`` partition matches what
-        # MediaCollection expects.
-        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("media_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn(
-            "user_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("users.user_id"),
-            nullable=False,
-        ),
-        SAColumn("s3_key", Text(), nullable=True),
-        SAColumn("mime_type", Text(), nullable=False),
-        SAColumn("size_bytes", Integer(), nullable=False),
-        SAColumn("source", Text(), nullable=False),
-        SAColumn("metadata_json", JSONB(), nullable=False, server_default="{}"),
-        SAColumn("generation_prompt", Text(), nullable=True),
-        SAColumn("media_category", Text(), nullable=False, server_default="image"),
-        SAColumn("extraction_status", Text(), nullable=False, server_default="none"),
-        SAColumn("thumbnail_s3_key", Text(), nullable=True),
-        SAColumn(
-            "cloud_connection_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("cloud_connections.cloud_connection_id", ondelete="SET NULL"),
-            nullable=True,
-        ),
-        SAColumn("cloud_file_id", Text(), nullable=True),
-        SAColumn("cloud_file_url", Text(), nullable=True),
-        SAColumn(
-            "memory_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("memories.memory_id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        Index("ix_media_user_date", "user_id", "date_created"),
-        Index("ix_media_mime_type", "mime_type"),
-        Index("ix_media_memory_id", "memory_id"),
-        Index(
-            "uq_media_cloud_connection_file",
-            "cloud_connection_id",
-            "cloud_file_id",
-            unique=True,
-        ),
-    )
+    return cast(Table, MediaCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def media_content_table(metadata: MetaData) -> Table:
-    """Register the ``media_content`` table on the given SA metadata (v0.7.5).
+    """Register the ``media_content`` table on the given SA metadata.
 
-    Replaces the hand-maintained ``MediaContentModel`` declarative class
-    on the metallm side. Carries derived content (descriptions,
-    transcripts, OCR text) for ``media`` rows with its own embedding +
-    search_vector columns.
-
-    Idempotent.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`MediaContentCollection.schema.to_sqlalchemy_table`. Carries
+    derived content (descriptions, transcripts, OCR text) for ``media``
+    rows with its own embedding + search_vector columns.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``media_content`` :class:`Table`
     :rtype: Table
     """
-    if "media_content" in metadata.tables:
-        return metadata.tables["media_content"]
-    vector_cls = _require_pgvector()
-    return Table(
-        "media_content",
-        metadata,
-        # Composite PK ``(agent_id, content_id)`` matches prod (set by
-        # 3tears v010_media_content_composite_fk). The pre-v0.7.5
-        # metallm MediaContentModel was silently divergent.
-        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("content_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
-        # ``media_id`` FK is composite ``(agent_id, media_id) -> media
-        # (agent_id, media_id)`` in prod (v010). SQLAlchemy expresses
-        # composite FKs via ``ForeignKeyConstraint`` at table level;
-        # the column declaration drops the inline ``ForeignKey``.
-        SAColumn("media_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn(
-            "user_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("users.user_id"),
-            nullable=False,
-        ),
-        SAColumn("content_type", Text(), nullable=False),
-        SAColumn("content", Text(), nullable=False),
-        SAColumn("summary", Text(), nullable=True),
-        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
-        SAColumn("search_vector", TSVECTOR(), nullable=True),
-        SAColumn(
-            "model_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("models.model_id"),
-            nullable=True,
-        ),
-        SAColumn(
-            "provider_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("providers.provider_id"),
-            nullable=True,
-        ),
-        SAColumn("model_name", Text(), nullable=True),
-        SAColumn("provider_name", Text(), nullable=True),
-        SAColumn("token_count_prompt", Integer(), nullable=True),
-        SAColumn("token_count_completion", Integer(), nullable=True),
-        SAColumn("cost", Numeric(12, 8), nullable=True),
-        SAColumn("metadata_json", JSONB(), nullable=True),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        Index("ix_media_content_media_type", "media_id", "content_type"),
-        Index("ix_media_content_user", "user_id"),
-    )
+    return cast(Table, MediaContentCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def memory_chunks_table(metadata: MetaData) -> Table:
-    """Register the ``memory_chunks`` table on the given SA metadata (v0.7.5).
+    """Register the ``memory_chunks`` table on the given SA metadata.
 
-    Replaces the hand-maintained ``MemoryChunkModel`` declarative class
-    on the metallm side. Carries chunked text + embeddings parented to
-    a ``memories`` row, plus the v0.14.0 transcript-chunk
-    ``message_id_start`` / ``message_id_end`` provenance columns.
-
-    Idempotent.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`MemoryChunkCollection.schema.to_sqlalchemy_table`. Carries
+    chunked text + embeddings parented to a ``memories`` row, plus the
+    v0.14.0 transcript-chunk ``message_id_start`` / ``message_id_end``
+    provenance columns.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``memory_chunks`` :class:`Table`
     :rtype: Table
     """
-    if "memory_chunks" in metadata.tables:
-        return metadata.tables["memory_chunks"]
-    vector_cls = _require_pgvector()
-    return Table(
-        "memory_chunks",
-        metadata,
-        # Composite PK ``(agent_id, chunk_id)`` matches prod (set by
-        # 3tears v011_memory_chunks_composite_fk). The pre-v0.7.5
-        # metallm MemoryChunkModel was silently divergent.
-        SAColumn("agent_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("chunk_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("customer_id", PgUUID(as_uuid=True), nullable=False),
-        # ``memory_id`` FK is composite ``(agent_id, memory_id) ->
-        # memories(agent_id, memory_id)`` in prod (v011). Drop the
-        # inline ``ForeignKey``; the composite is documented for the
-        # eventual v0.8.0 TableSchema-driven approach to express
-        # natively.
-        SAColumn("memory_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn(
-            "user_id",
-            PgUUID(as_uuid=True),
-            ForeignKey("users.user_id"),
-            nullable=False,
-        ),
-        SAColumn("chunk_index", Integer(), nullable=False),
-        SAColumn("content", Text(), nullable=False),
-        SAColumn("summary", Text(), nullable=True),
-        SAColumn("heading_context", Text(), nullable=True),
-        SAColumn("page_number", Integer(), nullable=True),
-        SAColumn("token_count", Integer(), nullable=False),
-        SAColumn("embedding", vector_cls(_MEMORY_VECTOR_DIM), nullable=True),
-        SAColumn("search_vector", TSVECTOR(), nullable=True),
-        # Transcript-chunk message provenance (metallm alembic 084).
-        # Document chunks leave both NULL; transcript chunks populate
-        # them so the agent can navigate chunk -> source messages.
-        SAColumn("message_id_start", PgUUID(as_uuid=True), nullable=True),
-        SAColumn("message_id_end", PgUUID(as_uuid=True), nullable=True),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-        Index("ix_memory_chunks_memory", "memory_id", "chunk_index"),
-        Index("ix_memory_chunks_user", "user_id"),
-    )
+    return cast(Table, MemoryChunkCollection.schema.to_sqlalchemy_table(metadata))
 
 
 def _build_fts_text(user_text: str, min_len: int = 3, max_len: int = 500) -> str | None:

@@ -26,15 +26,12 @@ tick the authorizer wires in :meth:`LocalGrantAuthorizer.start`.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from uuid_utils import uuid7
 
-from sqlalchemy import Column as SAColumn
-from sqlalchemy import DateTime, Index, MetaData, Table, Text
-from sqlalchemy import text as sa_text
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy import MetaData, Table
 
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -60,43 +57,18 @@ log = get_logger(__name__)
 def mcp_tool_grants_table(metadata: MetaData) -> Table:
     """register the ``mcp_tool_grants`` table on the given SA metadata.
 
-    call this before ``SQLiteBackend.initialize(metadata)`` so the L1
-    cache gets the correct schema. safe to call multiple times --
-    returns the existing table if already registered.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`McpToolGrantCollection.schema.to_sqlalchemy_table`. Call
+    this before ``SQLiteBackend.initialize(metadata)`` so the L1 cache
+    gets the correct schema.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``mcp_tool_grants`` :class:`Table`
     :rtype: Table
     """
-    if "mcp_tool_grants" in metadata.tables:
-        return metadata.tables["mcp_tool_grants"]
-    return Table(
-        "mcp_tool_grants",
-        metadata,
-        SAColumn("grant_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("principal_type", Text(), nullable=False),
-        SAColumn("principal_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn("tool_name", Text(), nullable=False),
-        SAColumn("permission", Text(), nullable=False),
-        # ``date_created`` carries ``server_default=text("now()")`` to
-        # match prod (v001 migration declares ``TIMESTAMPTZ NOT NULL
-        # DEFAULT now()``).
-        SAColumn(
-            "date_created",
-            DateTime(timezone=True),
-            nullable=False,
-            server_default=sa_text("now()"),
-        ),
-        # lookup indexes for the authorizer cache rebuild path. v001
-        # creates the same two indexes on the L3 side.
-        Index(
-            "idx_mcp_tool_grants_principal",
-            "principal_id",
-            "permission",
-        ),
-        Index("idx_mcp_tool_grants_tool", "tool_name"),
-    )
+    return cast(Table, McpToolGrantCollection.schema.to_sqlalchemy_table(metadata))
 
 
 class McpToolGrantEntity(BaseEntity):
