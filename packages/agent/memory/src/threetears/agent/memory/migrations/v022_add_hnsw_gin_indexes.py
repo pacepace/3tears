@@ -22,7 +22,10 @@ own Alembic migrations:
   prod was created before metallm started parametrising HNSW),
   ``uq_media_content_content_id`` UNIQUE constraint.
 - ``memory_chunks`` (5): ``idx_chunks_message_id_start`` partial
-  composite btree, ``idx_memory_chunks_agent_user`` composite btree,
+  composite btree on ``(agent_id, message_id_start)`` (fixed in
+  v0.8.2; v0.8.1 mistakenly wrote ``(message_id_start, chunk_index)``
+  -- see v023 for the drop-and-recreate path),
+  ``idx_memory_chunks_agent_user`` composite btree,
   ``idx_memory_chunks_search_vector`` GIN FTS,
   ``ix_memory_chunks_embedding`` HNSW vector (no WITH parameters),
   ``uq_memory_chunks_chunk_id`` UNIQUE constraint.
@@ -106,9 +109,18 @@ _IX_MEDIA_CONTENT_EMBEDDING_SQL = (
 
 # ----- memory_chunks indexes (5 adds) --------------------------------- #
 
+# v0.8.2: column shape corrected to ``(agent_id, message_id_start)``
+# to match the schema declaration in ``MemoryChunkCollection.schema``
+# and the prod metallm shape (verified against
+# ``pg_indexes`` on the dev DB). v0.8.1 shipped this migration with
+# ``(message_id_start, chunk_index)`` which mismatched both the
+# schema and prod -- the parity test passed because it compares
+# schema vs reference fixture (both correct) without consulting the
+# migration SQL. v023 handles the drop-and-recreate path for any
+# agent pods that already ran the broken v022.
 _IDX_CHUNKS_MESSAGE_ID_START_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_message_id_start "
-    "ON memory_chunks (message_id_start, chunk_index) "
+    "ON memory_chunks (agent_id, message_id_start) "
     "WHERE message_id_start IS NOT NULL"
 )
 
