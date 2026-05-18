@@ -135,6 +135,9 @@ from threetears.agent.memory.migrations.v021_memory_chunks_index_and_token impor
 from threetears.agent.memory.migrations.v022_add_hnsw_gin_indexes import (
     add_hnsw_gin_indexes,
 )
+from threetears.agent.memory.migrations.v023_fix_idx_chunks_message_id_start import (
+    fix_idx_chunks_message_id_start,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -185,6 +188,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(20)(add_memories_alias)
     pkg.version(21)(add_chunk_index_and_token_count)
     pkg.version(22)(add_hnsw_gin_indexes)
+    pkg.version(23)(fix_idx_chunks_message_id_start)
     runner.register(pkg)
     return pkg
 
@@ -193,6 +197,7 @@ __all__ = [
     "PACKAGE_NAME",
     "add_chunk_index_and_token_count",
     "add_hnsw_gin_indexes",
+    "fix_idx_chunks_message_id_start",
     "add_lifecycle_columns",
     "add_memories_alias",
     "add_memory_fts",
