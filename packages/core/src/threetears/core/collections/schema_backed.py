@@ -687,6 +687,170 @@ class TableSchema:
         pk_set = set(self._pk_columns)
         return [c for c in self.columns if not c.immutable and c.name not in pk_set]
 
+    def to_sqlalchemy_table(self, metadata: Any) -> Any:
+        """register this schema's canonical SQLAlchemy ``Table`` on ``metadata``.
+
+        idempotent: if a table with :attr:`name` already exists on the
+        passed metadata, returns the existing Table without
+        re-registering.
+
+        SQLAlchemy + pgvector imports are deferred inside the method
+        body so non-Alembic / non-SQLAlchemy consumers of
+        :mod:`threetears.core.collections.schema_backed` (e.g. the
+        per-pod async-CRUD execution path) do not pay the import cost.
+
+        :param metadata: SQLAlchemy ``MetaData`` instance to attach the
+            table to
+        :ptype metadata: sqlalchemy.MetaData
+        :return: the registered :class:`sqlalchemy.Table`
+        :rtype: sqlalchemy.Table
+        :raises KeyError: when any column carries a ``column_type`` tag
+            that is not registered in the type mapping (catches
+            unknown-tag drift loudly rather than silently dropping the
+            column)
+        :raises ImportError: when the schema contains a VECTOR_TYPE
+            column and ``pgvector`` is not installed (mirrors the
+            v0.7.5 factory behaviour -- the failure is legible at
+            registration time, not at first INSERT)
+        """
+        # import inside the method so callers that never invoke
+        # to_sqlalchemy_table don't import SQLAlchemy at module-import
+        # time. local imports here are tiny -- the global SQLAlchemy
+        # initialisation cost is large.
+        import sqlalchemy as sa
+        from sqlalchemy import (
+            Boolean,
+            DateTime,
+            Enum as SAEnum,
+            Integer,
+            Numeric,
+            Text,
+        )
+        from sqlalchemy.dialects.postgresql import (
+            BYTEA,
+            JSONB,
+            TSVECTOR,
+            UUID as PgUUID,
+        )
+
+        if self.name in metadata.tables:
+            return metadata.tables[self.name]
+
+        # tag → SQLAlchemy type constructor. each lambda receives the
+        # :class:`Column` so vector-dim / numeric-precision / enum-value
+        # parameters thread through cleanly without a second lookup.
+        type_mapping: dict[str, Callable[[Column], Any]] = {
+            UUID_TYPE: lambda col: PgUUID(as_uuid=True),
+            STRING_TYPE: lambda col: Text(),
+            DATETIMETZ_TYPE: lambda col: DateTime(timezone=True),
+            JSONB_TYPE: lambda col: JSONB(),
+            BYTES_TYPE: lambda col: BYTEA(),
+            INT_TYPE: lambda col: Integer(),
+            BOOL_TYPE: lambda col: Boolean(),
+            VECTOR_TYPE: lambda col: _require_pgvector()(col.vector_dim),
+            NUMERIC_TYPE: lambda col: Numeric(col.precision, col.scale),
+            TSVECTOR_TYPE: lambda col: TSVECTOR(),
+            ENUM_TYPE: lambda col: SAEnum(
+                *(col.enum_type or ()),
+                name=col.enum_name,
+                create_constraint=True,
+            ),
+        }
+
+        pk_set = set(self._pk_columns)
+        sa_columns: list[Any] = []
+        for col in self.columns:
+            if col.column_type not in type_mapping:
+                raise KeyError(
+                    f"TableSchema(name={self.name!r}): column "
+                    f"{col.name!r} has unknown column_type "
+                    f"{col.column_type!r}; no entry in to_sqlalchemy_table "
+                    f"type mapping",
+                )
+            sa_type = type_mapping[col.column_type](col)
+            is_pk = col.name in pk_set
+            # PK columns are NOT NULL by definition; for non-PK columns
+            # carry through the schema's :attr:`Column.nullable` flag.
+            nullable = False if is_pk else col.nullable
+            kwargs: dict[str, Any] = {
+                "primary_key": is_pk,
+                "nullable": nullable,
+            }
+            if col.server_default is not None:
+                kwargs["server_default"] = col.server_default
+            if col.foreign_key is not None:
+                ref_table, ref_col = col.foreign_key
+                sa_columns.append(
+                    sa.Column(
+                        col.name,
+                        sa_type,
+                        sa.ForeignKey(f"{ref_table}.{ref_col}"),
+                        **kwargs,
+                    ),
+                )
+            else:
+                sa_columns.append(sa.Column(col.name, sa_type, **kwargs))
+
+        # composite (or supplementary single-column) FKs declared at
+        # table level via :attr:`foreign_keys`. ``ondelete`` is omitted
+        # when the action is "NO ACTION" so the emitted DDL matches the
+        # hand-written factories byte-for-byte (SQLAlchemy treats
+        # ``ondelete=None`` as "no clause"; passing the literal string
+        # would force an explicit ``ON DELETE NO ACTION`` that the
+        # factories don't emit).
+        sa_fk_constraints: list[Any] = []
+        for fk in self.foreign_keys:
+            ondelete: str | None = fk.on_delete if fk.on_delete != "NO ACTION" else None
+            sa_fk_constraints.append(
+                sa.ForeignKeyConstraint(
+                    list(fk.local_cols),
+                    [f"{fk.ref_table}.{ref_col}" for ref_col in fk.ref_cols],
+                    ondelete=ondelete,
+                ),
+            )
+
+        sa_indexes: list[Any] = []
+        for idx in self.indexes:
+            sa_indexes.append(
+                sa.Index(
+                    idx.name,
+                    *idx.columns,
+                    unique=idx.unique,
+                    postgresql_where=sa.text(idx.where) if idx.where else None,
+                ),
+            )
+
+        return sa.Table(
+            self.name,
+            metadata,
+            *sa_columns,
+            *sa_fk_constraints,
+            *sa_indexes,
+        )
+
+
+def _require_pgvector() -> Any:
+    """return pgvector's ``Vector`` column class.
+
+    deferred lazy-import: pgvector is pulled in only when a caller
+    declares a VECTOR_TYPE column. import failure raises at call time
+    so the failure is legible at table-registration / collection-init,
+    not deep inside an asyncpg INSERT.
+
+    :return: the :class:`pgvector.sqlalchemy.Vector` class
+    :rtype: type
+    :raises ImportError: when pgvector is not installed
+    """
+    try:
+        from pgvector.sqlalchemy import Vector
+    except ImportError as exc:
+        raise ImportError(
+            "pgvector is required to materialise VECTOR_TYPE columns; "
+            "install ``pgvector`` or remove the column from the "
+            "TableSchema",
+        ) from exc
+    return Vector
+
 
 def _coerce_uuid(value: Any) -> UUID | None:
     """coerce a value to a stdlib :class:`UUID`.

@@ -39,15 +39,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
-try:
-    # pgvector.sqlalchemy ships the canonical Vector column type.
-    # Importing inside a try block keeps the package importable in
-    # environments where pgvector is unavailable (tests that exercise
-    # non-memory packages); the four memory-table factories below
-    # require pgvector so they raise at call time if it's missing.
-    from pgvector.sqlalchemy import Vector as _PGVector
-except ImportError:  # pragma: no cover - pgvector should always be installed
-    _PGVector = None
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import (
@@ -60,6 +51,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    _require_pgvector,
     spans_partitions,
 )
 from threetears.core.config import CoreConfig
@@ -172,26 +164,6 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 # voyage-3-large default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
 # the metallm declarations.
 _MEMORY_VECTOR_DIM = 1024
-
-
-def _require_pgvector() -> Any:
-    """return the ``Vector`` class, or raise if pgvector is unavailable.
-
-    keeps the import-time soft failure path tidy: a host that doesn't
-    install pgvector can still import ``threetears.agent.memory`` for
-    the entities + collection methods that don't touch the vector
-    column, but the factories below raise on call so the failure is
-    legible at registration time rather than at first INSERT.
-
-    :raises ImportError: when pgvector is not installed
-    :return: pgvector's ``Vector`` column type class
-    :rtype: type
-    """
-    if _PGVector is None:
-        raise ImportError(
-            "pgvector is required to declare memory table factories; install ``pgvector`` or remove the factory call",
-        )
-    return _PGVector
 
 
 def memories_table(metadata: MetaData) -> Table:
