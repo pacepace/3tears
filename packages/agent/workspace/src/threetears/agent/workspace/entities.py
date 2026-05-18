@@ -75,9 +75,13 @@ class Workspace(BaseEntity):
     be loaded from :class:`platform.namespaces` at resolve-time; the
     ``_resolve_workspace`` helper stamps it onto the entity via the
     ``customer_id`` setter after a single platform lookup.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``workspace_id`` (migration v005) to standardize on
+    ``<entity>_id`` across all entity tables.
     """
 
-    primary_key_field: str = "id"
+    primary_key_field: str = "workspace_id"
 
     @property
     def agent_id(self) -> UUID:
@@ -363,9 +367,14 @@ class Workspace(BaseEntity):
 
 
 class WorkspaceFile(BaseEntity):
-    """cache-proxy entity for workspace_files head-state table."""
+    """cache-proxy entity for workspace_files head-state table.
 
-    primary_key_field: str = "id"
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``file_id`` (migration v005) to standardize on ``<entity>_id``
+    across all entity tables.
+    """
+
+    primary_key_field: str = "file_id"
 
     @property
     def workspace_id(self) -> UUID:
@@ -494,9 +503,14 @@ class WorkspaceFile(BaseEntity):
 
 
 class WorkspaceFileVersion(BaseEntity):
-    """cache-proxy entity for workspace_file_versions append-only journal table."""
+    """cache-proxy entity for workspace_file_versions append-only journal table.
 
-    primary_key_field: str = "id"
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``version_id`` (migration v005) to standardize on
+    ``<entity>_id`` across all entity tables.
+    """
+
+    primary_key_field: str = "version_id"
 
     @property
     def workspace_id(self) -> UUID:

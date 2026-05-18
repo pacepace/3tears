@@ -313,7 +313,7 @@ async def _resolve_or_create_conversation_namespace(
     now = datetime.now(UTC)
     entity = namespace_collection.entity_class(
         {
-            "id": new_id,
+            "namespace_id": new_id,
             "name": conversation_namespace_name(agent_id, customer_id),
             "namespace_type": CONVERSATION_NAMESPACE_TYPE,
             "owner_agent_id": agent_id,
@@ -485,7 +485,7 @@ async def ensure_conversation_owner_assignment(
     if existing_group is None:
         group_entity = deps.group_collection.entity_class(
             {
-                "id": group_id,
+                "group_id": group_id,
                 "customer_id": customer_id,
                 "name": group_name,
                 "description": "auto (conversation owner)",

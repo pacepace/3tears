@@ -92,13 +92,16 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     # date_created) + ``idx_conv_status`` + ``idx_conversations_search_vector``
     # (GIN -- can't be expressed in v0.8.0 IndexDef, kept Alembic-side
     # for now). Standard btree indexes are declared here.
-    primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
+    # v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    # ``conversation_id`` to standardize on ``<entity>_id`` across all
+    # entity tables (matches metallm prod + JSON API contract).
+    primary_key_column: str | tuple[str, ...] = ("agent_id", "conversation_id")
     schema = TableSchema(
         name="conversations",
-        primary_key=("agent_id", "id"),
+        primary_key=("agent_id", "conversation_id"),
         columns=[
             Column("agent_id", UUID_TYPE, partition=True),
-            Column("id", UUID_TYPE),
+            Column("conversation_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, immutable=True),
             Column("user_id", UUID_TYPE, immutable=True),
             Column("channel_type", STRING_TYPE, immutable=True),
@@ -371,7 +374,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data.pop("rank", None)
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["id"])
+            pk = (data["agent_id"], data["conversation_id"])
             # Populate L2 only, not L1. Search results are derived
             # (caller's intent is "find conversations matching X",
             # not "warm the L1 row cache"), and the typical follow-up
@@ -430,7 +433,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             data = self._coerce_row(dict(row))
             entity = self.entity_class(data, is_new=False, collection=self)
             entity.original_date_updated = data.get("date_updated")
-            pk = (data["agent_id"], data["id"])
+            pk = (data["agent_id"], data["conversation_id"])
             await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities

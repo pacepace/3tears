@@ -7,10 +7,9 @@ lookup indexes whose names diverge from prod (``idx_ctx_conversation``
 / ``idx_ctx_conversation_type`` vs prod's ``ix_context_items_conv``
 / ``ix_context_items_type``), without the partial-unique
 ``ix_context_items_var_key``, without the LRU index
-``ix_context_items_lru``, without the FK on ``conversation_id``, and
-with ``long_desc VARCHAR(1000) NULL`` instead of prod's
-``TEXT NOT NULL DEFAULT ''``. v003 closes every gap so 3tears
-integration tests carry the shape the v0.8.0
+``ix_context_items_lru``, and with ``long_desc VARCHAR(1000) NULL``
+instead of prod's ``TEXT NOT NULL DEFAULT ''``. v003 closes every
+gap so 3tears integration tests carry the shape the v0.8.0
 ``ContextItemCollection.schema`` declares.
 
 Changes:
@@ -22,18 +21,48 @@ Changes:
   ``ix_context_items_var_key`` partial-unique)
 - backfill ``long_desc`` NULL -> '' and promote NOT NULL + SET
   DEFAULT '' to match prod
-- add the FK ``conversation_id -> conversations(conversation_id) ON
-  DELETE CASCADE`` (named ``fk_context_items_conversation``,
-  matching prod) IF NOT EXISTS via a ``pg_constraint`` lookup
+
+FK decision (v0.8.0 shard 04.6). Earlier drafts of this migration
+added a single-column FK
+``context_items.conversation_id -> conversations.conversation_id ON
+DELETE CASCADE``. With the v0.8.0 shard 04.6 rename of
+``conversations.id -> conversations.conversation_id``, that FK
+target column now exists -- but the 3tears ``conversations`` table
+has a COMPOSITE primary key ``(agent_id, conversation_id)``, and
+Postgres requires every FK to reference a unique or primary-key
+column set. A single-column FK against the
+``conversation_id`` half of a composite PK is not legal.
+
+The composite FK ``(agent_id, conversation_id)
+-> conversations(agent_id, conversation_id)`` would be the correct
+shape -- BUT ``context_items`` does NOT carry an ``agent_id``
+column on the 3tears side (the table is partitioned by
+``conversation_id`` alone; the prod metallm ``context_items``
+table likewise has no ``agent_id`` column because metallm's
+``conversations`` table has a non-composite PK on ``id`` only).
+
+Therefore: v003 declares NO FK on ``conversation_id``. The 3tears
+side relies on app-level cascade (
+:class:`ConversationsCollection` is the sole writer to
+``conversations`` and triggers context-item cleanup through the
+:class:`ContextItemCollection` when a conversation is closed /
+deleted). Prod metallm keeps the metallm-shaped single-column FK
+because its ``conversations.id`` is a non-composite PK; that side
+is unaffected by this divergence.
+
+The ``ContextItemCollection.schema.foreign_keys`` declaration in
+:mod:`threetears.agent.tools.collections` keeps the metallm-shaped
+single-column FK so the ``to_sqlalchemy_table`` factory produces a
+metadata table consumers can introspect. The 3tears integration
+test fixtures override the metadata before applying it to a real
+postgres so the FK does not surface as a DDL error.
 
 Idempotency: every CREATE / DROP uses IF EXISTS / IF NOT EXISTS, the
 SET NOT NULL is guarded by an ``information_schema`` DO block
-(Postgres has no SET NOT NULL IF NOT NULL), the FK add is guarded by
-a ``pg_constraint`` DO block (Postgres has no ADD CONSTRAINT IF NOT
-EXISTS). v0.8.0 schema parity is the target shape; subsequent test
-runs should observe zero phantom migrations between the 3tears
-migration output and the prod metallm Alembic output for
-``context_items``.
+(Postgres has no SET NOT NULL IF NOT NULL). v0.8.0 schema parity is
+the target shape; subsequent test runs should observe zero phantom
+migrations between the 3tears migration output and the prod metallm
+Alembic output for the ``context_items`` index / column shape.
 """
 
 from __future__ import annotations
@@ -94,24 +123,21 @@ END
 $$
 """
 
-# Postgres has no ``ADD CONSTRAINT IF NOT EXISTS``; guard the FK add
-# with a ``pg_constraint`` lookup keyed by the prod constraint name.
-_ADD_FK_CONVERSATION_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'fk_context_items_conversation'
-    ) THEN
-        ALTER TABLE context_items
-            ADD CONSTRAINT fk_context_items_conversation
-            FOREIGN KEY (conversation_id)
-            REFERENCES conversations(conversation_id)
-            ON DELETE CASCADE;
-    END IF;
-END
-$$
-"""
+# FK on ``conversation_id`` was intentionally dropped from this
+# migration. See module docstring "FK decision" section: 3tears
+# ``conversations`` carries a composite PK ``(agent_id, conversation_id)``
+# and ``context_items`` has no ``agent_id`` column, so no FK shape is
+# legal. App-level cascade handles conversation -> context_items
+# cleanup; the schema declaration in
+# ``ContextItemCollection.schema.foreign_keys`` keeps the metallm-
+# shaped single-column FK so ``to_sqlalchemy_table`` produces a
+# metadata table consumers can introspect.
+# A previously-installed FK from earlier v003 drafts would block
+# further work on agent-aware partitioning, so drop it by name if
+# present. The constraint name ``fk_context_items_conversation``
+# matches the prod metallm declaration; on 3tears agent schemas
+# that never carried it, the DROP IF EXISTS is a no-op.
+_DROP_LEGACY_FK_CONVERSATION_SQL = "ALTER TABLE context_items DROP CONSTRAINT IF EXISTS fk_context_items_conversation"
 
 
 async def align_context_items_shape(store: DataStore) -> None:
@@ -133,5 +159,7 @@ async def align_context_items_shape(store: DataStore) -> None:
     # long_desc shape
     await store.execute(_BACKFILL_LONG_DESC_SQL)
     await store.execute(_PROMOTE_LONG_DESC_SQL)
-    # FK to conversations
-    await store.execute(_ADD_FK_CONVERSATION_SQL)
+    # FK on conversation_id: see module docstring; no FK is legal
+    # against a composite-PK conversations table from a table that
+    # lacks agent_id. Drop any stale FK from earlier v003 drafts.
+    await store.execute(_DROP_LEGACY_FK_CONVERSATION_SQL)

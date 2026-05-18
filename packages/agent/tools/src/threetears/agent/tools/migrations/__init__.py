@@ -10,8 +10,8 @@ moved here from agent-memory because the table is conversation-scoped
 context surfaced to the LLM at tool-call time, not extracted memory.
 
 the package declares ``depends_on=("conversations",)`` because every
-``context_items`` row references a ``conversations.id`` value; ordering
-on apply guarantees the parent table exists before the child.
+``context_items`` row references a ``conversations.conversation_id`` value;
+ordering on apply guarantees the parent table exists before the child.
 
 version history:
 

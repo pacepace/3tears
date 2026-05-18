@@ -151,7 +151,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     the canonical class because every rbac-consuming app needs them.
     """
 
-    primary_key_column: tuple[str, ...] = ("row_scope", "id")
+    primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
     _partition_exempt_methods = frozenset(
         {
             "list_by_customer",
@@ -172,12 +172,17 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     # partition column that the platform DDL does NOT carry. v0.8.0
     # cannot reconcile that divergence without a platform-side
     # change. Documented for future cleanup.
+    # v0.8.0 shard 04.6: bare-``id`` PK column renamed to
+    # ``group_id`` to standardize on ``<entity>_id`` across all entity
+    # tables. The rename happens at the platform DDL side (outside
+    # 3tears); the schema declaration here reflects the post-rename
+    # column.
     schema = TableSchema(
         name="groups",
-        primary_key=("row_scope", "id"),
+        primary_key=("row_scope", "group_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
-            Column("id", UUID_TYPE),
+            Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE, nullable=True),
@@ -240,12 +245,13 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         self,
         group_id: UUID,
     ) -> GroupEntity | None:
-        """resolve group by ``id`` alone via the ``UNIQUE (id)`` constraint.
+        """resolve group by ``group_id`` alone via the ``UNIQUE (group_id)`` constraint.
 
         every endpoint that takes ``{group_id}`` in the URL knows the
         row's id but not the partition column ``row_scope``. uniqueness
-        is preserved by the table-level ``UNIQUE (id)`` constraint so
-        an id-only fetch is unambiguous.
+        is preserved by the table-level ``UNIQUE (group_id)`` constraint
+        (v0.8.0 shard 04.6 renamed from bare ``id``) so a single-column
+        fetch is unambiguous.
 
         :param group_id: group UUID
         :ptype group_id: UUID
@@ -255,7 +261,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         result: GroupEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM groups WHERE id = $1",
+                "SELECT * FROM groups WHERE group_id = $1",
                 group_id,
             )
             if row is not None:
@@ -325,7 +331,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
         result: list[GroupEntity] = []
         if self.l3_pool is not None and len(group_ids) > 0:
             rows = await self.l3_pool.fetch(
-                "SELECT * FROM groups WHERE id = ANY($1::uuid[])",
+                "SELECT * FROM groups WHERE group_id = ANY($1::uuid[])",
                 list(group_ids),
             )
             for row in rows:
@@ -334,8 +340,8 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
                 # JSON which collapses them to strings; the schema's
                 # _coerce_row handles UUID columns it knows about, but
                 # belt-and-suspenders for the two pk-adjacent columns.
-                if "id" in data:
-                    data["id"] = _coerce_uuid(data["id"])
+                if "group_id" in data:
+                    data["group_id"] = _coerce_uuid(data["group_id"])
                 if "customer_id" in data:
                     data["customer_id"] = _coerce_uuid(data["customer_id"])
                 self.write_to_cache_sync(data)
@@ -618,12 +624,14 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     # defaults match the platform DDL (test fixture lines 177-185).
     # Platform-managed table -- 3tears has no migration; the
     # ``UNIQUE(name)`` constraint lives in the platform DDL.
-    primary_key_column: str = "id"
+    # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``role_id`` to
+    # standardize on ``<entity>_id`` across all entity tables.
+    primary_key_column: str = "role_id"
     schema = TableSchema(
         name="roles",
-        primary_key="id",
+        primary_key="role_id",
         columns=[
-            Column("id", UUID_TYPE),
+            Column("role_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE),
             Column("permissions", JSONB_TYPE),
@@ -736,15 +744,15 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
         if self.l3_pool is not None and len(role_ids) > 0:
             rows = await self.l3_pool.fetch(
                 """
-                SELECT id, name, permissions, is_builtin
+                SELECT role_id, name, permissions, is_builtin
                   FROM roles
-                 WHERE id = ANY($1::uuid[])
+                 WHERE role_id = ANY($1::uuid[])
                 """,
                 list(role_ids),
             )
             result = [
                 Role(
-                    id=_coerce_uuid(row["id"]),  # type: ignore[arg-type]
+                    id=_coerce_uuid(row["role_id"]),  # type: ignore[arg-type]
                     name=row["name"],
                     permissions=_coerce_role_permissions(row["permissions"]),
                     is_built_in=bool(row["is_builtin"]),
@@ -770,7 +778,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     ``count_by_*``) subclass and add their own methods.
     """
 
-    primary_key_column: tuple[str, ...] = ("row_scope", "id")
+    primary_key_column: tuple[str, ...] = ("row_scope", "assignment_id")
     _partition_exempt_methods = frozenset(
         {
             "load_for_groups",
@@ -787,12 +795,16 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
     # managed table -- 3tears has no migration; FKs to ``roles`` /
     # ``groups`` / ``namespaces`` and the ``scope_type`` CHECK live
     # in the platform DDL.
+    # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``assignment_id``
+    # to standardize on ``<entity>_id`` across all entity tables. The
+    # rename happens at the platform DDL side (outside 3tears); the
+    # schema declaration here reflects the post-rename column.
     schema = TableSchema(
         name="role_assignments",
-        primary_key=("row_scope", "id"),
+        primary_key=("row_scope", "assignment_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
-            Column("id", UUID_TYPE),
+            Column("assignment_id", UUID_TYPE),
             Column("role_id", UUID_TYPE, immutable=True),
             Column("group_id", UUID_TYPE, immutable=True),
             Column("scope_type", STRING_TYPE, immutable=True),
@@ -869,12 +881,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         self,
         assignment_id: UUID,
     ) -> RoleAssignmentEntity | None:
-        """resolve assignment by ``id`` alone via the ``UNIQUE (id)`` constraint.
+        """resolve assignment by ``assignment_id`` alone (v0.8.0 shard 04.6).
 
         admin endpoints take ``{assignment_id}`` in the URL but not the
         partition column ``row_scope``. uniqueness across the whole
-        table is preserved by the table-level ``UNIQUE (id)``
-        constraint.
+        table is preserved by the table-level
+        ``UNIQUE (assignment_id)`` constraint (renamed from bare
+        ``id`` in v0.8.0 shard 04.6).
 
         :param assignment_id: assignment UUID
         :ptype assignment_id: UUID
@@ -884,7 +897,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         result: RoleAssignmentEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM role_assignments WHERE id = $1",
+                "SELECT * FROM role_assignments WHERE assignment_id = $1",
                 assignment_id,
             )
             if row is not None:
@@ -927,7 +940,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # of scope.
             rows = await self.l3_pool.fetch(
                 """
-                SELECT id, role_id, group_id, scope_type,
+                SELECT assignment_id, role_id, group_id, scope_type,
                        scope_namespace_id, scope_namespace_type,
                        scope_customer_id
                   FROM role_assignments
@@ -938,7 +951,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             )
             result = [
                 RoleAssignment(
-                    id=_coerce_uuid(row["id"]),  # type: ignore[arg-type]
+                    id=_coerce_uuid(row["assignment_id"]),  # type: ignore[arg-type]
                     role_id=_coerce_uuid(row["role_id"]),  # type: ignore[arg-type]
                     group_id=_coerce_uuid(row["group_id"]),  # type: ignore[arg-type]
                     scope_type=ScopeType(row["scope_type"]),
@@ -1025,13 +1038,13 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         row_scope = "platform" if scope_type == "all" else "customer"
         existing_row = await self.l3_pool.fetchrow(
             """
-            SELECT id FROM role_assignments
+            SELECT assignment_id FROM role_assignments
              WHERE row_scope = $1
                AND group_id = $2
                AND role_id = $3
                AND scope_type = $4
                AND scope_namespace_id IS NOT DISTINCT FROM $5
-             ORDER BY id ASC
+             ORDER BY assignment_id ASC
              LIMIT 1
             """,
             row_scope,
@@ -1042,14 +1055,14 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
         )
         result: UUID
         if existing_row is not None:
-            result = existing_row["id"]
+            result = existing_row["assignment_id"]
         else:
             new_id = uuid7()
             now = datetime.now(UTC)
             await self.l3_pool.execute(
                 """
                 INSERT INTO role_assignments (
-                    row_scope, id, role_id, group_id, scope_type,
+                    row_scope, assignment_id, role_id, group_id, scope_type,
                     scope_namespace_id, scope_namespace_type,
                     scope_customer_id, granted_by, date_granted,
                     managed_by
@@ -1178,7 +1191,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     deploying-app subclasses.
     """
 
-    primary_key_column: tuple[str, ...] = ("row_scope", "id")
+    primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
     _partition_exempt_methods = frozenset(
         {
             "delete_from_postgres",
@@ -1197,12 +1210,16 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     # fixture's ``DEFAULT '{}'::jsonb`` server default (line 144).
     # Platform-managed table -- 3tears has no migration; the
     # ``row_scope`` partition column is 3tears-side only.
+    # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``namespace_id``
+    # to standardize on ``<entity>_id`` across all entity tables. The
+    # rename happens at the platform DDL side (outside 3tears); the
+    # schema declaration here reflects the post-rename column.
     schema = TableSchema(
         name="namespaces",
-        primary_key=("row_scope", "id"),
+        primary_key=("row_scope", "namespace_id"),
         columns=[
             Column("row_scope", STRING_TYPE, partition=True),
-            Column("id", UUID_TYPE),
+            Column("namespace_id", UUID_TYPE),
             Column("name", STRING_TYPE),
             Column("namespace_type", STRING_TYPE, immutable=True),
             Column("owner_agent_id", UUID_TYPE, nullable=True, immutable=True),
@@ -1267,13 +1284,14 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         self,
         namespace_id: UUID,
     ) -> NamespaceEntity | None:
-        """resolve namespace by ``id`` alone via the ``UNIQUE (id)`` constraint.
+        """resolve namespace by ``namespace_id`` alone (v0.8.0 shard 04.6).
 
-        callers know the namespace's ``id`` (often computed
+        callers know the namespace's id (often computed
         deterministically from the owning agent_id / customer_id) but
         not the partition column ``row_scope``. uniqueness is
-        preserved by the ``UNIQUE (id)`` constraint so an id-only
-        fetch is unambiguous.
+        preserved by the ``UNIQUE (namespace_id)`` constraint
+        (renamed from bare ``id`` in v0.8.0 shard 04.6) so a single-
+        column fetch is unambiguous.
 
         :param namespace_id: namespace UUID
         :ptype namespace_id: UUID
@@ -1283,7 +1301,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: NamespaceEntity | None = None
         if self.l3_pool is not None:
             row = await self.l3_pool.fetchrow(
-                "SELECT * FROM namespaces WHERE id = $1",
+                "SELECT * FROM namespaces WHERE namespace_id = $1",
                 namespace_id,
             )
             if row is not None:
@@ -1397,7 +1415,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                    AND namespace_type = $2
                    AND owner_agent_id IS NOT DISTINCT FROM $3
                    AND customer_id IS NOT DISTINCT FROM $4
-                 ORDER BY id ASC
+                 ORDER BY namespace_id ASC
                  LIMIT 1
                 """,
                 row_scope,
@@ -1475,11 +1493,11 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[UUID] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
-                "SELECT id FROM namespaces WHERE row_scope = 'customer'   AND customer_id = $1 AND namespace_type = $2",
+                "SELECT namespace_id FROM namespaces WHERE row_scope = 'customer'   AND customer_id = $1 AND namespace_type = $2",
                 customer_id,
                 namespace_type,
             )
-            result = [row["id"] for row in rows if row["id"] is not None]
+            result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
 
     async def list_all_ids(self) -> list[UUID]:
@@ -1495,7 +1513,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
         result: list[UUID] = []
         if self.l3_pool is not None:
             rows = await self.l3_pool.fetch(
-                "SELECT id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
+                "SELECT namespace_id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
             )
-            result = [row["id"] for row in rows if row["id"] is not None]
+            result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
         return result
