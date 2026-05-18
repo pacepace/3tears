@@ -56,7 +56,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
     workspace transaction commits.
     """
 
-    primary_key_column: str = "id"
+    primary_key_column: str = "workspace_id"
     # v0.8.0 hygiene enrichment: ``current_version`` carries
     # ``server_default="0"`` to match the v001 migration's
     # ``INTEGER NOT NULL DEFAULT 0``. No FKs or indexes are declared
@@ -65,11 +65,14 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
     # supports UNIQUE indexes but the v001 declaration is a table-
     # level UNIQUE constraint (different SQL syntax) -- leaving it as
     # an Alembic-side concern for downstream consumers.
+    # v0.8.0 shard 04.6: bare-``id`` PK column renamed to
+    # ``workspace_id`` to standardize on ``<entity>_id`` across all
+    # entity tables (see migration v005).
     schema = TableSchema(
         name="workspaces",
-        primary_key="id",
+        primary_key="workspace_id",
         columns=[
-            Column("id", UUID_TYPE),
+            Column("workspace_id", UUID_TYPE),
             Column("agent_id", UUID_TYPE, immutable=True),
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE, nullable=True),
@@ -167,7 +170,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["workspace_id"], data)
             entities.append(entity)
         return entities
 
@@ -200,7 +203,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :rtype: Workspace | None
         """
         row = await self.l3_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2 AND date_deleted IS NULL",
+            "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2 AND date_deleted IS NULL",
             workspace_id,
             agent_id,
         )
@@ -208,7 +211,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -231,7 +234,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         :rtype: Workspace | None
         """
         row = await self.l3_pool.fetchrow(
-            "SELECT * FROM workspaces WHERE id = $1 AND agent_id = $2",
+            "SELECT * FROM workspaces WHERE workspace_id = $1 AND agent_id = $2",
             workspace_id,
             agent_id,
         )
@@ -239,7 +242,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -271,7 +274,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["workspace_id"], data)
             result = entity
         return result
 
@@ -286,16 +289,20 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
     through L2 preserves arbitrary bytes including NULs.
     """
 
-    primary_key_column: str = "id"
-    # v0.8.0 hygiene enrichment: FK ``workspace_id → workspaces.id ON
-    # DELETE CASCADE`` matches the v001 migration. The lookup index
+    primary_key_column: str = "file_id"
+    # v0.8.0 hygiene enrichment: FK
+    # ``workspace_id → workspaces.workspace_id ON DELETE CASCADE``
+    # matches the v001 migration (renamed in v005). The lookup index
     # ``idx_workspace_files_workspace`` is the v001 migration's
     # ``CREATE INDEX`` declaration.
+    # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``file_id``
+    # (migration v005); FK target column on ``workspaces`` was
+    # likewise renamed from ``id`` to ``workspace_id``.
     schema = TableSchema(
         name="workspace_files",
-        primary_key="id",
+        primary_key="file_id",
         columns=[
-            Column("id", UUID_TYPE),
+            Column("file_id", UUID_TYPE),
             Column("workspace_id", UUID_TYPE, immutable=True),
             Column("relative_path", STRING_TYPE, immutable=True),
             Column("content", BYTES_TYPE),
@@ -307,7 +314,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
             SchemaForeignKey(
                 "workspace_id",
                 "workspaces",
-                "id",
+                "workspace_id",
                 on_delete="CASCADE",
             ),
         ),
@@ -390,7 +397,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         if row is not None:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["file_id"], data)
             result = entity
         return result
 
@@ -417,7 +424,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
         for row in rows:
             data = dict(row)
             entity = self.entity_class(data, is_new=False, collection=self)
-            await self._save_to_l2(data["id"], data)
+            await self._save_to_l2(data["file_id"], data)
             entities.append(entity)
         return entities
 
@@ -438,16 +445,20 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
     :class:`asyncpg.exceptions.UniqueViolationError` from asyncpg.
     """
 
-    primary_key_column: str = "id"
-    # v0.8.0 hygiene enrichment: FK ``workspace_id → workspaces.id ON
-    # DELETE CASCADE`` matches the v001 migration. The history-lookup
-    # index ``idx_workspace_file_versions_history`` is the v001
-    # migration's ``CREATE INDEX``.
+    primary_key_column: str = "version_id"
+    # v0.8.0 hygiene enrichment: FK
+    # ``workspace_id → workspaces.workspace_id ON DELETE CASCADE``
+    # matches the v001 migration (renamed in v005). The history-
+    # lookup index ``idx_workspace_file_versions_history`` is the
+    # v001 migration's ``CREATE INDEX``.
+    # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``version_id``
+    # (migration v005); FK target column on ``workspaces`` was
+    # likewise renamed from ``id`` to ``workspace_id``.
     schema = TableSchema(
         name="workspace_file_versions",
-        primary_key="id",
+        primary_key="version_id",
         columns=[
-            Column("id", UUID_TYPE),
+            Column("version_id", UUID_TYPE),
             Column("workspace_id", UUID_TYPE, immutable=True),
             Column("relative_path", STRING_TYPE, immutable=True),
             Column("version", INT_TYPE, immutable=True),
@@ -464,7 +475,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             SchemaForeignKey(
                 "workspace_id",
                 "workspaces",
-                "id",
+                "workspace_id",
                 on_delete="CASCADE",
             ),
         ),

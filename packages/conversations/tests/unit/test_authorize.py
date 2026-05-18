@@ -72,7 +72,7 @@ class _StubNamespaceEntity:
         _ = is_new, collection
         self._data = dict(data) if data else {}
         if data is not None:
-            self.id = data["id"]
+            self.id = data["namespace_id"]
             self.namespace_type = data["namespace_type"]
             self.owner_agent_id = data["owner_agent_id"]
             self.customer_id = data["customer_id"]

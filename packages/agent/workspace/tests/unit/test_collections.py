@@ -34,7 +34,7 @@ def _workspaces_metadata() -> MetaData:
     Table(
         "workspaces",
         metadata,
-        Column("id", String(64), primary_key=True),
+        Column("workspace_id", String(64), primary_key=True),
         Column("agent_id", String(64)),
         Column("name", String(255)),
         Column("description", Text),
@@ -54,7 +54,7 @@ def _workspace_files_metadata() -> MetaData:
     Table(
         "workspace_files",
         metadata,
-        Column("id", String(64), primary_key=True),
+        Column("file_id", String(64), primary_key=True),
         Column("workspace_id", String(64)),
         Column("relative_path", String(512)),
         Column("content", LargeBinary),
@@ -71,7 +71,7 @@ def _workspace_file_versions_metadata() -> MetaData:
     Table(
         "workspace_file_versions",
         metadata,
-        Column("id", String(64), primary_key=True),
+        Column("version_id", String(64), primary_key=True),
         Column("workspace_id", String(64)),
         Column("relative_path", String(512)),
         Column("version", Integer),
@@ -89,7 +89,7 @@ def _workspace_file_versions_metadata() -> MetaData:
 def _make_workspace_row() -> dict[str, Any]:
     """return sample workspaces row dict."""
     return {
-        "id": uuid4(),
+        "workspace_id": uuid4(),
         "agent_id": uuid4(),
         "name": "docs",
         "description": "docs workspace",
@@ -105,7 +105,7 @@ def _make_workspace_row() -> dict[str, Any]:
 def _make_workspace_file_row() -> dict[str, Any]:
     """return sample workspace_files row dict."""
     return {
-        "id": uuid4(),
+        "file_id": uuid4(),
         "workspace_id": uuid4(),
         "relative_path": "README.md",
         "content": b"# hi\n\x00binary",
@@ -118,7 +118,7 @@ def _make_workspace_file_row() -> dict[str, Any]:
 def _make_workspace_file_version_row() -> dict[str, Any]:
     """return sample workspace_file_versions row dict."""
     return {
-        "id": uuid4(),
+        "version_id": uuid4(),
         "workspace_id": uuid4(),
         "relative_path": "README.md",
         "version": 1,
@@ -243,7 +243,18 @@ def _make_pool_mock() -> AsyncMock:
         executed.append((query, args))
         if "INSERT" in query.upper():
             entity_id = str(args[0])
-            store[entity_id] = {"id": entity_id}
+            # The PK column key depends on which table the INSERT is
+            # against; pick the matching ``<entity>_id`` key from the
+            # query text so the stored row mirrors the production
+            # column shape. v0.8.0 shard 04.6 renamed bare ``id`` ->
+            # ``<entity>_id`` on every workspace table.
+            if "workspace_file_versions" in query:
+                pk_col = "version_id"
+            elif "workspace_files" in query:
+                pk_col = "file_id"
+            else:
+                pk_col = "workspace_id"
+            store[entity_id] = {pk_col: entity_id}
             return "INSERT 0 1"
         if "DELETE" in query.upper():
             entity_id = str(args[0])
@@ -315,7 +326,7 @@ class TestWorkspaceCollectionSerialization:
         payload = coll.serialize(row)
         assert isinstance(payload, bytes)
         restored = coll.deserialize(payload)
-        assert restored["id"] == row["id"]
+        assert restored["workspace_id"] == row["workspace_id"]
         assert restored["agent_id"] == row["agent_id"]
         assert restored["created_by"] == row["created_by"]
         assert restored["name"] == row["name"]
@@ -332,7 +343,7 @@ class TestWorkspaceCollectionSave:
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """save_to_postgres uses INSERT ... ON CONFLICT (id) DO UPDATE."""
+        """save_to_postgres uses INSERT ... ON CONFLICT (workspace_id) DO UPDATE."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
@@ -342,14 +353,15 @@ class TestWorkspaceCollectionSave:
         assert rows_affected == 1
         issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspaces" in issued_sql
-        assert "ON CONFLICT (id) DO UPDATE" in issued_sql
+        # v0.8.0 shard 04.6: PK column renamed to ``workspace_id``.
+        assert "ON CONFLICT (workspace_id) DO UPDATE" in issued_sql
 
     async def test_delete_issues_delete_by_id(
         self,
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE workspace_id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
@@ -358,7 +370,8 @@ class TestWorkspaceCollectionSave:
         await coll.delete_from_postgres(target_id)
         issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspaces" in issued_sql
-        assert "WHERE id = $1" in issued_sql
+        # v0.8.0 shard 04.6: PK column renamed to ``workspace_id``.
+        assert "WHERE workspace_id = $1" in issued_sql
 
 
 class TestWorkspaceFileCollectionSave:
@@ -369,7 +382,7 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """save_to_postgres uses INSERT ... ON CONFLICT (id) DO UPDATE for head state."""
+        """save_to_postgres uses INSERT ... ON CONFLICT (file_id) DO UPDATE for head state."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
@@ -379,7 +392,8 @@ class TestWorkspaceFileCollectionSave:
         assert rows_affected == 1
         issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_files" in issued_sql
-        assert "ON CONFLICT (id) DO UPDATE" in issued_sql
+        # v0.8.0 shard 04.6: PK column renamed to ``file_id``.
+        assert "ON CONFLICT (file_id) DO UPDATE" in issued_sql
 
     async def test_delete_issues_delete_by_id(
         self,
@@ -502,16 +516,16 @@ class TestCrossPodInvalidation:
 
         # seed pod B's L1 with a row so we can observe eviction
         row = _make_workspace_row()
-        entity_id = str(row["id"])
+        entity_id = str(row["workspace_id"])
         l1_row = {k: str(v) if isinstance(v, UUID) else v for k, v in row.items()}
-        l1_b.upsert("workspaces", l1_row, "id")
-        assert l1_b.select_by_id("workspaces", entity_id, "id") is not None
+        l1_b.upsert("workspaces", l1_row, "workspace_id")
+        assert l1_b.select_by_id("workspaces", entity_id, "workspace_id") is not None
 
         # publish through pod A's registry; fake bus dispatches to pod B's subscriber
-        await registry_a.publish_invalidation(bus, coll_a.table_name, row["id"])
+        await registry_a.publish_invalidation(bus, coll_a.table_name, row["workspace_id"])
 
         # pod B's L1 entry is now gone
-        assert l1_b.select_by_id("workspaces", entity_id, "id") is None
+        assert l1_b.select_by_id("workspaces", entity_id, "workspace_id") is None
 
         l1_a.reset()
         l1_b.reset()
@@ -532,7 +546,7 @@ class TestCollectionShapes:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspaces"
         assert coll.entity_class is Workspace
-        assert coll.primary_key_column == "id"
+        assert coll.primary_key_column == "workspace_id"
 
     def test_workspace_file_collection_identity(
         self,
@@ -546,7 +560,7 @@ class TestCollectionShapes:
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_files"
         assert coll.entity_class is WorkspaceFile
-        assert coll.primary_key_column == "id"
+        assert coll.primary_key_column == "file_id"
 
     def test_workspace_file_version_collection_identity(
         self,
@@ -560,7 +574,7 @@ class TestCollectionShapes:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         assert coll.table_name == "workspace_file_versions"
         assert coll.entity_class is WorkspaceFileVersion
-        assert coll.primary_key_column == "id"
+        assert coll.primary_key_column == "version_id"
 
 
 class TestInvalidationSubjectConstant:

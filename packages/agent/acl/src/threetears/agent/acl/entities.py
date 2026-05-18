@@ -44,14 +44,18 @@ __all__ = [
 class GroupEntity(BaseEntity):
     """row in ``groups``.
 
-    composite primary key ``(row_scope, id)``. the row_scope column
-    discriminates platform-scope groups (``customer_id IS NULL``) from
-    customer-scope groups; a single CHECK constraint at the database
-    layer pins the invariant ``row_scope='platform' <-> customer_id IS
-    NULL``.
+    composite primary key ``(row_scope, group_id)``. the row_scope
+    column discriminates platform-scope groups (``customer_id IS
+    NULL``) from customer-scope groups; a single CHECK constraint at
+    the database layer pins the invariant
+    ``row_scope='platform' <-> customer_id IS NULL``.
 
-    fields: ``row_scope`` / ``id`` / ``customer_id`` / ``name`` /
-    ``description`` / ``date_created`` / ``date_updated``.
+    fields: ``row_scope`` / ``group_id`` / ``customer_id`` / ``name``
+    / ``description`` / ``date_created`` / ``date_updated``.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``group_id`` to standardize on ``<entity>_id`` across all entity
+    tables.
     """
 
     primary_key_field: str = "row_scope"
@@ -64,9 +68,10 @@ class GroupEntity(BaseEntity):
     ) -> None:
         """initialize entity with composite-pk ``_id`` tuple.
 
-        :param data: row dict carrying both ``row_scope`` and ``id``;
-            ``row_scope`` is auto-derived from ``customer_id`` when
-            absent so callers / fixtures keep their pre-partition shape
+        :param data: row dict carrying both ``row_scope`` and
+            ``group_id``; ``row_scope`` is auto-derived from
+            ``customer_id`` when absent so callers / fixtures keep
+            their pre-partition shape
         :ptype data: dict[str, Any]
         :param is_new: whether entity is unsaved
         :ptype is_new: bool
@@ -80,8 +85,8 @@ class GroupEntity(BaseEntity):
             row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (row_scope, data["id"]))
+        object.__setattr__(self, "_row_id", data["group_id"])
+        object.__setattr__(self, "_id", (row_scope, data["group_id"]))
 
     @property
     def id(self) -> Any:
@@ -142,25 +147,33 @@ class RoleEntity(BaseEntity):
     not partitioned: small row count, by-name lookup shape, and the
     table acts as an FK target via ``role_assignments.role_id``.
 
-    fields: ``id`` / ``name`` / ``description`` / ``permissions`` /
-    ``is_builtin`` / ``date_created`` / ``date_updated``.
+    fields: ``role_id`` / ``name`` / ``description`` / ``permissions``
+    / ``is_builtin`` / ``date_created`` / ``date_updated``.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``role_id`` to standardize on ``<entity>_id`` across all entity
+    tables.
     """
 
-    primary_key_field: str = "id"
+    primary_key_field: str = "role_id"
 
 
 class RoleAssignmentEntity(BaseEntity):
     """row in ``role_assignments``.
 
-    composite primary key ``(row_scope, id)``. the row_scope column
-    discriminates platform-scope assignments (``scope_type='all'`` or
-    ``scope_type='type_customer'`` with NULL ``scope_customer_id``)
-    from customer-scope assignments.
+    composite primary key ``(row_scope, assignment_id)``. the
+    row_scope column discriminates platform-scope assignments
+    (``scope_type='all'`` or ``scope_type='type_customer'`` with NULL
+    ``scope_customer_id``) from customer-scope assignments.
 
-    fields: ``row_scope`` / ``id`` / ``role_id`` / ``group_id`` /
-    ``scope_type`` / ``scope_namespace_id`` / ``scope_namespace_type``
-    / ``scope_customer_id`` / ``granted_by`` / ``date_granted`` /
-    ``managed_by``.
+    fields: ``row_scope`` / ``assignment_id`` / ``role_id`` /
+    ``group_id`` / ``scope_type`` / ``scope_namespace_id`` /
+    ``scope_namespace_type`` / ``scope_customer_id`` / ``granted_by``
+    / ``date_granted`` / ``managed_by``.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``assignment_id`` to standardize on ``<entity>_id`` across all
+    entity tables.
     """
 
     primary_key_field: str = "row_scope"
@@ -173,9 +186,9 @@ class RoleAssignmentEntity(BaseEntity):
     ) -> None:
         """initialize entity with composite-pk ``_id`` tuple.
 
-        :param data: row dict carrying both ``row_scope`` and ``id``;
-            ``row_scope`` is auto-derived from the scope shape when
-            absent
+        :param data: row dict carrying both ``row_scope`` and
+            ``assignment_id``; ``row_scope`` is auto-derived from the
+            scope shape when absent
         :ptype data: dict[str, Any]
         :param is_new: whether entity is unsaved
         :ptype is_new: bool
@@ -196,8 +209,8 @@ class RoleAssignmentEntity(BaseEntity):
                 row_scope = "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (row_scope, data["id"]))
+        object.__setattr__(self, "_row_id", data["assignment_id"])
+        object.__setattr__(self, "_id", (row_scope, data["assignment_id"]))
 
     @property
     def id(self) -> Any:
@@ -212,14 +225,20 @@ class RoleAssignmentEntity(BaseEntity):
 class NamespaceEntity(BaseEntity):
     """row in ``namespaces``.
 
-    composite primary key ``(row_scope, id)``. namespace rows are the
-    target side of every authorization check; ``namespace_type`` carries
-    the resource-type discriminator (``workspace`` / ``agent`` /
-    ``shared`` / ``system`` / ...) the evaluator routes on.
+    composite primary key ``(row_scope, namespace_id)``. namespace rows
+    are the target side of every authorization check;
+    ``namespace_type`` carries the resource-type discriminator
+    (``workspace`` / ``agent`` / ``shared`` / ``system`` / ...) the
+    evaluator routes on.
 
-    fields: ``row_scope`` / ``id`` / ``name`` / ``namespace_type`` /
-    ``owner_agent_id`` / ``customer_id`` / ``schema_name`` /
-    ``metadata`` / ``date_created`` / ``date_updated``.
+    fields: ``row_scope`` / ``namespace_id`` / ``name`` /
+    ``namespace_type`` / ``owner_agent_id`` / ``customer_id`` /
+    ``schema_name`` / ``metadata`` / ``date_created`` /
+    ``date_updated``.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``namespace_id`` to standardize on ``<entity>_id`` across all
+    entity tables.
     """
 
     primary_key_field: str = "row_scope"
@@ -232,9 +251,9 @@ class NamespaceEntity(BaseEntity):
     ) -> None:
         """initialize entity with composite-pk ``_id`` tuple.
 
-        :param data: row dict carrying both ``row_scope`` and ``id``;
-            ``row_scope`` is auto-derived from ``customer_id`` when
-            absent
+        :param data: row dict carrying both ``row_scope`` and
+            ``namespace_id``; ``row_scope`` is auto-derived from
+            ``customer_id`` when absent
         :ptype data: dict[str, Any]
         :param is_new: whether entity is unsaved
         :ptype is_new: bool
@@ -248,8 +267,8 @@ class NamespaceEntity(BaseEntity):
             row_scope = "platform" if data.get("customer_id") is None else "customer"
             data = {**data, "row_scope": row_scope}
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (row_scope, data["id"]))
+        object.__setattr__(self, "_row_id", data["namespace_id"])
+        object.__setattr__(self, "_id", (row_scope, data["namespace_id"]))
 
     @property
     def id(self) -> Any:

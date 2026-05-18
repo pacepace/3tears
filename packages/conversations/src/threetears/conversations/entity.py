@@ -80,9 +80,13 @@ class Conversation(BaseEntity):
     properties to associate their own per-conversation rows with the
     conversation's identity and scope.
 
-    composite primary key on ``(agent_id, id)`` so rows are
-    partitioned per agent; ``_id`` holds the
-    ``(agent_id, id)`` tuple after construction.
+    composite primary key on ``(agent_id, conversation_id)`` so rows
+    are partitioned per agent; ``_id`` holds the
+    ``(agent_id, conversation_id)`` tuple after construction.
+
+    v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
+    ``conversation_id`` to standardize on ``<entity>_id`` across all
+    entity tables (matches metallm prod + JSON API contract).
 
     :ivar primary_key_field: name of the first pk column on the table
     :ptype primary_key_field: str
@@ -104,7 +108,8 @@ class Conversation(BaseEntity):
         and :meth:`BaseCollection.l2_key` address the row uniformly
         across tiers.
 
-        :param data: row dict; must carry both ``agent_id`` and ``id``
+        :param data: row dict; must carry both ``agent_id`` and
+            ``conversation_id``
         :ptype data: dict[str, Any]
         :param is_new: whether entity is unsaved
         :ptype is_new: bool
@@ -114,7 +119,7 @@ class Conversation(BaseEntity):
         :rtype: None
         """
         super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_id", (data["agent_id"], data["id"]))
+        object.__setattr__(self, "_id", (data["agent_id"], data["conversation_id"]))
 
     @property
     def agent_id(self) -> UUID:

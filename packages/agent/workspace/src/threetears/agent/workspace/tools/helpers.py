@@ -280,7 +280,7 @@ class Sha256Mismatch(RuntimeError):
         super().__init__(f"sha256 mismatch: expected {expected!r}, current {current!r}")
 
 
-_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM platform.namespaces WHERE id = $1"
+_SELECT_NAMESPACE_CUSTOMER_SQL = "SELECT customer_id FROM platform.namespaces WHERE namespace_id = $1"
 
 
 async def authorize_workspace(
@@ -545,14 +545,14 @@ async def _next_journal_version(
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
-    id, workspace_id, relative_path, version, content,
+    version_id, workspace_id, relative_path, version, content,
     sha256, action, label, actor_id, correlation_id, date_created
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """
 
 _UPSERT_WORKSPACE_FILE_SQL = """
 INSERT INTO workspace_files (
-    id, workspace_id, relative_path, content, sha256, version, date_updated
+    file_id, workspace_id, relative_path, content, sha256, version, date_updated
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (workspace_id, relative_path) DO UPDATE SET
     content = EXCLUDED.content,
@@ -565,7 +565,7 @@ _UPDATE_WORKSPACE_VERSION_SQL = """
 UPDATE workspaces
 SET current_version = GREATEST(current_version, $1),
     date_updated = $2
-WHERE id = $3 AND agent_id = $4
+WHERE workspace_id = $3 AND agent_id = $4
 """
 
 

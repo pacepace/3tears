@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-registry"
-version = "0.7.5"
+version = "0.8.0"
 description = "MCP-compatible tool registry for 3tears tool system"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]

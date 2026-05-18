@@ -318,22 +318,27 @@ class TestAlignContextItemsShapeMigration:
         assert "ALTER TABLE context_items ALTER COLUMN long_desc SET DEFAULT ''" in joined
         assert "ALTER TABLE context_items ALTER COLUMN long_desc SET NOT NULL" in joined
 
-    async def test_direct_call_adds_conversation_fk_guarded(self) -> None:
-        """v003 adds the FK conversation_id -> conversations(conversation_id)
-        guarded by a pg_constraint lookup so the migration replays cleanly.
+    async def test_direct_call_drops_legacy_conversation_fk(self) -> None:
+        """v003 drops any legacy ``fk_context_items_conversation`` FK.
+
+        See v003 module docstring "FK decision" -- the 3tears
+        ``conversations`` table has composite PK
+        ``(agent_id, conversation_id)`` and ``context_items`` lacks
+        ``agent_id``, so no FK shape is legal. Earlier drafts of
+        v003 added a single-column FK that the v0.8.0 shard 04.6
+        rename surfaced as illegal. The migration now drops the FK
+        by name (idempotent via ``IF EXISTS``) so any agent schema
+        that ran an earlier v003 draft converges to the FK-free
+        shape.
         """
         store = _FakeDataStore()
         await align_context_items_shape(store)  # type: ignore[arg-type]
         joined = _joined_executed_sql(store)
-        # FK shape matches prod ``fk_context_items_conversation`` name
-        assert "ADD CONSTRAINT fk_context_items_conversation" in joined
-        assert "FOREIGN KEY (conversation_id)" in joined
-        assert "REFERENCES conversations(conversation_id)" in joined
-        assert "ON DELETE CASCADE" in joined
-        # guarded by pg_constraint lookup (no ADD CONSTRAINT IF NOT
-        # EXISTS in Postgres)
-        assert "FROM pg_constraint" in joined
-        assert "conname = 'fk_context_items_conversation'" in joined
+        assert "DROP CONSTRAINT IF EXISTS fk_context_items_conversation" in joined
+        # explicitly assert the migration does NOT try to add the
+        # FK -- a regression here would mean the composite-PK +
+        # missing-agent_id combination breaks again.
+        assert "ADD CONSTRAINT fk_context_items_conversation" not in joined
 
     async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
         """direct invocation does not touch ``_schema_migrations``."""

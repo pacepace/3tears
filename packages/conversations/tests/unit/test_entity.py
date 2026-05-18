@@ -38,7 +38,7 @@ def mock_collection() -> tuple[MagicMock, dict[str, dict[str, object]]]:
         :return: always True (cache always accepts)
         :rtype: bool
         """
-        pk = data.get("id", "")
+        pk = data.get("conversation_id", "")
         cache[str(pk)] = dict(data)
         return True
 
@@ -104,7 +104,7 @@ def _sample_data() -> dict[str, object]:
     """
     now = datetime.now(UTC)
     return {
-        "id": uuid7(),
+        "conversation_id": uuid7(),
         "agent_id": uuid7(),
         "customer_id": uuid7(),
         "user_id": uuid7(),
@@ -169,7 +169,7 @@ class TestConversationIdentityProperties:
         data = _sample_data()
         entity = Conversation(data)
 
-        assert entity.id == (data["agent_id"], data["id"])
+        assert entity.id == (data["agent_id"], data["conversation_id"])
 
 
 class TestConversationNameProperty:
@@ -338,8 +338,8 @@ class TestConversationSetterWithCollection:
         entity.status = "closed"
 
         assert entity.status == "closed"
-        # composite-pk entity addresses cache via the (agent_id, id) tuple.
-        coll.set_field_sync.assert_called_with((data["agent_id"], data["id"]), "status", "closed")
+        # composite-pk entity addresses cache via the (agent_id, conversation_id) tuple.
+        coll.set_field_sync.assert_called_with((data["agent_id"], data["conversation_id"]), "status", "closed")
 
     def test_summary_setter_tracks_change(
         self,

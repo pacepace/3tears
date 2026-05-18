@@ -26,8 +26,10 @@ def mock_collection() -> tuple[MagicMock, dict[str, dict[str, Any]]]:
     coll = MagicMock()
 
     def write_to_cache(data: dict[str, Any]) -> bool:
-        """write row into cache keyed by id."""
-        pk = data.get("id", "")
+        """write row into cache keyed by per-entity PK column."""
+        # v0.8.0 shard 04.6: PK column was renamed to ``<entity>_id``
+        # on every workspace table; pick the first one present.
+        pk = data.get("workspace_id") or data.get("file_id") or data.get("version_id") or ""
         cache[str(pk)] = dict(data)
         return True
 
@@ -60,7 +62,7 @@ def mock_collection() -> tuple[MagicMock, dict[str, dict[str, Any]]]:
 def _workspace_data() -> dict[str, Any]:
     """return sample Workspace row dict."""
     return {
-        "id": uuid4(),
+        "workspace_id": uuid4(),
         "agent_id": uuid4(),
         "name": "design-notes",
         "description": "scratchpad for design docs",
@@ -75,7 +77,7 @@ def _workspace_data() -> dict[str, Any]:
 def _workspace_file_data() -> dict[str, Any]:
     """return sample WorkspaceFile row dict."""
     return {
-        "id": uuid4(),
+        "file_id": uuid4(),
         "workspace_id": uuid4(),
         "relative_path": "docs/intro.md",
         "content": b"hello bytes\x00binary",
@@ -88,7 +90,7 @@ def _workspace_file_data() -> dict[str, Any]:
 def _workspace_file_version_data() -> dict[str, Any]:
     """return sample WorkspaceFileVersion row dict."""
     return {
-        "id": uuid4(),
+        "version_id": uuid4(),
         "workspace_id": uuid4(),
         "relative_path": "docs/intro.md",
         "version": 3,
@@ -105,15 +107,17 @@ def _workspace_file_version_data() -> dict[str, Any]:
 class TestWorkspaceEntity:
     """tests for Workspace entity without a collection."""
 
-    def testprimary_key_field_is_id(self) -> None:
-        """primary key field is id per shard."""
-        assert Workspace.primary_key_field == "id"
+    def testprimary_key_field_is_workspace_id(self) -> None:
+        """primary key field is workspace_id (v0.8.0 shard 04.6)."""
+        assert Workspace.primary_key_field == "workspace_id"
 
     def test_create_sets_id_and_flags(self) -> None:
         """factory construction populates id and is_new flag."""
         data = _workspace_data()
         entity = Workspace(data)
-        assert entity.id == data["id"]
+        # ``entity.id`` is the BaseEntity-level property; after the
+        # v0.8.0 rename it surfaces ``data["workspace_id"]``.
+        assert entity.id == data["workspace_id"]
         assert entity.is_new is True
         assert entity.is_dirty is True
 
@@ -184,9 +188,9 @@ class TestWorkspaceEntity:
 class TestWorkspaceFileEntity:
     """tests for WorkspaceFile entity without a collection."""
 
-    def testprimary_key_field_is_id(self) -> None:
-        """primary key field is id per shard."""
-        assert WorkspaceFile.primary_key_field == "id"
+    def testprimary_key_field_is_file_id(self) -> None:
+        """primary key field is file_id (v0.8.0 shard 04.6)."""
+        assert WorkspaceFile.primary_key_field == "file_id"
 
     def test_all_properties_round_trip(self) -> None:
         """each declared property reads back the value given at construction."""
@@ -210,9 +214,9 @@ class TestWorkspaceFileEntity:
 class TestWorkspaceFileVersionEntity:
     """tests for WorkspaceFileVersion entity without a collection."""
 
-    def testprimary_key_field_is_id(self) -> None:
-        """primary key field is id per shard."""
-        assert WorkspaceFileVersion.primary_key_field == "id"
+    def testprimary_key_field_is_version_id(self) -> None:
+        """primary key field is version_id (v0.8.0 shard 04.6)."""
+        assert WorkspaceFileVersion.primary_key_field == "version_id"
 
     def test_all_properties_round_trip(self) -> None:
         """each declared property reads back the value given at construction."""

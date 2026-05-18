@@ -36,6 +36,12 @@ version history:
   Future polyglot consumers set the per-conversation language without
   another migration; existing rows backfill to ``'english'`` via
   the column default.
+- v007 -- v0.8.0 shard 04.6: rename the bare-``id`` PK column to
+  ``conversation_id`` so the entity table follows the canonical
+  ``<entity>_id`` naming used everywhere else in the stack (memory_id,
+  media_id, context_id, etc.). Postgres updates the PK + every index
+  + every dependent FK automatically; the rename is guarded by an
+  ``information_schema`` DO block so replays are idempotent.
 """
 
 from __future__ import annotations
@@ -57,6 +63,9 @@ from threetears.conversations.migrations.v005_conversation_search_vector import 
 )
 from threetears.conversations.migrations.v006_conversation_language_column import (
     add_conversation_language_column,
+)
+from threetears.conversations.migrations.v007_rename_id_to_conversation_id import (
+    rename_id_to_conversation_id,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -90,6 +99,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(4)(datetime_to_datetimetz)
     pkg.version(5)(add_conversation_search_vector)
     pkg.version(6)(add_conversation_language_column)
+    pkg.version(7)(rename_id_to_conversation_id)
     runner.register(pkg)
     return pkg
 
@@ -103,4 +113,5 @@ __all__ = [
     "create_conversations_table",
     "datetime_to_datetimetz",
     "register",
+    "rename_id_to_conversation_id",
 ]
