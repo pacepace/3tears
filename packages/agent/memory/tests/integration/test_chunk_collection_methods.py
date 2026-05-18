@@ -131,6 +131,8 @@ async def _seed_chunk(
     content: str,
     message_id_start: uuid.UUID | None = None,
     message_id_end: uuid.UUID | None = None,
+    chunk_index: int = 0,
+    token_count: int = 1,
 ) -> uuid.UUID:
     """Insert one chunk parented to ``memory_id``; returns its chunk_id."""
     import uuid_utils
@@ -146,10 +148,12 @@ async def _seed_chunk(
             "agent_id": agent_id,
             "customer_id": customer_id,
             "user_id": user_id,
+            "chunk_index": chunk_index,
             "content": content,
             "summary": content[:40],
             "heading_context": None,
             "page_number": None,
+            "token_count": token_count,
             "embedding": [0.1] * 1024,
             "message_id_start": message_id_start,
             "message_id_end": message_id_end,

@@ -50,12 +50,20 @@ __all__ = [
     "BYTES_TYPE",
     "Column",
     "DATETIMETZ_TYPE",
+    "ENUM_TYPE",
+    "ForeignKey",
+    "ForeignKeyDef",
     "INT_TYPE",
+    "Index",
+    "IndexDef",
     "JSONB_TYPE",
+    "NUMERIC_TYPE",
     "OnConflict",
+    "OnDelete",
     "PartitionEnforcementError",
     "SchemaBackedCollection",
     "STRING_TYPE",
+    "TSVECTOR_TYPE",
     "TableSchema",
     "UUID_TYPE",
     "VECTOR_TYPE",
@@ -84,6 +92,28 @@ log = get_logger(__name__)
 # rather than by runtime ``isinstance`` checks.
 UUID_TYPE = "uuid"
 STRING_TYPE = "string"
+# ENUM_TYPE: column declared as a real Postgres enum via
+# ``CREATE TYPE <name> AS ENUM (...)``. Verified via ``pg_type`` query
+# against prod for ``memory_type``, ``conversation_status``,
+# ``message_role``, ``user_role``, ``visibility_mode``,
+# ``participation_role``, ``tool_invocation_status``. The
+# :class:`Column` declaration carries ``enum_type`` (the allowed value
+# tuple) and ``enum_name`` (the Postgres type name); the SQL generator
+# / ``to_sqlalchemy_table`` shaper dispatch on this tag.
+ENUM_TYPE = "enum"
+# NUMERIC_TYPE: column declared as ``NUMERIC(precision, scale)`` --
+# fixed-precision decimal. Required for ``media_content.cost`` which is
+# ``Numeric(12, 8)`` in the v0.7.5 factory; no other existing tag covers
+# this. The :class:`Column` declaration carries ``precision`` and
+# ``scale``.
+NUMERIC_TYPE = "numeric"
+# TSVECTOR_TYPE: Postgres ``tsvector`` column (full-text search vector).
+# Maintained server-side by a trigger; the DDL for the trigger stays in
+# alembic on the consumer side. Declared with ``nullable=True,
+# immutable=True`` so the Collection UPDATE generators exclude it from
+# the ``SET`` clause -- otherwise an application UPDATE would overwrite
+# the trigger-maintained value.
+TSVECTOR_TYPE = "tsvector"
 # DATETIMETZ_TYPE: column declared as ``TIMESTAMPTZ`` (timezone-aware
 # instant) in the L3 DDL. This is the only datetime column type the
 # platform supports; ``DATETIME_TYPE`` (TIMESTAMP / naive) was removed
@@ -104,6 +134,203 @@ BYTES_TYPE = "bytes"
 INT_TYPE = "int"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
+
+
+# allowed values for :attr:`ForeignKeyDef.on_delete`. matches the
+# Postgres referential-action clause used in production migrations; the
+# rare ``on_update`` clause is not modeled (v0.8.0 locked decision).
+OnDelete = Literal["CASCADE", "SET NULL", "RESTRICT", "NO ACTION"]
+
+_ON_DELETE_VALUES: frozenset[str] = frozenset(
+    {"CASCADE", "SET NULL", "RESTRICT", "NO ACTION"},
+)
+
+
+@dataclass(frozen=True)
+class ForeignKeyDef:
+    """foreign-key descriptor for :class:`TableSchema`.
+
+    represents both single-column FKs (``local_cols`` and ``ref_cols``
+    each a 1-tuple) and composite FKs (same-length N-tuples). single-
+    column FKs may alternatively be declared via
+    :attr:`Column.foreign_key` so simple cases stay terse; the composite
+    case requires this dataclass on the :class:`TableSchema` because a
+    single :class:`Column` declaration cannot reference multiple local
+    columns.
+
+    :cvar local_cols: tuple of column names on this table participating
+        in the FK, in declared order
+    :cvar ref_table: name of the referenced table
+    :cvar ref_cols: tuple of column names on the referenced table, in
+        the same order as :attr:`local_cols`
+    :cvar on_delete: referential-action clause; defaults to
+        ``"NO ACTION"`` (Postgres default semantics)
+    """
+
+    local_cols: tuple[str, ...]
+    ref_table: str
+    ref_cols: tuple[str, ...]
+    on_delete: OnDelete = "NO ACTION"
+
+    def __post_init__(self) -> None:
+        """validate the FK shape after construction.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``local_cols`` / ``ref_cols`` are
+            empty, mismatched in length, when ``ref_table`` is empty,
+            or when ``on_delete`` is not one of the allowed literals
+        """
+        if not self.local_cols:
+            raise ValueError(
+                "ForeignKeyDef: local_cols must be a non-empty tuple",
+            )
+        if not self.ref_cols:
+            raise ValueError(
+                "ForeignKeyDef: ref_cols must be a non-empty tuple",
+            )
+        if len(self.local_cols) != len(self.ref_cols):
+            raise ValueError(
+                f"ForeignKeyDef: local_cols (len={len(self.local_cols)}) and "
+                f"ref_cols (len={len(self.ref_cols)}) must have the same length",
+            )
+        if not self.ref_table:
+            raise ValueError(
+                "ForeignKeyDef: ref_table must be non-empty",
+            )
+        if self.on_delete not in _ON_DELETE_VALUES:
+            raise ValueError(
+                f"ForeignKeyDef: on_delete must be one of {sorted(_ON_DELETE_VALUES)!r}; got {self.on_delete!r}",
+            )
+
+
+@dataclass(frozen=True)
+class IndexDef:
+    """index descriptor for :class:`TableSchema`.
+
+    represents a named SQL index. supports plain composite indexes,
+    UNIQUE indexes, and partial indexes via the ``where`` clause (a
+    raw Postgres boolean expression -- the generator inlines it
+    verbatim, no parameter binding).
+
+    :cvar name: index name (matches the L3 DDL exactly; required, no
+        auto-generation per v0.8.0 locked decision)
+    :cvar columns: tuple of column names on this table covered by the
+        index, in declared order
+    :cvar unique: when ``True``, emit ``CREATE UNIQUE INDEX``
+    :cvar where: optional partial-index predicate (raw SQL expression);
+        when set, emit ``WHERE <where>`` after the column list
+    """
+
+    name: str
+    columns: tuple[str, ...]
+    unique: bool = False
+    where: str | None = None
+
+    def __post_init__(self) -> None:
+        """validate the index shape after construction.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``name`` is empty or ``columns`` is empty
+        """
+        if not self.name:
+            raise ValueError("IndexDef: name must be non-empty")
+        if not self.columns:
+            raise ValueError(
+                f"IndexDef(name={self.name!r}): columns must be a non-empty tuple",
+            )
+
+
+def ForeignKey(  # noqa: N802 -- factory function intentionally named like a class
+    local_cols: tuple[str, ...] | str,
+    ref_table: str,
+    ref_cols: tuple[str, ...] | str,
+    *,
+    on_delete: OnDelete = "NO ACTION",
+) -> ForeignKeyDef:
+    """factory for :class:`ForeignKeyDef`.
+
+    coerces bare-string ``local_cols`` / ``ref_cols`` arguments into
+    1-tuples so the common single-column case stays terse::
+
+        ForeignKey("user_id", "users", "user_id")
+        # equivalent to:
+        ForeignKey(("user_id",), "users", ("user_id",))
+
+    composite FKs require tuples directly::
+
+        ForeignKey(
+            ("agent_id", "memory_id"),
+            "memories",
+            ("agent_id", "memory_id"),
+            on_delete="CASCADE",
+        )
+
+    :param local_cols: column name(s) on this table; bare ``str``
+        coerced to a 1-tuple
+    :ptype local_cols: tuple[str, ...] | str
+    :param ref_table: referenced table name
+    :ptype ref_table: str
+    :param ref_cols: column name(s) on the referenced table; bare
+        ``str`` coerced to a 1-tuple
+    :ptype ref_cols: tuple[str, ...] | str
+    :param on_delete: referential-action clause; defaults to
+        ``"NO ACTION"``
+    :ptype on_delete: OnDelete
+    :return: validated :class:`ForeignKeyDef` instance
+    :rtype: ForeignKeyDef
+    :raises ValueError: when validation in
+        :meth:`ForeignKeyDef.__post_init__` fails
+    """
+    local_tup: tuple[str, ...] = (local_cols,) if isinstance(local_cols, str) else tuple(local_cols)
+    ref_tup: tuple[str, ...] = (ref_cols,) if isinstance(ref_cols, str) else tuple(ref_cols)
+    return ForeignKeyDef(
+        local_cols=local_tup,
+        ref_table=ref_table,
+        ref_cols=ref_tup,
+        on_delete=on_delete,
+    )
+
+
+def Index(  # noqa: N802 -- factory function intentionally named like a class
+    name: str,
+    *columns: str,
+    unique: bool = False,
+    where: str | None = None,
+) -> IndexDef:
+    """factory for :class:`IndexDef`.
+
+    varargs ``columns`` reads cleanly at call sites::
+
+        Index("ix_memories_user_date", "user_id", "date_created")
+        Index(
+            "ix_memories_user_alias",
+            "agent_id", "user_id", "alias",
+            unique=True,
+            where="alias IS NOT NULL",
+        )
+
+    :param name: index name (required; no auto-generation)
+    :ptype name: str
+    :param columns: column name(s) covered by the index, in declared
+        order
+    :ptype columns: str
+    :param unique: emit ``CREATE UNIQUE INDEX`` when ``True``
+    :ptype unique: bool
+    :param where: optional partial-index predicate (raw Postgres SQL)
+    :ptype where: str | None
+    :return: validated :class:`IndexDef` instance
+    :rtype: IndexDef
+    :raises ValueError: when validation in
+        :meth:`IndexDef.__post_init__` fails
+    """
+    return IndexDef(
+        name=name,
+        columns=tuple(columns),
+        unique=unique,
+        where=where,
+    )
 
 
 @dataclass(frozen=True)
@@ -163,6 +390,112 @@ class Column:
     immutable: bool = False
     nullable: bool = False
     partition: bool = False
+    # ---new in v0.8.0:---
+    # single-column FK shape; composite FKs go on
+    # :attr:`TableSchema.foreign_keys`. tuple shape: ``(ref_table, ref_col)``.
+    foreign_key: tuple[str, str] | None = None
+    # enum CHECK constraint values; only valid with ``column_type == ENUM_TYPE``
+    enum_type: tuple[str, ...] | None = None
+    # Postgres enum-type name (the ``CREATE TYPE <name> AS ENUM`` identifier);
+    # required when ``enum_type`` is set
+    enum_name: str | None = None
+    # pgvector dimension; only valid with ``column_type == VECTOR_TYPE``
+    vector_dim: int | None = None
+    # raw Postgres expression for ``DEFAULT <expr>`` in the DDL; passed
+    # through verbatim, no parameter binding
+    server_default: str | None = None
+    # NUMERIC(precision, scale); both required together with NUMERIC_TYPE
+    precision: int | None = None
+    scale: int | None = None
+
+    def __post_init__(self) -> None:
+        """validate cross-field constraints introduced in v0.8.0.
+
+        Numbering matches the v0.8.0-task-01 shard spec
+        §"Validation in `__post_init__`" items 1-10. Spec items 1
+        (foreign_key has no cross-field restriction on column_type)
+        and 7 (server_default has no cross-field restriction) are
+        deliberate non-restrictions, no validator needed; the
+        numbered comments below preserve the spec's enumeration so
+        future maintainers can map code↔spec at a glance.
+
+        All validators are wrapped in :class:`ValueError` so callers
+        get a single, consistent exception class for declaration-time
+        bugs.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when any of the cross-field constraints
+            are violated (see body for the full set of rules)
+        """
+        # 1. foreign_key × column_type: no restriction (foreign_key
+        #    may be set on any column_type). No validator.
+        # 2. enum_type only valid with ENUM_TYPE; requires enum_name;
+        #    requires non-empty tuple.
+        if self.enum_type is not None:
+            if self.column_type != ENUM_TYPE:
+                raise ValueError(
+                    f"Column(name={self.name!r}): enum_type only valid with "
+                    f"column_type=ENUM_TYPE; got column_type={self.column_type!r}",
+                )
+            if not self.enum_name:
+                raise ValueError(
+                    f"Column(name={self.name!r}): enum_type requires enum_name to be set",
+                )
+            if len(self.enum_type) == 0:
+                raise ValueError(
+                    f"Column(name={self.name!r}): enum_type must be a non-empty tuple",
+                )
+        # 3. ENUM_TYPE requires enum_type (inverse of #2).
+        if self.column_type == ENUM_TYPE and self.enum_type is None:
+            raise ValueError(
+                f"Column(name={self.name!r}): column_type=ENUM_TYPE requires enum_type to be set",
+            )
+        # 4. vector_dim only valid with VECTOR_TYPE.
+        if self.vector_dim is not None and self.column_type != VECTOR_TYPE:
+            raise ValueError(
+                f"Column(name={self.name!r}): vector_dim only valid with "
+                f"column_type=VECTOR_TYPE; got column_type={self.column_type!r}",
+            )
+        # 5. VECTOR_TYPE requires vector_dim (inverse of #4).
+        if self.column_type == VECTOR_TYPE and self.vector_dim is None:
+            raise ValueError(
+                f"Column(name={self.name!r}): column_type=VECTOR_TYPE requires vector_dim to be set",
+            )
+        # 6. foreign_key tuple shape -- must be ``(ref_table, ref_col)``,
+        #    both non-empty strings.
+        if self.foreign_key is not None:
+            if (
+                not isinstance(self.foreign_key, tuple)
+                or len(self.foreign_key) != 2
+                or not all(isinstance(part, str) and part for part in self.foreign_key)
+            ):
+                raise ValueError(
+                    f"Column(name={self.name!r}): foreign_key must be a 2-tuple of "
+                    f"non-empty strings (ref_table, ref_col); got {self.foreign_key!r}",
+                )
+        # 7. server_default: no cross-field restriction (any string
+        #    accepted). No validator.
+        # 8. precision/scale only valid with NUMERIC_TYPE.
+        if (self.precision is not None or self.scale is not None) and self.column_type != NUMERIC_TYPE:
+            raise ValueError(
+                f"Column(name={self.name!r}): precision/scale only valid with "
+                f"column_type=NUMERIC_TYPE; got column_type={self.column_type!r}",
+            )
+        # 9. NUMERIC_TYPE requires both precision and scale (inverse
+        #    of #8).
+        if self.column_type == NUMERIC_TYPE and (self.precision is None or self.scale is None):
+            raise ValueError(
+                f"Column(name={self.name!r}): column_type=NUMERIC_TYPE requires both precision and scale to be set",
+            )
+        # 10. TSVECTOR_TYPE requires immutable=True (trigger-maintained
+        #     server-side; UPDATE generators must skip the column).
+        if self.column_type == TSVECTOR_TYPE and not self.immutable:
+            raise ValueError(
+                f"Column(name={self.name!r}): column_type=TSVECTOR_TYPE columns are "
+                f"trigger-maintained server-side and must be declared immutable=True "
+                f"to exclude them from Collection UPDATE generators",
+            )
 
 
 @dataclass(frozen=True)
@@ -200,6 +533,15 @@ class TableSchema:
     columns: list[Column]
     cas_column: str | None = None
     on_conflict: OnConflict = "update"
+    # ---new in v0.8.0:---
+    # composite or supplementary FK declarations. single-column FKs may
+    # alternatively be declared via :attr:`Column.foreign_key` to keep
+    # simple cases terse; both shapes coexist. tuple (not list) so the
+    # frozen-dataclass hash + equality contract stays intact.
+    foreign_keys: tuple[ForeignKeyDef, ...] = ()
+    # named indexes on this table. ``UNIQUE`` + partial-index variants
+    # supported via :class:`IndexDef`. tuple for the same reason.
+    indexes: tuple[IndexDef, ...] = ()
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -236,6 +578,18 @@ class TableSchema:
                         immutable=True,
                         nullable=col.nullable,
                         partition=True,
+                        # v0.8.0: pass through every new field. without
+                        # this, a partition column declared with
+                        # foreign_key= / enum_type= / vector_dim= /
+                        # server_default= / precision= / scale= would
+                        # silently drop those fields during coercion.
+                        foreign_key=col.foreign_key,
+                        enum_type=col.enum_type,
+                        enum_name=col.enum_name,
+                        vector_dim=col.vector_dim,
+                        server_default=col.server_default,
+                        precision=col.precision,
+                        scale=col.scale,
                     )
             coerced_columns.append(col)
         if len(partition_cols) > 1:
@@ -267,6 +621,27 @@ class TableSchema:
         object.__setattr__(self, "_pk_columns", pk_cols)
         object.__setattr__(self, "_by_name", by_name)
         object.__setattr__(self, "_partition_column", partition_column)
+        # v0.8.0 cross-field validators. placed AFTER ``_by_name`` is
+        # installed because they reference the indexed column map.
+        for fk in self.foreign_keys:
+            for local_col in fk.local_cols:
+                if local_col not in by_name:
+                    raise ValueError(
+                        f"TableSchema(name={self.name!r}): foreign_key references "
+                        f"local_col={local_col!r} which is not declared in columns",
+                    )
+        for idx in self.indexes:
+            for col_name in idx.columns:
+                if col_name not in by_name:
+                    raise ValueError(
+                        f"TableSchema(name={self.name!r}): index name={idx.name!r} "
+                        f"references col={col_name!r} which is not declared in columns",
+                    )
+        index_names = [i.name for i in self.indexes]
+        if len(index_names) != len(set(index_names)):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): duplicate index names in {index_names!r}",
+            )
 
     @property
     def pk_columns(self) -> tuple[str, ...]:
@@ -325,6 +700,170 @@ class TableSchema:
         """
         pk_set = set(self._pk_columns)
         return [c for c in self.columns if not c.immutable and c.name not in pk_set]
+
+    def to_sqlalchemy_table(self, metadata: Any) -> Any:
+        """register this schema's canonical SQLAlchemy ``Table`` on ``metadata``.
+
+        idempotent: if a table with :attr:`name` already exists on the
+        passed metadata, returns the existing Table without
+        re-registering.
+
+        SQLAlchemy + pgvector imports are deferred inside the method
+        body so non-Alembic / non-SQLAlchemy consumers of
+        :mod:`threetears.core.collections.schema_backed` (e.g. the
+        per-pod async-CRUD execution path) do not pay the import cost.
+
+        :param metadata: SQLAlchemy ``MetaData`` instance to attach the
+            table to
+        :ptype metadata: sqlalchemy.MetaData
+        :return: the registered :class:`sqlalchemy.Table`
+        :rtype: sqlalchemy.Table
+        :raises KeyError: when any column carries a ``column_type`` tag
+            that is not registered in the type mapping (catches
+            unknown-tag drift loudly rather than silently dropping the
+            column)
+        :raises ImportError: when the schema contains a VECTOR_TYPE
+            column and ``pgvector`` is not installed (mirrors the
+            v0.7.5 factory behaviour -- the failure is legible at
+            registration time, not at first INSERT)
+        """
+        # import inside the method so callers that never invoke
+        # to_sqlalchemy_table don't import SQLAlchemy at module-import
+        # time. local imports here are tiny -- the global SQLAlchemy
+        # initialisation cost is large.
+        import sqlalchemy as sa
+        from sqlalchemy import (
+            Boolean,
+            DateTime,
+            Enum as SAEnum,
+            Integer,
+            Numeric,
+            Text,
+        )
+        from sqlalchemy.dialects.postgresql import (
+            BYTEA,
+            JSONB,
+            TSVECTOR,
+            UUID as PgUUID,
+        )
+
+        if self.name in metadata.tables:
+            return metadata.tables[self.name]
+
+        # tag → SQLAlchemy type constructor. each lambda receives the
+        # :class:`Column` so vector-dim / numeric-precision / enum-value
+        # parameters thread through cleanly without a second lookup.
+        type_mapping: dict[str, Callable[[Column], Any]] = {
+            UUID_TYPE: lambda col: PgUUID(as_uuid=True),
+            STRING_TYPE: lambda col: Text(),
+            DATETIMETZ_TYPE: lambda col: DateTime(timezone=True),
+            JSONB_TYPE: lambda col: JSONB(),
+            BYTES_TYPE: lambda col: BYTEA(),
+            INT_TYPE: lambda col: Integer(),
+            BOOL_TYPE: lambda col: Boolean(),
+            VECTOR_TYPE: lambda col: _require_pgvector()(col.vector_dim),
+            NUMERIC_TYPE: lambda col: Numeric(col.precision, col.scale),
+            TSVECTOR_TYPE: lambda col: TSVECTOR(),
+            ENUM_TYPE: lambda col: SAEnum(
+                *(col.enum_type or ()),
+                name=col.enum_name,
+                create_constraint=True,
+            ),
+        }
+
+        pk_set = set(self._pk_columns)
+        sa_columns: list[Any] = []
+        for col in self.columns:
+            if col.column_type not in type_mapping:
+                raise KeyError(
+                    f"TableSchema(name={self.name!r}): column "
+                    f"{col.name!r} has unknown column_type "
+                    f"{col.column_type!r}; no entry in to_sqlalchemy_table "
+                    f"type mapping",
+                )
+            sa_type = type_mapping[col.column_type](col)
+            is_pk = col.name in pk_set
+            # PK columns are NOT NULL by definition; for non-PK columns
+            # carry through the schema's :attr:`Column.nullable` flag.
+            nullable = False if is_pk else col.nullable
+            kwargs: dict[str, Any] = {
+                "primary_key": is_pk,
+                "nullable": nullable,
+            }
+            if col.server_default is not None:
+                kwargs["server_default"] = col.server_default
+            if col.foreign_key is not None:
+                ref_table, ref_col = col.foreign_key
+                sa_columns.append(
+                    sa.Column(
+                        col.name,
+                        sa_type,
+                        sa.ForeignKey(f"{ref_table}.{ref_col}"),
+                        **kwargs,
+                    ),
+                )
+            else:
+                sa_columns.append(sa.Column(col.name, sa_type, **kwargs))
+
+        # composite (or supplementary single-column) FKs declared at
+        # table level via :attr:`foreign_keys`. ``ondelete`` is omitted
+        # when the action is "NO ACTION" so the emitted DDL matches the
+        # hand-written factories byte-for-byte (SQLAlchemy treats
+        # ``ondelete=None`` as "no clause"; passing the literal string
+        # would force an explicit ``ON DELETE NO ACTION`` that the
+        # factories don't emit).
+        sa_fk_constraints: list[Any] = []
+        for fk in self.foreign_keys:
+            ondelete: str | None = fk.on_delete if fk.on_delete != "NO ACTION" else None
+            sa_fk_constraints.append(
+                sa.ForeignKeyConstraint(
+                    list(fk.local_cols),
+                    [f"{fk.ref_table}.{ref_col}" for ref_col in fk.ref_cols],
+                    ondelete=ondelete,
+                ),
+            )
+
+        sa_indexes: list[Any] = []
+        for idx in self.indexes:
+            sa_indexes.append(
+                sa.Index(
+                    idx.name,
+                    *idx.columns,
+                    unique=idx.unique,
+                    postgresql_where=sa.text(idx.where) if idx.where else None,
+                ),
+            )
+
+        return sa.Table(
+            self.name,
+            metadata,
+            *sa_columns,
+            *sa_fk_constraints,
+            *sa_indexes,
+        )
+
+
+def _require_pgvector() -> Any:
+    """return pgvector's ``Vector`` column class.
+
+    deferred lazy-import: pgvector is pulled in only when a caller
+    declares a VECTOR_TYPE column. import failure raises at call time
+    so the failure is legible at table-registration / collection-init,
+    not deep inside an asyncpg INSERT.
+
+    :return: the :class:`pgvector.sqlalchemy.Vector` class
+    :rtype: type
+    :raises ImportError: when pgvector is not installed
+    """
+    try:
+        from pgvector.sqlalchemy import Vector
+    except ImportError as exc:
+        raise ImportError(
+            "pgvector is required to materialise VECTOR_TYPE columns; "
+            "install ``pgvector`` or remove the column from the "
+            "TableSchema",
+        ) from exc
+    return Vector
 
 
 def _coerce_uuid(value: Any) -> UUID | None:
@@ -918,11 +1457,56 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = f"${idx}"
         return result
 
-    def _build_insert_sql(self) -> str:
+    def _insert_columns_for_data(self, data: dict[str, Any]) -> list[Column]:
+        """select the column list to emit in INSERT SQL + params.
+
+        v0.8.0: columns with a declared ``server_default`` are OMITTED
+        from the INSERT when the caller did not supply a value, so the
+        server-side default applies. Without this gate the caller MUST
+        write every column whose Python value matches the default —
+        a footgun every downstream consumer hits.
+
+        Selection rule per column:
+
+        * ``column.name in data`` -> always include (caller-supplied
+          value wins over server default).
+        * ``column.server_default is None`` -> always include; the
+          ``_pull_value`` path produces NULL or raises KeyError
+          depending on ``nullable``.
+        * ``column.server_default is not None`` AND ``column.name not
+          in data`` -> SKIP the column from both the SQL and the
+          parameter list so Postgres applies the server-side default.
+
+        The SQL and params builders both call this method with the
+        same ``data`` dict so the positional binding stays in sync.
+
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: ordered list of columns to emit; subset of
+            ``self.schema.columns`` preserving declared order
+        :rtype: list[Column]
+        """
+        included: list[Column] = []
+        for col in self.schema.columns:
+            if col.server_default is not None and col.name not in data:
+                # let Postgres apply the server-side default
+                continue
+            included.append(col)
+        return included
+
+    def _build_insert_sql(self, data: dict[str, Any] | None = None) -> str:
         """build INSERT SQL with the conflict clause selected by schema.
 
-        column order matches :attr:`TableSchema.columns` exactly; tests
-        that assert on positional asyncpg parameters can rely on that.
+        column order matches :attr:`TableSchema.columns` exactly,
+        FILTERED to the subset selected by
+        :meth:`_insert_columns_for_data` (v0.8.0): columns with a
+        declared ``server_default`` that the caller omitted are
+        dropped from the column list AND the parameter list so the
+        server-side default applies.
+
+        Tests that assert on positional asyncpg parameters MUST call
+        ``_build_insert_sql`` and ``_build_insert_params`` with the
+        same ``data`` dict so the parameter positions match.
 
         branches on :attr:`TableSchema.on_conflict`:
 
@@ -931,13 +1515,24 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         * ``"update"`` (default): ``INSERT ... ON CONFLICT (pk) DO
           UPDATE SET <mutable>``; falls back to ``DO NOTHING`` when
           every non-pk column is immutable so existing rows are not
-          clobbered
+          clobbered. The ``EXCLUDED.<name>`` references in the SET
+          clause stay limited to mutable columns regardless of
+          omitted server-default columns -- the ON CONFLICT path
+          updates whatever columns ARE in the INSERT, but only the
+          ones in mutable_columns() are eligible.
 
+        :param data: row dict to drive column selection. ``None`` is
+            accepted for backward compatibility with call-sites that
+            pre-date the v0.8.0 server_default gate; treated as an
+            empty dict which means EVERY server-default column is
+            omitted -- callers always pair the SQL with params built
+            from the SAME ``data`` so the param positions match.
+        :ptype data: dict[str, Any] | None
         :return: parameterized INSERT SQL
         :rtype: str
         """
         schema = self.schema
-        cols = schema.columns
+        cols = self._insert_columns_for_data(data or {})
         col_names = ", ".join(c.name for c in cols)
         placeholders = ", ".join(self._render_param(c, i + 1) for i, c in enumerate(cols))
         sql = f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})"
@@ -947,13 +1542,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         elif schema.on_conflict == "ignore":
             result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         else:
-            mutable = schema.mutable_columns()
-            if mutable:
-                set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable)
+            # DO UPDATE SET references EXCLUDED.<col> for each mutable
+            # column. Intersect with the columns ACTUALLY emitted in
+            # the INSERT -- an EXCLUDED reference to a column that
+            # was not in the column list would be a SQL error.
+            emitted = {c.name for c in cols}
+            mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
+            if mutable_emitted:
+                set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
                 result = f"{sql} ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause}"
             else:
-                # pk-only table or every non-pk column is immutable:
-                # emit DO NOTHING so existing rows are not clobbered.
+                # pk-only table or every non-pk column is immutable or
+                # omitted-via-server-default: emit DO NOTHING so
+                # existing rows are not clobbered.
                 result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         return result
 
@@ -1090,12 +1691,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _build_insert_params(self, data: dict[str, Any]) -> list[Any]:
         """build the parameter list for the INSERT path in declared order.
 
+        v0.8.0: columns with ``server_default`` that the caller did
+        not include in ``data`` are OMITTED from both the SQL and the
+        parameter list (see :meth:`_insert_columns_for_data`). The
+        SQL builder and this builder MUST be called with the same
+        ``data`` dict so the positional bindings stay aligned.
+
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
-        :return: parameter list matching :attr:`TableSchema.columns` order
+        :return: parameter list matching the SQL column order
+            (subset of :attr:`TableSchema.columns`)
         :rtype: list[Any]
         """
-        return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self.schema.columns]
+        return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self._insert_columns_for_data(data)]
 
     def _build_cas_params(
         self,
@@ -1219,7 +1827,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 sql = self._build_cas_update_sql()
                 params = self._build_cas_params(data, original_timestamp)  # type: ignore[arg-type]
             else:
-                sql = self._build_insert_sql()
+                # Pass ``data`` so server_default columns the caller
+                # omitted are dropped from both the SQL column list
+                # and the parameter list (v0.8.0).
+                sql = self._build_insert_sql(data)
                 params = self._build_insert_params(data)
             status = await executor.execute(sql, *params)
             result = self._parse_rowcount(status)
