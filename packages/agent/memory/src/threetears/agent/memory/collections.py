@@ -538,6 +538,43 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 unique=True,
                 where="alias IS NOT NULL",
             ),
+            # v0.8.1: parity-gate enrichments relocated from metallm
+            # alembic. tenancy-scope btree composites used by the
+            # cross-tenant access guards.
+            SchemaIndex("idx_memories_agent_user", "agent_id", "user_id"),
+            SchemaIndex(
+                "idx_memories_agent_customer_user",
+                "agent_id",
+                "customer_id",
+                "user_id",
+            ),
+            # v0.8.1: GIN over the trigger-maintained ``search_vector``
+            # column drives FTS path on memories.
+            SchemaIndex(
+                "idx_memories_search_vector",
+                "search_vector",
+                using="gin",
+            ),
+            # v0.8.1: HNSW vector-similarity index with the
+            # ``vector_cosine_ops`` opclass; ``m`` / ``ef_construction``
+            # parameters mirror prod (metallm alembic). these are
+            # strings to match the textual ``WITH (key = value)`` DDL
+            # syntax pgvector emits.
+            SchemaIndex(
+                "ix_memories_embedding_hnsw",
+                "embedding",
+                using="hnsw",
+                ops={"embedding": "vector_cosine_ops"},
+                pg_with={"m": "16", "ef_construction": "64"},
+            ),
+            # v0.8.1: global uniqueness on ``memory_id`` (stronger than
+            # the composite ``(agent_id, memory_id)`` PK so cross-agent
+            # leaks of the same UUID surface as a write-time conflict).
+            SchemaIndex(
+                "uq_memories_memory_id",
+                "memory_id",
+                unique=True,
+            ),
         ),
     )
 
@@ -1590,6 +1627,23 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 "cloud_file_id",
                 unique=True,
             ),
+            # v0.8.1: parity-gate enrichments relocated from metallm
+            # alembic. tenancy-scope btree composite.
+            SchemaIndex("idx_media_agent_user", "agent_id", "user_id"),
+            # v0.8.1: partial btree over rows still awaiting extraction;
+            # selective enough to keep the queue-scan cheap.
+            SchemaIndex(
+                "ix_media_extraction_pending",
+                "extraction_status",
+                where="extraction_status = 'pending'",
+            ),
+            # v0.8.1: global uniqueness on ``media_id`` (stronger than
+            # the composite ``(agent_id, media_id)`` PK).
+            SchemaIndex(
+                "uq_media_media_id",
+                "media_id",
+                unique=True,
+            ),
         ),
     )
 
@@ -1706,6 +1760,37 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 "content_type",
             ),
             SchemaIndex("ix_media_content_user", "user_id"),
+            # v0.8.1: parity-gate enrichments relocated from metallm
+            # alembic. tenancy-scope btree composite.
+            SchemaIndex(
+                "idx_media_content_agent_user",
+                "agent_id",
+                "user_id",
+            ),
+            # v0.8.1: GIN over the trigger-maintained ``search_vector``
+            # column drives the FTS half of the hybrid-search path.
+            SchemaIndex(
+                "idx_media_content_search_vector",
+                "search_vector",
+                using="gin",
+            ),
+            # v0.8.1: HNSW vector-similarity index with the
+            # ``vector_cosine_ops`` opclass. Prod does NOT carry a
+            # ``WITH`` clause here (the index was built before the
+            # metallm migration started parametrising hnsw), so this
+            # declaration has no ``pg_with=``.
+            SchemaIndex(
+                "ix_media_content_embedding",
+                "embedding",
+                using="hnsw",
+                ops={"embedding": "vector_cosine_ops"},
+            ),
+            # v0.8.1: global uniqueness on ``content_id``.
+            SchemaIndex(
+                "uq_media_content_content_id",
+                "content_id",
+                unique=True,
+            ),
         ),
     )
 
@@ -2213,6 +2298,44 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 "chunk_index",
             ),
             SchemaIndex("ix_memory_chunks_user", "user_id"),
+            # v0.8.1: parity-gate enrichments relocated from metallm
+            # alembic. partial composite covering the agent-scoped
+            # conversation-replay lookup that follows
+            # ``message_id_start`` chains.
+            SchemaIndex(
+                "idx_chunks_message_id_start",
+                "agent_id",
+                "message_id_start",
+                where="message_id_start IS NOT NULL",
+            ),
+            # v0.8.1: tenancy-scope btree composite.
+            SchemaIndex(
+                "idx_memory_chunks_agent_user",
+                "agent_id",
+                "user_id",
+            ),
+            # v0.8.1: GIN over the trigger-maintained ``search_vector``
+            # column drives the FTS half of chunks hybrid search.
+            SchemaIndex(
+                "idx_memory_chunks_search_vector",
+                "search_vector",
+                using="gin",
+            ),
+            # v0.8.1: HNSW vector-similarity index with
+            # ``vector_cosine_ops``. Prod does NOT carry a ``WITH``
+            # clause here (mirror of ``ix_media_content_embedding``).
+            SchemaIndex(
+                "ix_memory_chunks_embedding",
+                "embedding",
+                using="hnsw",
+                ops={"embedding": "vector_cosine_ops"},
+            ),
+            # v0.8.1: global uniqueness on ``chunk_id``.
+            SchemaIndex(
+                "uq_memory_chunks_chunk_id",
+                "chunk_id",
+                unique=True,
+            ),
         ),
     )
 

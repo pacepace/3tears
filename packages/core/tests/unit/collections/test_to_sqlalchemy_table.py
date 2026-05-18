@@ -544,3 +544,115 @@ def test_parity_helper_catches_numeric_scale_regression() -> None:
     # the (precision, scale) tuple drift specifically.
     with pytest.raises(AssertionError, match=r"12,\s*8"):
         assert_tables_equivalent(a, b)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1: HNSW / GIN / opclass / WITH-clause emission
+# ---------------------------------------------------------------------------
+
+
+def test_to_sqla_hnsw_index_using_ops() -> None:
+    """schema with an HNSW :class:`IndexDef` carrying ``using="hnsw"``,
+    ``ops={"embedding": "vector_cosine_ops"}``, and ``pg_with={"m": "16",
+    "ef_construction": "64"}`` produces a SA Index with the correct
+    dialect_kwargs propagated.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("embedding", VECTOR_TYPE, vector_dim=8, nullable=True),
+        ],
+        indexes=(
+            Index(
+                "ix_t_embedding_hnsw",
+                "embedding",
+                using="hnsw",
+                ops={"embedding": "vector_cosine_ops"},
+                pg_with={"m": "16", "ef_construction": "64"},
+            ),
+        ),
+    )
+    t = schema.to_sqlalchemy_table(sa.MetaData())
+    by_name = {i.name: i for i in t.indexes}
+    idx = by_name["ix_t_embedding_hnsw"]
+    assert idx.dialect_kwargs.get("postgresql_using") == "hnsw"
+    assert idx.dialect_kwargs.get("postgresql_ops") == {"embedding": "vector_cosine_ops"}
+    assert idx.dialect_kwargs.get("postgresql_with") == {
+        "m": "16",
+        "ef_construction": "64",
+    }
+    # negative-control: a plain index in the same schema would not have
+    # these kwargs set; the explicit None / absence assertion guards
+    # against an accidental schema-wide leak of the dialect kwargs.
+    assert idx.unique is False
+    assert idx.dialect_kwargs.get("postgresql_where") is None
+
+
+def test_to_sqla_gin_index_using() -> None:
+    """schema with a GIN :class:`IndexDef` (``using="gin"``, no
+    ``ops`` / ``pg_with``) produces a SA Index with
+    ``postgresql_using="gin"`` and no ops / with kwargs.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("search_vector", TSVECTOR_TYPE, immutable=True, nullable=True),
+        ],
+        indexes=(
+            Index(
+                "ix_t_search_vector",
+                "search_vector",
+                using="gin",
+            ),
+        ),
+    )
+    t = schema.to_sqlalchemy_table(sa.MetaData())
+    by_name = {i.name: i for i in t.indexes}
+    idx = by_name["ix_t_search_vector"]
+    assert idx.dialect_kwargs.get("postgresql_using") == "gin"
+    # ops / pg_with are unset on this index; reading them back via
+    # dialect_kwargs.get returns the empty-mapping default that
+    # SQLAlchemy materialises for dict-typed dialect kwargs (so the
+    # parity helper's ``or {}`` fallback resolves to the same empty
+    # tuple on both reference and candidate sides).
+    assert not idx.dialect_kwargs.get("postgresql_ops")
+    assert not idx.dialect_kwargs.get("postgresql_with")
+
+
+def test_parity_helper_catches_using_regression() -> None:
+    """parity helper raises AssertionError when two schemas differ
+    only in the access method (``using="hnsw"`` vs ``using="btree"``).
+
+    proves the appended ``postgresql_using`` field on the
+    :func:`index_signature` 7-tuple is load-bearing — a future
+    regression that flipped HNSW back to btree on the ``embedding``
+    column would otherwise pass parity silently and only surface at
+    metallm Alembic auto-gen.
+    """
+
+    def _build(using: str) -> sa.Table:
+        schema = TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[
+                Column("a", UUID_TYPE),
+                Column("embedding", VECTOR_TYPE, vector_dim=8, nullable=True),
+            ],
+            indexes=(
+                Index(
+                    "ix_t_embedding",
+                    "embedding",
+                    using=using,
+                ),
+            ),
+        )
+        return schema.to_sqlalchemy_table(sa.MetaData())
+
+    a = _build("hnsw")
+    b = _build("btree")
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(a, b)

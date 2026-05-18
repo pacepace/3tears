@@ -118,20 +118,41 @@ def column_signature(
 
 def index_signature(
     idx: sa.Index,
-) -> tuple[str, frozenset[str], bool, str | None]:
+) -> tuple[
+    str,
+    frozenset[str],
+    bool,
+    str | None,
+    str | None,
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+]:
     """return a structural signature for a SA Index.
 
-    Reads the partial-index ``WHERE`` clause via the public
-    ``dialect_kwargs`` API (NOT ``dialect_options``, which is
-    internal state and has versioned shape).
+    Reads the partial-index ``WHERE`` clause, access method,
+    per-column operator classes, and access-method parameter
+    storage via the public ``dialect_kwargs`` API (NOT
+    ``dialect_options``, which is internal state and has versioned
+    shape).
+
+    v0.8.1 added the ``postgresql_using`` / ``postgresql_ops`` /
+    ``postgresql_with`` axes so a future schema regression that
+    flipped an HNSW index to btree, dropped a ``vector_cosine_ops``
+    opclass binding, or perturbed the ``m`` / ``ef_construction``
+    parameters does not pass parity silently.
 
     :param idx: index to summarise
     :ptype idx: sqlalchemy.Index
-    :return: 4-tuple of (name, frozenset of column names, unique,
-        compiled where-clause text or None)
+    :return: 7-tuple of (name, frozenset of column names, unique,
+        compiled where-clause text or ``None``, access-method name or
+        ``None``, tuple of sorted ``(column, opclass)`` pairs, tuple
+        of sorted ``(key, value)`` pairs for the ``WITH`` clause)
     :rtype: tuple
     """
     where = idx.dialect_kwargs.get("postgresql_where")
+    using = idx.dialect_kwargs.get("postgresql_using")
+    ops_map = idx.dialect_kwargs.get("postgresql_ops") or {}
+    with_map = idx.dialect_kwargs.get("postgresql_with") or {}
     # ``idx.name`` is typed as ``quoted_name | None`` by SQLAlchemy 2.x
     # but is always a real string in our declarations (the v0.8.0
     # spec disallows auto-named indexes). Coerce to ``str`` so the
@@ -141,6 +162,9 @@ def index_signature(
         frozenset(c.name for c in idx.columns),
         bool(idx.unique),
         str(where.compile(compile_kwargs={"literal_binds": True})) if where is not None else None,
+        str(using) if using is not None else None,
+        tuple(sorted((str(k), str(v)) for k, v in ops_map.items())),
+        tuple(sorted((str(k), str(v)) for k, v in with_map.items())),
     )
 
 
