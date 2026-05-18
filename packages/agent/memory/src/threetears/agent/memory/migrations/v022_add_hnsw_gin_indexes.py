@@ -77,7 +77,7 @@ _IDX_MEMORIES_SEARCH_VECTOR_SQL = (
 
 _IDX_MEMORIES_EMBEDDING_HNSW_SQL = (
     "CREATE INDEX IF NOT EXISTS ix_memories_embedding_hnsw "
-    "ON memories USING hnsw (embedding vector_cosine_ops) "
+    "ON memories USING hnsw (embedding public.vector_cosine_ops) "
     "WITH (m = 16, ef_construction = 64)"
 )
 
@@ -104,7 +104,7 @@ _IDX_MEDIA_CONTENT_SEARCH_VECTOR_SQL = (
 # Prod does NOT carry a WITH clause for this HNSW index -- mirror
 # (see :class:`MediaContentCollection.schema` for the rationale).
 _IX_MEDIA_CONTENT_EMBEDDING_SQL = (
-    "CREATE INDEX IF NOT EXISTS ix_media_content_embedding ON media_content USING hnsw (embedding vector_cosine_ops)"
+    "CREATE INDEX IF NOT EXISTS ix_media_content_embedding ON media_content USING hnsw (embedding public.vector_cosine_ops)"
 )
 
 # ----- memory_chunks indexes (5 adds) --------------------------------- #
@@ -133,7 +133,7 @@ _IDX_MEMORY_CHUNKS_SEARCH_VECTOR_SQL = (
 )
 
 _IX_MEMORY_CHUNKS_EMBEDDING_SQL = (
-    "CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding ON memory_chunks USING hnsw (embedding vector_cosine_ops)"
+    "CREATE INDEX IF NOT EXISTS ix_memory_chunks_embedding ON memory_chunks USING hnsw (embedding public.vector_cosine_ops)"
 )
 
 # ----- unique constraints (4 adds; DO-block guarded) ------------------ #
