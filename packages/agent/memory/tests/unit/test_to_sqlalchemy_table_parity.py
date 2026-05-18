@@ -28,6 +28,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    UniqueConstraint as SAUniqueConstraint,
 )
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
@@ -118,6 +119,27 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             unique=True,
             postgresql_where=sa_text("alias IS NOT NULL"),
         ),
+        # v0.8.1 enrichments mirror prod metallm alembic.
+        SAIndex("idx_memories_agent_user", "agent_id", "user_id"),
+        SAIndex(
+            "idx_memories_agent_customer_user",
+            "agent_id",
+            "customer_id",
+            "user_id",
+        ),
+        SAIndex(
+            "idx_memories_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
+        SAIndex(
+            "ix_memories_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": "16", "ef_construction": "64"},
+        ),
+        SAUniqueConstraint("memory_id", name="uq_memories_memory_id"),
     )
 
 
@@ -197,6 +219,14 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             "cloud_file_id",
             unique=True,
         ),
+        # v0.8.1 enrichments mirror prod metallm alembic.
+        SAIndex("idx_media_agent_user", "agent_id", "user_id"),
+        SAIndex(
+            "ix_media_extraction_pending",
+            "extraction_status",
+            postgresql_where=sa_text("extraction_status = 'pending'"),
+        ),
+        SAUniqueConstraint("media_id", name="uq_media_media_id"),
     )
 
 
@@ -256,6 +286,25 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
         ),
         SAIndex("ix_media_content_media_type", "media_id", "content_type"),
         SAIndex("ix_media_content_user", "user_id"),
+        # v0.8.1 enrichments mirror prod metallm alembic.
+        SAIndex(
+            "idx_media_content_agent_user",
+            "agent_id",
+            "user_id",
+        ),
+        SAIndex(
+            "idx_media_content_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
+        # prod does NOT carry a WITH clause for this HNSW index.
+        SAIndex(
+            "ix_media_content_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        SAUniqueConstraint("content_id", name="uq_media_content_content_id"),
     )
 
 
@@ -302,6 +351,31 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
         ),
         SAIndex("ix_memory_chunks_memory", "memory_id", "chunk_index"),
         SAIndex("ix_memory_chunks_user", "user_id"),
+        # v0.8.1 enrichments mirror prod metallm alembic.
+        SAIndex(
+            "idx_chunks_message_id_start",
+            "agent_id",
+            "message_id_start",
+            postgresql_where=sa_text("message_id_start IS NOT NULL"),
+        ),
+        SAIndex(
+            "idx_memory_chunks_agent_user",
+            "agent_id",
+            "user_id",
+        ),
+        SAIndex(
+            "idx_memory_chunks_search_vector",
+            "search_vector",
+            postgresql_using="gin",
+        ),
+        # prod does NOT carry a WITH clause for this HNSW index.
+        SAIndex(
+            "ix_memory_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        SAUniqueConstraint("chunk_id", name="uq_memory_chunks_chunk_id"),
     )
 
 

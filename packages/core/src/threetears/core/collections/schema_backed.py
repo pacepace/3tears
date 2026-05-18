@@ -35,7 +35,7 @@ from __future__ import annotations
 import base64
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import wraps
@@ -213,6 +213,17 @@ class IndexDef:
     raw Postgres boolean expression -- the generator inlines it
     verbatim, no parameter binding).
 
+    v0.8.1 added ``using`` / ``ops`` / ``pg_with`` so non-btree access
+    methods (HNSW, GIN) and their per-column operator-class /
+    parameter knobs can be modelled. These map 1:1 onto SQLAlchemy's
+    ``postgresql_using`` / ``postgresql_ops`` / ``postgresql_with``
+    dialect kwargs at :meth:`TableSchema.to_sqlalchemy_table` emission
+    time. The ``ops`` and ``pg_with`` payloads are stored as tuples of
+    ``(key, value)`` pairs (not ``dict``) because the dataclass is
+    ``frozen=True`` and ``dict`` is unhashable; the
+    :class:`Index` factory accepts the natural ``dict`` shape and
+    coerces to tuples here.
+
     :cvar name: index name (matches the L3 DDL exactly; required, no
         auto-generation per v0.8.0 locked decision)
     :cvar columns: tuple of column names on this table covered by the
@@ -220,12 +231,28 @@ class IndexDef:
     :cvar unique: when ``True``, emit ``CREATE UNIQUE INDEX``
     :cvar where: optional partial-index predicate (raw SQL expression);
         when set, emit ``WHERE <where>`` after the column list
+    :cvar using: optional access-method name (e.g. ``"hnsw"``, ``"gin"``,
+        ``"btree"``). when ``None``, the default Postgres btree access
+        method is used and SQLAlchemy emits no ``USING <method>``
+        clause. v0.8.1+
+    :cvar ops: optional per-column operator-class mapping, as a tuple
+        of ``(column_name, opclass_name)`` pairs (e.g.
+        ``(("embedding", "vector_cosine_ops"),)``). v0.8.1+
+    :cvar pg_with: optional access-method parameter mapping, as a
+        tuple of ``(parameter_name, value_str)`` pairs (e.g.
+        ``(("m", "16"), ("ef_construction", "64"))``). values are
+        strings to mirror the textual ``WITH (key = value, ...)`` DDL
+        syntax verbatim. v0.8.1+
     """
 
     name: str
     columns: tuple[str, ...]
     unique: bool = False
     where: str | None = None
+    # ---new in v0.8.1:---
+    using: str | None = None
+    ops: tuple[tuple[str, str], ...] | None = None
+    pg_with: tuple[tuple[str, str], ...] | None = None
 
     def __post_init__(self) -> None:
         """validate the index shape after construction.
@@ -298,6 +325,9 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     *columns: str,
     unique: bool = False,
     where: str | None = None,
+    using: str | None = None,
+    ops: Mapping[str, str] | None = None,
+    pg_with: Mapping[str, str] | None = None,
 ) -> IndexDef:
     """factory for :class:`IndexDef`.
 
@@ -310,6 +340,18 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
             unique=True,
             where="alias IS NOT NULL",
         )
+        Index(
+            "ix_memories_embedding_hnsw",
+            "embedding",
+            using="hnsw",
+            ops={"embedding": "vector_cosine_ops"},
+            pg_with={"m": "16", "ef_construction": "64"},
+        )
+        Index("idx_memories_search_vector", "search_vector", using="gin")
+
+    The ``ops`` and ``pg_with`` arguments accept any
+    :class:`collections.abc.Mapping` (typically ``dict``) and are
+    converted to tuples for storage on the frozen :class:`IndexDef`.
 
     :param name: index name (required; no auto-generation)
     :ptype name: str
@@ -320,17 +362,115 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
     :ptype unique: bool
     :param where: optional partial-index predicate (raw Postgres SQL)
     :ptype where: str | None
+    :param using: optional Postgres access-method name (e.g.
+        ``"hnsw"``, ``"gin"``, ``"btree"``); maps to SQLAlchemy's
+        ``postgresql_using`` dialect kwarg
+    :ptype using: str | None
+    :param ops: optional per-column operator-class mapping (e.g.
+        ``{"embedding": "vector_cosine_ops"}``); maps to SQLAlchemy's
+        ``postgresql_ops`` dialect kwarg
+    :ptype ops: Mapping[str, str] | None
+    :param pg_with: optional access-method parameter mapping (e.g.
+        ``{"m": "16", "ef_construction": "64"}``); maps to
+        SQLAlchemy's ``postgresql_with`` dialect kwarg. values are
+        strings to mirror the textual ``WITH (key = value, ...)`` DDL
+        syntax verbatim
+    :ptype pg_with: Mapping[str, str] | None
     :return: validated :class:`IndexDef` instance
     :rtype: IndexDef
     :raises ValueError: when validation in
         :meth:`IndexDef.__post_init__` fails
     """
+    ops_tuple: tuple[tuple[str, str], ...] | None
+    if ops is None:
+        ops_tuple = None
+    else:
+        ops_tuple = tuple((k, v) for k, v in ops.items())
+    pg_with_tuple: tuple[tuple[str, str], ...] | None
+    if pg_with is None:
+        pg_with_tuple = None
+    else:
+        pg_with_tuple = tuple((k, v) for k, v in pg_with.items())
     return IndexDef(
         name=name,
         columns=tuple(columns),
         unique=unique,
         where=where,
+        using=using,
+        ops=ops_tuple,
+        pg_with=pg_with_tuple,
     )
+
+
+@dataclass(frozen=True)
+class UniqueConstraintDef:
+    """unique-constraint descriptor for :class:`TableSchema`.
+
+    Represents a named ``UNIQUE`` table constraint declared via
+    ``ALTER TABLE ... ADD CONSTRAINT <name> UNIQUE (<cols>)``. This is
+    distinct from a UNIQUE index declared via
+    :class:`IndexDef` with ``unique=True``: both shapes produce
+    identical rows in ``pg_indexes`` so they are byte-for-byte
+    indistinguishable at the storage level, BUT Alembic auto-gen reads
+    ``information_schema.table_constraints`` and surfaces a
+    ``drop_constraint`` + ``create_unique_constraint`` diff when a
+    target metadata's ``UniqueConstraint`` does not match a prod
+    deployment's ``CONSTRAINT ... UNIQUE``.
+
+    Use :class:`UniqueConstraintDef` when the prod DDL is
+    ``ADD CONSTRAINT <name> UNIQUE (...)``. Use
+    :class:`IndexDef` with ``unique=True`` only when prod uses
+    ``CREATE UNIQUE INDEX``.
+
+    :cvar name: constraint name (matches the L3 DDL exactly; required,
+        no auto-generation per the v0.8.0 locked decision)
+    :cvar columns: tuple of column names covered by the constraint,
+        in declared order
+    """
+
+    name: str
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """validate the constraint shape after construction.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``name`` is empty or ``columns`` is empty
+        """
+        if not self.name:
+            raise ValueError("UniqueConstraintDef: name must be non-empty")
+        if not self.columns:
+            raise ValueError(
+                f"UniqueConstraintDef(name={self.name!r}): columns must be a non-empty tuple",
+            )
+
+
+def UniqueConstraint(  # noqa: N802 -- factory function intentionally named like a class
+    name: str,
+    *columns: str,
+) -> UniqueConstraintDef:
+    """factory for :class:`UniqueConstraintDef`.
+
+    Varargs ``columns`` reads cleanly at call sites::
+
+        UniqueConstraint("uq_memories_memory_id", "memory_id")
+        UniqueConstraint(
+            "uq_memories_agent_memory",
+            "agent_id", "memory_id",
+        )
+
+    :param name: constraint name (required; no auto-generation)
+    :ptype name: str
+    :param columns: column name(s) covered by the constraint, in
+        declared order
+    :ptype columns: str
+    :return: validated :class:`UniqueConstraintDef` instance
+    :rtype: UniqueConstraintDef
+    :raises ValueError: when validation in
+        :meth:`UniqueConstraintDef.__post_init__` fails
+    """
+    return UniqueConstraintDef(name=name, columns=tuple(columns))
 
 
 @dataclass(frozen=True)
@@ -542,6 +682,12 @@ class TableSchema:
     # named indexes on this table. ``UNIQUE`` + partial-index variants
     # supported via :class:`IndexDef`. tuple for the same reason.
     indexes: tuple[IndexDef, ...] = ()
+    # named UNIQUE constraints (``ALTER TABLE ... ADD CONSTRAINT ...
+    # UNIQUE (...)``). distinct from :class:`IndexDef` ``unique=True``
+    # at the Alembic auto-gen level even though both produce identical
+    # ``pg_indexes`` rows; see :class:`UniqueConstraintDef` docstring.
+    # v0.8.1+
+    unique_constraints: tuple[UniqueConstraintDef, ...] = ()
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -641,6 +787,31 @@ class TableSchema:
         if len(index_names) != len(set(index_names)):
             raise ValueError(
                 f"TableSchema(name={self.name!r}): duplicate index names in {index_names!r}",
+            )
+        # v0.8.1: validate the new ``unique_constraints`` field
+        # symmetrically with ``indexes``.
+        for uc in self.unique_constraints:
+            for col_name in uc.columns:
+                if col_name not in by_name:
+                    raise ValueError(
+                        f"TableSchema(name={self.name!r}): unique_constraint "
+                        f"name={uc.name!r} references col={col_name!r} which "
+                        f"is not declared in columns",
+                    )
+        uc_names = [u.name for u in self.unique_constraints]
+        if len(uc_names) != len(set(uc_names)):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): duplicate unique_constraint names in {uc_names!r}",
+            )
+        # Cross-axis name collision: an index and a unique constraint
+        # cannot share a name (Postgres allows it at separate
+        # information-schema layers but the parity assertions would
+        # produce ambiguous error messages).
+        collision = set(index_names) & set(uc_names)
+        if collision:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): name(s) {sorted(collision)!r} "
+                f"used by both an IndexDef and a UniqueConstraintDef",
             )
 
     @property
@@ -825,14 +996,35 @@ class TableSchema:
 
         sa_indexes: list[Any] = []
         for idx in self.indexes:
+            idx_kwargs: dict[str, Any] = {
+                "unique": idx.unique,
+            }
+            if idx.where is not None:
+                idx_kwargs["postgresql_where"] = sa.text(idx.where)
+            if idx.using is not None:
+                idx_kwargs["postgresql_using"] = idx.using
+            if idx.ops is not None:
+                # convert the frozen tuple-of-pairs storage shape back
+                # to the natural dict shape SA's dialect_kwargs expects.
+                idx_kwargs["postgresql_ops"] = dict(idx.ops)
+            if idx.pg_with is not None:
+                idx_kwargs["postgresql_with"] = dict(idx.pg_with)
             sa_indexes.append(
                 sa.Index(
                     idx.name,
                     *idx.columns,
-                    unique=idx.unique,
-                    postgresql_where=sa.text(idx.where) if idx.where else None,
+                    **idx_kwargs,
                 ),
             )
+
+        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
+        # so Alembic auto-gen reads them out of
+        # ``information_schema.table_constraints`` and matches the prod
+        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
+        # :class:`UniqueConstraintDef` docstring for the distinction.
+        sa_unique_constraints: list[Any] = [
+            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
+        ]
 
         return sa.Table(
             self.name,
@@ -840,6 +1032,7 @@ class TableSchema:
             *sa_columns,
             *sa_fk_constraints,
             *sa_indexes,
+            *sa_unique_constraints,
         )
 
 
