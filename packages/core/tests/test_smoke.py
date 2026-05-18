@@ -1,7 +1,7 @@
 def test_core_import():
     from threetears.core import __version__
 
-    assert __version__ == "0.8.0"
+    assert __version__ == "0.8.1"
 
 
 def test_cross_package_imports():
@@ -9,6 +9,6 @@ def test_cross_package_imports():
     from threetears.agent.memory import __version__ as memory_version
     from threetears.agent.tools import __version__ as tools_version
 
-    assert core_version == "0.8.0"
-    assert memory_version == "0.8.0"
-    assert tools_version == "0.8.0"
+    assert core_version == "0.8.1"
+    assert memory_version == "0.8.1"
+    assert tools_version == "0.8.1"

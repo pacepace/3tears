@@ -49,6 +49,8 @@ from threetears.core.collections.schema_backed import (
     ForeignKey,
     Index,
     TableSchema,
+    UniqueConstraint,
+    UniqueConstraintDef,
 )
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
 
@@ -544,3 +546,224 @@ def test_parity_helper_catches_numeric_scale_regression() -> None:
     # the (precision, scale) tuple drift specifically.
     with pytest.raises(AssertionError, match=r"12,\s*8"):
         assert_tables_equivalent(a, b)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1: HNSW / GIN / opclass / WITH-clause emission
+# ---------------------------------------------------------------------------
+
+
+def test_to_sqla_hnsw_index_using_ops() -> None:
+    """schema with an HNSW :class:`IndexDef` carrying ``using="hnsw"``,
+    ``ops={"embedding": "vector_cosine_ops"}``, and ``pg_with={"m": "16",
+    "ef_construction": "64"}`` produces a SA Index with the correct
+    dialect_kwargs propagated.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("embedding", VECTOR_TYPE, vector_dim=8, nullable=True),
+        ],
+        indexes=(
+            Index(
+                "ix_t_embedding_hnsw",
+                "embedding",
+                using="hnsw",
+                ops={"embedding": "vector_cosine_ops"},
+                pg_with={"m": "16", "ef_construction": "64"},
+            ),
+        ),
+    )
+    t = schema.to_sqlalchemy_table(sa.MetaData())
+    by_name = {i.name: i for i in t.indexes}
+    idx = by_name["ix_t_embedding_hnsw"]
+    assert idx.dialect_kwargs.get("postgresql_using") == "hnsw"
+    assert idx.dialect_kwargs.get("postgresql_ops") == {"embedding": "vector_cosine_ops"}
+    assert idx.dialect_kwargs.get("postgresql_with") == {
+        "m": "16",
+        "ef_construction": "64",
+    }
+    # negative-control: a plain index in the same schema would not have
+    # these kwargs set; the explicit None / absence assertion guards
+    # against an accidental schema-wide leak of the dialect kwargs.
+    assert idx.unique is False
+    assert idx.dialect_kwargs.get("postgresql_where") is None
+
+
+def test_to_sqla_gin_index_using() -> None:
+    """schema with a GIN :class:`IndexDef` (``using="gin"``, no
+    ``ops`` / ``pg_with``) produces a SA Index with
+    ``postgresql_using="gin"`` and no ops / with kwargs.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("search_vector", TSVECTOR_TYPE, immutable=True, nullable=True),
+        ],
+        indexes=(
+            Index(
+                "ix_t_search_vector",
+                "search_vector",
+                using="gin",
+            ),
+        ),
+    )
+    t = schema.to_sqlalchemy_table(sa.MetaData())
+    by_name = {i.name: i for i in t.indexes}
+    idx = by_name["ix_t_search_vector"]
+    assert idx.dialect_kwargs.get("postgresql_using") == "gin"
+    # ops / pg_with are unset on this index; reading them back via
+    # dialect_kwargs.get returns the empty-mapping default that
+    # SQLAlchemy materialises for dict-typed dialect kwargs (so the
+    # parity helper's ``or {}`` fallback resolves to the same empty
+    # tuple on both reference and candidate sides).
+    assert not idx.dialect_kwargs.get("postgresql_ops")
+    assert not idx.dialect_kwargs.get("postgresql_with")
+
+
+def test_parity_helper_catches_using_regression() -> None:
+    """parity helper raises AssertionError when two schemas differ
+    only in the access method (``using="hnsw"`` vs ``using="btree"``).
+
+    proves the appended ``postgresql_using`` field on the
+    :func:`index_signature` 7-tuple is load-bearing — a future
+    regression that flipped HNSW back to btree on the ``embedding``
+    column would otherwise pass parity silently and only surface at
+    metallm Alembic auto-gen.
+    """
+
+    def _build(using: str) -> sa.Table:
+        schema = TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[
+                Column("a", UUID_TYPE),
+                Column("embedding", VECTOR_TYPE, vector_dim=8, nullable=True),
+            ],
+            indexes=(
+                Index(
+                    "ix_t_embedding",
+                    "embedding",
+                    using=using,
+                ),
+            ),
+        )
+        return schema.to_sqlalchemy_table(sa.MetaData())
+
+    a = _build("hnsw")
+    b = _build("btree")
+    with pytest.raises(AssertionError, match="index-signature"):
+        assert_tables_equivalent(a, b)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1: UniqueConstraintDef (alembic auto-gen distinguishes UNIQUE
+# constraint from unique index even though pg_indexes does not)
+# ---------------------------------------------------------------------------
+
+
+def test_to_sqla_unique_constraint_emits_sa_unique_constraint() -> None:
+    """``unique_constraints=`` round-trips through
+    :meth:`to_sqlalchemy_table` as a real ``sa.UniqueConstraint`` (NOT
+    a ``sa.Index(unique=True)``).
+
+    Verifies the v0.8.1 fix: prod creates the 4 ``uq_<table>_<id>``
+    constraints via ``ALTER TABLE ... ADD CONSTRAINT ... UNIQUE``;
+    Alembic auto-gen distinguishes UNIQUE-CONSTRAINT from
+    UNIQUE-INDEX via ``information_schema.table_constraints``, so we
+    need the emitted Table to carry a ``UniqueConstraint`` (not a
+    unique index) for the parity gate to match prod.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key=("agent_id", "memory_id"),
+        columns=[
+            Column("agent_id", UUID_TYPE),
+            Column("memory_id", UUID_TYPE),
+        ],
+        unique_constraints=(UniqueConstraint("uq_t_memory_id", "memory_id"),),
+    )
+    table = schema.to_sqlalchemy_table(sa.MetaData())
+    uniques = [c for c in table.constraints if isinstance(c, sa.UniqueConstraint)]
+    # SQLAlchemy attaches an implicit empty UniqueConstraint to every
+    # Table; the named one we declared is the additional entry.
+    named = [u for u in uniques if u.name == "uq_t_memory_id"]
+    assert len(named) == 1, f"expected one named UniqueConstraint, got {[u.name for u in uniques]!r}"
+    assert [c.name for c in named[0].columns] == ["memory_id"]
+    # Critically: there must NOT be an Index with the same name
+    # (would mean we accidentally emitted both shapes).
+    assert not any(i.name == "uq_t_memory_id" for i in table.indexes)
+
+
+def test_parity_helper_catches_unique_constraint_vs_unique_index() -> None:
+    """parity helper raises AssertionError when one schema declares a
+    UNIQUE constraint and the other declares a unique index with the
+    same column set.
+
+    Proves the new ``unique_constraint_signature`` axis is
+    load-bearing -- without it the two shapes would compare equal at
+    the storage level (same ``pg_indexes`` row) but diverge under
+    Alembic auto-gen against prod (``information_schema`` reads
+    different).
+    """
+    md1 = sa.MetaData()
+    md2 = sa.MetaData()
+    # Schema A: UNIQUE constraint
+    a = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+        unique_constraints=(UniqueConstraint("uq_t_b", "b"),),
+    ).to_sqlalchemy_table(md1)
+    # Schema B: unique INDEX (same name, same column)
+    b = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+        indexes=(Index("uq_t_b", "b", unique=True),),
+    ).to_sqlalchemy_table(md2)
+    with pytest.raises(AssertionError, match="(unique-constraint|index-signature)"):
+        assert_tables_equivalent(a, b)
+
+
+def test_unique_constraint_def_validation_rejects_empty_columns() -> None:
+    """:class:`UniqueConstraintDef` rejects empty columns at
+    construction time so a typo cannot produce a constraint with no
+    column list.
+    """
+    with pytest.raises(ValueError, match="columns must be a non-empty tuple"):
+        UniqueConstraintDef(name="uq_t_x", columns=())
+    with pytest.raises(ValueError, match="name must be non-empty"):
+        UniqueConstraintDef(name="", columns=("x",))
+
+
+def test_unique_constraint_def_rejects_unknown_column() -> None:
+    """:class:`TableSchema` validates ``unique_constraints`` column refs
+    against the declared columns so a typo fails loudly at
+    declaration time.
+    """
+    with pytest.raises(ValueError, match="not declared in columns"):
+        TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[Column("a", UUID_TYPE)],
+            unique_constraints=(UniqueConstraint("uq_t_missing", "nonexistent_col"),),
+        )
+
+
+def test_unique_constraint_def_rejects_name_collision_with_index() -> None:
+    """An IndexDef and a UniqueConstraintDef with the same name on the
+    same table fails validation.
+    """
+    with pytest.raises(ValueError, match="used by both"):
+        TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+            indexes=(Index("dup_name", "b"),),
+            unique_constraints=(UniqueConstraint("dup_name", "b"),),
+        )

@@ -51,6 +51,7 @@ __all__ = [
     "fk_constraint_signature",
     "index_signature",
     "inline_fk_signatures",
+    "unique_constraint_signature",
 ]
 
 
@@ -118,20 +119,41 @@ def column_signature(
 
 def index_signature(
     idx: sa.Index,
-) -> tuple[str, frozenset[str], bool, str | None]:
+) -> tuple[
+    str,
+    frozenset[str],
+    bool,
+    str | None,
+    str | None,
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+]:
     """return a structural signature for a SA Index.
 
-    Reads the partial-index ``WHERE`` clause via the public
-    ``dialect_kwargs`` API (NOT ``dialect_options``, which is
-    internal state and has versioned shape).
+    Reads the partial-index ``WHERE`` clause, access method,
+    per-column operator classes, and access-method parameter
+    storage via the public ``dialect_kwargs`` API (NOT
+    ``dialect_options``, which is internal state and has versioned
+    shape).
+
+    v0.8.1 added the ``postgresql_using`` / ``postgresql_ops`` /
+    ``postgresql_with`` axes so a future schema regression that
+    flipped an HNSW index to btree, dropped a ``vector_cosine_ops``
+    opclass binding, or perturbed the ``m`` / ``ef_construction``
+    parameters does not pass parity silently.
 
     :param idx: index to summarise
     :ptype idx: sqlalchemy.Index
-    :return: 4-tuple of (name, frozenset of column names, unique,
-        compiled where-clause text or None)
+    :return: 7-tuple of (name, frozenset of column names, unique,
+        compiled where-clause text or ``None``, access-method name or
+        ``None``, tuple of sorted ``(column, opclass)`` pairs, tuple
+        of sorted ``(key, value)`` pairs for the ``WITH`` clause)
     :rtype: tuple
     """
     where = idx.dialect_kwargs.get("postgresql_where")
+    using = idx.dialect_kwargs.get("postgresql_using")
+    ops_map = idx.dialect_kwargs.get("postgresql_ops") or {}
+    with_map = idx.dialect_kwargs.get("postgresql_with") or {}
     # ``idx.name`` is typed as ``quoted_name | None`` by SQLAlchemy 2.x
     # but is always a real string in our declarations (the v0.8.0
     # spec disallows auto-named indexes). Coerce to ``str`` so the
@@ -141,6 +163,39 @@ def index_signature(
         frozenset(c.name for c in idx.columns),
         bool(idx.unique),
         str(where.compile(compile_kwargs={"literal_binds": True})) if where is not None else None,
+        str(using) if using is not None else None,
+        tuple(sorted((str(k), str(v)) for k, v in ops_map.items())),
+        tuple(sorted((str(k), str(v)) for k, v in with_map.items())),
+    )
+
+
+def unique_constraint_signature(
+    constraint: sa.UniqueConstraint,
+) -> tuple[str, tuple[str, ...]]:
+    """return a structural signature for a SA UniqueConstraint.
+
+    Distinct axis from :func:`index_signature` even though Postgres
+    surfaces both as identical rows in ``pg_indexes``. Alembic
+    auto-gen reads UNIQUE constraints out of
+    ``information_schema.table_constraints``, so a schema that declares
+    ``CREATE UNIQUE INDEX uq_foo`` will diff against a prod that
+    declares ``ALTER TABLE foo ADD CONSTRAINT uq_foo UNIQUE`` and
+    surface a ``drop_constraint`` / ``create_unique_constraint`` op.
+    v0.8.1 added :class:`UniqueConstraintDef` so the two shapes are
+    independently modellable.
+
+    PK column order is NOT preserved on UNIQUE constraints (Postgres
+    treats UNIQUE column lists as sets; Alembic auto-gen compares
+    unordered), so the signature uses a tuple of sorted column names.
+
+    :param constraint: SA ``UniqueConstraint``
+    :ptype constraint: sqlalchemy.UniqueConstraint
+    :return: 2-tuple of (name, sorted-tuple of column names)
+    :rtype: tuple
+    """
+    return (
+        str(constraint.name) if constraint.name is not None else "",
+        tuple(sorted(c.name for c in constraint.columns)),
     )
 
 
@@ -262,6 +317,16 @@ def assert_tables_equivalent(a: sa.Table, b: sa.Table) -> None:
         f"FK-constraint sets differ on {a.name}: "
         f"only-in-reference={a_fk_sigs - b_fk_sigs!r}, "
         f"only-in-to_sqla={b_fk_sigs - a_fk_sigs!r}"
+    )
+
+    # table-level UNIQUE constraints. v0.8.1: distinct axis from
+    # indexes; see ``unique_constraint_signature`` docstring.
+    a_uc_sigs = {unique_constraint_signature(c) for c in a.constraints if isinstance(c, sa.UniqueConstraint)}
+    b_uc_sigs = {unique_constraint_signature(c) for c in b.constraints if isinstance(c, sa.UniqueConstraint)}
+    assert a_uc_sigs == b_uc_sigs, (
+        f"unique-constraint sets differ on {a.name}: "
+        f"only-in-reference={a_uc_sigs - b_uc_sigs!r}, "
+        f"only-in-to_sqla={b_uc_sigs - a_uc_sigs!r}"
     )
 
     # inline FK signatures
