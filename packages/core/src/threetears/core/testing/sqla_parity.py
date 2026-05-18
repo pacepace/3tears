@@ -51,6 +51,7 @@ __all__ = [
     "fk_constraint_signature",
     "index_signature",
     "inline_fk_signatures",
+    "unique_constraint_signature",
 ]
 
 
@@ -165,6 +166,36 @@ def index_signature(
         str(using) if using is not None else None,
         tuple(sorted((str(k), str(v)) for k, v in ops_map.items())),
         tuple(sorted((str(k), str(v)) for k, v in with_map.items())),
+    )
+
+
+def unique_constraint_signature(
+    constraint: sa.UniqueConstraint,
+) -> tuple[str, tuple[str, ...]]:
+    """return a structural signature for a SA UniqueConstraint.
+
+    Distinct axis from :func:`index_signature` even though Postgres
+    surfaces both as identical rows in ``pg_indexes``. Alembic
+    auto-gen reads UNIQUE constraints out of
+    ``information_schema.table_constraints``, so a schema that declares
+    ``CREATE UNIQUE INDEX uq_foo`` will diff against a prod that
+    declares ``ALTER TABLE foo ADD CONSTRAINT uq_foo UNIQUE`` and
+    surface a ``drop_constraint`` / ``create_unique_constraint`` op.
+    v0.8.1 added :class:`UniqueConstraintDef` so the two shapes are
+    independently modellable.
+
+    PK column order is NOT preserved on UNIQUE constraints (Postgres
+    treats UNIQUE column lists as sets; Alembic auto-gen compares
+    unordered), so the signature uses a tuple of sorted column names.
+
+    :param constraint: SA ``UniqueConstraint``
+    :ptype constraint: sqlalchemy.UniqueConstraint
+    :return: 2-tuple of (name, sorted-tuple of column names)
+    :rtype: tuple
+    """
+    return (
+        str(constraint.name) if constraint.name is not None else "",
+        tuple(sorted(c.name for c in constraint.columns)),
     )
 
 
@@ -286,6 +317,16 @@ def assert_tables_equivalent(a: sa.Table, b: sa.Table) -> None:
         f"FK-constraint sets differ on {a.name}: "
         f"only-in-reference={a_fk_sigs - b_fk_sigs!r}, "
         f"only-in-to_sqla={b_fk_sigs - a_fk_sigs!r}"
+    )
+
+    # table-level UNIQUE constraints. v0.8.1: distinct axis from
+    # indexes; see ``unique_constraint_signature`` docstring.
+    a_uc_sigs = {unique_constraint_signature(c) for c in a.constraints if isinstance(c, sa.UniqueConstraint)}
+    b_uc_sigs = {unique_constraint_signature(c) for c in b.constraints if isinstance(c, sa.UniqueConstraint)}
+    assert a_uc_sigs == b_uc_sigs, (
+        f"unique-constraint sets differ on {a.name}: "
+        f"only-in-reference={a_uc_sigs - b_uc_sigs!r}, "
+        f"only-in-to_sqla={b_uc_sigs - a_uc_sigs!r}"
     )
 
     # inline FK signatures

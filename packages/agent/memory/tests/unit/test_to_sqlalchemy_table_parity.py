@@ -28,6 +28,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     Text,
+    UniqueConstraint as SAUniqueConstraint,
 )
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
@@ -138,11 +139,7 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_with={"m": "16", "ef_construction": "64"},
         ),
-        SAIndex(
-            "uq_memories_memory_id",
-            "memory_id",
-            unique=True,
-        ),
+        SAUniqueConstraint("memory_id", name="uq_memories_memory_id"),
     )
 
 
@@ -229,11 +226,7 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             "extraction_status",
             postgresql_where=sa_text("extraction_status = 'pending'"),
         ),
-        SAIndex(
-            "uq_media_media_id",
-            "media_id",
-            unique=True,
-        ),
+        SAUniqueConstraint("media_id", name="uq_media_media_id"),
     )
 
 
@@ -311,11 +304,7 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
-        SAIndex(
-            "uq_media_content_content_id",
-            "content_id",
-            unique=True,
-        ),
+        SAUniqueConstraint("content_id", name="uq_media_content_content_id"),
     )
 
 
@@ -386,11 +375,7 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
-        SAIndex(
-            "uq_memory_chunks_chunk_id",
-            "chunk_id",
-            unique=True,
-        ),
+        SAUniqueConstraint("chunk_id", name="uq_memory_chunks_chunk_id"),
     )
 
 

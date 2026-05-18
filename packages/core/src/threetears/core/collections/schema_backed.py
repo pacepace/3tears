@@ -403,6 +403,77 @@ def Index(  # noqa: N802 -- factory function intentionally named like a class
 
 
 @dataclass(frozen=True)
+class UniqueConstraintDef:
+    """unique-constraint descriptor for :class:`TableSchema`.
+
+    Represents a named ``UNIQUE`` table constraint declared via
+    ``ALTER TABLE ... ADD CONSTRAINT <name> UNIQUE (<cols>)``. This is
+    distinct from a UNIQUE index declared via
+    :class:`IndexDef` with ``unique=True``: both shapes produce
+    identical rows in ``pg_indexes`` so they are byte-for-byte
+    indistinguishable at the storage level, BUT Alembic auto-gen reads
+    ``information_schema.table_constraints`` and surfaces a
+    ``drop_constraint`` + ``create_unique_constraint`` diff when a
+    target metadata's ``UniqueConstraint`` does not match a prod
+    deployment's ``CONSTRAINT ... UNIQUE``.
+
+    Use :class:`UniqueConstraintDef` when the prod DDL is
+    ``ADD CONSTRAINT <name> UNIQUE (...)``. Use
+    :class:`IndexDef` with ``unique=True`` only when prod uses
+    ``CREATE UNIQUE INDEX``.
+
+    :cvar name: constraint name (matches the L3 DDL exactly; required,
+        no auto-generation per the v0.8.0 locked decision)
+    :cvar columns: tuple of column names covered by the constraint,
+        in declared order
+    """
+
+    name: str
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """validate the constraint shape after construction.
+
+        :return: nothing
+        :rtype: None
+        :raises ValueError: when ``name`` is empty or ``columns`` is empty
+        """
+        if not self.name:
+            raise ValueError("UniqueConstraintDef: name must be non-empty")
+        if not self.columns:
+            raise ValueError(
+                f"UniqueConstraintDef(name={self.name!r}): columns must be a non-empty tuple",
+            )
+
+
+def UniqueConstraint(  # noqa: N802 -- factory function intentionally named like a class
+    name: str,
+    *columns: str,
+) -> UniqueConstraintDef:
+    """factory for :class:`UniqueConstraintDef`.
+
+    Varargs ``columns`` reads cleanly at call sites::
+
+        UniqueConstraint("uq_memories_memory_id", "memory_id")
+        UniqueConstraint(
+            "uq_memories_agent_memory",
+            "agent_id", "memory_id",
+        )
+
+    :param name: constraint name (required; no auto-generation)
+    :ptype name: str
+    :param columns: column name(s) covered by the constraint, in
+        declared order
+    :ptype columns: str
+    :return: validated :class:`UniqueConstraintDef` instance
+    :rtype: UniqueConstraintDef
+    :raises ValueError: when validation in
+        :meth:`UniqueConstraintDef.__post_init__` fails
+    """
+    return UniqueConstraintDef(name=name, columns=tuple(columns))
+
+
+@dataclass(frozen=True)
 class Column:
     """column descriptor for :class:`TableSchema`.
 
@@ -611,6 +682,12 @@ class TableSchema:
     # named indexes on this table. ``UNIQUE`` + partial-index variants
     # supported via :class:`IndexDef`. tuple for the same reason.
     indexes: tuple[IndexDef, ...] = ()
+    # named UNIQUE constraints (``ALTER TABLE ... ADD CONSTRAINT ...
+    # UNIQUE (...)``). distinct from :class:`IndexDef` ``unique=True``
+    # at the Alembic auto-gen level even though both produce identical
+    # ``pg_indexes`` rows; see :class:`UniqueConstraintDef` docstring.
+    # v0.8.1+
+    unique_constraints: tuple[UniqueConstraintDef, ...] = ()
 
     _pk_columns: tuple[str, ...] = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -710,6 +787,31 @@ class TableSchema:
         if len(index_names) != len(set(index_names)):
             raise ValueError(
                 f"TableSchema(name={self.name!r}): duplicate index names in {index_names!r}",
+            )
+        # v0.8.1: validate the new ``unique_constraints`` field
+        # symmetrically with ``indexes``.
+        for uc in self.unique_constraints:
+            for col_name in uc.columns:
+                if col_name not in by_name:
+                    raise ValueError(
+                        f"TableSchema(name={self.name!r}): unique_constraint "
+                        f"name={uc.name!r} references col={col_name!r} which "
+                        f"is not declared in columns",
+                    )
+        uc_names = [u.name for u in self.unique_constraints]
+        if len(uc_names) != len(set(uc_names)):
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): duplicate unique_constraint names in {uc_names!r}",
+            )
+        # Cross-axis name collision: an index and a unique constraint
+        # cannot share a name (Postgres allows it at separate
+        # information-schema layers but the parity assertions would
+        # produce ambiguous error messages).
+        collision = set(index_names) & set(uc_names)
+        if collision:
+            raise ValueError(
+                f"TableSchema(name={self.name!r}): name(s) {sorted(collision)!r} "
+                f"used by both an IndexDef and a UniqueConstraintDef",
             )
 
     @property
@@ -915,12 +1017,22 @@ class TableSchema:
                 ),
             )
 
+        # v0.8.1: emit ``sa.UniqueConstraint`` (NOT ``sa.Index(unique=True)``)
+        # so Alembic auto-gen reads them out of
+        # ``information_schema.table_constraints`` and matches the prod
+        # ``ADD CONSTRAINT ... UNIQUE`` DDL byte-for-byte. See
+        # :class:`UniqueConstraintDef` docstring for the distinction.
+        sa_unique_constraints: list[Any] = [
+            sa.UniqueConstraint(*uc.columns, name=uc.name) for uc in self.unique_constraints
+        ]
+
         return sa.Table(
             self.name,
             metadata,
             *sa_columns,
             *sa_fk_constraints,
             *sa_indexes,
+            *sa_unique_constraints,
         )
 
 

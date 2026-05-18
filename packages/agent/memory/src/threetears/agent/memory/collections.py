@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
+    UniqueConstraint as SchemaUniqueConstraint,
     spans_partitions,
 )
 from threetears.core.config import CoreConfig
@@ -567,15 +568,15 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
                 ops={"embedding": "vector_cosine_ops"},
                 pg_with={"m": "16", "ef_construction": "64"},
             ),
-            # v0.8.1: global uniqueness on ``memory_id`` (stronger than
-            # the composite ``(agent_id, memory_id)`` PK so cross-agent
-            # leaks of the same UUID surface as a write-time conflict).
-            SchemaIndex(
-                "uq_memories_memory_id",
-                "memory_id",
-                unique=True,
-            ),
         ),
+        # v0.8.1: global uniqueness on ``memory_id`` (stronger than the
+        # composite ``(agent_id, memory_id)`` PK so cross-agent leaks of
+        # the same UUID surface as a write-time conflict). Modelled as a
+        # UNIQUE CONSTRAINT (not a unique index) because prod metallm
+        # alembic 064 declares it via ``ALTER TABLE ... ADD CONSTRAINT
+        # uq_memories_memory_id UNIQUE``; Alembic auto-gen distinguishes
+        # the two via ``information_schema.table_constraints``.
+        unique_constraints=(SchemaUniqueConstraint("uq_memories_memory_id", "memory_id"),),
     )
 
     def __init__(
@@ -1637,14 +1638,13 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
                 "extraction_status",
                 where="extraction_status = 'pending'",
             ),
-            # v0.8.1: global uniqueness on ``media_id`` (stronger than
-            # the composite ``(agent_id, media_id)`` PK).
-            SchemaIndex(
-                "uq_media_media_id",
-                "media_id",
-                unique=True,
-            ),
         ),
+        # v0.8.1: global uniqueness on ``media_id`` (stronger than the
+        # composite ``(agent_id, media_id)`` PK). Modelled as a UNIQUE
+        # CONSTRAINT (not a unique index) -- prod creates it via
+        # ``ALTER TABLE ... ADD CONSTRAINT uq_media_media_id UNIQUE`` in
+        # metallm alembic 064.
+        unique_constraints=(SchemaUniqueConstraint("uq_media_media_id", "media_id"),),
     )
 
     @property
@@ -1785,13 +1785,12 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
             ),
-            # v0.8.1: global uniqueness on ``content_id``.
-            SchemaIndex(
-                "uq_media_content_content_id",
-                "content_id",
-                unique=True,
-            ),
         ),
+        # v0.8.1: global uniqueness on ``content_id``. Modelled as a
+        # UNIQUE CONSTRAINT (not a unique index) -- prod creates it via
+        # ``ALTER TABLE ... ADD CONSTRAINT uq_media_content_content_id
+        # UNIQUE`` in metallm alembic 064.
+        unique_constraints=(SchemaUniqueConstraint("uq_media_content_content_id", "content_id"),),
     )
 
     @property
@@ -2330,13 +2329,12 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
             ),
-            # v0.8.1: global uniqueness on ``chunk_id``.
-            SchemaIndex(
-                "uq_memory_chunks_chunk_id",
-                "chunk_id",
-                unique=True,
-            ),
         ),
+        # v0.8.1: global uniqueness on ``chunk_id``. Modelled as a
+        # UNIQUE CONSTRAINT (not a unique index) -- prod creates it via
+        # ``ALTER TABLE ... ADD CONSTRAINT uq_memory_chunks_chunk_id
+        # UNIQUE`` in metallm alembic 064.
+        unique_constraints=(SchemaUniqueConstraint("uq_memory_chunks_chunk_id", "chunk_id"),),
     )
 
     @property

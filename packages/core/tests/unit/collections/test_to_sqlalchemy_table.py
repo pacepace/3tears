@@ -49,6 +49,8 @@ from threetears.core.collections.schema_backed import (
     ForeignKey,
     Index,
     TableSchema,
+    UniqueConstraint,
+    UniqueConstraintDef,
 )
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
 
@@ -656,3 +658,112 @@ def test_parity_helper_catches_using_regression() -> None:
     b = _build("btree")
     with pytest.raises(AssertionError, match="index-signature"):
         assert_tables_equivalent(a, b)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.1: UniqueConstraintDef (alembic auto-gen distinguishes UNIQUE
+# constraint from unique index even though pg_indexes does not)
+# ---------------------------------------------------------------------------
+
+
+def test_to_sqla_unique_constraint_emits_sa_unique_constraint() -> None:
+    """``unique_constraints=`` round-trips through
+    :meth:`to_sqlalchemy_table` as a real ``sa.UniqueConstraint`` (NOT
+    a ``sa.Index(unique=True)``).
+
+    Verifies the v0.8.1 fix: prod creates the 4 ``uq_<table>_<id>``
+    constraints via ``ALTER TABLE ... ADD CONSTRAINT ... UNIQUE``;
+    Alembic auto-gen distinguishes UNIQUE-CONSTRAINT from
+    UNIQUE-INDEX via ``information_schema.table_constraints``, so we
+    need the emitted Table to carry a ``UniqueConstraint`` (not a
+    unique index) for the parity gate to match prod.
+    """
+    schema = TableSchema(
+        name="t",
+        primary_key=("agent_id", "memory_id"),
+        columns=[
+            Column("agent_id", UUID_TYPE),
+            Column("memory_id", UUID_TYPE),
+        ],
+        unique_constraints=(UniqueConstraint("uq_t_memory_id", "memory_id"),),
+    )
+    table = schema.to_sqlalchemy_table(sa.MetaData())
+    uniques = [c for c in table.constraints if isinstance(c, sa.UniqueConstraint)]
+    # SQLAlchemy attaches an implicit empty UniqueConstraint to every
+    # Table; the named one we declared is the additional entry.
+    named = [u for u in uniques if u.name == "uq_t_memory_id"]
+    assert len(named) == 1, f"expected one named UniqueConstraint, got {[u.name for u in uniques]!r}"
+    assert [c.name for c in named[0].columns] == ["memory_id"]
+    # Critically: there must NOT be an Index with the same name
+    # (would mean we accidentally emitted both shapes).
+    assert not any(i.name == "uq_t_memory_id" for i in table.indexes)
+
+
+def test_parity_helper_catches_unique_constraint_vs_unique_index() -> None:
+    """parity helper raises AssertionError when one schema declares a
+    UNIQUE constraint and the other declares a unique index with the
+    same column set.
+
+    Proves the new ``unique_constraint_signature`` axis is
+    load-bearing -- without it the two shapes would compare equal at
+    the storage level (same ``pg_indexes`` row) but diverge under
+    Alembic auto-gen against prod (``information_schema`` reads
+    different).
+    """
+    md1 = sa.MetaData()
+    md2 = sa.MetaData()
+    # Schema A: UNIQUE constraint
+    a = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+        unique_constraints=(UniqueConstraint("uq_t_b", "b"),),
+    ).to_sqlalchemy_table(md1)
+    # Schema B: unique INDEX (same name, same column)
+    b = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+        indexes=(Index("uq_t_b", "b", unique=True),),
+    ).to_sqlalchemy_table(md2)
+    with pytest.raises(AssertionError, match="(unique-constraint|index-signature)"):
+        assert_tables_equivalent(a, b)
+
+
+def test_unique_constraint_def_validation_rejects_empty_columns() -> None:
+    """:class:`UniqueConstraintDef` rejects empty columns at
+    construction time so a typo cannot produce a constraint with no
+    column list.
+    """
+    with pytest.raises(ValueError, match="columns must be a non-empty tuple"):
+        UniqueConstraintDef(name="uq_t_x", columns=())
+    with pytest.raises(ValueError, match="name must be non-empty"):
+        UniqueConstraintDef(name="", columns=("x",))
+
+
+def test_unique_constraint_def_rejects_unknown_column() -> None:
+    """:class:`TableSchema` validates ``unique_constraints`` column refs
+    against the declared columns so a typo fails loudly at
+    declaration time.
+    """
+    with pytest.raises(ValueError, match="not declared in columns"):
+        TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[Column("a", UUID_TYPE)],
+            unique_constraints=(UniqueConstraint("uq_t_missing", "nonexistent_col"),),
+        )
+
+
+def test_unique_constraint_def_rejects_name_collision_with_index() -> None:
+    """An IndexDef and a UniqueConstraintDef with the same name on the
+    same table fails validation.
+    """
+    with pytest.raises(ValueError, match="used by both"):
+        TableSchema(
+            name="t",
+            primary_key="a",
+            columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+            indexes=(Index("dup_name", "b"),),
+            unique_constraints=(UniqueConstraint("dup_name", "b"),),
+        )
