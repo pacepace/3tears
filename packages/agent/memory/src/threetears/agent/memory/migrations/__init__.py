@@ -129,6 +129,9 @@ from threetears.agent.memory.migrations.v019_conversation_id_not_null import (
 from threetears.agent.memory.migrations.v020_memories_alias import (
     add_memories_alias,
 )
+from threetears.agent.memory.migrations.v021_memory_chunks_index_and_token import (
+    add_chunk_index_and_token_count,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -177,12 +180,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(18)(drop_legacy_memory_columns)
     pkg.version(19)(enforce_conversation_id_not_null)
     pkg.version(20)(add_memories_alias)
+    pkg.version(21)(add_chunk_index_and_token_count)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_chunk_index_and_token_count",
     "add_lifecycle_columns",
     "add_memories_alias",
     "add_memory_fts",

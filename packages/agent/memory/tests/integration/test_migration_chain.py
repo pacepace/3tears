@@ -444,11 +444,17 @@ class TestUnifiedMemoryParentFks:
                 now,
             )
 
+            # v021 promotes media.date_updated to NOT NULL DEFAULT now()
+            # and installs a BEFORE UPDATE trigger that re-sets it.
+            # Both `date_created` and `date_updated` are supplied
+            # explicitly here so the legacy v006-shaped row carries
+            # meaningful timestamps (matching the prod-canonical
+            # shape the v021 migration converges to).
             await conn.execute(
                 "INSERT INTO media ("
                 "media_id, memory_id, agent_id, customer_id, user_id, "
                 "media_category, metadata_json, date_created, date_updated"
-                ") VALUES ($1, $2, $3, $4, $5, 'document', NULL, $6, $6)",
+                ") VALUES ($1, $2, $3, $4, $5, 'document', '{}'::jsonb, $6, $6)",
                 media_id,
                 memory_id,
                 agent_id,

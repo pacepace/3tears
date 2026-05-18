@@ -163,6 +163,15 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "find_by_id",
         }
     )
+    # v0.8.0 hygiene enrichment: date_created/date_updated carry the
+    # platform DDL's ``DEFAULT NOW()`` server default (test fixture in
+    # ``packages/agent/workspace/tests/integration/test_cross_agent_workspace.py``
+    # at line 152-159 is the canonical reference). Note: this table
+    # is platform-managed -- the DDL lives outside 3tears and 3tears
+    # has no migration for it; ``row_scope`` is a 3tears-side
+    # partition column that the platform DDL does NOT carry. v0.8.0
+    # cannot reconcile that divergence without a platform-side
+    # change. Documented for future cleanup.
     schema = TableSchema(
         name="groups",
         primary_key=("row_scope", "id"),
@@ -172,8 +181,13 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE, nullable=True),
-            Column("date_created", DATETIMETZ_TYPE, immutable=True),
-            Column("date_updated", DATETIMETZ_TYPE),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
+            Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
     )
@@ -400,6 +414,10 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             "save_entity",
         }
     )
+    # v0.8.0 hygiene enrichment: ``date_added`` server default matches
+    # the platform DDL (test fixture line 171). Platform-managed --
+    # 3tears has no migration for this table; the FK to ``groups`` and
+    # the ``member_type`` CHECK constraint live in the platform DDL.
     schema = TableSchema(
         name="group_members",
         primary_key=("group_id", "id"),
@@ -409,7 +427,12 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
             Column("member_type", STRING_TYPE, immutable=True),
             Column("member_id", UUID_TYPE, immutable=True),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
-            Column("date_added", DATETIMETZ_TYPE, immutable=True),
+            Column(
+                "date_added",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
         ],
     )
 
@@ -591,6 +614,10 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
     ``get_many``) stay on the canonical class.
     """
 
+    # v0.8.0 hygiene enrichment: ``is_builtin`` server default + date
+    # defaults match the platform DDL (test fixture lines 177-185).
+    # Platform-managed table -- 3tears has no migration; the
+    # ``UNIQUE(name)`` constraint lives in the platform DDL.
     primary_key_column: str = "id"
     schema = TableSchema(
         name="roles",
@@ -600,9 +627,19 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             Column("name", STRING_TYPE),
             Column("description", STRING_TYPE),
             Column("permissions", JSONB_TYPE),
-            Column("is_builtin", BOOL_TYPE, immutable=True),
-            Column("date_created", DATETIMETZ_TYPE, immutable=True),
-            Column("date_updated", DATETIMETZ_TYPE),
+            Column(
+                "is_builtin",
+                BOOL_TYPE,
+                immutable=True,
+                server_default="false",
+            ),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
+            Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
     )
@@ -745,6 +782,11 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             "find_by_id",
         }
     )
+    # v0.8.0 hygiene enrichment: ``date_granted`` server default
+    # matches the platform DDL (test fixture line 200). Platform-
+    # managed table -- 3tears has no migration; FKs to ``roles`` /
+    # ``groups`` / ``namespaces`` and the ``scope_type`` CHECK live
+    # in the platform DDL.
     schema = TableSchema(
         name="role_assignments",
         primary_key=("row_scope", "id"),
@@ -758,7 +800,12 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             Column("scope_namespace_type", STRING_TYPE, nullable=True, immutable=True),
             Column("scope_customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("granted_by", UUID_TYPE, nullable=True, immutable=True),
-            Column("date_granted", DATETIMETZ_TYPE, immutable=True),
+            Column(
+                "date_granted",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
             # ``managed_by`` declares assignment provenance. default
             # ``'manual'`` covers admin-authored rows; agent-side
             # automation passes ``'auto:agent-yaml'``.
@@ -1146,6 +1193,10 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "find_by_id",
         }
     )
+    # v0.8.0 hygiene enrichment: ``metadata`` carries the test
+    # fixture's ``DEFAULT '{}'::jsonb`` server default (line 144).
+    # Platform-managed table -- 3tears has no migration; the
+    # ``row_scope`` partition column is 3tears-side only.
     schema = TableSchema(
         name="namespaces",
         primary_key=("row_scope", "id"),
@@ -1157,7 +1208,12 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             Column("owner_agent_id", UUID_TYPE, nullable=True, immutable=True),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("schema_name", STRING_TYPE, nullable=True, immutable=True),
-            Column("metadata", JSONB_TYPE, nullable=True),
+            Column(
+                "metadata",
+                JSONB_TYPE,
+                nullable=True,
+                server_default="'{}'::jsonb",
+            ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],

@@ -26,20 +26,19 @@ tick the authorizer wires in :meth:`LocalGrantAuthorizer.start`.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from uuid_utils import uuid7
 
-from sqlalchemy import Column as SAColumn
-from sqlalchemy import DateTime, MetaData, Table, Text
-from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy import MetaData, Table
 
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -58,27 +57,18 @@ log = get_logger(__name__)
 def mcp_tool_grants_table(metadata: MetaData) -> Table:
     """register the ``mcp_tool_grants`` table on the given SA metadata.
 
-    call this before ``SQLiteBackend.initialize(metadata)`` so the L1
-    cache gets the correct schema. safe to call multiple times --
-    returns the existing table if already registered.
+    v0.8.0: schema declaration is now the single source of truth. This
+    factory is a thin idempotency wrapper around
+    :meth:`McpToolGrantCollection.schema.to_sqlalchemy_table`. Call
+    this before ``SQLiteBackend.initialize(metadata)`` so the L1 cache
+    gets the correct schema.
 
     :param metadata: SQLAlchemy metadata to attach the table to
     :ptype metadata: MetaData
     :return: the ``mcp_tool_grants`` :class:`Table`
     :rtype: Table
     """
-    if "mcp_tool_grants" in metadata.tables:
-        return metadata.tables["mcp_tool_grants"]
-    return Table(
-        "mcp_tool_grants",
-        metadata,
-        SAColumn("grant_id", PgUUID(as_uuid=True), primary_key=True, nullable=False),
-        SAColumn("principal_type", Text(), nullable=False),
-        SAColumn("principal_id", PgUUID(as_uuid=True), nullable=False),
-        SAColumn("tool_name", Text(), nullable=False),
-        SAColumn("permission", Text(), nullable=False),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
-    )
+    return cast(Table, McpToolGrantCollection.schema.to_sqlalchemy_table(metadata))
 
 
 class McpToolGrantEntity(BaseEntity):
@@ -108,6 +98,11 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
     """
 
     primary_key_column: str | tuple[str, ...] = "grant_id"
+    # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``
+    # to match prod and the v001 migration's ``TIMESTAMPTZ NOT NULL
+    # DEFAULT now()`` declaration. The two lookup indexes mirror v001
+    # so the parity gate stays clean against metallm's registered
+    # ``mcp_tool_grants_table``.
     schema = TableSchema(
         name="mcp_tool_grants",
         primary_key=("grant_id",),
@@ -117,8 +112,21 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             Column("principal_id", UUID_TYPE, immutable=True),
             Column("tool_name", STRING_TYPE, immutable=True),
             Column("permission", STRING_TYPE, immutable=True),
-            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
         ],
+        indexes=(
+            SchemaIndex(
+                "idx_mcp_tool_grants_principal",
+                "principal_id",
+                "permission",
+            ),
+            SchemaIndex("idx_mcp_tool_grants_tool", "tool_name"),
+        ),
     )
 
     @property

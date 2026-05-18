@@ -22,6 +22,8 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    ForeignKey as SchemaForeignKey,
+    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -55,6 +57,14 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
     """
 
     primary_key_column: str = "id"
+    # v0.8.0 hygiene enrichment: ``current_version`` carries
+    # ``server_default="0"`` to match the v001 migration's
+    # ``INTEGER NOT NULL DEFAULT 0``. No FKs or indexes are declared
+    # on this table beyond the UNIQUE(agent_id, name) constraint that
+    # the v001 migration creates; the v0.8.0 :class:`IndexDef` shape
+    # supports UNIQUE indexes but the v001 declaration is a table-
+    # level UNIQUE constraint (different SQL syntax) -- leaving it as
+    # an Alembic-side concern for downstream consumers.
     schema = TableSchema(
         name="workspaces",
         primary_key="id",
@@ -65,7 +75,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
             Column("description", STRING_TYPE, nullable=True),
             Column("template_name", STRING_TYPE, nullable=True),
             Column("created_by", UUID_TYPE, immutable=True),
-            Column("current_version", INT_TYPE),
+            Column("current_version", INT_TYPE, server_default="0"),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
             Column("date_deleted", DATETIMETZ_TYPE, nullable=True),
@@ -277,6 +287,10 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
     """
 
     primary_key_column: str = "id"
+    # v0.8.0 hygiene enrichment: FK ``workspace_id → workspaces.id ON
+    # DELETE CASCADE`` matches the v001 migration. The lookup index
+    # ``idx_workspace_files_workspace`` is the v001 migration's
+    # ``CREATE INDEX`` declaration.
     schema = TableSchema(
         name="workspace_files",
         primary_key="id",
@@ -289,6 +303,20 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
             Column("version", INT_TYPE),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        foreign_keys=(
+            SchemaForeignKey(
+                "workspace_id",
+                "workspaces",
+                "id",
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            SchemaIndex(
+                "idx_workspace_files_workspace",
+                "workspace_id",
+            ),
+        ),
     )
 
     def __init__(
@@ -411,6 +439,10 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
     """
 
     primary_key_column: str = "id"
+    # v0.8.0 hygiene enrichment: FK ``workspace_id → workspaces.id ON
+    # DELETE CASCADE`` matches the v001 migration. The history-lookup
+    # index ``idx_workspace_file_versions_history`` is the v001
+    # migration's ``CREATE INDEX``.
     schema = TableSchema(
         name="workspace_file_versions",
         primary_key="id",
@@ -428,6 +460,21 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
         on_conflict="raise",
+        foreign_keys=(
+            SchemaForeignKey(
+                "workspace_id",
+                "workspaces",
+                "id",
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            SchemaIndex(
+                "idx_workspace_file_versions_history",
+                "workspace_id",
+                "date_created",
+            ),
+        ),
     )
 
     def __init__(

@@ -24,6 +24,15 @@ version history:
   database holds aware-UTC end to end. ships paired with the
   DATETIME_TYPE -> DATETIMETZ_TYPE Column-declaration flip in
   ``collections.py`` so the alignment enforcement test stays green.
+- v003 (v0.8.0 shard 03) aligns the ``context_items`` shape with
+  prod metallm: drops the v001 legacy indexes
+  (``idx_ctx_conversation`` / ``idx_ctx_conversation_type``),
+  creates the four v0.8.0 indexes (``ix_context_items_conv``,
+  ``ix_context_items_type``, ``ix_context_items_lru``,
+  ``ix_context_items_var_key`` partial-unique), backfills
+  ``long_desc`` NULL -> '' and promotes it to NOT NULL DEFAULT '',
+  and adds the FK ``conversation_id -> conversations(conversation_id)
+  ON DELETE CASCADE`` so the parity gate stays clean.
 """
 
 from __future__ import annotations
@@ -33,6 +42,9 @@ from threetears.agent.tools.migrations.v001_create_context_items_table import (
 )
 from threetears.agent.tools.migrations.v002_datetime_to_datetimetz import (
     datetime_to_datetimetz,
+)
+from threetears.agent.tools.migrations.v003_align_context_items_shape import (
+    align_context_items_shape,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -63,12 +75,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     )
     pkg.version(1)(create_context_items_table)
     pkg.version(2)(datetime_to_datetimetz)
+    pkg.version(3)(align_context_items_shape)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "align_context_items_shape",
     "create_context_items_table",
     "datetime_to_datetimetz",
     "register",
