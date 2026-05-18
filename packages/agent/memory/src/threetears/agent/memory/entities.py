@@ -210,10 +210,14 @@ class MediaEntity(BaseEntity):
     columns: ``media_id`` PK, ``memory_id`` parent (NOT NULL after
     v017), nullable ``agent_id`` / ``customer_id``, required
     ``user_id``, ``media_category`` discriminator, ``metadata_json``
-    blob, plus ``date_created``. v021 dropped ``date_updated`` (v0.8.0
-    parity with prod metallm, which never carried the column); the
-    entity matches that shape — there is no ``date_updated``
-    getter/setter.
+    blob, plus ``date_created`` and ``date_updated``. v021 promoted
+    ``date_updated`` to NOT NULL DEFAULT now() and installed a
+    ``BEFORE UPDATE`` trigger that re-sets it on every row update —
+    the column is trigger-maintained server-side, so the entity
+    exposes a getter only (no setter); attempting to write the
+    column from Python is ignored (the schema declares the column
+    ``immutable=True`` so the Collection's UPDATE generator skips
+    it).
     """
 
     primary_key_field: str = "media_id"
@@ -393,6 +397,23 @@ class MediaEntity(BaseEntity):
         :ptype value: datetime
         """
         BaseEntity.__setattr__(self, "date_created", value)
+
+    @property
+    def date_updated(self) -> datetime:
+        """get the last-modified timestamp.
+
+        Maintained server-side by the ``media_date_updated_trigger``
+        ``BEFORE UPDATE`` trigger installed by migration v021: every
+        row update resets the column to ``now()``. The schema
+        declares the column ``immutable=True`` so the Collection's
+        UPDATE generator excludes it from SET clauses; no Python
+        setter is provided.
+
+        :return: last-modified datetime
+        :rtype: datetime
+        """
+        value: datetime = self._get_raw("date_updated")
+        return value
 
 
 class MediaContentEntity(BaseEntity):

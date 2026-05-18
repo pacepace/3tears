@@ -411,7 +411,15 @@ class Column:
     def __post_init__(self) -> None:
         """validate cross-field constraints introduced in v0.8.0.
 
-        all validators are wrapped in :class:`ValueError` so callers
+        Numbering matches the v0.8.0-task-01 shard spec
+        §"Validation in `__post_init__`" items 1-10. Spec items 1
+        (foreign_key has no cross-field restriction on column_type)
+        and 7 (server_default has no cross-field restriction) are
+        deliberate non-restrictions, no validator needed; the
+        numbered comments below preserve the spec's enumeration so
+        future maintainers can map code↔spec at a glance.
+
+        All validators are wrapped in :class:`ValueError` so callers
         get a single, consistent exception class for declaration-time
         bugs.
 
@@ -420,7 +428,10 @@ class Column:
         :raises ValueError: when any of the cross-field constraints
             are violated (see body for the full set of rules)
         """
-        # 1. enum_type only valid with ENUM_TYPE
+        # 1. foreign_key × column_type: no restriction (foreign_key
+        #    may be set on any column_type). No validator.
+        # 2. enum_type only valid with ENUM_TYPE; requires enum_name;
+        #    requires non-empty tuple.
         if self.enum_type is not None:
             if self.column_type != ENUM_TYPE:
                 raise ValueError(
@@ -435,24 +446,24 @@ class Column:
                 raise ValueError(
                     f"Column(name={self.name!r}): enum_type must be a non-empty tuple",
                 )
-        # 2. ENUM_TYPE requires enum_type (inverse)
+        # 3. ENUM_TYPE requires enum_type (inverse of #2).
         if self.column_type == ENUM_TYPE and self.enum_type is None:
             raise ValueError(
                 f"Column(name={self.name!r}): column_type=ENUM_TYPE requires enum_type to be set",
             )
-        # 3. vector_dim only valid with VECTOR_TYPE
+        # 4. vector_dim only valid with VECTOR_TYPE.
         if self.vector_dim is not None and self.column_type != VECTOR_TYPE:
             raise ValueError(
                 f"Column(name={self.name!r}): vector_dim only valid with "
                 f"column_type=VECTOR_TYPE; got column_type={self.column_type!r}",
             )
-        # 4. VECTOR_TYPE requires vector_dim (inverse)
+        # 5. VECTOR_TYPE requires vector_dim (inverse of #4).
         if self.column_type == VECTOR_TYPE and self.vector_dim is None:
             raise ValueError(
                 f"Column(name={self.name!r}): column_type=VECTOR_TYPE requires vector_dim to be set",
             )
-        # 5. foreign_key tuple shape -- must be ``(ref_table, ref_col)``,
-        #    both non-empty
+        # 6. foreign_key tuple shape -- must be ``(ref_table, ref_col)``,
+        #    both non-empty strings.
         if self.foreign_key is not None:
             if (
                 not isinstance(self.foreign_key, tuple)
@@ -463,19 +474,22 @@ class Column:
                     f"Column(name={self.name!r}): foreign_key must be a 2-tuple of "
                     f"non-empty strings (ref_table, ref_col); got {self.foreign_key!r}",
                 )
-        # 6. precision/scale only valid with NUMERIC_TYPE
+        # 7. server_default: no cross-field restriction (any string
+        #    accepted). No validator.
+        # 8. precision/scale only valid with NUMERIC_TYPE.
         if (self.precision is not None or self.scale is not None) and self.column_type != NUMERIC_TYPE:
             raise ValueError(
                 f"Column(name={self.name!r}): precision/scale only valid with "
                 f"column_type=NUMERIC_TYPE; got column_type={self.column_type!r}",
             )
-        # 7. NUMERIC_TYPE requires both precision and scale (inverse)
+        # 9. NUMERIC_TYPE requires both precision and scale (inverse
+        #    of #8).
         if self.column_type == NUMERIC_TYPE and (self.precision is None or self.scale is None):
             raise ValueError(
                 f"Column(name={self.name!r}): column_type=NUMERIC_TYPE requires both precision and scale to be set",
             )
-        # 8. TSVECTOR_TYPE requires immutable=True (trigger-maintained
-        #    server-side; UPDATE generators must skip it)
+        # 10. TSVECTOR_TYPE requires immutable=True (trigger-maintained
+        #     server-side; UPDATE generators must skip the column).
         if self.column_type == TSVECTOR_TYPE and not self.immutable:
             raise ValueError(
                 f"Column(name={self.name!r}): column_type=TSVECTOR_TYPE columns are "

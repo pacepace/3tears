@@ -51,6 +51,15 @@ Columns promoted to NOT NULL + DEFAULT to match prod parity:
   server default below for symmetry with prod and to let the
   SchemaBackedCollection INSERT generator omit the column when the
   caller omits it.)
+- ``media.date_updated``: v006 declared the column ``TIMESTAMPTZ
+  NULL`` with no default. v0.8.0 promotes it to ``NOT NULL DEFAULT
+  now()`` AND installs a ``BEFORE UPDATE`` trigger that re-sets the
+  column on every row update — the column carries meaningful
+  modification-timestamp data automatically, no app-code coupling.
+  The schema declares the column ``immutable=True`` so the
+  Collection's UPDATE generator excludes it from SET clauses; the
+  trigger owns the write path. Backfill any pre-existing NULL rows
+  to ``date_created`` before SET NOT NULL.
 
 Idempotency: every ALTER uses ``ADD COLUMN IF NOT EXISTS`` so replay
 on recovery is safe. The NOT NULL promotion + SET DEFAULT statements
@@ -107,13 +116,66 @@ _ADD_MEDIA_EXTRACTION_STATUS_SQL = (
     "ALTER TABLE media ADD COLUMN IF NOT EXISTS extraction_status TEXT NOT NULL DEFAULT 'none'"
 )
 
-# media.date_updated was added by v006 but prod does NOT have it
-# (the v0.7.5 ``media_table`` factory declares only ``date_created``).
-# Drop it from 3tears agent schemas so the integration-test DDL and
-# the v0.8.0 ``MediaCollection.schema`` (which excludes
-# ``date_updated``) agree, eliminating the parity-gate phantom-add
-# diff in shard 05.
-_DROP_MEDIA_DATE_UPDATED_SQL = "ALTER TABLE media DROP COLUMN IF EXISTS date_updated"
+# media.date_updated: 3tears v006 added the column with no default and
+# nullable. v0.8.0 promotes it to NOT NULL DEFAULT now() and installs a
+# BEFORE UPDATE trigger that auto-sets the column on every row update,
+# so the column carries meaningful data without app-code coupling. The
+# schema declares ``immutable=True`` so the Collection's UPDATE
+# generator excludes the column from SET clauses; the trigger owns the
+# write path.
+#
+# Migration walks:
+#   1. ADD COLUMN IF NOT EXISTS (defensive for fresh DBs that never ran
+#      v006; idempotent for v006 consumers who already have the column).
+#   2. Backfill any legacy NULL rows to date_created.
+#   3. DO-block SET DEFAULT + SET NOT NULL (guarded so replay is a
+#      no-op).
+#   4. CREATE OR REPLACE the trigger function (idempotent).
+#   5. DROP TRIGGER IF EXISTS + CREATE TRIGGER (idempotent guard).
+#
+# Metallm prod does NOT (yet) have the column; the parallel Alembic
+# migration in shard 05 adds it + the trigger on the metallm side so
+# both consumers converge on the richer shape.
+_ADD_MEDIA_DATE_UPDATED_SQL = "ALTER TABLE media ADD COLUMN IF NOT EXISTS date_updated TIMESTAMPTZ DEFAULT now()"
+
+_BACKFILL_MEDIA_DATE_UPDATED_SQL = "UPDATE media SET date_updated = date_created WHERE date_updated IS NULL"
+
+_PROMOTE_MEDIA_DATE_UPDATED_SQL = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'media'
+          AND column_name = 'date_updated'
+          AND is_nullable = 'YES'
+    ) THEN
+        ALTER TABLE media ALTER COLUMN date_updated SET DEFAULT now();
+        ALTER TABLE media ALTER COLUMN date_updated SET NOT NULL;
+    END IF;
+END
+$$
+"""
+
+_MEDIA_DATE_UPDATED_TRIGGER_FN_SQL = """
+CREATE OR REPLACE FUNCTION media_set_date_updated()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.date_updated := now();
+    RETURN NEW;
+END;
+$$
+"""
+
+_DROP_MEDIA_DATE_UPDATED_TRIGGER_SQL = "DROP TRIGGER IF EXISTS media_date_updated_trigger ON media"
+
+_CREATE_MEDIA_DATE_UPDATED_TRIGGER_SQL = """
+CREATE TRIGGER media_date_updated_trigger
+    BEFORE UPDATE ON media
+    FOR EACH ROW
+    EXECUTE FUNCTION media_set_date_updated()
+"""
 
 # media_content: prod adds provider/model/cost/metadata columns over
 # v006 that the 3tears migrations never followed up on. All nullable.
@@ -209,7 +271,16 @@ async def add_chunk_index_and_token_count(store: DataStore) -> None:
     await store.execute(_ADD_MEDIA_CLOUD_FILE_ID_SQL)
     await store.execute(_ADD_MEDIA_CLOUD_FILE_URL_SQL)
     await store.execute(_ADD_MEDIA_EXTRACTION_STATUS_SQL)
-    await store.execute(_DROP_MEDIA_DATE_UPDATED_SQL)
+    # media.date_updated: ADD (defensive) + backfill NULLs to
+    # date_created + promote NOT NULL + DEFAULT now() via DO-block
+    # guard. Then CREATE OR REPLACE the trigger function and
+    # (idempotently re-)install the BEFORE UPDATE trigger.
+    await store.execute(_ADD_MEDIA_DATE_UPDATED_SQL)
+    await store.execute(_BACKFILL_MEDIA_DATE_UPDATED_SQL)
+    await store.execute(_PROMOTE_MEDIA_DATE_UPDATED_SQL)
+    await store.execute(_MEDIA_DATE_UPDATED_TRIGGER_FN_SQL)
+    await store.execute(_DROP_MEDIA_DATE_UPDATED_TRIGGER_SQL)
+    await store.execute(_CREATE_MEDIA_DATE_UPDATED_TRIGGER_SQL)
     # media: align metadata_json with prod (NOT NULL + DEFAULT) and
     # pin server defaults on the two columns that v006 declared
     # NOT NULL without a default.

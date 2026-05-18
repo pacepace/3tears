@@ -1552,6 +1552,19 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
             Column("cloud_file_url", STRING_TYPE, nullable=True),
             Column("memory_id", UUID_TYPE, immutable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            # date_updated is trigger-maintained server-side: the v021
+            # migration installs a BEFORE UPDATE trigger that resets
+            # the column to now() on every row update. Declared
+            # ``immutable=True`` so the Collection's UPDATE generator
+            # excludes it from SET clauses; ``server_default="now()"``
+            # so INSERTs that omit the value get the right shape from
+            # Postgres.
+            Column(
+                "date_updated",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
         ],
         foreign_keys=(
             SchemaForeignKey(

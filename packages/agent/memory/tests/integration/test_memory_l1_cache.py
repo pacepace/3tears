@@ -102,6 +102,7 @@ def _build_l1_metadata() -> MetaData:
         Column("cloud_file_id", Text),
         Column("cloud_file_url", Text),
         Column("date_created", DateTime),
+        Column("date_updated", DateTime),
     )
     Table(
         "media_content",
@@ -318,8 +319,11 @@ class TestMemoryCollectionsL1:
             # explicitly for clarity; the server_default INSERT gate
             # (``_insert_columns_for_data``) would let callers omit
             # ``media_category`` / ``extraction_status`` / ``metadata_json``
-            # and let Postgres apply the declared defaults, but pinning
-            # the explicit-pass shape keeps the L1 fixture readable.
+            # / ``date_updated`` and let Postgres apply the declared
+            # defaults, but pinning the explicit-pass shape keeps the
+            # L1 fixture readable (and the L1 sqlite mirror doesn't
+            # honour the Postgres ``now()`` server_default, so the
+            # value must flow through Python for the L1 row to match).
             data = {
                 "media_id": media_id,
                 "memory_id": memory_id,
@@ -333,6 +337,7 @@ class TestMemoryCollectionsL1:
                 "extraction_status": "none",
                 "metadata_json": {"document_title": "photo.jpg"},
                 "date_created": now,
+                "date_updated": now,
             }
             entity = media.create(data)
             await media.save_entity(entity)
@@ -407,6 +412,7 @@ class TestMemoryCollectionsL1:
                     "extraction_status": "none",
                     "metadata_json": {},
                     "date_created": now,
+                    "date_updated": now,
                 },
             )
             await media.save_entity(media_entity)
