@@ -26,6 +26,8 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    ForeignKey as SchemaForeignKey,
+    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -87,6 +89,20 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
     """
 
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "context_id")
+    # v0.8.0 enrichment: ``long_desc`` carries ``server_default="''"``
+    # to match prod (the v001 migration declared this default; prod
+    # ``information_schema`` confirms). ``long_desc`` is also
+    # non-nullable in prod (NULL is the default value the server
+    # substitutes when the caller omits it). The FK on
+    # ``conversation_id`` matches prod's
+    # ``fk_context_items_conversation`` (CASCADE on parent
+    # conversation delete) -- declared at table level because the
+    # inline 2-tuple form does not carry ``on_delete=``. Indexes
+    # mirror the v001 migration + the ``ix_context_items_var_key``
+    # partial-unique that ``upsert_variable`` requires for its
+    # ``ON CONFLICT (conversation_id, key) WHERE context_type =
+    # 'variable'`` clause + the ``ix_context_items_lru`` LRU index
+    # that ``evict_lru`` reads.
     schema = TableSchema(
         name="context_items",
         primary_key=("conversation_id", "context_id"),
@@ -96,7 +112,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             Column("context_type", STRING_TYPE, immutable=True),
             Column("key", STRING_TYPE, immutable=True),
             Column("short_desc", STRING_TYPE),
-            Column("long_desc", STRING_TYPE, nullable=True),
+            Column("long_desc", STRING_TYPE, server_default="''::text"),
             Column("content", STRING_TYPE),
             Column("metadata", JSONB_TYPE, nullable=True),
             Column("date_accessed", DATETIMETZ_TYPE),
@@ -104,6 +120,34 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        foreign_keys=(
+            SchemaForeignKey(
+                "conversation_id",
+                "conversations",
+                "conversation_id",
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            SchemaIndex("ix_context_items_conv", "conversation_id"),
+            SchemaIndex(
+                "ix_context_items_type",
+                "conversation_id",
+                "context_type",
+            ),
+            SchemaIndex(
+                "ix_context_items_lru",
+                "conversation_id",
+                "date_accessed",
+            ),
+            SchemaIndex(
+                "ix_context_items_var_key",
+                "conversation_id",
+                "key",
+                unique=True,
+                where="context_type = 'variable'",
+            ),
+        ),
     )
 
     @property

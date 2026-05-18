@@ -210,7 +210,10 @@ class MediaEntity(BaseEntity):
     columns: ``media_id`` PK, ``memory_id`` parent (NOT NULL after
     v017), nullable ``agent_id`` / ``customer_id``, required
     ``user_id``, ``media_category`` discriminator, ``metadata_json``
-    blob, plus ``date_created`` / ``date_updated``.
+    blob, plus ``date_created``. v021 dropped ``date_updated`` (v0.8.0
+    parity with prod metallm, which never carried the column); the
+    entity matches that shape — there is no ``date_updated``
+    getter/setter.
     """
 
     primary_key_field: str = "media_id"
@@ -390,25 +393,6 @@ class MediaEntity(BaseEntity):
         :ptype value: datetime
         """
         BaseEntity.__setattr__(self, "date_created", value)
-
-    @property
-    def date_updated(self) -> datetime:
-        """get the last-updated timestamp.
-
-        :return: update datetime
-        :rtype: datetime
-        """
-        value: datetime = self._get_raw("date_updated")
-        return value
-
-    @date_updated.setter
-    def date_updated(self, value: datetime) -> None:
-        """set the last-updated timestamp.
-
-        :param value: new update datetime
-        :ptype value: datetime
-        """
-        BaseEntity.__setattr__(self, "date_updated", value)
 
 
 class MediaContentEntity(BaseEntity):

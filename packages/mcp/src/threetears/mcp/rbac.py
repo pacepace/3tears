@@ -32,7 +32,8 @@ from uuid import UUID
 from uuid_utils import uuid7
 
 from sqlalchemy import Column as SAColumn
-from sqlalchemy import DateTime, MetaData, Table, Text
+from sqlalchemy import DateTime, Index, MetaData, Table, Text
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.schema_backed import (
@@ -40,6 +41,7 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -77,7 +79,23 @@ def mcp_tool_grants_table(metadata: MetaData) -> Table:
         SAColumn("principal_id", PgUUID(as_uuid=True), nullable=False),
         SAColumn("tool_name", Text(), nullable=False),
         SAColumn("permission", Text(), nullable=False),
-        SAColumn("date_created", DateTime(timezone=True), nullable=False),
+        # ``date_created`` carries ``server_default=text("now()")`` to
+        # match prod (v001 migration declares ``TIMESTAMPTZ NOT NULL
+        # DEFAULT now()``).
+        SAColumn(
+            "date_created",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=sa_text("now()"),
+        ),
+        # lookup indexes for the authorizer cache rebuild path. v001
+        # creates the same two indexes on the L3 side.
+        Index(
+            "idx_mcp_tool_grants_principal",
+            "principal_id",
+            "permission",
+        ),
+        Index("idx_mcp_tool_grants_tool", "tool_name"),
     )
 
 
@@ -108,6 +126,11 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
     """
 
     primary_key_column: str | tuple[str, ...] = "grant_id"
+    # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``
+    # to match prod and the v001 migration's ``TIMESTAMPTZ NOT NULL
+    # DEFAULT now()`` declaration. The two lookup indexes mirror v001
+    # so the parity gate stays clean against metallm's registered
+    # ``mcp_tool_grants_table``.
     schema = TableSchema(
         name="mcp_tool_grants",
         primary_key=("grant_id",),
@@ -117,8 +140,21 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
             Column("principal_id", UUID_TYPE, immutable=True),
             Column("tool_name", STRING_TYPE, immutable=True),
             Column("permission", STRING_TYPE, immutable=True),
-            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
         ],
+        indexes=(
+            SchemaIndex(
+                "idx_mcp_tool_grants_principal",
+                "principal_id",
+                "permission",
+            ),
+            SchemaIndex("idx_mcp_tool_grants_tool", "tool_name"),
+        ),
     )
 
     @property

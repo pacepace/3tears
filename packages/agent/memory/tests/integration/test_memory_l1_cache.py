@@ -75,6 +75,12 @@ def _build_l1_metadata() -> MetaData:
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
     )
+    # v0.8.0: schemas widened to full prod shape; mirror the new
+    # required columns in this embedded L1 DDL fixture. (Per the
+    # 2026-05-03 "embedded DDL in test setup is a smell" learning, a
+    # follow-up should retire this in favor of calling the package
+    # factories directly; that's a separate refactor scoped to shard
+    # 04's factory-collapse work.)
     Table(
         "media",
         meta,
@@ -83,10 +89,19 @@ def _build_l1_metadata() -> MetaData:
         Column("memory_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
+        Column("s3_key", Text),
+        Column("mime_type", Text),
+        Column("size_bytes", Integer),
+        Column("source", Text),
         Column("media_category", String(64)),
+        Column("extraction_status", Text),
         Column("metadata_json", Text),
+        Column("generation_prompt", Text),
+        Column("thumbnail_s3_key", Text),
+        Column("cloud_connection_id", String(255)),
+        Column("cloud_file_id", Text),
+        Column("cloud_file_url", Text),
         Column("date_created", DateTime),
-        Column("date_updated", DateTime),
     )
     Table(
         "media_content",
@@ -100,6 +115,14 @@ def _build_l1_metadata() -> MetaData:
         Column("content", Text),
         Column("summary", Text),
         Column("embedding", Text),
+        Column("model_id", String(255)),
+        Column("provider_id", String(255)),
+        Column("model_name", Text),
+        Column("provider_name", Text),
+        Column("token_count_prompt", Integer),
+        Column("token_count_completion", Integer),
+        Column("cost", Text),
+        Column("metadata_json", Text),
         Column("date_created", DateTime),
     )
     Table(
@@ -110,10 +133,12 @@ def _build_l1_metadata() -> MetaData:
         Column("memory_id", String(255)),
         Column("customer_id", String(255)),
         Column("user_id", String(255)),
+        Column("chunk_index", Integer),
         Column("content", Text),
         Column("summary", Text),
         Column("heading_context", Text),
         Column("page_number", Integer),
+        Column("token_count", Integer),
         Column("embedding", Text),
         Column("message_id_start", String(255)),
         Column("message_id_end", String(255)),
@@ -286,16 +311,28 @@ class TestMemoryCollectionsL1:
             )
             await memories.save_entity(parent_memory)
 
+            # v0.8.0 enrichment widened MediaCollection.schema to the
+            # full prod shape; required (NOT NULL) columns now include
+            # ``mime_type`` / ``size_bytes`` / ``source`` /
+            # ``extraction_status``. Test data supplies them
+            # explicitly for clarity; the server_default INSERT gate
+            # (``_insert_columns_for_data``) would let callers omit
+            # ``media_category`` / ``extraction_status`` / ``metadata_json``
+            # and let Postgres apply the declared defaults, but pinning
+            # the explicit-pass shape keeps the L1 fixture readable.
             data = {
                 "media_id": media_id,
                 "memory_id": memory_id,
                 "agent_id": agent_id,
                 "customer_id": customer_id,
                 "user_id": user_id,
+                "mime_type": "image/jpeg",
+                "size_bytes": 1024,
+                "source": "upload",
                 "media_category": "image",
+                "extraction_status": "none",
                 "metadata_json": {"document_title": "photo.jpg"},
                 "date_created": now,
-                "date_updated": now,
             }
             entity = media.create(data)
             await media.save_entity(entity)
@@ -353,6 +390,9 @@ class TestMemoryCollectionsL1:
             )
             await memories.save_entity(parent_memory)
 
+            # v0.8.0 enrichment widened MediaCollection.schema to the
+            # full prod shape; supply every NOT NULL column the new
+            # shape requires.
             media_entity = media.create(
                 {
                     "media_id": media_id,
@@ -360,10 +400,13 @@ class TestMemoryCollectionsL1:
                     "agent_id": agent_id,
                     "customer_id": customer_id,
                     "user_id": user_id,
+                    "mime_type": "application/pdf",
+                    "size_bytes": 2048,
+                    "source": "upload",
                     "media_category": "document",
-                    "metadata_json": None,
+                    "extraction_status": "none",
+                    "metadata_json": {},
                     "date_created": now,
-                    "date_updated": now,
                 },
             )
             await media.save_entity(media_entity)
@@ -440,16 +483,21 @@ class TestMemoryCollectionsL1:
             )
             await memories.save_entity(parent_memory)
 
+            # v0.8.0 enrichment added ``chunk_index`` + ``token_count``
+            # (both NOT NULL in prod; supplied here so the v0.8.0
+            # schema's required-column guard is satisfied).
             chunk_data = {
                 "chunk_id": chunk_id,
                 "memory_id": memory_id,
                 "agent_id": agent_id,
                 "customer_id": customer_id,
                 "user_id": user_id,
+                "chunk_index": 0,
                 "content": "cached chunk content",
                 "summary": None,
                 "heading_context": "Intro",
                 "page_number": 1,
+                "token_count": 5,
                 "embedding": [0.3] * 1024,
                 "date_created": now,
             }

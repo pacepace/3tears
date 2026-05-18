@@ -1443,11 +1443,56 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = f"${idx}"
         return result
 
-    def _build_insert_sql(self) -> str:
+    def _insert_columns_for_data(self, data: dict[str, Any]) -> list[Column]:
+        """select the column list to emit in INSERT SQL + params.
+
+        v0.8.0: columns with a declared ``server_default`` are OMITTED
+        from the INSERT when the caller did not supply a value, so the
+        server-side default applies. Without this gate the caller MUST
+        write every column whose Python value matches the default —
+        a footgun every downstream consumer hits.
+
+        Selection rule per column:
+
+        * ``column.name in data`` -> always include (caller-supplied
+          value wins over server default).
+        * ``column.server_default is None`` -> always include; the
+          ``_pull_value`` path produces NULL or raises KeyError
+          depending on ``nullable``.
+        * ``column.server_default is not None`` AND ``column.name not
+          in data`` -> SKIP the column from both the SQL and the
+          parameter list so Postgres applies the server-side default.
+
+        The SQL and params builders both call this method with the
+        same ``data`` dict so the positional binding stays in sync.
+
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: ordered list of columns to emit; subset of
+            ``self.schema.columns`` preserving declared order
+        :rtype: list[Column]
+        """
+        included: list[Column] = []
+        for col in self.schema.columns:
+            if col.server_default is not None and col.name not in data:
+                # let Postgres apply the server-side default
+                continue
+            included.append(col)
+        return included
+
+    def _build_insert_sql(self, data: dict[str, Any] | None = None) -> str:
         """build INSERT SQL with the conflict clause selected by schema.
 
-        column order matches :attr:`TableSchema.columns` exactly; tests
-        that assert on positional asyncpg parameters can rely on that.
+        column order matches :attr:`TableSchema.columns` exactly,
+        FILTERED to the subset selected by
+        :meth:`_insert_columns_for_data` (v0.8.0): columns with a
+        declared ``server_default`` that the caller omitted are
+        dropped from the column list AND the parameter list so the
+        server-side default applies.
+
+        Tests that assert on positional asyncpg parameters MUST call
+        ``_build_insert_sql`` and ``_build_insert_params`` with the
+        same ``data`` dict so the parameter positions match.
 
         branches on :attr:`TableSchema.on_conflict`:
 
@@ -1456,13 +1501,24 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         * ``"update"`` (default): ``INSERT ... ON CONFLICT (pk) DO
           UPDATE SET <mutable>``; falls back to ``DO NOTHING`` when
           every non-pk column is immutable so existing rows are not
-          clobbered
+          clobbered. The ``EXCLUDED.<name>`` references in the SET
+          clause stay limited to mutable columns regardless of
+          omitted server-default columns -- the ON CONFLICT path
+          updates whatever columns ARE in the INSERT, but only the
+          ones in mutable_columns() are eligible.
 
+        :param data: row dict to drive column selection. ``None`` is
+            accepted for backward compatibility with call-sites that
+            pre-date the v0.8.0 server_default gate; treated as an
+            empty dict which means EVERY server-default column is
+            omitted -- callers always pair the SQL with params built
+            from the SAME ``data`` so the param positions match.
+        :ptype data: dict[str, Any] | None
         :return: parameterized INSERT SQL
         :rtype: str
         """
         schema = self.schema
-        cols = schema.columns
+        cols = self._insert_columns_for_data(data or {})
         col_names = ", ".join(c.name for c in cols)
         placeholders = ", ".join(self._render_param(c, i + 1) for i, c in enumerate(cols))
         sql = f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})"
@@ -1472,13 +1528,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         elif schema.on_conflict == "ignore":
             result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         else:
-            mutable = schema.mutable_columns()
-            if mutable:
-                set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable)
+            # DO UPDATE SET references EXCLUDED.<col> for each mutable
+            # column. Intersect with the columns ACTUALLY emitted in
+            # the INSERT -- an EXCLUDED reference to a column that
+            # was not in the column list would be a SQL error.
+            emitted = {c.name for c in cols}
+            mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
+            if mutable_emitted:
+                set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
                 result = f"{sql} ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause}"
             else:
-                # pk-only table or every non-pk column is immutable:
-                # emit DO NOTHING so existing rows are not clobbered.
+                # pk-only table or every non-pk column is immutable or
+                # omitted-via-server-default: emit DO NOTHING so
+                # existing rows are not clobbered.
                 result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         return result
 
@@ -1615,12 +1677,19 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
     def _build_insert_params(self, data: dict[str, Any]) -> list[Any]:
         """build the parameter list for the INSERT path in declared order.
 
+        v0.8.0: columns with ``server_default`` that the caller did
+        not include in ``data`` are OMITTED from both the SQL and the
+        parameter list (see :meth:`_insert_columns_for_data`). The
+        SQL builder and this builder MUST be called with the same
+        ``data`` dict so the positional bindings stay aligned.
+
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
-        :return: parameter list matching :attr:`TableSchema.columns` order
+        :return: parameter list matching the SQL column order
+            (subset of :attr:`TableSchema.columns`)
         :rtype: list[Any]
         """
-        return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self.schema.columns]
+        return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self._insert_columns_for_data(data)]
 
     def _build_cas_params(
         self,
@@ -1744,7 +1813,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 sql = self._build_cas_update_sql()
                 params = self._build_cas_params(data, original_timestamp)  # type: ignore[arg-type]
             else:
-                sql = self._build_insert_sql()
+                # Pass ``data`` so server_default columns the caller
+                # omitted are dropped from both the SQL column list
+                # and the parameter list (v0.8.0).
+                sql = self._build_insert_sql(data)
                 params = self._build_insert_params(data)
             status = await executor.execute(sql, *params)
             result = self._parse_rowcount(status)

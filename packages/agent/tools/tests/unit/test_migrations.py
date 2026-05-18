@@ -17,6 +17,7 @@ import pytest
 
 from threetears.agent.tools.migrations import (
     PACKAGE_NAME,
+    align_context_items_shape,
     create_context_items_table,
     datetime_to_datetimetz,
     register,
@@ -133,13 +134,15 @@ class TestRegisterAgentToolsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ("conversations",)
 
-    async def test_register_populates_versions_one_and_two(self) -> None:
-        """register attaches v001 (create) and v002 (datetime promote)."""
+    async def test_register_populates_versions_one_through_three(self) -> None:
+        """register attaches v001 (create), v002 (datetime promote),
+        v003 (align context_items shape with prod parity).
+        """
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2}
+        assert set(pkg.versions.keys()) == {1, 2, 3}
 
-    async def test_apply_in_isolation_runs_both_versions(self) -> None:
+    async def test_apply_in_isolation_runs_all_versions(self) -> None:
         """
         apply_package runs the package's migrations against a target
         store without resolving dependencies; this is the harness path
@@ -149,8 +152,8 @@ class TestRegisterAgentToolsMigrations:
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_package(store, PACKAGE_NAME)
-        assert first_count == 2
-        assert [row["version"] for row in store.migrations_rows] == [1, 2]
+        assert first_count == 3
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
 
     async def test_apply_emits_context_items_create_statement(self) -> None:
         """the CREATE TABLE statement carries every column and type."""
@@ -271,6 +274,71 @@ class TestDatetimeToDatetimetzMigration:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await datetime_to_datetimetz(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAlignContextItemsShapeMigration:
+    """tests for v003: align ``context_items`` shape with prod parity.
+
+    v003 drops the v001 legacy indexes, creates the four v0.8.0
+    indexes (matching prod metallm), promotes ``long_desc`` to NOT
+    NULL DEFAULT '', and adds the FK on ``conversation_id`` -
+    everything required for the v0.8.0 parity gate to stay clean.
+    """
+
+    async def test_direct_call_drops_legacy_indexes(self) -> None:
+        """v003 drops the v001 ``idx_ctx_*`` indexes that diverge from prod."""
+        store = _FakeDataStore()
+        await align_context_items_shape(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "DROP INDEX IF EXISTS idx_ctx_conversation" in joined
+        assert "DROP INDEX IF EXISTS idx_ctx_conversation_type" in joined
+
+    async def test_direct_call_creates_v080_indexes(self) -> None:
+        """v003 creates the four v0.8.0 indexes matching prod."""
+        store = _FakeDataStore()
+        await align_context_items_shape(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "CREATE INDEX IF NOT EXISTS ix_context_items_conv" in joined
+        assert "CREATE INDEX IF NOT EXISTS ix_context_items_type" in joined
+        assert "CREATE INDEX IF NOT EXISTS ix_context_items_lru" in joined
+        assert "CREATE UNIQUE INDEX IF NOT EXISTS ix_context_items_var_key" in joined
+        # the var_key index is partial-unique on context_type=variable
+        assert "WHERE context_type = 'variable'" in joined
+
+    async def test_direct_call_backfills_and_promotes_long_desc(self) -> None:
+        """v003 backfills NULL long_desc -> '' then promotes NOT NULL."""
+        store = _FakeDataStore()
+        await align_context_items_shape(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "UPDATE context_items SET long_desc = '' WHERE long_desc IS NULL" in joined
+        # the SET NOT NULL is inside a DO block; the inner ALTER is
+        # what matters for the parity gate.
+        assert "ALTER TABLE context_items ALTER COLUMN long_desc SET DEFAULT ''" in joined
+        assert "ALTER TABLE context_items ALTER COLUMN long_desc SET NOT NULL" in joined
+
+    async def test_direct_call_adds_conversation_fk_guarded(self) -> None:
+        """v003 adds the FK conversation_id -> conversations(conversation_id)
+        guarded by a pg_constraint lookup so the migration replays cleanly.
+        """
+        store = _FakeDataStore()
+        await align_context_items_shape(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        # FK shape matches prod ``fk_context_items_conversation`` name
+        assert "ADD CONSTRAINT fk_context_items_conversation" in joined
+        assert "FOREIGN KEY (conversation_id)" in joined
+        assert "REFERENCES conversations(conversation_id)" in joined
+        assert "ON DELETE CASCADE" in joined
+        # guarded by pg_constraint lookup (no ADD CONSTRAINT IF NOT
+        # EXISTS in Postgres)
+        assert "FROM pg_constraint" in joined
+        assert "conname = 'fk_context_items_conversation'" in joined
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await align_context_items_shape(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

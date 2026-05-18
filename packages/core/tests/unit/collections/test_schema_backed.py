@@ -1578,6 +1578,200 @@ class TestPartitionColumnCoercionV080:
 
 
 # ---------------------------------------------------------------------------
+# v0.8.0: TSVECTOR write-path audit
+# ---------------------------------------------------------------------------
+#
+# Per shard 03 §"TSVECTOR write-path audit": declaring
+# ``Column("search_vector", TSVECTOR_TYPE, nullable=True, immutable=True)``
+# changes Collection write behaviour. These tests pin the SQL
+# generators' current behaviour so any future regression that
+# accidentally adds TSVECTOR to ``DO UPDATE SET`` / ``CAS UPDATE SET``
+# (would silently overwrite the trigger-maintained value) breaks
+# loudly.
+
+
+class _TsvectorCollection(SchemaBackedCollection[_StubEntity]):
+    """schema-backed collection carrying a trigger-maintained TSVECTOR.
+
+    used by the TSVECTOR audit tests to drive ``_build_insert_sql`` /
+    ``_build_cas_update_sql`` against a TableSchema that mirrors the
+    v0.8.0 ``memories.search_vector`` shape (``TSVECTOR_TYPE``,
+    ``nullable=True``, ``immutable=True``).
+    """
+
+    primary_key_column: str = "id"
+    schema = TableSchema(
+        name="fts_items",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("content", STRING_TYPE),
+            # immutable=True is required by the TSVECTOR_TYPE validator
+            # (the trigger maintains the value server-side; UPDATE
+            # generators must skip the column).
+            Column("search_vector", TSVECTOR_TYPE, nullable=True, immutable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+        ],
+        cas_column="date_updated",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return table name."""
+        return "fts_items"
+
+    @property
+    def entity_class(self) -> type[_StubEntity]:
+        """return entity class."""
+        return _StubEntity
+
+
+class TestTsvectorWritePathAudit:
+    """TSVECTOR write-path audit (shard 03 §"TSVECTOR write-path audit").
+
+    The :attr:`Column.immutable` flag must keep TSVECTOR_TYPE columns
+    out of every UPDATE ``SET`` clause emitted by the SQL generators.
+    The INSERT path is allowed to list the column (with a NULL
+    parameter) because the Postgres ``BEFORE INSERT`` trigger overrides
+    any caller-supplied value -- but if a future generator change
+    skipped immutable columns from INSERT, that would also be safe
+    (the column default + trigger would still produce the right
+    value). This test pins the CURRENT behaviour so the choice is
+    deliberate.
+    """
+
+    @pytest.mark.asyncio
+    async def test_immutable_tsvector_excluded_from_upsert_set(self) -> None:
+        """``ON CONFLICT DO UPDATE SET`` MUST NOT include ``search_vector``.
+
+        an UPDATE SET containing the trigger-maintained tsvector
+        column would either (a) overwrite the trigger's computed value
+        with whatever the caller passed (NULL) on every upsert, or
+        (b) require the caller to supply a hand-computed tsvector
+        from python -- both regressions. ``Column.immutable=True``
+        excludes the column from ``mutable_columns()`` and therefore
+        from the SET clause.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "content": "hello world",
+                "search_vector": None,
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        sql = pool.calls[0][1]
+        assert "INSERT INTO fts_items" in sql
+        assert "ON CONFLICT (id) DO UPDATE SET" in sql
+        # content + date_updated are mutable -- they ARE in SET
+        assert "content = EXCLUDED.content" in sql
+        assert "date_updated = EXCLUDED.date_updated" in sql
+        # search_vector is immutable + trigger-maintained -- it MUST
+        # NOT appear in the SET clause
+        assert "search_vector = EXCLUDED.search_vector" not in sql
+        assert "search_vector =" not in sql.split("DO UPDATE SET", 1)[1]
+
+    @pytest.mark.asyncio
+    async def test_immutable_tsvector_excluded_from_cas_update_set(self) -> None:
+        """CAS ``UPDATE SET`` MUST NOT include ``search_vector`` either.
+
+        the CAS path mirrors the upsert path -- :meth:`mutable_columns`
+        is the single source of truth for which columns reach a SET
+        clause. covered explicitly so a future divergence between the
+        upsert and CAS generators is caught by the audit suite.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "UPDATE 1"
+        coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "id": uuid.uuid4(),
+                "content": "updated content",
+                "search_vector": None,
+                "date_created": now,
+                "date_updated": now,
+            },
+            original_timestamp=now,
+        )
+        sql = pool.calls[0][1]
+        assert "UPDATE fts_items SET" in sql
+        # content + date_updated mutable -> in SET
+        assert "content =" in sql
+        assert "date_updated =" in sql
+        # search_vector immutable -> NOT in SET
+        # CAS UPDATE SQL shape: "UPDATE <table> SET <set> WHERE <where>"
+        set_section = sql.split(" SET ", 1)[1].split(" WHERE ", 1)[0]
+        assert "search_vector" not in set_section
+
+    @pytest.mark.asyncio
+    async def test_immutable_tsvector_in_insert_column_list_with_null_param(self) -> None:
+        """INSERT column list includes ``search_vector`` with a NULL bind value.
+
+        The current generator behaviour: ``_build_insert_sql`` iterates
+        ALL schema columns (including immutable ones), so the column
+        list contains ``search_vector``; ``_build_insert_params`` reads
+        the column from the data dict and the nullable=True column
+        defaults missing keys to ``None`` so the parameter list carries
+        ``None`` for ``search_vector``.
+
+        Why this is safe: the Postgres ``BEFORE INSERT OR UPDATE OF
+        content, summary`` trigger fires on every INSERT and overrides
+        whatever value the row carries -- so the explicit ``NULL`` is
+        replaced by the trigger-computed tsvector before the row is
+        committed.
+
+        Why we don't skip it from INSERT: the generator's
+        ``mutable_columns()`` filter is reserved for UPDATE-side
+        guards. Mirroring that filter into ``_build_insert_sql`` would
+        widen the scope of ``immutable=True`` beyond its stated
+        semantic ("excluded from UPDATE SET"). The current behaviour
+        keeps ``immutable=True`` UPDATE-only and relies on the
+        Postgres trigger for INSERT-side semantics; both reach the
+        same outcome.
+
+        If a future refactor decides to exclude immutable columns from
+        INSERT too (also safe given the trigger), this test must be
+        updated, not the generator (the behaviour choice is deliberate).
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
+        now = datetime.now(UTC)
+        item_id = uuid.uuid4()
+        # caller deliberately does NOT pass search_vector -- it's
+        # nullable so the generator should default to None
+        await coll.save_to_postgres(
+            {
+                "id": item_id,
+                "content": "hello world",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        sql = pool.calls[0][1]
+        args = pool.calls[0][2]
+        # column list contains search_vector
+        insert_cols_section = sql.split("(", 1)[1].split(")", 1)[0]
+        assert "search_vector" in insert_cols_section
+        # parameter list (positional asyncpg args) matches column order;
+        # find search_vector's position and assert the corresponding
+        # arg is None
+        col_names = [c.strip() for c in insert_cols_section.split(",")]
+        sv_index = col_names.index("search_vector")
+        assert args[sv_index] is None, (
+            f"search_vector INSERT param at index {sv_index} should be None "
+            f"when caller omits the key; got {args[sv_index]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # v0.8.0: backward compatibility — existing TableSchema declarations work
 # ---------------------------------------------------------------------------
 
@@ -1587,15 +1781,14 @@ class TestExistingTableSchemaBackwardCompat:
 
     def test_existing_table_schema_declaration_works_unchanged(self) -> None:
         """A representative real-world TableSchema (MemoriesCollection.schema)
-        constructs without errors after the v0.8.0 API extension.
+        constructs without errors after the v0.8.0 API extension and
+        carries the v0.8.0 enrichments.
 
         Guards against accidentally making any new field non-optional
-        and against making any new validator reject a v0.7.x declaration.
-        Note: ``MemoriesCollection.schema``'s ``embedding`` column was
-        enriched with ``vector_dim=`` as part of this shard so the new
-        ``VECTOR_TYPE requires vector_dim`` validator could land --
-        see the report attached to the shard for the deviation
-        rationale; the rest of the declaration is untouched.
+        and against making any new validator reject the declaration.
+        Note: ``MemoriesCollection.schema`` was enriched in shard 03
+        (v0.8.0) with single-column FKs, ENUM type_memory, vector_dim
+        on embedding, TSVECTOR search_vector, and named indexes.
         """
         # Import inside the test so workspaces with the agent-memory
         # package missing still collect the rest of this module.
@@ -1607,6 +1800,202 @@ class TestExistingTableSchemaBackwardCompat:
         assert schema.pk_columns == ("agent_id", "memory_id")
         # the partition column survives coercion + v0.8.0 validation
         assert schema.partition_column == "agent_id"
-        # v0.8.0 defaults
-        assert schema.foreign_keys == ()
-        assert schema.indexes == ()
+        # v0.8.0: indexes declared (ix_memories_user_date from v0.7.5
+        # factory + ix_memories_user_alias relocated from metallm
+        # alembic 088).
+        index_names = {idx.name for idx in schema.indexes}
+        assert "ix_memories_user_date" in index_names
+        assert "ix_memories_user_alias" in index_names
+        # v0.8.0: every Column with ``foreign_key=`` survives partition
+        # coercion. user_id has an inline FK to users.user_id.
+        user_id_col = schema.column("user_id")
+        assert user_id_col.foreign_key == ("users", "user_id")
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0 shard 03: INSERT generators honor Column.server_default
+# ---------------------------------------------------------------------------
+#
+# Without this gate, ``nullable=False`` columns that declare a
+# ``server_default`` (e.g. ``media.metadata_json`` /
+# ``media.media_category`` / ``media.extraction_status`` /
+# ``mcp_tool_grants.date_created``) force every Python writer to
+# duplicate the default value or hit a ``KeyError`` from
+# ``_pull_value``. The post-shard-03 behaviour: when the caller omits
+# such a column from the data dict, the INSERT generator drops the
+# column from BOTH the SQL column list AND the parameter list, letting
+# Postgres apply the server-side default.
+
+
+class _ServerDefaultCollection(SchemaBackedCollection[_StubEntity]):
+    """schema with a ``nullable=False, server_default=...`` column.
+
+    used by the server-default gate tests below to drive
+    ``_build_insert_sql`` / ``_build_insert_params`` against the
+    canonical "required + has server default" shape (the shape every
+    ``date_created TIMESTAMPTZ NOT NULL DEFAULT now()`` column in the
+    package wears).
+    """
+
+    primary_key_column: str = "id"
+    schema = TableSchema(
+        name="sd_items",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("name", STRING_TYPE),
+            # NOT NULL + server_default: the shape of
+            # mcp_tool_grants.date_created, media.metadata_json,
+            # conversation_memory_refs.date_created, etc.
+            Column(
+                "kind",
+                STRING_TYPE,
+                server_default="'image'::text",
+            ),
+        ],
+        on_conflict="raise",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return table name."""
+        return "sd_items"
+
+    @property
+    def entity_class(self) -> type[_StubEntity]:
+        """return entity class."""
+        return _StubEntity
+
+
+class _NoDefaultCollection(SchemaBackedCollection[_StubEntity]):
+    """schema with a ``nullable=False`` column that has NO server_default.
+
+    used to confirm the v0.8.0 gate does NOT mask the required-column
+    KeyError for columns without a default: those must still raise so
+    the caller learns immediately that a required column was missed.
+    """
+
+    primary_key_column: str = "id"
+    schema = TableSchema(
+        name="nd_items",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("name", STRING_TYPE),
+            # NOT NULL, no server_default — every writer MUST supply
+            # this value or hit KeyError.
+            Column("kind", STRING_TYPE),
+        ],
+        on_conflict="raise",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return table name."""
+        return "nd_items"
+
+    @property
+    def entity_class(self) -> type[_StubEntity]:
+        """return entity class."""
+        return _StubEntity
+
+
+class TestInsertServerDefaultGate:
+    """v0.8.0: server_default columns drop out of INSERT when omitted."""
+
+    @pytest.mark.asyncio
+    async def test_insert_omits_server_default_column_when_caller_omits(self) -> None:
+        """``kind`` column with ``server_default`` and absent from
+        the data dict MUST NOT appear in the INSERT SQL or params.
+
+        Without this gate, ``_pull_value`` raised KeyError for
+        ``nullable=False`` columns regardless of server_default,
+        forcing every caller to supply a value. After v0.8.0 the gate
+        drops the column so Postgres applies the server-side default
+        verbatim.
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _ServerDefaultCollection(_registry(pool), _config(), nats_client=_nats())
+        item_id = uuid.uuid4()
+        # caller deliberately omits ``kind`` — server default should
+        # apply
+        await coll.save_to_postgres({"id": item_id, "name": "x"})
+        sql = pool.calls[0][1]
+        args = pool.calls[0][2]
+        # column list MUST NOT include ``kind``
+        insert_cols_section = sql.split("(", 1)[1].split(")", 1)[0]
+        col_names = [c.strip() for c in insert_cols_section.split(",")]
+        assert "kind" not in col_names, (
+            f"server_default column 'kind' should be omitted from INSERT when caller omits it; got {col_names!r}"
+        )
+        # params list MUST be the same length as the emitted column
+        # list — i.e. no stray NULL for ``kind``
+        assert len(args) == len(col_names), (
+            f"INSERT params count {len(args)} should match emitted column count {len(col_names)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_insert_includes_server_default_column_when_caller_supplies(self) -> None:
+        """when the caller DOES supply a value, the column IS in the
+        SQL (caller-supplied value wins over server default).
+        """
+        pool = _RecordingPool()
+        pool.execute_status = "INSERT 0 1"
+        coll = _ServerDefaultCollection(_registry(pool), _config(), nats_client=_nats())
+        item_id = uuid.uuid4()
+        await coll.save_to_postgres({"id": item_id, "name": "x", "kind": "document"})
+        sql = pool.calls[0][1]
+        args = pool.calls[0][2]
+        insert_cols_section = sql.split("(", 1)[1].split(")", 1)[0]
+        col_names = [c.strip() for c in insert_cols_section.split(",")]
+        assert "kind" in col_names, f"caller-supplied 'kind' must appear in INSERT cols; got {col_names!r}"
+        # the supplied value is in args at the index matching ``kind``
+        idx = col_names.index("kind")
+        assert args[idx] == "document"
+
+    @pytest.mark.asyncio
+    async def test_insert_still_raises_on_missing_required_column_without_default(self) -> None:
+        """required column WITHOUT server_default still raises KeyError
+        when omitted — the v0.8.0 gate only applies to columns that
+        DECLARE a server default.
+        """
+        pool = _RecordingPool()
+        coll = _NoDefaultCollection(_registry(pool), _config(), nats_client=_nats())
+        with pytest.raises(KeyError, match="kind"):
+            # ``kind`` is non-nullable with no server_default — must
+            # raise, not silently bind NULL
+            await coll.save_to_postgres({"id": uuid.uuid4(), "name": "x"})
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0 shard 03: mutable_columns() pins for MediaContent / MemoryChunk
+# ---------------------------------------------------------------------------
+
+
+class TestMediaContentImmutabilityPin:
+    """v0.8.0: customer_id / media_id / user_id silently flipped to
+    immutable; pin so a regression flagging them mutable surfaces in
+    unit tests rather than in the Alembic auto-gen diff.
+    """
+
+    def test_media_content_collection_immutable_columns_pin(self) -> None:
+        """v0.8.0: customer_id / media_id / user_id are immutable;
+        UPDATE generators must not include them in SET clause.
+        """
+        from threetears.agent.memory.collections import MediaContentCollection
+
+        mutable = {c.name for c in MediaContentCollection.schema.mutable_columns()}
+        for col in ("customer_id", "media_id", "user_id"):
+            assert col not in mutable, f"{col} must not be in mutable columns for media_content"
+
+    def test_memory_chunk_collection_immutable_columns_pin(self) -> None:
+        """v0.8.0: customer_id / memory_id / user_id are immutable on
+        memory_chunks; UPDATE generators must not include them in
+        SET clause.
+        """
+        from threetears.agent.memory.collections import MemoryChunkCollection
+
+        mutable = {c.name for c in MemoryChunkCollection.schema.mutable_columns()}
+        for col in ("customer_id", "memory_id", "user_id"):
+            assert col not in mutable, f"{col} must not be in mutable columns for memory_chunks"

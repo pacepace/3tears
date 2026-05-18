@@ -444,11 +444,14 @@ class TestUnifiedMemoryParentFks:
                 now,
             )
 
+            # v021 dropped media.date_updated to match prod parity
+            # (the v0.7.5 factory only declares date_created); the
+            # INSERT here is updated accordingly.
             await conn.execute(
                 "INSERT INTO media ("
                 "media_id, memory_id, agent_id, customer_id, user_id, "
-                "media_category, metadata_json, date_created, date_updated"
-                ") VALUES ($1, $2, $3, $4, $5, 'document', NULL, $6, $6)",
+                "media_category, metadata_json, date_created"
+                ") VALUES ($1, $2, $3, $4, $5, 'document', NULL, $6)",
                 media_id,
                 memory_id,
                 agent_id,

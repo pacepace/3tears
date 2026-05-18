@@ -30,6 +30,7 @@ from threetears.agent.memory.collections import (
     memory_chunks_table,
 )
 from threetears.agent.tools.collections import context_items_table
+from threetears.mcp.rbac import mcp_tool_grants_table
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
@@ -330,7 +331,15 @@ def _inline_in_extra(
 
 
 def _memories_schema() -> TableSchema:
-    """build the enriched TableSchema mirroring ``memories_table``."""
+    """build the enriched TableSchema mirroring ``memories_table``.
+
+    ``message_id_source`` FK is table-level with ``on_delete="SET NULL"``
+    because the inline 2-tuple ``foreign_key=`` form carries no
+    ``on_delete=``. Prod metallm (alembic
+    ``memories_message_id_source_fkey``) declares SET NULL; v0.8.0 the
+    factory was updated to match — the table-level form is the only
+    way to express the prod shape in this declaration.
+    """
     return TableSchema(
         name="memories",
         primary_key=("memory_id", "agent_id"),
@@ -348,7 +357,6 @@ def _memories_schema() -> TableSchema:
                 "message_id_source",
                 UUID_TYPE,
                 nullable=True,
-                foreign_key=("messages", "message_id"),
             ),
             Column(
                 "type_memory",
@@ -380,6 +388,14 @@ def _memories_schema() -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
+        foreign_keys=(
+            ForeignKey(
+                "message_id_source",
+                "messages",
+                "message_id",
+                on_delete="SET NULL",
+            ),
+        ),
         indexes=(Index("ix_memories_user_date", "user_id", "date_created"),),
     )
 
@@ -612,7 +628,24 @@ def _memory_chunks_schema() -> TableSchema:
 def _conversation_memory_refs_schema() -> TableSchema:
     """build the enriched TableSchema mirroring
     ``conversation_memory_refs_table``.
+
+    Shape mirrors prod (FK on ``conversation_id`` with CASCADE, lookup
+    index on ``conversation_id``, ``date_created`` immutable with
+    ``server_default="now()"``). The hand-written factory does not
+    emit these directly — they live in prod metallm Alembic.
+
+    Production ``conversation_memory_refs.date_created`` is
+    ``TIMESTAMPTZ NOT NULL DEFAULT now()`` and the FK has
+    ``ON DELETE CASCADE`` (alembic
+    ``conversation_memory_refs_conversation_id_fkey``); the v0.8.0
+    ``MemoryRefsCollection.schema`` carries the same shape, and v021
+    pins the ``date_created`` server default.
     """
+    # TODO(v0.8.0 shard 04): replace with
+    # _reference_<table>_table per shard 04 §"Concrete steps per
+    # factory". Production schema now carries FK + indexes this
+    # helper does not — keep this helper in sync until shard 04
+    # collapses every factory onto :meth:`TableSchema.to_sqlalchemy_table`.
     return TableSchema(
         name="conversation_memory_refs",
         primary_key=("conversation_id", "item_id"),
@@ -621,14 +654,72 @@ def _conversation_memory_refs_schema() -> TableSchema:
             Column("item_id", UUID_TYPE),
             Column("item_type", STRING_TYPE),
             Column("short_desc", STRING_TYPE),
-            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        foreign_keys=(
+            ForeignKey(
+                "conversation_id",
+                "conversations",
+                "conversation_id",
+                on_delete="CASCADE",
+            ),
+        ),
+        indexes=(
+            Index(
+                "ix_conversation_memory_refs_cid",
+                "conversation_id",
+            ),
+        ),
+    )
+
+
+def _mcp_tool_grants_schema() -> TableSchema:
+    """build the enriched TableSchema mirroring ``mcp_tool_grants_table``.
+
+    Shape mirrors prod (v001 migration creates the table with
+    ``date_created TIMESTAMPTZ NOT NULL DEFAULT now()`` and two
+    lookup indexes). The v0.8.0 ``McpToolGrantCollection.schema``
+    carries the same shape.
+    """
+    return TableSchema(
+        name="mcp_tool_grants",
+        primary_key="grant_id",
+        columns=[
+            Column("grant_id", UUID_TYPE),
+            Column("principal_type", STRING_TYPE),
+            Column("principal_id", UUID_TYPE),
+            Column("tool_name", STRING_TYPE),
+            Column("permission", STRING_TYPE),
+            Column(
+                "date_created",
+                DATETIMETZ_TYPE,
+                immutable=True,
+                server_default="now()",
+            ),
+        ],
+        indexes=(
+            Index(
+                "idx_mcp_tool_grants_principal",
+                "principal_id",
+                "permission",
+            ),
+            Index("idx_mcp_tool_grants_tool", "tool_name"),
+        ),
     )
 
 
 def _context_items_schema() -> TableSchema:
     """build the enriched TableSchema mirroring ``context_items_table``."""
+    # TODO(v0.8.0 shard 04): replace with
+    # _reference_<table>_table per shard 04 §"Concrete steps per
+    # factory". Production schema now carries FK + indexes this
+    # helper does not.
     return TableSchema(
         name="context_items",
         primary_key=("conversation_id", "context_id"),
@@ -753,6 +844,15 @@ def test_parity_conversation_memory_refs_table() -> None:
     via_to_sqla = _conversation_memory_refs_schema().to_sqlalchemy_table(
         sa.MetaData(),
     )
+    _assert_tables_equivalent(via_factory, via_to_sqla)
+
+
+def test_parity_mcp_tool_grants_table() -> None:
+    """enriched TableSchema produces a Table structurally equal to
+    ``mcp_tool_grants_table``.
+    """
+    via_factory = mcp_tool_grants_table(sa.MetaData())
+    via_to_sqla = _mcp_tool_grants_schema().to_sqlalchemy_table(sa.MetaData())
     _assert_tables_equivalent(via_factory, via_to_sqla)
 
 

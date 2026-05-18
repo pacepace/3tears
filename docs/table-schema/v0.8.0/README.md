@@ -98,6 +98,27 @@ Permitted noise (does NOT count as a phantom migration):
   columns that doesn't match the declaration. Document any specific
   occurrence in the shard 05 verification output but do not require
   the diff to be empty.
+- `op.create_check_constraint(...)` on the following two CHECK
+  constraints — they are declared in prod metallm Alembic as CHECK
+  constraints on plain TEXT columns (NOT Postgres enum types — the
+  shard 03 lookup against `pg_type` returned 0 rows for both names),
+  and v0.8.0 locks the decision "CHECK constraints beyond enums: Not
+  for v0.8.0" so the parity gate will emit them as auto-gen output.
+  Both are expected and stable:
+
+  - `conversation_memory_refs_item_type_check`:
+    `CHECK (item_type = ANY (ARRAY['memory'::text, 'media'::text,
+    'chunk'::text]))`
+  - `ck_context_items_type`:
+    `CHECK (context_type = ANY (ARRAY['variable'::text,
+    'tool_result'::text, 'media_slot'::text]))`
+
+  These two CHECK constraints are domain enum-narrowings carried by
+  prod metallm but not modelled in 3tears `TableSchema` (v0.8.0 does
+  not model CHECK constraints beyond Postgres enums). Shard 05
+  auto-gen will report them as `op.create_check_constraint` ops; the
+  release reviewer should confirm the auto-gen output matches the
+  two definitions above and treat them as no-ops on the parity gate.
 
 If auto-generate produces any non-permitted op on the seven tables,
 the release is not ready. Other tables (workspace, ACL, etc.) are

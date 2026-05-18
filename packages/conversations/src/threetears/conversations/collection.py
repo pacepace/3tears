@@ -33,8 +33,10 @@ from threetears.core.collections.schema_backed import (
     INT_TYPE,
     JSONB_TYPE,
     STRING_TYPE,
+    TSVECTOR_TYPE,
     UUID_TYPE,
     Column,
+    Index as SchemaIndex,
     SchemaBackedCollection,
     TableSchema,
 )
@@ -82,6 +84,14 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
     _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset(
         {"attach_write_buffer"},
     )
+    # v0.8.0 hygiene enrichment: ``search_vector`` (TSVECTOR,
+    # immutable, trigger-maintained per v005 migration);
+    # ``language`` server default ``'english'`` matches v006
+    # migration. Indexes mirror the v001 / v005 migrations:
+    # ``idx_conv_user`` / ``idx_conv_customer`` (composite by
+    # date_created) + ``idx_conv_status`` + ``idx_conversations_search_vector``
+    # (GIN -- can't be expressed in v0.8.0 IndexDef, kept Alembic-side
+    # for now). Standard btree indexes are declared here.
     primary_key_column: str | tuple[str, ...] = ("agent_id", "id")
     schema = TableSchema(
         name="conversations",
@@ -96,6 +106,12 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("name", STRING_TYPE, nullable=True),
             Column("status", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
+            Column(
+                "search_vector",
+                TSVECTOR_TYPE,
+                nullable=True,
+                immutable=True,
+            ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
             Column("date_last_message", DATETIMETZ_TYPE, nullable=True),
@@ -108,9 +124,18 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             # ``german``, etc.). The trigger function rebuilds the
             # search_vector on UPDATE OF this column too, so flipping
             # language re-tokenizes lazily.
-            Column("language", STRING_TYPE),
+            Column("language", STRING_TYPE, server_default="'english'::text"),
         ],
         cas_column="date_updated",
+        indexes=(
+            SchemaIndex("idx_conv_user", "user_id", "date_created"),
+            SchemaIndex(
+                "idx_conv_customer",
+                "customer_id",
+                "date_created",
+            ),
+            SchemaIndex("idx_conv_status", "status"),
+        ),
     )
 
     def __init__(
