@@ -116,11 +116,11 @@ class TestWorkspaceNamespaceBackfillShape:
 
     @pytest.mark.asyncio
     async def test_is_idempotent_via_on_conflict(self) -> None:
-        """replay is safe: ON CONFLICT (id) DO NOTHING."""
+        """replay is safe: ON CONFLICT (namespace_id) DO NOTHING (v0.8.0)."""
         store = _CaptureStore()
         await workspace_namespace_backfill(store)  # type: ignore[arg-type]
         joined = _joined_sql(store)
-        assert "ON CONFLICT (id) DO NOTHING" in joined
+        assert "ON CONFLICT (namespace_id) DO NOTHING" in joined
 
     @pytest.mark.asyncio
     async def test_namespace_name_prefix_avoids_agent_collision(self) -> None:

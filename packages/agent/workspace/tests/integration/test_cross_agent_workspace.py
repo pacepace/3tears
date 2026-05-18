@@ -130,12 +130,20 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     :param conn: asyncpg connection
     :ptype conn: asyncpg.Connection
     """
+    # v0.8.0 shard 04.6: every entity-table PK column was renamed
+    # from bare ``id`` to ``<entity>_id``. The platform DDL here
+    # mirrors the post-rename column shape (groups.group_id,
+    # roles.role_id, role_assignments.assignment_id,
+    # namespaces.namespace_id). ``group_members.id`` stays as ``id``
+    # because group_members is not in the shard's rename list -- it
+    # already has a separate ``member_id`` column carrying the
+    # user/agent identifier.
     await conn.execute("DROP SCHEMA IF EXISTS platform CASCADE")
     await conn.execute("CREATE SCHEMA platform")
     await conn.execute(
         """
         CREATE TABLE platform.namespaces (
-            id            UUID PRIMARY KEY,
+            namespace_id  UUID PRIMARY KEY,
             name          TEXT NOT NULL,
             namespace_type TEXT NOT NULL,
             owner_agent_id UUID NOT NULL,
@@ -150,7 +158,7 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
         CREATE TABLE platform.groups (
-            id UUID PRIMARY KEY,
+            group_id UUID PRIMARY KEY,
             customer_id UUID,
             name VARCHAR(255) NOT NULL,
             description TEXT,
@@ -163,7 +171,7 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
         """
         CREATE TABLE platform.group_members (
             id UUID PRIMARY KEY,
-            group_id UUID NOT NULL REFERENCES platform.groups(id) ON DELETE CASCADE,
+            group_id UUID NOT NULL REFERENCES platform.groups(group_id) ON DELETE CASCADE,
             member_type VARCHAR(10) NOT NULL
                 CHECK (member_type IN ('user', 'agent')),
             member_id UUID NOT NULL,
@@ -175,7 +183,7 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
         CREATE TABLE platform.roles (
-            id UUID PRIMARY KEY,
+            role_id UUID PRIMARY KEY,
             name VARCHAR(255) NOT NULL UNIQUE,
             description TEXT,
             permissions JSONB NOT NULL,
@@ -188,12 +196,12 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(
         """
         CREATE TABLE platform.role_assignments (
-            id UUID PRIMARY KEY,
-            role_id UUID NOT NULL REFERENCES platform.roles(id),
-            group_id UUID NOT NULL REFERENCES platform.groups(id) ON DELETE CASCADE,
+            assignment_id UUID PRIMARY KEY,
+            role_id UUID NOT NULL REFERENCES platform.roles(role_id),
+            group_id UUID NOT NULL REFERENCES platform.groups(group_id) ON DELETE CASCADE,
             scope_type VARCHAR(16) NOT NULL
                 CHECK (scope_type IN ('namespace', 'type_customer', 'all')),
-            scope_namespace_id UUID REFERENCES platform.namespaces(id) ON DELETE CASCADE,
+            scope_namespace_id UUID REFERENCES platform.namespaces(namespace_id) ON DELETE CASCADE,
             scope_namespace_type VARCHAR(255),
             scope_customer_id UUID,
             granted_by UUID,
@@ -209,7 +217,7 @@ async def _build_platform_schema(conn: asyncpg.Connection) -> None:
     # ``read`` / ``write``.
     await conn.execute(
         """
-        INSERT INTO platform.roles (id, name, description, permissions, is_builtin)
+        INSERT INTO platform.roles (role_id, name, description, permissions, is_builtin)
         VALUES ($1, 'WorkspaceEditor',
                 'Read and write on workspaces and workspace files.',
                 '{"workspace": ["read", "write", "read_file_matching:**/*", "write_file_matching:**/*"], "workspace_file": ["read", "write"]}'::jsonb,
@@ -230,10 +238,12 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     """
     schema = _schema_name(agent_id)
     await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    # v0.8.0 shard 04.6: agent-schema workspace tables use the
+    # post-rename PK column names (workspace_id, file_id, version_id).
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspaces (
-            id              UUID PRIMARY KEY,
+            workspace_id    UUID PRIMARY KEY,
             agent_id        UUID NOT NULL,
             name            TEXT NOT NULL,
             description     TEXT,
@@ -249,8 +259,8 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspace_files (
-            id              UUID PRIMARY KEY,
-            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(id)
+            file_id         UUID PRIMARY KEY,
+            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(workspace_id)
                                ON DELETE CASCADE,
             relative_path   TEXT NOT NULL,
             content         BYTEA NOT NULL,
@@ -264,8 +274,8 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspace_file_versions (
-            id              UUID PRIMARY KEY,
-            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(id)
+            version_id      UUID PRIMARY KEY,
+            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(workspace_id)
                                ON DELETE CASCADE,
             relative_path   TEXT NOT NULL,
             version         INTEGER NOT NULL,
@@ -396,7 +406,7 @@ class _SqlGrantLoader:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, role_id, group_id, scope_type,
+                SELECT assignment_id, role_id, group_id, scope_type,
                        scope_namespace_id, scope_namespace_type, scope_customer_id
                   FROM platform.role_assignments
                  WHERE group_id = ANY($1::uuid[])
@@ -416,7 +426,7 @@ class _SqlGrantLoader:
             )
         return tuple(
             RoleAssignment(
-                id=row["id"],
+                id=row["assignment_id"],
                 role_id=row["role_id"],
                 group_id=row["group_id"],
                 scope_type=ScopeType(row["scope_type"]),
@@ -443,9 +453,9 @@ class _SqlGrantLoader:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, name, permissions, is_builtin
+                SELECT role_id, name, permissions, is_builtin
                   FROM platform.roles
-                 WHERE id = ANY($1::uuid[])
+                 WHERE role_id = ANY($1::uuid[])
                 """,
                 list(role_ids),
             )
@@ -463,8 +473,8 @@ class _SqlGrantLoader:
             for resource_type, actions in parsed.items():
                 if isinstance(actions, list):
                     permissions[resource_type] = frozenset(str(a) for a in actions)
-            result[row["id"]] = Role(
-                id=row["id"],
+            result[row["role_id"]] = Role(
+                id=row["role_id"],
                 name=row["name"],
                 permissions=permissions,
                 is_built_in=bool(row["is_builtin"]),
@@ -487,16 +497,16 @@ class _SqlGrantLoader:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, name, customer_id
+                SELECT group_id, name, customer_id
                   FROM platform.groups
-                 WHERE id = ANY($1::uuid[])
+                 WHERE group_id = ANY($1::uuid[])
                 """,
                 list(group_ids),
             )
         result: dict[UUID, object] = {}
         for row in rows:
-            result[row["id"]] = AclGroup(
-                id=row["id"],
+            result[row["group_id"]] = AclGroup(
+                id=row["group_id"],
                 name=row["name"],
                 customer_id=row["customer_id"],
             )
@@ -590,7 +600,7 @@ class _SqlWorkspaceCollection:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces WHERE id = $1 AND agent_id = $2',
+                f'SELECT * FROM "{self._schema}".workspaces WHERE workspace_id = $1 AND agent_id = $2',
                 workspace_id,
                 agent_id,
             )
@@ -613,7 +623,7 @@ class _SqlWorkspace:
     @property
     def id(self) -> UUID:
         """workspace uuid."""
-        return self._data["id"]
+        return self._data["workspace_id"]
 
     @property
     def name(self) -> str:
@@ -638,7 +648,7 @@ class _SqlWorkspace:
     @property
     def namespace_name(self) -> str:
         """canonical namespace key."""
-        return f"workspace.{self._data['id']}"
+        return f"workspace.{self._data['workspace_id']}"
 
     @property
     def customer_id(self) -> UUID | None:
@@ -1050,7 +1060,7 @@ async def _seed_namespace_row(
     await conn.execute(
         """
         INSERT INTO platform.namespaces (
-            id, name, namespace_type, owner_agent_id, schema_name,
+            namespace_id, name, namespace_type, owner_agent_id, schema_name,
             customer_id, metadata, date_created, date_updated
         ) VALUES ($1, $2, 'workspace', $3, $4, $5, '{}'::jsonb, $6, $7)
         """,
@@ -1103,7 +1113,7 @@ async def _grant_via_singleton_group(
     await conn.execute(
         """
         INSERT INTO platform.groups (
-            id, customer_id, name, description, date_created, date_updated
+            group_id, customer_id, name, description, date_created, date_updated
         ) VALUES ($1, $2, $3, $4, $5, $6)
         """,
         group_id,
@@ -1129,7 +1139,7 @@ async def _grant_via_singleton_group(
     await conn.execute(
         """
         INSERT INTO platform.role_assignments (
-            id, role_id, group_id, scope_type,
+            assignment_id, role_id, group_id, scope_type,
             scope_namespace_id, scope_namespace_type, scope_customer_id,
             granted_by, date_granted
         )
@@ -1170,7 +1180,7 @@ async def _seed_workspace(
     await conn.execute(
         f"""
         INSERT INTO "{schema}".workspaces (
-            id, agent_id, name, description, template_name, created_by,
+            workspace_id, agent_id, name, description, template_name, created_by,
             current_version, date_created, date_updated
         ) VALUES ($1, $2, $3, NULL, NULL, $4, 1, $5, $6)
         """,
@@ -1190,7 +1200,7 @@ async def _seed_workspace(
     await conn.execute(
         f"""
         INSERT INTO "{schema}".workspace_files (
-            id, workspace_id, relative_path, content, sha256, version, date_updated
+            file_id, workspace_id, relative_path, content, sha256, version, date_updated
         ) VALUES ($1, $2, $3, $4, $5, 1, $6)
         """,
         file_id,
@@ -1203,7 +1213,7 @@ async def _seed_workspace(
     await conn.execute(
         f"""
         INSERT INTO "{schema}".workspace_file_versions (
-            id, workspace_id, relative_path, version, content, sha256,
+            version_id, workspace_id, relative_path, version, content, sha256,
             action, label, actor_id, correlation_id, date_created
         ) VALUES ($1, $2, $3, 1, $4, $5, 'create', NULL, $6, $7, $8)
         """,
@@ -1303,7 +1313,7 @@ class _CrossAgentWorkspaceCollection:
         del agent_id
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT * FROM "{self._schema}".workspaces WHERE id = $1 AND agent_id = $2',
+                f'SELECT * FROM "{self._schema}".workspaces WHERE workspace_id = $1 AND agent_id = $2',
                 workspace_id,
                 self._owner,
             )

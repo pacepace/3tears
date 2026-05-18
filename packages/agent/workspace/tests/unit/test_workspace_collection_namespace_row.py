@@ -37,7 +37,7 @@ def _workspaces_metadata() -> MetaData:
     Table(
         "workspaces",
         metadata,
-        Column("id", String(64), primary_key=True),
+        Column("workspace_id", String(64), primary_key=True),
         Column("agent_id", String(64)),
         Column("name", String(255)),
         Column("description", Text),
@@ -106,7 +106,7 @@ async def test_save_issues_single_workspaces_upsert(
 
     now = datetime.now(UTC).replace(tzinfo=None)
     data: dict[str, Any] = {
-        "id": uuid4(),
+        "workspace_id": uuid4(),
         "agent_id": uuid4(),
         "name": "ws-under-test",
         "description": None,

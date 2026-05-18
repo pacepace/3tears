@@ -18,6 +18,14 @@ version history:
   :mod:`threetears.agent.workspace.collections` flip from
   DATETIME_TYPE to DATETIMETZ_TYPE in the same commit so
   ``tests/enforcement/test_column_type_alignment.py`` stays green).
+- v005: v0.8.0 shard 04.6 rename of the bare-``id`` PK columns to
+  the canonical ``<entity>_id`` shape on all three workspace tables
+  (``workspaces.id`` -> ``workspaces.workspace_id``,
+  ``workspace_files.id`` -> ``workspace_files.file_id``,
+  ``workspace_file_versions.id`` -> ``workspace_file_versions.version_id``).
+  Postgres updates the PK constraint, every index, and every
+  dependent FK constraint automatically; the renames are guarded by
+  ``information_schema`` DO blocks so replays are idempotent.
 """
 
 from __future__ import annotations
@@ -39,6 +47,9 @@ from threetears.agent.workspace.migrations.v003_workspace_namespace_backfill imp
 )
 from threetears.agent.workspace.migrations.v004_datetime_to_datetimetz import (
     datetime_to_datetimetz,
+)
+from threetears.agent.workspace.migrations.v005_rename_id_columns import (
+    rename_id_columns,
 )
 
 PACKAGE_NAME = "agent_workspace"
@@ -66,6 +77,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(add_date_deleted_column)
     pkg.version(3)(workspace_namespace_backfill)
     pkg.version(4)(datetime_to_datetimetz)
+    pkg.version(5)(rename_id_columns)
     runner.register(pkg)
     return pkg
 
@@ -76,5 +88,6 @@ __all__ = [
     "create_workspace_tables",
     "datetime_to_datetimetz",
     "register",
+    "rename_id_columns",
     "workspace_namespace_backfill",
 ]

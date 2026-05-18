@@ -109,23 +109,27 @@ def _joined_executed_sql(store: _FakeDataStore) -> str:
 class TestRegisterWorkspaceMigrations:
     """tests for the register factory and apply flow."""
 
-    async def test_register_returns_package_with_versions_one_through_four(self) -> None:
-        """register populates the PackageMigrations with versions 1, 2, 3, and 4."""
+    async def test_register_returns_package_with_versions_one_through_five(self) -> None:
+        """register populates the PackageMigrations with versions 1-5.
+
+        v0.8.0 shard 04.6 added v005 to rename bare-``id`` PK columns
+        to ``<entity>_id`` on all three workspace tables.
+        """
         runner = MigrationRunner()
         pkg = register(runner)
         assert pkg.name == PACKAGE_NAME
         assert pkg.scope == MigrationScope.AGENT
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5}
 
     async def test_apply_runs_all_versions_then_idempotent(self) -> None:
-        """apply records v1-v4 in _schema_migrations and runs no second time."""
+        """apply records v1-v5 in _schema_migrations and runs no second time."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 4
+        assert first_count == 5
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 

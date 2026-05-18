@@ -28,7 +28,7 @@ def _sample_data() -> dict[str, Any]:
     """
     now = datetime.now(UTC)
     return {
-        "id": uuid7(),
+        "conversation_id": uuid7(),
         "agent_id": uuid7(),
         "customer_id": uuid7(),
         "user_id": uuid7(),
@@ -62,9 +62,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
 
     async def _fetchrow(query: str, *args: object) -> dict[str, Any] | None:
         """
-        simulate ``SELECT * FROM conversations WHERE agent_id = $1 AND id = $2``.
+        simulate ``SELECT * FROM conversations WHERE agent_id = $1 AND conversation_id = $2``.
 
-        composite-pk fetch: arg[0] is agent_id, arg[1] is id.
+        composite-pk fetch: arg[0] is agent_id, arg[1] is conversation_id.
 
         :param query: SQL text (ignored by the mock)
         :ptype query: str
@@ -81,9 +81,10 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
         simulate INSERT/UPDATE/DELETE against the in-memory store.
 
         composite-pk schema column order (matches SchemaBackedCollection
-        generator): agent_id, id, customer_id, user_id, channel_type,
-        conversation_ref, name, status, summary, date_created,
-        date_updated, date_last_message, metadata, message_count.
+        generator): agent_id, conversation_id, customer_id, user_id,
+        channel_type, conversation_ref, name, status, summary,
+        date_created, date_updated, date_last_message, metadata,
+        message_count.
 
         :param query: SQL text
         :ptype query: str
@@ -96,7 +97,7 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
         if "INSERT" in query:
             keys = [
                 "agent_id",
-                "id",
+                "conversation_id",
                 "customer_id",
                 "user_id",
                 "channel_type",
@@ -113,11 +114,11 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "language",
             ]
             row = dict(zip(keys, args, strict=False))
-            store[str(row["id"])] = row
+            store[str(row["conversation_id"])] = row
             result = "INSERT 0 1"
             return result
         if "UPDATE" in query:
-            # CAS UPDATE pk-first: $1=agent_id, $2=id, then mutables, then CAS fence.
+            # CAS UPDATE pk-first: $1=agent_id, $2=conversation_id, then mutables, then CAS fence.
             entity_id = str(args[1])
             existing = store.get(entity_id)
             if existing is None:
@@ -156,12 +157,12 @@ class TestFetchFromPostgres:
     async def test_fetch_returns_row_dict(self) -> None:
         """fetch_from_postgres returns the row as a dict when present."""
         data = _sample_data()
-        store: dict[str, dict[str, Any]] = {str(data["id"]): data}
+        store: dict[str, dict[str, Any]] = {str(data["conversation_id"]): data}
         pg = _make_pg_mock(store)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        result = await collection.fetch_from_postgres((data["agent_id"], data["id"]))
+        result = await collection.fetch_from_postgres((data["agent_id"], data["conversation_id"]))
 
         assert result == data
 
@@ -190,12 +191,12 @@ class TestSaveToPostgres:
         affected = await collection.save_to_postgres(data)
 
         assert affected == 1
-        assert str(data["id"]) in l3
+        assert str(data["conversation_id"]) in l3
 
     async def test_update_existing_row_with_timestamp(self) -> None:
         """update path respects optimistic concurrency timestamp."""
         data = _sample_data()
-        l3: dict[str, dict[str, Any]] = {str(data["id"]): data}
+        l3: dict[str, dict[str, Any]] = {str(data["conversation_id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
@@ -205,7 +206,7 @@ class TestSaveToPostgres:
         affected = await collection.save_to_postgres(updated, original_timestamp=data["date_updated"])
 
         assert affected == 1
-        assert l3[str(data["id"])]["status"] == "closed"
+        assert l3[str(data["conversation_id"])]["status"] == "closed"
 
 
 class TestDeleteFromPostgres:
@@ -214,14 +215,14 @@ class TestDeleteFromPostgres:
     async def test_delete_removes_row(self) -> None:
         """delete_from_postgres removes the row from the backing store."""
         data = _sample_data()
-        l3: dict[str, dict[str, Any]] = {str(data["id"]): data}
+        l3: dict[str, dict[str, Any]] = {str(data["conversation_id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        await collection.delete_from_postgres((data["agent_id"], data["id"]))
+        await collection.delete_from_postgres((data["agent_id"], data["conversation_id"]))
 
-        assert str(data["id"]) not in l3
+        assert str(data["conversation_id"]) not in l3
 
 
 class TestSerializationRoundTrip:

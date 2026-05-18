@@ -72,7 +72,7 @@ def _group_row(
     cid = customer_id if customer_id is not None else uuid7()
     return {
         "row_scope": "customer" if cid is not None else "platform",
-        "id": uuid7(),
+        "group_id": uuid7(),
         "customer_id": cid,
         "name": name,
         "description": f"{name} description",
@@ -97,7 +97,7 @@ def _role_row(
     """
     now = datetime.now(UTC)
     return {
-        "id": uuid7(),
+        "role_id": uuid7(),
         "name": name,
         "description": f"{name} role",
         "permissions": {"*": ["read"]},
@@ -144,7 +144,7 @@ def _assignment_row(
         row_scope = "customer"
     return {
         "row_scope": row_scope,
-        "id": uuid7(),
+        "assignment_id": uuid7(),
         "role_id": role_id,
         "group_id": group_id,
         "scope_type": scope_type,
@@ -215,8 +215,8 @@ class TestGroupCollectionGetMany:
         gid_b = uuid7()
         row_a = _group_row(name="A")
         row_b = _group_row(name="B")
-        row_a["id"] = gid_a
-        row_b["id"] = gid_b
+        row_a["group_id"] = gid_a
+        row_b["group_id"] = gid_b
         pool = AsyncMock()
         pool.fetch.return_value = [row_a, row_b]
         coll = _make_collection(GroupCollection, l3_pool=pool)
@@ -229,7 +229,7 @@ class TestGroupCollectionGetMany:
         gid = uuid7()
         cid = uuid7()
         row = _group_row(customer_id=cid)
-        row["id"] = str(gid)
+        row["group_id"] = str(gid)
         row["customer_id"] = str(cid)
         pool = AsyncMock()
         pool.fetch.return_value = [row]
@@ -332,7 +332,7 @@ class TestRoleGetMany:
         role_id = uuid7()
         rows = [
             {
-                "id": role_id,
+                "role_id": role_id,
                 "name": "Reader",
                 "permissions": {"workspace": ["read"], "*": ["read"]},
                 "is_builtin": True,
@@ -367,7 +367,7 @@ class TestRoleAssignmentLoadForGroups:
         ns_id = uuid7()
         rows = [
             {
-                "id": uuid7(),
+                "assignment_id": uuid7(),
                 "role_id": role_id,
                 "group_id": group_id,
                 "scope_type": "namespace",
@@ -395,7 +395,7 @@ class TestEnsureGroupRoleAssignment:
         """existing matching row wins; no INSERT."""
         existing_id = uuid7()
         pool = AsyncMock()
-        pool.fetchrow.return_value = {"id": existing_id}
+        pool.fetchrow.return_value = {"assignment_id": existing_id}
         coll = _make_collection(RoleAssignmentCollection, l3_pool=pool)
         result = await coll.ensure_group_role_assignment(
             group_id=uuid7(),
@@ -524,7 +524,7 @@ def _namespace_row(
     now = datetime.now(UTC)
     return {
         "row_scope": "platform" if customer_id is None else "customer",
-        "id": uuid7(),
+        "namespace_id": uuid7(),
         "name": name,
         "namespace_type": namespace_type,
         "owner_agent_id": owner_agent_id,
@@ -546,9 +546,9 @@ class TestNamespaceCollectionFindById:
         pool = AsyncMock()
         pool.fetchrow.return_value = row
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
-        result = await coll.find_by_id(row["id"])
+        result = await coll.find_by_id(row["namespace_id"])
         assert result is not None
-        assert result.id == row["id"]
+        assert result.id == row["namespace_id"]
 
     @pytest.mark.asyncio
     async def test_returns_none_when_absent(self) -> None:
@@ -620,7 +620,7 @@ class TestNamespaceListIdsByCustomerAndType:
     async def test_returns_list_of_uuids(self) -> None:
         ids = [uuid7(), uuid7()]
         pool = AsyncMock()
-        pool.fetch.return_value = [{"id": i} for i in ids]
+        pool.fetch.return_value = [{"namespace_id": i} for i in ids]
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_ids_by_customer_and_type(uuid7(), "workspace")
         assert result == ids
@@ -633,7 +633,7 @@ class TestNamespaceListAllIds:
     async def test_returns_all(self) -> None:
         ids = [uuid7(), uuid7(), uuid7()]
         pool = AsyncMock()
-        pool.fetch.return_value = [{"id": i} for i in ids]
+        pool.fetch.return_value = [{"namespace_id": i} for i in ids]
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
         result = await coll.list_all_ids()
         assert result == ids
