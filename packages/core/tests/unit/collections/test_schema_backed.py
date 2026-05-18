@@ -23,12 +23,19 @@ from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     BYTES_TYPE,
     DATETIMETZ_TYPE,
+    ENUM_TYPE,
     INT_TYPE,
     JSONB_TYPE,
+    NUMERIC_TYPE,
     STRING_TYPE,
+    TSVECTOR_TYPE,
     UUID_TYPE,
     VECTOR_TYPE,
     Column,
+    ForeignKey,
+    ForeignKeyDef,
+    Index,
+    IndexDef,
     PartitionEnforcementError,
     SchemaBackedCollection,
     TableSchema,
@@ -59,7 +66,7 @@ class _ItemCollection(SchemaBackedCollection[_StubEntity]):
             Column("owner_id", UUID_TYPE, immutable=True),
             Column("label", STRING_TYPE),
             Column("payload", JSONB_TYPE, nullable=True),
-            Column("vec", VECTOR_TYPE, nullable=True),
+            Column("vec", VECTOR_TYPE, nullable=True, vector_dim=4),
             Column("blob", BYTES_TYPE, nullable=True),
             Column("counter", INT_TYPE),
             Column("flag", BOOL_TYPE),
@@ -1299,3 +1306,307 @@ def _sample_item(
         "date_created": date_created or now,
         "date_updated": date_updated or now,
     }
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: Column validators for new fields
+# ---------------------------------------------------------------------------
+
+
+class TestColumnV080Validators:
+    """cross-field validators introduced by v0.8.0 shard 01."""
+
+    def test_column_enum_type_requires_enum_column_type(self) -> None:
+        """enum_type set on non-ENUM_TYPE column is rejected."""
+        with pytest.raises(ValueError, match="enum_type only valid"):
+            Column("x", STRING_TYPE, enum_type=("a", "b"), enum_name="foo")
+
+    def test_column_enum_column_type_requires_enum_values(self) -> None:
+        """ENUM_TYPE without enum_type tuple is rejected."""
+        with pytest.raises(ValueError, match="ENUM_TYPE requires enum_type"):
+            Column("x", ENUM_TYPE)
+
+    def test_column_enum_column_type_requires_enum_name(self) -> None:
+        """ENUM_TYPE with enum_type but no enum_name is rejected."""
+        with pytest.raises(ValueError, match="enum_type requires enum_name"):
+            Column("x", ENUM_TYPE, enum_type=("a",))
+
+    def test_column_enum_type_empty_tuple_rejected(self) -> None:
+        """ENUM_TYPE with empty enum_type tuple is rejected."""
+        with pytest.raises(ValueError, match="must be a non-empty tuple"):
+            Column("x", ENUM_TYPE, enum_type=(), enum_name="foo")
+
+    def test_column_enum_full_declaration_constructs(self) -> None:
+        """positive: ENUM_TYPE with all required fields constructs cleanly."""
+        col = Column(
+            "memory_type",
+            ENUM_TYPE,
+            enum_type=("preference", "fact"),
+            enum_name="memory_type",
+        )
+        assert col.column_type == ENUM_TYPE
+        assert col.enum_type == ("preference", "fact")
+        assert col.enum_name == "memory_type"
+
+    def test_column_vector_dim_requires_vector_column_type(self) -> None:
+        """vector_dim set on non-VECTOR_TYPE column is rejected."""
+        with pytest.raises(ValueError, match="vector_dim only valid"):
+            Column("x", STRING_TYPE, vector_dim=1024)
+
+    def test_column_vector_column_type_requires_dim(self) -> None:
+        """VECTOR_TYPE without vector_dim is rejected."""
+        with pytest.raises(ValueError, match="VECTOR_TYPE requires vector_dim"):
+            Column("x", VECTOR_TYPE)
+
+    def test_column_numeric_requires_precision_and_scale(self) -> None:
+        """NUMERIC_TYPE missing either precision or scale is rejected."""
+        with pytest.raises(ValueError, match="NUMERIC_TYPE requires both"):
+            Column("x", NUMERIC_TYPE)
+        with pytest.raises(ValueError, match="NUMERIC_TYPE requires both"):
+            Column("x", NUMERIC_TYPE, precision=12)
+        with pytest.raises(ValueError, match="NUMERIC_TYPE requires both"):
+            Column("x", NUMERIC_TYPE, scale=8)
+
+    def test_column_precision_scale_require_numeric_type(self) -> None:
+        """precision / scale on non-NUMERIC_TYPE column is rejected."""
+        with pytest.raises(ValueError, match="precision/scale only valid"):
+            Column("x", INT_TYPE, precision=12, scale=8)
+
+    def test_column_numeric_full_declaration_constructs(self) -> None:
+        """positive: NUMERIC_TYPE with both precision and scale constructs."""
+        col = Column("cost", NUMERIC_TYPE, precision=12, scale=8, nullable=True)
+        assert col.column_type == NUMERIC_TYPE
+        assert col.precision == 12
+        assert col.scale == 8
+
+    def test_column_tsvector_requires_immutable(self) -> None:
+        """TSVECTOR_TYPE without immutable=True is rejected."""
+        with pytest.raises(ValueError, match="TSVECTOR_TYPE"):
+            Column("x", TSVECTOR_TYPE, nullable=True)
+
+    def test_column_tsvector_with_immutable_constructs(self) -> None:
+        """positive: TSVECTOR_TYPE with immutable=True constructs cleanly."""
+        col = Column("search_vector", TSVECTOR_TYPE, nullable=True, immutable=True)
+        assert col.column_type == TSVECTOR_TYPE
+        assert col.immutable is True
+        assert col.nullable is True
+
+    def test_column_foreign_key_passes_through(self) -> None:
+        """foreign_key 2-tuple is retained on the dataclass."""
+        col = Column("user_id", UUID_TYPE, foreign_key=("users", "user_id"))
+        assert col.foreign_key == ("users", "user_id")
+
+    def test_column_foreign_key_bad_shape_rejected(self) -> None:
+        """foreign_key with wrong arity is rejected."""
+        with pytest.raises(ValueError, match="foreign_key must be a 2-tuple"):
+            Column("x", UUID_TYPE, foreign_key=("only-one",))  # type: ignore[arg-type]
+
+    def test_column_server_default_passes_through(self) -> None:
+        """server_default is retained on the dataclass; no cross-field check."""
+        col = Column("kind", STRING_TYPE, server_default="'image'")
+        assert col.server_default == "'image'"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: ForeignKey factory
+# ---------------------------------------------------------------------------
+
+
+class TestForeignKeyFactory:
+    """:func:`ForeignKey` factory + :class:`ForeignKeyDef` validation."""
+
+    def test_foreign_key_single_column_via_strings(self) -> None:
+        """bare-string args coerce to 1-tuples for the common case."""
+        fk = ForeignKey("user_id", "users", "user_id")
+        assert isinstance(fk, ForeignKeyDef)
+        assert fk.local_cols == ("user_id",)
+        assert fk.ref_table == "users"
+        assert fk.ref_cols == ("user_id",)
+        assert fk.on_delete == "NO ACTION"
+
+    def test_foreign_key_composite_via_tuples(self) -> None:
+        """composite FK preserves tuple shape and on_delete clause."""
+        fk = ForeignKey(
+            ("agent_id", "memory_id"),
+            "memories",
+            ("agent_id", "memory_id"),
+            on_delete="CASCADE",
+        )
+        assert fk.local_cols == ("agent_id", "memory_id")
+        assert fk.ref_cols == ("agent_id", "memory_id")
+        assert fk.on_delete == "CASCADE"
+
+    def test_foreign_key_mismatched_lengths_raises(self) -> None:
+        """local_cols and ref_cols must have the same length."""
+        with pytest.raises(ValueError, match="same length"):
+            ForeignKey(("a",), "t", ("a", "b"))
+
+    def test_foreign_key_invalid_on_delete_raises(self) -> None:
+        """on_delete outside the Literal set is rejected at runtime."""
+        with pytest.raises(ValueError, match="on_delete must be one of"):
+            ForeignKey("user_id", "users", "user_id", on_delete="BOGUS")  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: Index factory
+# ---------------------------------------------------------------------------
+
+
+class TestIndexFactory:
+    """:func:`Index` factory + :class:`IndexDef` validation."""
+
+    def test_index_basic(self) -> None:
+        """varargs columns produce the expected tuple."""
+        idx = Index("ix_x", "a", "b")
+        assert isinstance(idx, IndexDef)
+        assert idx.name == "ix_x"
+        assert idx.columns == ("a", "b")
+        assert idx.unique is False
+        assert idx.where is None
+
+    def test_index_unique_partial(self) -> None:
+        """unique + where flow through to the dataclass."""
+        idx = Index("ix_x", "a", unique=True, where="a IS NOT NULL")
+        assert idx.unique is True
+        assert idx.where == "a IS NOT NULL"
+        assert idx.columns == ("a",)
+
+    def test_index_no_columns_raises(self) -> None:
+        """no-columns Index is rejected."""
+        with pytest.raises(ValueError, match="must be a non-empty tuple"):
+            Index("ix_x")
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: TableSchema validators
+# ---------------------------------------------------------------------------
+
+
+class TestTableSchemaV080Validators:
+    """new TableSchema-level cross-field validators."""
+
+    def test_table_schema_foreign_keys_must_reference_declared_columns(self) -> None:
+        """FK whose local_cols are not declared in columns is rejected."""
+        with pytest.raises(ValueError, match="not declared in columns"):
+            TableSchema(
+                name="t",
+                primary_key="id",
+                columns=[Column("id", UUID_TYPE)],
+                foreign_keys=(ForeignKey("missing_col", "other", "other_id"),),
+            )
+
+    def test_table_schema_indexes_must_reference_declared_columns(self) -> None:
+        """Index columns must resolve against the schema's columns."""
+        with pytest.raises(ValueError, match="not declared in columns"):
+            TableSchema(
+                name="t",
+                primary_key="id",
+                columns=[Column("id", UUID_TYPE)],
+                indexes=(Index("ix_bad", "missing_col"),),
+            )
+
+    def test_table_schema_duplicate_index_names_rejected(self) -> None:
+        """two indexes with the same name on one TableSchema are rejected."""
+        with pytest.raises(ValueError, match="duplicate index names"):
+            TableSchema(
+                name="t",
+                primary_key="id",
+                columns=[
+                    Column("id", UUID_TYPE),
+                    Column("a", STRING_TYPE),
+                    Column("b", STRING_TYPE),
+                ],
+                indexes=(
+                    Index("dup", "a"),
+                    Index("dup", "b"),
+                ),
+            )
+
+    def test_table_schema_default_values_for_v080_fields(self) -> None:
+        """foreign_keys / indexes default to empty tuples."""
+        schema = TableSchema(
+            name="t",
+            primary_key="id",
+            columns=[Column("id", UUID_TYPE)],
+        )
+        assert schema.foreign_keys == ()
+        assert schema.indexes == ()
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: partition-coercion regression — preserve new fields
+# ---------------------------------------------------------------------------
+
+
+class TestPartitionColumnCoercionV080:
+    """regression coverage for the partition-coercion field-passthrough fix."""
+
+    def test_partition_column_preserves_v080_fields_through_coercion(self) -> None:
+        """partition columns retain foreign_key / server_default after the
+        coerce-to-immutable rebuild in :meth:`TableSchema.__post_init__`.
+
+        without the fix, the coercion only carried the v0.7.x fields
+        (name, column_type, immutable, nullable, partition) and silently
+        dropped any v0.8.0 field set on the source declaration. this
+        test fails fast if a future edit forgets to extend the
+        passthrough.
+        """
+        schema = TableSchema(
+            name="memories",
+            primary_key=("agent_id", "memory_id"),
+            columns=[
+                Column("memory_id", UUID_TYPE),
+                # NOTE: deliberately NOT setting immutable=True so the
+                # coercion path runs (it short-circuits when immutable
+                # is already True).
+                Column(
+                    "agent_id",
+                    UUID_TYPE,
+                    partition=True,
+                    foreign_key=("agents", "agent_id"),
+                    server_default="'00000000-0000-0000-0000-000000000000'",
+                ),
+            ],
+        )
+        coerced = schema.column("agent_id")
+        assert coerced.partition is True
+        # the coerce path forces immutable=True regardless of the source value
+        assert coerced.immutable is True
+        # v0.8.0 fields must survive the rebuild
+        assert coerced.foreign_key == ("agents", "agent_id")
+        assert coerced.server_default == "'00000000-0000-0000-0000-000000000000'"
+
+
+# ---------------------------------------------------------------------------
+# v0.8.0: backward compatibility — existing TableSchema declarations work
+# ---------------------------------------------------------------------------
+
+
+class TestExistingTableSchemaBackwardCompat:
+    """backward-compatibility guard for downstream collections."""
+
+    def test_existing_table_schema_declaration_works_unchanged(self) -> None:
+        """A representative real-world TableSchema (MemoriesCollection.schema)
+        constructs without errors after the v0.8.0 API extension.
+
+        Guards against accidentally making any new field non-optional
+        and against making any new validator reject a v0.7.x declaration.
+        Note: ``MemoriesCollection.schema``'s ``embedding`` column was
+        enriched with ``vector_dim=`` as part of this shard so the new
+        ``VECTOR_TYPE requires vector_dim`` validator could land --
+        see the report attached to the shard for the deviation
+        rationale; the rest of the declaration is untouched.
+        """
+        # Import inside the test so workspaces with the agent-memory
+        # package missing still collect the rest of this module.
+        from threetears.agent.memory.collections import MemoriesCollection
+
+        schema = MemoriesCollection.schema
+        assert isinstance(schema, TableSchema)
+        assert schema.name == "memories"
+        assert schema.pk_columns == ("agent_id", "memory_id")
+        # the partition column survives coercion + v0.8.0 validation
+        assert schema.partition_column == "agent_id"
+        # v0.8.0 defaults
+        assert schema.foreign_keys == ()
+        assert schema.indexes == ()

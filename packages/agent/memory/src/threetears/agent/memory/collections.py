@@ -720,7 +720,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity]):
             Column("message_id_source", UUID_TYPE, immutable=True),
             Column("type_memory", STRING_TYPE, immutable=True),
             Column("content", STRING_TYPE),
-            Column("embedding", VECTOR_TYPE),
+            Column("embedding", VECTOR_TYPE, vector_dim=_MEMORY_VECTOR_DIM),
             # v0.7.5: optional named anchor for direct lookup. Per-user
             # unique on the metallm DB side via alembic 088 (partial
             # unique index ``ix_memories_user_alias ON
@@ -1754,7 +1754,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity]):
             Column("content_type", STRING_TYPE),
             Column("content", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
-            Column("embedding", VECTOR_TYPE, nullable=True),
+            Column("embedding", VECTOR_TYPE, nullable=True, vector_dim=_MEMORY_VECTOR_DIM),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
     )
@@ -2219,7 +2219,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity]):
             Column("summary", STRING_TYPE, nullable=True),
             Column("heading_context", STRING_TYPE, nullable=True),
             Column("page_number", INT_TYPE, nullable=True),
-            Column("embedding", VECTOR_TYPE, nullable=True),
+            Column("embedding", VECTOR_TYPE, nullable=True, vector_dim=_MEMORY_VECTOR_DIM),
             Column("message_id_start", UUID_TYPE, nullable=True, immutable=True),
             Column("message_id_end", UUID_TYPE, nullable=True, immutable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
