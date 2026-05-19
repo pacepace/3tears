@@ -147,20 +147,20 @@ _INPUT_SCHEMA: dict[str, Any] = {
 
 _INSERT_WORKSPACE_SQL = """
 INSERT INTO workspaces (
-    id, agent_id, name, description, template_name,
+    workspace_id, agent_id, name, description, template_name,
     created_by, current_version, date_created, date_updated, date_deleted
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
 """
 
 _INSERT_WORKSPACE_FILE_SQL = """
 INSERT INTO workspace_files (
-    id, workspace_id, relative_path, content, sha256, version, date_updated
+    file_id, workspace_id, relative_path, content, sha256, version, date_updated
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
 """
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
-    id, workspace_id, relative_path, version, content,
+    version_id, workspace_id, relative_path, version, content,
     sha256, action, label, actor_id, correlation_id, date_created
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """

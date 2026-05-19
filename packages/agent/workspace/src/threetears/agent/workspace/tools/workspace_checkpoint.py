@@ -55,7 +55,7 @@ log = get_logger(__name__)
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
 INSERT INTO workspace_file_versions (
-    id, workspace_id, relative_path, version, content,
+    version_id, workspace_id, relative_path, version, content,
     sha256, action, label, actor_id, correlation_id, date_created
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 """

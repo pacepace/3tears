@@ -62,7 +62,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
 
 
 _SOFT_DELETE_WORKSPACE_SQL = (
-    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE id = $2 AND agent_id = $3"
+    "UPDATE workspaces SET date_deleted = $1, date_updated = $1 WHERE workspace_id = $2 AND agent_id = $3"
 )
 
 
