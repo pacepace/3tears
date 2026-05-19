@@ -246,6 +246,29 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.heartbeat.>", kind="pattern")
 
     @classmethod
+    def agent_reregister_request(cls, pod_id: str | UUID) -> Subject:
+        """router -> agent pod nudge to re-register after deregistration.
+
+        Published by :class:`AgentHeartbeatMonitor.handle_heartbeat` when a
+        heartbeat arrives from a pod whose endpoint is missing from the
+        catalog (typically because the heartbeat-timeout monitor
+        deregistered the pod during a long host pause such as a laptop
+        sleep, and the pod is now back alive and emitting heartbeats
+        again). The agent pod subscribes to its own ``pod_id``-tailed
+        subject and runs the full registration handshake on receipt --
+        restoring the catalog endpoint without forcing a process restart.
+
+        :param pod_id: target agent pod identifier
+        :ptype pod_id: str | UUID
+        :return: subject ``{ns}.agents.reregister_request.{pod_id}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.agents.reregister_request.{_sanitize(pod_id)}",
+            kind="point",
+        )
+
+    @classmethod
     def agent_route(cls, agent_id: str | UUID) -> Subject:
         """request/reply subject for hub -> agent inbound user message.
 
