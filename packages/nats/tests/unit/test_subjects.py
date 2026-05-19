@@ -72,6 +72,8 @@ def test_agent_subjects_namespace_prefix() -> None:
     assert Subjects.agent_heartbeat(pod_id).path == "aibots.agents.heartbeat.pod-abc"
     assert Subjects.agent_heartbeat_wildcard().path == "aibots.agents.heartbeat.>"
     assert Subjects.agent_heartbeat_wildcard().kind == "pattern"
+    assert Subjects.agent_reregister_request(pod_id).path == "aibots.agents.reregister_request.pod-abc"
+    assert Subjects.agent_reregister_request(pod_id).kind == "point"
     assert Subjects.agent_route(agent_id).path == ("aibots.agents.route.019470a8-b5c3-7def-8123-456789abcdef")
     assert Subjects.agent_route_wildcard().path == "aibots.agents.route.>"
     assert Subjects.agent_internal(agent_id, pod_id).path == (
