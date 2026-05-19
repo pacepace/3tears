@@ -104,11 +104,15 @@ pod_heartbeats_table = Table(
 # :mod:`threetears.agent.acl` collection classes; the L1 mirror here
 # matches them column-for-column so reads round-trip through the
 # in-process SQLite tier without ``column does not exist`` errors.
+# v0.8.0 shard 04.6 PK column rename: namespaces.id -> namespace_id,
+# groups.id -> group_id, roles.id -> role_id,
+# role_assignments.id -> assignment_id. group_members.id was NOT
+# renamed (the canonical primary_key is ``(group_id, id)``).
 namespaces_table = Table(
     "namespaces",
     REGISTRY_L1_METADATA,
     Column("row_scope", String(20), primary_key=True, nullable=False),
-    Column("id", UUID, primary_key=True),
+    Column("namespace_id", UUID, primary_key=True),
     Column("name", String(255), nullable=False),
     Column("namespace_type", String(20), nullable=False),
     Column("owner_agent_id", UUID, nullable=True),
@@ -123,7 +127,7 @@ groups_table = Table(
     "groups",
     REGISTRY_L1_METADATA,
     Column("row_scope", String(20), primary_key=True, nullable=False),
-    Column("id", UUID, primary_key=True),
+    Column("group_id", UUID, primary_key=True),
     Column("customer_id", UUID, nullable=True),
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=True),
@@ -134,6 +138,7 @@ groups_table = Table(
 group_members_table = Table(
     "group_members",
     REGISTRY_L1_METADATA,
+    # group_members.id was NOT renamed in v0.8.0.
     Column("id", UUID, primary_key=True),
     Column("group_id", UUID, primary_key=True, nullable=False),
     Column("member_type", String(10), nullable=False),
@@ -146,7 +151,7 @@ group_members_table = Table(
 roles_table = Table(
     "roles",
     REGISTRY_L1_METADATA,
-    Column("id", UUID, primary_key=True),
+    Column("role_id", UUID, primary_key=True),
     Column("name", String(255), nullable=False),
     Column("description", Text, nullable=False),
     Column("permissions", JSONB, nullable=False),
@@ -159,7 +164,7 @@ role_assignments_table = Table(
     "role_assignments",
     REGISTRY_L1_METADATA,
     Column("row_scope", String(20), primary_key=True, nullable=False),
-    Column("id", UUID, primary_key=True),
+    Column("assignment_id", UUID, primary_key=True),
     Column("role_id", UUID, nullable=False),
     Column("group_id", UUID, nullable=False),
     Column("scope_type", String(16), nullable=False),

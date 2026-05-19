@@ -1767,15 +1767,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         Selection rule per mutable column:
 
-        * ``column.name in data`` -> include (caller-supplied value
-          wins over server default).
+        * ``column.name in data`` AND ``data[column.name] is not None``
+          -> include (caller-supplied value wins over server default).
         * ``column.server_default is None`` -> always include; the
           ``_pull_value`` path produces NULL or raises KeyError
           depending on ``nullable``.
-        * ``column.server_default is not None`` AND ``column.name not
-          in data`` -> SKIP from both the SET clause and the
-          parameter list so the existing row's value is preserved
-          and Postgres does not raise on a missing required column.
+        * ``column.server_default is not None`` AND
+          ``column.name not in data`` -> SKIP from both the SET clause
+          and the parameter list so the existing row's value is
+          preserved and Postgres does not raise on a missing required
+          column.
+        * ``column.server_default is not None`` AND
+          ``column.nullable is False`` AND ``data[column.name] is None``
+          -> SKIP. This protects against the L1 round-trip noise where
+          the entity is loaded from L1 cache (which mirrors columns as
+          nullable for shape-flexibility), the cache reads back ``None``
+          for any column never explicitly written, and the resulting
+          dict surfaces ``None`` on a NOT NULL server-default column
+          that the caller never set. Treat ``None`` on a NOT NULL
+          server-default column as "use existing DB value" rather than
+          "write NULL" because writing NULL is not a legitimate
+          operation on such a column (Postgres rejects it). The
+          nullable check ensures legitimate ``None`` writes on a
+          nullable column with a server-default still apply.
 
         The SQL and params builders both call this method with the
         same ``data`` dict so the positional binding stays in sync.
@@ -1788,6 +1802,11 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         included: list[Column] = []
         for col in self.schema.mutable_columns():
             if col.server_default is not None and col.name not in data:
+                continue
+            if col.server_default is not None and not col.nullable and col.name in data and data[col.name] is None:
+                # L1 round-trip surfaced a None on a NOT NULL
+                # server-default column. Preserve existing DB value
+                # (see docstring for the full rationale).
                 continue
             included.append(col)
         return included
