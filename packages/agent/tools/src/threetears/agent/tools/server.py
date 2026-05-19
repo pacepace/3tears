@@ -1015,7 +1015,7 @@ class ToolServer:
         # ``ToolNamespaceEmitter``).
         entity = self._namespace_collection.entity_class(
             {
-                "id": namespace_id,
+                "namespace_id": namespace_id,
                 "name": name,
                 "namespace_type": "tool",
                 "owner_agent_id": self._agent_id,

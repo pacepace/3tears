@@ -1751,13 +1751,65 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
         return result
 
-    def _build_cas_update_sql(self) -> str:
+    def _cas_mutable_columns_for_data(self, data: dict[str, Any]) -> list[Column]:
+        """select the mutable column list to emit in CAS UPDATE SQL + params.
+
+        symmetric counterpart to :meth:`_insert_columns_for_data` for
+        the CAS UPDATE path. Without this filter, a mutable column
+        declared with ``server_default`` would force every CAS update
+        to carry that column in its data dict; the canonical contract
+        is that columns with a server default are optional in the
+        caller's payload. Surface for the symptom: a soft-fail
+        ``required column 'language' missing from data`` warning on
+        every ConversationWriteBuffer flush, because the lazy-create
+        path for ``conversations`` does not seed ``language`` (the
+        server default ``'english'`` handles it).
+
+        Selection rule per mutable column:
+
+        * ``column.name in data`` -> include (caller-supplied value
+          wins over server default).
+        * ``column.server_default is None`` -> always include; the
+          ``_pull_value`` path produces NULL or raises KeyError
+          depending on ``nullable``.
+        * ``column.server_default is not None`` AND ``column.name not
+          in data`` -> SKIP from both the SET clause and the
+          parameter list so the existing row's value is preserved
+          and Postgres does not raise on a missing required column.
+
+        The SQL and params builders both call this method with the
+        same ``data`` dict so the positional binding stays in sync.
+
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: ordered list of mutable columns to emit
+        :rtype: list[Column]
+        """
+        included: list[Column] = []
+        for col in self.schema.mutable_columns():
+            if col.server_default is not None and col.name not in data:
+                continue
+            included.append(col)
+        return included
+
+    def _build_cas_update_sql(self, data: dict[str, Any] | None = None) -> str:
         """build UPDATE SQL for the CAS (optimistic-concurrency) path.
 
         parameter ordering: pk values ($1..$Npk), then mutable columns
-        in declared order, then the CAS fence value as the last
-        parameter. callers match this layout in :meth:`save_to_postgres`.
+        (filtered by :meth:`_cas_mutable_columns_for_data` so
+        server-default columns the caller omitted are dropped from
+        both the SET clause and the params) in declared order, then
+        the CAS fence value as the last parameter. callers match this
+        layout in :meth:`save_to_postgres`.
 
+        :param data: row dict to drive column selection. ``None`` is
+            accepted for backward compatibility with call-sites that
+            pre-date the v0.8.4 server_default gate on the CAS path;
+            treated as an empty dict which means EVERY server-default
+            mutable column is omitted -- callers always pair the SQL
+            with params built from the SAME ``data`` so the param
+            positions match.
+        :ptype data: dict[str, Any] | None
         :return: parameterized UPDATE SQL
         :rtype: str
         :raises RuntimeError: when the schema has no :attr:`cas_column`
@@ -1769,7 +1821,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 f"TableSchema(name={schema.name!r}): CAS UPDATE requires cas_column to be set",
             )
         pk_cols = schema.pk_columns
-        mutable = schema.mutable_columns()
+        mutable = self._cas_mutable_columns_for_data(data or {})
         # $1..$Npk are pk values; $Npk+1..$Npk+Nmut are mutable values
         pk_where = " AND ".join(f"{col} = ${i + 1}" for i, col in enumerate(pk_cols))
         set_parts: list[str] = []
@@ -1922,7 +1974,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         for pk_name in schema.pk_columns:
             pk_col = schema.column(pk_name)
             params.append(self._normalize_write_value(pk_col, self._pull_value(data, pk_col)))
-        for col in schema.mutable_columns():
+        # filter mutable columns to those the caller supplied (or that
+        # have no server_default) so the params list aligns positionally
+        # with the SET clause produced by _build_cas_update_sql(data).
+        for col in self._cas_mutable_columns_for_data(data):
             params.append(self._normalize_write_value(col, self._pull_value(data, col)))
         # CAS fence value: CAS column is typically date_updated; caller
         # supplies the pre-mutation value directly
@@ -2017,7 +2072,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 schema.cas_column is not None and original_timestamp is not None and schema.on_conflict == "update"
             )
             if cas_eligible:
-                sql = self._build_cas_update_sql()
+                # pass ``data`` so server_default columns the caller
+                # omitted are dropped from both the SET clause and the
+                # parameter list (v0.8.4; symmetric with the INSERT path).
+                sql = self._build_cas_update_sql(data)
                 params = self._build_cas_params(data, original_timestamp)  # type: ignore[arg-type]
             else:
                 # Pass ``data`` so server_default columns the caller
