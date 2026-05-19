@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-tools"
-version = "0.8.3"
+version = "0.8.4"
 description = "Tool framework for LLM agents — routing, execution, and builtin tools"
 readme = "README.md"
 requires-python = ">=3.14"

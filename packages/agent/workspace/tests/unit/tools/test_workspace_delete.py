@@ -208,7 +208,7 @@ async def test_delete_soft_deletes_workspace_in_transaction(
     sql, args, in_tx = updates[0]
     assert "SET date_deleted = $1" in sql
     assert "date_updated = $1" in sql
-    assert "WHERE id = $2" in sql
+    assert "WHERE workspace_id = $2" in sql
     assert in_tx is True
     assert isinstance(args[0], datetime)
     assert args[0].tzinfo == UTC

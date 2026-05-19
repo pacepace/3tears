@@ -563,7 +563,7 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspaces (
-            id              UUID PRIMARY KEY,
+            workspace_id    UUID PRIMARY KEY,
             agent_id        UUID NOT NULL,
             name            TEXT NOT NULL,
             description     TEXT,
@@ -579,8 +579,8 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspace_files (
-            id              UUID PRIMARY KEY,
-            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(id)
+            file_id         UUID PRIMARY KEY,
+            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(workspace_id)
                                ON DELETE CASCADE,
             relative_path   TEXT NOT NULL,
             content         BYTEA NOT NULL,
@@ -594,8 +594,8 @@ async def _build_agent_schema(conn: asyncpg.Connection, agent_id: UUID) -> None:
     await conn.execute(
         f"""
         CREATE TABLE "{schema}".workspace_file_versions (
-            id              UUID PRIMARY KEY,
-            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(id)
+            version_id      UUID PRIMARY KEY,
+            workspace_id    UUID NOT NULL REFERENCES "{schema}".workspaces(workspace_id)
                                ON DELETE CASCADE,
             relative_path   TEXT NOT NULL,
             version         INTEGER NOT NULL,
@@ -649,7 +649,7 @@ async def seeded_env(pg_url: str) -> AsyncIterator[dict[str, Any]]:
         async with pool.acquire() as conn:
             await conn.execute(
                 f'INSERT INTO "{schema_a}".workspaces '
-                "(id, agent_id, name, created_by, current_version, "
+                "(workspace_id, agent_id, name, created_by, current_version, "
                 " date_created, date_updated) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 workspace_a_id,
@@ -665,7 +665,7 @@ async def seeded_env(pg_url: str) -> AsyncIterator[dict[str, Any]]:
             # unrelated tx running.
             await conn.execute(
                 f'INSERT INTO "{schema_b}".workspaces '
-                "(id, agent_id, name, created_by, current_version, "
+                "(workspace_id, agent_id, name, created_by, current_version, "
                 " date_created, date_updated) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 workspace_c_id,
@@ -764,7 +764,7 @@ async def test_grantee_tx_writes_land_in_owner_schema(
     async with backend.transaction(namespace=namespace_a) as conn:
         await conn.execute(
             "INSERT INTO workspace_file_versions "
-            "(id, workspace_id, relative_path, version, content, sha256, "
+            "(version_id, workspace_id, relative_path, version, content, sha256, "
             " action, label, actor_id, correlation_id, date_created) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             uuid7(),
@@ -781,7 +781,7 @@ async def test_grantee_tx_writes_land_in_owner_schema(
         )
         await conn.execute(
             "INSERT INTO workspace_files "
-            "(id, workspace_id, relative_path, content, sha256, version, "
+            "(file_id, workspace_id, relative_path, content, sha256, version, "
             " date_updated) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7)",
             uuid7(),
@@ -853,7 +853,7 @@ async def test_concurrent_tx_on_different_workspaces_no_cross_contamination(
         async with backend.transaction(namespace=namespace) as conn:
             await conn.execute(
                 "INSERT INTO workspace_file_versions "
-                "(id, workspace_id, relative_path, version, content, "
+                "(version_id, workspace_id, relative_path, version, content, "
                 " sha256, action, label, actor_id, correlation_id, "
                 " date_created) "
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",

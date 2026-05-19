@@ -720,7 +720,7 @@ async def _write_file_atomic(
 
 
 _SELECT_LATEST_VERSION_ROW_SQL = (
-    "SELECT id, workspace_id, relative_path, version, content, sha256, "
+    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
     "action, label, actor_id, correlation_id, date_created "
     "FROM workspace_file_versions "
     "WHERE workspace_id = $1 AND relative_path = $2 "
@@ -728,14 +728,14 @@ _SELECT_LATEST_VERSION_ROW_SQL = (
 )
 
 _SELECT_VERSION_BY_NUMBER_SQL = (
-    "SELECT id, workspace_id, relative_path, version, content, sha256, "
+    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
     "action, label, actor_id, correlation_id, date_created "
     "FROM workspace_file_versions "
     "WHERE workspace_id = $1 AND relative_path = $2 AND version = $3"
 )
 
 _SELECT_CHECKPOINT_ROW_SQL = (
-    "SELECT id, workspace_id, relative_path, version, content, sha256, "
+    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
     "action, label, actor_id, correlation_id, date_created "
     "FROM workspace_file_versions "
     "WHERE workspace_id = $1 AND relative_path = $2 "

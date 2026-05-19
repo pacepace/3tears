@@ -400,7 +400,7 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """delete_from_postgres issues DELETE WHERE id = $1."""
+        """delete_from_postgres issues DELETE WHERE file_id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
