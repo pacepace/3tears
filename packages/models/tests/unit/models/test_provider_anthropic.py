@@ -278,3 +278,128 @@ class TestAnthropicWrapperStreaming:
             " times — expected >=4 (one per fake chunk). The fix"
             " silently dropped the list of bound handlers."
         )
+
+
+class TestAnthropicWrapperToolNameValidation:
+    """Wrapper-level defense against junk ``invalid_tool_calls`` names.
+
+    Mirrors the OpenRouter wrapper's validation hook. Both wrappers
+    drop ``invalid_tool_calls`` entries whose names fail the canonical
+    3tears tool-name regex before yielding the chunk / returning the
+    result. This blocks the metallm 2026-05-19 prod incident
+    (conv ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``) from recurring
+    on either provider.
+    """
+
+    @pytest.mark.asyncio
+    async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``astream`` drops ``invalid_tool_calls`` entries whose names
+        fail the canonical regex.
+        """
+        from langchain_core.messages import AIMessage
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "name": junk_name,
+                            "args": "{}",
+                            "id": "call_junk",
+                            "error": "JSONDecodeError",
+                        },
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{partial",
+                            "id": "call_ok",
+                            "error": "JSONDecodeError",
+                        },
+                    ],
+                ),
+            )
+
+        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            chunks: list[AIMessageChunk] = []
+            async for chunk in model.astream("hi"):
+                chunks.append(chunk)
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        # Confirm the AIMessage shape so the typing import is used.
+        _ = AIMessage(content="placeholder")
+        carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
+        assert len(carrier_chunks) == 1
+        kept = carrier_chunks[0].invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``_agenerate`` mirrors the streaming-path filter for
+        non-streaming calls.
+        """
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_agenerate(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            del self, messages, stop, run_manager, kwargs
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            invalid_tool_calls=[
+                                {
+                                    "name": junk_name,
+                                    "args": "{}",
+                                    "id": "call_junk",
+                                    "error": "JSONDecodeError",
+                                },
+                                {
+                                    "name": "threetears_calculator",
+                                    "args": "{partial",
+                                    "id": "call_ok",
+                                    "error": "JSONDecodeError",
+                                },
+                            ],
+                        ),
+                    ),
+                ],
+            )
+
+        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+
+        original_agenerate = ChatAnthropic._agenerate
+        try:
+            ChatAnthropic._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            result = await model.ainvoke("hi")
+        finally:
+            ChatAnthropic._agenerate = original_agenerate  # type: ignore[method-assign]
+
+        kept = result.invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert all(call["name"] != junk_name for call in kept)

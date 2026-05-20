@@ -33,6 +33,8 @@ from threetears.models.tool_name_translation import (
     build_name_translation,
     reverse_translate_message,
 )
+from threetears.models.tool_name_validation import filter_invalid_tool_calls
+from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from langchain_anthropic import ChatAnthropic
@@ -51,6 +53,42 @@ __all__ = [
 
 
 ANTHROPIC_PROVIDER_NAME = "anthropic"
+
+_logger = get_logger(__name__)
+
+
+def _drop_junk_invalid_tool_calls(message: Any) -> None:
+    """drop ``invalid_tool_calls`` entries whose ``name`` fails validation.
+
+    Mirror of the OpenRouter wrapper's hook. Mutates
+    ``message.invalid_tool_calls`` in place, keeping only entries
+    whose names match the canonical 3tears tool-name regex. Each
+    rejected entry is logged once at WARNING (name truncated to 80
+    characters). See
+    :mod:`threetears.models.providers.openrouter` for the prod
+    incident write-up (metallm conv
+    ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``, 2026-05-19).
+
+    :param message: chat-model response (``AIMessage`` or
+        ``AIMessageChunk``); duck-typed via attribute access
+    :ptype message: Any
+    """
+    raw = getattr(message, "invalid_tool_calls", None) or []
+    if not raw:
+        return
+    kept, rejected = filter_invalid_tool_calls(raw)
+    if not rejected:
+        return
+    for entry in rejected:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        truncated = (name[:80] if isinstance(name, str) else repr(name)[:80])
+        _logger.warning(
+            "anthropic wrapper dropped invalid_tool_calls entry"
+            " with junk name: %s",
+            truncated,
+        )
+    raw.clear()
+    raw.extend(kept)
 
 
 def strip_v1_suffix(url: str) -> str:
@@ -188,6 +226,10 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
                 **kwargs,
             ):
                 reverse_translate_message(chunk, self._name_reverse_map)
+                # Drop junk-name ``invalid_tool_calls`` entries
+                # before they reach downstream dispatch / persistence
+                # (see :func:`_drop_junk_invalid_tool_calls`).
+                _drop_junk_invalid_tool_calls(chunk)
                 yield chunk
 
         async def _agenerate(
@@ -224,6 +266,7 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             )
             for generation in result.generations:
                 reverse_translate_message(generation.message, self._name_reverse_map)
+                _drop_junk_invalid_tool_calls(generation.message)
             return result
 
     return _NameTranslatingChatAnthropic
