@@ -144,11 +144,13 @@ def _schema(properties: dict) -> dict:
 
 def test_normalize_kwargs_coerces_only_declared_array_and_object_fields():
     """kwargs not in the schema and non-complex declared types pass through."""
-    schema = _schema({
-        "name": {"type": "string"},
-        "tags": {"type": "array", "items": {"type": "string"}},
-        "metadata": {"type": "object"},
-    })
+    schema = _schema(
+        {
+            "name": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "metadata": {"type": "object"},
+        }
+    )
     raw = {
         "name": "hello",
         "tags": '["a", "b"]',
@@ -166,10 +168,12 @@ def test_normalize_kwargs_coerces_only_declared_array_and_object_fields():
 
 def test_normalize_kwargs_preserves_explicit_none():
     """explicit None survives so required-field checks in subclasses fire."""
-    schema = _schema({
-        "tags": {"type": "array"},
-        "metadata": {"type": "object"},
-    })
+    schema = _schema(
+        {
+            "tags": {"type": "array"},
+            "metadata": {"type": "object"},
+        }
+    )
     result = normalize_kwargs({"tags": None, "metadata": None}, schema)
     assert result == {"tags": None, "metadata": None}
 
@@ -188,10 +192,12 @@ def test_normalize_kwargs_malformed_json_does_not_crash():
     and surface a misleading downstream error. this test pins
     ``normalize_kwargs`` as never-raising on garbage input.
     """
-    schema = _schema({
-        "datasource_ids": {"type": "array", "items": {"type": "string"}},
-        "config": {"type": "object"},
-    })
+    schema = _schema(
+        {
+            "datasource_ids": {"type": "array", "items": {"type": "string"}},
+            "config": {"type": "object"},
+        }
+    )
     # this call MUST NOT raise. malformed values pass through unchanged.
     result = normalize_kwargs(
         {"datasource_ids": "[broken json", "config": "{also broken"},
