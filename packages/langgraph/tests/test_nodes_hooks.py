@@ -366,3 +366,71 @@ class TestToolNodeHooks:
         }
         await tool_node(state, config)  # type: ignore[arg-type]
         assert all(not e.startswith("hb:") for e in events)
+
+
+class TestToolNodeUnknownToolName:
+    """tool_node returns a 'did you mean' hint when the LLM emits a
+    tool name that does not match any registered tool. without the
+    hint, the LLM saw a bare ``tool 'X' not found`` message that
+    looked the same for every kind of miss; it would then loop
+    trying minor variants of the same wrong name because nothing in
+    the error pointed at the right shape. the hint uses difflib's
+    close-match heuristic which catches the common families of
+    confusion: dot-vs-underscore boundaries, missing namespace
+    prefix, transposed characters.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_returns_did_you_mean_hint(self) -> None:
+        """when the LLM calls a near-miss name, the tool message
+        carries a ``did you mean`` line naming up to three closest
+        registered tools so the LLM can self-correct on the next
+        turn.
+        """
+        mock_tool = AsyncMock()
+        mock_tool.name = "datasource_central-reporting_schema"
+        mock_tool.ainvoke = AsyncMock(return_value="should not be called")
+        ai_msg = AIMessage(content="")
+        # LLM emits the dotted form (common artefact of provider-side
+        # name sanitisation leaking back into the model's context)
+        ai_msg.tool_calls = [
+            {"id": "tc1", "name": "datasource.central-reporting.schema", "args": {}},
+        ]
+        state: dict[str, Any] = {"messages": [ai_msg]}
+        config: RunnableConfig = {
+            "configurable": {"tools": [mock_tool], "_hook_heartbeat_seconds": 0.0},
+        }
+
+        result = await tool_node(state, config)  # type: ignore[arg-type]
+
+        tool_message_content = result["messages"][0].content
+        assert "not found" in tool_message_content
+        assert "did you mean" in tool_message_content
+        # the close match shows up explicitly so the LLM does not
+        # have to guess
+        assert "datasource_central-reporting_schema" in tool_message_content
+        # the wrongly-called tool is NOT actually dispatched
+        mock_tool.ainvoke.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_no_hint_when_nothing_close(self) -> None:
+        """when nothing is structurally close to the wrong name, the
+        message omits the ``did you mean`` line rather than offering
+        a misleading suggestion. the LLM gets a clean unknown-tool
+        error and the available-tools list it can scan.
+        """
+        mock_tool = AsyncMock()
+        mock_tool.name = "completely_unrelated_tool"
+        mock_tool.ainvoke = AsyncMock(return_value="should not be called")
+        ai_msg = AIMessage(content="")
+        ai_msg.tool_calls = [{"id": "tc1", "name": "xyz", "args": {}}]
+        state: dict[str, Any] = {"messages": [ai_msg]}
+        config: RunnableConfig = {
+            "configurable": {"tools": [mock_tool], "_hook_heartbeat_seconds": 0.0},
+        }
+
+        result = await tool_node(state, config)  # type: ignore[arg-type]
+
+        tool_message_content = result["messages"][0].content
+        assert "not found" in tool_message_content
+        assert "did you mean" not in tool_message_content

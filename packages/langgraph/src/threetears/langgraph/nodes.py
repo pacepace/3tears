@@ -18,6 +18,7 @@ on the hook, not on the node.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -248,7 +249,25 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
                     tool_result = f"Tool error: {tool_call['name']}: {exc}"
                     success = False
             else:
-                tool_result = f"tool '{tool_call['name']}' not found"
+                # tool name miss: surface the closest available tool names
+                # so the LLM can self-correct on the next turn rather than
+                # loop on the same wrong shape. names that share an underscore
+                # / dot prefix the LLM picks up routinely (e.g. it emitted
+                # ``datasource.x.read`` when the registered name is
+                # ``datasource_x_read`` after sanitisation); difflib's
+                # SequenceMatcher catches that family naturally.
+                suggestions = difflib.get_close_matches(
+                    tool_call["name"],
+                    list(tool_map.keys()),
+                    n=3,
+                    cutoff=0.5,
+                )
+                base = f"tool '{tool_call['name']}' not found"
+                if suggestions:
+                    hint = ", ".join(f"'{s}'" for s in suggestions)
+                    tool_result = f"{base}. did you mean: {hint}?"
+                else:
+                    tool_result = base
                 success = False
         finally:
             if heartbeat_task is not None:
