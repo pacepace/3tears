@@ -82,10 +82,7 @@ class ToolNameValidationError(ValueError):
         :ptype bad_name: str
         """
         self.bad_name = bad_name
-        super().__init__(
-            f"tool name failed validation: {bad_name!r} does not match"
-            f" {_TOOL_NAME_PATTERN.pattern}"
-        )
+        super().__init__(f"tool name failed validation: {bad_name!r} does not match {_TOOL_NAME_PATTERN.pattern}")
 
 
 def is_valid_tool_name(name: str) -> bool:

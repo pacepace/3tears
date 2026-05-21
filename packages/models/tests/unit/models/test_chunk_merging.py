@@ -107,10 +107,7 @@ class TestMergeChunks:
         ]
         result = merge_chunks(chunks)
         assert result.content == "4"
-        assert (
-            result.additional_kwargs.get("reasoning_content")
-            == "Let me think... the answer is 4."
-        )
+        assert result.additional_kwargs.get("reasoning_content") == "Let me think... the answer is 4."
 
     def test_usage_metadata_sums_across_chunks(self) -> None:
         """``usage_metadata`` sums per-field across chunks (LangChain merge contract).

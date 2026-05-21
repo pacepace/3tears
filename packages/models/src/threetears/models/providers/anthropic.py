@@ -81,10 +81,9 @@ def _drop_junk_invalid_tool_calls(message: Any) -> None:
         return
     for entry in rejected:
         name = entry.get("name") if isinstance(entry, dict) else None
-        truncated = (name[:80] if isinstance(name, str) else repr(name)[:80])
+        truncated = name[:80] if isinstance(name, str) else repr(name)[:80]
         _logger.warning(
-            "anthropic wrapper dropped invalid_tool_calls entry"
-            " with junk name: %s",
+            "anthropic wrapper dropped invalid_tool_calls entry with junk name: %s",
             truncated,
         )
     raw.clear()
