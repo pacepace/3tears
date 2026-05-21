@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Bump version across all packages.
-# Usage: ./scripts/bump-version.sh [major|minor|patch]
-# Defaults to patch if no argument given.
+# Bump version across every workspace package.
+# Usage:
+#   ./scripts/bump-version.sh                 # patch bump (default)
+#   ./scripts/bump-version.sh patch
+#   ./scripts/bump-version.sh minor
+#   ./scripts/bump-version.sh major
+#   ./scripts/bump-version.sh 0.9.0           # bump to an explicit version
+#
+# Discovers every packages/**/pyproject.toml that currently carries the
+# repo's canonical version and rewrites it to the new value. The
+# canonical version is read from packages/core/pyproject.toml; every
+# other package is expected to track it (16-package workspace, single
+# version line). Packages whose version does not match the canonical
+# value are skipped (they were intentionally pinned elsewhere; touching
+# them would diverge the workspace).
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ARG="${1:-patch}"
 
-BUMP="${1:-patch}"
-
-if [[ "$BUMP" != "major" && "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
-    echo "Usage: $0 [major|minor|patch]"
-    exit 1
-fi
-
-# Portable in-place sed (macOS requires -i '', GNU requires -i)
 _sed_i() {
+    # Portable in-place sed (macOS BSD vs. GNU).
     if sed --version 2>/dev/null | grep -q GNU; then
         sed -i "$@"
     else
@@ -23,49 +29,72 @@ _sed_i() {
     fi
 }
 
-# Read current version from core package
-CURRENT=$(grep '^version = ' "$REPO_ROOT/packages/core/pyproject.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
+# Read the canonical version from packages/core/pyproject.toml.
+CURRENT=$(grep '^version = ' "$REPO_ROOT/packages/core/pyproject.toml" \
+    | head -1 \
+    | sed 's/version = "\(.*\)"/\1/')
 
 if [ -z "$CURRENT" ]; then
-    echo "Could not read current version from packages/core/pyproject.toml"
+    echo "ERROR: could not read current version from packages/core/pyproject.toml"
     exit 1
 fi
 
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+# Resolve the new version. Accept "patch"/"minor"/"major" bump keywords
+# or a literal X.Y.Z value.
+if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    NEW="$ARG"
+elif [[ "$ARG" == "major" || "$ARG" == "minor" || "$ARG" == "patch" ]]; then
+    IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+    case "$ARG" in
+        major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+        minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+        patch) PATCH=$((PATCH + 1)) ;;
+    esac
+    NEW="$MAJOR.$MINOR.$PATCH"
+else
+    echo "Usage: $0 [major|minor|patch|<x.y.z>]"
+    exit 1
+fi
 
-case "$BUMP" in
-    major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-    minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-    patch) PATCH=$((PATCH + 1)) ;;
-esac
+if [[ "$CURRENT" == "$NEW" ]]; then
+    echo "Already at $NEW; nothing to do."
+    exit 0
+fi
 
-NEW="$MAJOR.$MINOR.$PATCH"
+echo "Bumping: $CURRENT -> $NEW"
 
-echo "Bumping $BUMP: $CURRENT -> $NEW"
+UPDATED_COUNT=0
+SKIPPED_COUNT=0
 
-# Update all package pyproject.toml files
-for PKG in core agent-memory agent-tools; do
-    FILE="$REPO_ROOT/packages/$PKG/pyproject.toml"
-    if [ -f "$FILE" ]; then
-        _sed_i "s/^version = \"$CURRENT\"/version = \"$NEW\"/" "$FILE"
-        echo "  Updated packages/$PKG/pyproject.toml"
+# Discover every workspace pyproject.toml and rewrite its version line
+# if it currently matches the canonical version.
+while IFS= read -r FILE; do
+    if grep -q "^version = \"$CURRENT\"\$" "$FILE"; then
+        _sed_i "s/^version = \"$CURRENT\"\$/version = \"$NEW\"/" "$FILE"
+        REL="${FILE#$REPO_ROOT/}"
+        echo "  updated $REL"
+        UPDATED_COUNT=$((UPDATED_COUNT + 1))
+    else
+        REL="${FILE#$REPO_ROOT/}"
+        OTHER=$(grep '^version = ' "$FILE" | head -1 | sed 's/version = "\(.*\)"/\1/' || true)
+        if [ -n "$OTHER" ] && [[ "$OTHER" != "$NEW" ]]; then
+            echo "  SKIPPED $REL (pinned to $OTHER, not the canonical $CURRENT)"
+            SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        fi
     fi
-done
+done < <(find "$REPO_ROOT/packages" -name pyproject.toml -type f)
 
-# Update __version__ in __init__.py files
-for INIT in \
-    "$REPO_ROOT/packages/core/src/threetears/core/__init__.py" \
-    "$REPO_ROOT/packages/agent-memory/src/threetears/agent/memory/__init__.py" \
-    "$REPO_ROOT/packages/agent-tools/src/threetears/agent/tools/__init__.py"; do
-    if [ -f "$INIT" ]; then
-        _sed_i "s/__version__ = \"$CURRENT\"/__version__ = \"$NEW\"/" "$INIT"
-        echo "  Updated $(basename "$(dirname "$INIT")")/__init__.py"
-    fi
-done
-
+echo ""
 echo "Done. New version: $NEW"
+echo "  $UPDATED_COUNT pyproject.toml files updated."
+if [ "$SKIPPED_COUNT" -gt 0 ]; then
+    echo "  $SKIPPED_COUNT files skipped (intentional pins; review with 'git diff packages')."
+fi
+
 echo ""
 echo "Next steps:"
-echo "  git add -A && git commit -m \"bump version to $NEW\""
+echo "  uv sync --extra vision                            # refresh uv.lock"
+echo "  git add packages uv.lock                          # stage version files (no -A)"
+echo "  git commit -m \"chore: bump all packages to $NEW\""
 echo "  git tag v$NEW"
-echo "  git push origin develop --tags"
+echo "  git push origin <branch> --tags                   # branch, not develop, if on a PR"
