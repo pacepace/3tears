@@ -31,6 +31,7 @@ class TestDataSourceTypeEnum:
             "snowflake",
             "bigquery",
             "postgres",
+            "yugabyte",
             "agent_internal",
         }
 

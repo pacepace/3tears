@@ -61,6 +61,9 @@ class DataSourceType(StrEnum):
     :cvar SNOWFLAKE: Snowflake Data Cloud
     :cvar BIGQUERY: Google BigQuery
     :cvar POSTGRES: standard PostgreSQL
+    :cvar YUGABYTE: YugabyteDB (postgres-compatible; same asyncpg driver
+        as POSTGRES, separate enum value so operators can see which
+        backend they're talking to)
     :cvar AGENT_INTERNAL: agent-created table variant; owner_agent_id +
         schema_name carry the routing target
     """
@@ -69,6 +72,7 @@ class DataSourceType(StrEnum):
     SNOWFLAKE = "snowflake"
     BIGQUERY = "bigquery"
     POSTGRES = "postgres"
+    YUGABYTE = "yugabyte"
     AGENT_INTERNAL = "agent_internal"
 
 

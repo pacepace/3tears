@@ -51,7 +51,16 @@ from threetears.datasources.collections import (
     DataSourceTableCollection,
     TableTemplateCollection,
 )
-from threetears.datasources.config import DatasourceConfig
+from threetears.datasources.config import (
+    AgentInternalConnectionConfig,
+    BigQueryConnectionConfig,
+    ConnectionConfig,
+    DatasourceConfig,
+    PostgresConnectionConfig,
+    RedshiftConnectionConfig,
+    SnowflakeConnectionConfig,
+    YugabyteConnectionConfig,
+)
 from threetears.datasources.entities import (
     DataSourceAccessMode,
     DataSourceColumnEntity,
@@ -70,6 +79,9 @@ from threetears.datasources.namespace import (
 
 __all__ = [
     "DATASOURCE_NAMESPACE_TYPE",
+    "AgentInternalConnectionConfig",
+    "BigQueryConnectionConfig",
+    "ConnectionConfig",
     "DataSourceAccessMode",
     "DataSourceCollection",
     "DataSourceColumnCollection",
@@ -82,8 +94,12 @@ __all__ = [
     "DataSourceTableEntity",
     "DataSourceType",
     "DatasourceConfig",
+    "PostgresConnectionConfig",
+    "RedshiftConnectionConfig",
+    "SnowflakeConnectionConfig",
     "TableTemplateCollection",
     "TableTemplateEntity",
+    "YugabyteConnectionConfig",
     "datasource_namespace_id",
     "datasource_namespace_name",
 ]
