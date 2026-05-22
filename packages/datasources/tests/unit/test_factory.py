@@ -202,22 +202,29 @@ class TestDispatch:
 class TestImportFailureSurfacing:
     """when the concrete driver module is genuinely absent, ImportError surfaces.
 
-    shards 10 / 11 / 12 land the concrete drivers; until then, calling
-    create_driver for the real config (without the test fixture
-    stubbing the import) raises ImportError. the factory MUST NOT
-    swallow it.
+    shard 10 lands ``AsyncpgDriver``; shards 11 / 12 still owe the
+    redshift / snowflake / bigquery driver modules. for backends with
+    no concrete driver yet, calling :func:`create_driver` (without the
+    test fixture stubbing the import) MUST raise
+    :class:`ModuleNotFoundError`. the factory does NOT swallow it.
     """
 
     def test_missing_concrete_driver_raises_importerror(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # make sure the stub from a prior test is gone for this test
+        # clear any stub the prior tests installed so the factory's
+        # match arm hits the real import.
         for module_name, _ in _DRIVER_MODULES:
             monkeypatch.delitem(sys.modules, module_name, raising=False)
-        config = PostgresConnectionConfig(
-            datasource_type=DataSourceType.POSTGRES,
-            host="localhost",
-            database="x",
+        # snowflake driver hasn't landed yet -- the genuine
+        # ModuleNotFoundError path. swap to a different
+        # not-yet-shipped backend once snowflake_driver.py lands.
+        config = SnowflakeConnectionConfig(
+            datasource_type=DataSourceType.SNOWFLAKE,
+            account="acct",
+            warehouse="wh",
+            user="u",
+            password_env="X",
         )
         with pytest.raises(ModuleNotFoundError):
             create_driver(config)

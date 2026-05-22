@@ -28,18 +28,22 @@ classifiers = [
 dependencies = [
     "3tears>=0.9.0,<1.0",
     "pydantic>=2.0",
+    # asyncpg is the baseline backend lib: postgres / yugabyte /
+    # agent_internal coverage is expected of every 3tears consumer,
+    # so the dependency is non-optional. (shard-10 lifts the lib here
+    # from the previous optional-extras slot; the AsyncpgDriver
+    # imports asyncpg at module top.) the other backend libs
+    # (redshift / snowflake / bigquery) stay behind extras keys.
+    "asyncpg>=0.29",
 ]
 
 [project.optional-dependencies]
-# every concrete driver backend lives behind an extras key so Hub/agent
-# consumers that don't use a given backend don't pay the import cost.
-# extras keys are part of the package's public API surface; declare all
-# four up front even though only redshift + asyncpg-backed (postgres /
-# yugabyte / agent_internal) drivers ship in the initial 0.1.0 release.
-# asyncpg itself is a HARD dependency (not extras) because postgres /
-# yugabyte / agent_internal coverage is the baseline expected of any
-# 3tears consumer.
-asyncpg = ["asyncpg>=0.29"]
+# every secondary concrete driver backend lives behind an extras key so
+# Hub/agent consumers that don't use a given backend don't pay the
+# import cost. extras keys are part of the package's public API surface;
+# declare all of them up front even though only redshift + asyncpg-
+# backed (postgres / yugabyte / agent_internal) drivers ship in the
+# initial 0.1.0 release.
 redshift = ["redshift-connector>=2.1"]
 snowflake = ["snowflake-connector-python>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]
@@ -67,9 +71,14 @@ packages = ["threetears.datasources"]
 explicit_package_bases = true
 ignore_missing_imports = true
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-markers = [
-    "integration: integration tests requiring docker or real infra",
-    "live: tests that connect to a real external warehouse (env-gated)",
-]
+# no [tool.pytest.ini_options] block: pytest's rootdir detection picks
+# the closest pyproject with [tool.pytest.ini_options], so a per-package
+# block hides the workspace-level conftest.py and unregisters the
+# canonical ``pytest_plugins = ["threetears.core.testing.fixtures"]``
+# line. inherit from the workspace instead -- the workspace registers
+# the ``integration`` marker + asyncio mode + import-mode.
+#
+# the ``live`` marker (env-gated tests against a real external
+# warehouse; see IMPLEMENTING_DRIVERS.md) is added to the workspace
+# pyproject's marker list in shard 10 alongside the AsyncpgDriver
+# integration tests.

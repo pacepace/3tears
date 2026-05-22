@@ -123,6 +123,7 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
+    "live: tests that connect to a real external warehouse (env-gated); not run by default",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

@@ -324,13 +324,11 @@ version = "0.1.0"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
+    { name = "asyncpg" },
     { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
-asyncpg = [
-    { name = "asyncpg" },
-]
 bigquery = [
     { name = "google-cloud-bigquery" },
 ]
@@ -350,7 +348,7 @@ snowflake = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
-    { name = "asyncpg", marker = "extra == 'asyncpg'", specifier = ">=0.29" },
+    { name = "asyncpg", specifier = ">=0.29" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -360,7 +358,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },
 ]
-provides-extras = ["asyncpg", "redshift", "snowflake", "bigquery", "dev"]
+provides-extras = ["redshift", "snowflake", "bigquery", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
