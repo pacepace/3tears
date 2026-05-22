@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-datasources"
+# package version is decoupled from 3tears core; see CHANGELOG.md +
+# README.md "Versioning policy" for the SemVer-independence rationale
+# (datasource-task-07 DS-07-12).
+version = "0.1.0"
+description = "datasource entities, collections, namespace helpers, agent-yaml config model + driver abstraction for postgres/redshift/snowflake/bigquery backends"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# core depends on a RANGE, not a pin. the package owns its own version
+# (see CHANGELOG); 3tears core can bump independently as long as the
+# Driver ABC + Collection contract stays stable.
+dependencies = [
+    "3tears>=0.9.0,<1.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+# every concrete driver backend lives behind an extras key so Hub/agent
+# consumers that don't use a given backend don't pay the import cost.
+# extras keys are part of the package's public API surface; declare all
+# four up front even though only redshift + asyncpg-backed (postgres /
+# yugabyte / agent_internal) drivers ship in the initial 0.1.0 release.
+# asyncpg itself is a HARD dependency (not extras) because postgres /
+# yugabyte / agent_internal coverage is the baseline expected of any
+# 3tears consumer.
+asyncpg = ["asyncpg>=0.29"]
+redshift = ["redshift-connector>=2.1"]
+snowflake = ["snowflake-connector-python>=3.0"]
+bigquery = ["google-cloud-bigquery>=3.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.8",
+    "ruff>=0.3",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+Documentation = "https://github.com/pacepace/3tears/tree/develop/packages/datasources"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.datasources"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests requiring docker or real infra",
+    "live: tests that connect to a real external warehouse (env-gated)",
+]

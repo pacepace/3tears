@@ -1,0 +1,818 @@
+"""three-tier collections for datasource registry, schema metadata, and table templates.
+
+merged from Hub's ``aibots/hub/datasources/collections.py``,
+``schema_collections.py``, and ``template_collections.py`` per
+``datasource-task-07``. class definitions are byte-identical to the Hub
+originals -- this shard is pure relocation, not refactor.
+
+collections in this module:
+
+- :class:`DataSourceCollection` -- ``SchemaBackedCollection`` for the
+  ``platform.datasources`` registry. composite PK
+  ``(customer_id, id)`` with a ``find_by_id`` helper that uses the
+  v054 ``UNIQUE (id)`` constraint for partition-exempt lookups.
+- :class:`DataSourceTableCollection` -- ``BaseCollection`` for the
+  ``platform.datasource_tables`` row set.
+- :class:`DataSourceColumnCollection` -- ``BaseCollection`` for
+  ``platform.datasource_columns``. natural-key upsert on
+  ``(datasource_id, schema_name, table_name, column_name)``.
+- :class:`DataSourceRelationCollection` -- ``BaseCollection`` for
+  ``platform.datasource_relations``.
+- :class:`TableTemplateCollection` -- ``BaseCollection`` for
+  ``platform.table_templates``. composite PK ``(customer_id, id)``.
+
+per-table column variants (``TableTemplateColumnCollection``) stay in
+Hub for now because they have no cross-consumer demand yet; lift later
+if a second 3tears consumer needs them.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.schema_backed import (
+    DATETIMETZ_TYPE,
+    JSONB_TYPE,
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    SchemaBackedCollection,
+    TableSchema,
+)
+from threetears.core.serialization import deserialize_from_json, serialize_to_json
+from threetears.observe import get_logger
+
+from threetears.datasources.entities import (
+    DataSourceColumnEntity,
+    DataSourceEntity,
+    DataSourceRelationEntity,
+    DataSourceTableEntity,
+    TableTemplateEntity,
+)
+
+log = get_logger(__name__)
+
+
+__all__ = [
+    "DataSourceCollection",
+    "DataSourceColumnCollection",
+    "DataSourceRelationCollection",
+    "DataSourceTableCollection",
+    "TableTemplateCollection",
+]
+
+
+_TABLE_FIELD_TYPES: dict[str, Any] = {
+    "id": UUID,
+    "datasource_id": UUID,
+    "schema_name": str,
+    "table_name": str,
+    "description": str,
+    "row_count_approx": int,
+    "caveats": str,
+    # template-task-01: nullable FK into platform.table_templates;
+    # most tables stay unbound (template_id IS NULL). when bound,
+    # the read-time merge in template-task-02 overlays the
+    # template's column docs onto this row's instance docs.
+    "template_id": UUID,
+    # template-task-01: when True, the merged caveat returns the
+    # instance caveat alone (full override) instead of concatenating
+    # the template caveat. default FALSE keeps the additive concat.
+    "caveats_replaces_definition": bool,
+    "date_introspected": datetime,
+    "date_described": datetime,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_COLUMN_FIELD_TYPES: dict[str, Any] = {
+    "id": UUID,
+    "datasource_id": UUID,
+    "schema_name": str,
+    "table_name": str,
+    "column_name": str,
+    "data_type": str,
+    "is_nullable": bool,
+    "ordinal_position": int,
+    "description": str,
+    "valid_range": str,
+    "caveats": str,
+    "tags": list,
+    # template-task-01: per-column override of the additive caveat
+    # concat rule. mirrors the table-level flag for the rare case
+    # where the instance docs replace rather than augment the
+    # template's column-level caveats.
+    "caveats_replaces_definition": bool,
+    "date_introspected": datetime,
+    "date_described": datetime,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_RELATION_FIELD_TYPES: dict[str, Any] = {
+    "id": UUID,
+    "name": str,
+    "description": str,
+    "datasource_ids": list,
+    "join_paths": list,
+    "aggregation_notes": str,
+    "caveats": str,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_TEMPLATE_FIELD_TYPES: dict[str, Any] = {
+    "id": UUID,
+    "customer_id": UUID,
+    "name": str,
+    "description": str,
+    "caveats": str,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+
+class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
+    """three-tier collection for data source entities.
+
+    provides CRUD operations with L1 -> L2 -> L3 caching. data sources
+    are hard-deleted (no soft-delete pattern). ``connection_config`` is
+    stored as encrypted JSON string in L3 (kept as ``STRING_TYPE`` so
+    the SchemaBackedCollection write path passes the ciphertext through
+    unchanged); ``allowed_schemas`` is stored as a JSONB array. CRUD
+    comes from the declarative :class:`TableSchema`; no domain queries
+    live on the subclass today (every callsite resolves by primary key
+    or filters in admin endpoints via the L3 pool with cache-bypass
+    rationales).
+    """
+
+    primary_key_column: tuple[str, ...] = ("customer_id", "id")
+    # rationale: find_by_id resolves a datasource by its public id from
+    # the admin URL and the agent-side tool flow; the v054 UNIQUE (id)
+    # constraint preserves uniqueness without forcing every caller to
+    # know the customer_id partition up front.
+    _partition_exempt_methods = frozenset({"find_by_id"})
+    schema = TableSchema(
+        name="datasources",
+        primary_key=("customer_id", "id"),
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("name", STRING_TYPE),
+            Column("customer_id", UUID_TYPE, partition=True),
+            Column("datasource_type", STRING_TYPE, immutable=True),
+            # connection_config is nullable post-v056: agent_internal
+            # rows carry no external connection config because the
+            # broker routes via the L3 broker bound to schema_name.
+            Column("connection_config", STRING_TYPE, nullable=True),
+            Column("allowed_schemas", JSONB_TYPE, nullable=True),
+            Column("access_mode", STRING_TYPE),
+            Column("status", STRING_TYPE),
+            # owner_agent_id: NULL for external datasources, set for
+            # agent_internal rows. v056 CHECK
+            # datasources_agent_internal_shape_ck enforces the
+            # bidirectional invariant with datasource_type.
+            Column("owner_agent_id", UUID_TYPE, immutable=True, nullable=True),
+            # schema_name: NULL for external datasources, set to
+            # ``agent_<hex>`` for agent_internal rows. immutable: the
+            # routing target is part of the row's identity once
+            # materialized.
+            Column("schema_name", STRING_TYPE, immutable=True, nullable=True),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+        ],
+        cas_column="date_updated",
+    )
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasources"
+
+    @property
+    def entity_class(self) -> type[DataSourceEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceEntity class
+        :rtype: type[DataSourceEntity]
+        """
+        return DataSourceEntity
+
+    async def find_by_id(
+        self, datasource_id: UUID,
+    ) -> DataSourceEntity | None:
+        """resolve a datasource by ``id`` alone via the v054 ``UNIQUE (id)``.
+
+        the admin endpoints (GET / DELETE / connection-config update)
+        and the agent-side tool flow take ``{datasource_id}`` in the
+        URL but not the partition column ``customer_id``. uniqueness
+        is preserved by the ``UNIQUE (id)`` constraint added by hub
+        migration v054.
+
+        :param datasource_id: data source UUID
+        :ptype datasource_id: UUID
+        :return: datasource entity or ``None`` when no row exists
+        :rtype: DataSourceEntity | None
+        """
+        result: DataSourceEntity | None = None
+        if self.l3_pool is not None:
+            row = await self.l3_pool.fetchrow(
+                "SELECT * FROM datasources WHERE id = $1",
+                datasource_id,
+            )
+            if row is not None:
+                data = self._coerce_row(dict(row))
+                self.write_to_cache_sync(data)
+                result = self.entity_class(data, is_new=False, collection=self)
+        return result
+
+
+class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
+    """three-tier collection for data source table entities.
+
+    provides CRUD operations with L1 -> L2 -> L3 caching.
+    data source tables are hard-deleted (no soft-delete pattern).
+    """
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_tables"
+
+    @property
+    def entity_class(self) -> type[DataSourceTableEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceTableEntity class
+        :rtype: type[DataSourceTableEntity]
+        """
+        return DataSourceTableEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _TABLE_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch data source table record from L3 by primary key.
+
+        :param entity_id: data source table UUID
+        :ptype entity_id: Any
+        :return: table data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_tables WHERE id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            data = dict(row)
+            result = data
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert data source table record to L3 with optimistic concurrency.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_tables (
+                id, datasource_id, schema_name, table_name, description,
+                row_count_approx, caveats, template_id,
+                caveats_replaces_definition,
+                date_introspected, date_described,
+                date_created, date_updated
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                datasource_id = EXCLUDED.datasource_id,
+                schema_name = EXCLUDED.schema_name,
+                table_name = EXCLUDED.table_name,
+                description = EXCLUDED.description,
+                row_count_approx = EXCLUDED.row_count_approx,
+                caveats = EXCLUDED.caveats,
+                template_id = EXCLUDED.template_id,
+                caveats_replaces_definition = EXCLUDED.caveats_replaces_definition,
+                date_introspected = EXCLUDED.date_introspected,
+                date_described = EXCLUDED.date_described,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("id"),
+            data.get("datasource_id"),
+            data.get("schema_name"),
+            data.get("table_name"),
+            data.get("description"),
+            data.get("row_count_approx"),
+            data.get("caveats"),
+            data.get("template_id"),
+            # template-task-01: explicit FALSE default at the write
+            # boundary so legacy callers that don't set the flag get
+            # the additive-concat semantics rather than NULL (which
+            # the column rejects via NOT NULL).
+            data.get("caveats_replaces_definition") or False,
+            data.get("date_introspected"),
+            data.get("date_described"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete data source table from L3.
+
+        :param entity_id: data source table UUID
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_tables WHERE id = $1",
+            entity_id,
+        )
+
+
+class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
+    """three-tier collection for data source column entities.
+
+    provides CRUD operations with L1 -> L2 -> L3 caching.
+    data source columns are hard-deleted (no soft-delete pattern).
+    tags is stored as JSONB array in L3.
+    """
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_columns"
+
+    @property
+    def entity_class(self) -> type[DataSourceColumnEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceColumnEntity class
+        :rtype: type[DataSourceColumnEntity]
+        """
+        return DataSourceColumnEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _COLUMN_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch data source column record from L3 by primary key.
+
+        :param entity_id: data source column UUID
+        :ptype entity_id: Any
+        :return: column data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_columns WHERE id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            data = dict(row)
+            if isinstance(data.get("tags"), str):
+                data["tags"] = json.loads(data["tags"])
+            result = data
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert data source column record to L3 with natural key conflict resolution.
+
+        uses ON CONFLICT on (datasource_id, schema_name, table_name, column_name)
+        natural key for upsert, allowing re-introspection to update existing columns.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        tags = data.get("tags")
+        tags_json = json.dumps(tags) if tags is not None else "[]"
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_columns (
+                id, datasource_id, schema_name, table_name, column_name,
+                data_type, is_nullable, ordinal_position, description,
+                valid_range, caveats, tags, caveats_replaces_definition,
+                date_introspected, date_described,
+                date_created, date_updated
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                $12::jsonb, $13, $14, $15, $16, $17
+            )
+            ON CONFLICT (datasource_id, schema_name, table_name, column_name) DO UPDATE SET
+                data_type = EXCLUDED.data_type,
+                is_nullable = EXCLUDED.is_nullable,
+                ordinal_position = EXCLUDED.ordinal_position,
+                description = EXCLUDED.description,
+                valid_range = EXCLUDED.valid_range,
+                caveats = EXCLUDED.caveats,
+                tags = EXCLUDED.tags,
+                caveats_replaces_definition = EXCLUDED.caveats_replaces_definition,
+                date_introspected = EXCLUDED.date_introspected,
+                date_described = EXCLUDED.date_described,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("id"),
+            data.get("datasource_id"),
+            data.get("schema_name"),
+            data.get("table_name"),
+            data.get("column_name"),
+            data.get("data_type"),
+            data.get("is_nullable"),
+            data.get("ordinal_position"),
+            data.get("description"),
+            data.get("valid_range"),
+            data.get("caveats"),
+            tags_json,
+            # template-task-01: NOT NULL column with FALSE default;
+            # explicit fallback ensures legacy callers that omit the
+            # field get the additive-concat semantics.
+            data.get("caveats_replaces_definition") or False,
+            data.get("date_introspected"),
+            data.get("date_described"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete data source column from L3.
+
+        :param entity_id: data source column UUID
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_columns WHERE id = $1",
+            entity_id,
+        )
+
+
+class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
+    """three-tier collection for data source relation entities.
+
+    provides CRUD operations with L1 -> L2 -> L3 caching.
+    data source relations are hard-deleted (no soft-delete pattern).
+    datasource_ids and join_paths are stored as JSONB arrays in L3.
+    """
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_relations"
+
+    @property
+    def entity_class(self) -> type[DataSourceRelationEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceRelationEntity class
+        :rtype: type[DataSourceRelationEntity]
+        """
+        return DataSourceRelationEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _RELATION_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch data source relation record from L3 by primary key.
+
+        :param entity_id: data source relation UUID
+        :ptype entity_id: Any
+        :return: relation data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_relations WHERE id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            data = dict(row)
+            if isinstance(data.get("datasource_ids"), str):
+                data["datasource_ids"] = json.loads(data["datasource_ids"])
+            if isinstance(data.get("join_paths"), str):
+                data["join_paths"] = json.loads(data["join_paths"])
+            result = data
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert data source relation record to L3 with optimistic concurrency.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        datasource_ids = data.get("datasource_ids")
+        datasource_ids_json = json.dumps(datasource_ids) if datasource_ids is not None else "[]"
+        join_paths = data.get("join_paths")
+        join_paths_json = json.dumps(join_paths) if join_paths is not None else "[]"
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_relations (
+                id, name, description, datasource_ids, join_paths,
+                aggregation_notes, caveats, date_created, date_updated
+            ) VALUES (
+                $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                datasource_ids = EXCLUDED.datasource_ids,
+                join_paths = EXCLUDED.join_paths,
+                aggregation_notes = EXCLUDED.aggregation_notes,
+                caveats = EXCLUDED.caveats,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("id"),
+            data.get("name"),
+            data.get("description"),
+            datasource_ids_json,
+            join_paths_json,
+            data.get("aggregation_notes"),
+            data.get("caveats"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete data source relation from L3.
+
+        :param entity_id: data source relation UUID
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_relations WHERE id = $1",
+            entity_id,
+        )
+
+
+class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
+    """three-tier collection for table-template entities.
+
+    provides CRUD with L1 -> L2 -> L3 caching for the customer-scoped
+    template definition rows. composite PK ``(customer_id, id)`` is
+    enforced via the framework's normalize_pk lookup, so callers
+    address rows by the full tuple. natural-key conflict resolution
+    on ``(customer_id, name)`` keeps slug collisions inside a
+    customer's namespace.
+
+    templates are hard-deleted; the FK from
+    ``datasource_tables.template_id`` is ``ON DELETE SET NULL`` so
+    deleting a template never destroys instance metadata, and the FK
+    from ``table_template_columns.template_id`` is ``ON DELETE
+    CASCADE`` so the per-template column list goes with it.
+    """
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "table_templates"
+
+    @property
+    def entity_class(self) -> type[TableTemplateEntity]:
+        """return entity class for this collection.
+
+        :return: TableTemplateEntity class
+        :rtype: type[TableTemplateEntity]
+        """
+        return TableTemplateEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _TEMPLATE_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch table-template row from L3 by composite primary key.
+
+        :param entity_id: ``(customer_id, id)`` tuple
+        :ptype entity_id: Any
+        :return: template data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        customer_id, template_id = entity_id
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM table_templates WHERE customer_id = $1 AND id = $2",
+            customer_id,
+            template_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            result = dict(row)
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert table-template row to L3.
+
+        natural-key conflict on ``(customer_id, name)`` is enforced by
+        the unique index added in v006; the upsert routes on the
+        primary-key conflict so a re-save with the same id keeps the
+        row's identity stable.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for
+            optimistic concurrency check (unused today; pattern
+            mirror of DataSourceTableCollection)
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO table_templates (
+                id, customer_id, name, description, caveats,
+                date_created, date_updated
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7
+            )
+            ON CONFLICT (customer_id, id) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description,
+                caveats = EXCLUDED.caveats,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("id"),
+            data.get("customer_id"),
+            data.get("name"),
+            data.get("description"),
+            data.get("caveats"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete template row from L3.
+
+        :param entity_id: ``(customer_id, id)`` tuple
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        customer_id, template_id = entity_id
+        await self.l3_pool.execute(
+            "DELETE FROM table_templates WHERE customer_id = $1 AND id = $2",
+            customer_id,
+            template_id,
+        )
