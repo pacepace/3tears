@@ -95,6 +95,8 @@ packages/conversations/tests/unit/test_migrations.py:32:_FakeDataStore
 packages/agent/tools/tests/unit/test_bootstrap.py:14:_FakeToolServer
 # rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
 packages/agent/tools/tests/unit/test_migrations.py:32:_FakeDataStore
+# rationale: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
+packages/agent/tools/tests/unit/test_platform_migrations.py:30:_FakeDataStore
 # rationale: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
 packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
 # rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope

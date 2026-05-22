@@ -163,6 +163,13 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
 class ToolManifestEntry(BaseModel):
     """single tool entry in registration manifest.
 
+    The two visibility flags ride with each tool's manifest entry so
+    the hub-side ``ToolNamespaceEmitter`` can stamp them onto the
+    ``platform.namespaces`` row it writes. Defaults match
+    :class:`~threetears.agent.tools.base_tool.TearsTool` so manifests
+    composed by older callers that don't set the fields still land
+    with the canonical "tool-eligible, not skill-eligible" shape.
+
     :param name: namespaced tool name
     :ptype name: str
     :param version: semver-compatible version string
@@ -173,6 +180,16 @@ class ToolManifestEntry(BaseModel):
     :ptype input_schema: dict[str, Any]
     :param timeout_seconds: expected maximum execution time, None uses caller default
     :ptype timeout_seconds: float | None
+    :param tool_eligible: whether the tool belongs in the agent's
+        default tool surface; mirrors
+        :attr:`TearsTool.tool_eligible`. Defaults to ``True`` so
+        manifests built without an explicit value preserve the
+        pre-shard behaviour.
+    :ptype tool_eligible: bool
+    :param skill_eligible: whether the tool is discoverable via the
+        skills catalog; mirrors :attr:`TearsTool.skill_eligible`.
+        Defaults to ``False``.
+    :ptype skill_eligible: bool
     """
 
     name: str
@@ -180,6 +197,8 @@ class ToolManifestEntry(BaseModel):
     description: str
     input_schema: dict[str, Any]
     timeout_seconds: float | None = None
+    tool_eligible: bool = True
+    skill_eligible: bool = False
 
 
 class RegistrationManifest(BaseModel):
@@ -1025,6 +1044,8 @@ class ToolServer:
                     "mcp_name": schema.name,
                     "mcp_version": schema.version,
                 },
+                "tool_eligible": bool(getattr(tool, "tool_eligible", True)),
+                "skill_eligible": bool(getattr(tool, "skill_eligible", False)),
                 "date_created": now,
                 "date_updated": now,
             },
@@ -1119,12 +1140,36 @@ class ToolServer:
         tools_list: list[ToolManifestEntry] = []
         for tool in self._tools.values():
             schema = tool.mcp_schema()
+            tool_eligible = bool(getattr(tool, "tool_eligible", True))
+            skill_eligible = bool(getattr(tool, "skill_eligible", False))
+            if not tool_eligible and not skill_eligible:
+                # registering a tool with both flags off makes it
+                # invisible to every agent surface. almost certainly
+                # a configuration error; surface a structured WARNING
+                # so the operator notices instead of debugging a
+                # phantom missing tool later.
+                log.warning(
+                    "tool registered with tool_eligible=False and "
+                    "skill_eligible=False -- it will never be visible "
+                    "to any agent. did you forget to enable a "
+                    "surface?",
+                    extra={
+                        "extra_data": {
+                            "mcp_name": schema.name,
+                            "mcp_version": schema.version,
+                            "pod_id": self._pod_id,
+                            "tool_class": type(tool).__name__,
+                        }
+                    },
+                )
             entry = ToolManifestEntry(
                 name=schema.name,
                 version=schema.version,
                 description=schema.description,
                 input_schema=schema.input_schema,
                 timeout_seconds=schema.timeout_seconds,
+                tool_eligible=tool_eligible,
+                skill_eligible=skill_eligible,
             )
             tools_list.append(entry)
 
