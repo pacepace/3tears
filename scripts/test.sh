@@ -26,5 +26,10 @@ EXTRA_ARGS=("$@")
 if [ -n "$PACKAGE" ]; then
     uv run pytest "packages/$PACKAGE/tests/" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 else
-    uv run pytest packages/core/tests/ packages/agent-memory/tests/ packages/agent-tools/tests/ ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
+    # Mirror the CI workflow's invocation (`packages/ tests/` with
+    # ``-m "not integration"``). The agent-namespace move
+    # (agent-memory -> agent/memory, etc.) means hard-coded per-
+    # package paths drift; pointing at ``packages/`` lets pytest's
+    # rootdir + collection rules pick up every package's tests.
+    uv run pytest packages/ tests/ -m "not integration" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"}
 fi
