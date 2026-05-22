@@ -147,6 +147,25 @@ class TestConstruction:
         assert driver._pool is external  # noqa: SLF001
         assert driver._owns_pool is False  # noqa: SLF001
 
+    def test_init_datasource_name_default_is_unknown(
+        self, postgres_config: PostgresConnectionConfig
+    ) -> None:
+        """omitting ``datasource_name`` defaults to ``"unknown"``.
+
+        the OTel metric label still tags emissions; ``"unknown"`` is
+        the documented sentinel for callers who don't have the name
+        in scope.
+        """
+        driver = AsyncpgDriver(postgres_config)
+        assert driver._datasource_name == "unknown"  # noqa: SLF001
+
+    def test_init_datasource_name_captured(
+        self, postgres_config: PostgresConnectionConfig
+    ) -> None:
+        """passing ``datasource_name`` stores it for metric tagging."""
+        driver = AsyncpgDriver(postgres_config, datasource_name="warehouse")
+        assert driver._datasource_name == "warehouse"  # noqa: SLF001
+
 
 class TestClose:
     """close() concurrency contract per DS-09-12 / DS-10-07."""

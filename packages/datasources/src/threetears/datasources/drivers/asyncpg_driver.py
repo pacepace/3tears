@@ -269,6 +269,14 @@ class AsyncpgDriver(Driver):
         external (postgres / yugabyte) callers pass None and the
         driver creates its own pool on first use
     :ptype external_pool: asyncpg.Pool | None
+    :param datasource_name: human-readable name of the datasource this
+        driver instance serves (``DatasourceConfig.name`` from
+        agent.yaml or :class:`DataSourceEntity.name` from the Hub
+        admin row). surfaced as the ``datasource_name`` attribute on
+        every OTel metric emitted by :func:`_observed`. defaults to
+        ``"unknown"`` when callers can't supply one; the Hub broker /
+        tool-pod / introspector (shards 13-14) thread the name through
+    :ptype datasource_name: str
     """
 
     def __init__(
@@ -276,6 +284,7 @@ class AsyncpgDriver(Driver):
         config: _AnyConfig,
         *,
         external_pool: asyncpg.Pool[Any] | None = None,
+        datasource_name: str = "unknown",
     ) -> None:
         """capture config + optional borrowed pool. no I/O.
 
@@ -283,6 +292,9 @@ class AsyncpgDriver(Driver):
         :ptype config: PostgresConnectionConfig | YugabyteConnectionConfig | AgentInternalConnectionConfig
         :param external_pool: pre-existing pool to borrow (agent-internal)
         :ptype external_pool: asyncpg.Pool | None
+        :param datasource_name: name of the datasource this driver serves;
+            surfaces on every OTel metric
+        :ptype datasource_name: str
         :return: nothing
         :rtype: None
         """
@@ -294,12 +306,11 @@ class AsyncpgDriver(Driver):
         self._pool: asyncpg.Pool[Any] | None = external_pool
         self._owns_pool = external_pool is None
         self._closed = False
-        # surfaced as the ``datasource_name`` attribute on the OTel
-        # metrics emitted by :func:`_observed`. concrete name lives on
-        # :class:`DatasourceConfig`, not on the connection-config
-        # member directly -- the driver doesn't see DatasourceConfig
-        # so we settle for "unknown" until callers wire a name in.
-        self._datasource_name = "unknown"
+        # read by :func:`_observed` as the ``datasource_name`` attribute
+        # on every emitted metric. the Hub-side caller (shards 13/14)
+        # passes the name through ``create_driver``; tests pass an
+        # explicit value or accept the ``"unknown"`` default.
+        self._datasource_name = datasource_name
 
     # -------------------------------------------------------------------
     # pool lifecycle helpers
@@ -636,12 +647,18 @@ class AsyncpgDriver(Driver):
     # -------------------------------------------------------------------
 
     @traced
+    @_observed(driver_type="asyncpg")
     async def test_connection(self) -> None:
         """cheapest possible round-trip; verifies credentials + reachability.
 
         wrapped in :class:`DriverConnectError` on any failure so the
         original asyncpg exception (which sometimes carries the
         password value in nested context) does not reach the caller.
+
+        note: ``except asyncio.CancelledError`` is intentionally absent
+        here. :class:`CancelledError` is rooted at :class:`BaseException`
+        (Python 3.8+), so the ``except Exception`` below does not catch
+        it -- cancellation propagates unchanged, by design.
 
         :return: nothing; raises on failure
         :rtype: None
@@ -656,10 +673,6 @@ class AsyncpgDriver(Driver):
             await self._acquire_and_run(
                 lambda conn: conn.fetchval(_PING_SQL),
             )
-        except asyncio.CancelledError:
-            # propagate cancellation unchanged -- it is not a
-            # connection failure.
-            raise
         except Exception:
             # sanitize: the wrapper carries the connection identity
             # (safe to log) but never the password. ``from None``

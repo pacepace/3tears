@@ -45,6 +45,7 @@ def create_driver(
     config: ConnectionConfig,
     *,
     hub_l3_pool: "asyncpg.Pool[Any] | None" = None,
+    datasource_name: str = "unknown",
 ) -> Driver:
     """dispatch to the concrete :class:`Driver` for ``config``.
 
@@ -63,6 +64,14 @@ def create_driver(
         kwarg. omitting it raises :class:`ValueError` for the
         AGENT_INTERNAL case
     :ptype hub_l3_pool: asyncpg.Pool | None
+    :param datasource_name: human-readable name of the datasource the
+        constructed driver serves; surfaces on every OTel metric
+        emitted by :func:`_observed` as the ``datasource_name``
+        attribute. defaults to ``"unknown"`` so callers that don't
+        know the name (or don't care about per-datasource metrics)
+        can omit. the Hub broker / tool-pod / introspector (shards
+        13/14) thread the name from :attr:`DatasourceConfig.name`
+    :ptype datasource_name: str
     :return: live :class:`Driver` instance ready for use; no async
         ``initialize()`` step is required -- drivers that need async
         warm-up do it lazily on first ``fetch``
@@ -81,7 +90,7 @@ def create_driver(
                 AsyncpgDriver,
             )
 
-            driver = AsyncpgDriver(config)
+            driver = AsyncpgDriver(config, datasource_name=datasource_name)
         case DataSourceType.AGENT_INTERNAL:
             if hub_l3_pool is None:
                 raise ValueError(
@@ -92,25 +101,29 @@ def create_driver(
                 AsyncpgDriver,
             )
 
-            driver = AsyncpgDriver(config, external_pool=hub_l3_pool)
+            driver = AsyncpgDriver(
+                config,
+                external_pool=hub_l3_pool,
+                datasource_name=datasource_name,
+            )
         case DataSourceType.REDSHIFT:
             from threetears.datasources.drivers.redshift_driver import (
                 RedshiftDriver,
             )
 
-            driver = RedshiftDriver(config)
+            driver = RedshiftDriver(config, datasource_name=datasource_name)
         case DataSourceType.SNOWFLAKE:
             from threetears.datasources.drivers.snowflake_driver import (
                 SnowflakeDriver,
             )
 
-            driver = SnowflakeDriver(config)
+            driver = SnowflakeDriver(config, datasource_name=datasource_name)
         case DataSourceType.BIGQUERY:
             from threetears.datasources.drivers.bigquery_driver import (
                 BigQueryDriver,
             )
 
-            driver = BigQueryDriver(config)
+            driver = BigQueryDriver(config, datasource_name=datasource_name)
         case _:
             raise ValueError(
                 f"no driver registered for datasource_type={config.datasource_type!r}"

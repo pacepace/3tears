@@ -52,13 +52,20 @@ class _StubDriver(Driver):
 
     factory tests stub out the per-backend driver module to return
     instances of this class so we can assert (1) the right import
-    path was taken and (2) the right args (notably external_pool=)
-    reached the constructor.
+    path was taken and (2) the right args (notably ``external_pool=``
+    + ``datasource_name=``) reached the constructor.
     """
 
-    def __init__(self, config: Any, *, external_pool: Any = None) -> None:
+    def __init__(
+        self,
+        config: Any,
+        *,
+        external_pool: Any = None,
+        datasource_name: str = "unknown",
+    ) -> None:
         self.config = config
         self.external_pool = external_pool
+        self.datasource_name = datasource_name
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         return []
@@ -197,6 +204,90 @@ class TestDispatch:
         )
         driver = create_driver(config)
         assert isinstance(driver, stub_driver_modules["BigQueryDriver"])
+
+
+class TestDatasourceNamePlumbing:
+    """``datasource_name`` reaches the driver constructor for every backend.
+
+    surfaces as the ``datasource_name`` OTel metric attribute on every
+    query. the factory threads the kwarg through every match arm so
+    callers (Hub broker / tool-pod / introspector in shards 13/14)
+    get meaningful labels without needing to reach into per-driver
+    constructor surfaces.
+    """
+
+    def test_default_is_unknown(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        """omitting ``datasource_name`` defaults to ``"unknown"``."""
+        config = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="localhost",
+            database="x",
+        )
+        driver = create_driver(config)
+        assert driver.datasource_name == "unknown"  # type: ignore[attr-defined]
+
+    def test_postgres_threads_through(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        config = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="localhost",
+            database="x",
+        )
+        driver = create_driver(config, datasource_name="warehouse-prod")
+        assert driver.datasource_name == "warehouse-prod"  # type: ignore[attr-defined]
+
+    def test_agent_internal_threads_through(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        config = AgentInternalConnectionConfig(
+            datasource_type=DataSourceType.AGENT_INTERNAL,
+            schema_name="agent_xyz",
+        )
+        sentinel_pool = object()
+        driver = create_driver(
+            config,
+            hub_l3_pool=sentinel_pool,  # type: ignore[arg-type]
+            datasource_name="agent-tables",
+        )
+        assert driver.datasource_name == "agent-tables"  # type: ignore[attr-defined]
+
+    def test_redshift_threads_through(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="cluster.example.com",
+            database="analytics",
+        )
+        driver = create_driver(config, datasource_name="central-reporting")
+        assert driver.datasource_name == "central-reporting"  # type: ignore[attr-defined]
+
+    def test_snowflake_threads_through(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        config = SnowflakeConnectionConfig(
+            datasource_type=DataSourceType.SNOWFLAKE,
+            account="acct",
+            warehouse="wh",
+            user="u",
+            password_env="X",
+        )
+        driver = create_driver(config, datasource_name="snowflake-marts")
+        assert driver.datasource_name == "snowflake-marts"  # type: ignore[attr-defined]
+
+    def test_bigquery_threads_through(
+        self, stub_driver_modules: dict[str, type[_StubDriver]]
+    ) -> None:
+        config = BigQueryConnectionConfig(
+            datasource_type=DataSourceType.BIGQUERY,
+            project_id="my-project",
+            credentials_json_env="X",
+        )
+        driver = create_driver(config, datasource_name="bq-events")
+        assert driver.datasource_name == "bq-events"  # type: ignore[attr-defined]
 
 
 class TestImportFailureSurfacing:
