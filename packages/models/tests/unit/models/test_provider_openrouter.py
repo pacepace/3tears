@@ -250,6 +250,141 @@ class TestNameTranslatingChatOpenRouter:
         reverse_translate_message(msg, model._name_reverse_map)
         assert msg.invalid_tool_calls[0]["name"] == "threetears.calculator"
 
+    @pytest.mark.asyncio
+    async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``astream`` drops ``invalid_tool_calls`` entries whose names
+        fail the canonical regex.
+
+        Regression test for metallm prod incident on 2026-05-19 (conv
+        ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``): the model emitted a
+        tool call whose ``function.name`` carried an embedded
+        XML-attribute fragment (``memory_recall" name="memory_recall``).
+        That value landed in ``invalid_tool_calls``, passed through
+        the wrapper unfiltered, and reached metallm's dispatch layer
+        where it was persisted as an unrecoverable invocation. The
+        wrapper now drops those entries before yielding the chunk.
+        """
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            # Two invalid_tool_calls: one with a junk name, one
+            # plausibly recoverable.
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "name": junk_name,
+                            "args": "{}",
+                            "id": "call_junk",
+                            "error": "JSONDecodeError",
+                        },
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{partial",
+                            "id": "call_ok",
+                            "error": "JSONDecodeError",
+                        },
+                    ],
+                ),
+            )
+
+        model = create_openrouter_chat(
+            "deepseek/deepseek-chat-v3-0324",
+            "sk-test",
+        )
+
+        original_astream = ChatOpenRouter._astream
+        try:
+            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
+            chunks: list[AIMessageChunk] = []
+            async for chunk in model.astream("hi"):
+                chunks.append(chunk)
+        finally:
+            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+
+        # The chunk carrying invalid_tool_calls should keep only the
+        # well-named entry; the junk name must be dropped.
+        carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
+        assert len(carrier_chunks) == 1
+        kept = carrier_chunks[0].invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert kept[0]["id"] == "call_ok"
+        assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
+        """``_agenerate`` mirrors the streaming-path filter for non-streaming calls.
+
+        Same prod incident as the streaming test above; the
+        non-streaming path (``ainvoke`` and friends) needs the same
+        defense so consumers that don't stream are equally protected.
+        """
+        from langchain_core.outputs import ChatGeneration, ChatResult
+        from langchain_openrouter import ChatOpenRouter
+
+        junk_name = 'memory_recall" name="memory_recall'
+
+        async def _fake_super_agenerate(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ) -> ChatResult:
+            del self, messages, stop, run_manager, kwargs
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            invalid_tool_calls=[
+                                {
+                                    "name": junk_name,
+                                    "args": "{}",
+                                    "id": "call_junk",
+                                    "error": "JSONDecodeError",
+                                },
+                                {
+                                    "name": "threetears_calculator",
+                                    "args": "{partial",
+                                    "id": "call_ok",
+                                    "error": "JSONDecodeError",
+                                },
+                            ],
+                        ),
+                    ),
+                ],
+            )
+
+        model = create_openrouter_chat(
+            "deepseek/deepseek-chat-v3-0324",
+            "sk-test",
+        )
+
+        original_agenerate = ChatOpenRouter._agenerate
+        try:
+            ChatOpenRouter._agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            result = await model.ainvoke("hi")
+        finally:
+            ChatOpenRouter._agenerate = original_agenerate  # type: ignore[method-assign]
+
+        kept = result.invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] == "threetears_calculator"
+        assert all(call["name"] != junk_name for call in kept)
+
     def test_reverse_translate_message_noop_when_no_tools_bound(self) -> None:
         """Without any prior ``bind_tools`` call the reverse map is
         empty; ``_reverse_translate_message`` short-circuits without
