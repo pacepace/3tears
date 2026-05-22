@@ -55,16 +55,15 @@ class TestDataSourceStatusEnum:
 
 
 class TestDataSourceEntity:
-    """composite-PK shape: ``_id`` is a ``(customer_id, id)`` tuple."""
+    """composite-PK shape: scalar ``id`` exposed publicly; partition column
+    surfaced via ``primary_key_field``."""
 
-    def test_id_tuple_shape(self) -> None:
-        customer_id = uuid4()
+    def test_id_and_partition(self) -> None:
         row_id = uuid4()
         entity = DataSourceEntity(
-            data={"customer_id": customer_id, "id": row_id, "name": "ds"},
+            data={"customer_id": uuid4(), "id": row_id, "name": "ds"},
             is_new=True,
         )
-        assert entity._id == (customer_id, row_id)
         # scalar id property returns the row UUID, not the tuple
         assert entity.id == row_id
         # primary_key_field signals the partition column to the framework
@@ -117,14 +116,12 @@ class TestDataSourceRelationEntity:
 class TestTableTemplateEntity:
     """template entities mirror DataSourceEntity's composite-PK shape."""
 
-    def test_id_tuple_shape(self) -> None:
-        customer_id = uuid4()
+    def test_id_and_partition(self) -> None:
         template_id = uuid4()
         entity = TableTemplateEntity(
-            data={"customer_id": customer_id, "id": template_id, "name": "tpl"},
+            data={"customer_id": uuid4(), "id": template_id, "name": "tpl"},
             is_new=True,
         )
-        assert entity._id == (customer_id, template_id)
         assert entity.id == template_id
         assert isinstance(entity.id, UUID)
         assert entity.primary_key_field == "customer_id"

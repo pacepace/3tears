@@ -18,8 +18,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
-
-from uuid_extensions import uuid7
+from uuid import uuid4
 
 from threetears.datasources.collections import (
     DataSourceCollection,
@@ -93,8 +92,8 @@ class TestDataSourceTableCollection:
         coll = DataSourceTableCollection(registry=registry, config=config)
         now = datetime.now(UTC)
         data: dict[str, Any] = {
-            "id": uuid7(),
-            "datasource_id": uuid7(),
+            "id": uuid4(),
+            "datasource_id": uuid4(),
             "schema_name": "public",
             "table_name": "users",
             "description": "user accounts",
@@ -135,8 +134,8 @@ class TestDataSourceColumnCollection:
         coll = DataSourceColumnCollection(registry=registry, config=config)
         now = datetime.now(UTC)
         data: dict[str, Any] = {
-            "id": uuid7(),
-            "datasource_id": uuid7(),
+            "id": uuid4(),
+            "datasource_id": uuid4(),
             "schema_name": "public",
             "table_name": "users",
             "column_name": "email",
@@ -180,10 +179,10 @@ class TestDataSourceRelationCollection:
         registry, config = _make_registry_and_config()
         coll = DataSourceRelationCollection(registry=registry, config=config)
         now = datetime.now(UTC)
-        ds_id1 = str(uuid7())
-        ds_id2 = str(uuid7())
+        ds_id1 = str(uuid4())
+        ds_id2 = str(uuid4())
         data: dict[str, Any] = {
-            "id": uuid7(),
+            "id": uuid4(),
             "name": "users_orders",
             "description": "join path",
             "datasource_ids": [ds_id1, ds_id2],
@@ -222,8 +221,8 @@ class TestTableTemplateCollection:
         coll = TableTemplateCollection(registry=registry, config=config)
         now = datetime.now(UTC)
         data: dict[str, Any] = {
-            "id": uuid7(),
-            "customer_id": uuid7(),
+            "id": uuid4(),
+            "customer_id": uuid4(),
             "name": "report_geofacts",
             "description": "geofacts report shape",
             "caveats": None,
