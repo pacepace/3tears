@@ -65,6 +65,9 @@ _PARTITIONED_TABLES: dict[str, str] = {
     "media_content": "agent_id",
     "memory_chunks": "agent_id",
     "conversation_memory_refs": "conversation_id",
+    # agent-skills
+    "agent_skills": "agent_id",
+    "agent_skill_invocations": "agent_id",
     # agent-workspace
     "workspaces": "agent_id",
     "workspace_files": "workspace_id",
@@ -89,6 +92,15 @@ _PACKAGE_SRC_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "agent-workspace" / "src",
     _REPO_ROOT / "packages" / "agent-memory" / "src",
     _REPO_ROOT / "packages" / "conversations" / "src",
+    # Post agent-namespace move, agent-* packages live under packages/agent/<name>/src.
+    # The dash-named paths above are kept for any historical layout that survives;
+    # paths that do not exist are skipped silently by ``_walk_python_files``.
+    _REPO_ROOT / "packages" / "agent" / "tools" / "src",
+    _REPO_ROOT / "packages" / "agent" / "memory" / "src",
+    _REPO_ROOT / "packages" / "agent" / "workspace" / "src",
+    _REPO_ROOT / "packages" / "agent" / "skills" / "src",
+    _REPO_ROOT / "packages" / "agent" / "acl" / "src",
+    _REPO_ROOT / "packages" / "agent" / "audit" / "src",
 ]
 
 

@@ -12,6 +12,7 @@ members = [
     "3tears-agent-acl",
     "3tears-agent-audit",
     "3tears-agent-memory",
+    "3tears-agent-skills",
     "3tears-agent-tools",
     "3tears-agent-workspace",
     "3tears-channels",
@@ -149,6 +150,21 @@ requires-dist = [
     { name = "3tears-langgraph", editable = "packages/langgraph" },
     { name = "langchain-core" },
     { name = "pgvector" },
+]
+
+[[package]]
+name = "3tears-agent-skills"
+version = "0.9.0"
+source = { editable = "packages/agent/skills" }
+dependencies = [
+    { name = "3tears" },
+    { name = "uuid-utils" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears", editable = "packages/core" },
+    { name = "uuid-utils" },
 ]
 
 [[package]]
