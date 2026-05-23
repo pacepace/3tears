@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.cache import MISSING
@@ -69,6 +69,15 @@ class BaseCollection(ABC, Generic[EntityT]):
     """
 
     primary_key_column: str | tuple[str, ...] = "id"
+
+    # datasource-task-06 DS-06-04: per-concrete-class memo of table
+    # names that have already emitted the "nats_client missing"
+    # warning, so a busy write path logs the wiring gap once rather
+    # than per-write. each subclass gets its own set via the
+    # ``type(self)._missing_nats_warned_tables = ...`` assignment in
+    # :meth:`_warn_missing_nats_client_once`; declared here so the
+    # attribute is typed + present on the base.
+    _missing_nats_warned_tables: ClassVar[set[str]] = set()
 
     def __init__(
         self,
@@ -656,8 +665,67 @@ class BaseCollection(ABC, Generic[EntityT]):
     # --- Cache coherence signaling ---
 
     async def _publish_invalidation(self, entity_id: Any) -> None:
-        """Signal other pods to evict this entity from their L1 caches."""
-        await self._registry.publish_invalidation(self._nats_client, self.table_name, entity_id)
+        """Signal other pods to evict this entity from their L1 caches.
+
+        datasource-task-06 DS-06-04: when ``nats_client`` is missing
+        the publish is a no-op -- consumer pods serve stale L1
+        entries indefinitely. log a one-shot WARNING the first
+        time this happens for a given table so the wiring gap is
+        visible in the operator's log. the warning is per-table to
+        keep the log scannable across a fleet with many collections.
+
+        design choice: WARNING vs hard-fail-at-construction.
+        the spec (DS-06-04) accepted either. WARNING is the
+        chosen shape because:
+
+        - the underlying wiring gap (Hub's datasource collections
+          constructed without ``nats_client``) is FIXED in
+          ``aibots.hub.app.lifespan``; the WARNING is the
+          regression net, not the primary fix.
+        - several legitimate test scaffolds construct collections
+          without a NATS client (SQLite-only L1 tests in
+          ``threetears.core``). hard-failing at construction would
+          force every such test to stand up a NATS mock for a
+          feature it does not exercise.
+        - the WARNING fires at the first attempted publish, NOT at
+          construction, so collections that never publish (read-
+          only utility flows) stay quiet.
+        - one-shot dedup means a busy write path doesn't drown
+          the log.
+        """
+        if self._nats_client is None:
+            self._warn_missing_nats_client_once()
+        await self._registry.publish_invalidation(
+            self._nats_client,
+            self.table_name,
+            entity_id,
+        )
+
+    def _warn_missing_nats_client_once(self) -> None:
+        """emit a one-shot WARNING when invalidation cannot publish.
+
+        guards against log spam under workloads that issue many
+        writes per second -- the wiring gap is process-wide and
+        worth surfacing once. uses a class-level set keyed on
+        table_name so collections of distinct types each get one
+        warning.
+
+        :return: nothing
+        :rtype: None
+        """
+        cls = type(self)
+        warned: set[str] = getattr(cls, "_missing_nats_warned_tables", None) or set()
+        if self.table_name in warned:
+            return
+        warned.add(self.table_name)
+        cls._missing_nats_warned_tables = warned
+        log.warning(
+            "collection invalidation is silently disabled: table=%s -- "
+            "consumer pods will serve stale L1 entries until the "
+            "collection is reconstructed with a non-None nats_client. "
+            "wiring gap: datasource-task-06 DS-06-04.",
+            self.table_name,
+        )
 
     # --- Span attribute helpers (no-op when OTel unavailable) ---
 
