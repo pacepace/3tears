@@ -101,6 +101,45 @@ class TestExecuteQuery:
         assert results[0]["age"] == 25
 
 
+class TestUpsertFiltersUnknownColumns:
+    """``upsert`` must drop keys the table schema doesn't declare.
+
+    ``BaseCollection.save_entity`` unconditionally injects
+    ``date_created`` / ``date_updated`` for new entities, but not every
+    entity's table carries those columns (e.g. ``agent_skill_invocations``
+    uses ``invoked_at`` and has neither). Writing an unknown column to
+    SQLite raises ``OperationalError: table X has no column named ...``;
+    the L1 write must mirror the L3 projection and silently drop unknown
+    keys instead.
+    """
+
+    def test_unknown_columns_are_dropped(self, backend: SQLiteBackend) -> None:
+        entity_id = str(uuid.uuid4())
+        # ``date_created`` / ``date_updated`` are NOT columns on
+        # ``test_entities``; the framework would inject them on a new
+        # entity. The upsert must not raise.
+        backend.upsert(
+            "test_entities",
+            {
+                "id": entity_id,
+                "name": "Filter Test",
+                "age": 30,
+                "active": False,
+                "data": None,
+                "created_at": None,
+                "raw_bytes": None,
+                "date_created": datetime.now(timezone.utc),
+                "date_updated": datetime.now(timezone.utc),
+            },
+        )
+        row = backend.select_by_id("test_entities", entity_id)
+        assert row is not None
+        assert row["name"] == "Filter Test"
+        # The unknown keys never reached the row.
+        assert "date_created" not in row
+        assert "date_updated" not in row
+
+
 class TestSerializationRoundTrip:
     """Verify round-trip serialization for various Python types."""
 
