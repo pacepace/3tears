@@ -18,12 +18,10 @@ Requirements TOOL-15 / TOOL-16 + PLACEMENT §1.13.
 
 from __future__ import annotations
 
-import hmac
 import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from hashlib import sha256
 from typing import Any, Final
 from uuid import UUID
 
@@ -44,6 +42,7 @@ from threetears.agent.wake.events import (
     EVENT_WEBHOOK_RECEIVED,
     EVENT_WEBHOOK_REJECTED,
 )
+from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.types import (
     DeliveryAdapter,
@@ -113,6 +112,7 @@ async def webhook_receive(
     rate_window_seconds: int = DEFAULT_RATE_WINDOW_SECONDS,
     now: datetime | None = None,
     wake_config: WakeConfig = DEFAULT_WAKE_CONFIG,
+    pre_verified: bool = False,
 ) -> WebhookReceiveResult:
     """Verify, rate-limit, and dispatch an inbound webhook.
 
@@ -122,6 +122,9 @@ async def webhook_receive(
        receiver has no conversation context until this lookup).
     2. Verify HMAC over the raw ``payload_bytes`` against the
        subscription's decrypted secret (constant-time compare).
+       Skipped when ``pre_verified=True`` -- the receiver layer has
+       already dispatched via its verifier registry and confirmed the
+       signature.
     3. Apply the optional ``allowed_source_pattern`` regex against
        ``source_ip``.
     4. Count recent fires for the subscription and reject when the
@@ -176,6 +179,15 @@ async def webhook_receive(
         / the subscription row override) so callers passing the default
         config still get full coverage.
     :ptype wake_config: WakeConfig
+    :param pre_verified: when ``True``, the caller (typically the
+        channels-side :class:`~threetears.channels.webhook.WebhookReceiver`)
+        has already dispatched via its verifier registry and confirmed
+        the HMAC signature. This branch skips the inline HMAC compute
+        + the missing-signature 401 -- those have already been mapped
+        by the receiver. Defaults to ``False`` so direct callers
+        (tests, future vendor adapters that bypass the receiver) still
+        get the full verify path.
+    :ptype pre_verified: bool
     :return: outcome envelope the receiver translates to an HTTP
         response
     :rtype: WebhookReceiveResult
@@ -208,48 +220,55 @@ async def webhook_receive(
         )
 
     # HMAC verification ------------------------------------------------
-    if not signature_header:
-        log.info(
-            EVENT_WEBHOOK_AUTH_FAILED,
-            extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "missing_header"}},
-        )
-        emitter.inc_webhook_received(outcome="auth_failed")
-        return WebhookReceiveResult(
-            status_code=401,
-            fire_id=None,
-            message="missing signature header",
-        )
-    try:
-        secret = sub.decrypt_secret(encryption_service)
-    except Exception as exc:  # noqa: BLE001 - encryption boundary
-        log.warning(
-            "webhook_receive secret decrypt failed",
-            extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
-        )
-        return WebhookReceiveResult(
-            status_code=500,
-            fire_id=None,
-            message=f"secret decrypt failed: {exc}",
-        )
-    expected = (
-        "sha256="
-        + hmac.new(
+    # When ``pre_verified=True`` the channels-side receiver has already
+    # dispatched the inbound through its verifier registry (which calls
+    # the canonical :func:`~threetears.agent.wake.hmac_util.verify_generic_hmac_sha256`
+    # for the default scheme + any vendor verifier the consumer registered)
+    # and confirmed the signature -- both the missing-header and bad-signature
+    # branches are owned by the receiver in that path. Direct callers
+    # (tests, future surfaces bypassing the receiver) get the default
+    # ``pre_verified=False`` so the full verify path still runs here.
+    if not pre_verified:
+        if not signature_header:
+            log.info(
+                EVENT_WEBHOOK_AUTH_FAILED,
+                extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "missing_header"}},
+            )
+            emitter.inc_webhook_received(outcome="auth_failed")
+            return WebhookReceiveResult(
+                status_code=401,
+                fire_id=None,
+                message="missing signature header",
+            )
+        try:
+            secret = sub.decrypt_secret(encryption_service)
+        except Exception as exc:  # noqa: BLE001 - encryption boundary
+            log.warning(
+                "webhook_receive secret decrypt failed",
+                extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
+            )
+            return WebhookReceiveResult(
+                status_code=500,
+                fire_id=None,
+                message=f"secret decrypt failed: {exc}",
+            )
+        # Same constant-time compare the receiver-side default verifier
+        # uses (single source of truth in ``hmac_util``).
+        if not verify_generic_hmac_sha256(
             secret.encode("utf-8"),
             payload_bytes,
-            sha256,
-        ).hexdigest()
-    )
-    if not hmac.compare_digest(expected, signature_header):
-        log.info(
-            EVENT_WEBHOOK_AUTH_FAILED,
-            extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "bad_signature"}},
-        )
-        emitter.inc_webhook_received(outcome="auth_failed")
-        return WebhookReceiveResult(
-            status_code=401,
-            fire_id=None,
-            message="invalid signature",
-        )
+            signature_header,
+        ):
+            log.info(
+                EVENT_WEBHOOK_AUTH_FAILED,
+                extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "bad_signature"}},
+            )
+            emitter.inc_webhook_received(outcome="auth_failed")
+            return WebhookReceiveResult(
+                status_code=401,
+                fire_id=None,
+                message="invalid signature",
+            )
 
     # Source IP allow-list --------------------------------------------
     if sub.allowed_source_pattern is not None and source_ip is not None:

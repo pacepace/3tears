@@ -326,8 +326,48 @@ class TestSubscriptionCheckConstraints:
         finally:
             await conn.close()
 
-    async def test_verification_scheme_rejected(self, pg_schema: tuple[str, str]) -> None:
-        """A future scheme not yet in the enum fails."""
+    async def test_verification_scheme_slug_format_accepts_vendor_names(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """Slug-shaped vendor names (post-v005) are accepted by the format guard.
+
+        v005 replaced the hardcoded ``IN ('generic_hmac_sha256')`` CHECK with
+        a slug-format guard (``^[a-z0-9_]+$``, length 1-64) so the receiver's
+        pluggable verifier registry isn't blocked at the schema layer. This
+        test exercises a vendor-scheme name (``'slack_signing'``) that
+        previously raised on INSERT.
+        """
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            await conn.execute(
+                "INSERT INTO webhook_subscriptions "
+                "(conversation_id, subscription_id, user_id, agent_id, "
+                " secret_ciphertext, verification_scheme) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                _new_uuid(),
+                _new_uuid(),
+                _new_uuid(),
+                _new_uuid(),
+                b"\x00",
+                "slack_signing",
+            )
+            # Sanity: the row exists with the vendor scheme value.
+            stored = await conn.fetchval(
+                "SELECT verification_scheme FROM webhook_subscriptions WHERE verification_scheme = $1",
+                "slack_signing",
+            )
+            assert stored == "slack_signing"
+        finally:
+            await conn.close()
+
+    async def test_verification_scheme_rejects_uppercase(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """The slug format guard rejects uppercase letters."""
         url, schema = pg_schema
         conn = await asyncpg.connect(url)
         try:
@@ -343,7 +383,82 @@ class TestSubscriptionCheckConstraints:
                     _new_uuid(),
                     _new_uuid(),
                     b"\x00",
-                    "slack_signing",
+                    "GitHub",
+                )
+        finally:
+            await conn.close()
+
+    async def test_verification_scheme_rejects_punctuation(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """The slug format guard rejects hyphens / dots / spaces."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            with pytest.raises(asyncpg.exceptions.CheckViolationError):
+                await conn.execute(
+                    "INSERT INTO webhook_subscriptions "
+                    "(conversation_id, subscription_id, user_id, agent_id, "
+                    " secret_ciphertext, verification_scheme) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    b"\x00",
+                    "slack-signing",
+                )
+        finally:
+            await conn.close()
+
+    async def test_verification_scheme_rejects_empty(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """The length guard rejects the empty string."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            with pytest.raises(asyncpg.exceptions.CheckViolationError):
+                await conn.execute(
+                    "INSERT INTO webhook_subscriptions "
+                    "(conversation_id, subscription_id, user_id, agent_id, "
+                    " secret_ciphertext, verification_scheme) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    b"\x00",
+                    "",
+                )
+        finally:
+            await conn.close()
+
+    async def test_verification_scheme_rejects_too_long(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """The length guard rejects values over 64 chars."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            with pytest.raises(asyncpg.exceptions.CheckViolationError):
+                await conn.execute(
+                    "INSERT INTO webhook_subscriptions "
+                    "(conversation_id, subscription_id, user_id, agent_id, "
+                    " secret_ciphertext, verification_scheme) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    _new_uuid(),
+                    b"\x00",
+                    "a" * 65,
                 )
         finally:
             await conn.close()

@@ -14,16 +14,17 @@ and writes to ``wake_fires``); the per-test ``_apply_schema`` helper
 in ``test_webhook_e2e.py`` registers all three migration packs
 against the schema this fixture creates.
 
-No ``__init__.py`` under ``tests/integration/`` so this conftest's
-module name is the full rootdir-relative path (matches the wake
-package's integration conftest); a shared module name like
-``tests.integration.conftest`` would collide with other packages'
-integration conftests under pytest's ``--import-mode=importlib``.
+No ``__init__.py`` under ``tests/integration/`` (pytest is run with
+``--import-mode=importlib`` so the conftest module name is the
+rootdir-relative path); test files use the ``from .conftest import
+AsyncpgStore`` relative import pattern the agent-wake package uses,
+which works without an ``__init__.py`` under importlib mode.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 import asyncpg
 import pytest
@@ -39,6 +40,30 @@ def pg_url(db_container: str) -> str:
     :rtype: str
     """
     return db_container
+
+
+class AsyncpgStore:
+    """``DataStore``-shape wrapper over an asyncpg connection.
+
+    Mirrors the helper in :mod:`packages.agent.wake.tests.integration.conftest`
+    so the migration runner has its ``execute`` + ``query`` surface
+    when called against a raw asyncpg connection. Shared via
+    ``from .conftest import AsyncpgStore`` from integration test
+    modules in this package (the wake package uses the same pattern).
+    """
+
+    def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
+
+    async def execute(self, sql: str, *params: Any) -> str:
+        """Execute SQL via the underlying connection."""
+        result: str = await self._conn.execute(sql, *params)
+        return result
+
+    async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        """Fetch rows as a list of dicts."""
+        rows = await self._conn.fetch(sql, *params)
+        return [dict(r) for r in rows]
 
 
 @pytest.fixture

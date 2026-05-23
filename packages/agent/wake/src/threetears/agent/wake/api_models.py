@@ -80,7 +80,15 @@ _FireStatus = Literal[
     "failed",
 ]
 _FireSource = Literal["scheduled_tick", "webhook"]
-_VerificationScheme = Literal["generic_hmac_sha256"]
+
+# Format guard for ``verification_scheme`` (mirrors v005's
+# ``^[a-z0-9_]+$`` length 1-64 CHECK). Vendor schemes (``'github'``,
+# ``'stripe'``, ``'slack_signing'``, ...) register at runtime via
+# :meth:`~threetears.channels.webhook.WebhookReceiver.register_verifier`,
+# so the Pydantic surface accepts any slug-shaped value rather than
+# pinning to a Literal that would defeat the registry. The
+# receiver returns 400 for unregistered slugs at handle time.
+_VERIFICATION_SCHEME_PATTERN = r"^[a-z0-9_]{1,64}$"
 
 
 # extra='forbid' fails closed on unexpected fields so a client typo
@@ -281,7 +289,9 @@ class WebhookSubscriptionResponse(BaseModel):
     task_prompt_template: str | None
     delivery_target: _DeliveryTarget
     delivery_config: dict[str, Any]
-    verification_scheme: _VerificationScheme
+    verification_scheme: str = Field(
+        pattern=_VERIFICATION_SCHEME_PATTERN,
+    )
     default_skill_id: UUID | None
     allowed_source_pattern: str | None
     rate_limit_per_minute: int | None

@@ -93,6 +93,10 @@ from threetears.agent.wake.events import (
     EVENT_WEBHOOK_RECEIVED,
     EVENT_WEBHOOK_REJECTED,
 )
+from threetears.agent.wake.hmac_util import (
+    compute_generic_hmac_sha256_signature,
+    verify_generic_hmac_sha256,
+)
 from threetears.agent.wake.metrics import (
     FORBIDDEN_LABEL_NAMES,
     WAKE_DELIVERY_TOTAL,
@@ -242,6 +246,7 @@ __all__ = [
     "WebhookSubscriptionStatus",
     "_check_active_schedule_cap",
     "_check_rate_limit",
+    "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",
     "get_wake_emitter",
@@ -263,6 +268,7 @@ __all__ = [
     "reset_wake_emitter_for_testing",
     "validate_context_from_chain",
     "validate_schedule_config",
+    "verify_generic_hmac_sha256",
     "wake_tick_job",
     "webhook_receive",
 ]

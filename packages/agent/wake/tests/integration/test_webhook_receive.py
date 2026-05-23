@@ -412,3 +412,44 @@ async def test_webhook_receive_paused_subscription_404(
         assert result.status_code == 404
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_receive_pre_verified_skips_hmac_compute(
+    pg_schema: tuple[str, str],
+) -> None:
+    """With ``pre_verified=True`` the adapter trusts the caller's verify
+    decision and skips the inline HMAC compute (so a deliberately
+    wrong / arbitrary signature value still dispatches successfully).
+
+    Proves the new receiver-side wiring contract: the channels-side
+    :class:`~threetears.channels.webhook.WebhookReceiver` does the
+    verifier-registry dispatch then calls this function with
+    ``pre_verified=True``, and the adapter does NOT re-verify.
+    """
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        conv_id = _new_uuid()
+        sub_id, _real_secret = await _seed_subscription(pool, conversation_id=conv_id)
+        handler = _RecordingHandler()
+        payload = b'{"type":"pre-verified"}'
+        # A signature value that would NOT pass the inline HMAC check
+        # -- proves the inline compute is skipped when pre_verified=True.
+        result = await webhook_receive(
+            subscription_id=sub_id,
+            payload_bytes=payload,
+            signature_header="vendor=trusted-by-receiver",
+            source_ip=None,
+            pool=pool,
+            encryption_service=_IdentityEncryption(),
+            handler=handler,
+            pre_verified=True,
+        )
+        assert result.status_code == 202, result
+        assert result.fire_id is not None
+        assert len(handler.invocations) == 1
+        trigger, _ = handler.invocations[0]
+        assert "pre-verified" in (trigger.task_prompt or "")
+    finally:
+        await pool.close()

@@ -28,9 +28,11 @@ CHECK constraints:
 
 - ``execution_mode IN ('inline', 'spawn')`` -- CHECK-pinned.
 - ``delivery_target IN ('conversation', 'email')`` -- CHECK-pinned.
-- ``verification_scheme IN ('generic_hmac_sha256')`` -- CHECK-pinned;
-  the enum is reserved for future schemes (slack_signing,
-  github_hmac).
+- ``verification_scheme IN ('generic_hmac_sha256')`` -- CHECK-pinned
+  on creation; REPLACED by v005 with a slug-format guard once the
+  receiver's pluggable verifier registry landed (the hardcoded-value
+  CHECK made the registry useless because the schema rejected any
+  vendor scheme at INSERT time). See v005 for the open form.
 - ``status IN ('active', 'paused')`` -- CHECK-pinned. No ``expired``
   state because webhook subscriptions are long-lived (unlike one-shot
   schedules).

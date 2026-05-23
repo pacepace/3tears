@@ -18,6 +18,7 @@ checkout.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -301,6 +302,64 @@ def test_webhook_subscription_response_round_trip() -> None:
     again = WebhookSubscriptionResponse.model_validate(response.model_dump())
     assert again.verification_scheme == "generic_hmac_sha256"
     assert "secret_plaintext" not in again.model_dump()
+
+
+def test_webhook_subscription_response_accepts_vendor_verification_scheme() -> None:
+    """Vendor scheme slugs (registered at runtime via the receiver's
+    :meth:`~threetears.channels.webhook.WebhookReceiver.register_verifier`)
+    pass the Pydantic format guard. The model accepts any slug-shaped
+    value (post-v005 the schema does too); the receiver returns 400
+    at handle time when the scheme is not registered.
+    """
+    response = WebhookSubscriptionResponse(
+        subscription_id=uuid4(),
+        conversation_id=uuid4(),
+        user_id=uuid4(),
+        agent_id=uuid4(),
+        name="github push",
+        execution_mode="inline",
+        status="active",
+        task_prompt_template="x",
+        delivery_target="conversation",
+        delivery_config={},
+        verification_scheme="github",
+        default_skill_id=None,
+        allowed_source_pattern=None,
+        rate_limit_per_minute=None,
+        last_fired_at=None,
+        date_created=datetime.now(UTC),
+        date_updated=datetime.now(UTC),
+    )
+    again = WebhookSubscriptionResponse.model_validate(response.model_dump())
+    assert again.verification_scheme == "github"
+
+
+def test_webhook_subscription_response_rejects_invalid_scheme_shape() -> None:
+    """The slug format guard (``^[a-z0-9_]{1,64}$``) rejects punctuation
+    and uppercase. Mirrors v005's CHECK constraint so the API + DB
+    enforce the same shape.
+    """
+    base_kwargs: dict[str, Any] = {
+        "subscription_id": uuid4(),
+        "conversation_id": uuid4(),
+        "user_id": uuid4(),
+        "agent_id": uuid4(),
+        "name": None,
+        "execution_mode": "inline",
+        "status": "active",
+        "task_prompt_template": None,
+        "delivery_target": "conversation",
+        "delivery_config": {},
+        "default_skill_id": None,
+        "allowed_source_pattern": None,
+        "rate_limit_per_minute": None,
+        "last_fired_at": None,
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    }
+    for bad in ("GitHub", "with-hyphen", "with space", "", "a" * 65):
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            WebhookSubscriptionResponse(verification_scheme=bad, **base_kwargs)
 
 
 def test_create_webhook_subscription_response_carries_plaintext() -> None:

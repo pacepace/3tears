@@ -50,6 +50,12 @@ Version history:
   ``'dispatching'`` placeholder value so ``create_dispatching`` can
   write a distinct in-flight status instead of pre-claiming the
   terminal ``'fired'``.
+- v005 opens the ``webhook_subscriptions.verification_scheme`` CHECK
+  constraint: replaces the hardcoded ``IN ('generic_hmac_sha256')``
+  predicate (which made the receiver's pluggable verifier registry
+  useless) with a slug-format guard (``^[a-z0-9_]+$``, length 1-64).
+  Registered-scheme validation happens at handle time in the
+  receiver.
 """
 
 from __future__ import annotations
@@ -65,6 +71,9 @@ from threetears.agent.wake.migrations.v003_create_webhook_subscriptions import (
 )
 from threetears.agent.wake.migrations.v004_add_dispatching_status import (
     add_dispatching_status,
+)
+from threetears.agent.wake.migrations.v005_open_verification_scheme_check import (
+    open_verification_scheme_check,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -97,6 +106,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(2)(create_wake_fires)
     pkg.version(3)(create_webhook_subscriptions)
     pkg.version(4)(add_dispatching_status)
+    pkg.version(5)(open_verification_scheme_check)
     runner.register(pkg)
     return pkg
 
@@ -107,5 +117,6 @@ __all__ = [
     "create_agent_wake_schedules",
     "create_wake_fires",
     "create_webhook_subscriptions",
+    "open_verification_scheme_check",
     "register",
 ]

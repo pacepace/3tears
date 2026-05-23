@@ -1,36 +1,50 @@
 """Generic HTTP webhook receiver for the 3tears channels package.
 
 Sibling of the Slack / Discord / WebSocket inbound adapters: receives
-HTTP POSTs at a configurable mount point on a host FastAPI app, verifies
-the HMAC signature, and delegates to
-:func:`threetears.agent.wake.webhook_adapter.webhook_receive` for the
-verify + rate-limit + trigger-construct + dispatch flow. Maps the
-:class:`WebhookReceiveResult` outcome to a JSON HTTP response.
+HTTP POSTs at a configurable mount point on a host FastAPI app, looks
+up the subscription, dispatches HMAC verification through the
+:meth:`WebhookReceiver.register_verifier` registry by the
+subscription's ``verification_scheme`` column, and on success delegates
+to :func:`threetears.agent.wake.webhook_adapter.webhook_receive` with
+``pre_verified=True`` for the rate-limit + trigger-construct + dispatch
+flow. Maps the :class:`WebhookReceiveResult` outcome to a JSON HTTP
+response.
 
 Spec ref: ``docs/agent-wake/shard-06-channels-webhook-receiver.md``.
 PLACEMENT §1.13 (webhook receiver platform-side) + §3.3 (locked:
 ``3tears-channels``).
 
 The receiver framework owns the HTTP routing-and-response plumbing
-ONLY. The verify + rate-limit + dispatch flow is owned by
-:func:`webhook_receive` in ``3tears-agent-wake`` (shard 04) so the
-wake invariants stay localised. Vendor-specific signature schemes
-(GitHub ``X-Hub-Signature-256``, Stripe ``Stripe-Signature``, etc.)
-plug in via :meth:`WebhookReceiver.register_verifier` without
-modifying this module.
+PLUS the verifier-registry dispatch. The wake-side
+:func:`webhook_receive` owns the rate-limit + trigger-construct +
+dispatch flow so the platform's wake invariants stay localised.
+Vendor-specific signature schemes (GitHub ``X-Hub-Signature-256``,
+Stripe ``Stripe-Signature``, etc.) plug in via
+:meth:`WebhookReceiver.register_verifier` without modifying this
+module.
+
+Verifier signature
+------------------
+
+A :data:`Verifier` is a callable taking
+``(secret_bytes, payload_bytes, signature_value) -> bool``. The
+receiver extracts the signature value using the configured
+``signature_header`` name and hands the verifier the RAW value (e.g.
+``"sha256=abc..."``) -- vendor schemes that use a different header
+name (e.g. ``X-Hub-Signature-256``) work uniformly because the
+receiver does the header-name resolution once.
 """
 
 from __future__ import annotations
 
-import hmac
 from collections.abc import Callable
-from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -77,14 +91,21 @@ DEFAULT_MAX_PAYLOAD_BYTES: Final[int] = 1 << 20  # 1 MiB
 _DEFAULT_RETRY_AFTER_SECONDS: Final[str] = "60"
 
 
-Verifier = Callable[[bytes, bytes, dict[str, str]], bool]
+Verifier = Callable[[bytes, bytes, str], bool]
 """Signature-verification callable plugged into the receiver.
 
 The :class:`WebhookReceiver` looks up the verifier for an inbound
 subscription by its ``verification_scheme`` (e.g. ``'generic_hmac_sha256'``
-or a vendor name) and invokes it with ``(secret, payload_bytes, headers)``.
+or a vendor name) and invokes it with ``(secret, payload_bytes, signature_value)``.
 A truthy return means the signature is valid; the receiver then hands
-off to :func:`webhook_receive` for the rest of the pipeline.
+off to :func:`webhook_receive` for the rest of the pipeline with
+``pre_verified=True``.
+
+``signature_value`` is the RAW header value the receiver extracted
+using the configured ``signature_header`` name (e.g. ``"sha256=<hex>"``
+or ``"t=<ts>,v1=<sig>"`` for Stripe). Verifiers do NOT receive the full
+headers dict so vendor schemes that use a non-default header name work
+uniformly.
 
 Vendor adapters (``'github'``, ``'stripe'``, ``'slack'``) register their
 own verifier via :meth:`WebhookReceiver.register_verifier`. Verifier
@@ -93,48 +114,17 @@ constant-time compare) to guard against timing attacks.
 """
 
 
-def verify_generic_hmac_sha256(
-    secret: bytes,
-    payload: bytes,
-    headers: dict[str, str],
-) -> bool:
-    """Verify an HMAC-SHA256 signature in the platform-default header format.
-
-    The default scheme uses an ``X-3Tears-Webhook-Signature`` header
-    carrying ``sha256=<hex>``. The HMAC is computed over the raw
-    request bytes with :func:`hmac.compare_digest` for constant-time
-    comparison (timing-attack defence). Returns ``False`` for any
-    structural problem (missing header, wrong prefix, length mismatch)
-    rather than raising; the receiver maps the boolean to a 403.
-
-    :param secret: subscription's decrypted HMAC secret
-    :ptype secret: bytes
-    :param payload: raw HTTP body to verify against
-    :ptype payload: bytes
-    :param headers: request headers as a case-folded dict (the receiver
-        passes lowercase header names per HTTP/2 convention; verifiers
-        SHOULD look up by lowercase)
-    :ptype headers: dict[str, str]
-    :return: ``True`` when the computed HMAC matches the header
-        verbatim, ``False`` otherwise
-    :rtype: bool
-    """
-    sig_header = headers.get(DEFAULT_SIGNATURE_HEADER.lower(), "")
-    if not sig_header.startswith("sha256="):
-        return False
-    expected = "sha256=" + hmac.new(secret, payload, sha256).hexdigest()
-    return hmac.compare_digest(expected, sig_header)
-
-
 class WebhookReceiver:
     """Generic HMAC-verified inbound webhook receiver.
 
     Routes ``POST {mount_path}/{subscription_id}`` into
     :func:`threetears.agent.wake.webhook_adapter.webhook_receive`. The
     receiver framework owns the HTTP boundary (body read, size cap,
-    signature header extraction, source-IP detection, response shape);
-    the wake-side adapter owns the verify + rate-limit + trigger +
-    dispatch flow.
+    signature header extraction, source-IP detection, response shape)
+    AND the verifier-registry dispatch (look up by
+    ``verification_scheme`` column, invoke verifier, fall through to
+    the wake adapter on success); the wake-side adapter owns the
+    rate-limit + trigger + dispatch flow.
 
     Consumers construct the receiver at app-startup time and register
     it on their FastAPI app via :meth:`register`. All dependencies
@@ -164,7 +154,8 @@ class WebhookReceiver:
         anything larger returns 413 without invoking the wake adapter
     :ivar _verifiers: scheme name -> :class:`Verifier` registry; the
         receiver looks up by the subscription row's
-        ``verification_scheme`` column
+        ``verification_scheme`` column at handle time. Unknown schemes
+        return 400; verifier-returns-False maps to 403.
     """
 
     def __init__(
@@ -227,8 +218,10 @@ class WebhookReceiver:
         Vendor-specific schemes (``'github'``, ``'stripe'``,
         ``'slack'``, etc.) plug in via this method without modifying
         the receiver. The subscription row's ``verification_scheme``
-        column drives the lookup; ``'generic_hmac_sha256'`` is
-        pre-registered with :func:`verify_generic_hmac_sha256`.
+        column drives the lookup at handle time;
+        ``'generic_hmac_sha256'`` is pre-registered with
+        :func:`verify_generic_hmac_sha256` so the platform default
+        works without consumer ceremony.
 
         Overriding the default scheme is supported (e.g. a consumer
         wanting a non-standard header format can register a custom
@@ -279,20 +272,25 @@ class WebhookReceiver:
            gets the raw header value).
         3. Resolve source IP via ``X-Forwarded-For`` first-hop, falling
            back to socket address.
-        4. Hand off to :func:`webhook_receive` for subscription lookup,
-           verification, rate-limit, trigger build, dispatch.
-        5. Map the :class:`WebhookReceiveResult` to a
+        4. Look up the subscription row by bare ``subscription_id`` so
+           we can read its ``verification_scheme`` column and decrypt
+           its secret.
+        5. Dispatch verification through :attr:`_verifiers`: unknown
+           scheme -> 400; verifier-returns-False -> 403; success ->
+           hand off to :func:`webhook_receive` with ``pre_verified=True``.
+        6. Map the :class:`WebhookReceiveResult` to a
            :class:`JSONResponse` with the corresponding status code
            and (for 429) a ``Retry-After`` header.
 
-        The webhook adapter's per-subscription verifier-lookup happens
-        inside :func:`webhook_receive` against the subscription's
-        ``verification_scheme`` column; the receiver framework's
-        :attr:`_verifiers` registry is consulted only when a future
-        revision extends the adapter to dispatch via the registry.
-        For v1 the adapter hardcodes ``generic_hmac_sha256``; the
-        registry exists so vendor schemes can land without an adapter
-        change.
+        The subscription lookup happens twice (once here for the
+        verifier dispatch, once inside :func:`webhook_receive` for
+        the dispatch flow). This double-fetch is intentional: it
+        keeps the wake adapter's invariants self-contained (the
+        adapter is a complete entry point for direct callers like
+        the wake-side tests + future vendor adapters that bypass the
+        receiver) and lets the receiver layer own the verifier
+        dispatch surface without coupling the adapter to a registry
+        type it does not otherwise need.
 
         :param subscription_id: bare subscription UUID from the path
         :ptype subscription_id: UUID
@@ -302,12 +300,15 @@ class WebhookReceiver:
             diagnostic ``message`` field
         :rtype: Response
         """
-        # Lazy import keeps this module's load cost cheap when the
+        # Lazy imports keep this module's load cost cheap when the
         # consumer doesn't actually mount webhooks (CLI tools, test
         # runners that only touch other channel adapters). Same
         # pattern as agent-wake's dispatch module uses for its
         # CollectionRegistry import.
+        from threetears.agent.wake.collections import WebhookSubscriptionCollection  # noqa: PLC0415
         from threetears.agent.wake.webhook_adapter import webhook_receive  # noqa: PLC0415
+        from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
+        from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
 
         body = await request.body()
         if len(body) > self._max_payload_bytes:
@@ -319,6 +320,103 @@ class WebhookReceiver:
         signature = request.headers.get(self._signature_header)
         source_ip = self._resolve_source_ip(request)
 
+        # Subscription lookup + verifier-registry dispatch ----------------
+        # We need the subscription row here (not just inside the wake
+        # adapter) so we can read its ``verification_scheme`` column,
+        # decrypt its secret, and dispatch verification through the
+        # registry. The wake adapter does the same lookup for the
+        # dispatch flow; the duplication is the cost of keeping the
+        # verifier dispatch on the receiver layer (where vendor
+        # schemes register) without coupling the adapter to the
+        # registry type.
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=self._pool)
+        cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+        subs = WebhookSubscriptionCollection(registry=registry, config=cfg)
+        sub = await subs.find_by_id(subscription_id)
+        if sub is None or sub.status != "active":
+            # Forward to the wake adapter unchanged -- it owns the
+            # not-found / paused outcome shape (404). Skipping
+            # verification here is safe because the adapter will
+            # short-circuit before any payload work.
+            result = await webhook_receive(
+                subscription_id=subscription_id,
+                payload_bytes=body,
+                signature_header=signature,
+                source_ip=source_ip,
+                pool=self._pool,
+                encryption_service=self._encryption_service,
+                handler=self._handler,
+                delivery_adapters=self._delivery_adapters,
+                wake_config=self._wake_config,
+            )
+            return self._json_response(result)
+
+        scheme = sub.verification_scheme
+        verifier = self._verifiers.get(scheme)
+        if verifier is None:
+            log.warning(
+                "webhook_receiver unknown verification_scheme",
+                extra={
+                    "extra_data": {
+                        "subscription_id": str(subscription_id),
+                        "scheme": scheme,
+                    },
+                },
+            )
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "fire_id": None,
+                    "message": f"unknown verification scheme: {scheme}",
+                },
+            )
+
+        if not signature:
+            # No signature header at all -- map straight to 401 (same
+            # outcome the wake adapter would produce on its own). Skip
+            # the verifier so vendor verifiers don't have to defend
+            # against ``None`` / empty inputs.
+            return JSONResponse(
+                status_code=401,
+                content={"fire_id": None, "message": "missing signature header"},
+            )
+
+        try:
+            secret = sub.decrypt_secret(self._encryption_service)
+        except Exception as exc:  # noqa: BLE001 - encryption boundary
+            log.warning(
+                "webhook_receiver secret decrypt failed",
+                extra={
+                    "extra_data": {
+                        "subscription_id": str(subscription_id),
+                        "error": str(exc),
+                    },
+                },
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "fire_id": None,
+                    "message": f"secret decrypt failed: {exc}",
+                },
+            )
+
+        if not verifier(secret.encode("utf-8"), body, signature):
+            log.info(
+                "webhook_receiver signature verification failed",
+                extra={
+                    "extra_data": {
+                        "subscription_id": str(subscription_id),
+                        "scheme": scheme,
+                    },
+                },
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"fire_id": None, "message": "invalid signature"},
+            )
+
         result = await webhook_receive(
             subscription_id=subscription_id,
             payload_bytes=body,
@@ -329,8 +427,25 @@ class WebhookReceiver:
             handler=self._handler,
             delivery_adapters=self._delivery_adapters,
             wake_config=self._wake_config,
+            pre_verified=True,
         )
+        return self._json_response(result)
 
+    def _json_response(self, result: Any) -> Response:
+        """Map a :class:`WebhookReceiveResult` to a :class:`JSONResponse`.
+
+        Extracted as a helper because both the "subscription not
+        found / paused -> pass-through to the adapter" and the
+        "verified -> dispatch via adapter" branches in :meth:`_handle`
+        produce the same response shape.
+
+        :param result: outcome envelope returned by
+            :func:`webhook_receive`
+        :ptype result: WebhookReceiveResult
+        :return: JSON response with the status code, fire-id, and
+            message verbatim, plus a ``Retry-After: 60`` header on 429
+        :rtype: Response
+        """
         headers: dict[str, str] = {}
         if result.status_code == 429:
             headers["Retry-After"] = _DEFAULT_RETRY_AFTER_SECONDS

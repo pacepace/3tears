@@ -124,11 +124,18 @@ FireStatus = Literal[
 DeliveryTarget = Literal["conversation", "email"]
 
 
-# ``verification_scheme`` column on ``webhook_subscriptions``. Only
-# ``'generic_hmac_sha256'`` is recognised in v1; the enum is typed so
-# adding ``'slack_signing'`` / ``'github_hmac'`` in a future shard
-# requires only a CHECK migration + Literal update.
-VerificationScheme = Literal["generic_hmac_sha256"]
+# ``verification_scheme`` column on ``webhook_subscriptions``. v1
+# ships ``'generic_hmac_sha256'`` as the platform default; vendor
+# schemes (``'github'``, ``'stripe'``, ``'slack_signing'``, ...)
+# plug in at runtime via
+# :meth:`~threetears.channels.webhook.WebhookReceiver.register_verifier`
+# and the schema accepts any slug-shaped value (``^[a-z0-9_]+$``,
+# length 1-64; enforced by v005's CHECK constraint).
+# ``str`` rather than ``Literal[...]`` because typing every vendor
+# scheme up front would defeat the registry's pluggability -- the
+# format guard lives at the schema layer + the receiver returns 400
+# for any value not in its in-process registry.
+VerificationScheme = str
 
 
 # ``status`` column on ``webhook_subscriptions``. Symmetrical to

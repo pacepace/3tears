@@ -8,15 +8,24 @@ a valid HMAC-signed payload and asserts:
 - ``wake_fires`` row persisted with ``status='fired'``
 - The handler callback was invoked with the rendered task prompt
 
-Also covers invalid-signature (401) and oversized-body (413) paths
-end-to-end against the real adapter (the unit tests stub
-``webhook_receive`` for the routing-only coverage; this file is the
-real integration test required by Requirement WEBHOOK-10).
+Also covers invalid-signature (403), oversized-body (413), and the
+registered-vendor-scheme path end-to-end against the real adapter (the
+unit tests stub ``webhook_receive`` for the routing-only coverage;
+this file is the real integration test required by Requirement
+WEBHOOK-10).
 
 The test uses ``httpx.AsyncClient`` + ``ASGITransport`` so the FastAPI
 app is exercised through the same path a real HTTP request would
 take, including starlette's request body read + header dict
 construction + response serialisation.
+
+The :class:`AsyncpgStore` helper comes via the relative
+``from .conftest import AsyncpgStore`` import -- the wake package's
+integration tests use the same pattern (no ``__init__.py`` required
+under pytest's ``--import-mode=importlib``). The Critic's audit
+identified the previous inline-shim pattern as inconsistent with the
+wake convention; switching to the relative import keeps one shared
+helper.
 """
 
 from __future__ import annotations
@@ -52,32 +61,10 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
 
+from .conftest import AsyncpgStore
+
 
 pytestmark = pytest.mark.integration
-
-
-class _AsyncpgStore:
-    """``DataStore``-shape wrapper over an asyncpg connection.
-
-    Inline shim for the migration runner (the runner's protocol is
-    just ``execute`` + ``query``). Mirrors the helper in the
-    ``conftest.py`` next to this file -- inlined here so the test file
-    does not need a relative import (relative imports require a
-    package ``__init__.py``, which would collide with other packages'
-    ``tests/integration/conftest.py`` modules under pytest's importlib
-    mode).
-    """
-
-    def __init__(self, conn: asyncpg.Connection) -> None:
-        self._conn = conn
-
-    async def execute(self, sql: str, *params: Any) -> str:
-        result: str = await self._conn.execute(sql, *params)
-        return result
-
-    async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
-        rows = await self._conn.fetch(sql, *params)
-        return [dict(r) for r in rows]
 
 
 def _new_uuid() -> UUID:
@@ -159,7 +146,7 @@ async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
         register_conversations(runner)
         register_skills(runner)
         register_wake(runner)
-        store = _AsyncpgStore(setup_conn)
+        store = AsyncpgStore(setup_conn)
         await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
     finally:
         await setup_conn.close()
@@ -299,7 +286,13 @@ async def test_webhook_receiver_invalid_signature_returns_401(
                 headers={DEFAULT_SIGNATURE_HEADER: "sha256=bogus"},
             )
 
-        assert response.status_code == 401, response.text
+        # Receiver-side verifier registry returns 403 when the
+        # registered scheme's verifier rejects the signature. (The
+        # pre-shard-06-fix path returned 401 from the wake adapter's
+        # inline HMAC compare; the registry rewiring moves the
+        # decision to the receiver, where verifier-returns-False
+        # naturally maps to 403.)
+        assert response.status_code == 403, response.text
         body = response.json()
         assert body["fire_id"] is None
         assert "invalid signature" in body["message"]
@@ -351,6 +344,169 @@ async def test_webhook_receiver_oversized_body_returns_413(
         # No fire row should exist.
         count = await pool.fetchval("SELECT COUNT(*) FROM wake_fires")
         assert count == 0
+        assert handler.invocations == []
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_receiver_custom_vendor_scheme_dispatches_via_registry(
+    pg_schema: tuple[str, str],
+) -> None:
+    """End-to-end vendor-scheme path: a custom verifier registered via
+    :meth:`WebhookReceiver.register_verifier` actually runs at handle
+    time, and a valid request reaches the wake adapter with
+    ``pre_verified=True``.
+
+    Direct SQL INSERT into ``webhook_subscriptions`` because the
+    production create tool hardcodes ``'generic_hmac_sha256'``; future
+    work could parameterise the tool, but for the registry-wiring
+    integration test the direct INSERT keeps the surface tight to the
+    receiver code under audit.
+    """
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        conv_id = _new_uuid()
+        sub_id = _new_uuid()
+        # Hand-roll the row so we can pick the verification_scheme.
+        # The ``test_constant_secret`` scheme below ignores the HMAC
+        # and just checks the signature value matches a constant.
+        await pool.execute(
+            "INSERT INTO webhook_subscriptions "
+            "(conversation_id, subscription_id, user_id, agent_id, "
+            " secret_ciphertext, task_prompt_template, "
+            " verification_scheme, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            conv_id,
+            sub_id,
+            _new_uuid(),
+            _new_uuid(),
+            b"vendor-secret-bytes",
+            "vendor event: {{event.kind}}",
+            "test_constant_secret",
+            "active",
+        )
+
+        handler = _RecordingHandler()
+        receiver = WebhookReceiver(
+            pool=pool,
+            encryption_service=_IdentityEncryption(),
+            handler=handler,
+            wake_config=DEFAULT_WAKE_CONFIG,
+            delivery_adapters=None,
+        )
+
+        # The constant-secret verifier ignores the secret + payload
+        # entirely and matches against a fixed signature value. This
+        # is the simplest possible vendor-scheme stand-in for proving
+        # the registry actually dispatches.
+        def _constant_verifier(
+            secret: bytes,
+            payload: bytes,
+            signature_value: str,
+        ) -> bool:
+            del secret, payload
+            return signature_value == "VENDOR-EXPECTED-VALUE"
+
+        receiver.register_verifier("test_constant_secret", _constant_verifier)
+        app = FastAPI()
+        receiver.register(app)
+
+        payload = b'{"kind": "vendor-event"}'
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                f"/webhooks/{sub_id}",
+                content=payload,
+                headers={
+                    DEFAULT_SIGNATURE_HEADER: "VENDOR-EXPECTED-VALUE",
+                    "Content-Type": "application/json",
+                },
+            )
+
+        assert response.status_code == 202, response.text
+        body = response.json()
+        assert body["fire_id"] is not None
+        assert body["message"] == "dispatched"
+
+        # The handler was invoked with a trigger carrying the rendered
+        # task prompt -- proving the adapter's pre_verified=True path
+        # ran through to dispatch_wake.
+        assert len(handler.invocations) == 1
+        trigger, _ = handler.invocations[0]
+        assert "vendor-event" in (trigger.task_prompt or "")
+
+        # And a bad signature is rejected by the same verifier with 403.
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            bad_response = await client.post(
+                f"/webhooks/{sub_id}",
+                content=payload,
+                headers={DEFAULT_SIGNATURE_HEADER: "WRONG-VALUE"},
+            )
+        assert bad_response.status_code == 403, bad_response.text
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_receiver_unknown_scheme_returns_400(
+    pg_schema: tuple[str, str],
+) -> None:
+    """A subscription whose ``verification_scheme`` is not registered
+    on the receiver returns 400 with the scheme name in the message
+    body (the v005 CHECK accepts the slug, but the receiver only
+    dispatches to registered schemes).
+    """
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        conv_id = _new_uuid()
+        sub_id = _new_uuid()
+        await pool.execute(
+            "INSERT INTO webhook_subscriptions "
+            "(conversation_id, subscription_id, user_id, agent_id, "
+            " secret_ciphertext, verification_scheme, status) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            conv_id,
+            sub_id,
+            _new_uuid(),
+            _new_uuid(),
+            b"\x00",
+            "exotic_unregistered",
+            "active",
+        )
+
+        handler = _RecordingHandler()
+        receiver = WebhookReceiver(
+            pool=pool,
+            encryption_service=_IdentityEncryption(),
+            handler=handler,
+            wake_config=DEFAULT_WAKE_CONFIG,
+            delivery_adapters=None,
+        )
+        app = FastAPI()
+        receiver.register(app)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                f"/webhooks/{sub_id}",
+                content=b"{}",
+                headers={DEFAULT_SIGNATURE_HEADER: "sha256=stub"},
+            )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        assert body["fire_id"] is None
+        assert "exotic_unregistered" in body["message"]
         assert handler.invocations == []
     finally:
         await pool.close()

@@ -5,7 +5,11 @@ Covers:
 - :func:`verify_generic_hmac_sha256` correctness (golden vector +
   missing-header + wrong-prefix paths, constant-time compare via
   :func:`hmac.compare_digest`).
-- :meth:`WebhookReceiver.register_verifier` registry behaviour.
+- :meth:`WebhookReceiver.register_verifier` registry behaviour and
+  end-to-end wire-up: registered verifier is invoked at handle time;
+  unknown scheme returns 400; verifier-returns-False returns 403;
+  verifier-returns-True forwards to the wake adapter with
+  ``pre_verified=True``.
 - HTTP status mapping for every adapter outcome (202 / 400 / 401 /
   403 / 404 / 429 / 500), exercised against a stubbed
   ``webhook_receive`` so the receiver's routing-and-response plumbing
@@ -36,6 +40,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG
+from threetears.agent.wake.entities import WebhookSubscriptionEntity
 from threetears.agent.wake.webhook_adapter import WebhookReceiveResult
 from threetears.channels.webhook import (
     DEFAULT_MAX_PAYLOAD_BYTES,
@@ -104,6 +109,65 @@ def _make_app(receiver: WebhookReceiver, *, mount_path: str = "/webhooks") -> Fa
     return app
 
 
+def _build_subscription(
+    *,
+    status: str = "active",
+    verification_scheme: str = "generic_hmac_sha256",
+    secret_plaintext: str = "test-secret",
+) -> WebhookSubscriptionEntity:
+    """Construct a real :class:`WebhookSubscriptionEntity` for stub lookups.
+
+    Using the production entity avoids fake-parity violations and
+    keeps the receiver test exercising the same ``decrypt_secret`` /
+    ``verification_scheme`` surfaces production code reads. The
+    :class:`_IdentityEncryption` stand-in returns the plaintext bytes
+    decoded as UTF-8, so ``secret_ciphertext = secret_plaintext.encode()``
+    round-trips through :meth:`decrypt_secret` cleanly.
+    """
+    return WebhookSubscriptionEntity(
+        {
+            "conversation_id": uuid4(),
+            "subscription_id": uuid4(),
+            "user_id": uuid4(),
+            "agent_id": uuid4(),
+            "default_skill_id": None,
+            "name": "stub",
+            "secret_ciphertext": secret_plaintext.encode("utf-8"),
+            "allowed_source_pattern": None,
+            "execution_mode": "inline",
+            "task_prompt_template": None,
+            "delivery_target": "conversation",
+            "delivery_config": {},
+            "verification_scheme": verification_scheme,
+            "status": status,
+            "rate_limit_per_minute": None,
+            "last_fired_at": None,
+            "date_created": None,
+            "date_updated": None,
+        },
+        is_new=False,
+        collection=None,
+    )
+
+
+def _patch_subscription_lookup(entity: WebhookSubscriptionEntity | None) -> Any:
+    """Patch :class:`WebhookSubscriptionCollection.find_by_id` on the receiver.
+
+    Returns ``entity`` regardless of the subscription id passed. Pass
+    ``None`` to simulate a missing subscription (the receiver should
+    forward to the wake adapter for the 404 mapping).
+    """
+
+    async def _find_by_id(self: Any, subscription_id: Any) -> Any:
+        del self, subscription_id
+        return entity
+
+    return patch(
+        "threetears.agent.wake.collections.WebhookSubscriptionCollection.find_by_id",
+        _find_by_id,
+    )
+
+
 # ============================================================
 # verify_generic_hmac_sha256 -- the platform-default verifier
 # ============================================================
@@ -116,23 +180,16 @@ class TestVerifyGenericHmacSha256:
         secret = b"s3cret"
         payload = b'{"hello": "world"}'
         sig = "sha256=" + hmac.new(secret, payload, sha256).hexdigest()
-        headers = {DEFAULT_SIGNATURE_HEADER.lower(): sig}
-        assert verify_generic_hmac_sha256(secret, payload, headers) is True
+        assert verify_generic_hmac_sha256(secret, payload, sig) is True
 
     def test_invalid_signature_returns_false(self) -> None:
-        headers = {DEFAULT_SIGNATURE_HEADER.lower(): "sha256=" + "0" * 64}
-        assert verify_generic_hmac_sha256(b"s3cret", b"payload", headers) is False
+        assert verify_generic_hmac_sha256(b"s3cret", b"payload", "sha256=" + "0" * 64) is False
 
-    def test_missing_header_returns_false(self) -> None:
-        assert verify_generic_hmac_sha256(b"s3cret", b"payload", {}) is False
+    def test_empty_signature_value_returns_false(self) -> None:
+        assert verify_generic_hmac_sha256(b"s3cret", b"payload", "") is False
 
     def test_wrong_prefix_returns_false(self) -> None:
-        headers = {DEFAULT_SIGNATURE_HEADER.lower(): "md5=" + "0" * 32}
-        assert verify_generic_hmac_sha256(b"s3cret", b"payload", headers) is False
-
-    def test_empty_signature_returns_false(self) -> None:
-        headers = {DEFAULT_SIGNATURE_HEADER.lower(): ""}
-        assert verify_generic_hmac_sha256(b"s3cret", b"payload", headers) is False
+        assert verify_generic_hmac_sha256(b"s3cret", b"payload", "md5=" + "0" * 32) is False
 
     def test_uses_constant_time_compare(self) -> None:
         """``verify_generic_hmac_sha256`` must use :func:`hmac.compare_digest`.
@@ -149,8 +206,8 @@ class TestVerifyGenericHmacSha256:
         assert "compare_digest" in source, "must use hmac.compare_digest"
         # Belt-and-braces: the source must NOT do raw ``==`` between
         # the expected and provided signatures.
-        assert "expected == sig_header" not in source
-        assert "sig_header == expected" not in source
+        assert "expected == signature_value" not in source
+        assert "signature_value == expected" not in source
 
 
 # ============================================================
@@ -171,8 +228,8 @@ class TestRegisterVerifier:
     def test_register_custom_scheme(self) -> None:
         receiver = _build_receiver()
 
-        def _github_stub(secret: bytes, payload: bytes, headers: dict[str, str]) -> bool:
-            del secret, payload, headers
+        def _github_stub(secret: bytes, payload: bytes, signature_value: str) -> bool:
+            del secret, payload, signature_value
             return True
 
         receiver.register_verifier("github", _github_stub)
@@ -181,8 +238,8 @@ class TestRegisterVerifier:
     def test_register_overrides_existing(self) -> None:
         receiver = _build_receiver()
 
-        def _replacement(secret: bytes, payload: bytes, headers: dict[str, str]) -> bool:
-            del secret, payload, headers
+        def _replacement(secret: bytes, payload: bytes, signature_value: str) -> bool:
+            del secret, payload, signature_value
             return False
 
         receiver.register_verifier("generic_hmac_sha256", _replacement)
@@ -190,13 +247,218 @@ class TestRegisterVerifier:
 
 
 # ============================================================
-# HTTP status mapping -- routing-and-response plumbing
+# Registry wiring -- the receiver actually dispatches through the registry
 # ============================================================
 
 
 @pytest.fixture
 def fixed_subscription_id() -> UUID:
     return uuid4()
+
+
+class TestRegistryDispatch:
+    """End-to-end wiring: registered verifiers actually run at handle time."""
+
+    def test_custom_verifier_is_invoked_for_its_scheme(
+        self,
+        fixed_subscription_id: UUID,
+    ) -> None:
+        receiver = _build_receiver()
+        captured: dict[str, Any] = {}
+
+        def _github_verifier(secret: bytes, payload: bytes, signature_value: str) -> bool:
+            captured["secret"] = secret
+            captured["payload"] = payload
+            captured["signature_value"] = signature_value
+            return True
+
+        receiver.register_verifier("github", _github_verifier)
+
+        # Subscription declares the 'github' scheme; default verifier
+        # must NOT run for this row.
+        sub = _build_subscription(
+            verification_scheme="github",
+            secret_plaintext="gh-secret",
+        )
+
+        async def _adapter_stub(**kwargs: Any) -> WebhookReceiveResult:
+            # The adapter must be invoked with pre_verified=True after
+            # the registry-dispatched verifier returns True.
+            captured["adapter_pre_verified"] = kwargs.get("pre_verified")
+            return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
+
+        app = _make_app(receiver)
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _adapter_stub,
+            ),
+        ):
+            client = TestClient(app)
+            r = client.post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"github-payload",
+                headers={DEFAULT_SIGNATURE_HEADER: "vendor=42"},
+            )
+
+        assert r.status_code == 202
+        # The custom verifier was invoked with exactly the receiver-
+        # extracted signature value (not the full headers dict).
+        assert captured["secret"] == b"gh-secret"
+        assert captured["payload"] == b"github-payload"
+        assert captured["signature_value"] == "vendor=42"
+        # The adapter received pre_verified=True.
+        assert captured["adapter_pre_verified"] is True
+
+    def test_unknown_scheme_returns_400(self, fixed_subscription_id: UUID) -> None:
+        receiver = _build_receiver()
+        # Subscription declares a scheme nobody registered.
+        sub = _build_subscription(verification_scheme="exotic_vendor")
+
+        async def _adapter_stub(**_kwargs: Any) -> WebhookReceiveResult:
+            msg = "adapter must not run for unknown-scheme rows"
+            raise AssertionError(msg)
+
+        app = _make_app(receiver)
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _adapter_stub,
+            ),
+        ):
+            client = TestClient(app)
+            r = client.post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"{}",
+                headers={DEFAULT_SIGNATURE_HEADER: "sha256=whatever"},
+            )
+
+        assert r.status_code == 400
+        body = r.json()
+        assert body["fire_id"] is None
+        assert "exotic_vendor" in body["message"]
+
+    def test_verifier_returns_false_yields_403(self, fixed_subscription_id: UUID) -> None:
+        receiver = _build_receiver()
+
+        def _always_reject(secret: bytes, payload: bytes, signature_value: str) -> bool:
+            del secret, payload, signature_value
+            return False
+
+        receiver.register_verifier("always_reject", _always_reject)
+        sub = _build_subscription(verification_scheme="always_reject")
+
+        async def _adapter_stub(**_kwargs: Any) -> WebhookReceiveResult:
+            msg = "adapter must not run when verifier rejects"
+            raise AssertionError(msg)
+
+        app = _make_app(receiver)
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _adapter_stub,
+            ),
+        ):
+            client = TestClient(app)
+            r = client.post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"{}",
+                headers={DEFAULT_SIGNATURE_HEADER: "sha256=bogus"},
+            )
+
+        assert r.status_code == 403
+        body = r.json()
+        assert body["fire_id"] is None
+        assert "invalid signature" in body["message"]
+
+    def test_verifier_returns_true_calls_adapter_with_pre_verified(
+        self,
+        fixed_subscription_id: UUID,
+    ) -> None:
+        """When the verifier succeeds the adapter MUST be invoked with
+        ``pre_verified=True`` so it skips its inline HMAC compute.
+        """
+        receiver = _build_receiver()
+
+        def _always_accept(secret: bytes, payload: bytes, signature_value: str) -> bool:
+            del secret, payload, signature_value
+            return True
+
+        receiver.register_verifier("always_accept", _always_accept)
+        sub = _build_subscription(verification_scheme="always_accept")
+        captured: dict[str, Any] = {}
+
+        async def _adapter_stub(**kwargs: Any) -> WebhookReceiveResult:
+            captured.update(kwargs)
+            return WebhookReceiveResult(
+                status_code=202,
+                fire_id=uuid4(),
+                message="dispatched",
+            )
+
+        app = _make_app(receiver)
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _adapter_stub,
+            ),
+        ):
+            client = TestClient(app)
+            r = client.post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"{}",
+                headers={DEFAULT_SIGNATURE_HEADER: "sha256=stub"},
+            )
+
+        assert r.status_code == 202
+        assert captured["pre_verified"] is True
+        # The receiver forwards the raw signature header to the
+        # adapter (so the adapter still records it for auditing /
+        # logging downstream).
+        assert captured["signature_header"] == "sha256=stub"
+
+    def test_missing_signature_header_returns_401(
+        self,
+        fixed_subscription_id: UUID,
+    ) -> None:
+        """An active subscription with no signature header maps to 401
+        before any verifier runs.
+        """
+        receiver = _build_receiver()
+        sub = _build_subscription(verification_scheme="generic_hmac_sha256")
+
+        async def _adapter_stub(**_kwargs: Any) -> WebhookReceiveResult:
+            msg = "adapter must not run when the signature header is missing"
+            raise AssertionError(msg)
+
+        app = _make_app(receiver)
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _adapter_stub,
+            ),
+        ):
+            client = TestClient(app)
+            r = client.post(
+                f"/webhooks/{fixed_subscription_id}",
+                content=b"{}",
+                # NO signature header
+            )
+
+        assert r.status_code == 401
+        body = r.json()
+        assert body["fire_id"] is None
+        assert "missing signature header" in body["message"]
+
+
+# ============================================================
+# HTTP status mapping -- routing-and-response plumbing
+# ============================================================
 
 
 def _patch_receive(
@@ -218,13 +480,28 @@ def _patch_receive(
 
 
 class TestHttpStatusMapping:
-    """Adapter outcome -> HTTP status code mapping per WEBHOOK-03."""
+    """Adapter outcome -> HTTP status code mapping per WEBHOOK-03.
+
+    These tests target the response-mapping plumbing. The subscription
+    lookup is stubbed to return ``None`` so the receiver forwards
+    straight to the adapter (which produces the canned result).
+    """
 
     def test_202_accepted_includes_fire_id(self, fixed_subscription_id: UUID) -> None:
         receiver = _build_receiver()
         app = _make_app(receiver)
         fire_id = uuid4()
-        with _patch_receive(status_code=202, fire_id=fire_id, message="dispatched"):
+        # Subscription lookup returns None -> receiver forwards to
+        # adapter for the canned response; the adapter would normally
+        # produce a 404 itself, but the stub overrides that.
+        with (
+            _patch_subscription_lookup(None),
+            _patch_receive(
+                status_code=202,
+                fire_id=fire_id,
+                message="dispatched",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -236,9 +513,26 @@ class TestHttpStatusMapping:
         assert body == {"fire_id": str(fire_id), "message": "dispatched"}
 
     def test_400_malformed_payload(self, fixed_subscription_id: UUID) -> None:
+        """A 400 from the adapter (template render error) propagates verbatim.
+
+        Drives the receiver via an active, registered-scheme subscription
+        whose verifier always passes, so the adapter is reached + its
+        canned 400 is returned.
+        """
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
-        with _patch_receive(status_code=400, message="template render error"):
+        with (
+            _patch_subscription_lookup(sub),
+            _patch_receive(
+                status_code=400,
+                message="template render error",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -248,10 +542,20 @@ class TestHttpStatusMapping:
         assert r.status_code == 400
         assert r.json() == {"fire_id": None, "message": "template render error"}
 
-    def test_401_missing_signature(self, fixed_subscription_id: UUID) -> None:
+    def test_401_missing_signature_pass_through_via_adapter(
+        self,
+        fixed_subscription_id: UUID,
+    ) -> None:
+        """When the subscription is missing the adapter owns the 401 mapping."""
         receiver = _build_receiver()
         app = _make_app(receiver)
-        with _patch_receive(status_code=401, message="missing signature header"):
+        with (
+            _patch_subscription_lookup(None),
+            _patch_receive(
+                status_code=401,
+                message="missing signature header",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -262,8 +566,19 @@ class TestHttpStatusMapping:
 
     def test_403_source_ip_rejected(self, fixed_subscription_id: UUID) -> None:
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
-        with _patch_receive(status_code=403, message="source IP not allowed"):
+        with (
+            _patch_subscription_lookup(sub),
+            _patch_receive(
+                status_code=403,
+                message="source IP not allowed",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -276,7 +591,13 @@ class TestHttpStatusMapping:
     def test_404_unknown_subscription(self, fixed_subscription_id: UUID) -> None:
         receiver = _build_receiver()
         app = _make_app(receiver)
-        with _patch_receive(status_code=404, message="subscription not found or paused"):
+        with (
+            _patch_subscription_lookup(None),
+            _patch_receive(
+                status_code=404,
+                message="subscription not found or paused",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -291,8 +612,19 @@ class TestHttpStatusMapping:
 
     def test_429_rate_limited_includes_retry_after(self, fixed_subscription_id: UUID) -> None:
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
-        with _patch_receive(status_code=429, message="rate limit exceeded"):
+        with (
+            _patch_subscription_lookup(sub),
+            _patch_receive(
+                status_code=429,
+                message="rate limit exceeded",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -310,9 +642,21 @@ class TestHttpStatusMapping:
 
     def test_500_dispatch_failed(self, fixed_subscription_id: UUID) -> None:
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
         fire_id = uuid4()
-        with _patch_receive(status_code=500, fire_id=fire_id, message="dispatch failed: oops"):
+        with (
+            _patch_subscription_lookup(sub),
+            _patch_receive(
+                status_code=500,
+                fire_id=fire_id,
+                message="dispatch failed: oops",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -363,8 +707,20 @@ class TestPayloadSizeCap:
     def test_body_at_cap_size_is_accepted(self, fixed_subscription_id: UUID) -> None:
         """Body exactly at the cap should pass through (the check is ``>`` not ``>=``)."""
         receiver = _build_receiver(max_payload_bytes=16)
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
-        with _patch_receive(status_code=202, fire_id=uuid4(), message="ok"):
+        with (
+            _patch_subscription_lookup(sub),
+            _patch_receive(
+                status_code=202,
+                fire_id=uuid4(),
+                message="ok",
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -387,6 +743,11 @@ class TestSignatureHeaderOverride:
         fixed_subscription_id: UUID,
     ) -> None:
         receiver = _build_receiver(signature_header="X-MetaLLM-Signature")
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
 
         captured: dict[str, Any] = {}
@@ -395,7 +756,13 @@ class TestSignatureHeaderOverride:
             captured.update(kwargs)
             return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
 
-        with patch("threetears.agent.wake.webhook_adapter.webhook_receive", _stub):
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _stub,
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -411,6 +778,11 @@ class TestSignatureHeaderOverride:
         fixed_subscription_id: UUID,
     ) -> None:
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
 
         captured: dict[str, Any] = {}
@@ -419,7 +791,13 @@ class TestSignatureHeaderOverride:
             captured.update(kwargs)
             return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
 
-        with patch("threetears.agent.wake.webhook_adapter.webhook_receive", _stub):
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _stub,
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -444,6 +822,11 @@ class TestSourceIpResolution:
         fixed_subscription_id: UUID,
     ) -> None:
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
 
         captured: dict[str, Any] = {}
@@ -452,7 +835,13 @@ class TestSourceIpResolution:
             captured.update(kwargs)
             return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
 
-        with patch("threetears.agent.wake.webhook_adapter.webhook_receive", _stub):
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _stub,
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
@@ -475,6 +864,11 @@ class TestSourceIpResolution:
         TestClient sets ``request.client.host`` to ``'testclient'``.
         """
         receiver = _build_receiver()
+        receiver.register_verifier(
+            "always_accept",
+            lambda _s, _p, _v: True,
+        )
+        sub = _build_subscription(verification_scheme="always_accept")
         app = _make_app(receiver)
 
         captured: dict[str, Any] = {}
@@ -483,7 +877,13 @@ class TestSourceIpResolution:
             captured.update(kwargs)
             return WebhookReceiveResult(status_code=202, fire_id=uuid4(), message="ok")
 
-        with patch("threetears.agent.wake.webhook_adapter.webhook_receive", _stub):
+        with (
+            _patch_subscription_lookup(sub),
+            patch(
+                "threetears.agent.wake.webhook_adapter.webhook_receive",
+                _stub,
+            ),
+        ):
             client = TestClient(app)
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
