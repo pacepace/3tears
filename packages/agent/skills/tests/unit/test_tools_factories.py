@@ -482,6 +482,62 @@ class TestSkillList:
         out = await tool.ainvoke({})
         assert "secret" not in out
 
+    async def test_tool_skills_surface_when_prose_dominates(self) -> None:
+        """SK-16 discoverability: prose can't saturate limit and silently hide tools.
+
+        With ``limit=4`` and 10 eligible prose rows + 2 tool-skills,
+        the merge must still surface at least one tool-skill. The
+        prior implementation queried prose with the full limit then
+        truncated, hiding tools entirely.
+        """
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        # Seed 10 prose skills
+        for i in range(10):
+            sid = _new_uuid()
+            coll.rows[(agent_id, sid)] = {
+                "skill_id": sid,
+                "agent_id": agent_id,
+                "user_id": user_id,
+                "name": f"prose-{i}",
+                "summary": f"prose number {i}",
+                "body": "x",
+                "prompt_mode": "additive",
+                "tool_additions": [],
+                "tool_restrictions": [],
+                "trigger_keywords": "",
+                "tags": [],
+                "source": "manual",
+                "enabled": True,
+                "use_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "last_used_at": None,
+                "last_failure_at": None,
+                "date_created": datetime.now(UTC),
+                "date_updated": datetime.now(UTC),
+            }
+        reg = _FakeRegistry(
+            skill_eligible=[
+                SkillEligibleTool(mcp_name="loki.query", summary="Query Loki logs"),
+                SkillEligibleTool(mcp_name="mcp.shell", summary="Shell access"),
+            ],
+        )
+        [tool] = load_skill_list_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            registry=reg,
+        )
+        out = await tool.ainvoke({"limit": 4})
+        # Result honors limit ...
+        # one header line + N entry lines; count entry lines
+        entry_lines = [line for line in out.splitlines() if line.startswith("- [skill:")]
+        assert len(entry_lines) == 4
+        # ... AND at least one tool-skill is present
+        assert "kind=tool" in out
+
 
 # --- skill_get / skill_update / skill_delete ---
 
@@ -816,6 +872,43 @@ class TestSkillInvoke:
         assert "[TOOL ERROR]" in out
         assert "conversation_id_resolver" in out
         assert state.active is None
+
+    async def test_setter_failure_leaves_no_invocation_row(self) -> None:
+        """Setter-first ordering: if the setter raises, NO invocation row persists.
+
+        The previous order (persist-then-setter) left a row in the DB
+        when the setter raised, with the in-process state unset --
+        the next skill_invoke this turn would pass the probe and
+        record a second row (first-invoke-wins violated at the row
+        count). Reversing to setter-first means a setter raise
+        short-circuits before the persist.
+        """
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        conv_id = _new_uuid()
+        coll = _FakeSkillsCollection()
+        inv = _FakeInvocationsCollection()
+        skill_id = await _seed_skill(coll, agent_id=agent_id, user_id=user_id)
+
+        def boom(_: UUID) -> None:
+            raise RuntimeError("setter exploded")
+
+        [tool] = load_skill_invoke_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=coll,
+            invocations_collection=inv,
+            conversation_id_resolver=lambda: conv_id,
+            active_skill_probe=lambda: None,
+            active_skill_setter=boom,
+        )
+        out = await tool.ainvoke({"skill_id": str(skill_id)})
+        assert "[TOOL ERROR]" in out
+        assert "state setter failed" in out
+        # No invocation row persisted -- this is the load-bearing
+        # assertion for the setter-first ordering fix.
+        assert inv.latest() is None
+        assert len(inv.rows) == 0
 
 
 # --- skill_introspect ---

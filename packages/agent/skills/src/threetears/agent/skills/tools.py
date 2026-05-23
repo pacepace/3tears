@@ -294,7 +294,9 @@ class SkillListInput(BaseModel):
     )
     tag_filter: str | None = Field(
         default=None,
-        description="Optional tag (matches prose skills only).",
+        description=(
+            "Optional tag (matches prose skills only). When set, tool-skills are excluded since they carry no tags."
+        ),
     )
     enabled_only: bool = Field(
         default=True,
@@ -407,7 +409,12 @@ def _parse_skill_id(raw: str) -> UUID | None:
         candidate = candidate[len("[skill:") : -1].strip()
     try:
         return UUID(candidate)
-    except ValueError, AttributeError:
+    except ValueError:
+        # malformed UUID literal (typo, wrong format, etc.)
+        return None
+    except AttributeError:
+        # defensive: handles unusual non-string candidates that
+        # uuid.UUID rejects via attribute access on its input
         return None
 
 
@@ -933,31 +940,10 @@ def load_skill_list_tool(
         limit: int = 20,
     ) -> str:
         """List skills available to the caller (prose + tool UNION)."""
-        prose_entries: list[dict[str, Any]] = []
-        if kind_filter in {"all", "prose"}:
-            try:
-                rows = await skills_collection.list_for_user(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    enabled_only=enabled_only,
-                    tag_filter=[tag_filter] if tag_filter else None,
-                    query=query,
-                    limit=limit,
-                    offset=0,
-                )
-            except Exception as exc:
-                return _tool_error("skill_list", f"prose list failed: {exc}")
-            for entity in rows:
-                prose_entries.append(
-                    {
-                        "skill_id": str(entity.skill_id),
-                        "name": entity.name,
-                        "summary": entity.summary,
-                        "kind": "prose",
-                        "enabled": entity.enabled,
-                    }
-                )
-
+        # Fetch tool-skills FIRST when they're in scope so we can reserve
+        # a slice of ``limit`` for them. Without this, prose alone can
+        # saturate ``limit`` and silently hide every tool-skill from the
+        # UNION (SK-16 discoverability bug).
         tool_entries: list[dict[str, Any]] = []
         if kind_filter in {"all", "tool"}:
             try:
@@ -988,11 +974,43 @@ def load_skill_list_tool(
                     }
                 )
 
+        # Reserve up to ``limit // 2`` slots for tool-skills when any
+        # exist; the rest is the prose query cap. This guarantees at
+        # least some tool-skills surface when prose would otherwise
+        # saturate the limit, while still respecting the caller's cap.
+        tool_reserve = min(len(tool_entries), limit // 2)
+        prose_cap = max(limit - tool_reserve, 1)
+
+        prose_entries: list[dict[str, Any]] = []
+        if kind_filter in {"all", "prose"}:
+            try:
+                rows = await skills_collection.list_for_user(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    enabled_only=enabled_only,
+                    tag_filter=[tag_filter] if tag_filter else None,
+                    query=query,
+                    limit=prose_cap,
+                    offset=0,
+                )
+            except Exception as exc:
+                return _tool_error("skill_list", f"prose list failed: {exc}")
+            for entity in rows:
+                prose_entries.append(
+                    {
+                        "skill_id": str(entity.skill_id),
+                        "name": entity.name,
+                        "summary": entity.summary,
+                        "kind": "prose",
+                        "enabled": entity.enabled,
+                    }
+                )
+
         # Combine, prose-first by recency (the Collection already
         # ordered them); tool-skills sorted alphabetically so the
-        # catalog has a stable shape. Truncate to ``limit`` after
-        # merging so callers can see at least some tool-skills even
-        # when prose dominates.
+        # catalog has a stable shape. Final ``[:limit]`` is defensive --
+        # the per-side caps above already keep the combined length
+        # within ``limit``.
         combined: list[dict[str, Any]] = prose_entries + sorted(
             tool_entries,
             key=lambda e: e["name"].lower(),
@@ -1014,7 +1032,8 @@ def load_skill_list_tool(
         "List skills available to you — prose skills you authored AND tools "
         "registered as skill-eligible.\n"
         "Returns [skill:<id>] + name + summary + kind ('prose' | 'tool'). "
-        "Use skill_introspect for details."
+        "Use skill_introspect for details.\n"
+        "tag_filter applies to prose skills only; setting it hides all tool-skills."
     )
 
     return [skill_list]
@@ -1412,6 +1431,24 @@ def load_skill_invoke_tool(
                 "conversation_id_resolver returned None; cannot record invocation",
             )
 
+        # Setter MUST succeed before we record the invocation so a
+        # setter failure can't leak a row without corresponding
+        # in-process state. With the previous order, a setter raise
+        # left a persisted invocation row + unset state, letting the
+        # next skill_invoke this turn pass the probe and double-record
+        # (first-invoke-wins violated at the row count).
+        try:
+            active_skill_setter(entity.skill_id)
+        except Exception as exc:
+            log.warning(
+                "skill_invoke active_skill_setter raised",
+                extra={"extra_data": {"error": str(exc)}},
+            )
+            return _tool_error(
+                "skill_invoke",
+                f"state setter failed: {exc}",
+            )
+
         invocation_id = UUID(str(uuid7()))
         now = datetime.now(UTC)
         invocation = invocations_collection.create(
@@ -1432,6 +1469,11 @@ def load_skill_invoke_tool(
         try:
             await invocations_collection.record(agent_id, invocation)
         except Exception as exc:
+            # Setter already marked the turn active; on persist
+            # failure we still return an error. The consumer's wrapper
+            # treats tool errors as "this skill did NOT activate" and
+            # may unset state accordingly. The in-process state will
+            # be discarded with the turn regardless.
             log.warning(
                 "skill_invoke invocation persist failed",
                 extra={
@@ -1442,18 +1484,6 @@ def load_skill_invoke_tool(
                 },
             )
             return _tool_error("skill_invoke", f"invocation persist failed: {exc}")
-
-        try:
-            active_skill_setter(entity.skill_id)
-        except Exception as exc:
-            log.warning(
-                "skill_invoke active_skill_setter raised",
-                extra={"extra_data": {"error": str(exc)}},
-            )
-            return _tool_error(
-                "skill_invoke",
-                f"state setter failed: {exc}",
-            )
 
         log.info(
             "skill_invoke fired",

@@ -36,3 +36,28 @@ register_skills(runner)
 Migrations are agent-scoped and depend on `conversations` (the
 invocation rows carry `conversation_id` -- ordering on apply, not an
 FK constraint).
+
+## `SkillRegistryClient` Protocol — why this package takes no ACL / tools deps
+
+`agent-memory` (a sibling package) takes direct dependencies on
+`3tears-agent-acl` and `3tears-agent-tools` because its memory tools
+need first-class ACL evaluator + tool-registry types in their public
+surface. `agent-skills` deliberately diverges: the tool factories take
+a thin `SkillRegistryClient` Protocol (three async methods,
+`acl_permits` / `list_skill_eligible_tools` / `get_tool_introspect`,
+plus a `ConversationIdResolver` / `ActiveSkillProbe` /
+`ActiveSkillSetter` callable triple wired by the consumer) instead of
+importing the ACL evaluator or the tool registry types directly.
+
+The trade-off: callers must implement a small adapter (~10 lines over
+their existing `NamespaceCollection` + ACL cache + in-process tool
+registry), but `agent-skills` ships with zero hard deps beyond core
+and `langchain-core`. The shard-02 spec explicitly endorses this
+(Implementation note 10: "the metallm consumer wires this; tests
+mock it"); PLACEMENT §3.2's ACL-via-evaluator note targets the
+shard-03 composition renderer, not the tools surface.
+
+Future sibling packages should follow whichever pattern their public
+surface demands -- direct deps when types are part of the contract,
+Protocol when the contract is method-shaped and the deps are
+incidental.
