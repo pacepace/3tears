@@ -35,6 +35,7 @@ from threetears.agent.wake.collections import (
     WakeFireCollection,
     WebhookSubscriptionCollection,
 )
+from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG, WakeConfig
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.entities import EncryptionService
 from threetears.agent.wake.events import (
@@ -111,6 +112,7 @@ async def webhook_receive(
     default_rate_limit_per_minute: int = 60,
     rate_window_seconds: int = DEFAULT_RATE_WINDOW_SECONDS,
     now: datetime | None = None,
+    wake_config: WakeConfig = DEFAULT_WAKE_CONFIG,
 ) -> WebhookReceiveResult:
     """Verify, rate-limit, and dispatch an inbound webhook.
 
@@ -167,6 +169,13 @@ async def webhook_receive(
     :param now: reference instant for the rate-limit window + fire
         timestamps (defaults to ``datetime.now(UTC)``)
     :ptype now: datetime | None
+    :param wake_config: consumer's :class:`WakeConfig` impl forwarded to
+        :func:`dispatch_wake` for the per-conv + per-user rate-limit
+        check at dispatch time. The webhook-side per-subscription cap
+        is enforced inline above (using ``default_rate_limit_per_minute``
+        / the subscription row override) so callers passing the default
+        config still get full coverage.
+    :ptype wake_config: WakeConfig
     :return: outcome envelope the receiver translates to an HTTP
         response
     :rtype: WebhookReceiveResult
@@ -399,6 +408,7 @@ async def webhook_receive(
             pool,
             handler=handler,
             delivery_adapters=delivery_adapters,
+            wake_config=wake_config,
         )
     except Exception as exc:  # noqa: BLE001 - dispatch boundary
         log.exception(

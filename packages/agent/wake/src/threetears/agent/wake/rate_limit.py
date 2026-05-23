@@ -22,8 +22,9 @@ OBS-13 / OBS-14; PLACEMENT §1.9.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 from threetears.observe import get_logger
@@ -35,9 +36,20 @@ if TYPE_CHECKING:
 
 __all__ = [
     "RATE_LIMIT_WINDOW_HOURS",
+    "RateLimitScope",
     "_check_active_schedule_cap",
     "_check_rate_limit",
 ]
+
+
+# Which cap was hit by :func:`_check_rate_limit`. ``None`` means
+# the fire may proceed; ``'conv'`` / ``'user'`` identify the per-conv
+# vs per-user cap so the caller can attach the scope to its log line
+# + Prometheus label. ``'webhook'`` is reserved for the webhook-side
+# per-subscription cap (enforced separately in
+# :mod:`threetears.agent.wake.webhook_adapter`) so the scope label set
+# stays bounded across both call sites.
+RateLimitScope = Literal["conv", "user", "webhook"]
 
 
 log = get_logger(__name__)
@@ -55,19 +67,27 @@ async def _check_rate_limit(
     trigger: "WakeTrigger",
     pool: Any,
     config: WakeConfig,
-) -> bool:
-    """Return ``True`` when both per-conv + per-user counts are under cap.
+) -> RateLimitScope | None:
+    """Return the scope of the exceeded cap, or ``None`` if the fire may proceed.
 
     Counts only ``status='fired'`` rows in the trailing 24h. The
     per-user count covers BOTH schedule-source and webhook-source
     fires (UNION over the two source-tables) so a user can't dodge the
     cap by alternating subscription types.
 
-    Returns ``False`` when either cap is exceeded; emit-site logs +
-    counter increment are the caller's responsibility (so the caller
-    can attach trigger context to the log + scope='conv' / 'user' to
-    the counter). ``None`` pool returns ``True`` so unit tests without
-    a DB still exercise the call path.
+    Returns ``'conv'`` when the per-conv cap is at-or-over (per-user
+    query is skipped). Returns ``'user'`` when the per-conv cap is
+    under but the per-user cap is at-or-over. Returns ``None`` (the
+    happy path) when both are under cap.
+
+    Emit-site logging + Prometheus counter increment are the
+    CALLER's responsibility -- the helper logs the per-cap diagnostic
+    here but the caller attaches the structured event +
+    :meth:`WakeMetricsEmitter.inc_rate_limit_rejection` so the trigger
+    context lands on the event row coherently.
+
+    ``None`` pool returns ``None`` so unit tests without a DB still
+    exercise the call path.
 
     :param trigger: fire envelope (carries ``conversation_id`` +
         ``user_id``)
@@ -76,12 +96,12 @@ async def _check_rate_limit(
     :ptype pool: Any
     :param config: consumer's :class:`WakeConfig` impl supplying caps
     :ptype config: WakeConfig
-    :return: ``True`` if the fire may proceed; ``False`` if either cap
-        is at-or-over
-    :rtype: bool
+    :return: scope of exceeded cap (``'conv'`` | ``'user'``) or
+        ``None`` if the fire may proceed
+    :rtype: RateLimitScope | None
     """
     if pool is None:
-        return True
+        return None
 
     since = datetime.now(UTC) - timedelta(hours=RATE_LIMIT_WINDOW_HOURS)
     conv_count = await pool.fetchval(
@@ -105,7 +125,7 @@ async def _check_rate_limit(
                 }
             },
         )
-        return False
+        return "conv"
 
     # Per-user count covers both schedule-source and webhook-source
     # fires. The two subqueries union via ``+`` and each hits the
@@ -139,54 +159,86 @@ async def _check_rate_limit(
                 }
             },
         )
-        return False
+        return "user"
 
-    return True
+    return None
 
 
 async def _check_active_schedule_cap(
     *,
     conversation_id: UUID,
-    pool: Any,
-    config: WakeConfig,
+    cap: int,
+    pool: Any | None = None,
+    count_func: Callable[[], Awaitable[int]] | None = None,
 ) -> bool:
     """Return ``True`` when the conversation is under its active-schedule cap.
 
     Counts ``status='active'`` rows for ``conversation_id`` and
-    compares against :attr:`WakeConfig.max_schedules_per_conversation`
-    (default 10 per PLACEMENT §1.9). Returns ``False`` when at-or-over
-    the cap.
+    compares against ``cap`` (the default lives at
+    :data:`DEFAULT_MAX_SCHEDULES_PER_CONVERSATION` = 10 per PLACEMENT
+    §1.9; the consumer's :class:`WakeConfig` impl typically passes
+    ``config.max_schedules_per_conversation`` here). Returns ``False``
+    when at-or-over the cap.
 
-    Used by ``wake_schedule_create`` before INSERT (the primary
-    enforcement point) and is exposed here so future surfaces (a
-    cleanup task that re-asserts caps on user-initiated re-enables,
-    say) can share the rule. ``None`` pool returns ``True``.
+    The single source of truth for the cap-check semantics lives in
+    this helper. ``wake_schedule_create`` calls it before INSERT (the
+    primary enforcement point) so future surfaces (a cleanup task that
+    re-asserts caps on user-initiated re-enables, say) share one rule.
+
+    Two count paths are supported so both call shapes can route through
+    the same enforcement:
+
+    - ``count_func`` (preferred for the tools layer): an async callable
+      returning the current count. Lets a caller that already owns a
+      :class:`WakeScheduleCollection` share the collection's tested
+      ``count_active_for_conversation`` method instead of duplicating
+      the SQL.
+    - ``pool`` (kept for direct-pool callers): runs the COUNT inline
+      against the pool.
+
+    When both are supplied, ``count_func`` wins. Supplying neither
+    returns ``True`` (parallels the ``pool=None`` short-circuit on
+    :func:`_check_rate_limit`).
+
+    Why ``cap: int`` instead of ``config: WakeConfig``: callers that
+    already have an integer cap in hand (the tool factory closes over
+    ``max_schedules_per_conversation``) would otherwise have to build a
+    throwaway :class:`WakeConfig` shim to satisfy a single attribute
+    read. Taking the integer directly keeps the helper minimal; callers
+    holding a full :class:`WakeConfig` pass
+    ``config.max_schedules_per_conversation``.
 
     :param conversation_id: conversation under test
     :ptype conversation_id: UUID
-    :param pool: asyncpg-compatible pool (or ``None`` in unit tests)
-    :ptype pool: Any
-    :param config: consumer's :class:`WakeConfig` impl supplying the cap
-    :ptype config: WakeConfig
+    :param cap: maximum allowed active schedules for the conversation
+    :ptype cap: int
+    :param pool: asyncpg-compatible pool (alternative to ``count_func``)
+    :ptype pool: Any | None
+    :param count_func: async callable returning the active count
+        (preferred when the caller already has a Collection handy)
+    :ptype count_func: Callable[[], Awaitable[int]] | None
     :return: ``True`` if a new schedule may be created
     :rtype: bool
     """
-    if pool is None:
+    if count_func is not None:
+        count = int(await count_func())
+    elif pool is not None:
+        value = await pool.fetchval(
+            "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'",
+            conversation_id,
+        )
+        count = int(value or 0)
+    else:
         return True
 
-    value = await pool.fetchval(
-        "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'",
-        conversation_id,
-    )
-    count = int(value or 0)
-    if count >= config.max_schedules_per_conversation:
+    if count >= cap:
         log.info(
             "rate-limit: active-schedule cap exceeded",
             extra={
                 "extra_data": {
                     "conversation_id": str(conversation_id),
                     "count": count,
-                    "cap": config.max_schedules_per_conversation,
+                    "cap": cap,
                 }
             },
         )

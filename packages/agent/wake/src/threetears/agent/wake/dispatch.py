@@ -55,14 +55,17 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
+from threetears.agent.wake.config import DEFAULT_WAKE_CONFIG, WakeConfig
 from threetears.agent.wake.events import (
     EVENT_DELIVERY_ATTEMPT,
     EVENT_DELIVERY_FAILED,
     EVENT_DELIVERY_SKIPPED_SILENT,
     EVENT_DELIVERY_SUCCESS,
+    EVENT_FIRE_RATE_LIMITED,
     EVENT_FIRE_SILENT,
 )
 from threetears.agent.wake.metrics import get_wake_emitter
+from threetears.agent.wake.rate_limit import _check_rate_limit
 from threetears.agent.wake.types import (
     DeliveryAdapter,
     FireStatus,
@@ -128,6 +131,7 @@ async def dispatch_wake(
     *,
     handler: HandlerCallback,
     delivery_adapters: dict[str, DeliveryAdapter] | None = None,
+    wake_config: WakeConfig = DEFAULT_WAKE_CONFIG,
 ) -> WakeDispatchResult:
     """Drive one wake fire end-to-end and return the typed result.
 
@@ -143,16 +147,23 @@ async def dispatch_wake(
 
     This function:
 
-    1. Resolves the ``context_from`` chain (single hop) into
+    1. Runs the rate-limit check via
+       :func:`threetears.agent.wake.rate_limit._check_rate_limit`.
+       When either the per-conv or per-user cap is exceeded, emits
+       :data:`EVENT_FIRE_RATE_LIMITED`, increments the matching
+       Prometheus rejection counter, and returns
+       ``WakeDispatchResult(status='skipped_rate_limit', ...)``
+       without invoking the handler or any delivery adapters.
+    2. Resolves the ``context_from`` chain (single hop) into
        :attr:`PreparedWakeContext.context_blocks`.
-    2. Resolves the attached skill from
+    3. Resolves the attached skill from
        ``(trigger.agent_id, trigger.skill_id)``. Missing or disabled
        skills resolve to ``None`` with a warning log; the handler
        sees ``attached_skill=None`` and decides how to proceed.
-    3. Invokes the consumer's :class:`HandlerCallback`. Exceptions
+    4. Invokes the consumer's :class:`HandlerCallback`. Exceptions
        propagate to the caller (the tick records them via the
        ``try / except`` in :func:`threetears.agent.wake.tick._dispatch_one`).
-    4. Determines silent treatment from the handler's outcome:
+    5. Determines silent treatment from the handler's outcome:
        ``is_silent`` is true when EITHER the ``[SILENT]`` marker
        (PLACEMENT §1.4) is detected OR the handler explicitly
        returned ``status='fired_silent'``. Either signal alone is
@@ -162,7 +173,7 @@ async def dispatch_wake(
        skipped (recorded as ``'skipped_silent'`` on
        :attr:`WakeDispatchResult.delivery_status` for shard-05
        metrics).
-    5. Routes delivery: ``'conversation'`` is a no-op (handler
+    6. Routes delivery: ``'conversation'`` is a no-op (handler
        already wrote the message); other targets invoke the matching
        :class:`DeliveryAdapter` from ``delivery_adapters``. Delivery
        failure is logged but does not fail the fire -- the message
@@ -184,12 +195,53 @@ async def dispatch_wake(
         delivery targets to their adapters; ``None`` is treated as an
         empty dict (only ``'conversation'`` is routable)
     :ptype delivery_adapters: dict[str, DeliveryAdapter] | None
+    :param wake_config: consumer's :class:`WakeConfig` impl supplying
+        rate-limit caps; defaults to :data:`DEFAULT_WAKE_CONFIG` so
+        the platform invariants are enforced even when the consumer
+        forgets to plumb a config
+    :ptype wake_config: WakeConfig
     :return: typed dispatch result the caller writes onto
         ``wake_fires``
     :rtype: WakeDispatchResult
     """
     started = time.monotonic()
     adapters = delivery_adapters or {}
+    emitter = get_wake_emitter()
+
+    # Step 1 (per OBS-13 / PLACEMENT §1.9): rate-limit check BEFORE
+    # any handler work runs. Rejection short-circuits to a
+    # ``skipped_rate_limit`` terminal result; the caller writes it
+    # onto the ``wake_fires`` row via the usual finalize path. With
+    # ``pool=None`` (unit tests without a DB) the helper returns
+    # ``None`` so existing handler-flow tests are unchanged.
+    rate_limit_scope = await _check_rate_limit(trigger, pool, wake_config)
+    if rate_limit_scope is not None:
+        cap = (
+            wake_config.max_fires_per_conv_per_day
+            if rate_limit_scope == "conv"
+            else wake_config.max_fires_per_user_per_day
+        )
+        log.info(
+            EVENT_FIRE_RATE_LIMITED,
+            extra={
+                "extra_data": {
+                    "fire_id": str(fire_id),
+                    "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                    "conversation_id": str(trigger.conversation_id),
+                    "user_id": str(trigger.user_id),
+                    "fire_source": trigger.fire_source,
+                    "scope": rate_limit_scope,
+                    "cap": cap,
+                }
+            },
+        )
+        emitter.inc_rate_limit_rejection(scope=rate_limit_scope)
+        emitter.inc_failure(reason="rate_limited")
+        return WakeDispatchResult(
+            status="skipped_rate_limit",
+            error=f"rate limit exceeded ({rate_limit_scope}); cap={cap}",
+            latency_ms=int((time.monotonic() - started) * 1000),
+        )
 
     context_blocks = await _resolve_context_from(pool, trigger)
     attached_skill = await _resolve_attached_skill(pool, trigger)
@@ -236,7 +288,6 @@ async def dispatch_wake(
     else:
         final_status = handler_result.status
 
-    emitter = get_wake_emitter()
     delivery_status: dict[str, str] = {}
     if handler_result.status in {"fired", "fired_silent"} and trigger.delivery_target != "conversation":
         if is_silent:

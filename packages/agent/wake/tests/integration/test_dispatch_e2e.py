@@ -821,6 +821,119 @@ class TestCreateDispatchingPlaceholderIntegration:
             await pool.close()
 
 
+class TestRateLimitWiringIntegration:
+    """End-to-end: rate-limit wiring rejects without invoking the handler.
+
+    Pins the BLOCKING Critic finding against shard-05 against a REAL
+    Postgres testcontainer: the rate-limit query reads from the
+    ``wake_fires`` partition + ``agent_wake_schedules`` JOIN exactly as
+    production would, and rejection results in NO handler invocation +
+    NO new ``wake_fires`` row written by ``dispatch_wake`` itself (the
+    caller writes the terminal ``'skipped_rate_limit'`` row via
+    ``finalize_*`` after seeing the return value -- the test
+    invocation pattern here mirrors the production tick body).
+    """
+
+    async def test_per_conv_cap_rejects_against_real_pg(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent = _new_uuid()
+            user = _new_uuid()
+            sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+            )
+            now = datetime.now(UTC)
+            # Seed 3 prior successful fires in the last hour.
+            for offset in (60, 120, 180):
+                await _seed_fire(
+                    pool,
+                    conversation_id=conv,
+                    schedule_id=sched,
+                    status="fired",
+                    output_text="ok",
+                    fired_at=now - timedelta(seconds=offset),
+                )
+
+            # parity-with: threetears.agent.wake.config.WakeConfig
+            class _TightConvCap:
+                """Per-conv cap = 1, per-user wide open."""
+
+                @property
+                def max_fires_per_conv_per_day(self) -> int:
+                    return 1
+
+                @property
+                def max_fires_per_user_per_day(self) -> int:
+                    return 1000
+
+                @property
+                def max_email_per_recipient_per_hour(self) -> int:
+                    return 5
+
+                @property
+                def max_webhook_fires_per_subscription_per_hour(self) -> int:
+                    return 60
+
+                @property
+                def max_schedules_per_conversation(self) -> int:
+                    return 10
+
+                @property
+                def http_allowed_hosts(self) -> tuple[str, ...]:
+                    return ()
+
+                @property
+                def loki_client(self) -> Any | None:
+                    return None
+
+                @property
+                def loki_named_queries(self) -> dict[str, str]:
+                    return {}
+
+                @property
+                def postgres_named_queries(self) -> dict[str, str]:
+                    return {}
+
+            handler = _CapturingHandler()
+            trigger = _make_trigger(
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                schedule_id=sched,
+            )
+            result = await dispatch_wake(
+                trigger,
+                _new_uuid(),
+                pool=pool,
+                handler=handler,
+                wake_config=_TightConvCap(),
+            )
+            # rejected with conv-scope
+            assert result.status == "skipped_rate_limit"
+            assert result.error is not None
+            assert "conv" in result.error
+            # handler MUST NOT have been invoked
+            assert handler.received is None
+            # No new wake_fires row was written by dispatch_wake itself
+            # (only the 3 seed rows exist; the caller writes the
+            # terminal 'skipped_rate_limit' row via finalize_*).
+            count = await pool.fetchval(
+                "SELECT COUNT(*) FROM wake_fires WHERE conversation_id = $1",
+                conv,
+            )
+            assert int(count or 0) == 3
+        finally:
+            await pool.close()
+
+
 class TestEndToEndHappyPath:
     """A full schedule + skill + handler round-trip lands the right context."""
 

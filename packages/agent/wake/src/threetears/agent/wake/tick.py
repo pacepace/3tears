@@ -53,6 +53,7 @@ from threetears.agent.wake.events import (
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
+    EVENT_FIRE_SKIPPED_BUSY,
     EVENT_TICK_COMPLETED,
     EVENT_TICK_STARTED,
 )
@@ -229,10 +230,28 @@ async def _dispatch_one(
         now=tick_at,
     )
     if not claimed:
-        log.debug(
-            "wake_tick: claim lost on schedule",
-            extra={"extra_data": {"schedule_id": str(schedule.schedule_id)}},
+        # Per-schedule "another tick already grabbed this row" path --
+        # the natural ``EVENT_FIRE_SKIPPED_BUSY`` emit site (the
+        # CAS-miss IS the per-fire busy signal). The whole-tick
+        # cross-pod ``LockHeld`` path is intentionally NOT a skipped-fire
+        # event: it skips the entire tick body (zero fires considered),
+        # which is logged at debug level by :func:`wake_tick_job` and
+        # shows up on Prometheus as a quiet tick rather than per-fire
+        # rejections. inc_failure(reason='conv_busy') keeps a counter
+        # so operators can alert on persistent CAS-miss bursts.
+        log.info(
+            EVENT_FIRE_SKIPPED_BUSY,
+            extra={
+                "extra_data": {
+                    "schedule_id": str(schedule.schedule_id),
+                    "conversation_id": str(schedule.conversation_id),
+                    "schedule_type": schedule.schedule_type,
+                    "fire_source": "scheduled_tick",
+                    "reason": "claim_lost",
+                }
+            },
         )
+        emitter.inc_failure(reason="conv_busy")
         return
 
     fire_id = _generate_fire_id()

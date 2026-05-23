@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
     "DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR",
     "DEFAULT_POSTGRES_NAMED_QUERIES",
+    "DEFAULT_WAKE_CONFIG",
     "WakeConfig",
 ]
 
@@ -157,3 +158,65 @@ class WakeConfig(Protocol):
 
     @property
     def postgres_named_queries(self) -> dict[str, str]: ...
+
+
+class _DefaultWakeConfig:
+    """Concrete :class:`WakeConfig` returning only the platform defaults.
+
+    Used as the fallback when a consumer (or a call site that pre-dates
+    full wake-config plumbing) invokes :func:`dispatch_wake` /
+    :func:`webhook_receive` without an explicit config. Every property
+    delegates to the corresponding module-level ``DEFAULT_*`` constant
+    so an operator changing a default sees it land everywhere at once.
+
+    Consumers wanting per-deployment overrides supply their own
+    :class:`WakeConfig` impl (typically reading ``system_settings`` or
+    equivalent) -- this default exists so the rate-limit + cap helpers
+    have a non-``None`` config to consult even when no consumer config
+    has been registered.
+    """
+
+    @property
+    def max_fires_per_conv_per_day(self) -> int:
+        return DEFAULT_MAX_FIRES_PER_CONV_PER_DAY
+
+    @property
+    def max_fires_per_user_per_day(self) -> int:
+        return DEFAULT_MAX_FIRES_PER_USER_PER_DAY
+
+    @property
+    def max_email_per_recipient_per_hour(self) -> int:
+        return DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR
+
+    @property
+    def max_webhook_fires_per_subscription_per_hour(self) -> int:
+        return DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR
+
+    @property
+    def max_schedules_per_conversation(self) -> int:
+        return DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+
+    @property
+    def http_allowed_hosts(self) -> tuple[str, ...]:
+        return DEFAULT_HTTP_ALLOWED_HOSTS
+
+    @property
+    def loki_client(self) -> Any | None:
+        return None
+
+    @property
+    def loki_named_queries(self) -> dict[str, str]:
+        return DEFAULT_LOKI_NAMED_QUERIES
+
+    @property
+    def postgres_named_queries(self) -> dict[str, str]:
+        return DEFAULT_POSTGRES_NAMED_QUERIES
+
+
+# Platform-default :class:`WakeConfig` singleton. Caps return the
+# ``DEFAULT_*`` integer constants; the named-query + HTTP-allow-list
+# surfaces return their empty defaults. Used by :func:`dispatch_wake`
+# and :func:`webhook_receive` when no consumer-supplied config is
+# wired -- which means the platform's rate-limit + cap invariants are
+# always enforced, even when the consumer forgot to plumb a config.
+DEFAULT_WAKE_CONFIG: WakeConfig = _DefaultWakeConfig()

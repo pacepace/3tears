@@ -274,7 +274,14 @@ class WakeMetricsEmitter:
                 continue
             try:
                 self._resolved_registry.unregister(collector)
-            except KeyError, ValueError:
+            except KeyError:
+                # collector wasn't actually on the registry -- benign
+                # race with another test's teardown path; continue.
+                continue
+            except ValueError:
+                # prometheus_client raises ValueError when a collector
+                # is registered against a different registry than ours;
+                # also benign for the unregister-best-effort flow.
                 continue
         self._fires = None
         self._failures = None

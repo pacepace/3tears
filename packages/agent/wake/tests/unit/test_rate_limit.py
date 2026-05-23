@@ -131,48 +131,48 @@ def _trigger(
 
 
 @pytest.mark.asyncio
-async def test_check_rate_limit_returns_true_when_both_counts_under_cap() -> None:
-    """Both under cap -> the fire may proceed."""
+async def test_check_rate_limit_returns_none_when_both_counts_under_cap() -> None:
+    """Both under cap -> ``None`` (the fire may proceed)."""
     pool = _StubPool([5, 10])  # conv=5, user=10 against (24, 100)
     config = _StubConfig()
     trigger = _trigger()
-    assert await _check_rate_limit(trigger, pool, config) is True
+    assert await _check_rate_limit(trigger, pool, config) is None
     assert len(pool.calls) == 2  # both queries ran
 
 
 @pytest.mark.asyncio
-async def test_check_rate_limit_returns_false_when_per_conv_at_cap() -> None:
-    """Per-conv count >= cap -> reject, per-user query is skipped."""
+async def test_check_rate_limit_returns_conv_scope_when_per_conv_at_cap() -> None:
+    """Per-conv count >= cap -> returns ``'conv'``, per-user query is skipped."""
     pool = _StubPool([DEFAULT_MAX_FIRES_PER_CONV_PER_DAY, 0])
     config = _StubConfig()
-    assert await _check_rate_limit(_trigger(), pool, config) is False
+    assert await _check_rate_limit(_trigger(), pool, config) == "conv"
     assert len(pool.calls) == 1  # per-user query did not run
 
 
 @pytest.mark.asyncio
-async def test_check_rate_limit_returns_false_when_per_user_at_cap() -> None:
-    """Per-conv under cap + per-user at cap -> reject after both queries."""
+async def test_check_rate_limit_returns_user_scope_when_per_user_at_cap() -> None:
+    """Per-conv under cap + per-user at cap -> returns ``'user'`` after both queries."""
     pool = _StubPool([0, DEFAULT_MAX_FIRES_PER_USER_PER_DAY])
     config = _StubConfig()
-    assert await _check_rate_limit(_trigger(), pool, config) is False
+    assert await _check_rate_limit(_trigger(), pool, config) == "user"
     assert len(pool.calls) == 2  # both ran
 
 
 @pytest.mark.asyncio
-async def test_check_rate_limit_returns_true_with_none_pool() -> None:
-    """``None`` pool -> True (allows unit tests that omit the DB)."""
-    assert await _check_rate_limit(_trigger(), None, _StubConfig()) is True
+async def test_check_rate_limit_returns_none_with_none_pool() -> None:
+    """``None`` pool -> ``None`` (allows unit tests that omit the DB)."""
+    assert await _check_rate_limit(_trigger(), None, _StubConfig()) is None
 
 
 @pytest.mark.asyncio
 async def test_check_active_schedule_cap_returns_true_under_cap() -> None:
-    """Count strictly under cap -> True."""
+    """Count strictly under cap -> True (pool path)."""
     pool = _StubPool([DEFAULT_MAX_SCHEDULES_PER_CONVERSATION - 1])
     assert (
         await _check_active_schedule_cap(
             conversation_id=uuid4(),
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
             pool=pool,
-            config=_StubConfig(),
         )
         is True
     )
@@ -180,26 +180,72 @@ async def test_check_active_schedule_cap_returns_true_under_cap() -> None:
 
 @pytest.mark.asyncio
 async def test_check_active_schedule_cap_returns_false_at_cap() -> None:
-    """Count at the cap boundary -> False (>= rejects)."""
+    """Count at the cap boundary -> False (>= rejects; pool path)."""
     pool = _StubPool([DEFAULT_MAX_SCHEDULES_PER_CONVERSATION])
     assert (
         await _check_active_schedule_cap(
             conversation_id=uuid4(),
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
             pool=pool,
-            config=_StubConfig(),
         )
         is False
     )
 
 
 @pytest.mark.asyncio
-async def test_check_active_schedule_cap_returns_true_with_none_pool() -> None:
-    """``None`` pool -> True (parallel to the rate-limit helper)."""
+async def test_check_active_schedule_cap_returns_true_with_none_pool_and_no_count_func() -> None:
+    """Neither ``pool`` nor ``count_func`` supplied -> True (short-circuit)."""
     assert (
         await _check_active_schedule_cap(
             conversation_id=uuid4(),
-            pool=None,
-            config=_StubConfig(),
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
         )
         is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_active_schedule_cap_uses_count_func_when_supplied() -> None:
+    """When ``count_func`` is supplied, it wins over ``pool``.
+
+    Pins the tool-layer integration: ``wake_schedule_create`` passes a
+    ``count_func`` closing over the collection's
+    ``count_active_for_conversation``. Verifying the helper invokes the
+    callable (not the pool's fetchval) keeps the SQL single-sourced.
+    """
+    calls: list[None] = []
+
+    async def count_active() -> int:
+        calls.append(None)
+        return DEFAULT_MAX_SCHEDULES_PER_CONVERSATION - 1
+
+    pool = _StubPool([999])  # would say "over cap" if consulted
+    assert (
+        await _check_active_schedule_cap(
+            conversation_id=uuid4(),
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+            pool=pool,
+            count_func=count_active,
+        )
+        is True
+    )
+    # count_func was used; pool was NOT consulted
+    assert len(calls) == 1
+    assert pool.calls == []
+
+
+@pytest.mark.asyncio
+async def test_check_active_schedule_cap_count_func_at_cap_rejects() -> None:
+    """``count_func`` returning >= cap rejects (parity with the pool path)."""
+
+    async def count_active() -> int:
+        return DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+
+    assert (
+        await _check_active_schedule_cap(
+            conversation_id=uuid4(),
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+            count_func=count_active,
+        )
+        is False
     )

@@ -41,6 +41,7 @@ from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.config import (
     DEFAULT_MAX_SCHEDULES_PER_CONVERSATION as _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
 )
+from threetears.agent.wake.rate_limit import _check_active_schedule_cap
 from threetears.agent.wake.reschedule import _compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_schedule_id
 from threetears.agent.wake.tools.validators import (
@@ -513,20 +514,31 @@ def load_wake_schedule_create_tool(
                 f"missed_fire_policy must be 'coalesce' or 'catch_up'; got {missed_fire_policy!r}",
             )
 
-        # Per-conversation cap (PLACEMENT §1.9).
+        # Per-conversation cap (PLACEMENT §1.9). Routed through the
+        # platform helper :func:`_check_active_schedule_cap` so the tool
+        # layer and any future cap-aware surface share one source of
+        # truth. ``count_func`` lets the helper reuse the collection's
+        # tested ``count_active_for_conversation`` SQL instead of
+        # duplicating it on a freshly-built pool path.
         try:
-            current_count = await schedules_collection.count_active_for_conversation(
-                conversation_id,
+            cap_ok = await _check_active_schedule_cap(
+                conversation_id=conversation_id,
+                cap=max_schedules_per_conversation,
+                count_func=lambda: schedules_collection.count_active_for_conversation(
+                    conversation_id,
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - DB raise surfaces as tool error
             return _tool_error(
                 "wake_schedule_create",
                 f"failed to read active schedule count: {exc}",
             )
-        if current_count >= max_schedules_per_conversation:
+        if not cap_ok:
             # local import keeps the tool layer's cold-import cost the
             # same on the happy path; metrics + events only matter on
-            # the rejection branch.
+            # the rejection branch. The Loki event is intentionally
+            # emitted here (not in the helper) so the trigger context
+            # -- user_id, agent_id -- lands on the structured event.
             from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT  # noqa: PLC0415
             from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
 
@@ -538,7 +550,6 @@ def load_wake_schedule_create_tool(
                         "conversation_id": str(conversation_id),
                         "user_id": str(user_id),
                         "agent_id": str(agent_id),
-                        "count": current_count,
                         "cap": max_schedules_per_conversation,
                     }
                 },

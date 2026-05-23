@@ -63,6 +63,7 @@ from threetears.agent.wake.config import (
     DEFAULT_MAX_FIRES_PER_USER_PER_DAY,
     DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR,
     DEFAULT_POSTGRES_NAMED_QUERIES,
+    DEFAULT_WAKE_CONFIG,
     WakeConfig,
 )
 from threetears.agent.wake.dispatch import detect_silent_prefix, dispatch_wake
@@ -112,6 +113,7 @@ from threetears.agent.wake.metrics import (
 from threetears.agent.wake.migrations import register
 from threetears.agent.wake.rate_limit import (
     RATE_LIMIT_WINDOW_HOURS,
+    RateLimitScope,
     _check_active_schedule_cap,
     _check_rate_limit,
 )
@@ -167,6 +169,7 @@ __all__ = [
     "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
     "DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR",
     "DEFAULT_POSTGRES_NAMED_QUERIES",
+    "DEFAULT_WAKE_CONFIG",
     "EVENT_DELIVERY_ATTEMPT",
     "EVENT_DELIVERY_FAILED",
     "EVENT_DELIVERY_SKIPPED_SILENT",
@@ -187,6 +190,7 @@ __all__ = [
     "EVENT_WEBHOOK_REJECTED",
     "FORBIDDEN_LABEL_NAMES",
     "RATE_LIMIT_WINDOW_HOURS",
+    "RateLimitScope",
     "WAKE_DELIVERY_TOTAL",
     "WAKE_DRIFT_SECONDS",
     "WAKE_FAILURES_TOTAL",
