@@ -60,5 +60,14 @@ def _parse_tagged(raw: str, tag: str) -> UUID | None:
         candidate = candidate[len(prefix) : -1].strip()
     try:
         return UUID(candidate)
-    except ValueError, AttributeError, TypeError:
+    except ValueError:
+        # malformed UUID literal (typo, wrong format, etc.)
+        return None
+    except AttributeError:
+        # defensive: handles unusual non-string candidates that
+        # uuid.UUID rejects via attribute access on its input
+        return None
+    except TypeError:
+        # defensive: non-str inputs (e.g. dict, list) that bypass the
+        # earlier ``isinstance(raw, str)`` guard via duck-typing
         return None

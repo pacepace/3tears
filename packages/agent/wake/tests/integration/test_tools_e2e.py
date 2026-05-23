@@ -84,6 +84,31 @@ class _PermissiveRegistry(WakeRegistryClient):
         return None
 
 
+# parity-with: threetears.agent.wake.tools.schedule_tools.WakeRegistryClient
+class _RestrictiveRegistry(WakeRegistryClient):
+    """Denies every skill_id ACL probe; returns no names."""
+
+    async def acl_permits_skill(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        skill_id: UUID,
+    ) -> bool:
+        del user_id, agent_id, skill_id
+        return False
+
+    async def skill_name_for_id(
+        self,
+        *,
+        user_id: UUID,
+        agent_id: UUID,
+        skill_id: UUID,
+    ) -> str | None:
+        del user_id, agent_id, skill_id
+        return None
+
+
 # parity-with: threetears.agent.wake.entities.EncryptionService
 class _IdentityEncryption:
     """Identity encryption for the integration tests (no real crypto)."""
@@ -338,6 +363,179 @@ async def test_schedule_update_rejects_self_context_from_cycle(
         )
         assert update_result.startswith("[TOOL ERROR]")
         assert "cycle" in update_result
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_acl_denied_skill_does_not_persist(
+    pg_schema: tuple[str, str],
+) -> None:
+    """ACL-denied skill_id on create must NOT persist the schedule row.
+
+    Covers the Critic warning that the ACL-denied path was only
+    exercised at the unit level against an in-memory fake collection;
+    this test runs the rejection against testcontainers Postgres so the
+    "no row written on ACL denial" contract has a real-stack guard.
+    """
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        conv_id = _new_uuid()
+        user_id = _new_uuid()
+        agent_id = _new_uuid()
+        forbidden_skill = _new_uuid()
+
+        create_tool = load_wake_schedule_create_tool(
+            conversation_id=conv_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=_RestrictiveRegistry(),
+        )[0]
+        list_tool = load_wake_schedule_list_tool(
+            conversation_id=conv_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0]
+
+        result = await create_tool.ainvoke(
+            {
+                "schedule_type": "interval",
+                "schedule_config": {"seconds": 600},
+                "skill_id": str(forbidden_skill),
+                "name": "should-not-persist",
+            },
+        )
+        assert result.startswith("[TOOL ERROR]"), result
+        assert "not authorized" in result
+
+        # No row landed in Postgres.
+        list_result = await list_tool.ainvoke({})
+        assert "No wake schedules" in list_result, list_result
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_cross_user_returns_not_found(
+    pg_schema: tuple[str, str],
+) -> None:
+    """User B cannot read or mutate a schedule owned by user A.
+
+    Seeds via user A's create tool against real Postgres, then attempts
+    update via user B's update tool. The cross-user attempt MUST
+    surface as "not found" (existence is not leaked) and MUST NOT
+    mutate the row.
+    """
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        conv_id = _new_uuid()
+        user_a = _new_uuid()
+        user_b = _new_uuid()
+        agent_id = _new_uuid()
+
+        # User A creates a schedule.
+        create_a = load_wake_schedule_create_tool(
+            conversation_id=conv_id,
+            user_id=user_a,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0]
+        create_result = await create_a.ainvoke(
+            {
+                "schedule_type": "interval",
+                "schedule_config": {"seconds": 600},
+                "name": "owned-by-a",
+            },
+        )
+        assert create_result.startswith("[schedule:"), create_result
+        sched_id = UUID(create_result.split("]")[0].removeprefix("[schedule:"))
+
+        # User B tries to update it.
+        update_b = load_wake_schedule_update_tool(
+            conversation_id=conv_id,
+            user_id=user_b,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=_PermissiveRegistry(),
+        )[0]
+        update_result = await update_b.ainvoke(
+            {
+                "schedule_id": str(sched_id),
+                "name": "hijacked",
+            },
+        )
+        assert update_result.startswith("[TOOL ERROR]")
+        assert "not found" in update_result
+
+        # The row still belongs to user A and the name is untouched.
+        row = await schedules.get((conv_id, sched_id))
+        assert row is not None
+        assert row.user_id == user_a
+        assert row.name == "owned-by-a"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_cross_user_returns_not_found(
+    pg_schema: tuple[str, str],
+) -> None:
+    """User B cannot read or mutate a webhook subscription owned by user A."""
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        _, subs = _build_collections(pool)
+        conv_id = _new_uuid()
+        user_a = _new_uuid()
+        user_b = _new_uuid()
+        agent_id = _new_uuid()
+        enc = _IdentityEncryption()
+
+        create_a = load_webhook_subscription_create_tool(
+            conversation_id=conv_id,
+            user_id=user_a,
+            agent_id=agent_id,
+            subscriptions_collection=subs,
+            encryption_service=enc,
+            registry=_PermissiveRegistry(),
+        )[0]
+        create_result = await create_a.ainvoke(
+            {
+                "task_prompt_template": "x: {{event.type}}",
+                "name": "owned-by-a",
+            },
+        )
+        assert "[webhook:" in create_result
+        sub_id = UUID(create_result.split("[webhook:")[1].split("]")[0])
+
+        update_b = load_webhook_subscription_update_tool(
+            conversation_id=conv_id,
+            user_id=user_b,
+            agent_id=agent_id,
+            subscriptions_collection=subs,
+            registry=_PermissiveRegistry(),
+        )[0]
+        update_result = await update_b.ainvoke(
+            {
+                "subscription_id": str(sub_id),
+                "name": "hijacked",
+            },
+        )
+        assert update_result.startswith("[TOOL ERROR]")
+        assert "not found" in update_result
+
+        row = await subs.get((conv_id, sub_id))
+        assert row is not None
+        assert row.user_id == user_a
+        assert row.name == "owned-by-a"
     finally:
         await pool.close()
 

@@ -236,8 +236,14 @@ class ScheduleUpdateInput(BaseModel):
     """Input schema for ``wake_schedule_update``.
 
     Every non-``schedule_id`` field is optional; only fields the LLM
-    passes get applied. ``skill_id=None`` (explicit) detaches; absent
-    field leaves the existing attachment alone.
+    passes get applied. Because LangChain ``@tool`` cannot distinguish
+    "field absent" from "explicit null" at the JSON layer, detachment
+    of nullable references uses explicit boolean fields:
+
+    - ``detach_skill=true`` clears the attached skill (regardless of
+      what ``skill_id`` holds; passing both is rejected).
+    - ``detach_context_from=true`` clears ``context_from_schedule_id``.
+    - ``clear_name=true`` clears the optional human-readable name.
     """
 
     schedule_id: str = Field(description="[schedule:<id>] of the schedule to update.")
@@ -245,7 +251,11 @@ class ScheduleUpdateInput(BaseModel):
     schedule_config: dict[str, Any] | None = None
     skill_id: str | None = Field(
         default=None,
-        description="Pass null to detach; omit to leave unchanged.",
+        description="New [skill:<uuid>] or bare UUID to attach. Omit to leave unchanged. To detach, pass detach_skill=true (do not pass both).",
+    )
+    detach_skill: bool = Field(
+        default=False,
+        description="When true, clear the attached skill_id. Must not be combined with skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
     delivery_target: Literal["conversation", "email"] | None = None
@@ -253,7 +263,15 @@ class ScheduleUpdateInput(BaseModel):
     missed_fire_policy: Literal["coalesce", "catch_up"] | None = None
     task_prompt: str | None = None
     name: str | None = None
+    clear_name: bool = Field(
+        default=False,
+        description="When true, clear the human-readable name. Must not be combined with name.",
+    )
     context_from_schedule_id: str | None = None
+    detach_context_from: bool = Field(
+        default=False,
+        description="When true, clear context_from_schedule_id. Must not be combined with context_from_schedule_id.",
+    )
 
 
 class ScheduleListInput(BaseModel):
@@ -507,17 +525,30 @@ def load_wake_schedule_create_tool(
 
         attached_skill: UUID | None = None
         if skill_id is not None:
-            parsed_skill = parse_schedule_id(skill_id) if skill_id.startswith("[schedule:") else None
-            # accept [skill:<id>] or bare UUID; reject the wrong tag form
-            if parsed_skill is None:
-                # try the [skill:<id>] / bare-UUID path
-                stripped = skill_id.strip()
-                if stripped.startswith("[skill:") and stripped.endswith("]"):
-                    stripped = stripped[len("[skill:") : -1].strip()
-                try:
-                    parsed_skill = UUID(stripped)
-                except ValueError, AttributeError, TypeError:
-                    parsed_skill = None
+            stripped = skill_id.strip()
+            # Tag-confusion guard: a [schedule:<id>] tag is NEVER a valid
+            # skill_id (it's a schedule identifier). Surface as a clear
+            # error so the LLM corrects the call instead of silently
+            # ACL-denying a UUID that happens to parse.
+            if stripped.startswith("[schedule:"):
+                return _tool_error(
+                    "wake_schedule_create",
+                    f"skill_id received a schedule tag {skill_id!r}; "
+                    "did you mean to pass a skill catalog id from "
+                    "skill_list/skill_get? Schedule tags are not valid "
+                    "skill identifiers.",
+                )
+            if stripped.startswith("[skill:") and stripped.endswith("]"):
+                stripped = stripped[len("[skill:") : -1].strip()
+            parsed_skill: UUID | None
+            try:
+                parsed_skill = UUID(stripped)
+            except ValueError:
+                parsed_skill = None
+            except AttributeError:
+                parsed_skill = None
+            except TypeError:
+                parsed_skill = None
             if parsed_skill is None:
                 return _tool_error(
                     "wake_schedule_create",
@@ -663,10 +694,12 @@ def load_wake_schedule_update_tool(
     """Build a ``wake_schedule_update`` tool with partial-update semantics.
 
     Re-runs the same validators ``wake_schedule_create`` enforces on any
-    field the caller passes. ``skill_id=None`` explicitly detaches;
-    omitting the field leaves the existing attachment alone -- the LLM
-    must pass ``skill_id=null`` to detach (Pydantic distinguishes the
-    two via field presence at the JSON-schema level).
+    field the caller passes. Detachment of nullable references uses
+    explicit boolean fields (``detach_skill``, ``detach_context_from``,
+    ``clear_name``) because LangChain ``@tool`` decoration cannot
+    distinguish "field absent from JSON input" from "explicit null in
+    JSON input". Passing the attach value AND the detach flag together
+    is contradictory and rejected.
 
     :param conversation_id: caller's conversation UUID
     :ptype conversation_id: UUID
@@ -690,15 +723,39 @@ def load_wake_schedule_update_tool(
         schedule_type: str | None = None,
         schedule_config: dict[str, Any] | None = None,
         skill_id: str | None = None,
+        detach_skill: bool = False,
         execution_mode: Literal["inline", "spawn"] | None = None,
         delivery_target: Literal["conversation", "email"] | None = None,
         delivery_config: dict[str, Any] | None = None,
         missed_fire_policy: Literal["coalesce", "catch_up"] | None = None,
         task_prompt: str | None = None,
         name: str | None = None,
+        clear_name: bool = False,
         context_from_schedule_id: str | None = None,
+        detach_context_from: bool = False,
     ) -> str:
         """Edit a wake schedule in place. Pass only fields to change."""
+        # Contradictory-input guards. Attach value + detach flag is
+        # ambiguous; reject before touching the DB.
+        if skill_id is not None and detach_skill:
+            return _tool_error(
+                "wake_schedule_update",
+                "skill_id and detach_skill=true cannot be combined; "
+                "pass exactly one (or neither, to leave the attachment unchanged).",
+            )
+        if name is not None and clear_name:
+            return _tool_error(
+                "wake_schedule_update",
+                "name and clear_name=true cannot be combined; "
+                "pass exactly one (or neither, to leave the name unchanged).",
+            )
+        if context_from_schedule_id is not None and detach_context_from:
+            return _tool_error(
+                "wake_schedule_update",
+                "context_from_schedule_id and detach_context_from=true "
+                "cannot be combined; pass exactly one (or neither).",
+            )
+
         parsed = parse_schedule_id(schedule_id)
         if parsed is None:
             return _tool_error("wake_schedule_update", f"invalid schedule_id {schedule_id!r}")
@@ -715,7 +772,6 @@ def load_wake_schedule_update_tool(
         merged_config = dict(schedule_config) if schedule_config is not None else dict(entity.schedule_config)
         merged_target = delivery_target if delivery_target is not None else entity.delivery_target
         merged_delivery_config = dict(delivery_config) if delivery_config is not None else dict(entity.delivery_config)
-        merged_policy = missed_fire_policy if missed_fire_policy is not None else entity.missed_fire_policy
 
         # Validation pass over fields the caller changed or that are
         # affected by a changed neighbour.
@@ -749,29 +805,35 @@ def load_wake_schedule_update_tool(
                 f"missed_fire_policy must be 'coalesce' or 'catch_up'; got {missed_fire_policy!r}",
             )
 
-        # Resolve skill_id change: the LLM passes a string (or ``null``
-        # to detach). Empty string is treated as a no-op typo guard.
+        # Resolve skill_id change. detach_skill=True clears the
+        # attachment; a non-null skill_id attaches the new skill (after
+        # ACL check); both unset is a no-op. skill_change[1] is True
+        # when entity.skill_id should be overwritten with skill_change[0].
         skill_change: tuple[UUID | None, bool]
-        if skill_id is None:
-            # OpenAI tool-calls represent "field absent" as JSON null.
-            # We cannot distinguish "omit" from "explicit null" through
-            # LangChain's @tool decoration, so we treat any null/None as
-            # detach intent. The product-side REST surface can offer
-            # finer-grained PATCH semantics if needed.
-            skill_change = (None, False)
-        elif skill_id == "":
-            skill_change = (None, False)
-        else:
+        if detach_skill:
+            skill_change = (None, True)
+        elif skill_id is not None:
             stripped = skill_id.strip()
-            if stripped.startswith("[skill:") and stripped.endswith("]"):
-                stripped = stripped[len("[skill:") : -1].strip()
-            try:
-                new_skill = UUID(stripped)
-            except ValueError, AttributeError, TypeError:
+            # Tag-confusion guard: schedule tag is not a skill id.
+            if stripped.startswith("[schedule:"):
                 return _tool_error(
                     "wake_schedule_update",
-                    f"invalid skill_id {skill_id!r}",
+                    f"skill_id received a schedule tag {skill_id!r}; "
+                    "did you mean to pass a skill catalog id from "
+                    "skill_list/skill_get? Schedule tags are not valid "
+                    "skill identifiers.",
                 )
+            if stripped.startswith("[skill:") and stripped.endswith("]"):
+                stripped = stripped[len("[skill:") : -1].strip()
+            new_skill: UUID
+            try:
+                new_skill = UUID(stripped)
+            except ValueError:
+                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
+            except AttributeError:
+                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
+            except TypeError:
+                return _tool_error("wake_schedule_update", f"invalid skill_id {skill_id!r}")
             err = await _check_skill_acl(
                 registry=registry,
                 user_id=user_id,
@@ -782,15 +844,16 @@ def load_wake_schedule_update_tool(
             if err is not None:
                 return _tool_error("wake_schedule_update", err)
             skill_change = (new_skill, True)
+        else:
+            skill_change = (None, False)
 
+        # context_from_schedule_id change.
         new_context_from: UUID | None
         context_from_changed = False
-        if context_from_schedule_id is None:
-            new_context_from = entity.context_from_schedule_id
-        elif context_from_schedule_id == "":
+        if detach_context_from:
             new_context_from = None
             context_from_changed = True
-        else:
+        elif context_from_schedule_id is not None:
             new_context_from = parse_schedule_id(context_from_schedule_id)
             if new_context_from is None:
                 return _tool_error(
@@ -798,6 +861,8 @@ def load_wake_schedule_update_tool(
                     f"invalid context_from_schedule_id {context_from_schedule_id!r}",
                 )
             context_from_changed = True
+        else:
+            new_context_from = entity.context_from_schedule_id
 
         if context_from_changed and new_context_from is not None:
             resolver = _make_chain_resolver(schedules_collection, conversation_id)
@@ -828,8 +893,10 @@ def load_wake_schedule_update_tool(
             entity.delivery_config = dict(delivery_config)
         if task_prompt is not None:
             entity.task_prompt = task_prompt if task_prompt else None
-        if name is not None:
-            entity.name = name if name else None
+        if clear_name:
+            entity.name = None
+        elif name is not None:
+            entity.name = name
         if skill_change[1]:
             entity.skill_id = skill_change[0]
         if context_from_changed:
@@ -876,7 +943,10 @@ def load_wake_schedule_update_tool(
         return _format_schedule_line(entity, skill_name=skill_name)
 
     wake_schedule_update.description = (
-        "Edit a wake schedule in place. Pass only fields to change. Pass skill_id=null to detach.\n"
+        "Edit a wake schedule in place. Pass only fields to change.\n"
+        "Attach a skill: pass skill_id=<uuid>. Detach: pass detach_skill=true.\n"
+        "Clear the name: pass clear_name=true. Clear context_from: pass detach_context_from=true.\n"
+        "Passing the attach value AND its detach flag together is rejected.\n"
         "Returns the updated catalog line."
     )
 

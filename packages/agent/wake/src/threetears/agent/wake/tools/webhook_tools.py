@@ -116,19 +116,42 @@ class WebhookSubscriptionCreateInput(BaseModel):
 
 
 class WebhookSubscriptionUpdateInput(BaseModel):
-    """Input schema for ``webhook_subscription_update``."""
+    """Input schema for ``webhook_subscription_update``.
+
+    Because LangChain ``@tool`` cannot distinguish "field absent" from
+    "explicit null" at the JSON layer, detachment of nullable
+    references uses explicit boolean fields:
+
+    - ``detach_default_skill=true`` clears the default skill.
+    - ``clear_name=true`` clears the optional human-readable name.
+    - ``clear_allowed_source_pattern=true`` clears the source IP regex.
+
+    Passing the attach value AND its detach flag together is rejected.
+    """
 
     subscription_id: str = Field(description="[webhook:<id>] to update.")
     name: str | None = None
+    clear_name: bool = Field(
+        default=False,
+        description="When true, clear the human-readable name. Must not be combined with name.",
+    )
     task_prompt_template: str | None = None
     default_skill_id: str | None = Field(
         default=None,
-        description="Pass null to detach the default skill; omit to leave unchanged.",
+        description="New [skill:<uuid>] or bare UUID to set as the default skill. Omit to leave unchanged. To detach, pass detach_default_skill=true (do not pass both).",
+    )
+    detach_default_skill: bool = Field(
+        default=False,
+        description="When true, clear the default_skill_id. Must not be combined with default_skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
     delivery_target: Literal["conversation", "email"] | None = None
     delivery_config: dict[str, Any] | None = None
     allowed_source_pattern: str | None = None
+    clear_allowed_source_pattern: bool = Field(
+        default=False,
+        description="When true, clear allowed_source_pattern. Must not be combined with allowed_source_pattern.",
+    )
     rate_limit_per_minute: int | None = None
 
 
@@ -196,7 +219,16 @@ def _parse_skill_id_arg(raw: str) -> UUID | None:
         stripped = stripped[len("[skill:") : -1].strip()
     try:
         return UUID(stripped)
-    except ValueError, AttributeError, TypeError:
+    except ValueError:
+        # malformed UUID literal (typo, wrong format, etc.)
+        return None
+    except AttributeError:
+        # defensive: handles unusual non-string candidates that
+        # uuid.UUID rejects via attribute access on its input
+        return None
+    except TypeError:
+        # defensive: non-str inputs (e.g. dict, list) that bypass the
+        # earlier ``isinstance(raw, str)`` guard via duck-typing
         return None
 
 
@@ -472,15 +504,37 @@ def load_webhook_subscription_update_tool(
     async def webhook_subscription_update(
         subscription_id: str,
         name: str | None = None,
+        clear_name: bool = False,
         task_prompt_template: str | None = None,
         default_skill_id: str | None = None,
+        detach_default_skill: bool = False,
         execution_mode: Literal["inline", "spawn"] | None = None,
         delivery_target: Literal["conversation", "email"] | None = None,
         delivery_config: dict[str, Any] | None = None,
         allowed_source_pattern: str | None = None,
+        clear_allowed_source_pattern: bool = False,
         rate_limit_per_minute: int | None = None,
     ) -> str:
         """Edit a webhook subscription in place. Pass only fields to change."""
+        # Contradictory-input guards.
+        if default_skill_id is not None and detach_default_skill:
+            return _tool_error(
+                "webhook_subscription_update",
+                "default_skill_id and detach_default_skill=true cannot be combined; "
+                "pass exactly one (or neither, to leave the attachment unchanged).",
+            )
+        if name is not None and clear_name:
+            return _tool_error(
+                "webhook_subscription_update",
+                "name and clear_name=true cannot be combined; pass exactly one (or neither).",
+            )
+        if allowed_source_pattern is not None and clear_allowed_source_pattern:
+            return _tool_error(
+                "webhook_subscription_update",
+                "allowed_source_pattern and clear_allowed_source_pattern=true "
+                "cannot be combined; pass exactly one (or neither).",
+            )
+
         parsed = parse_subscription_id(subscription_id)
         if parsed is None:
             return _tool_error(
@@ -519,14 +573,18 @@ def load_webhook_subscription_update_tool(
                 f"execution_mode must be 'inline' or 'spawn'; got {execution_mode!r}",
             )
 
-        # default_skill_id handling: null/empty detach, value attach.
-        if default_skill_id is None:
-            # Treat as no-op (cannot distinguish "field absent" vs
-            # "explicit null" via LangChain @tool typing).
-            pass
-        elif default_skill_id == "":
+        # default_skill_id handling via explicit attach/detach booleans.
+        if detach_default_skill:
             entity.default_skill_id = None
-        else:
+        elif default_skill_id is not None:
+            stripped = default_skill_id.strip()
+            # Tag-confusion guard: webhook/schedule tags are not skill ids.
+            if stripped.startswith("[webhook:") or stripped.startswith("[schedule:"):
+                return _tool_error(
+                    "webhook_subscription_update",
+                    f"default_skill_id received a non-skill tag {default_skill_id!r}; "
+                    "use a [skill:<uuid>] or bare UUID from skill_list/skill_get.",
+                )
             parsed_skill = _parse_skill_id_arg(default_skill_id)
             if parsed_skill is None:
                 return _tool_error(
@@ -544,8 +602,10 @@ def load_webhook_subscription_update_tool(
                 return _tool_error("webhook_subscription_update", err)
             entity.default_skill_id = parsed_skill
 
-        if name is not None:
-            entity.name = name if name else None
+        if clear_name:
+            entity.name = None
+        elif name is not None:
+            entity.name = name
         if task_prompt_template is not None:
             entity.task_prompt_template = task_prompt_template
         if execution_mode is not None:
@@ -554,8 +614,10 @@ def load_webhook_subscription_update_tool(
             entity.delivery_target = delivery_target
         if delivery_config is not None:
             entity.delivery_config = dict(delivery_config)
-        if allowed_source_pattern is not None:
-            entity.allowed_source_pattern = allowed_source_pattern if allowed_source_pattern else None
+        if clear_allowed_source_pattern:
+            entity.allowed_source_pattern = None
+        elif allowed_source_pattern is not None:
+            entity.allowed_source_pattern = allowed_source_pattern
         if rate_limit_per_minute is not None:
             entity.rate_limit_per_minute = rate_limit_per_minute
 
@@ -579,6 +641,8 @@ def load_webhook_subscription_update_tool(
 
     webhook_subscription_update.description = (
         "Edit a webhook subscription in place. Pass only fields to change.\n"
+        "Attach a skill: pass default_skill_id=<uuid>. Detach: pass detach_default_skill=true.\n"
+        "Clear name/source-pattern via clear_name=true / clear_allowed_source_pattern=true.\n"
         "Cannot change the HMAC secret -- use webhook_subscription_rotate_secret."
     )
     return [webhook_subscription_update]

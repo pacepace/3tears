@@ -609,6 +609,333 @@ async def test_schedule_update_changes_name_and_skill(
     assert "skill: summarise" in result
 
 
+def _seeded_schedule_row(
+    *,
+    conv_id: UUID,
+    sid: UUID,
+    user_id: UUID,
+    agent_id: UUID,
+    skill_id: UUID | None = None,
+    name: str | None = "seed",
+    context_from_schedule_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Compact helper for the detach/no-op unit fixtures."""
+    return {
+        "conversation_id": conv_id,
+        "schedule_id": sid,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "skill_id": skill_id,
+        "schedule_type": "interval",
+        "schedule_config": {"seconds": 600},
+        "execution_mode": "inline",
+        "status": "active",
+        "next_fire_at": datetime.now(UTC),
+        "missed_fire_policy": "coalesce",
+        "delivery_target": "conversation",
+        "delivery_config": {},
+        "name": name,
+        "context_from_schedule_id": context_from_schedule_id,
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    }
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_detach_skill_clears_attachment(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """detach_skill=true must clear an existing skill attachment."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    attached_skill = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        skill_id=attached_skill,
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "detach_skill": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["skill_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_omitting_both_is_no_op_on_skill(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Neither skill_id nor detach_skill: leave the existing attachment alone."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    attached_skill = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        skill_id=attached_skill,
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    # Only update name; skill_id/detach_skill both unset.
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "name": "renamed",
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["skill_id"] == attached_skill
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_rejects_skill_id_plus_detach_skill(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Passing skill_id AND detach_skill=true is contradictory; reject."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        skill_id=None,
+    )
+    new_skill = _new_uuid()
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(permitted_skills={new_skill}),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "skill_id": str(new_skill),
+            "detach_skill": True,
+        },
+    )
+    assert result.startswith("[TOOL ERROR]")
+    assert "cannot be combined" in result
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_attach_new_skill(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Passing skill_id with no existing attachment attaches the skill."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        skill_id=None,
+    )
+    new_skill = _new_uuid()
+    registry = _FakeRegistry(
+        permitted_skills={new_skill},
+        names={new_skill: "summarise"},
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=registry,
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "skill_id": str(new_skill),
+        },
+    )
+    assert "skill: summarise" in result
+    assert coll.rows[(conv_id, sid)]["skill_id"] == new_skill
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_clear_name(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """clear_name=true clears the schedule name."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        name="old-name",
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "clear_name": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_rejects_name_plus_clear_name(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """name + clear_name=true is contradictory; reject."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "name": "new",
+            "clear_name": True,
+        },
+    )
+    assert result.startswith("[TOOL ERROR]")
+    assert "cannot be combined" in result
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_detach_context_from(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """detach_context_from=true clears an existing context_from chain."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    upstream = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        context_from_schedule_id=upstream,
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "detach_context_from": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["context_from_schedule_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_create_rejects_schedule_tag_as_skill_id(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Passing a [schedule:<uuid>] as skill_id surfaces a tag-confusion error."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    tools = load_wake_schedule_create_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    a_schedule = _new_uuid()
+    result = await tools[0].ainvoke(
+        {
+            "schedule_type": "interval",
+            "schedule_config": {"seconds": 600},
+            "skill_id": f"[schedule:{a_schedule}]",
+        },
+    )
+    assert result.startswith("[TOOL ERROR]")
+    assert "schedule tag" in result
+    assert "skill_list" in result
+    assert len(coll.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_update_rejects_schedule_tag_as_skill_id(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Same tag-confusion guard on the update tool's skill_id arg."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_schedule_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    tools = load_wake_schedule_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    a_schedule = _new_uuid()
+    result = await tools[0].ainvoke(
+        {
+            "schedule_id": str(sid),
+            "skill_id": f"[schedule:{a_schedule}]",
+        },
+    )
+    assert result.startswith("[TOOL ERROR]")
+    assert "schedule tag" in result
+
+
 # ---------------------------------------------------------------------------
 # Webhook tool tests
 # ---------------------------------------------------------------------------
@@ -839,6 +1166,238 @@ async def test_webhook_list_filters_other_users(
     )
     result = await tools[0].ainvoke({})
     assert "No webhook subscriptions" in result
+
+
+def _seeded_subscription_row(
+    *,
+    conv_id: UUID,
+    sid: UUID,
+    user_id: UUID,
+    agent_id: UUID,
+    default_skill_id: UUID | None = None,
+    name: str | None = "sub",
+    allowed_source_pattern: str | None = None,
+) -> dict[str, Any]:
+    """Compact helper for the webhook detach/no-op unit fixtures."""
+    return {
+        "conversation_id": conv_id,
+        "subscription_id": sid,
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "default_skill_id": default_skill_id,
+        "name": name,
+        "secret_ciphertext": b"sec",
+        "allowed_source_pattern": allowed_source_pattern,
+        "execution_mode": "inline",
+        "task_prompt_template": "x",
+        "delivery_target": "conversation",
+        "delivery_config": {},
+        "verification_scheme": "generic_hmac_sha256",
+        "status": "active",
+        "rate_limit_per_minute": None,
+        "last_fired_at": None,
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    }
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_detach_default_skill_clears_attachment(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """detach_default_skill=true clears the default_skill_id."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    attached = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        default_skill_id=attached,
+    )
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "detach_default_skill": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["default_skill_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_omitting_both_is_no_op_on_skill(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Neither default_skill_id nor detach_default_skill: leave attachment alone."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    attached = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        default_skill_id=attached,
+    )
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "name": "renamed",
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["default_skill_id"] == attached
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_rejects_default_skill_id_plus_detach(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Passing both default_skill_id and detach_default_skill is rejected."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    new_skill = _new_uuid()
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(permitted_skills={new_skill}),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "default_skill_id": str(new_skill),
+            "detach_default_skill": True,
+        },
+    )
+    assert result.startswith("[TOOL ERROR]")
+    assert "cannot be combined" in result
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_attach_new_default_skill(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Passing default_skill_id with ACL allow attaches the new skill."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+    )
+    new_skill = _new_uuid()
+    registry = _FakeRegistry(
+        permitted_skills={new_skill},
+        names={new_skill: "named-skill"},
+    )
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=registry,
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "default_skill_id": str(new_skill),
+        },
+    )
+    assert "skill: named-skill" in result
+    assert coll.rows[(conv_id, sid)]["default_skill_id"] == new_skill
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_clear_name(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """clear_name=true clears the subscription name."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        name="old-name",
+    )
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "clear_name": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["name"] is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_update_clear_allowed_source_pattern(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """clear_allowed_source_pattern=true clears the field."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeSubscriptionsCollection()
+    sid = _new_uuid()
+    coll.rows[(conv_id, sid)] = _seeded_subscription_row(
+        conv_id=conv_id,
+        sid=sid,
+        user_id=user_id,
+        agent_id=agent_id,
+        allowed_source_pattern=r"^10\.0\.",
+    )
+    tools = load_webhook_subscription_update_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        agent_id=agent_id,
+        subscriptions_collection=coll,  # type: ignore[arg-type]
+        registry=_FakeRegistry(),
+    )
+    result = await tools[0].ainvoke(
+        {
+            "subscription_id": str(sid),
+            "clear_allowed_source_pattern": True,
+        },
+    )
+    assert not result.startswith("[TOOL ERROR]"), result
+    assert coll.rows[(conv_id, sid)]["allowed_source_pattern"] is None
 
 
 # ---------------------------------------------------------------------------
