@@ -218,6 +218,7 @@ async def _dispatch_one(
     trigger = WakeTrigger(
         schedule_id=schedule.schedule_id,
         user_id=schedule.user_id,
+        agent_id=schedule.agent_id,
         conversation_id=schedule.conversation_id,
         fire_source="scheduled_tick",
         execution_mode=schedule.execution_mode,

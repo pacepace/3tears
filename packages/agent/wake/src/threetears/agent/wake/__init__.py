@@ -42,6 +42,7 @@ from threetears.agent.wake.collections import (
     WakeScheduleCollection,
     WebhookSubscriptionCollection,
 )
+from threetears.agent.wake.dispatch import detect_silent_prefix, dispatch_wake
 from threetears.agent.wake.entities import (
     EncryptionService,
     WakeFireEntity,
@@ -51,11 +52,15 @@ from threetears.agent.wake.entities import (
 from threetears.agent.wake.migrations import register
 from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.types import (
+    DeliveryAdapter,
     DeliveryTarget,
     ExecutionMode,
     FireSource,
     FireStatus,
+    HandlerCallback,
+    HandlerCallbackResult,
     MissedFirePolicy,
+    PreparedWakeContext,
     ScheduleStatus,
     ScheduleType,
     VerificationScheme,
@@ -65,13 +70,17 @@ from threetears.agent.wake.types import (
 )
 
 __all__ = [
+    "DeliveryAdapter",
     "DeliveryTarget",
     "DispatchCallback",
     "EncryptionService",
     "ExecutionMode",
     "FireSource",
     "FireStatus",
+    "HandlerCallback",
+    "HandlerCallbackResult",
     "MissedFirePolicy",
+    "PreparedWakeContext",
     "ScheduleStatus",
     "ScheduleType",
     "VerificationScheme",
@@ -84,6 +93,8 @@ __all__ = [
     "WebhookSubscriptionCollection",
     "WebhookSubscriptionEntity",
     "WebhookSubscriptionStatus",
+    "detect_silent_prefix",
+    "dispatch_wake",
     "register",
     "wake_tick_job",
 ]
