@@ -24,6 +24,15 @@ try:
 except _PackageNotFoundError:  # pragma: no cover - dev fallback
     __version__ = "unknown"
 
+from threetears.agent.skills.api_models import (
+    CreateSkillRequest,
+    SkillInvocationListResponse,
+    SkillInvocationResponse,
+    SkillListResponse,
+    SkillResponse,
+    SkillSummary,
+    UpdateSkillRequest,
+)
 from threetears.agent.skills.collections import (
     AgentSkillCollection,
     AgentSkillInvocationCollection,
@@ -81,6 +90,7 @@ __all__ = [
     "AgentSkillInvocationEntity",
     "ComposedTurnContext",
     "ConversationIdResolver",
+    "CreateSkillRequest",
     "InvocationSource",
     "OutcomeSource",
     "PromptMode",
@@ -89,13 +99,19 @@ __all__ = [
     "SkillEligibleTool",
     "SkillGetInput",
     "SkillIntrospectInput",
+    "SkillInvocationListResponse",
+    "SkillInvocationResponse",
     "SkillInvokeInput",
     "SkillListInput",
+    "SkillListResponse",
     "SkillOutcome",
     "SkillRegistryClient",
+    "SkillResponse",
     "SkillSource",
+    "SkillSummary",
     "SkillToolIntrospect",
     "SkillUpdateInput",
+    "UpdateSkillRequest",
     "agent_skill_invocations_table",
     "agent_skills_table",
     "compose_turn_context",
