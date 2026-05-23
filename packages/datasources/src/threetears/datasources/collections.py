@@ -83,6 +83,12 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     # instance caveat alone (full override) instead of concatenating
     # the template caveat. default FALSE keeps the additive concat.
     "caveats_replaces_definition": bool,
+    # datasource-task-02: per-table column-shape MD5 (the Tier-2
+    # change-probe digest). NULL = "force re-introspect" sentinel.
+    # the warehouse-side SQL in AsyncpgDriver / RedshiftDriver's
+    # ``table_hashes`` byte-equal to ``compute_column_hash`` over
+    # the same column set.
+    "column_hash": str,
     "date_introspected": datetime,
     "date_described": datetime,
     "date_created": datetime,
@@ -323,11 +329,11 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
             INSERT INTO datasource_tables (
                 id, datasource_id, schema_name, table_name, description,
                 row_count_approx, caveats, template_id,
-                caveats_replaces_definition,
+                caveats_replaces_definition, column_hash,
                 date_introspected, date_described,
                 date_created, date_updated
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
             )
             ON CONFLICT (id) DO UPDATE SET
                 datasource_id = EXCLUDED.datasource_id,
@@ -338,6 +344,7 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
                 caveats = EXCLUDED.caveats,
                 template_id = EXCLUDED.template_id,
                 caveats_replaces_definition = EXCLUDED.caveats_replaces_definition,
+                column_hash = EXCLUDED.column_hash,
                 date_introspected = EXCLUDED.date_introspected,
                 date_described = EXCLUDED.date_described,
                 date_updated = EXCLUDED.date_updated
@@ -355,6 +362,10 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
             # the additive-concat semantics rather than NULL (which
             # the column rejects via NOT NULL).
             data.get("caveats_replaces_definition") or False,
+            # datasource-task-02: column_hash is nullable. None is
+            # the "force re-introspect" sentinel; the introspector
+            # writes the digest after computing it over the column set.
+            data.get("column_hash"),
             data.get("date_introspected"),
             data.get("date_described"),
             data.get("date_created"),

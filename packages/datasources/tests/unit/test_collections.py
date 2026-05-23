@@ -101,6 +101,7 @@ class TestDataSourceTableCollection:
             "description": "user accounts",
             "row_count_approx": 10000,
             "caveats": None,
+            "column_hash": "abc123def456",
             "date_introspected": now,
             "date_described": None,
             "date_created": now,
@@ -113,6 +114,36 @@ class TestDataSourceTableCollection:
         assert deserialized["schema_name"] == "public"
         assert deserialized["table_name"] == "users"
         assert deserialized["row_count_approx"] == 10000
+        # datasource-task-02: column_hash is now part of the
+        # canonical table-row shape; round-trip must preserve it
+        # (None is the documented "force re-introspect" sentinel,
+        # asserted via the missing-key path below).
+        assert deserialized["column_hash"] == "abc123def456"
+
+    def test_column_hash_none_sentinel_roundtrips(self) -> None:
+        """``None`` column_hash (the migration-backfill sentinel) round-trips cleanly.
+
+        the migration v010 adds the column with no backfill, so every
+        existing row reads NULL until the introspector populates it.
+        the introspector's diff treats NULL as "force re-introspect";
+        deserialization must NOT spuriously promote None to a string.
+        """
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        now = datetime.now(UTC)
+        data: dict[str, Any] = {
+            "id": uuid4(),
+            "datasource_id": uuid4(),
+            "schema_name": "public",
+            "table_name": "users",
+            "column_hash": None,
+            "date_introspected": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+        serialized = coll.serialize(data)
+        deserialized = coll.deserialize(serialized)
+        assert deserialized.get("column_hash") is None
 
 
 # -- DataSourceColumnCollection --
