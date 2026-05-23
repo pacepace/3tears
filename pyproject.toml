@@ -45,6 +45,15 @@ dev-dependencies = [
     # workspace pytest run never silently skips the metric-emitter
     # contract.
     "prometheus-client>=0.20",
+    # datasources backend libs installed in dev so the redshift / snowflake /
+    # bigquery driver test modules collect and run rather than erroring at
+    # import. declared as 3tears-datasources extras (datasources[redshift] /
+    # [snowflake] / [bigquery]); pinning them in dev-deps ensures the
+    # workspace pytest run exercises every driver module (same rationale as
+    # prometheus-client above). the libs are still OPTIONAL for consumers.
+    "redshift-connector>=2.1",
+    "snowflake-connector-python>=3.0",
+    "google-cloud-bigquery>=3.0",
 ]
 
 [tool.ruff]
