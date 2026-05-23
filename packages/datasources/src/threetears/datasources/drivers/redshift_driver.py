@@ -82,7 +82,7 @@ import asyncio
 import collections
 import contextlib
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -448,7 +448,7 @@ def _get_executor_saturation_gauge() -> Any:
 
 
 def _drain_cache_static(
-    connections: list["RedshiftConnection"],
+    connections: Iterable["RedshiftConnection"],
 ) -> None:
     """module-level finalize callback; close any connections still alive at GC.
 
@@ -463,13 +463,19 @@ def _drain_cache_static(
     raise. each ``conn.close()`` is wrapped in a try/except for that
     reason.
 
-    :param connections: cached connection list snapshot taken at
-        driver-construction time. references the same objects as
-        :attr:`RedshiftDriver._cache`; closing here doesn't break
-        anything because the driver instance is being GC'd
-    :ptype connections: list[redshift_connector.Connection]
+    :param connections: the live cache iterable (the deque held by
+        the driver instance, NOT a snapshot). passing the deque
+        itself -- rather than ``list(self._cache)`` at init time --
+        ensures the finalize sees whatever connections are cached at
+        GC time. lazy-fill means the cache is empty at construction;
+        capturing a snapshot then would drain nothing
+    :ptype connections: Iterable[redshift_connector.Connection]
     """
-    for conn in connections:
+    # snapshot iteration here is intentional: callers may mutate the
+    # underlying deque while we iterate (e.g. a concurrent close()
+    # racing with the finalize), and ``list(...)`` gives us a stable
+    # view of "what was in the cache at the moment we started".
+    for conn in list(connections):
         try:
             conn.close()
         except Exception as exc:  # noqa: BLE001 -- defensive at finalize
@@ -570,8 +576,14 @@ class RedshiftDriver(Driver):
         # callback that drains the cache at GC time. NOT a guarantee
         # against SIGKILL pod crashes; the cluster reaps orphaned
         # sessions on its session timeout (~4h default).
+        #
+        # pass the LIVE deque (not list(self._cache) at init time --
+        # lazy-fill means the cache is empty here; a snapshot would
+        # drain nothing). weakref.finalize holds a strong ref to the
+        # deque, which is safe because the deque doesn't ref-cycle
+        # back to the driver instance.
         self._finalize = weakref.finalize(
-            self, _drain_cache_static, list(self._cache),
+            self, _drain_cache_static, self._cache,
         )
 
     # -------------------------------------------------------------------

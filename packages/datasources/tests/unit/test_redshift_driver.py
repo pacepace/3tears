@@ -166,6 +166,30 @@ class TestConstruction:
         # the finalize is alive until detach() / GC.
         assert driver._finalize.alive  # noqa: SLF001
 
+    def test_finalize_drains_cache_added_after_init(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+    ) -> None:
+        """finalize closes connections added to the cache POST-init.
+
+        regression guard for the bug where ``weakref.finalize`` was
+        registered with ``list(self._cache)`` -- a snapshot at init
+        time, when the cache is empty due to lazy-fill. the finalize
+        MUST see the live cache state at GC time so connections added
+        between init and GC actually get closed.
+        """
+        driver = RedshiftDriver(redshift_config)
+        c1 = _build_mock_connection()
+        c2 = _build_mock_connection()
+        driver._cache.append(c1)  # noqa: SLF001
+        driver._cache.append(c2)  # noqa: SLF001
+        # directly invoke the finalize (simulates GC-time invocation).
+        # this exercises the ``self._cache`` reference the finalize
+        # captured at __init__; a snapshot would close nothing.
+        driver._finalize()  # noqa: SLF001
+        c1.close.assert_called()
+        c2.close.assert_called()
+
 
 class TestClose:
     """close() concurrency contract per DS-09-12 / DS-11-10."""
