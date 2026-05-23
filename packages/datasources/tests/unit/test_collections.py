@@ -17,8 +17,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
+
+import pytest
 
 from threetears.datasources.collections import (
     DataSourceCollection,
@@ -234,3 +236,160 @@ class TestTableTemplateCollection:
         assert deserialized["id"] == data["id"]
         assert deserialized["name"] == "report_geofacts"
         assert deserialized["customer_id"] == data["customer_id"]
+
+
+# ---------------------------------------------------------------------------
+# get_by_natural_key (introspector lookup path)
+# ---------------------------------------------------------------------------
+
+
+def _make_coll_with_pool(
+    cls: type[Any], row: dict[str, Any] | None = None
+) -> tuple[Any, AsyncMock]:
+    """build a collection with a mocked L3 pool returning ``row`` from fetchrow.
+
+    used by the natural-key tests below; isolates the collection
+    instance from real L3 wiring so the assertion is purely about the
+    SQL the method emits + how it maps the row dict back to the entity.
+
+    :param cls: Collection class to instantiate
+    :ptype cls: type
+    :param row: row dict that ``pool.fetchrow`` returns; None means
+        the lookup miss path
+    :ptype row: dict[str, Any] | None
+    :return: ``(collection, mock_pool)`` so tests can assert the SQL
+    :rtype: tuple[Any, AsyncMock]
+    """
+    registry, config = _make_registry_and_config()
+    coll = cls(registry=registry, config=config)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=row)
+    coll.l3_pool = pool
+    return coll, pool
+
+
+class TestDataSourceTableGetByNaturalKey:
+    """``(datasource_id, schema_name, table_name)`` lookup for the introspector."""
+
+    @pytest.mark.asyncio
+    async def test_returns_entity_when_row_exists(self) -> None:
+        now = datetime.now(UTC)
+        ds_id = uuid4()
+        row = {
+            "id": uuid4(),
+            "datasource_id": ds_id,
+            "schema_name": "reporting_prod",
+            "table_name": "events",
+            "date_introspected": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceTableCollection, row=row)
+        entity = await coll.get_by_natural_key(ds_id, "reporting_prod", "events")
+        assert entity is not None
+        assert isinstance(entity, DataSourceTableEntity)
+        assert entity.id == row["id"]
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_row_missing(self) -> None:
+        coll, _pool = _make_coll_with_pool(DataSourceTableCollection, row=None)
+        entity = await coll.get_by_natural_key(uuid4(), "s", "t")
+        assert entity is None
+
+    @pytest.mark.asyncio
+    async def test_passes_natural_key_to_pool(self) -> None:
+        coll, pool = _make_coll_with_pool(DataSourceTableCollection, row=None)
+        ds_id = uuid4()
+        await coll.get_by_natural_key(ds_id, "schema_x", "table_y")
+        pool.fetchrow.assert_called_once()
+        args = pool.fetchrow.call_args.args
+        # ds_id + schema + table are the three positional bind params
+        assert args[1:] == (ds_id, "schema_x", "table_y")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_l3_pool_is_none(self) -> None:
+        """defensive null-check on l3_pool (matches the surrounding pattern)."""
+        registry, config = _make_registry_and_config()
+        coll = DataSourceTableCollection(registry=registry, config=config)
+        coll.l3_pool = None
+        entity = await coll.get_by_natural_key(uuid4(), "s", "t")
+        assert entity is None
+
+
+class TestDataSourceColumnGetByNaturalKey:
+    """``(datasource_id, schema, table, column)`` lookup for the introspector."""
+
+    @pytest.mark.asyncio
+    async def test_returns_entity_when_row_exists(self) -> None:
+        now = datetime.now(UTC)
+        ds_id = uuid4()
+        row = {
+            "id": uuid4(),
+            "datasource_id": ds_id,
+            "schema_name": "reporting_prod",
+            "table_name": "events",
+            "column_name": "user_id",
+            "data_type": "integer",
+            "is_nullable": False,
+            "ordinal_position": 1,
+            "tags": [],
+            "date_introspected": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=row)
+        entity = await coll.get_by_natural_key(
+            ds_id, "reporting_prod", "events", "user_id"
+        )
+        assert entity is not None
+        assert isinstance(entity, DataSourceColumnEntity)
+        assert entity.id == row["id"]
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_row_missing(self) -> None:
+        coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=None)
+        entity = await coll.get_by_natural_key(uuid4(), "s", "t", "c")
+        assert entity is None
+
+    @pytest.mark.asyncio
+    async def test_parses_jsonb_tags_when_stored_as_string(self) -> None:
+        """JSONB ``tags`` arrive as ``str`` from raw L3; method round-trips them."""
+        now = datetime.now(UTC)
+        ds_id = uuid4()
+        row = {
+            "id": uuid4(),
+            "datasource_id": ds_id,
+            "schema_name": "s",
+            "table_name": "t",
+            "column_name": "c",
+            "data_type": "varchar",
+            "is_nullable": False,
+            "ordinal_position": 1,
+            "tags": '["pii", "email"]',  # JSONB-as-str from asyncpg
+            "date_introspected": now,
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=row)
+        entity = await coll.get_by_natural_key(ds_id, "s", "t", "c")
+        assert entity is not None
+        # the method MUST json-decode the tags array so callers see a list
+        # (matches the existing fetch_from_postgres behaviour)
+        assert entity.tags == ["pii", "email"]
+
+    @pytest.mark.asyncio
+    async def test_passes_natural_key_to_pool(self) -> None:
+        coll, pool = _make_coll_with_pool(DataSourceColumnCollection, row=None)
+        ds_id = uuid4()
+        await coll.get_by_natural_key(ds_id, "s", "t", "col")
+        pool.fetchrow.assert_called_once()
+        args = pool.fetchrow.call_args.args
+        assert args[1:] == (ds_id, "s", "t", "col")
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_l3_pool_is_none(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceColumnCollection(registry=registry, config=config)
+        coll.l3_pool = None
+        entity = await coll.get_by_natural_key(uuid4(), "s", "t", "c")
+        assert entity is None

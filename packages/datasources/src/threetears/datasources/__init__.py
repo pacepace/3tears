@@ -71,6 +71,11 @@ from threetears.datasources.entities import (
     DataSourceType,
     TableTemplateEntity,
 )
+from threetears.datasources.introspection import (
+    IntrospectionDiff,
+    compute_column_hash,
+    compute_introspection_diff,
+)
 from threetears.datasources.namespace import (
     DATASOURCE_NAMESPACE_TYPE,
     datasource_namespace_id,
@@ -94,12 +99,15 @@ __all__ = [
     "DataSourceTableEntity",
     "DataSourceType",
     "DatasourceConfig",
+    "IntrospectionDiff",
     "PostgresConnectionConfig",
     "RedshiftConnectionConfig",
     "SnowflakeConnectionConfig",
     "TableTemplateCollection",
     "TableTemplateEntity",
     "YugabyteConnectionConfig",
+    "compute_column_hash",
+    "compute_introspection_diff",
     "datasource_namespace_id",
     "datasource_namespace_name",
 ]

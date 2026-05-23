@@ -377,6 +377,48 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
             entity_id,
         )
 
+    async def get_by_natural_key(
+        self,
+        datasource_id: UUID,
+        schema_name: str,
+        table_name: str,
+    ) -> DataSourceTableEntity | None:
+        """resolve a table row by its ``(datasource_id, schema, table)`` natural key.
+
+        the introspector's "insert vs update" decision keys on the
+        natural unique constraint, not on the row's id. cache-bypass
+        by design: the natural-key lookup is only used in
+        introspection workflows (Hub-orchestrator concern, not the
+        hot read path); a future optimization can add a natural-key
+        secondary index in L1 if measurements justify it.
+
+        :param datasource_id: owning datasource UUID
+        :ptype datasource_id: UUID
+        :param schema_name: ``information_schema.tables.table_schema``
+        :ptype schema_name: str
+        :param table_name: ``information_schema.tables.table_name``
+        :ptype table_name: str
+        :return: the entity if a row exists, ``None`` otherwise
+        :rtype: DataSourceTableEntity | None
+        """
+        result: DataSourceTableEntity | None = None
+        if self.l3_pool is not None:
+            row = await self.l3_pool.fetchrow(
+                """
+                SELECT * FROM datasource_tables
+                WHERE datasource_id = $1
+                AND schema_name = $2
+                AND table_name = $3
+                """,
+                datasource_id,
+                schema_name,
+                table_name,
+            )
+            if row is not None:
+                data = dict(row)
+                result = self.entity_class(data, is_new=False, collection=self)
+        return result
+
 
 class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
     """three-tier collection for data source column entities.
@@ -533,6 +575,53 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             "DELETE FROM datasource_columns WHERE id = $1",
             entity_id,
         )
+
+    async def get_by_natural_key(
+        self,
+        datasource_id: UUID,
+        schema_name: str,
+        table_name: str,
+        column_name: str,
+    ) -> DataSourceColumnEntity | None:
+        """resolve a column row by its natural key.
+
+        the natural unique constraint is
+        ``(datasource_id, schema_name, table_name, column_name)``.
+        the introspector uses this to decide insert vs update during
+        per-table re-introspect.
+
+        :param datasource_id: owning datasource UUID
+        :ptype datasource_id: UUID
+        :param schema_name: schema name
+        :ptype schema_name: str
+        :param table_name: table name
+        :ptype table_name: str
+        :param column_name: column name
+        :ptype column_name: str
+        :return: the entity if a row exists, ``None`` otherwise
+        :rtype: DataSourceColumnEntity | None
+        """
+        result: DataSourceColumnEntity | None = None
+        if self.l3_pool is not None:
+            row = await self.l3_pool.fetchrow(
+                """
+                SELECT * FROM datasource_columns
+                WHERE datasource_id = $1
+                AND schema_name = $2
+                AND table_name = $3
+                AND column_name = $4
+                """,
+                datasource_id,
+                schema_name,
+                table_name,
+                column_name,
+            )
+            if row is not None:
+                data = dict(row)
+                if isinstance(data.get("tags"), str):
+                    data["tags"] = json.loads(data["tags"])
+                result = self.entity_class(data, is_new=False, collection=self)
+        return result
 
 
 class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
