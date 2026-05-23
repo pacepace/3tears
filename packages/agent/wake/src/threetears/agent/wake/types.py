@@ -82,8 +82,15 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 
 # ``status`` column on ``wake_fires``. The full enum after the
 # wake-yield revision (2026-05-19 evening, PLACEMENT §8.5.1) gained the
-# ``'yielded'`` value. CHECK-pinned in the L3 schema.
+# ``'yielded'`` value; v004 added the ``'dispatching'`` placeholder.
+# CHECK-pinned in the L3 schema.
 #
+# - ``'dispatching'`` -- in-flight placeholder written by
+#   :meth:`WakeFireCollection.create_dispatching` before the dispatch
+#   callback runs; overwritten by ``finalize_success`` /
+#   ``finalize_failed`` on the same tick. A row that stays in this
+#   status means the dispatcher crashed before finalize (audit
+#   evidence the fire was attempted).
 # - ``'fired'`` -- wake executed end-to-end, visible assistant response.
 # - ``'fired_silent'`` -- wake executed; assistant response started with
 #   ``[SILENT]`` and was suppressed (PLACEMENT §1.4).
@@ -97,6 +104,7 @@ MissedFirePolicy = Literal["coalesce", "catch_up"]
 #   callback at dispatch time.
 # - ``'failed'`` -- exception raised during dispatch / handler.
 FireStatus = Literal[
+    "dispatching",
     "fired",
     "fired_silent",
     "yielded",
@@ -181,6 +189,19 @@ class WakeDispatchResult:
     optional fixups the dispatcher may capture. Shard 03 owns the
     real producer; shard 02 only types the callable so the tick body
     can be exercised end-to-end with a stub callback.
+
+    :ivar delivery_status: per-delivery-target outcome keyed by target
+        name (e.g. ``{'email': 'delivered'}`` or
+        ``{'email': 'no_adapter'}``). Populated by
+        :func:`threetears.agent.wake.dispatch.dispatch_wake` after
+        delivery routing completes. ``'conversation'`` is a no-op
+        (handler already placed the message) so it is OMITTED from this
+        mapping rather than recorded as ``'delivered'``. Silent fires
+        record ``'skipped_silent'`` for the configured non-conversation
+        target. Shard-05 reads this off to emit Prometheus counters.
+        Empty dict when no delivery routing was attempted (i.e. when
+        the trigger's ``delivery_target == 'conversation'`` or when the
+        handler returned a non-fire status).
     """
 
     status: FireStatus
@@ -188,6 +209,7 @@ class WakeDispatchResult:
     latency_ms: int | None = None
     error: str | None = None
     display_suppressed: bool = False
+    delivery_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -351,9 +373,13 @@ class DeliveryAdapter(Protocol):
         :ptype handler_result: HandlerCallbackResult
         :param pool: asyncpg-compatible connection pool
         :ptype pool: Any
-        :return: short status string recorded on the fire row (e.g.
-            ``'delivered'``, ``'delivered_email_failed'``); target-
-            specific, free-form
+        :return: short status string stored under the target key in
+            :attr:`WakeDispatchResult.delivery_status`. Convention:
+            ``'delivered'`` on success, ``'failed'`` on a non-raising
+            adapter-side failure. Raising is also acceptable -- the
+            platform catches and records ``'failed'`` itself. Do NOT
+            include the target name in this string; the caller keys
+            by target.
         :rtype: str
         """
         ...

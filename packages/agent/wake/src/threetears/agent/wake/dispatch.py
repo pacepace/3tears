@@ -26,12 +26,16 @@ Flow (revised per PLACEMENT §1.6 / §1.4 / §1.3):
    ``attached_skill`` (or ``None``).
 3. Build :class:`PreparedWakeContext`.
 4. Invoke the consumer's :class:`HandlerCallback`.
-5. Detect ``[SILENT]`` prefix on the handler's assistant text; flip
+5. Determine silent treatment: ``[SILENT]`` marker on the assistant
+   text OR an explicit handler ``status='fired_silent'`` is enough
+   (either signal alone is authoritative). When silent, flip
    ``display_suppressed=True`` on the dispatch result.
 6. Route delivery: for ``'conversation'`` target the handler already
    placed the message -- no-op. For other targets, invoke the
-   matching :class:`DeliveryAdapter`. Skip delivery entirely on
-   ``[SILENT]`` -- silent fires have no payload to relay.
+   matching :class:`DeliveryAdapter`. Skip delivery on silent fires
+   -- silent fires have no payload to relay; the per-target
+   ``'skipped_silent'`` lands on
+   :attr:`WakeDispatchResult.delivery_status`.
 7. Build + return :class:`WakeDispatchResult`.
 
 The per-conv NATS lock is acquired by the CALLER (tick / webhook
@@ -140,15 +144,23 @@ async def dispatch_wake(
     3. Invokes the consumer's :class:`HandlerCallback`. Exceptions
        propagate to the caller (the tick records them via the
        ``try / except`` in :func:`threetears.agent.wake.tick._dispatch_one`).
-    4. Inspects the returned message text for the ``[SILENT]`` marker
-       (PLACEMENT §1.4); when matched, flips ``display_suppressed``
-       on the result and skips delivery routing.
+    4. Determines silent treatment from the handler's outcome:
+       ``is_silent`` is true when EITHER the ``[SILENT]`` marker
+       (PLACEMENT §1.4) is detected OR the handler explicitly
+       returned ``status='fired_silent'``. Either signal alone is
+       authoritative -- when the handler self-reports silent we
+       honor it even if the marker is absent. When ``is_silent`` is
+       true, ``display_suppressed`` flips and delivery routing is
+       skipped (recorded as ``'skipped_silent'`` on
+       :attr:`WakeDispatchResult.delivery_status` for shard-05
+       metrics).
     5. Routes delivery: ``'conversation'`` is a no-op (handler
        already wrote the message); other targets invoke the matching
        :class:`DeliveryAdapter` from ``delivery_adapters``. Delivery
        failure is logged but does not fail the fire -- the message
        already landed in the conversation, so a failed email side-
-       channel does not invalidate the wake.
+       channel does not invalidate the wake. The per-target outcome
+       lands on :attr:`WakeDispatchResult.delivery_status`.
 
     :param trigger: immutable fire envelope from the caller
     :ptype trigger: WakeTrigger
@@ -200,32 +212,39 @@ async def dispatch_wake(
     if latency_ms is None:
         latency_ms = int((time.monotonic() - started) * 1000)
 
-    is_silent = detect_silent_prefix(handler_result.assistant_message_content)
+    marker_detected = detect_silent_prefix(handler_result.assistant_message_content)
+    # The handler's explicit ``status='fired_silent'`` is authoritative
+    # (per the coherence-asymmetry resolution in
+    # `.prawduct/critic-review.md`): when the handler self-reports
+    # silent we honor it even if the marker is absent. Otherwise the
+    # marker is the canonical signal (PLACEMENT §1.4) and promotes
+    # ``'fired'`` to ``'fired_silent'``. The resulting ``is_silent``
+    # flag drives BOTH ``display_suppressed`` AND the delivery-skip
+    # branch, so the audit row + the suppression flag stay coherent.
+    is_silent = marker_detected or handler_result.status == "fired_silent"
     final_status: FireStatus
     if is_silent and handler_result.status == "fired":
-        # Per PLACEMENT §1.4 the marker is the canonical signal for
-        # the silent path. If the handler reported ``'fired'`` without
-        # noticing the marker (it forgot to inspect its own output),
-        # promote the status to ``'fired_silent'`` so the audit row +
-        # the suppression flag stay coherent.
         final_status = "fired_silent"
     else:
         final_status = handler_result.status
 
-    delivery_status: str | None = None
-    if (
-        not is_silent
-        and handler_result.status in {"fired", "fired_silent"}
-        and trigger.delivery_target != "conversation"
-    ):
-        delivery_status = await _route_delivery(
-            trigger=trigger,
-            prepared=prepared,
-            handler_result=handler_result,
-            adapters=adapters,
-            pool=pool,
-            fire_id=fire_id,
-        )
+    delivery_status: dict[str, str] = {}
+    if handler_result.status in {"fired", "fired_silent"} and trigger.delivery_target != "conversation":
+        if is_silent:
+            # Silent fires intentionally skip delivery -- the marker
+            # path means the agent decided there's nothing to relay.
+            # Record the skip on the result so shard-05 metrics can
+            # distinguish "no adapter" from "agent chose silence".
+            delivery_status[trigger.delivery_target] = "skipped_silent"
+        else:
+            delivery_status[trigger.delivery_target] = await _route_delivery(
+                trigger=trigger,
+                prepared=prepared,
+                handler_result=handler_result,
+                adapters=adapters,
+                pool=pool,
+                fire_id=fire_id,
+            )
 
     log.info(
         "dispatch_wake: handler complete",
@@ -248,6 +267,7 @@ async def dispatch_wake(
         latency_ms=latency_ms,
         error=handler_result.error,
         display_suppressed=is_silent,
+        delivery_status=delivery_status,
     )
 
 
@@ -444,8 +464,15 @@ async def _route_delivery(
     Failure of the adapter is logged but does NOT raise -- the
     assistant message already landed in the conversation, so an
     email-side-channel failure does not invalidate the wake. The
-    returned status string is recorded on the dispatch result for
-    audit (``'delivered_<target>_failed'`` is the convention).
+    returned status string is the value the caller stores in
+    :attr:`WakeDispatchResult.delivery_status` under the target key --
+    shard-05's Prometheus emit reads these strings off and increments
+    the matching counter. Values: ``'no_adapter'`` (no adapter
+    registered for this target), ``'failed'`` (adapter raised), or
+    whatever short string the adapter itself returned (convention:
+    ``'delivered'`` for success). The target name is NOT repeated in
+    the status string because the caller already keys the dict by
+    target.
 
     :param trigger: fire envelope (target lookup key)
     :ptype trigger: WakeTrigger
@@ -459,7 +486,7 @@ async def _route_delivery(
     :ptype pool: Any
     :param fire_id: forwarded to logging for correlation
     :ptype fire_id: UUID
-    :return: short status string suitable for the audit row
+    :return: short status string for the delivery_status dict value
     :rtype: str
     """
     target = trigger.delivery_target
@@ -476,7 +503,7 @@ async def _route_delivery(
                 }
             },
         )
-        return f"delivered_{target}_no_adapter"
+        return "no_adapter"
     try:
         return await adapter.deliver(trigger, prepared, handler_result, pool)
     except Exception as exc:  # noqa: BLE001 - boundary: delivery failure must not raise out of dispatch
@@ -491,4 +518,4 @@ async def _route_delivery(
                 }
             },
         )
-        return f"delivered_{target}_failed"
+        return "failed"

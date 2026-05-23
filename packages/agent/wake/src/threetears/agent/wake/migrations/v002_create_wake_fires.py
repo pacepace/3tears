@@ -36,10 +36,12 @@ NO FK on ``conversation_id`` (same legal reason as agent-tools'
 ``conversation_id``).
 
 The ``status`` enum after the 2026-05-19 wake-yield revision
-(PLACEMENT §8.5.1) gained the ``'yielded'`` value. Full enum:
-``'fired'``, ``'fired_silent'``, ``'yielded'``, ``'skipped_busy'``,
-``'skipped_rate_limit'``, ``'skipped_cap'``, ``'skipped_no_handler'``,
-``'failed'``. CHECK-pinned.
+(PLACEMENT §8.5.1) gained the ``'yielded'`` value. Original v002
+enum: ``'fired'``, ``'fired_silent'``, ``'yielded'``,
+``'skipped_busy'``, ``'skipped_rate_limit'``, ``'skipped_cap'``,
+``'skipped_no_handler'``, ``'failed'``. CHECK-pinned. The
+``'dispatching'`` placeholder was added in v004 (see
+``v004_add_dispatching_status.py``).
 
 ``display_suppressed`` boolean default ``false``: ``true`` when the
 agent emitted ``[SILENT]`` (status = ``'fired_silent'``); the product

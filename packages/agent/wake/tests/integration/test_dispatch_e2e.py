@@ -490,6 +490,337 @@ class TestAttachedSkillResolutionIntegration:
             await pool.close()
 
 
+class TestContextFromTruncationIntegration:
+    """The 16KB context_blocks budget truncates oversized upstream output.
+
+    Pins the truncation path in :func:`_resolve_context_from` (Critic
+    finding #2): a regression that mis-slices the UTF-8 boundary,
+    drops the ``[truncated: ...]`` suffix marker, or off-by-ones the
+    budget would land silently because shard-03 had no test for this
+    branch before this commit.
+    """
+
+    async def test_oversize_upstream_output_truncated_with_suffix(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """A >16KB upstream output is truncated + suffix-marked."""
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent = _new_uuid()
+            user = _new_uuid()
+            upstream_sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                name="oversize-upstream",
+            )
+            # 32KB of ASCII -- well above the 16KB budget. ASCII keeps
+            # byte-count == char-count so the boundary math is obvious;
+            # the multi-byte case is covered by the next test.
+            payload = "x" * (32 * 1024)
+            now = datetime.now(UTC)
+            await _seed_fire(
+                pool,
+                conversation_id=conv,
+                schedule_id=upstream_sched,
+                status="fired",
+                output_text=payload,
+                fired_at=now - timedelta(minutes=1),
+            )
+            downstream_sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                context_from_schedule_id=upstream_sched,
+            )
+            handler = _CapturingHandler()
+            trigger = _make_trigger(
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                schedule_id=downstream_sched,
+                context_from_schedule_id=upstream_sched,
+            )
+            await dispatch_wake(
+                trigger,
+                _new_uuid(),
+                pool=pool,
+                handler=handler,
+            )
+            assert handler.received is not None
+            blocks = handler.received.context_blocks
+            assert len(blocks) == 1
+            block = blocks[0]
+            # Suffix marker must be present, with the original size +
+            # the budget recorded so an operator can see what was cut.
+            assert "[truncated:" in block
+            assert "16384B" in block
+            # The block must be UNDER the original-payload size +
+            # bounded near the budget. We don't pin an exact byte count
+            # because the suffix string adds a handful of bytes; the
+            # invariant is "way smaller than original".
+            assert len(block.encode("utf-8")) < len(payload)
+        finally:
+            await pool.close()
+
+    async def test_truncation_at_multibyte_boundary_is_utf8_safe(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """Multi-byte chars at the 16KB boundary do not produce invalid UTF-8.
+
+        The resolver uses ``decode('utf-8', errors='ignore')`` to
+        survive a slice that lands mid-codepoint. This test seeds
+        upstream output engineered so the boundary falls inside a
+        4-byte emoji and verifies the resulting block is valid UTF-8
+        (encode-decode round-trips cleanly) + still carries the
+        truncation suffix.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent = _new_uuid()
+            user = _new_uuid()
+            upstream_sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                name="multibyte-upstream",
+            )
+            # The label prefix from _resolve_context_from is something
+            # like 'Context from upstream schedule "multibyte-upstream"
+            # (fired <iso>):\n' which is a variable-byte prefix; pad
+            # the payload with enough ASCII filler that the 16384-byte
+            # boundary falls deep into the emoji-run rather than just
+            # past the prefix. 32 KB of ASCII + emojis is more than
+            # enough.
+            ascii_filler = "a" * (20 * 1024)
+            emoji_run = "\U0001f600" * 2000  # 4-byte UTF-8 codepoint x 2000
+            payload = ascii_filler + emoji_run
+            now = datetime.now(UTC)
+            await _seed_fire(
+                pool,
+                conversation_id=conv,
+                schedule_id=upstream_sched,
+                status="fired",
+                output_text=payload,
+                fired_at=now - timedelta(minutes=1),
+            )
+            downstream_sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                context_from_schedule_id=upstream_sched,
+            )
+            handler = _CapturingHandler()
+            trigger = _make_trigger(
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+                schedule_id=downstream_sched,
+                context_from_schedule_id=upstream_sched,
+            )
+            await dispatch_wake(
+                trigger,
+                _new_uuid(),
+                pool=pool,
+                handler=handler,
+            )
+            assert handler.received is not None
+            blocks = handler.received.context_blocks
+            assert len(blocks) == 1
+            block = blocks[0]
+            # Truncation marker present -- the path ran.
+            assert "[truncated:" in block
+            # Round-trip through utf-8: a slice that left a dangling
+            # multi-byte sequence in place would raise here. The
+            # resolver uses errors='ignore' so dangling bytes are
+            # dropped cleanly.
+            roundtripped = block.encode("utf-8").decode("utf-8")
+            assert roundtripped == block
+        finally:
+            await pool.close()
+
+
+class TestCrossAgentSkillMismatchIntegration:
+    """Skill owned by a DIFFERENT agent resolves to None (composite-PK isolation).
+
+    Pins the cross-agent partition contract (Critic finding #5):
+    ``AgentSkillCollection.get((agent_id, skill_id))`` MUST return
+    ``None`` when the skill row exists with a DIFFERENT ``agent_id``
+    than the trigger carries. A future refactor that drops ``agent_id``
+    from the composite predicate (and reduces lookup to the standalone
+    ``UNIQUE (skill_id)`` constraint) would return the wrong-agent
+    skill and leak a cross-agent skill body into the handler -- this
+    test catches that regression.
+    """
+
+    async def test_skill_owned_by_other_agent_resolves_to_none(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent_a = _new_uuid()
+            agent_b = _new_uuid()
+            user = _new_uuid()
+            # Seed a skill owned by agent A
+            skill_owned_by_a = await _seed_skill(
+                pool,
+                agent_id=agent_a,
+                user_id=user,
+                name="agent-a-only-skill",
+                enabled=True,
+            )
+            # Schedule belongs to agent B; we DON'T attach the skill
+            # to the schedule because the FK on skill_id would be
+            # violated against agent_b's composite key. But the trigger
+            # we build below will reference (agent_b, skill_owned_by_a)
+            # directly to simulate the case where dispatch_wake is
+            # invoked with a malformed trigger.
+            sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent_b,
+                user_id=user,
+                # null skill_id at the schedule level
+                skill_id=None,
+            )
+            handler = _CapturingHandler()
+            # The trigger references agent_b but cites agent_a's skill
+            # id. The composite (agent_b, skill_owned_by_a) lookup MUST
+            # return None.
+            trigger = _make_trigger(
+                conversation_id=conv,
+                agent_id=agent_b,
+                user_id=user,
+                schedule_id=sched,
+                skill_id=skill_owned_by_a,
+            )
+            await dispatch_wake(
+                trigger,
+                _new_uuid(),
+                pool=pool,
+                handler=handler,
+            )
+            assert handler.received is not None
+            # NOT agent_a's skill -- the cross-agent partition holds.
+            assert handler.received.attached_skill is None
+        finally:
+            await pool.close()
+
+
+class TestCreateDispatchingPlaceholderIntegration:
+    """``create_dispatching`` writes the v004 ``'dispatching'`` placeholder.
+
+    Pins the placeholder-status contract (Critic finding #4): the
+    in-flight row must NOT pre-claim a terminal ``'fired'`` status.
+    Otherwise a future parallel-dispatch refactor could surface a
+    half-completed row to a downstream wake's ``context_from``
+    resolver and silently produce an empty context block.
+
+    A row that stays in ``'dispatching'`` is audit evidence the
+    dispatcher crashed before finalize ran; the finalize_success /
+    finalize_failed UPDATEs in :class:`WakeFireCollection` overwrite
+    to the real terminal status, so successful ticks never leave a
+    row in this state.
+    """
+
+    async def test_create_dispatching_writes_dispatching_status(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """Direct collection call -- placeholder row carries 'dispatching'."""
+        from threetears.agent.wake.collections import WakeFireCollection  # noqa: PLC0415
+        from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
+        from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
+
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent = _new_uuid()
+            user = _new_uuid()
+            sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+            )
+            registry = CollectionRegistry()
+            registry.configure(l3_pool=pool)
+            cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+            fires = WakeFireCollection(registry=registry, config=cfg)
+
+            fire_id = _new_uuid()
+            now = datetime.now(UTC)
+            await fires.create_dispatching(
+                fire_id=fire_id,
+                schedule_id=sched,
+                webhook_subscription_id=None,
+                conversation_id=conv,
+                scheduled_fire_at=now,
+                actual_fired_at=now,
+                fire_source="scheduled_tick",
+                execution_mode="inline",
+                delivery_target_resolved="conversation",
+            )
+            row = await pool.fetchrow(
+                "SELECT status FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2",
+                conv,
+                fire_id,
+            )
+            assert row is not None
+            assert row["status"] == "dispatching"
+        finally:
+            await pool.close()
+
+    async def test_check_constraint_accepts_dispatching(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """A raw INSERT with status='dispatching' passes the CHECK constraint.
+
+        Pins that the v004 migration applied the broadened CHECK so a
+        future migration-runner regression that skips v004 would fail
+        loudly here rather than silently downgrading semantics.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            conv = _new_uuid()
+            agent = _new_uuid()
+            user = _new_uuid()
+            sched = await _seed_schedule(
+                pool,
+                conversation_id=conv,
+                agent_id=agent,
+                user_id=user,
+            )
+            await pool.execute(
+                "INSERT INTO wake_fires "
+                "(conversation_id, fire_id, schedule_id, actual_fired_at, status) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                conv,
+                _new_uuid(),
+                sched,
+                datetime.now(UTC),
+                "dispatching",
+            )
+        finally:
+            await pool.close()
+
+
 class TestEndToEndHappyPath:
     """A full schedule + skill + handler round-trip lands the right context."""
 

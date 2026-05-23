@@ -25,11 +25,16 @@ Covered branches:
   handles the exception per shard-02 contract)
 - delivery_target='email' + adapter registered -> adapter invoked
   with the handler result, returned status recorded
-- delivery_target='email' + NO adapter registered -> result carries
-  ``delivered_email_no_adapter`` audit, NO raise
-- delivery_target='email' + adapter raises -> result carries
-  ``delivered_email_failed`` audit, NO raise out of dispatch
-- delivery_target='email' + [SILENT] -> adapter NOT invoked
+- delivery_target='email' + NO adapter registered -> result's
+  ``delivery_status['email'] == 'no_adapter'``, NO raise
+- delivery_target='email' + adapter raises -> result's
+  ``delivery_status['email'] == 'failed'``, NO raise out of dispatch
+- delivery_target='email' + [SILENT] -> adapter NOT invoked + result's
+  ``delivery_status['email'] == 'skipped_silent'``
+- handler explicitly returns ``status='fired_silent'`` WITHOUT the
+  ``[SILENT]`` marker -> the self-reported silent is authoritative:
+  ``display_suppressed=True`` AND delivery is skipped (matches the
+  fired_silent + marker case for coherence)
 """
 
 from __future__ import annotations
@@ -226,6 +231,43 @@ class TestSilentPromotion:
         assert result.status == "fired_silent"
         assert result.display_suppressed is True
 
+    async def test_explicit_fired_silent_without_marker_is_authoritative(self) -> None:
+        """Handler returns ``status='fired_silent'`` with NO marker -- still silent.
+
+        Pins the coherence-asymmetry resolution (Critic finding #3): a
+        handler's explicit ``status='fired_silent'`` is authoritative
+        even when the assistant text lacks the ``[SILENT]`` prefix.
+        Without this, the marker would be the sole signal and the
+        result would carry ``display_suppressed=False`` alongside
+        ``status='fired_silent'`` -- an internally inconsistent state.
+        """
+        trigger = _make_trigger(delivery_target="email")
+        adapter = _RecordingAdapter(status="delivered")
+        handler = _StubHandler(
+            HandlerCallbackResult(
+                status="fired_silent",
+                assistant_message_content="hello world",  # NO [SILENT] marker
+                target_conversation_id=trigger.conversation_id,
+            ),
+        )
+        result = await dispatch_wake(
+            trigger,
+            _new_uuid(),
+            pool=None,
+            handler=handler,
+            delivery_adapters={"email": adapter},
+        )
+        # status stays fired_silent (the handler's self-report wins)
+        assert result.status == "fired_silent"
+        # display_suppressed is True even without the marker -- the
+        # explicit fired_silent self-report is enough on its own
+        assert result.display_suppressed is True
+        # delivery routing is skipped on silent fires regardless of
+        # marker presence -- shard-05 distinguishes "no adapter" from
+        # "agent chose silence" via this string
+        assert adapter.calls == []
+        assert result.delivery_status == {"email": "skipped_silent"}
+
 
 class TestYieldedStatusPropagates:
     """``status='yielded'`` survives ``dispatch_wake`` unchanged (wake-yield)."""
@@ -320,6 +362,9 @@ class TestDeliveryRoutingEmail:
         recv_trigger, recv_result = adapter.calls[0]
         assert recv_trigger.delivery_target == "email"
         assert recv_result.assistant_message_content == "daily digest"
+        # adapter's returned status string lands on delivery_status
+        # under the target key for shard-05 metrics
+        assert result.delivery_status == {"email": "delivered"}
 
     async def test_email_adapter_not_invoked_on_silent(self) -> None:
         trigger = _make_trigger(delivery_target="email")
@@ -340,8 +385,12 @@ class TestDeliveryRoutingEmail:
         )
         assert result.status == "fired_silent"
         assert adapter.calls == []
+        # silent fires record 'skipped_silent' so shard-05 metrics can
+        # distinguish "no adapter" from "agent chose silence"
+        assert result.delivery_status == {"email": "skipped_silent"}
 
     async def test_no_adapter_registered_records_audit_status(self) -> None:
+        """Missing adapter records ``delivery_status['email']='no_adapter'``."""
         trigger = _make_trigger(delivery_target="email")
         handler = _StubHandler(
             HandlerCallbackResult(
@@ -357,13 +406,14 @@ class TestDeliveryRoutingEmail:
             pool=None,
             handler=handler,
         )
-        # delivery failed to route, but the fire still succeeded -- the
-        # status string lives in logs and the dispatch result's audit
-        # path (the WakeDispatchResult itself does not surface a
-        # dedicated delivery field in shard-03; the audit lives in
-        # logs + the ``delivery_status`` field arrives with shard-05
-        # observability hooks).
+        # delivery failed to route, but the fire still succeeded
         assert result.status == "fired"
+        # The audit string -- promised by the test name, delivered by
+        # delivery_status (Critic finding #6 + #1: previously the
+        # status string lived only in log output and the test was
+        # asserting only the fire status; now WakeDispatchResult
+        # surfaces it so the audit claim has teeth).
+        assert result.delivery_status == {"email": "no_adapter"}
 
     async def test_adapter_raise_does_not_escape(self) -> None:
         trigger = _make_trigger(delivery_target="email")
@@ -387,6 +437,32 @@ class TestDeliveryRoutingEmail:
             delivery_adapters={"email": adapter},
         )
         assert result.status == "fired"
+        assert result.delivery_status == {"email": "failed"}
+
+    async def test_conversation_target_records_empty_delivery_status(self) -> None:
+        """``delivery_target='conversation'`` is a no-op -- delivery_status stays empty.
+
+        The handler placed the message in the conversation; there is
+        no side-channel to route. shard-05's emit treats an empty dict
+        as "no delivery routing attempted" and does NOT increment any
+        delivery counter.
+        """
+        trigger = _make_trigger(delivery_target="conversation")
+        handler = _StubHandler(
+            HandlerCallbackResult(
+                status="fired",
+                assistant_message_content="visible reply",
+                target_conversation_id=trigger.conversation_id,
+            ),
+        )
+        result = await dispatch_wake(
+            trigger,
+            _new_uuid(),
+            pool=None,
+            handler=handler,
+        )
+        assert result.status == "fired"
+        assert result.delivery_status == {}
 
 
 class TestLatencyComputedWhenAbsent:

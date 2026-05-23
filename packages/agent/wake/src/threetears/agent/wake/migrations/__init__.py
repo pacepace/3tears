@@ -46,6 +46,10 @@ Version history:
   table does not yet exist at this point).
 - v003 creates ``webhook_subscriptions`` + indexes + retro-adds the FK
   on ``wake_fires.webhook_subscription_id``.
+- v004 extends ``wake_fires.status`` CHECK to accept the new
+  ``'dispatching'`` placeholder value so ``create_dispatching`` can
+  write a distinct in-flight status instead of pre-claiming the
+  terminal ``'fired'``.
 """
 
 from __future__ import annotations
@@ -58,6 +62,9 @@ from threetears.agent.wake.migrations.v002_create_wake_fires import (
 )
 from threetears.agent.wake.migrations.v003_create_webhook_subscriptions import (
     create_webhook_subscriptions,
+)
+from threetears.agent.wake.migrations.v004_add_dispatching_status import (
+    add_dispatching_status,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -89,12 +96,14 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(1)(create_agent_wake_schedules)
     pkg.version(2)(create_wake_fires)
     pkg.version(3)(create_webhook_subscriptions)
+    pkg.version(4)(add_dispatching_status)
     runner.register(pkg)
     return pkg
 
 
 __all__ = [
     "PACKAGE_NAME",
+    "add_dispatching_status",
     "create_agent_wake_schedules",
     "create_wake_fires",
     "create_webhook_subscriptions",

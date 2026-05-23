@@ -257,6 +257,27 @@ class TestFireConstraints:
         finally:
             await conn.close()
 
+    async def test_dispatching_status_accepted(self, pg_schema: tuple[str, str]) -> None:
+        """The v004 ``'dispatching'`` in-flight placeholder is accepted."""
+        url, schema = pg_schema
+        conn = await asyncpg.connect(url)
+        try:
+            await _apply(conn, schema)
+            conv = _new_uuid()
+            schedule_id = await self._seed_schedule(conn, conv)
+            await conn.execute(
+                "INSERT INTO wake_fires "
+                "(conversation_id, fire_id, schedule_id, actual_fired_at, status) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                conv,
+                _new_uuid(),
+                schedule_id,
+                datetime.now(UTC),
+                "dispatching",
+            )
+        finally:
+            await conn.close()
+
     async def test_status_rejected_outside_enum(self, pg_schema: tuple[str, str]) -> None:
         """A status value outside the eight-value enum fails."""
         url, schema = pg_schema

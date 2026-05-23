@@ -1021,11 +1021,23 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
 
         Called by the tick body (shard 02) and the webhook receiver
         (shard 06) immediately after a fire claim succeeds. The row
-        lands with ``status='fired'`` as a placeholder; the dispatch
-        callback (shard 03) finalizes via :meth:`finalize_success` /
-        :meth:`finalize_failed`. The two-write pattern lets the audit
-        trail capture the fact a fire was attempted even if the
-        dispatcher crashes before producing output.
+        lands with ``status='dispatching'`` -- a distinct placeholder
+        added in migration v004 so a half-completed row is queryable
+        as in-flight rather than terminal. The dispatch callback
+        (shard 03) finalizes via :meth:`finalize_success` /
+        :meth:`finalize_failed` which overwrite to the real terminal
+        status. The two-write pattern lets the audit trail capture
+        the fact a fire was attempted even if the dispatcher crashes
+        before producing output.
+
+        Using ``'dispatching'`` rather than pre-claiming
+        ``'fired'`` matters because the ``context_from`` resolver
+        keys off ``status IN {'fired', 'fired_silent'}``: if a future
+        refactor parallelises per-schedule dispatch inside the tick
+        body (PLACEMENT.md §1.3 anti-pattern), a downstream wake with
+        ``context_from = upstream`` would otherwise pick up an
+        in-flight row's NULL ``output_text`` and silently produce an
+        empty context block.
 
         ``execution_mode`` / ``delivery_target_resolved`` /
         ``fire_source`` are not stored on the v1 ``wake_fires`` row
@@ -1075,7 +1087,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             webhook_subscription_id,
             scheduled_fire_at,
             actual_fired_at,
-            "fired",
+            "dispatching",
             False,
         )
         return None
