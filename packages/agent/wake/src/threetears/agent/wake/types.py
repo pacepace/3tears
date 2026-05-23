@@ -15,16 +15,22 @@ Naming follows the agent-skills precedent
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
 
 __all__ = [
     "DeliveryTarget",
     "ExecutionMode",
+    "FireSource",
     "FireStatus",
     "MissedFirePolicy",
     "ScheduleStatus",
     "ScheduleType",
     "VerificationScheme",
+    "WakeDispatchResult",
+    "WakeTrigger",
     "WebhookSubscriptionStatus",
 ]
 
@@ -114,3 +120,59 @@ VerificationScheme = Literal["generic_hmac_sha256"]
 # ``ScheduleStatus`` minus the one-shot ``'expired'`` transition --
 # webhooks are long-lived. CHECK-pinned in the L3 schema.
 WebhookSubscriptionStatus = Literal["active", "paused"]
+
+
+# Source of a wake fire. ``'scheduled_tick'`` for fires emitted by
+# :func:`threetears.agent.wake.tick.wake_tick_job`; ``'webhook'`` for
+# inbound HTTP webhook fires (shard 06). Stored verbatim on the
+# ``wake_fires`` row so the audit history records the origin without
+# requiring a join.
+FireSource = Literal["scheduled_tick", "webhook"]
+
+
+@dataclass(frozen=True)
+class WakeTrigger:
+    """Immutable envelope describing a single wake fire opportunity.
+
+    Constructed by the tick engine after a schedule is claimed and
+    handed to the consumer-supplied ``dispatch_callback`` so the
+    handler (shard 03) has every field it needs to materialise the
+    fire without re-reading the schedule row. Frozen dataclass so the
+    callback cannot accidentally mutate fields the platform owns.
+
+    Fields mirror the wake schedule row plus the tick-side decisions
+    (``fire_source``, ``fired_at``). The handler decides what to do
+    with the fire; the platform decides when it fires.
+    """
+
+    schedule_id: UUID
+    user_id: UUID
+    conversation_id: UUID
+    fire_source: FireSource
+    execution_mode: str
+    schedule_type: str
+    fired_at: datetime
+    schedule_name: str | None = None
+    task_prompt: str | None = None
+    context_from_schedule_id: UUID | None = None
+    delivery_target: str = "conversation"
+    delivery_config: dict[str, Any] = field(default_factory=dict)
+    skill_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class WakeDispatchResult:
+    """Return value from a dispatch callback to the tick engine.
+
+    The platform uses :attr:`status` to write the terminal fire row;
+    :attr:`output_text` / :attr:`latency_ms` / :attr:`error` are
+    optional fixups the dispatcher may capture. Shard 03 owns the
+    real producer; shard 02 only types the callable so the tick body
+    can be exercised end-to-end with a stub callback.
+    """
+
+    status: FireStatus
+    output_text: str | None = None
+    latency_ms: int | None = None
+    error: str | None = None
+    display_suppressed: bool = False

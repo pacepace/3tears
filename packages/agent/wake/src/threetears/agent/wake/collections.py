@@ -675,6 +675,71 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         )
         return None
 
+    async def claim_and_reschedule(
+        self,
+        *,
+        conversation_id: UUID,
+        schedule_id: UUID,
+        expected_next_fire: datetime,
+        computed_next_fire: datetime | None,
+        new_status: str,
+        now: datetime,
+    ) -> bool:
+        """Atomically claim a due schedule and advance its ``next_fire_at``.
+
+        Optimistic-CAS UPDATE: the predicate ``next_fire_at =
+        expected_next_fire`` ensures exactly one tick wins when two
+        pods briefly disagree about the cross-pod lock (or, more
+        commonly, when the same pod runs overlapping tick bodies).
+        Returns ``True`` on a successful claim, ``False`` when another
+        tick has already advanced the row.
+
+        The UPDATE also stamps ``last_fired_at = now`` and rewrites
+        ``status`` (the caller computes ``'expired'`` for terminal
+        one-shots; ``'active'`` otherwise).
+
+        Takes ``conversation_id`` (partition column) so the SQL
+        predicate carries it -- pinned by
+        ``test_partition_column_enforcement.py``.
+
+        :param conversation_id: partition column
+        :ptype conversation_id: UUID
+        :param schedule_id: target schedule
+        :ptype schedule_id: UUID
+        :param expected_next_fire: the ``next_fire_at`` value the
+            caller observed when it picked up the schedule; the CAS
+            predicate
+        :ptype expected_next_fire: datetime
+        :param computed_next_fire: the new ``next_fire_at`` (may be
+            ``None`` for terminal one-shots)
+        :ptype computed_next_fire: datetime | None
+        :param new_status: the new ``status`` value
+        :ptype new_status: str
+        :param now: tick instant; written as ``last_fired_at`` and
+            ``date_updated``
+        :ptype now: datetime
+        :return: ``True`` on successful claim, ``False`` on CAS miss
+        :rtype: bool
+        """
+        if self.l3_pool is None:
+            return False
+        # cache-bypass: atomic CAS UPDATE; the row cache is invalidated
+        # naturally on the next read via the partition-aware fetch
+        # path.
+        claimed = await self.l3_pool.fetchval(
+            "UPDATE agent_wake_schedules "
+            "SET next_fire_at = $1, last_fired_at = $2, date_updated = $2, status = $3 "
+            "WHERE conversation_id = $4 AND schedule_id = $5 AND next_fire_at = $6 "
+            "RETURNING schedule_id",
+            computed_next_fire,
+            now,
+            new_status,
+            conversation_id,
+            schedule_id,
+            expected_next_fire,
+        )
+        return claimed is not None
+
     async def mark_expired(
         self,
         conversation_id: UUID,
@@ -938,6 +1003,181 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         if row is None:
             return None
         return WakeFireEntity(dict(row), is_new=False, collection=self)
+
+    async def create_dispatching(
+        self,
+        *,
+        fire_id: UUID,
+        schedule_id: UUID | None,
+        webhook_subscription_id: UUID | None,
+        conversation_id: UUID,
+        scheduled_fire_at: datetime | None,
+        actual_fired_at: datetime,
+        fire_source: str,
+        execution_mode: str,
+        delivery_target_resolved: str,
+    ) -> None:
+        """Insert an initial in-flight ``wake_fires`` row.
+
+        Called by the tick body (shard 02) and the webhook receiver
+        (shard 06) immediately after a fire claim succeeds. The row
+        lands with ``status='fired'`` as a placeholder; the dispatch
+        callback (shard 03) finalizes via :meth:`finalize_success` /
+        :meth:`finalize_failed`. The two-write pattern lets the audit
+        trail capture the fact a fire was attempted even if the
+        dispatcher crashes before producing output.
+
+        ``execution_mode`` / ``delivery_target_resolved`` /
+        ``fire_source`` are not stored on the v1 ``wake_fires`` row
+        (they live on the schedule); they are accepted here for
+        callsite-symmetry with the trigger envelope and so the
+        platform can promote them to fire columns later without
+        churning every callsite.
+
+        :param fire_id: pre-generated UUIDv7
+        :ptype fire_id: UUID
+        :param schedule_id: source schedule (NULL for webhook fires)
+        :ptype schedule_id: UUID | None
+        :param webhook_subscription_id: source webhook (NULL for
+            scheduled fires)
+        :ptype webhook_subscription_id: UUID | None
+        :param conversation_id: partition column
+        :ptype conversation_id: UUID
+        :param scheduled_fire_at: the planned fire time (None for
+            webhook fires; the schedule's ``next_fire_at`` from the
+            claim transaction)
+        :ptype scheduled_fire_at: datetime | None
+        :param actual_fired_at: the actual tick instant
+        :ptype actual_fired_at: datetime
+        :param fire_source: source label (reserved for v2)
+        :ptype fire_source: str
+        :param execution_mode: execution mode (reserved for v2)
+        :ptype execution_mode: str
+        :param delivery_target_resolved: resolved delivery target
+            (reserved for v2)
+        :ptype delivery_target_resolved: str
+        :return: nothing
+        :rtype: None
+        """
+        del fire_source, execution_mode, delivery_target_resolved
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: write-path; the row cache is read-mostly and
+        # invalidated naturally on the next fetch.
+        await self.l3_pool.execute(
+            "INSERT INTO wake_fires "
+            "(conversation_id, fire_id, schedule_id, webhook_subscription_id, "
+            " scheduled_fire_at, actual_fired_at, status, display_suppressed) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            conversation_id,
+            fire_id,
+            schedule_id,
+            webhook_subscription_id,
+            scheduled_fire_at,
+            actual_fired_at,
+            "fired",
+            False,
+        )
+        return None
+
+    async def finalize_success(
+        self,
+        conversation_id: UUID,
+        fire_id: UUID,
+        *,
+        status: str = "fired",
+        output_text: str | None = None,
+        latency_ms: int | None = None,
+        display_suppressed: bool = False,
+    ) -> None:
+        """Stamp a successful dispatch result onto the fire row.
+
+        Called by the dispatch callback in shard 03 after the LLM /
+        handler returns. Idempotent: replaying the same finalization
+        on a row already in the terminal state overwrites with the
+        same values.
+
+        Takes ``conversation_id`` first (partition column) so the SQL
+        carries the partition predicate -- pinned by
+        ``test_partition_column_enforcement.py``.
+
+        :param conversation_id: partition column for ``wake_fires``
+        :ptype conversation_id: UUID
+        :param fire_id: target fire row
+        :ptype fire_id: UUID
+        :param status: terminal status -- one of ``'fired'``,
+            ``'fired_silent'``, ``'yielded'``, or a ``'skipped_*'``
+        :ptype status: str
+        :param output_text: captured assistant output text
+        :ptype output_text: str | None
+        :param latency_ms: end-to-end fire latency
+        :ptype latency_ms: int | None
+        :param display_suppressed: whether visible display was
+            suppressed (``[SILENT]`` path)
+        :ptype display_suppressed: bool
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: targeted UPDATE on the terminal-state columns.
+        await self.l3_pool.execute(
+            "UPDATE wake_fires "
+            "SET status = $1, output_text = $2, latency_ms = $3, "
+            "    display_suppressed = $4 "
+            "WHERE conversation_id = $5 AND fire_id = $6",
+            status,
+            output_text,
+            latency_ms,
+            display_suppressed,
+            conversation_id,
+            fire_id,
+        )
+        return None
+
+    async def finalize_failed(
+        self,
+        conversation_id: UUID,
+        fire_id: UUID,
+        *,
+        error: str,
+        latency_ms: int | None = None,
+    ) -> None:
+        """Stamp a failed-dispatch result onto the fire row.
+
+        Called by the tick body in shard 02 when the dispatch callback
+        raises -- the per-schedule try/except keeps one bad fire from
+        poisoning the rest of the tick.
+
+        Takes ``conversation_id`` first (partition column) so the SQL
+        carries the partition predicate -- pinned by
+        ``test_partition_column_enforcement.py``.
+
+        :param conversation_id: partition column for ``wake_fires``
+        :ptype conversation_id: UUID
+        :param fire_id: target fire row
+        :ptype fire_id: UUID
+        :param error: captured error message (truncated by the DB if
+            needed)
+        :ptype error: str
+        :param latency_ms: latency up to the failure (may be ``None``
+            if the failure happened pre-LLM)
+        :ptype latency_ms: int | None
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return None
+        # cache-bypass: targeted UPDATE on the failure columns.
+        await self.l3_pool.execute(
+            "UPDATE wake_fires SET status = 'failed', error = $1, latency_ms = $2 "
+            "WHERE conversation_id = $3 AND fire_id = $4",
+            error,
+            latency_ms,
+            conversation_id,
+            fire_id,
+        )
+        return None
 
     async def count_in_window(
         self,

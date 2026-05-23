@@ -49,32 +49,41 @@ from threetears.agent.wake.entities import (
     WebhookSubscriptionEntity,
 )
 from threetears.agent.wake.migrations import register
+from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.types import (
     DeliveryTarget,
     ExecutionMode,
+    FireSource,
     FireStatus,
     MissedFirePolicy,
     ScheduleStatus,
     ScheduleType,
     VerificationScheme,
+    WakeDispatchResult,
+    WakeTrigger,
     WebhookSubscriptionStatus,
 )
 
 __all__ = [
     "DeliveryTarget",
+    "DispatchCallback",
     "EncryptionService",
     "ExecutionMode",
+    "FireSource",
     "FireStatus",
     "MissedFirePolicy",
     "ScheduleStatus",
     "ScheduleType",
     "VerificationScheme",
+    "WakeDispatchResult",
     "WakeFireCollection",
     "WakeFireEntity",
     "WakeScheduleCollection",
     "WakeScheduleEntity",
+    "WakeTrigger",
     "WebhookSubscriptionCollection",
     "WebhookSubscriptionEntity",
     "WebhookSubscriptionStatus",
     "register",
+    "wake_tick_job",
 ]

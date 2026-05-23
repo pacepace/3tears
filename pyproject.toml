@@ -44,6 +44,10 @@ dev-dependencies = [
     # workspace pytest run never silently skips the metric-emitter
     # contract.
     "prometheus-client>=0.20",
+    # freezegun is used by the agent-wake reschedule unit tests to pin
+    # ``now`` across DST-transition test cases. Time-sensitive logic
+    # cannot be tested deterministically otherwise.
+    "freezegun>=1.5",
 ]
 
 [tool.ruff]
@@ -221,6 +225,10 @@ module = [
     "jsonpath_ng.*",
     "testcontainers",
     "testcontainers.*",
+    "apscheduler",
+    "apscheduler.*",
+    "freezegun",
+    "freezegun.*",
 ]
 ignore_missing_imports = true
 
