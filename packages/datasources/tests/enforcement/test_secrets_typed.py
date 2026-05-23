@@ -7,12 +7,15 @@ opaque by construction: ``repr()`` and ``str()`` redact to
 ``'**********'`` so the resolved value can't leak through tracebacks,
 log lines, or pydantic ``ValidationError`` chains.
 
-field-name EXEMPTION: names ending in ``_env`` are env-var NAMES
-(the literal string ``"OTS_REDSHIFT_PASSWORD"``), not the secret
-itself. those stay typed ``str`` because the env-var name is safe to
-surface in logs. see :class:`PostgresConnectionConfig.password_env`
-for the canonical shape -- the env-var name is the field, and a
-:meth:`resolve_password` method returns the ``SecretStr`` at use time.
+field-name EXEMPTION: names ending in ``_ref`` are credential
+REFERENCES -- a ``scheme://locator`` string (e.g.
+``"env://OTS_REDSHIFT_PASSWORD"`` or
+``"k8s://central-reporting/password"``), not the secret itself. those
+stay typed ``str`` because the reference is safe to surface in logs.
+see :class:`PostgresConnectionConfig.password_ref` for the canonical
+shape -- the reference is the field, and a :meth:`resolve_password`
+method returns the ``SecretStr`` at use time (resolved by
+:mod:`threetears.datasources.secrets`).
 
 scope:
 
@@ -21,12 +24,12 @@ scope:
   models a credential
 - flags every pydantic-style field assignment
   (``name: AnnotationLike``) where ``name`` matches the credential
-  patterns AND does NOT end with ``_env`` AND the annotation is not
+  patterns AND does NOT end with ``_ref`` AND the annotation is not
   ``SecretStr``
 
 this catches the most common drift: a future contributor adds a
 ``password: str`` field to a ConnectionConfig (instead of
-``password_env: str``) "for convenience," opening a credential-leak
+``password_ref: str``) "for convenience," opening a credential-leak
 hole.
 """
 
@@ -53,9 +56,9 @@ _CREDENTIAL_NAME_RE = re.compile(
     r"(?i)(password|secret|token|(^|_)key$)",
 )
 
-# exemption suffix: names ending in ``_env`` carry env-var names,
-# not secrets. typed ``str`` is correct.
-_ENV_VAR_SUFFIX = "_env"
+# exemption suffix: names ending in ``_ref`` carry a scheme://locator
+# credential reference, not the secret itself. typed ``str`` is correct.
+_REF_SUFFIX = "_ref"
 
 # package root resolved relative to this file so pytest can run from
 # any working directory.
@@ -125,8 +128,8 @@ def _find_unprotected_credentials(path: Path) -> list[tuple[int, str, str]]:
             if not isinstance(body_node.target, ast.Name):
                 continue
             name = body_node.target.id
-            if name.endswith(_ENV_VAR_SUFFIX):
-                continue  # env-var NAME, not the secret
+            if name.endswith(_REF_SUFFIX):
+                continue  # scheme://locator reference, not the secret
             if not _CREDENTIAL_NAME_RE.search(name):
                 continue
             if _annotation_is_secret_str(body_node.annotation):
@@ -146,9 +149,10 @@ def test_credential_fields_are_secret_str(source_module: Path) -> None:
     """credential-named pydantic fields MUST be typed ``SecretStr``.
 
     if this test fails: change the field's annotation to
-    :class:`SecretStr`, OR rename the field with ``_env`` suffix if
-    the value is actually an env-var name (the resolved secret then
-    lives in a :meth:`resolve_*` method that returns ``SecretStr``).
+    :class:`SecretStr`, OR rename the field with ``_ref`` suffix if
+    the value is actually a ``scheme://locator`` credential reference
+    (the resolved secret then lives in a :meth:`resolve_*` method that
+    returns ``SecretStr``).
 
     :param source_module: source-module path under test
     :ptype source_module: Path
@@ -156,28 +160,28 @@ def test_credential_fields_are_secret_str(source_module: Path) -> None:
     hits = _find_unprotected_credentials(source_module)
     if hits:
         rendered = "\n".join(
-            f"  {source_module.relative_to(_PACKAGE_ROOT)}:{lineno}: {name}: {ann}"
-            for lineno, name, ann in hits
+            f"  {source_module.relative_to(_PACKAGE_ROOT)}:{lineno}: {name}: {ann}" for lineno, name, ann in hits
         )
         raise AssertionError(
             f"credential-named pydantic fields MUST be typed `SecretStr` "
-            f"(or renamed with `_env` suffix if they carry an env-var name):\n"
+            f"(or renamed with `_ref` suffix if they carry a "
+            f"scheme://locator credential reference):\n"
             f"{rendered}"
         )
 
 
-def test_walker_correctly_classifies_env_suffix_as_safe() -> None:
-    """sanity: walker logic exempts ``*_env`` field names.
+def test_walker_correctly_classifies_ref_suffix_as_safe() -> None:
+    """sanity: walker logic exempts ``*_ref`` field names.
 
-    locks in the env-var-name vs secret-value distinction so a future
-    edit can't silently flip the exemption.
+    locks in the reference-string vs secret-value distinction so a
+    future edit can't silently flip the exemption.
     """
     source = (
         "class C:\n"
-        "    password_env: str\n"        # exempt: env-var name
-        "    primary_key_field: str\n"   # exempt: DB primary-key concept, not credential
-        "    api_key: str\n"             # SHOULD trip: trailing _key is a credential
-        "    api_token: str\n"           # SHOULD trip: credential w/o SecretStr
+        "    password_ref: str\n"  # exempt: scheme://locator reference
+        "    primary_key_field: str\n"  # exempt: DB primary-key concept, not credential
+        "    api_key: str\n"  # SHOULD trip: trailing _key is a credential
+        "    api_token: str\n"  # SHOULD trip: credential w/o SecretStr
     )
     tree = ast.parse(source)
     hits: list[tuple[int, str, str]] = []
@@ -190,7 +194,7 @@ def test_walker_correctly_classifies_env_suffix_as_safe() -> None:
             if not isinstance(body_node.target, ast.Name):
                 continue
             name = body_node.target.id
-            if name.endswith(_ENV_VAR_SUFFIX):
+            if name.endswith(_REF_SUFFIX):
                 continue
             if not _CREDENTIAL_NAME_RE.search(name):
                 continue

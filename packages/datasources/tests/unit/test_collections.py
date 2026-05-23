@@ -318,9 +318,7 @@ class TestTableTemplateCollection:
 # ---------------------------------------------------------------------------
 
 
-def _make_coll_with_pool(
-    cls: type[Any], row: dict[str, Any] | None = None
-) -> tuple[Any, AsyncMock]:
+def _make_coll_with_pool(cls: type[Any], row: dict[str, Any] | None = None) -> tuple[Any, AsyncMock]:
     """build a collection with a mocked L3 pool returning ``row`` from fetchrow.
 
     used by the natural-key tests below; isolates the collection
@@ -413,9 +411,7 @@ class TestDataSourceColumnGetByNaturalKey:
             "date_updated": now,
         }
         coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=row)
-        entity = await coll.get_by_natural_key(
-            ds_id, "reporting_prod", "events", "user_id"
-        )
+        entity = await coll.get_by_natural_key(ds_id, "reporting_prod", "events", "user_id")
         assert entity is not None
         assert isinstance(entity, DataSourceColumnEntity)
         assert entity.id == row["id"]

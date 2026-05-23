@@ -87,9 +87,7 @@ class TestWithCancellation:
         async def op() -> int:
             return 42
 
-        result = await driver.run_with_cancellation(
-            op, cancel_callback=lambda: cancel_calls.append("called")
-        )
+        result = await driver.run_with_cancellation(op, cancel_callback=lambda: cancel_calls.append("called"))
         assert result == 42
         assert cancel_calls == []  # success path does not fire the callback
 
@@ -153,9 +151,7 @@ class TestWithCancellation:
             raise ValueError("backend cancel hook failed")
 
         async def run() -> int:
-            return await driver.run_with_cancellation(
-                op, cancel_callback=broken_callback
-            )
+            return await driver.run_with_cancellation(op, cancel_callback=broken_callback)
 
         task = asyncio.create_task(run())
         await asyncio.sleep(0.05)

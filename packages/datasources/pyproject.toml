@@ -4,10 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-datasources"
-# package version is decoupled from 3tears core; see CHANGELOG.md +
-# README.md "Versioning policy" for the SemVer-independence rationale
-# (datasource-task-07 DS-07-12).
-version = "0.1.0"
+# versioned in lockstep with the rest of the 3tears monorepo (every
+# package tracks the framework git tag). do NOT decouple this number.
+version = "0.9.1"
 description = "datasource entities, collections, namespace helpers, agent-yaml config model + driver abstraction for postgres/redshift/snowflake/bigquery backends"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,11 +21,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
-# core depends on a RANGE, not a pin. the package owns its own version
-# (see CHANGELOG); 3tears core can bump independently as long as the
-# Driver ABC + Collection contract stays stable.
+# depends on 3tears core via a compatible-release range; the whole
+# monorepo bumps in lockstep so any 0.9.x core satisfies this.
 dependencies = [
-    "3tears>=0.9.0,<1.0",
+    "3tears>=0.9.1,<1.0",
     "pydantic>=2.0",
     # asyncpg is the baseline backend lib: postgres / yugabyte /
     # agent_internal coverage is expected of every 3tears consumer,
@@ -42,8 +40,8 @@ dependencies = [
 # Hub/agent consumers that don't use a given backend don't pay the
 # import cost. extras keys are part of the package's public API surface;
 # declare all of them up front even though only redshift + asyncpg-
-# backed (postgres / yugabyte / agent_internal) drivers ship in the
-# initial 0.1.0 release.
+# backed (postgres / yugabyte / agent_internal) drivers ship today
+# (snowflake / bigquery drivers are stubs).
 redshift = ["redshift-connector>=2.1"]
 snowflake = ["snowflake-connector-python>=3.0"]
 bigquery = ["google-cloud-bigquery>=3.0"]

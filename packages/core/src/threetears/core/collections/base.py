@@ -696,7 +696,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         if self._nats_client is None:
             self._warn_missing_nats_client_once()
         await self._registry.publish_invalidation(
-            self._nats_client, self.table_name, entity_id,
+            self._nats_client,
+            self.table_name,
+            entity_id,
         )
 
     def _warn_missing_nats_client_once(self) -> None:

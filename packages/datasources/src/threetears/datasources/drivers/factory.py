@@ -94,8 +94,7 @@ def create_driver(
         case DataSourceType.AGENT_INTERNAL:
             if hub_l3_pool is None:
                 raise ValueError(
-                    "AGENT_INTERNAL driver requires hub_l3_pool; "
-                    "the agent-internal variant borrows Hub's L3 pool"
+                    "AGENT_INTERNAL driver requires hub_l3_pool; the agent-internal variant borrows Hub's L3 pool"
                 )
             from threetears.datasources.drivers.asyncpg_driver import (
                 AsyncpgDriver,
@@ -125,7 +124,5 @@ def create_driver(
 
             driver = BigQueryDriver(config, datasource_name=datasource_name)
         case _:
-            raise ValueError(
-                f"no driver registered for datasource_type={config.datasource_type!r}"
-            )
+            raise ValueError(f"no driver registered for datasource_type={config.datasource_type!r}")
     return driver

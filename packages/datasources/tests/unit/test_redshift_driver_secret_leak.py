@@ -47,7 +47,7 @@ async def test_wrong_password_does_not_leak_password_value(
         port=1,  # closed port -- guaranteed connect failure
         database="x",
         username="u",
-        password_env="FAKE_REDSHIFT_PW",
+        password_ref="env://FAKE_REDSHIFT_PW",
         # tight sizing keeps the test fast
         executor_max_workers=1,
         connection_cache_size=1,
@@ -63,9 +63,7 @@ async def test_wrong_password_does_not_leak_password_value(
             + str(exc_info.value.__cause__ or "")
             + str(exc_info.value.__context__ or "")
         )
-        assert _FAKE_PW_VALUE not in rendered, (
-            f"password value leaked into exception rendering: {rendered!r}"
-        )
+        assert _FAKE_PW_VALUE not in rendered, f"password value leaked into exception rendering: {rendered!r}"
     finally:
         await driver.close()
 
@@ -87,7 +85,7 @@ async def test_chained_cause_broken_with_raise_from_none(
         port=1,
         database="x",
         username="u",
-        password_env="FAKE_REDSHIFT_PW",
+        password_ref="env://FAKE_REDSHIFT_PW",
         executor_max_workers=1,
         connection_cache_size=1,
         query_timeout_seconds=2,

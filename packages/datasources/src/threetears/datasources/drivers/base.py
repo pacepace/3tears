@@ -243,9 +243,7 @@ def _observed(driver_type: str) -> Callable[[F], F]:
 
     def decorator(fn: F) -> F:
         if not inspect.iscoroutinefunction(fn):
-            raise TypeError(
-                f"@_observed only wraps async functions; {fn.__qualname__} is not async"
-            )
+            raise TypeError(f"@_observed only wraps async functions; {fn.__qualname__} is not async")
 
         @functools.wraps(fn)
         async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
@@ -375,9 +373,7 @@ class Driver(ABC):
         :raises RuntimeError: if the driver was previously closed
         """
 
-    async def fetch_iter(
-        self, sql: str, *params: Any
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:
         """stream rows for large result sets.
 
         default implementation calls :meth:`fetch` and yields each row
@@ -428,9 +424,7 @@ class Driver(ABC):
         """
 
     @abstractmethod
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape; Tier-2 change-probe.
 
         MUST byte-equal the python-side ``_compute_column_hash`` from

@@ -102,9 +102,7 @@ class FakeDriver(Driver):
             raise RuntimeError("FakeDriver is closed")
         return list(self._column_rows)
 
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         if self._closed:
             raise RuntimeError("FakeDriver is closed")
         return dict(self._table_hash_map)

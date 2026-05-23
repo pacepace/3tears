@@ -263,7 +263,8 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
         return result
 
     async def find_by_id(
-        self, datasource_id: UUID,
+        self,
+        datasource_id: UUID,
     ) -> DataSourceEntity | None:
         """resolve a datasource by ``id`` alone via the v054 ``UNIQUE (id)``.
 

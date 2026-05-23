@@ -11,6 +11,7 @@ exclude = ["packages/agent"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "mypy>=1.8",
     "ruff>=0.3",
     "opentelemetry-api>=1.28",
@@ -120,6 +121,16 @@ select = ["SLF"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
+# Multiple packages carry a same-named ``tests`` package (e.g.
+# ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
+# both define ``tests/integration/conftest.py``). Under importlib mode
+# without this flag, the second one collides ("Plugin already registered
+# under a different name") and relative ``from ._helpers`` imports
+# resolve into whichever ``tests.unit`` package was imported first.
+# Treating the test trees as namespace packages gives each module a
+# unique, rootdir-relative dotted name so the whole workspace collects
+# cleanly under ``pytest packages/ tests/``.
+consider_namespace_packages = true
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",

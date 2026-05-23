@@ -93,8 +93,7 @@ except ImportError as exc:  # pragma: no cover -- environments without the extra
     # load with a clear install hint is more actionable than the bare
     # ImportError ``import redshift_connector`` would otherwise raise.
     raise ImportError(
-        "redshift-connector not installed; install via "
-        "'pip install 3tears-datasources[redshift]'"
+        "redshift-connector not installed; install via 'pip install 3tears-datasources[redshift]'"
     ) from exc
 
 if TYPE_CHECKING:
@@ -523,7 +522,7 @@ class RedshiftDriver(Driver):
     is observable, never silent).
 
     :param config: per-driver connection config carrying host/port/
-        database/username/password_env + executor/cache/timeout sizing
+        database/username/password_ref + executor/cache/timeout sizing
     :ptype config: RedshiftConnectionConfig
     :param datasource_name: human-readable name of the datasource this
         driver serves. surfaces as the ``datasource_name`` attribute
@@ -562,9 +561,7 @@ class RedshiftDriver(Driver):
         # lazy-fill -- no eager warmup. each enqueued connection has
         # already had ``SET statement_timeout`` applied (see
         # :meth:`_open_connection`).
-        self._cache: collections.deque["RedshiftConnection"] = (
-            collections.deque(maxlen=config.connection_cache_size)
-        )
+        self._cache: collections.deque["RedshiftConnection"] = collections.deque(maxlen=config.connection_cache_size)
         # cache mutations are guarded inside this lock so concurrent
         # acquire/release on the same event loop don't race.
         self._cache_lock = asyncio.Lock()
@@ -583,7 +580,9 @@ class RedshiftDriver(Driver):
         # deque, which is safe because the deque doesn't ref-cycle
         # back to the driver instance.
         self._finalize = weakref.finalize(
-            self, _drain_cache_static, self._cache,
+            self,
+            _drain_cache_static,
+            self._cache,
         )
 
     # -------------------------------------------------------------------
@@ -610,20 +609,14 @@ class RedshiftDriver(Driver):
                 port=cfg.port,
                 database=cfg.database,
                 user=cfg.username,
-                password=(
-                    cfg.resolve_password().get_secret_value()
-                    if cfg.password_env is not None
-                    else None
-                ),
+                password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
             )
         except Exception:
             # break the cause chain (``from None``) so the original
             # redshift_connector exception, which may embed the
             # password value in nested context, cannot reach loggers
             # / tracebacks via ``__cause__``.
-            raise DriverConnectError(
-                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}"
-            ) from None
+            raise DriverConnectError(f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}") from None
         # apply the server-side statement timeout once per connection.
         # Redshift expects milliseconds AND does not accept bind params
         # in ``SET`` statements (parser rejects ``SET x = $1`` with
@@ -633,11 +626,7 @@ class RedshiftDriver(Driver):
         try:
             cursor = conn.cursor()
             try:
-                cursor.execute(
-                    _SET_STATEMENT_TIMEOUT_SQL_TEMPLATE.format(
-                        ms=cfg.query_timeout_seconds * 1000
-                    )
-                )
+                cursor.execute(_SET_STATEMENT_TIMEOUT_SQL_TEMPLATE.format(ms=cfg.query_timeout_seconds * 1000))
             finally:
                 cursor.close()
         except Exception:
@@ -691,17 +680,13 @@ class RedshiftDriver(Driver):
         if conn is not None:
             hit_counter = _get_cache_hit_counter()
             if hit_counter is not None:
-                hit_counter.add(
-                    1, attributes={"datasource_name": self._datasource_name}
-                )
+                hit_counter.add(1, attributes={"datasource_name": self._datasource_name})
             return conn
         # cache miss: open a fresh connection through the bridge so
         # the TLS+auth wait doesn't block the asyncio loop.
         miss_counter = _get_cache_miss_counter()
         if miss_counter is not None:
-            miss_counter.add(
-                1, attributes={"datasource_name": self._datasource_name}
-            )
+            miss_counter.add(1, attributes={"datasource_name": self._datasource_name})
         # NOT to_thread_with_cancel here -- open is a one-shot
         # ; cancellation during connect would leave a half-open
         # connection which the worker thread closes naturally when
@@ -713,9 +698,7 @@ class RedshiftDriver(Driver):
         )
         return new_conn
 
-    async def _release_connection(
-        self, conn: RedshiftConnection
-    ) -> None:
+    async def _release_connection(self, conn: RedshiftConnection) -> None:
         """return a connection to the cache; close it if cache is full.
 
         the deque's ``maxlen`` guarantees no unbounded growth -- an
@@ -731,7 +714,8 @@ class RedshiftDriver(Driver):
         if self._closed:
             # driver is shutting down; just close the connection.
             await self._bridge.to_thread_with_cancel(
-                conn.close, cancel_cb=lambda: None,
+                conn.close,
+                cancel_cb=lambda: None,
             )
             return
         evicted: RedshiftConnection | None = None
@@ -744,12 +728,11 @@ class RedshiftDriver(Driver):
         if evicted is not None:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    evicted.close, cancel_cb=lambda: None,
+                    evicted.close,
+                    cancel_cb=lambda: None,
                 )
 
-    async def _evict_connection(
-        self, conn: RedshiftConnection
-    ) -> None:
+    async def _evict_connection(self, conn: RedshiftConnection) -> None:
         """explicitly drop a connection from the cache + close it.
 
         called from the cancellation path -- a closed connection
@@ -770,7 +753,8 @@ class RedshiftDriver(Driver):
                 self._cache.remove(conn)
         with self._suppress_close():
             await self._bridge.to_thread_with_cancel(
-                conn.close, cancel_cb=lambda: None,
+                conn.close,
+                cancel_cb=lambda: None,
             )
 
     async def _acquire_and_run(
@@ -810,9 +794,7 @@ class RedshiftDriver(Driver):
         # asyncio side. -1 happens in the finally below.
         saturation = _get_executor_saturation_gauge()
         if saturation is not None:
-            saturation.add(
-                1, attributes={"datasource_name": self._datasource_name}
-            )
+            saturation.add(1, attributes={"datasource_name": self._datasource_name})
         cancel_fired = _get_cancellation_fired_counter()
         cancel_failed = _get_cancellation_failed_counter()
         # the connection becomes poisoned on cancel (we close it to
@@ -840,14 +822,10 @@ class RedshiftDriver(Driver):
                     exc,
                 )
                 if cancel_failed is not None:
-                    cancel_failed.add(
-                        1, attributes={"driver_type": "redshift"}
-                    )
+                    cancel_failed.add(1, attributes={"driver_type": "redshift"})
             else:
                 if cancel_fired is not None:
-                    cancel_fired.add(
-                        1, attributes={"driver_type": "redshift"}
-                    )
+                    cancel_fired.add(1, attributes={"driver_type": "redshift"})
             # eviction is a no-op if the connection isn't in the
             # cache (it isn't, in this path -- it was popped on
             # acquire) but we call it anyway for symmetry with the
@@ -861,9 +839,7 @@ class RedshiftDriver(Driver):
             )
         finally:
             if saturation is not None:
-                saturation.add(
-                    -1, attributes={"datasource_name": self._datasource_name}
-                )
+                saturation.add(-1, attributes={"datasource_name": self._datasource_name})
             if not connection_poisoned:
                 await self._release_connection(conn)
         return result
@@ -959,9 +935,7 @@ class RedshiftDriver(Driver):
         await self._acquire_and_run(_op)
 
     @traced
-    async def fetch_iter(
-        self, sql: str, *params: Any
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:
         """stream rows via DB-API ``fetchmany`` (server-side cursor).
 
         overrides the ABC default. composes the streaming so each
@@ -1076,9 +1050,7 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
 
-        sql = _REDSHIFT_TABLES_SQL_TEMPLATE.format(
-            placeholders=_build_in_clause(len(schemas))
-        )
+        sql = _REDSHIFT_TABLES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -1138,9 +1110,7 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
 
-        sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(
-            placeholders=_build_in_clause(len(schemas))
-        )
+        sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -1179,9 +1149,7 @@ class RedshiftDriver(Driver):
 
     @traced
     @_observed(driver_type="redshift")
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over the column shape (Tier-2 change-probe).
 
         the warehouse-side MD5 in :data:`_REDSHIFT_TABLE_HASHES_SQL`
@@ -1200,9 +1168,7 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
 
-        sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(
-            placeholders=_build_in_clause(len(schemas))
-        )
+        sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders=_build_in_clause(len(schemas)))
         params = tuple(schemas)
 
         def _do_sync(
@@ -1216,10 +1182,7 @@ class RedshiftDriver(Driver):
                 rows = cursor.fetchall()
                 cols = [c[0] for c in cursor.description]
                 dicts = [dict(zip(cols, row)) for row in rows]
-                return {
-                    (r["table_schema"], r["table_name"]): r["column_hash"]
-                    for r in dicts
-                }
+                return {(r["table_schema"], r["table_name"]): r["column_hash"] for r in dicts}
             finally:
                 cursor.close()
 
@@ -1281,9 +1244,7 @@ class RedshiftDriver(Driver):
             # sanitize: wrap any backend-side failure with
             # connection identity, break the cause chain.
             identity = self._connection_identity()
-            raise DriverConnectError(
-                f"connection failed for {identity}"
-            ) from None
+            raise DriverConnectError(f"connection failed for {identity}") from None
 
     @traced
     async def close(self) -> None:
@@ -1311,7 +1272,8 @@ class RedshiftDriver(Driver):
         for conn in to_close:
             with self._suppress_close():
                 await self._bridge.to_thread_with_cancel(
-                    conn.close, cancel_cb=lambda: None,
+                    conn.close,
+                    cancel_cb=lambda: None,
                 )
         # bridge close uses shutdown(wait=False) -- contract.
         await self._bridge.close()

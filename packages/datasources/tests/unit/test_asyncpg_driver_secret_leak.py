@@ -47,7 +47,7 @@ async def test_wrong_password_does_not_leak_password_value(
         port=1,  # closed port -- guaranteed connect failure
         database="x",
         username="u",
-        password_env="FAKE_PW",
+        password_ref="env://FAKE_PW",
         # tight pool sizing to keep the test fast
         pool_min_size=1,
         pool_max_size=1,
@@ -62,9 +62,7 @@ async def test_wrong_password_does_not_leak_password_value(
         + str(exc_info.value.__cause__ or "")
         + str(exc_info.value.__context__ or "")
     )
-    assert _FAKE_PW_VALUE not in rendered, (
-        f"password value leaked into exception rendering: {rendered!r}"
-    )
+    assert _FAKE_PW_VALUE not in rendered, f"password value leaked into exception rendering: {rendered!r}"
 
 
 @pytest.mark.asyncio
@@ -84,7 +82,7 @@ async def test_chained_cause_broken_with_raise_from_none(
         port=1,
         database="x",
         username="u",
-        password_env="FAKE_PW",
+        password_ref="env://FAKE_PW",
         pool_min_size=1,
         pool_max_size=1,
         command_timeout_seconds=2,

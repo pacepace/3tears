@@ -141,8 +141,7 @@ log = get_logger(__name__)
 
 
 _NOT_IMPLEMENTED_HINT = (
-    "See docs/datasource-task-12-snowflake-bigquery-stubs.md + the "
-    "module docstring for the implementation roadmap."
+    "See docs/datasource-task-12-snowflake-bigquery-stubs.md + the module docstring for the implementation roadmap."
 )
 
 
@@ -161,7 +160,7 @@ class SnowflakeDriver(Driver):
     swallowed cancellation) are all documented there.
 
     :param config: snowflake connection config validated at
-        construction; carries account, warehouse, user, password_env,
+        construction; carries account, warehouse, user, password_ref,
         optional role, pool_size, query_timeout_seconds
     :ptype config: SnowflakeConnectionConfig
     :param datasource_type: NOT a kwarg; the discriminator already
@@ -197,62 +196,46 @@ class SnowflakeDriver(Driver):
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def execute(self, sql: str, *params: Any) -> None:
         """run a DML / DDL statement -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema allow-list -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.list_tables is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.list_tables is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_columns(self, schemas: list[str]) -> list[ColumnRow]:
         """list columns for every table in the schema allow-list -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over column shape (Tier-2 probe) -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.table_hashes is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.table_hashes is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def test_connection(self) -> None:
         """cheapest round-trip; verifies credentials -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.test_connection is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.test_connection is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def close(self) -> None:
         """release driver resources -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"SnowflakeDriver.close is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"SnowflakeDriver.close is not yet implemented. {_NOT_IMPLEMENTED_HINT}")

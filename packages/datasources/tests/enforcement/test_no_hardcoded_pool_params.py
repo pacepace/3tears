@@ -37,19 +37,21 @@ import pytest
 # banned kwarg NAMES. if a driver call site passes one of these with
 # a Constant (literal) value, the test fails. extending the list is
 # a one-line change visible in code review.
-_BANNED_POOL_KWARGS: frozenset[str] = frozenset({
-    "min_size",
-    "max_size",
-    "max_workers",
-    "timeout",
-    "command_timeout",
-    "connect_timeout",
-    "query_timeout",
-    "cache_size",
-    "pool_size",
-    "connection_cache_size",
-    "executor_max_workers",
-})
+_BANNED_POOL_KWARGS: frozenset[str] = frozenset(
+    {
+        "min_size",
+        "max_size",
+        "max_workers",
+        "timeout",
+        "command_timeout",
+        "connect_timeout",
+        "query_timeout",
+        "cache_size",
+        "pool_size",
+        "connection_cache_size",
+        "executor_max_workers",
+    }
+)
 
 # repo root path resolved relative to this file. allows pytest to run
 # from anywhere.
@@ -107,8 +109,7 @@ def test_no_hardcoded_pool_params(driver_module: Path) -> None:
     hits = _find_banned_literals(driver_module)
     if hits:
         rendered = "\n".join(
-            f"  {driver_module.relative_to(_PACKAGE_ROOT)}:{lineno}: {kwarg}={value}"
-            for lineno, kwarg, value in hits
+            f"  {driver_module.relative_to(_PACKAGE_ROOT)}:{lineno}: {kwarg}={value}" for lineno, kwarg, value in hits
         )
         raise AssertionError(
             f"banned literal pool/executor/timeout kwargs in driver module "

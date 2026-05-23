@@ -38,13 +38,15 @@ member via the canonical pattern documented in
 
 field-naming discipline (documented for the next contributor):
 
-- ``password_env`` and similar ``*_env`` fields carry env-var NAMES,
-  not the secret value itself. they are typed ``str``. drivers
-  resolve the env var via :meth:`resolve_password` (or
-  :meth:`resolve_credentials_json` for BigQuery) which returns
-  :class:`SecretStr`. the secret value is only ever held inside a
-  ``SecretStr`` and unwrapped at the last possible moment when handed
-  to the backend lib.
+- ``password_ref`` and similar ``*_ref`` fields carry a
+  ``scheme://locator`` secret REFERENCE (e.g. ``env://PG_PASSWORD``,
+  ``k8s://central-reporting/password``), not the secret value itself.
+  they are typed ``str``. drivers resolve the reference via
+  :meth:`resolve_password` (or :meth:`resolve_credentials_json` for
+  BigQuery) which dispatches to the backend in
+  :mod:`threetears.datasources.secrets` and returns :class:`SecretStr`.
+  the secret value is only ever held inside a ``SecretStr`` and
+  unwrapped at the last possible moment when handed to the backend lib.
 - fields that hold *resolved* secrets (none today; concrete drivers
   may add them when they cache a connection) MUST be typed
   :class:`SecretStr`. an enforcement test
@@ -59,13 +61,12 @@ field-naming discipline (documented for the next contributor):
 
 from __future__ import annotations
 
-import os
-import re
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from threetears.datasources.entities import DataSourceType
+from threetears.datasources.secrets import resolve_secret, validate_ref
 
 __all__ = [
     "AgentInternalConnectionConfig",
@@ -79,47 +80,17 @@ __all__ = [
 ]
 
 
-# regex pattern for valid environment variable names. duplicated from
-# the SDK's ``agent_config.py`` so this module has no SDK-side import
-# (the SDK depends on this package, not the other way around).
-_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
 # valid access mode values, mirrored from
 # :class:`threetears.datasources.entities.DataSourceAccessMode`. kept
 # as a literal set here so the config validator stays a pure pydantic
 # field check without pulling the enum module at validation time.
 _VALID_ACCESS_MODES = frozenset({"read", "write", "readwrite"})
 
-
-# ---------------------------------------------------------------------------
-# Helpers for env-var-name -> SecretStr resolution
-# ---------------------------------------------------------------------------
-
-
-def _resolve_env_to_secret(env_var_name: str) -> SecretStr:
-    """read the named env var and wrap it in :class:`SecretStr`.
-
-    raised at the last possible moment when handing the credential to
-    the backend lib (see ``datasource-task-10`` / ``11`` for driver
-    use sites). intermediate variables holding the resolved value as
-    ``str`` are not safe — they can land in pydantic ``ValidationError``
-    tracebacks or in ``repr()`` output.
-
-    :param env_var_name: documented name of the env var carrying the secret
-    :ptype env_var_name: str
-    :return: ``SecretStr`` wrapping the resolved value
-    :rtype: SecretStr
-    :raises ValueError: if the env var is not set; the message names
-        the env var (which is the safe-to-log identifier) but never
-        the secret value
-    """
-    raw = os.environ.get(env_var_name)
-    if raw is None:
-        raise ValueError(
-            f"environment variable {env_var_name!r} is not set. "
-            f"set it in your shell or .env file before running."
-        )
-    return SecretStr(raw)
+# credential resolution lives in :mod:`threetears.datasources.secrets`.
+# config carries a ``scheme://locator`` reference (``password_ref`` /
+# ``credentials_json_ref``); the value is resolved at use time via
+# :func:`resolve_secret`. field validators call :func:`validate_ref`
+# so a malformed reference fails at config-load, not at first query.
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +111,7 @@ class PostgresConnectionConfig(BaseModel):
     :param port: postgres port (default 5432)
     :param database: database name to connect to
     :param username: postgres user
-    :param password_env: env-var NAME holding the password (NOT the
+    :param password_ref: secret reference (scheme://locator, NOT the
         secret itself; drivers resolve via :meth:`resolve_password`)
     :param pool_min_size: asyncpg pool floor; min open connections per
         driver instance. trade-off: lower = lighter idle footprint;
@@ -163,10 +134,11 @@ class PostgresConnectionConfig(BaseModel):
         default=None,
         description="postgres user; None falls back to the connection's default user",
     )
-    password_env: str | None = Field(
+    password_ref: str | None = Field(
         default=None,
-        description="env-var NAME holding the postgres password (NOT the secret); "
-        "None for local dev / trust-auth setups where no password is required",
+        description="secret reference (scheme://locator, e.g. 'env://PG_PASSWORD') "
+        "for the postgres password; None for local dev / trust-auth setups where "
+        "no password is required",
     )
     pool_min_size: int = Field(
         default=1,
@@ -181,29 +153,26 @@ class PostgresConnectionConfig(BaseModel):
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
     )
 
-    @field_validator("password_env")
+    @field_validator("password_ref")
     @classmethod
-    def password_env_must_be_valid_name(cls, value: str | None) -> str | None:
-        if value is not None and not _ENV_VAR_NAME_RE.match(value):
-            raise ValueError(
-                f"invalid password_env {value!r}: must be a valid environment variable name"
-            )
-        return value
+    def password_ref_must_be_valid(cls, value: str | None) -> str | None:
+        return value if value is None else validate_ref(value)
 
     def resolve_password(self) -> SecretStr:
-        """resolve ``password_env`` to a :class:`SecretStr` at use time.
+        """resolve ``password_ref`` to a :class:`SecretStr` at use time.
 
         :return: ``SecretStr`` wrapping the resolved password
         :rtype: SecretStr
-        :raises ValueError: if ``password_env`` is None (no env var configured)
-            or the named env var is not set
+        :raises ValueError: if ``password_ref`` is None (no credential
+            configured) or the reference cannot be resolved
         """
-        if self.password_env is None:
+        if self.password_ref is None:
             raise ValueError(
-                "password_env is None; no env-var configured for this datasource. "
-                "set password_env in agent.yaml's connection_config block."
+                "password_ref is None; no credential configured for this "
+                "datasource. set password_ref (e.g. env://PG_PASSWORD) in "
+                "the datasource's connection_config."
             )
-        return _resolve_env_to_secret(self.password_env)
+        return resolve_secret(self.password_ref)
 
 
 class YugabyteConnectionConfig(BaseModel):
@@ -225,10 +194,11 @@ class YugabyteConnectionConfig(BaseModel):
         default=None,
         description="yugabyte user; None falls back to the connection's default user",
     )
-    password_env: str | None = Field(
+    password_ref: str | None = Field(
         default=None,
-        description="env-var NAME holding the yugabyte password (NOT the secret); "
-        "None for local dev / trust-auth setups where no password is required",
+        description="secret reference (scheme://locator, e.g. 'env://YB_PASSWORD') "
+        "for the yugabyte password; None for local dev / trust-auth setups where "
+        "no password is required",
     )
     pool_min_size: int = Field(
         default=1,
@@ -243,26 +213,24 @@ class YugabyteConnectionConfig(BaseModel):
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
     )
 
-    @field_validator("password_env")
+    @field_validator("password_ref")
     @classmethod
-    def password_env_must_be_valid_name(cls, value: str | None) -> str | None:
-        if value is not None and not _ENV_VAR_NAME_RE.match(value):
-            raise ValueError(
-                f"invalid password_env {value!r}: must be a valid environment variable name"
-            )
-        return value
+    def password_ref_must_be_valid(cls, value: str | None) -> str | None:
+        return value if value is None else validate_ref(value)
 
     def resolve_password(self) -> SecretStr:
-        """resolve ``password_env`` to a :class:`SecretStr` at use time.
+        """resolve ``password_ref`` to a :class:`SecretStr` at use time.
 
-        :raises ValueError: if ``password_env`` is None or the env var is not set
+        :raises ValueError: if ``password_ref`` is None or the reference
+            cannot be resolved
         """
-        if self.password_env is None:
+        if self.password_ref is None:
             raise ValueError(
-                "password_env is None; no env-var configured for this datasource. "
-                "set password_env in agent.yaml's connection_config block."
+                "password_ref is None; no credential configured for this "
+                "datasource. set password_ref (e.g. env://YB_PASSWORD) in "
+                "the datasource's connection_config."
             )
-        return _resolve_env_to_secret(self.password_env)
+        return resolve_secret(self.password_ref)
 
 
 class RedshiftConnectionConfig(BaseModel):
@@ -283,7 +251,7 @@ class RedshiftConnectionConfig(BaseModel):
     :param port: Redshift cluster port (default 5439)
     :param database: database name
     :param username: redshift user
-    :param password_env: env-var NAME holding the password
+    :param password_ref: secret reference (scheme://locator) for the password
     :param executor_max_workers: bounded ThreadPoolExecutor size (via
         ``AsyncSyncBridge``). trade-off: lower = serialises queries
         more, less Redshift WLM pressure; higher = more concurrent
@@ -308,10 +276,11 @@ class RedshiftConnectionConfig(BaseModel):
         description="redshift user; required for production but None is accepted "
         "so the discriminated-union shape mirrors PostgresConnectionConfig",
     )
-    password_env: str | None = Field(
+    password_ref: str | None = Field(
         default=None,
-        description="env-var NAME holding the redshift password (NOT the secret); "
-        "None during local fixtures only — drivers raise at use time",
+        description="secret reference (scheme://locator, e.g. 'env://REDSHIFT_PASSWORD') "
+        "for the redshift password; None during local fixtures only — drivers raise "
+        "at use time",
     )
     executor_max_workers: int = Field(
         default=10,
@@ -326,26 +295,24 @@ class RedshiftConnectionConfig(BaseModel):
         description="redshift statement_timeout; caps individual queries",
     )
 
-    @field_validator("password_env")
+    @field_validator("password_ref")
     @classmethod
-    def password_env_must_be_valid_name(cls, value: str | None) -> str | None:
-        if value is not None and not _ENV_VAR_NAME_RE.match(value):
-            raise ValueError(
-                f"invalid password_env {value!r}: must be a valid environment variable name"
-            )
-        return value
+    def password_ref_must_be_valid(cls, value: str | None) -> str | None:
+        return value if value is None else validate_ref(value)
 
     def resolve_password(self) -> SecretStr:
-        """resolve ``password_env`` to a :class:`SecretStr` at use time.
+        """resolve ``password_ref`` to a :class:`SecretStr` at use time.
 
-        :raises ValueError: if ``password_env`` is None or the env var is not set
+        :raises ValueError: if ``password_ref`` is None or the reference
+            cannot be resolved
         """
-        if self.password_env is None:
+        if self.password_ref is None:
             raise ValueError(
-                "password_env is None; no env-var configured for this datasource. "
-                "set password_env in agent.yaml's connection_config block."
+                "password_ref is None; no credential configured for this "
+                "datasource. set password_ref (e.g. env://REDSHIFT_PASSWORD) "
+                "in the datasource's connection_config."
             )
-        return _resolve_env_to_secret(self.password_env)
+        return resolve_secret(self.password_ref)
 
 
 class SnowflakeConnectionConfig(BaseModel):
@@ -360,7 +327,7 @@ class SnowflakeConnectionConfig(BaseModel):
     :param account: Snowflake account identifier (no .snowflakecomputing.com suffix)
     :param warehouse: virtual warehouse name to query against
     :param user: snowflake user
-    :param password_env: env-var NAME holding the password
+    :param password_ref: secret reference (scheme://locator) for the password
     :param role: optional snowflake role; None uses the user's default
     :param pool_size: warm connection pool size; Snowflake auth is
         expensive so a small pool amortises it
@@ -373,8 +340,9 @@ class SnowflakeConnectionConfig(BaseModel):
     account: str
     warehouse: str
     user: str
-    password_env: str = Field(
-        description="env-var NAME holding the snowflake password (NOT the secret)",
+    password_ref: str = Field(
+        description="secret reference (scheme://locator, e.g. 'env://SNOWFLAKE_PASSWORD') "
+        "for the snowflake password (NOT the secret itself)",
     )
     role: str | None = Field(
         default=None,
@@ -389,18 +357,14 @@ class SnowflakeConnectionConfig(BaseModel):
         description="snowflake-side per-query timeout",
     )
 
-    @field_validator("password_env")
+    @field_validator("password_ref")
     @classmethod
-    def password_env_must_be_valid_name(cls, value: str) -> str:
-        if not _ENV_VAR_NAME_RE.match(value):
-            raise ValueError(
-                f"invalid password_env {value!r}: must be a valid environment variable name"
-            )
-        return value
+    def password_ref_must_be_valid(cls, value: str) -> str:
+        return validate_ref(value)
 
     def resolve_password(self) -> SecretStr:
-        """resolve ``password_env`` to a :class:`SecretStr` at use time."""
-        return _resolve_env_to_secret(self.password_env)
+        """resolve ``password_ref`` to a :class:`SecretStr` at use time."""
+        return resolve_secret(self.password_ref)
 
 
 class BigQueryConnectionConfig(BaseModel):
@@ -414,10 +378,10 @@ class BigQueryConnectionConfig(BaseModel):
 
     :param datasource_type: discriminator; must be ``DataSourceType.BIGQUERY``
     :param project_id: GCP project hosting the BigQuery datasets
-    :param credentials_json_env: env-var NAME holding the service-account
-        JSON blob. resolved via :meth:`resolve_credentials_json` at use
-        time so the blob never lives in a ``str`` variable that could
-        leak into logs.
+    :param credentials_json_ref: secret reference (scheme://locator) for
+        the service-account JSON blob. resolved via
+        :meth:`resolve_credentials_json` at use time so the blob never
+        lives in a ``str`` variable that could leak into logs.
     :param executor_max_workers: bounded ThreadPoolExecutor size for
         wrapping the sync ``google-cloud-bigquery`` REST calls
     :param query_timeout_seconds: ``QueryJobConfig.job_timeout_ms``
@@ -428,8 +392,9 @@ class BigQueryConnectionConfig(BaseModel):
 
     datasource_type: Literal[DataSourceType.BIGQUERY]
     project_id: str
-    credentials_json_env: str = Field(
-        description="env-var NAME holding the GCP service-account JSON blob (NOT the secret)",
+    credentials_json_ref: str = Field(
+        description="secret reference (scheme://locator, e.g. 'env://GCP_SA_JSON') "
+        "for the GCP service-account JSON blob (NOT the secret itself)",
     )
     executor_max_workers: int = Field(
         default=10,
@@ -440,18 +405,14 @@ class BigQueryConnectionConfig(BaseModel):
         description="BigQuery job_timeout_ms upper bound (driver converts s -> ms)",
     )
 
-    @field_validator("credentials_json_env")
+    @field_validator("credentials_json_ref")
     @classmethod
-    def credentials_json_env_must_be_valid_name(cls, value: str) -> str:
-        if not _ENV_VAR_NAME_RE.match(value):
-            raise ValueError(
-                f"invalid credentials_json_env {value!r}: must be a valid environment variable name"
-            )
-        return value
+    def credentials_json_ref_must_be_valid(cls, value: str) -> str:
+        return validate_ref(value)
 
     def resolve_credentials_json(self) -> SecretStr:
-        """resolve ``credentials_json_env`` to a :class:`SecretStr` at use time."""
-        return _resolve_env_to_secret(self.credentials_json_env)
+        """resolve ``credentials_json_ref`` to a :class:`SecretStr` at use time."""
+        return resolve_secret(self.credentials_json_ref)
 
 
 class AgentInternalConnectionConfig(BaseModel):
@@ -524,7 +485,7 @@ class DatasourceConfig(BaseModel):
                port: 5439
                database: analytics
                username: ots_user
-               password_env: OTS_REDSHIFT_PASSWORD
+               password_ref: env://OTS_REDSHIFT_PASSWORD
 
     2. **reference shape** (canonical in ``agent.yaml``
        post-``datasource-task-05``). identity-only; the connection
@@ -584,9 +545,7 @@ class DatasourceConfig(BaseModel):
         :raises ValueError: if access mode is not valid
         """
         if value not in _VALID_ACCESS_MODES:
-            raise ValueError(
-                f"invalid access_mode {value!r}: must be one of read, write, readwrite"
-            )
+            raise ValueError(f"invalid access_mode {value!r}: must be one of read, write, readwrite")
         return value
 
     @property

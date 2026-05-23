@@ -27,16 +27,14 @@ def snowflake_config() -> SnowflakeConnectionConfig:
         account="acct-12345",
         warehouse="WH_TEST",
         user="testuser",
-        password_env="TEST_SF_PW",
+        password_ref="env://TEST_SF_PW",
     )
 
 
 class TestStubContract:
     """ABC subclass + abstract-methods coverage."""
 
-    def test_is_driver_subclass(
-        self, snowflake_config: SnowflakeConnectionConfig
-    ) -> None:
+    def test_is_driver_subclass(self, snowflake_config: SnowflakeConnectionConfig) -> None:
         """the stub is a real :class:`Driver` subclass."""
         driver = SnowflakeDriver(snowflake_config)
         assert isinstance(driver, Driver)
@@ -45,23 +43,17 @@ class TestStubContract:
         """every abstract method is overridden (stub or not)."""
         assert SnowflakeDriver.__abstractmethods__ == frozenset()
 
-    def test_init_validates_config(
-        self, snowflake_config: SnowflakeConnectionConfig
-    ) -> None:
+    def test_init_validates_config(self, snowflake_config: SnowflakeConnectionConfig) -> None:
         """``__init__`` stores the config without backend I/O."""
         driver = SnowflakeDriver(snowflake_config)
         assert driver._config is snowflake_config  # noqa: SLF001
 
-    def test_init_datasource_name_default_is_unknown(
-        self, snowflake_config: SnowflakeConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_default_is_unknown(self, snowflake_config: SnowflakeConnectionConfig) -> None:
         """default ``datasource_name`` matches the asyncpg / redshift contract."""
         driver = SnowflakeDriver(snowflake_config)
         assert driver._datasource_name == "unknown"  # noqa: SLF001
 
-    def test_init_datasource_name_captured(
-        self, snowflake_config: SnowflakeConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_captured(self, snowflake_config: SnowflakeConnectionConfig) -> None:
         """passing ``datasource_name`` is stored for the future metric path."""
         driver = SnowflakeDriver(snowflake_config, datasource_name="sf-prod")
         assert driver._datasource_name == "sf-prod"  # noqa: SLF001
@@ -76,9 +68,7 @@ class TestStubMethodsRaiseNotImplemented:
     """
 
     @pytest.fixture
-    def driver(
-        self, snowflake_config: SnowflakeConnectionConfig
-    ) -> SnowflakeDriver:
+    def driver(self, snowflake_config: SnowflakeConnectionConfig) -> SnowflakeDriver:
         return SnowflakeDriver(snowflake_config)
 
     @pytest.mark.asyncio
@@ -92,39 +82,23 @@ class TestStubMethodsRaiseNotImplemented:
             await driver.execute("CREATE TABLE x (i INT)")
 
     @pytest.mark.asyncio
-    async def test_list_tables_raises(
-        self, driver: SnowflakeDriver
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="SnowflakeDriver.list_tables"
-        ):
+    async def test_list_tables_raises(self, driver: SnowflakeDriver) -> None:
+        with pytest.raises(NotImplementedError, match="SnowflakeDriver.list_tables"):
             await driver.list_tables(["public"])
 
     @pytest.mark.asyncio
-    async def test_list_columns_raises(
-        self, driver: SnowflakeDriver
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="SnowflakeDriver.list_columns"
-        ):
+    async def test_list_columns_raises(self, driver: SnowflakeDriver) -> None:
+        with pytest.raises(NotImplementedError, match="SnowflakeDriver.list_columns"):
             await driver.list_columns(["public"])
 
     @pytest.mark.asyncio
-    async def test_table_hashes_raises(
-        self, driver: SnowflakeDriver
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="SnowflakeDriver.table_hashes"
-        ):
+    async def test_table_hashes_raises(self, driver: SnowflakeDriver) -> None:
+        with pytest.raises(NotImplementedError, match="SnowflakeDriver.table_hashes"):
             await driver.table_hashes(["public"])
 
     @pytest.mark.asyncio
-    async def test_test_connection_raises(
-        self, driver: SnowflakeDriver
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="SnowflakeDriver.test_connection"
-        ):
+    async def test_test_connection_raises(self, driver: SnowflakeDriver) -> None:
+        with pytest.raises(NotImplementedError, match="SnowflakeDriver.test_connection"):
             await driver.test_connection()
 
     @pytest.mark.asyncio
@@ -133,9 +107,7 @@ class TestStubMethodsRaiseNotImplemented:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_error_messages_reference_roadmap(
-        self, driver: SnowflakeDriver
-    ) -> None:
+    async def test_error_messages_reference_roadmap(self, driver: SnowflakeDriver) -> None:
         """every stub error names the doc / docstring as the next step.
 
         catches "I'll fix this stub later" silent partial
@@ -158,8 +130,10 @@ class TestStubDoesNotImportBackend:
 
     def test_snowflake_connector_not_loaded_after_stub_import(self) -> None:
         import sys
+
         # the stub may already be imported by other tests; we just
         # verify the backend lib isn't in sys.modules as a side effect
         # of importing the stub module itself.
         import threetears.datasources.drivers.snowflake_driver  # noqa: F401
+
         assert "snowflake.connector" not in sys.modules

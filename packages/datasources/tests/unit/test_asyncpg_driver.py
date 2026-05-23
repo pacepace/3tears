@@ -91,8 +91,8 @@ def _build_mock_pool(
 def postgres_config() -> PostgresConnectionConfig:
     """default :class:`PostgresConnectionConfig` for the unit tests.
 
-    no ``password_env`` so the lazy pool creation path doesn't try to
-    resolve an env var.
+    no ``password_ref`` so the lazy pool creation path doesn't try to
+    resolve a credential reference.
     """
     return PostgresConnectionConfig(
         datasource_type=DataSourceType.POSTGRES,
@@ -128,9 +128,7 @@ def agent_internal_config() -> AgentInternalConnectionConfig:
 class TestConstruction:
     """``__init__`` stores config + external_pool correctly; no I/O."""
 
-    def test_init_postgres_no_external_pool(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    def test_init_postgres_no_external_pool(self, postgres_config: PostgresConnectionConfig) -> None:
         """constructing a postgres driver does NOT open a pool eagerly."""
         driver = AsyncpgDriver(postgres_config)
         assert driver._config is postgres_config  # noqa: SLF001
@@ -138,18 +136,14 @@ class TestConstruction:
         assert driver._owns_pool is True  # noqa: SLF001
         assert driver._closed is False  # noqa: SLF001
 
-    def test_init_agent_internal_with_external_pool(
-        self, agent_internal_config: AgentInternalConnectionConfig
-    ) -> None:
+    def test_init_agent_internal_with_external_pool(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
         """agent-internal driver borrows the passed-in pool."""
         external = _build_mock_pool()
         driver = AsyncpgDriver(agent_internal_config, external_pool=external)
         assert driver._pool is external  # noqa: SLF001
         assert driver._owns_pool is False  # noqa: SLF001
 
-    def test_init_datasource_name_default_is_unknown(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_default_is_unknown(self, postgres_config: PostgresConnectionConfig) -> None:
         """omitting ``datasource_name`` defaults to ``"unknown"``.
 
         the OTel metric label still tags emissions; ``"unknown"`` is
@@ -159,9 +153,7 @@ class TestConstruction:
         driver = AsyncpgDriver(postgres_config)
         assert driver._datasource_name == "unknown"  # noqa: SLF001
 
-    def test_init_datasource_name_captured(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_captured(self, postgres_config: PostgresConnectionConfig) -> None:
         """passing ``datasource_name`` stores it for metric tagging."""
         driver = AsyncpgDriver(postgres_config, datasource_name="warehouse")
         assert driver._datasource_name == "warehouse"  # noqa: SLF001
@@ -171,9 +163,7 @@ class TestClose:
     """close() concurrency contract per DS-09-12 / DS-10-07."""
 
     @pytest.mark.asyncio
-    async def test_close_idempotent(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_close_idempotent(self, postgres_config: PostgresConnectionConfig) -> None:
         """second :meth:`close` call is a no-op (does NOT raise)."""
         driver = AsyncpgDriver(postgres_config)
         # no pool created yet, close should still work
@@ -183,9 +173,7 @@ class TestClose:
         await driver.close()
 
     @pytest.mark.asyncio
-    async def test_close_owned_pool_calls_pool_close(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_close_owned_pool_calls_pool_close(self, postgres_config: PostgresConnectionConfig) -> None:
         """owned-pool path: :meth:`close` awaits ``pool.close()``."""
         pool = _build_mock_pool()
         driver = AsyncpgDriver(postgres_config)
@@ -204,9 +192,7 @@ class TestClose:
         pool.close.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_methods_reject_after_close(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_methods_reject_after_close(self, postgres_config: PostgresConnectionConfig) -> None:
         """every public method raises :class:`RuntimeError` post-close."""
         driver = AsyncpgDriver(postgres_config)
         await driver.close()
@@ -224,9 +210,7 @@ class TestClose:
             await driver.test_connection()
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_rejects_after_close(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_fetch_iter_rejects_after_close(self, postgres_config: PostgresConnectionConfig) -> None:
         """:meth:`fetch_iter` (async generator) also raises post-close."""
         driver = AsyncpgDriver(postgres_config)
         await driver.close()
@@ -244,9 +228,7 @@ class TestQueryRouting:
     """fetch/execute route through the mocked pool's acquired connection."""
 
     @pytest.mark.asyncio
-    async def test_fetch_returns_dicts(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_fetch_returns_dicts(self, postgres_config: PostgresConnectionConfig) -> None:
         """:meth:`fetch` returns the records as dicts."""
         pool = _build_mock_pool(fetch_records=[{"a": 1, "b": "x"}])
         driver = AsyncpgDriver(postgres_config)
@@ -260,9 +242,7 @@ class TestQueryRouting:
         )
 
     @pytest.mark.asyncio
-    async def test_execute_routes_through_conn_execute(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_execute_routes_through_conn_execute(self, postgres_config: PostgresConnectionConfig) -> None:
         """:meth:`execute` calls ``conn.execute`` once."""
         pool = _build_mock_pool()
         driver = AsyncpgDriver(postgres_config)
@@ -277,13 +257,9 @@ class TestIntrospectionRouting:
     """list_tables / list_columns / table_hashes use the right SQL constants."""
 
     @pytest.mark.asyncio
-    async def test_list_tables_uses_tables_sql(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_list_tables_uses_tables_sql(self, postgres_config: PostgresConnectionConfig) -> None:
         """:meth:`list_tables` calls fetch with :data:`_POSTGRES_TABLES_SQL`."""
-        pool = _build_mock_pool(
-            fetch_records=[{"table_schema": "s1", "table_name": "t1"}]
-        )
+        pool = _build_mock_pool(fetch_records=[{"table_schema": "s1", "table_name": "t1"}])
         driver = AsyncpgDriver(postgres_config)
         driver._pool = pool  # noqa: SLF001
         rows = await driver.list_tables(["s1"])
@@ -350,9 +326,7 @@ class TestTestConnection:
     """:meth:`test_connection` issues ``SELECT 1`` and sanitizes failures."""
 
     @pytest.mark.asyncio
-    async def test_test_connection_happy_path(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_test_connection_happy_path(self, postgres_config: PostgresConnectionConfig) -> None:
         """successful round-trip returns None silently."""
         pool = _build_mock_pool(fetchval_value=1)
         driver = AsyncpgDriver(postgres_config)
@@ -362,9 +336,7 @@ class TestTestConnection:
         pool._conn.fetchval.assert_awaited_once_with("SELECT 1")  # noqa: SLF001
 
     @pytest.mark.asyncio
-    async def test_test_connection_sanitizes_failure(
-        self, postgres_config: PostgresConnectionConfig
-    ) -> None:
+    async def test_test_connection_sanitizes_failure(self, postgres_config: PostgresConnectionConfig) -> None:
         """backend failure surfaces as :class:`DriverConnectError`, no chain."""
         pool = _build_mock_pool()
         # seed a failure
@@ -392,9 +364,7 @@ class TestBorrowedPool:
     """AGENT_INTERNAL config branch uses the external pool, doesn't close it."""
 
     @pytest.mark.asyncio
-    async def test_external_pool_used_for_fetch(
-        self, agent_internal_config: AgentInternalConnectionConfig
-    ) -> None:
+    async def test_external_pool_used_for_fetch(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
         """fetch routes through the borrowed pool's acquired connection."""
         pool = _build_mock_pool(fetch_records=[{"x": 1}])
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
@@ -402,9 +372,7 @@ class TestBorrowedPool:
         assert rows == [{"x": 1}]
 
     @pytest.mark.asyncio
-    async def test_owns_pool_false_for_borrowed(
-        self, agent_internal_config: AgentInternalConnectionConfig
-    ) -> None:
+    async def test_owns_pool_false_for_borrowed(self, agent_internal_config: AgentInternalConnectionConfig) -> None:
         """``_owns_pool`` flag is False for the borrowed path."""
         pool = _build_mock_pool()
         driver = AsyncpgDriver(agent_internal_config, external_pool=pool)
@@ -468,7 +436,7 @@ class TestPoolCreation:
             port=5444,
             database="warehouse",
             username="ots",
-            password_env=None,
+            password_ref=None,
             pool_min_size=3,
             pool_max_size=11,
             command_timeout_seconds=42,
@@ -494,7 +462,7 @@ class TestPoolCreation:
         assert kwargs["port"] == 5444
         assert kwargs["database"] == "warehouse"
         assert kwargs["user"] == "ots"
-        assert kwargs["password"] is None  # password_env=None
+        assert kwargs["password"] is None  # password_ref=None
         assert kwargs["min_size"] == 3
         assert kwargs["max_size"] == 11
         assert kwargs["command_timeout"] == 42
@@ -513,7 +481,7 @@ class TestPoolCreation:
             host="h",
             database="x",
             username="u",
-            password_env="MY_PG_PW",
+            password_ref="env://MY_PG_PW",
         )
         fake_pool = _build_mock_pool()
         create_pool_mock = AsyncMock(return_value=fake_pool)

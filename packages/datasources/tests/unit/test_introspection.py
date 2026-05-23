@@ -42,12 +42,14 @@ class TestComputeColumnHash:
         assert compute_column_hash([]) == hashlib.md5(b"").hexdigest()  # noqa: S324
 
     def test_single_column_payload(self) -> None:
-        cols = [{
-            "column_name": "id",
-            "data_type": "integer",
-            "is_nullable": "NO",
-            "ordinal_position": 1,
-        }]
+        cols = [
+            {
+                "column_name": "id",
+                "data_type": "integer",
+                "is_nullable": "NO",
+                "ordinal_position": 1,
+            }
+        ]
         expected = hashlib.md5(b"id:integer:NO").hexdigest()  # noqa: S324
         assert compute_column_hash(cols) == expected
 
@@ -72,24 +74,28 @@ class TestComputeColumnHash:
 
     def test_none_is_nullable_renders_as_empty_string(self) -> None:
         """matches SQL's ``COALESCE(is_nullable, '')`` byte output."""
-        cols = [{
-            "column_name": "x",
-            "data_type": "text",
-            "is_nullable": None,
-            "ordinal_position": 1,
-        }]
+        cols = [
+            {
+                "column_name": "x",
+                "data_type": "text",
+                "is_nullable": None,
+                "ordinal_position": 1,
+            }
+        ]
         # payload becomes 'x:text:' (trailing empty after the second colon)
         expected = hashlib.md5(b"x:text:").hexdigest()  # noqa: S324
         assert compute_column_hash(cols) == expected
 
     def test_missing_is_nullable_renders_as_empty_string(self) -> None:
         """``.get('is_nullable') or ''`` handles missing keys gracefully."""
-        cols = [{
-            "column_name": "x",
-            "data_type": "text",
-            # is_nullable key absent
-            "ordinal_position": 1,
-        }]
+        cols = [
+            {
+                "column_name": "x",
+                "data_type": "text",
+                # is_nullable key absent
+                "ordinal_position": 1,
+            }
+        ]
         expected = hashlib.md5(b"x:text:").hexdigest()  # noqa: S324
         assert compute_column_hash(cols) == expected
 

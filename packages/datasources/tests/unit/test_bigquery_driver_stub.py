@@ -23,16 +23,14 @@ def bigquery_config() -> BigQueryConnectionConfig:
     return BigQueryConnectionConfig(
         datasource_type=DataSourceType.BIGQUERY,
         project_id="my-test-project",
-        credentials_json_env="TEST_GCP_SA_JSON",
+        credentials_json_ref="env://TEST_GCP_SA_JSON",
     )
 
 
 class TestStubContract:
     """ABC subclass + abstract-methods coverage."""
 
-    def test_is_driver_subclass(
-        self, bigquery_config: BigQueryConnectionConfig
-    ) -> None:
+    def test_is_driver_subclass(self, bigquery_config: BigQueryConnectionConfig) -> None:
         """the stub is a real :class:`Driver` subclass."""
         driver = BigQueryDriver(bigquery_config)
         assert isinstance(driver, Driver)
@@ -41,23 +39,17 @@ class TestStubContract:
         """every abstract method is overridden (stub or not)."""
         assert BigQueryDriver.__abstractmethods__ == frozenset()
 
-    def test_init_validates_config(
-        self, bigquery_config: BigQueryConnectionConfig
-    ) -> None:
+    def test_init_validates_config(self, bigquery_config: BigQueryConnectionConfig) -> None:
         """``__init__`` stores the config without backend I/O."""
         driver = BigQueryDriver(bigquery_config)
         assert driver._config is bigquery_config  # noqa: SLF001
 
-    def test_init_datasource_name_default_is_unknown(
-        self, bigquery_config: BigQueryConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_default_is_unknown(self, bigquery_config: BigQueryConnectionConfig) -> None:
         """default ``datasource_name`` matches the asyncpg / redshift contract."""
         driver = BigQueryDriver(bigquery_config)
         assert driver._datasource_name == "unknown"  # noqa: SLF001
 
-    def test_init_datasource_name_captured(
-        self, bigquery_config: BigQueryConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_captured(self, bigquery_config: BigQueryConnectionConfig) -> None:
         """passing ``datasource_name`` is stored for the future metric path."""
         driver = BigQueryDriver(bigquery_config, datasource_name="bq-marts")
         assert driver._datasource_name == "bq-marts"  # noqa: SLF001
@@ -67,9 +59,7 @@ class TestStubMethodsRaiseNotImplemented:
     """every public method raises :class:`NotImplementedError` with an actionable message."""
 
     @pytest.fixture
-    def driver(
-        self, bigquery_config: BigQueryConnectionConfig
-    ) -> BigQueryDriver:
+    def driver(self, bigquery_config: BigQueryConnectionConfig) -> BigQueryDriver:
         return BigQueryDriver(bigquery_config)
 
     @pytest.mark.asyncio
@@ -84,32 +74,22 @@ class TestStubMethodsRaiseNotImplemented:
 
     @pytest.mark.asyncio
     async def test_list_tables_raises(self, driver: BigQueryDriver) -> None:
-        with pytest.raises(
-            NotImplementedError, match="BigQueryDriver.list_tables"
-        ):
+        with pytest.raises(NotImplementedError, match="BigQueryDriver.list_tables"):
             await driver.list_tables(["my_dataset"])
 
     @pytest.mark.asyncio
     async def test_list_columns_raises(self, driver: BigQueryDriver) -> None:
-        with pytest.raises(
-            NotImplementedError, match="BigQueryDriver.list_columns"
-        ):
+        with pytest.raises(NotImplementedError, match="BigQueryDriver.list_columns"):
             await driver.list_columns(["my_dataset"])
 
     @pytest.mark.asyncio
     async def test_table_hashes_raises(self, driver: BigQueryDriver) -> None:
-        with pytest.raises(
-            NotImplementedError, match="BigQueryDriver.table_hashes"
-        ):
+        with pytest.raises(NotImplementedError, match="BigQueryDriver.table_hashes"):
             await driver.table_hashes(["my_dataset"])
 
     @pytest.mark.asyncio
-    async def test_test_connection_raises(
-        self, driver: BigQueryDriver
-    ) -> None:
-        with pytest.raises(
-            NotImplementedError, match="BigQueryDriver.test_connection"
-        ):
+    async def test_test_connection_raises(self, driver: BigQueryDriver) -> None:
+        with pytest.raises(NotImplementedError, match="BigQueryDriver.test_connection"):
             await driver.test_connection()
 
     @pytest.mark.asyncio
@@ -118,9 +98,7 @@ class TestStubMethodsRaiseNotImplemented:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_error_messages_reference_roadmap(
-        self, driver: BigQueryDriver
-    ) -> None:
+    async def test_error_messages_reference_roadmap(self, driver: BigQueryDriver) -> None:
         """every stub error names the doc / docstring as the next step."""
         with pytest.raises(NotImplementedError) as exc_info:
             await driver.fetch("SELECT 1")
@@ -134,4 +112,5 @@ class TestStubDoesNotImportBackend:
     def test_google_cloud_bigquery_not_loaded_after_stub_import(self) -> None:
         import sys
         import threetears.datasources.drivers.bigquery_driver  # noqa: F401
+
         assert "google.cloud.bigquery" not in sys.modules

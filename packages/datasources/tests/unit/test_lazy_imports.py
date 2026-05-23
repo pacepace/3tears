@@ -50,7 +50,5 @@ print('clean')
         text=True,
         check=False,
     )
-    assert result.returncode == 0, (
-        f"lazy-import audit failed: stdout={result.stdout!r} stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"lazy-import audit failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "clean" in result.stdout

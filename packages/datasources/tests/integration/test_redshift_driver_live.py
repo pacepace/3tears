@@ -40,7 +40,7 @@ from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.redshift_driver import RedshiftDriver
 from threetears.datasources.entities import DataSourceType
 
-from tests.unit._helpers.cancellation_contract import (
+from ..unit._helpers.cancellation_contract import (
     DriverCancellationContractTest,
 )
 
@@ -77,7 +77,7 @@ def redshift_creds() -> dict[str, Any]:
         "port": 5439,
         "database": "analytics",
         "username": "fourteen_eng_ai_bot_agent_ots",
-        "password_env": "OTS_REDSHIFT_PASSWORD",
+        "password_ref": "env://OTS_REDSHIFT_PASSWORD",
     }
 
 
@@ -95,7 +95,7 @@ def _make_config(creds: dict[str, Any]) -> RedshiftConnectionConfig:
         port=creds["port"],
         database=creds["database"],
         username=creds["username"],
-        password_env=creds["password_env"],
+        password_ref=creds["password_ref"],
         executor_max_workers=4,
         connection_cache_size=2,
         query_timeout_seconds=120,
@@ -140,9 +140,7 @@ class TestSmokingGun:
     """the load-bearing proof: ``redshift_connector`` succeeds where ``asyncpg`` hung."""
 
     @pytest.mark.asyncio
-    async def test_list_columns_completes(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_list_columns_completes(self, redshift_creds: dict[str, Any]) -> None:
         """THE proof point: ``list_columns(['reporting_prod'])`` returns >5000 rows in <60s.
 
         on ``asyncpg`` against ``information_schema.columns`` this
@@ -160,12 +158,11 @@ class TestSmokingGun:
                 driver.list_columns(["reporting_prod"]),
                 timeout=60.0,
             )
-            assert len(cols) > 5000, (
-                f"expected >5000 columns in reporting_prod, got {len(cols)}"
-            )
+            assert len(cols) > 5000, f"expected >5000 columns in reporting_prod, got {len(cols)}"
             # row shape sanity
-            assert {"table_schema", "table_name", "column_name",
-                    "data_type", "is_nullable", "ordinal_position"} <= set(cols[0])
+            assert {"table_schema", "table_name", "column_name", "data_type", "is_nullable", "ordinal_position"} <= set(
+                cols[0]
+            )
             # raw is_nullable string preserved (NOT a bool)
             for c in cols[:50]:
                 assert isinstance(c["is_nullable"], str)
@@ -174,9 +171,7 @@ class TestSmokingGun:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_list_tables_completes(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_list_tables_completes(self, redshift_creds: dict[str, Any]) -> None:
         """``list_tables(['reporting_prod'])`` returns >0 tables in <30s.
 
         SVV_TABLES is sub-second on a healthy cluster.
@@ -189,16 +184,12 @@ class TestSmokingGun:
                 timeout=30.0,
             )
             assert len(tables) > 0
-            assert all(
-                t["table_schema"] == "reporting_prod" for t in tables
-            )
+            assert all(t["table_schema"] == "reporting_prod" for t in tables)
         finally:
             await driver.close()
 
     @pytest.mark.asyncio
-    async def test_table_hashes_returns_per_table_entries(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_table_hashes_returns_per_table_entries(self, redshift_creds: dict[str, Any]) -> None:
         """``table_hashes`` returns one entry per table in the schema.
 
         the LISTAGG + MD5 hash runs over SVV_COLUMNS (Redshift-native
@@ -231,9 +222,7 @@ class TestHashEquivalence:
     """python-side ``_python_column_hash`` byte-equals warehouse-side MD5."""
 
     @pytest.mark.asyncio
-    async def test_python_and_sql_hashes_agree(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_python_and_sql_hashes_agree(self, redshift_creds: dict[str, Any]) -> None:
         """call :meth:`table_hashes` + recompute in python; assert equality.
 
         the cross-language invariant for the Tier-2 change-probe.
@@ -269,10 +258,7 @@ class TestHashEquivalence:
             assert target_table_name is not None, "no table with columns"
             py_hash = _python_column_hash(target_cols)
             sql_hash = hashes[("reporting_prod", target_table_name)]
-            assert sql_hash == py_hash, (
-                f"hash mismatch for {target_table_name}: "
-                f"python={py_hash} sql={sql_hash}"
-            )
+            assert sql_hash == py_hash, f"hash mismatch for {target_table_name}: python={py_hash} sql={sql_hash}"
         finally:
             await driver.close()
 
@@ -286,9 +272,7 @@ class TestStreaming:
     """:meth:`fetch_iter` streams without OOMing on large result sets."""
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_streams_large_result(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_fetch_iter_streams_large_result(self, redshift_creds: dict[str, Any]) -> None:
         """LIMIT 50000 over information_schema; streaming stays bounded.
 
         compares tracemalloc peak between ``fetch`` (materialize-
@@ -330,8 +314,7 @@ class TestStreaming:
             # arraysize chunks but may pre-fetch). the directional
             # guard catches catastrophic regressions.
             assert stream_peak <= fetch_peak * 1.2, (
-                f"fetch_iter peak {stream_peak} unexpectedly larger than "
-                f"fetch peak {fetch_peak}"
+                f"fetch_iter peak {stream_peak} unexpectedly larger than fetch peak {fetch_peak}"
             )
         finally:
             await driver.close()
@@ -357,9 +340,7 @@ class TestRedshiftDriverCancellation(DriverCancellationContractTest):
 
     async def make_slow_driver(self) -> Driver:
         """build a live :class:`RedshiftDriver`."""
-        return RedshiftDriver(
-            _make_config(self._creds), datasource_name="central-reporting"
-        )
+        return RedshiftDriver(_make_config(self._creds), datasource_name="central-reporting")
 
     def slow_sql(self) -> str:
         """return a Redshift-flavored slow query.
@@ -371,12 +352,7 @@ class TestRedshiftDriverCancellation(DriverCancellationContractTest):
         enough on any active cluster to take many seconds at O(n^4))
         is a reliable substitute that runs as a normal user.
         """
-        return (
-            "SELECT COUNT(*) FROM stl_query a "
-            "CROSS JOIN stl_query b "
-            "CROSS JOIN stl_query c "
-            "CROSS JOIN stl_query d "
-        )
+        return "SELECT COUNT(*) FROM stl_query a CROSS JOIN stl_query b CROSS JOIN stl_query c CROSS JOIN stl_query d "
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +364,7 @@ class TestCancellationObservable:
     """cancellation fires WLM cancellation visibly + cache stays consistent."""
 
     @pytest.mark.asyncio
-    async def test_cancellation_via_wait_for_timeout(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_cancellation_via_wait_for_timeout(self, redshift_creds: dict[str, Any]) -> None:
         """``wait_for(slow_query, timeout=5)`` raises TimeoutError.
 
         uses a cross-join slow query (``pg_sleep`` is restricted on
@@ -437,9 +411,7 @@ class TestCloseDrainsCache:
     """:meth:`close` drains the connection cache without leaking."""
 
     @pytest.mark.asyncio
-    async def test_close_drains_cache(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_close_drains_cache(self, redshift_creds: dict[str, Any]) -> None:
         """run a query (fills cache), close, assert cache is empty."""
         config = _make_config(redshift_creds)
         driver = RedshiftDriver(config, datasource_name="central-reporting")

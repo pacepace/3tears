@@ -123,9 +123,7 @@ def stub_driver_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, type[_Stub
 class TestDispatch:
     """create_driver dispatches each DataSourceType to its driver class."""
 
-    def test_postgres_dispatches_to_asyncpg_driver(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_postgres_dispatches_to_asyncpg_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = PostgresConnectionConfig(
             datasource_type=DataSourceType.POSTGRES,
             host="localhost",
@@ -136,9 +134,7 @@ class TestDispatch:
         # the external_pool kwarg is NOT supplied for external configs
         assert driver.external_pool is None  # type: ignore[attr-defined]
 
-    def test_yugabyte_dispatches_to_asyncpg_driver(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_yugabyte_dispatches_to_asyncpg_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = YugabyteConnectionConfig(
             datasource_type=DataSourceType.YUGABYTE,
             host="localhost",
@@ -160,9 +156,7 @@ class TestDispatch:
         # the borrowed pool must reach the driver constructor
         assert driver.external_pool is sentinel_pool  # type: ignore[attr-defined]
 
-    def test_agent_internal_without_pool_raises(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_agent_internal_without_pool_raises(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = AgentInternalConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_abc123",
@@ -170,9 +164,7 @@ class TestDispatch:
         with pytest.raises(ValueError, match="AGENT_INTERNAL"):
             create_driver(config)
 
-    def test_redshift_dispatches_to_redshift_driver(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_redshift_dispatches_to_redshift_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = RedshiftConnectionConfig(
             datasource_type=DataSourceType.REDSHIFT,
             host="cluster.region.redshift.amazonaws.com",
@@ -181,26 +173,22 @@ class TestDispatch:
         driver = create_driver(config)
         assert isinstance(driver, stub_driver_modules["RedshiftDriver"])
 
-    def test_snowflake_dispatches_to_snowflake_driver(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_snowflake_dispatches_to_snowflake_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = SnowflakeConnectionConfig(
             datasource_type=DataSourceType.SNOWFLAKE,
             account="acct",
             warehouse="wh",
             user="u",
-            password_env="X",
+            password_ref="env://X",
         )
         driver = create_driver(config)
         assert isinstance(driver, stub_driver_modules["SnowflakeDriver"])
 
-    def test_bigquery_dispatches_to_bigquery_driver(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_bigquery_dispatches_to_bigquery_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = BigQueryConnectionConfig(
             datasource_type=DataSourceType.BIGQUERY,
             project_id="proj",
-            credentials_json_env="X",
+            credentials_json_ref="env://X",
         )
         driver = create_driver(config)
         assert isinstance(driver, stub_driver_modules["BigQueryDriver"])
@@ -216,9 +204,7 @@ class TestDatasourceNamePlumbing:
     constructor surfaces.
     """
 
-    def test_default_is_unknown(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_default_is_unknown(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         """omitting ``datasource_name`` defaults to ``"unknown"``."""
         config = PostgresConnectionConfig(
             datasource_type=DataSourceType.POSTGRES,
@@ -228,9 +214,7 @@ class TestDatasourceNamePlumbing:
         driver = create_driver(config)
         assert driver.datasource_name == "unknown"  # type: ignore[attr-defined]
 
-    def test_postgres_threads_through(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_postgres_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = PostgresConnectionConfig(
             datasource_type=DataSourceType.POSTGRES,
             host="localhost",
@@ -239,9 +223,7 @@ class TestDatasourceNamePlumbing:
         driver = create_driver(config, datasource_name="warehouse-prod")
         assert driver.datasource_name == "warehouse-prod"  # type: ignore[attr-defined]
 
-    def test_agent_internal_threads_through(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_agent_internal_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = AgentInternalConnectionConfig(
             datasource_type=DataSourceType.AGENT_INTERNAL,
             schema_name="agent_xyz",
@@ -254,9 +236,7 @@ class TestDatasourceNamePlumbing:
         )
         assert driver.datasource_name == "agent-tables"  # type: ignore[attr-defined]
 
-    def test_redshift_threads_through(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_redshift_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = RedshiftConnectionConfig(
             datasource_type=DataSourceType.REDSHIFT,
             host="cluster.example.com",
@@ -265,26 +245,22 @@ class TestDatasourceNamePlumbing:
         driver = create_driver(config, datasource_name="central-reporting")
         assert driver.datasource_name == "central-reporting"  # type: ignore[attr-defined]
 
-    def test_snowflake_threads_through(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_snowflake_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = SnowflakeConnectionConfig(
             datasource_type=DataSourceType.SNOWFLAKE,
             account="acct",
             warehouse="wh",
             user="u",
-            password_env="X",
+            password_ref="env://X",
         )
         driver = create_driver(config, datasource_name="snowflake-marts")
         assert driver.datasource_name == "snowflake-marts"  # type: ignore[attr-defined]
 
-    def test_bigquery_threads_through(
-        self, stub_driver_modules: dict[str, type[_StubDriver]]
-    ) -> None:
+    def test_bigquery_threads_through(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = BigQueryConnectionConfig(
             datasource_type=DataSourceType.BIGQUERY,
             project_id="my-project",
-            credentials_json_env="X",
+            credentials_json_ref="env://X",
         )
         driver = create_driver(config, datasource_name="bq-events")
         assert driver.datasource_name == "bq-events"  # type: ignore[attr-defined]
@@ -308,9 +284,7 @@ class TestRealDriverModulesLoadable:
     which dispatch arm broke.
     """
 
-    def test_every_backend_dispatches_against_real_modules(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_every_backend_dispatches_against_real_modules(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # clear any stub the prior tests installed so each match arm
         # hits the genuine driver module.
         for module_name, _ in _DRIVER_MODULES:
@@ -336,16 +310,14 @@ class TestRealDriverModulesLoadable:
                 account="acct",
                 warehouse="wh",
                 user="u",
-                password_env="X",
+                password_ref="env://X",
             ),
             BigQueryConnectionConfig(
                 datasource_type=DataSourceType.BIGQUERY,
                 project_id="proj",
-                credentials_json_env="X",
+                credentials_json_ref="env://X",
             ),
         ]
         for config in configs:
             driver = create_driver(config)
-            assert isinstance(driver, Driver), (
-                f"{type(config).__name__} did not dispatch to a Driver instance"
-            )
+            assert isinstance(driver, Driver), f"{type(config).__name__} did not dispatch to a Driver instance"

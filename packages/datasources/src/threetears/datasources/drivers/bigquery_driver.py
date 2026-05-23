@@ -28,8 +28,8 @@ Connection lifecycle
     AUTH: the Client takes
     :class:`google.oauth2.service_account.Credentials` built from
     the JSON blob held by
-    :attr:`BigQueryConnectionConfig.credentials_json_env`. resolve
-    the env var via :meth:`BigQueryConnectionConfig.resolve_credentials_json`
+    :attr:`BigQueryConnectionConfig.credentials_json_ref`. resolve
+    the reference via :meth:`BigQueryConnectionConfig.resolve_credentials_json`
     (returns :class:`SecretStr`), unwrap via ``.get_secret_value()``
     at the LAST moment when handing to
     ``service_account.Credentials.from_service_account_info(
@@ -179,8 +179,7 @@ log = get_logger(__name__)
 
 
 _NOT_IMPLEMENTED_HINT = (
-    "See docs/datasource-task-12-snowflake-bigquery-stubs.md + the "
-    "module docstring for the implementation roadmap."
+    "See docs/datasource-task-12-snowflake-bigquery-stubs.md + the module docstring for the implementation roadmap."
 )
 
 
@@ -200,7 +199,7 @@ class BigQueryDriver(Driver):
     documented there.
 
     :param config: bigquery connection config validated at
-        construction; carries project_id, credentials_json_env,
+        construction; carries project_id, credentials_json_ref,
         executor_max_workers, query_timeout_seconds
     :ptype config: BigQueryConnectionConfig
     :param datasource_name: human-readable datasource name surfaced
@@ -234,62 +233,46 @@ class BigQueryDriver(Driver):
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.fetch is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def execute(self, sql: str, *params: Any) -> None:
         """run a DML / DDL statement -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.execute is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_tables(self, schemas: list[str]) -> list[TableRow]:
         """list tables in the schema (dataset) allow-list -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.list_tables is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.list_tables is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def list_columns(self, schemas: list[str]) -> list[ColumnRow]:
         """list columns via the BigQuery REST API -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.list_columns is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """per-table MD5 over column shape (computed python-side) -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.table_hashes is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.table_hashes is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def test_connection(self) -> None:
         """cheapest round-trip via metadata REST -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.test_connection is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.test_connection is not yet implemented. {_NOT_IMPLEMENTED_HINT}")
 
     async def close(self) -> None:
         """release driver resources -- NOT YET IMPLEMENTED.
 
         :raises NotImplementedError: stub method; see module docstring
         """
-        raise NotImplementedError(
-            f"BigQueryDriver.close is not yet implemented. {_NOT_IMPLEMENTED_HINT}"
-        )
+        raise NotImplementedError(f"BigQueryDriver.close is not yet implemented. {_NOT_IMPLEMENTED_HINT}")

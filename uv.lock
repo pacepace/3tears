@@ -45,6 +45,7 @@ dev = [
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "ruff", specifier = ">=0.3" },
     { name = "simpleeval", specifier = ">=1.0.4" },
     { name = "slack-bolt", specifier = ">=1.28" },
@@ -55,7 +56,7 @@ dev = [
 
 [[package]]
 name = "3tears"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/core" }
 dependencies = [
     { name = "3tears-nats" },
@@ -99,7 +100,7 @@ provides-extras = ["tracing", "duckdb", "testing"]
 
 [[package]]
 name = "3tears-agent-acl"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
@@ -114,7 +115,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-audit"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/agent/audit" }
 dependencies = [
     { name = "3tears" },
@@ -129,7 +130,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-memory"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
@@ -154,7 +155,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-agent-tools"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/agent/tools" }
 dependencies = [
     { name = "3tears" },
@@ -244,7 +245,7 @@ provides-extras = ["calculator", "units", "fetch", "pdf", "docx", "xlsx", "visio
 
 [[package]]
 name = "3tears-agent-workspace"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/agent/workspace" }
 dependencies = [
     { name = "3tears" },
@@ -271,7 +272,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-channels"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "3tears-observe" },
@@ -303,7 +304,7 @@ provides-extras = ["slack", "discord", "websocket"]
 
 [[package]]
 name = "3tears-conversations"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/conversations" }
 dependencies = [
     { name = "3tears" },
@@ -320,7 +321,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-datasources"
-version = "0.1.0"
+version = "0.9.1"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
@@ -362,7 +363,7 @@ provides-extras = ["redshift", "snowflake", "bigquery", "dev"]
 
 [[package]]
 name = "3tears-enforcement"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/enforcement" }
 dependencies = [
     { name = "3tears" },
@@ -382,7 +383,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "3tears-epoch"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/epoch" }
 dependencies = [
     { name = "3tears" },
@@ -401,7 +402,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-langgraph"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/langgraph" }
 dependencies = [
     { name = "asyncpg" },
@@ -420,7 +421,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-mcp"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/mcp" }
 dependencies = [
     { name = "3tears" },
@@ -445,7 +446,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-models"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/models" }
 dependencies = [
     { name = "3tears-agent-tools" },
@@ -489,7 +490,7 @@ provides-extras = ["voyageai", "whisper", "image", "prometheus"]
 
 [[package]]
 name = "3tears-nats"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/nats" }
 dependencies = [
     { name = "3tears-observe" },
@@ -506,7 +507,7 @@ requires-dist = [
 
 [[package]]
 name = "3tears-observe"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/observe" }
 
 [package.optional-dependencies]
@@ -530,7 +531,7 @@ provides-extras = ["otel", "asgi"]
 
 [[package]]
 name = "3tears-registry"
-version = "0.9.0"
+version = "0.9.1"
 source = { editable = "packages/registry" }
 dependencies = [
     { name = "3tears-agent-acl" },
@@ -2646,6 +2647,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/35/f8b19922b6a25bc0880171a2f1a003eaeb93657475193ab516fd87cac9da/pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5", size = 15075, upload-time = "2025-11-10T16:07:45.537Z" },
+]
+
+[[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382, upload-time = "2025-05-05T19:44:33.502Z" },
 ]
 
 [[package]]

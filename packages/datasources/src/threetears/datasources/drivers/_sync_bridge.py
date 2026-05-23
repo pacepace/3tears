@@ -143,9 +143,7 @@ class AsyncSyncBridge:
             backend cancellation
         """
         if self._closed:
-            raise RuntimeError(
-                f"AsyncSyncBridge[{self._name}] is closed; cannot submit new work"
-            )
+            raise RuntimeError(f"AsyncSyncBridge[{self._name}] is closed; cannot submit new work")
         loop = asyncio.get_running_loop()
         future = self._executor.submit(fn)
         wrapped = asyncio.wrap_future(future, loop=loop)

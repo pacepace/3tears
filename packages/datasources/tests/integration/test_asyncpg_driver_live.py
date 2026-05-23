@@ -33,7 +33,7 @@ from threetears.datasources.drivers.asyncpg_driver import AsyncpgDriver
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.entities import DataSourceType
 
-from tests.unit._helpers.cancellation_contract import (
+from ..unit._helpers.cancellation_contract import (
     DriverCancellationContractTest,
 )
 
@@ -82,7 +82,7 @@ def _make_config_for_container(
         port=parsed["port"],
         database=parsed["database"],
         username=parsed["username"],
-        password_env="ASYNCPG_DRIVER_TEST_PW",
+        password_ref="env://ASYNCPG_DRIVER_TEST_PW",
         pool_min_size=1,
         pool_max_size=2,
         command_timeout_seconds=10,
@@ -115,11 +115,7 @@ async def seeded_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.execute(f'CREATE SCHEMA "{schema}"')
         await conn.execute(
-            f'CREATE TABLE "{schema}"."widgets" ('
-            "id integer NOT NULL, "
-            "name text NOT NULL, "
-            "weight double precision"
-            ")"
+            f'CREATE TABLE "{schema}"."widgets" (id integer NOT NULL, name text NOT NULL, weight double precision)'
         )
         await conn.execute(
             f'INSERT INTO "{schema}"."widgets" (id, name, weight) '
@@ -197,20 +193,16 @@ class TestHappyPath:
         driver = AsyncpgDriver(config)
         try:
             rows = await driver.fetch(
-                f'SELECT name, weight FROM "{schema}"."widgets" '
-                "WHERE id = $1",
+                f'SELECT name, weight FROM "{schema}"."widgets" WHERE id = $1',
                 1,
             )
             assert rows == [{"name": "alpha", "weight": 1.5}]
             await driver.execute(
-                f'INSERT INTO "{schema}"."widgets" (id, name) '
-                "VALUES ($1, $2)",
+                f'INSERT INTO "{schema}"."widgets" (id, name) VALUES ($1, $2)',
                 99,
                 "echo",
             )
-            rows2 = await driver.fetch(
-                f'SELECT name FROM "{schema}"."widgets" WHERE id = $1', 99
-            )
+            rows2 = await driver.fetch(f'SELECT name FROM "{schema}"."widgets" WHERE id = $1', 99)
             assert rows2 == [{"name": "echo"}]
         finally:
             await driver.close()
@@ -243,14 +235,8 @@ class TestHappyPath:
         driver = AsyncpgDriver(config)
         try:
             cols = await driver.list_columns([schema])
-            id_col = next(
-                c for c in cols
-                if c["table_name"] == "widgets" and c["column_name"] == "id"
-            )
-            weight_col = next(
-                c for c in cols
-                if c["table_name"] == "widgets" and c["column_name"] == "weight"
-            )
+            id_col = next(c for c in cols if c["table_name"] == "widgets" and c["column_name"] == "id")
+            weight_col = next(c for c in cols if c["table_name"] == "widgets" and c["column_name"] == "weight")
             assert id_col["is_nullable"] == "NO"
             assert weight_col["is_nullable"] == "YES"
             # NOT a bool
@@ -285,22 +271,15 @@ class TestStreaming:
         driver = AsyncpgDriver(config)
         try:
             # seed 10k rows
-            await driver.execute(
-                f'CREATE TABLE "{schema}"."big" (id integer, payload text)'
-            )
+            await driver.execute(f'CREATE TABLE "{schema}"."big" (id integer, payload text)')
             # batch insert for speed
             payload = "x" * 200
             values = ", ".join(f"({i}, '{payload}')" for i in range(10000))
-            await driver.execute(
-                f'INSERT INTO "{schema}"."big" (id, payload) '
-                f"VALUES {values}"
-            )
+            await driver.execute(f'INSERT INTO "{schema}"."big" (id, payload) VALUES {values}')
 
             # measure peak memory for materialize-everything
             tracemalloc.start()
-            rows = await driver.fetch(
-                f'SELECT id, payload FROM "{schema}"."big" ORDER BY id'
-            )
+            rows = await driver.fetch(f'SELECT id, payload FROM "{schema}"."big" ORDER BY id')
             fetch_current, fetch_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
             assert len(rows) == 10000
@@ -309,9 +288,7 @@ class TestStreaming:
             # measure peak memory for streaming
             count = 0
             tracemalloc.start()
-            async for _row in driver.fetch_iter(
-                f'SELECT id, payload FROM "{schema}"."big" ORDER BY id'
-            ):
+            async for _row in driver.fetch_iter(f'SELECT id, payload FROM "{schema}"."big" ORDER BY id'):
                 count += 1
             stream_current, stream_peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()
@@ -319,8 +296,7 @@ class TestStreaming:
 
             # streaming should be substantially smaller than full materialization
             assert stream_peak < fetch_peak * 0.6, (
-                f"fetch_iter peak {stream_peak} is not substantially below "
-                f"fetch peak {fetch_peak}"
+                f"fetch_iter peak {stream_peak} is not substantially below fetch peak {fetch_peak}"
             )
         finally:
             await driver.close()
@@ -459,9 +435,7 @@ class TestBorrowedPoolLive:
                 schema_name=schema,
             )
             driver = AsyncpgDriver(config, external_pool=pool)
-            rows = await driver.fetch(
-                f'SELECT id FROM "{schema}"."widgets" ORDER BY id'
-            )
+            rows = await driver.fetch(f'SELECT id FROM "{schema}"."widgets" ORDER BY id')
             assert [r["id"] for r in rows] == [1, 2, 3]
             # close the driver -- the pool must remain open
             await driver.close()
@@ -532,9 +506,7 @@ async def test_borrowed_pool_microbenchmark_under_one_ms(
             raw_median = statistics.median(raw_durations)
             wrapped_median = statistics.median(wrapped_durations)
             added_latency = wrapped_median - raw_median
-            assert added_latency < 0.001, (
-                f"wrapper added {added_latency * 1000:.3f}ms median; bar is <1ms"
-            )
+            assert added_latency < 0.001, f"wrapper added {added_latency * 1000:.3f}ms median; bar is <1ms"
         finally:
             await driver.close()
     finally:

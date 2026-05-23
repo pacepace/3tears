@@ -101,9 +101,7 @@ DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 #: env var operators use to tune ``max_inactive_connection_lifetime``
 #: without a code change. verbose on purpose -- it is an operator tuning
 #: knob, not a dev convenience.
-ENV_MAX_INACTIVE_LIFETIME: str = (
-    "FOURTEENAIBOTS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS"
-)
+ENV_MAX_INACTIVE_LIFETIME: str = "FOURTEENAIBOTS_PG_POOL_MAX_INACTIVE_LIFETIME_SECONDS"
 
 
 def get_pg_pool_kwargs() -> dict[str, Any]:
@@ -151,8 +149,7 @@ def _resolve_max_inactive_lifetime() -> float:
             parsed = float(raw)
         except ValueError:
             log.warning(
-                f"invalid {ENV_MAX_INACTIVE_LIFETIME}={raw!r}, "
-                f"using default {DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS}s",
+                f"invalid {ENV_MAX_INACTIVE_LIFETIME}={raw!r}, using default {DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS}s",
                 extra={
                     "extra_data": {
                         "env_var": ENV_MAX_INACTIVE_LIFETIME,

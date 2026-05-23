@@ -99,7 +99,7 @@ def _build_mock_connection(
 def redshift_config() -> RedshiftConnectionConfig:
     """default :class:`RedshiftConnectionConfig` for the unit tests.
 
-    no ``password_env`` -- the connect call gets ``password=None``,
+    no ``password_ref`` -- the connect call gets ``password=None``,
     which is fine for the mocked path.
     """
     return RedshiftConnectionConfig(
@@ -108,7 +108,7 @@ def redshift_config() -> RedshiftConnectionConfig:
         port=5439,
         database="analytics",
         username="rs_user",
-        password_env=None,
+        password_ref=None,
         executor_max_workers=2,
         connection_cache_size=2,
         query_timeout_seconds=60,
@@ -123,44 +123,32 @@ def redshift_config() -> RedshiftConnectionConfig:
 class TestConstruction:
     """``__init__`` stores config + bridge + cache; no I/O."""
 
-    def test_init_does_not_open_connection(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    def test_init_does_not_open_connection(self, redshift_config: RedshiftConnectionConfig) -> None:
         """constructing the driver does NOT open a redshift connection."""
-        with patch(
-            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect"
-        ) as connect_mock:
+        with patch("threetears.datasources.drivers.redshift_driver.redshift_connector.connect") as connect_mock:
             driver = RedshiftDriver(redshift_config)
             assert driver._config is redshift_config  # noqa: SLF001
             assert driver._closed is False  # noqa: SLF001
             assert len(driver._cache) == 0  # noqa: SLF001
             connect_mock.assert_not_called()
 
-    def test_init_bridge_sized_from_config(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    def test_init_bridge_sized_from_config(self, redshift_config: RedshiftConnectionConfig) -> None:
         """bridge's executor max_workers matches ``executor_max_workers``."""
         driver = RedshiftDriver(redshift_config)
         # public surface on AsyncSyncBridge
         assert driver._bridge.max_workers == 2  # noqa: SLF001
 
-    def test_init_datasource_name_default_is_unknown(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_default_is_unknown(self, redshift_config: RedshiftConnectionConfig) -> None:
         """omitting ``datasource_name`` defaults to ``"unknown"``."""
         driver = RedshiftDriver(redshift_config)
         assert driver._datasource_name == "unknown"  # noqa: SLF001
 
-    def test_init_datasource_name_captured(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    def test_init_datasource_name_captured(self, redshift_config: RedshiftConnectionConfig) -> None:
         """passing ``datasource_name`` is stored for metric tagging."""
         driver = RedshiftDriver(redshift_config, datasource_name="ots")
         assert driver._datasource_name == "ots"  # noqa: SLF001
 
-    def test_init_registers_finalize(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    def test_init_registers_finalize(self, redshift_config: RedshiftConnectionConfig) -> None:
         """:func:`weakref.finalize` is registered for pod-crash mitigation."""
         driver = RedshiftDriver(redshift_config)
         # the finalize is alive until detach() / GC.
@@ -195,9 +183,7 @@ class TestClose:
     """close() concurrency contract per DS-09-12 / DS-11-10."""
 
     @pytest.mark.asyncio
-    async def test_close_idempotent(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_close_idempotent(self, redshift_config: RedshiftConnectionConfig) -> None:
         """second :meth:`close` is a no-op."""
         driver = RedshiftDriver(redshift_config)
         await driver.close()
@@ -206,9 +192,7 @@ class TestClose:
         await driver.close()
 
     @pytest.mark.asyncio
-    async def test_close_drains_cache(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_close_drains_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
         """every cached connection has ``close`` called on close()."""
         driver = RedshiftDriver(redshift_config)
         # inject two mock connections into the cache
@@ -222,9 +206,7 @@ class TestClose:
         assert len(driver._cache) == 0  # noqa: SLF001
 
     @pytest.mark.asyncio
-    async def test_methods_reject_after_close(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_methods_reject_after_close(self, redshift_config: RedshiftConnectionConfig) -> None:
         """every public method raises :class:`RuntimeError` post-close."""
         driver = RedshiftDriver(redshift_config)
         await driver.close()
@@ -242,9 +224,7 @@ class TestClose:
             await driver.test_connection()
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_rejects_after_close(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_fetch_iter_rejects_after_close(self, redshift_config: RedshiftConnectionConfig) -> None:
         """:meth:`fetch_iter` (async generator) also raises post-close."""
         driver = RedshiftDriver(redshift_config)
         await driver.close()
@@ -253,9 +233,7 @@ class TestClose:
                 pass  # pragma: no cover
 
     @pytest.mark.asyncio
-    async def test_close_detaches_finalize(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_close_detaches_finalize(self, redshift_config: RedshiftConnectionConfig) -> None:
         """post-close, the weakref finalize is detached."""
         driver = RedshiftDriver(redshift_config)
         await driver.close()
@@ -272,9 +250,7 @@ class TestConnectionCaching:
     """cache hit/miss + release routing."""
 
     @pytest.mark.asyncio
-    async def test_first_fetch_misses_then_caches(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_first_fetch_misses_then_caches(self, redshift_config: RedshiftConnectionConfig) -> None:
         """initial fetch: opens a fresh connection + caches it on release."""
         conn = _build_mock_connection(
             fetchall_rows=[(1, "alpha")],
@@ -293,9 +269,7 @@ class TestConnectionCaching:
             assert len(driver._cache) == 1  # noqa: SLF001
 
     @pytest.mark.asyncio
-    async def test_second_fetch_hits_cache(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_second_fetch_hits_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
         """second fetch reuses the cached connection (no second connect)."""
         conn = _build_mock_connection(
             fetchall_rows=[],
@@ -312,13 +286,9 @@ class TestConnectionCaching:
             connect_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_set_statement_timeout_applied_on_open(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_set_statement_timeout_applied_on_open(self, redshift_config: RedshiftConnectionConfig) -> None:
         """fresh connection has ``SET statement_timeout`` issued once."""
-        conn = _build_mock_connection(
-            fetchall_rows=[], description=[]
-        )
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
             return_value=conn,
@@ -328,9 +298,7 @@ class TestConnectionCaching:
             # the cursor saw at least one execute call with the
             # statement_timeout SQL (plus the fetch's own execute).
             calls = conn._cursor.execute.call_args_list  # noqa: SLF001
-            stmt_timeout_calls = [
-                c for c in calls if c.args and _is_set_stmt_timeout(c.args[0])
-            ]
+            stmt_timeout_calls = [c for c in calls if c.args and _is_set_stmt_timeout(c.args[0])]
             assert len(stmt_timeout_calls) == 1
             # ms value is inlined into the SQL (Redshift rejects
             # parameter binding in SET statements). assert the value
@@ -364,7 +332,8 @@ class TestQueryRouting:
             await driver.fetch("SELECT $1, $2", 1, "x")
             # find the non-statement_timeout execute call
             calls = [
-                c for c in conn._cursor.execute.call_args_list  # noqa: SLF001
+                c
+                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
                 if c.args and not _is_set_stmt_timeout(c.args[0])
             ]
             assert len(calls) == 1
@@ -372,9 +341,7 @@ class TestQueryRouting:
             assert calls[0].args[1] == (1, "x")
 
     @pytest.mark.asyncio
-    async def test_list_tables_uses_tables_sql(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_list_tables_uses_tables_sql(self, redshift_config: RedshiftConnectionConfig) -> None:
         """:meth:`list_tables` issues the canonical tables SQL."""
         conn = _build_mock_connection(
             fetchall_rows=[("s1", "t1")],
@@ -388,7 +355,8 @@ class TestQueryRouting:
             rows = await driver.list_tables(["s1"])
             assert rows == [{"table_schema": "s1", "table_name": "t1"}]
             calls = [
-                c for c in conn._cursor.execute.call_args_list  # noqa: SLF001
+                c
+                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
                 if c.args and not _is_set_stmt_timeout(c.args[0])
             ]
             # SQL is built from template + IN-clause placeholder for one schema
@@ -397,9 +365,7 @@ class TestQueryRouting:
             assert calls[0].args[1] == ("s1",)
 
     @pytest.mark.asyncio
-    async def test_list_columns_preserves_raw_is_nullable(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_list_columns_preserves_raw_is_nullable(self, redshift_config: RedshiftConnectionConfig) -> None:
         """``is_nullable`` is the raw warehouse string, NOT a bool."""
         conn = _build_mock_connection(
             fetchall_rows=[
@@ -425,7 +391,8 @@ class TestQueryRouting:
             assert rows[1]["is_nullable"] == "YES"
             assert isinstance(rows[0]["is_nullable"], str)
             calls = [
-                c for c in conn._cursor.execute.call_args_list  # noqa: SLF001
+                c
+                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
                 if c.args and not _is_set_stmt_timeout(c.args[0])
             ]
             expected_sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders="%s")
@@ -452,16 +419,15 @@ class TestQueryRouting:
             hashes = await driver.table_hashes(["s1"])
             assert hashes == {("s1", "t1"): "abc123"}
             calls = [
-                c for c in conn._cursor.execute.call_args_list  # noqa: SLF001
+                c
+                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
                 if c.args and not _is_set_stmt_timeout(c.args[0])
             ]
             expected_sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders="%s")
             assert calls[0].args[0] == expected_sql
 
     @pytest.mark.asyncio
-    async def test_execute_commits(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_execute_commits(self, redshift_config: RedshiftConnectionConfig) -> None:
         """:meth:`execute` issues ``conn.commit()`` so DDL/DML lands."""
         conn = _build_mock_connection()
         with patch(
@@ -482,9 +448,7 @@ class TestTestConnection:
     """:meth:`test_connection` issues PING + sanitizes failures."""
 
     @pytest.mark.asyncio
-    async def test_test_connection_happy_path(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_test_connection_happy_path(self, redshift_config: RedshiftConnectionConfig) -> None:
         """successful round-trip returns None silently."""
         conn = _build_mock_connection(
             fetchone_row=(1,),
@@ -498,15 +462,14 @@ class TestTestConnection:
             await driver.test_connection()
             # the PING SQL was issued
             calls = [
-                c for c in conn._cursor.execute.call_args_list  # noqa: SLF001
+                c
+                for c in conn._cursor.execute.call_args_list  # noqa: SLF001
                 if c.args and not _is_set_stmt_timeout(c.args[0])
             ]
             assert any(c.args[0] == _PING_SQL for c in calls)
 
     @pytest.mark.asyncio
-    async def test_test_connection_sanitizes_connect_failure(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_test_connection_sanitizes_connect_failure(self, redshift_config: RedshiftConnectionConfig) -> None:
         """``redshift_connector.connect`` failure wraps in :class:`DriverConnectError`."""
         with patch(
             "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
@@ -530,9 +493,7 @@ class TestFetchIter:
     """:meth:`fetch_iter` streams via DB-API ``fetchmany``."""
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_yields_chunks_correctly(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_fetch_iter_yields_chunks_correctly(self, redshift_config: RedshiftConnectionConfig) -> None:
         """multiple fetchmany chunks are concatenated correctly."""
         conn = _build_mock_connection(
             description=[("a", None)],
@@ -553,9 +514,7 @@ class TestFetchIter:
             assert rows == [{"a": 1}, {"a": 2}, {"a": 3}]
 
     @pytest.mark.asyncio
-    async def test_fetch_iter_sets_arraysize(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_fetch_iter_sets_arraysize(self, redshift_config: RedshiftConnectionConfig) -> None:
         """cursor.arraysize is set before iteration (server-side fetchmany)."""
         conn = _build_mock_connection(
             description=[("a", None)],
@@ -584,9 +543,7 @@ class TestCancellation:
     """cancellation routes through wait_for + conn.close + observability."""
 
     @pytest.mark.asyncio
-    async def test_cancellation_closes_connection_and_evicts(
-        self, redshift_config: RedshiftConnectionConfig
-    ) -> None:
+    async def test_cancellation_closes_connection_and_evicts(self, redshift_config: RedshiftConnectionConfig) -> None:
         """cancellation closes the connection + evicts from cache."""
         conn = _build_mock_connection()
 
@@ -601,6 +558,7 @@ class TestCancellation:
             # in the real thread this blocks indefinitely; mock by
             # spinning until the connection is closed (cancel cb).
             import time
+
             for _ in range(100):
                 if conn.close.called:
                     return
@@ -629,7 +587,8 @@ class TestCancellation:
 
     @pytest.mark.asyncio
     async def test_cancellation_callback_failure_observable(
-        self, redshift_config: RedshiftConnectionConfig,
+        self,
+        redshift_config: RedshiftConnectionConfig,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """if conn.close hangs past the timeout, WARNING is logged + cancellation.failed.
@@ -647,6 +606,7 @@ class TestCancellation:
                 return
             execute_blocked.set()
             import time
+
             for _ in range(200):
                 if close_started.is_set():
                     return
@@ -659,6 +619,7 @@ class TestCancellation:
             # signal that close started, then hang
             loop.call_soon_threadsafe(close_started.set)
             import time
+
             time.sleep(_CANCEL_TIMEOUT_SECONDS + 2)
             # release after the wait_for has already fired
 

@@ -58,20 +58,15 @@ satisfy (lands in `datasource-task-09`).
 
 ## Versioning policy
 
-`3tears-datasources` adopts SemVer **independently** of the 3tears
-core release cadence. Other 3tears packages share core's version; this
-package is explicitly multi-consumer (Hub + future products) so version
-lockstep would force every core breaking change to bump this package
-and every downstream consumer.
+`3tears-datasources` versions in **lockstep** with the rest of the
+3tears monorepo: every package shares one version, which tracks the
+framework git tag (`v0.9.1` at time of writing). An earlier experiment
+versioned this package independently (`0.1.x`); that was retired
+because it diverged from how the monorepo actually releases — all
+packages move together.
 
-The `pyproject.toml` pins compatible 3tears core via a range
-(`3tears>=0.9.0,<1.0`), not a single pinned version.
-
-- **Major bumps** (`1.0 → 2.0`): Driver ABC shape changes, Collection
-  PK changes, `ConnectionConfig` structural breaks.
-- **Minor bumps** (`0.1 → 0.2`): additive Driver methods (`fetch_iter`,
-  new high-level helpers), new driver type, new `ConnectionConfig`
-  field with default.
-- **Patch bumps**: bug fixes, doc updates, internal refactors.
+The `pyproject.toml` depends on 3tears core via a compatible-release
+range (`3tears>=0.9.1,<1.0`); because the monorepo bumps together, any
+matching `0.9.x` core satisfies it.
 
 See `CHANGELOG.md` for the full version history.

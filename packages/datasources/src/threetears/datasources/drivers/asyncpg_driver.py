@@ -375,7 +375,7 @@ class AsyncpgDriver(Driver):
                 " (Hub's L3 pool); cannot open a fresh pool from agent_internal"
             )
         cfg: _PgConfig = self._config
-        # SecretStr round-trip: resolve only if password_env is set;
+        # SecretStr round-trip: resolve only if password_ref is set;
         # local dev / trust-auth setups legitimately have no password.
         # ``.get_secret_value()`` is called inside the ``create_pool``
         # call site to keep the value off any intermediate variable
@@ -386,11 +386,7 @@ class AsyncpgDriver(Driver):
                 port=cfg.port,
                 database=cfg.database,
                 user=cfg.username,
-                password=(
-                    cfg.resolve_password().get_secret_value()
-                    if cfg.password_env is not None
-                    else None
-                ),
+                password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
                 min_size=cfg.pool_min_size,
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
@@ -402,15 +398,11 @@ class AsyncpgDriver(Driver):
             # value in nested context -- does NOT reach loggers /
             # tracebacks via ``__cause__``. the wrapper's message is
             # the only thing callers see.
-            raise DriverConnectError(
-                f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}"
-            ) from None
+            raise DriverConnectError(f"connection failed for {cfg.host}:{cfg.port}/{cfg.database}") from None
         # asyncpg.create_pool can return None on edge cases; guard
         # against the typing.
         if pool is None:
-            raise DriverConnectError(
-                f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}"
-            )
+            raise DriverConnectError(f"connection returned no pool for {cfg.host}:{cfg.port}/{cfg.database}")
         return pool
 
     async def _acquire_and_run(
@@ -513,9 +505,7 @@ class AsyncpgDriver(Driver):
         )
 
     @traced
-    async def fetch_iter(
-        self, sql: str, *params: Any
-    ) -> AsyncIterator[dict[str, Any]]:
+    async def fetch_iter(self, sql: str, *params: Any) -> AsyncIterator[dict[str, Any]]:
         """stream rows via asyncpg's server-side cursor.
 
         overrides the ABC default (which materializes via :meth:`fetch`
@@ -613,9 +603,7 @@ class AsyncpgDriver(Driver):
 
     @traced
     @_observed(driver_type="asyncpg")
-    async def table_hashes(
-        self, schemas: list[str]
-    ) -> dict[tuple[str, str], str]:
+    async def table_hashes(self, schemas: list[str]) -> dict[tuple[str, str], str]:
         """compute per-table MD5 over the column shape (Tier-2 change-probe).
 
         the warehouse-side MD5 formula in :data:`_POSTGRES_TABLE_HASHES_SQL`
@@ -636,10 +624,7 @@ class AsyncpgDriver(Driver):
         records = await self._acquire_and_run(
             lambda conn: conn.fetch(_POSTGRES_TABLE_HASHES_SQL, schemas),
         )
-        result: dict[tuple[str, str], str] = {
-            (r["table_schema"], r["table_name"]): r["column_hash"]
-            for r in records
-        }
+        result: dict[tuple[str, str], str] = {(r["table_schema"], r["table_name"]): r["column_hash"] for r in records}
         return result
 
     # -------------------------------------------------------------------
@@ -679,9 +664,7 @@ class AsyncpgDriver(Driver):
             # breaks the cause chain so the original asyncpg
             # exception's message can't surface via ``__cause__``.
             identity = self._connection_identity()
-            raise DriverConnectError(
-                f"connection failed for {identity}"
-            ) from None
+            raise DriverConnectError(f"connection failed for {identity}") from None
 
     @traced
     async def close(self) -> None:

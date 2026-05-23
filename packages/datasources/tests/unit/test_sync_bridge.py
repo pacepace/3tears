@@ -189,9 +189,7 @@ class TestClose:
         # but don't await it. cancellation in the asyncio caller is
         # irrelevant -- the worker thread is what matters for the
         # close() shutdown semantics under test.
-        bg_task = asyncio.create_task(
-            bridge.to_thread_with_cancel(long_running, cancel_cb=lambda: None)
-        )
+        bg_task = asyncio.create_task(bridge.to_thread_with_cancel(long_running, cancel_cb=lambda: None))
         # give the executor a moment to actually pick up the work
         await asyncio.sleep(0.05)
         # close should return promptly even with the worker blocked
@@ -201,10 +199,7 @@ class TestClose:
         # release the worker so it doesn't hold the executor forever
         proceed.set()
         # if close() blocked on the worker, elapsed would be ~5s
-        assert elapsed < 1.0, (
-            f"close() blocked on the executor for {elapsed:.2f}s; "
-            "should use shutdown(wait=False)"
-        )
+        assert elapsed < 1.0, f"close() blocked on the executor for {elapsed:.2f}s; should use shutdown(wait=False)"
         # drain the background task so pytest doesn't warn about
         # unawaited tasks; we don't care about its result here.
         with contextlib.suppress(Exception):
@@ -225,9 +220,7 @@ class TestBoundedExecutorSize:
                 return 1
 
             tasks = [
-                asyncio.create_task(
-                    bridge.to_thread_with_cancel(block_until_three, cancel_cb=lambda: None)
-                )
+                asyncio.create_task(bridge.to_thread_with_cancel(block_until_three, cancel_cb=lambda: None))
                 for _ in range(3)
             ]
             results = await asyncio.gather(*tasks)
