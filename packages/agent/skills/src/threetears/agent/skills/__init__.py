@@ -1,13 +1,15 @@
 """Agent-skills package -- procedural memory for 3tears agents.
 
-Shard 01 landed the schema + Collection layer. Shard 02 (this release)
-adds the seven agent tools (``skill_create`` / ``skill_list`` /
-``skill_get`` / ``skill_update`` / ``skill_delete`` / ``skill_invoke``
-/ ``skill_introspect``). Shard 03 will add the per-turn composition
-function (``compose_turn_context``). The public surface here re-exports
-the entity / collection / migration registration triad alongside the
-tool loader factories + their Pydantic input schemas + the
-``SkillRegistryClient`` Protocol the consumer implements.
+Shard 01 landed the schema + Collection layer. Shard 02 added the
+seven agent tools (``skill_create`` / ``skill_list`` / ``skill_get`` /
+``skill_update`` / ``skill_delete`` / ``skill_invoke`` /
+``skill_introspect``). Shard 03 (this release) adds the per-turn
+composition (``compose_turn_context``) + active-skill rendering
+(``render_skill_body_block``) for the consumer's ``personality_node``.
+The public surface here re-exports the entity / collection / migration
+registration triad alongside the tool loader factories + their
+Pydantic input schemas + the ``SkillRegistryClient`` Protocol the
+consumer implements + the composition surface.
 
 Version is sourced from the installed package metadata so a future
 release that bumps ``pyproject.toml`` without touching this file
@@ -31,6 +33,11 @@ from threetears.agent.skills.entities import (
     AgentSkillInvocationEntity,
 )
 from threetears.agent.skills.migrations import register
+from threetears.agent.skills.rendering import (
+    ComposedTurnContext,
+    compose_turn_context,
+    render_skill_body_block,
+)
 from threetears.agent.skills.tools import (
     ActiveSkillProbe,
     ActiveSkillSetter,
@@ -68,6 +75,7 @@ __all__ = [
     "AgentSkillEntity",
     "AgentSkillInvocationCollection",
     "AgentSkillInvocationEntity",
+    "ComposedTurnContext",
     "ConversationIdResolver",
     "InvocationSource",
     "OutcomeSource",
@@ -84,6 +92,7 @@ __all__ = [
     "SkillSource",
     "SkillToolIntrospect",
     "SkillUpdateInput",
+    "compose_turn_context",
     "load_skill_create_tool",
     "load_skill_delete_tool",
     "load_skill_get_tool",
@@ -92,4 +101,5 @@ __all__ = [
     "load_skill_list_tool",
     "load_skill_update_tool",
     "register",
+    "render_skill_body_block",
 ]
