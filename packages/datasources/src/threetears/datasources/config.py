@@ -505,52 +505,72 @@ ConnectionConfig = Annotated[
 
 
 class DatasourceConfig(BaseModel):
-    """configuration for a single external data source declared in agent.yaml.
+    """configuration for a single declared data source.
 
-    shape (post-``datasource-task-08``):
+    one model serves two surfaces post-``datasource-task-05``:
 
-    .. code-block:: yaml
+    1. **definition shape** (``aibots datasource apply -f <file>``
+       and the legacy / deprecated inline-in-``agent.yaml``
+       pattern). carries the full connection identity:
 
-        datasources:
-          - name: central-reporting
-            access_mode: read
-            schemas: [reporting_prod]
-            connection_config:
-              datasource_type: redshift
-              host: cluster.region.redshift.amazonaws.com
-              port: 5439
-              database: analytics
-              username: ots_user
-              password_env: OTS_REDSHIFT_PASSWORD
-              # optional tuning (defaults shown):
-              # executor_max_workers: 10
-              # connection_cache_size: 3
-              # query_timeout_seconds: 300
+       .. code-block:: yaml
 
-    the connection-shape fields live inside :attr:`connection_config`
-    (a discriminated union); top-level fields are limited to the
-    datasource's *identity* (name, access mode, schema allow-list).
-    no flat fields are kept for backward compat — pre-shard-08
-    ``agent.yaml`` files must be rewritten by hand at upgrade time
-    (one-time migration).
+           - name: central-reporting
+             access_mode: read
+             schemas: [reporting_prod]
+             connection_config:
+               datasource_type: redshift
+               host: cluster.region.redshift.amazonaws.com
+               port: 5439
+               database: analytics
+               username: ots_user
+               password_env: OTS_REDSHIFT_PASSWORD
+
+    2. **reference shape** (canonical in ``agent.yaml``
+       post-``datasource-task-05``). identity-only; the connection
+       config lives in a sibling ``datasources/<name>.yaml`` applied
+       via ``aibots datasource apply``:
+
+       .. code-block:: yaml
+
+           - name: central-reporting
+             access_mode: read
+
+    the model accepts both by making ``connection_config`` optional.
+    ``schemas`` is also optional in both shapes (empty means "all
+    schemas the warehouse account can see").
+
+    the post-shard-01 deprecation predicate (
+    :func:`aibots_agents.devx.datasource_provision._has_inline_connection_config`
+    ) keys off ``connection_config is not None`` -- a populated
+    inline block in ``agent.yaml`` triggers a one-shot
+    ``DeprecationWarning`` pointing at the new CLI; the reference
+    shape stays silent.
 
     :param name: human-readable name for this data source
     :ptype name: str
     :param access_mode: tool registration mode (read / write / readwrite)
     :ptype access_mode: str
     :param schemas: database schemas exposed to agents (whitelist;
-        empty means "all schemas the warehouse account can see")
+        empty means "all schemas the warehouse account can see").
+        IGNORED on the reference shape -- the canonical
+        ``schemas`` field for that datasource is read from the
+        applied definition YAML
     :ptype schemas: list[str]
-    :param connection_config: per-driver connection config; pydantic
-        dispatches on ``datasource_type`` to the right
-        :class:`ConnectionConfig` member
-    :ptype connection_config: ConnectionConfig
+    :param connection_config: per-driver connection config (
+        discriminated on ``datasource_type``). ``None`` on the
+        reference shape; required on the definition shape
+    :ptype connection_config: ConnectionConfig | None
     """
 
     name: str
     access_mode: str = "readwrite"
     schemas: list[str] = Field(default_factory=list)
-    connection_config: ConnectionConfig
+    connection_config: ConnectionConfig | None = None
+
+    # reject extra keys so a typo in the reference shape ("acccess_mode")
+    # surfaces at load time instead of silently shipping the default.
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("access_mode")
     @classmethod
@@ -570,15 +590,32 @@ class DatasourceConfig(BaseModel):
         return value
 
     @property
+    def is_reference(self) -> bool:
+        """``True`` when the entry is the reference-only shape (no inline config).
+
+        :return: reference-only shape indicator
+        :rtype: bool
+        """
+        return self.connection_config is None
+
+    @property
     def datasource_type(self) -> Any:
         """convenience accessor for the nested datasource_type.
 
-        ``ds_config.datasource_type`` is the common need; the value
-        actually lives in ``ds_config.connection_config.datasource_type``.
-        the property keeps existing callers concise without re-exposing
-        the rest of the flat surface.
+        only valid on the definition shape -- the reference shape
+        does not carry an inline connection config, and the type
+        information lives Hub-side. callers that need the type for
+        a reference must read it from the resolved
+        :class:`DataSourceResponse`.
 
         :return: the connection's ``DataSourceType`` enum member
         :rtype: DataSourceType
+        :raises AttributeError: when called on the reference shape
         """
+        if self.connection_config is None:
+            raise AttributeError(
+                f"datasource {self.name!r} is the reference-only shape; "
+                f"no inline connection_config. read datasource_type from "
+                f"the resolved DataSourceResponse instead.",
+            )
         return self.connection_config.datasource_type

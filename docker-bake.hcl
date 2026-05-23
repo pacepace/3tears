@@ -32,7 +32,12 @@
 # ---------------------------------------------------------------------------
 
 variable "VERSION" {
-  default = "v0.5.0"
+  # tracks the 3tears framework release (git tag). bump in lockstep
+  # with the framework version + the per-Dockerfile ARG defaults +
+  # the cross-target ``contexts`` keys below, which MUST match the
+  # Dockerfile ARG defaults exactly so buildx substitutes the
+  # in-flight base target instead of pulling from the registry.
+  default = "v0.9.0"
 }
 
 variable "REGISTRY" {
@@ -107,10 +112,10 @@ target "aibots-base" {
     # Wires the in-flight threetears-base target as a build context, so
     # `bake all` builds the framework base then immediately consumes it
     # without a registry round-trip during local development.
-    "ghcr.io/pacepace/threetears-base:v0.5.0" = "target:threetears-base"
+    "ghcr.io/pacepace/threetears-base:v0.9.0" = "target:threetears-base"
   }
   args = {
-    THREETEARS_BASE = "ghcr.io/pacepace/threetears-base:v0.5.0"
+    THREETEARS_BASE = "ghcr.io/pacepace/threetears-base:v0.9.0"
   }
   tags = [
     "${REGISTRY}/aibots-base:${VERSION}",
@@ -127,10 +132,10 @@ target "hub" {
   context    = "../14-eng-ai-bot"
   dockerfile = "Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.5.0" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.9.0" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.5.0"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.0"
   }
   tags = [
     "${REGISTRY}/aibots-hub:${VERSION}",
@@ -143,10 +148,10 @@ target "admin" {
   context    = "../14-eng-ai-bot-agent-admin"
   dockerfile = "Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.5.0" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.9.0" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.5.0"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.0"
   }
   tags = [
     "${REGISTRY}/aibots-admin:${VERSION}",
@@ -159,10 +164,10 @@ target "schema" {
   context    = "../14-eng-ai-bot-agents"
   dockerfile = "docker/schema-agent/Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.5.0" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.9.0" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.5.0"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.0"
   }
   tags = [
     "${REGISTRY}/aibots-schema:${VERSION}",

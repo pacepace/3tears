@@ -50,6 +50,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceStatus,
     DataSourceTableEntity,
     TableTemplateEntity,
 )
@@ -160,8 +161,11 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
     # rationale: find_by_id resolves a datasource by its public id from
     # the admin URL and the agent-side tool flow; the v054 UNIQUE (id)
     # constraint preserves uniqueness without forcing every caller to
-    # know the customer_id partition up front.
-    _partition_exempt_methods = frozenset({"find_by_id"})
+    # know the customer_id partition up front. iter_active_ids is the
+    # canonical cross-partition sweep primitive (consumed by the
+    # Hub-owned datasource-task-04 introspect scheduler); cross-customer
+    # is the intended behaviour, not a leak.
+    _partition_exempt_methods = frozenset({"find_by_id", "iter_active_ids"})
     schema = TableSchema(
         name="datasources",
         primary_key=("customer_id", "id"),
@@ -210,6 +214,53 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
         :rtype: type[DataSourceEntity]
         """
         return DataSourceEntity
+
+    async def iter_active_ids(self) -> list[UUID]:
+        """list every ACTIVE datasource's primary-key ``id``.
+
+        consumed by background-task sweeps (e.g. the Hub-owned
+        introspect scheduler in ``datasource-task-04``) that need
+        to walk the full row set without per-customer scoping.
+        callers MUST follow up with per-id :meth:`find_by_id` calls
+        when they need the full entity -- this helper deliberately
+        returns ONLY ids so the L3 round-trip stays small and the
+        per-row decode happens through the canonical
+        ``find_by_id`` path (which also writes the L1 cache).
+
+        status filter: only rows with ``status = 'active'`` are
+        returned. ``DataSourceStatus.DISABLED`` rows are skipped
+        because the operator intentionally disabled them and
+        probing them every sweep wastes warehouse round-trips +
+        emits spurious audit failure rows. audit-pass-3 CRITICAL-1.
+
+        cross-customer by design: the scheduler is one-process,
+        not per-customer, and the v054 ``UNIQUE (id)`` constraint
+        makes per-id resolution unambiguous without the partition
+        column. callers in per-customer contexts MUST NOT use this
+        helper -- use the admin-endpoint keyset-paginated list
+        with proper partition filtering instead.
+
+        :return: list of ``id`` values for every ACTIVE row,
+            ordered by ``(date_created, id)`` so the sweep order
+            is deterministic across restarts
+        :rtype: list[UUID]
+        """
+        if self.l3_pool is None:
+            return []
+        # cache-bypass: scheduler sweep needs every active row; no
+        # Collection surface exists for cross-partition list-all by
+        # design.
+        # partition-bypass: cross-customer sweep is documented above.
+        rows = await self.l3_pool.fetch(
+            """
+            SELECT id FROM datasources
+            WHERE status = $1
+            ORDER BY date_created, id
+            """,
+            DataSourceStatus.ACTIVE.value,
+        )
+        result = [row["id"] for row in rows]
+        return result
 
     async def find_by_id(
         self, datasource_id: UUID,

@@ -72,6 +72,50 @@ class TestDataSourceCollection:
     def test_primary_key_column_is_composite(self) -> None:
         assert DataSourceCollection.primary_key_column == ("customer_id", "id")
 
+    @pytest.mark.asyncio
+    async def test_iter_active_ids_filters_status_active(self) -> None:
+        """audit-pass-3 CRITICAL-1: iter_active_ids must filter by
+        ``status = 'active'`` so the scheduler does not probe DISABLED
+        datasources every sweep.
+
+        the assertion shape is "the SQL string includes
+        ``WHERE status``" + "the value passed is the ACTIVE enum
+        value." we don't run a real query; the mock pool records
+        the args.
+        """
+        registry, config = _make_registry_and_config()
+        mock_pool = MagicMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        registry.get_l3_pool.return_value = mock_pool
+
+        coll = DataSourceCollection(registry=registry, config=config)
+        result = await coll.iter_active_ids()
+
+        assert result == []
+        mock_pool.fetch.assert_awaited_once()
+        sql_arg, *bound_args = mock_pool.fetch.await_args.args
+        assert "WHERE status" in sql_arg
+        assert bound_args == ["active"]
+
+    @pytest.mark.asyncio
+    async def test_iter_active_ids_returns_only_active_rows(self) -> None:
+        """when the L3 pool returns rows, iter_active_ids extracts
+        their ids; DISABLED rows are filtered server-side by the
+        ``WHERE`` clause (the test verifies the contract by checking
+        the SQL + by trusting the pool's filter -- a real Postgres
+        instance enforces it).
+        """
+        registry, config = _make_registry_and_config()
+        mock_pool = MagicMock()
+        ids = [uuid4() for _ in range(3)]
+        mock_pool.fetch = AsyncMock(return_value=[{"id": ds_id} for ds_id in ids])
+        registry.get_l3_pool.return_value = mock_pool
+
+        coll = DataSourceCollection(registry=registry, config=config)
+        result = await coll.iter_active_ids()
+
+        assert result == ids
+
 
 # -- DataSourceTableCollection --
 
