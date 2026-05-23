@@ -115,6 +115,11 @@ from threetears.agent.wake.metrics import (
     reset_wake_emitter_for_testing,
 )
 from threetears.agent.wake.migrations import register
+from threetears.agent.wake.tables import (
+    agent_wake_schedules_table,
+    wake_fires_table,
+    webhook_subscriptions_table,
+)
 from threetears.agent.wake.rate_limit import (
     RATE_LIMIT_WINDOW_HOURS,
     RateLimitScope,
@@ -246,6 +251,7 @@ __all__ = [
     "WebhookSubscriptionStatus",
     "_check_active_schedule_cap",
     "_check_rate_limit",
+    "agent_wake_schedules_table",
     "compute_generic_hmac_sha256_signature",
     "detect_silent_prefix",
     "dispatch_wake",
@@ -269,6 +275,8 @@ __all__ = [
     "validate_context_from_chain",
     "validate_schedule_config",
     "verify_generic_hmac_sha256",
+    "wake_fires_table",
     "wake_tick_job",
     "webhook_receive",
+    "webhook_subscriptions_table",
 ]
