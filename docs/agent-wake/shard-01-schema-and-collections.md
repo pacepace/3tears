@@ -44,7 +44,7 @@ product's own messages table and ship via the product's migration
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| WAKE-01 | New package `3tears-agent-wake` at `packages/agent/wake/` with `pyproject.toml` declaring `name="3tears-agent-wake"`, `version="0.9.0"`, import path `threetears.agent.wake`. | P0 |
+| WAKE-01 | New package `3tears-agent-wake` at `packages/agent/wake/` with `pyproject.toml` declaring `name="3tears-agent-wake"`, version tracking the workspace canonical (bumped in lock-step by `scripts/bump-version.sh`), import path `threetears.agent.wake`. | P0 |
 | WAKE-02 | New table `agent_wake_schedules` with columns + indexes per the schema spec below. | P0 |
 | WAKE-03 | New table `wake_pre_check_types` registering the curated set of safe built-in pre-check operations (`http_get`, `loki_query`, `postgres_query` in v1; admin-extensible). | P0 |
 | WAKE-04 | New table `wake_fires` recording every fired wake (success or failure), supporting BOTH schedule-source and webhook-source fires via a `(schedule_id, webhook_subscription_id)` exclusive-OR CHECK constraint. | P0 |
