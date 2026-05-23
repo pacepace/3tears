@@ -133,6 +133,51 @@ def _build_collections(
     return skills, invocations
 
 
+def _build_collections_with_l1(
+    pool: asyncpg.Pool,
+) -> tuple[AgentSkillCollection, AgentSkillInvocationCollection]:
+    """Build skills + invocations Collections backed by an L1 SQLite cache.
+
+    The default :func:`_build_collections` wires L3 only; a consumer that
+    runs with the real three-tier cache (e.g. metallm via ``main.py``)
+    holds entities as L1 cache proxies. Tool code that reads entity
+    fields AFTER a Collection mutation (``delete``) must snapshot them
+    first, because ``delete`` evicts the L1 row and subsequent proxy
+    reads return ``None``. This builder reproduces that path so the
+    regression is caught here, not only downstream.
+    """
+    from sqlalchemy import MetaData
+    from threetears.agent.skills.tables import (
+        agent_skill_invocations_table,
+        agent_skills_table,
+    )
+    from threetears.core.cache.sqlite import SQLiteBackend
+
+    metadata = MetaData()
+    agent_skills_table(metadata)
+    agent_skill_invocations_table(metadata)
+    l1 = SQLiteBackend(db_name=f"skills_cache_{uuid7()}")
+    l1.initialize(metadata)
+
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l3_pool=pool)
+    config = DefaultCoreConfig(
+        collection_flush="ALWAYS",
+        collection_flush_tables="",
+    )
+    skills = AgentSkillCollection(
+        registry=registry,
+        config=config,
+        nats_client=None,
+    )
+    invocations = AgentSkillInvocationCollection(
+        registry=registry,
+        config=config,
+        nats_client=None,
+    )
+    return skills, invocations
+
+
 @pytest.fixture
 async def pool_with_schema(
     pg_schema: tuple[str, str],
@@ -261,6 +306,44 @@ class TestSkillLifecycle:
             {"name": "empty", "summary": "nothing"},
         )
         assert "[TOOL ERROR]" in out
+
+    async def test_delete_under_l1_cache_returns_success_message(
+        self,
+        pool_with_schema: asyncpg.Pool,
+    ) -> None:
+        """skill_delete must not read evicted entity fields post-delete.
+
+        Regression: with a live L1 cache (the production three-tier
+        path), the loaded entity is a cache proxy. ``delete`` evicts the
+        L1 row, so reading ``entity.name`` / ``entity.skill_id`` AFTER
+        the delete returns ``None`` and ``[skill:None]`` raises in the
+        UUID coercion. The tool snapshots both fields before delete.
+        """
+        agent_id = _new_uuid()
+        user_id = _new_uuid()
+        skills, _ = _build_collections_with_l1(pool_with_schema)
+        registry = _FakeRegistry()
+        [create_tool] = load_skill_create_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=skills,
+            registry=registry,
+        )
+        [delete_tool] = load_skill_delete_tool(
+            agent_id=agent_id,
+            user_id=user_id,
+            skills_collection=skills,
+        )
+
+        create_out = await create_tool.ainvoke(
+            {"name": "ephemeral", "summary": "to be deleted", "body": "x"},
+        )
+        skill_id_str = create_out.split("[skill:")[1].split("]")[0]
+
+        del_out = await delete_tool.ainvoke({"skill_id": skill_id_str})
+        # The success message renders the snapshotted name + id; no crash.
+        assert del_out.startswith("Deleted skill 'ephemeral'")
+        assert skill_id_str in del_out
 
 
 class TestCrossUserIsolation:

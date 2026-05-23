@@ -1303,8 +1303,16 @@ def load_skill_delete_tool(
         if entity is None:
             return _tool_error("skill_delete", "skill not found")
 
+        # Snapshot the identity fields BEFORE delete. The entity is a
+        # cache proxy that reads through the Collection's L1 store;
+        # ``delete`` evicts the row from L1, after which ``entity.name`` /
+        # ``entity.skill_id`` read back as ``None`` (the success message
+        # would then raise on ``_as_uuid(None)``).
+        deleted_name = entity.name
+        deleted_skill_id = entity.skill_id
+
         try:
-            await skills_collection.delete((agent_id, entity.skill_id))
+            await skills_collection.delete((agent_id, deleted_skill_id))
         except Exception as exc:
             log.warning(
                 "skill_delete persist failed",
@@ -1312,7 +1320,7 @@ def load_skill_delete_tool(
             )
             return _tool_error("skill_delete", f"persist failed: {exc}")
 
-        return f"Deleted skill {entity.name!r} ([skill:{entity.skill_id}])."
+        return f"Deleted skill {deleted_name!r} ([skill:{deleted_skill_id}])."
 
     skill_delete.description = (
         "Delete a prose skill permanently. Invocation history cascades. Use enabled=false to disable instead."
