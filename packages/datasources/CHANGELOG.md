@@ -9,15 +9,165 @@ and the package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-Driver abstraction additions land here as `datasource-task-09` through
-`datasource-task-12` execute:
+Future enhancements after the initial driver migration ships:
 
-- `Driver` ABC + `create_driver(config)` factory (shard 09)
-- `AsyncpgDriver` for postgres / yugabyte / agent_internal (shard 10)
-- `RedshiftDriver` for Redshift via `redshift-connector` (shard 11)
-- `SnowflakeDriver` + `BigQueryDriver` stubs (shard 12)
+- Snowflake + BigQuery concrete driver implementations (stubs today
+  per shard 12 — the ABC supports both shapes; implementations land
+  when a consumer needs them).
+- `Collection.save_entities_batched` to restore the per-batch write
+  performance that shard-13's per-row `save_entity` flow gave up
+  (preserving the L2-invalidation contract was non-negotiable; the
+  batched variant ships as a 3tears-core enhancement when profiling
+  data justifies it).
+- `Driver.execute` return-value extension (currently `None`;
+  callers that need a row count use `RETURNING *` + the read tool).
+- Lift the Hub-side `introspect_if_changed` orchestrator helpers
+  (probe + diff coordination) into `threetears.datasources.introspection`
+  when a second 3tears consumer wires up a change-driven introspector.
 
 ## [0.1.0] — initial release
+
+initial release shipping the full datasource driver-abstraction
+migration (shards 07–15 in the `14-eng-ai-bot/docs/datasource-task-*.md`
+series). drops in as the canonical home for datasource primitives
+across every 3tears consumer.
+
+### Driver layer (shards 09–12)
+
+- `threetears.datasources.drivers.Driver` ABC: the contract every
+  concrete driver implements. async-only surface (`fetch`,
+  `execute`, `fetch_iter`, `list_tables`, `list_columns`,
+  `table_hashes`, `test_connection`, `close`). `fetch_iter` carries
+  a working default impl (yields from `fetch`); native streaming
+  is the concrete-driver responsibility.
+- `threetears.datasources.drivers.create_driver(config, *, hub_l3_pool=None, datasource_name="unknown")`:
+  the factory. dispatches on `config.datasource_type` to the right
+  concrete driver class. lazy backend imports — importing the
+  `threetears.datasources` package roots does NOT pull
+  `redshift_connector` / `snowflake-connector-python` /
+  `google-cloud-bigquery`. one runtime audit verifies the contract
+  on every test run.
+- Shared helpers (`drivers/base.py`, `_util.py`, `_sync_bridge.py`):
+  - `Driver._with_cancellation(coro_fn, cancel_callback=...)` — the
+    canonical pattern every concrete driver routes through for
+    `CancelledError` propagation to the backend cancel hook.
+  - `_translate_placeholders(sql, target_style)` — `$1` ->
+    `%s`/`:1`/`@p1`. asyncpg style is a no-op. handles `$10` vs
+    `$1`, escaped `$$`, string-literal `'$1'`.
+  - `AsyncSyncBridge(max_workers, name)` — bounded
+    `ThreadPoolExecutor` + cancel-aware `to_thread_with_cancel`.
+    Redshift / Snowflake / BigQuery drivers share one
+    implementation rather than three drifting copies.
+  - `@_observed(driver_type=...)` decorator — auto-emits OTel
+    `datasource.driver.query.duration` (histogram) +
+    `datasource.driver.error` (counter) on every wrapped method.
+- `AsyncpgDriver` (shard 10) — covers POSTGRES / YUGABYTE /
+  AGENT_INTERNAL. server-side cursor streaming via
+  `conn.cursor()` inside `conn.transaction()`. AGENT_INTERNAL
+  borrows Hub's L3 pool via `external_pool=`. cancellation uses
+  `Connection.cancel()` (NOT `terminate()`) so the connection
+  returns to the pool clean.
+- `RedshiftDriver` (shard 11) — covers REDSHIFT via
+  `redshift-connector` (AWS's official driver; `asyncpg` against
+  Redshift's pg-protocol quirks never completed in production).
+  bounded connection cache (`connection_cache_size`) amortises the
+  ~1-3s TLS+auth handshake. `weakref.finalize` registers GC-time
+  cache drain for pod-crash mitigation. cancellation uses
+  `Connection.close()` wrapped in `asyncio.wait_for(_, 5.0)` (the
+  lib has no `cancel()` API; closing the connection is the only
+  in-flight-abort primitive). live integration test against the
+  `central-reporting` warehouse is CI-required.
+- `SnowflakeDriver` + `BigQueryDriver` (shard 12) — stub
+  implementations. every abstract method raises
+  `NotImplementedError` with a roadmap-pointing message; module
+  docstrings codify the future implementation shape so the next
+  contributor reuses `AsyncSyncBridge` / `_with_cancellation` /
+  `_translate_placeholders` instead of reinventing.
+
+### Configuration layer (shards 07–08)
+
+- `threetears.datasources.config.DatasourceConfig`: agent.yaml-facing
+  config. carries `name`, `access_mode`, `schemas`, and a nested
+  `connection_config: ConnectionConfig` field.
+- `threetears.datasources.config.ConnectionConfig`: discriminated
+  union (Pydantic `Annotated[Union[...], Field(discriminator=
+  "datasource_type")]`) routing to per-backend members:
+  `PostgresConnectionConfig`, `YugabyteConnectionConfig`,
+  `RedshiftConnectionConfig`, `SnowflakeConnectionConfig`,
+  `BigQueryConnectionConfig`, `AgentInternalConnectionConfig`.
+- Each member declares pool / executor / timeout knobs as Pydantic
+  fields with documented defaults. The enforcement test
+  `tests/enforcement/test_no_hardcoded_pool_params.py` fails the
+  build on any concrete driver that inlines a banned-kwarg literal
+  (`min_size`, `max_size`, `command_timeout`, `connection_cache_size`,
+  `executor_max_workers`, ...).
+- Passwords pass as env-var NAMES (`password_env: str`), NEVER
+  resolved values. `resolve_password() -> SecretStr` is the only
+  way to read the secret; drivers unwrap `.get_secret_value()`
+  at the last moment when handing to the backend lib. Exception
+  sanitization (`raise X from None`) breaks the cause chain so
+  backend errors don't surface the password.
+
+### Entity + collection + namespace layer (shard 07)
+
+- `threetears.datasources.entities` — `DataSourceEntity`,
+  `DataSourceTableEntity`, `DataSourceColumnEntity`,
+  `DataSourceRelationEntity`, `TableTemplateEntity` + the
+  `DataSourceType`, `DataSourceAccessMode`, `DataSourceStatus`
+  enums. All entities subclass `threetears.core.entities.base.BaseEntity`
+  and preserve the composite-PK / single-PK shape from their
+  Hub origins byte-for-byte.
+- `threetears.datasources.collections` — `DataSourceCollection`
+  (`SchemaBackedCollection` subclass), `DataSourceTableCollection`,
+  `DataSourceColumnCollection`, `DataSourceRelationCollection`,
+  `TableTemplateCollection`. `get_by_natural_key(...)` on the
+  table + column collections supports the introspector's "insert
+  vs update" decision. `DataSourceTableCollection` carries
+  `column_hash` natively (the Tier-2 probe digest).
+- `threetears.datasources.namespace` — `DATASOURCE_NAMESPACE_TYPE`,
+  `datasource_namespace_id`, `datasource_namespace_name` helpers.
+
+### Introspection helpers (shard 02 + 03, lifted from Hub)
+
+- `threetears.datasources.introspection.compute_column_hash(cols) -> str`:
+  Python-side cross-language Tier-2 hash. byte-identical to the
+  driver-side SQL `MD5(STRING_AGG(column_name || ':' || data_type
+  || ':' || COALESCE(is_nullable, ''), ',' ORDER BY ordinal_position))`.
+- `IntrospectionDiff` (frozen dataclass) — carries work lists
+  (`tables_to_introspect`, `tables_to_delete`) + summary counts
+  (`tables_checked`, `tables_unchanged`, `tables_changed`,
+  `tables_added`, `tables_removed`, `columns_*`, `elapsed_ms`).
+  `has_changes` property short-circuits the orchestrator when
+  there's no work to do.
+- `compute_introspection_diff(warehouse_hashes, stored_hashes)`:
+  pure function. classifies every key into the right work list +
+  counter bucket. null stored hashes are forced re-introspect
+  (matches the migration-backfill sentinel semantics).
+
+### Companion 3tears-core promotion (shard 07)
+
+- `threetears.core.utils.pg_pool_kwargs` — promoted from Hub. the
+  shared `asyncpg.create_pool` kwargs helper, DSN redactor, and
+  startup-timeout wrapper. previously lived in Hub's
+  `aibots/hub/common/pg_pool.py`; shard 15 deletes the Hub copy
+  entirely. consumers import directly from the core helper.
+
+### Out of scope (intentionally, for 0.1.0)
+
+- Hub admin API DTOs (`DataSourceCreateRequest`, `DataSourceResponse`,
+  etc.) — those are Hub-API contracts, not framework primitives;
+  they stay in Hub as `aibots/hub/datasources/hub_api.py`.
+- Per-table ACL via the `datasource_table` namespace — already
+  lives in Hub's template routes; separate concern.
+- Snowflake + BigQuery concrete driver implementations (stubs only
+  today per shard 12 — see Unreleased section).
+
+### Migration notes
+
+`3tears-datasources` is a brand-new package; no prior version exists.
+Hub + agent-SDK consumers flip imports from the old Hub paths to
+`threetears.datasources.*` in the same migration PR (shards 07 + 08).
+No backward-compat shims are provided.
 
 ### Added
 
