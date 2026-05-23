@@ -139,3 +139,11 @@ packages/agent/workspace/tests/unit/tools/test_workspace_history.py:66:_FakeVers
 packages/agent/workspace/tests/unit/tools/test_workspace_list.py:34:_FakeDiscoveryClient
 # rationale: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
 packages/agent/workspace/tests/unit/tools/test_workspace_use.py:35:_FakeCollection
+
+# agent-skills shard-02 agent-tools unit tests
+# rationale: AgentSkillCollection subset for the seven tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
+packages/agent/skills/tests/unit/test_tools_factories.py:50:_FakeSkillsCollection
+# rationale: AgentSkillInvocationCollection subset for skill_invoke unit coverage; the tools call only create/save_entity/record so the cache/persistence methods on the production class are out of scope
+packages/agent/skills/tests/unit/test_tools_factories.py:141:_FakeInvocationsCollection
+# rationale: in-memory SkillRegistryClient implementation; the production protocol is the SkillRegistryClient defined in tools.py and the fake declares parity-with via the marker on the class, but the strict walker also requires this entry to satisfy the cross-file Protocol lookup
+packages/agent/skills/tests/unit/test_tools_factories.py:169:_FakeRegistry

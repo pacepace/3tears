@@ -21,6 +21,8 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "langchain-core",
+    "pydantic",
     "uuid-utils",
 ]
 

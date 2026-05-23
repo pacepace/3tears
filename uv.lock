@@ -158,12 +158,16 @@ version = "0.9.0"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
     { name = "uuid-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
     { name = "uuid-utils" },
 ]
 

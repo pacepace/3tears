@@ -1,11 +1,13 @@
 """Agent-skills package -- procedural memory for 3tears agents.
 
-This shard exposes only the schema + Collection layer. Agent tools
-(``skill_create`` / ``skill_list`` / ``skill_get`` / ``skill_update``
-/ ``skill_delete`` / ``skill_invoke`` / ``skill_introspect``) land in
-shard 02; the per-turn composition function (``compose_turn_context``)
-lands in shard 03. The public surface here is the entity / collection
-/ migration registration triad.
+Shard 01 landed the schema + Collection layer. Shard 02 (this release)
+adds the seven agent tools (``skill_create`` / ``skill_list`` /
+``skill_get`` / ``skill_update`` / ``skill_delete`` / ``skill_invoke``
+/ ``skill_introspect``). Shard 03 will add the per-turn composition
+function (``compose_turn_context``). The public surface here re-exports
+the entity / collection / migration registration triad alongside the
+tool loader factories + their Pydantic input schemas + the
+``SkillRegistryClient`` Protocol the consumer implements.
 
 Version is sourced from the installed package metadata so a future
 release that bumps ``pyproject.toml`` without touching this file
@@ -29,6 +31,28 @@ from threetears.agent.skills.entities import (
     AgentSkillInvocationEntity,
 )
 from threetears.agent.skills.migrations import register
+from threetears.agent.skills.tools import (
+    ActiveSkillProbe,
+    ActiveSkillSetter,
+    ConversationIdResolver,
+    SkillCreateInput,
+    SkillDeleteInput,
+    SkillEligibleTool,
+    SkillGetInput,
+    SkillIntrospectInput,
+    SkillInvokeInput,
+    SkillListInput,
+    SkillRegistryClient,
+    SkillToolIntrospect,
+    SkillUpdateInput,
+    load_skill_create_tool,
+    load_skill_delete_tool,
+    load_skill_get_tool,
+    load_skill_introspect_tool,
+    load_skill_invoke_tool,
+    load_skill_list_tool,
+    load_skill_update_tool,
+)
 from threetears.agent.skills.types import (
     InvocationSource,
     OutcomeSource,
@@ -38,14 +62,34 @@ from threetears.agent.skills.types import (
 )
 
 __all__ = [
+    "ActiveSkillProbe",
+    "ActiveSkillSetter",
     "AgentSkillCollection",
     "AgentSkillEntity",
     "AgentSkillInvocationCollection",
     "AgentSkillInvocationEntity",
+    "ConversationIdResolver",
     "InvocationSource",
     "OutcomeSource",
     "PromptMode",
+    "SkillCreateInput",
+    "SkillDeleteInput",
+    "SkillEligibleTool",
+    "SkillGetInput",
+    "SkillIntrospectInput",
+    "SkillInvokeInput",
+    "SkillListInput",
     "SkillOutcome",
+    "SkillRegistryClient",
     "SkillSource",
+    "SkillToolIntrospect",
+    "SkillUpdateInput",
+    "load_skill_create_tool",
+    "load_skill_delete_tool",
+    "load_skill_get_tool",
+    "load_skill_introspect_tool",
+    "load_skill_invoke_tool",
+    "load_skill_list_tool",
+    "load_skill_update_tool",
     "register",
 ]
