@@ -239,6 +239,84 @@ class TestSkillRoundTrip:
         finally:
             await pool.close()
 
+    async def test_count_for_user_honours_tag_and_query_filters(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """``count_for_user`` filtered counts match ``list_for_user`` lengths.
+
+        The cap-check call (no filters) sees every row; a tag-filtered
+        or FTS-query-filtered count must match exactly the set
+        ``list_for_user`` returns under the same predicates so a
+        paginated ``total_count`` never overstates.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            coll = _build_skill_collection(pool)
+            agent_id = _new_uuid()
+            user_id = _new_uuid()
+            now = datetime.now(UTC)
+
+            # Two "ops"-tagged skills, one with a "terraform" body token;
+            # one untagged skill with an unrelated body.
+            for name, body, tags in [
+                ("deploy", "run terraform apply against prod", ["ops"]),
+                ("rollback", "revert the last release safely", ["ops"]),
+                ("notes", "generic personal scratchpad", []),
+            ]:
+                await coll.save_entity(
+                    coll.create(
+                        {
+                            "agent_id": agent_id,
+                            "skill_id": _new_uuid(),
+                            "user_id": user_id,
+                            "name": name,
+                            "summary": "s",
+                            "body": body,
+                            "prompt_mode": "additive",
+                            "tags": tags,
+                            "date_created": now,
+                            "date_updated": now,
+                        },
+                    ),
+                )
+
+            # Unfiltered cap-check semantics unchanged: all three rows.
+            assert await coll.count_for_user(agent_id, user_id) == 3
+
+            # Tag filter: only the two "ops"-tagged rows.
+            tag_count = await coll.count_for_user(
+                agent_id,
+                user_id,
+                tag_filter=["ops"],
+            )
+            tag_rows = await coll.list_for_user(
+                agent_id,
+                user_id,
+                tag_filter=["ops"],
+                limit=100,
+            )
+            assert tag_count == 2
+            assert tag_count == len(tag_rows)
+
+            # FTS query: only the row whose body mentions terraform.
+            query_count = await coll.count_for_user(
+                agent_id,
+                user_id,
+                query="terraform",
+            )
+            query_rows = await coll.list_for_user(
+                agent_id,
+                user_id,
+                query="terraform",
+                limit=100,
+            )
+            assert query_count == 1
+            assert query_count == len(query_rows)
+        finally:
+            await pool.close()
+
 
 class TestInvocationRoundTrip:
     """Invocation Collection: composite-pk save / get + record + set_outcome."""
@@ -425,5 +503,101 @@ class TestInvocationRoundTrip:
 
             rows = await inv_coll.list_for_skill(agent_id, skill_id, limit=10)
             assert [row.invocation_id for row in rows] == [third, second, first]
+        finally:
+            await pool.close()
+
+    async def test_count_for_skill_honours_outcome_filter(
+        self,
+        pg_schema: tuple[str, str],
+    ) -> None:
+        """``count_for_skill`` counts the full set independent of page limit.
+
+        Seeds more invocations than a page would hold and asserts the
+        count equals the total (not the page size), and that the
+        ``outcome_filter`` predicate matches ``list_for_skill``.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            skill_coll = _build_skill_collection(pool)
+            inv_coll = _build_invocation_collection(pool)
+            agent_id = _new_uuid()
+            user_id = _new_uuid()
+            conv_id = _new_uuid()
+            skill_id = _new_uuid()
+            now = datetime.now(UTC)
+
+            await skill_coll.save_entity(
+                skill_coll.create(
+                    {
+                        "agent_id": agent_id,
+                        "skill_id": skill_id,
+                        "user_id": user_id,
+                        "name": "x",
+                        "summary": "x",
+                        "body": "x",
+                        "prompt_mode": "additive",
+                        "date_created": now,
+                        "date_updated": now,
+                    },
+                ),
+            )
+
+            # 7 invocations: 3 success, 2 failure, 2 unclassified (NULL).
+            outcomes: list[str | None] = [
+                "success",
+                "success",
+                "success",
+                "failure",
+                "failure",
+                None,
+                None,
+            ]
+            for outcome in outcomes:
+                inv_id = _new_uuid()
+                await inv_coll.record(
+                    agent_id,
+                    inv_coll.create(
+                        {
+                            "agent_id": agent_id,
+                            "invocation_id": inv_id,
+                            "skill_id": skill_id,
+                            "user_id": user_id,
+                            "conversation_id": conv_id,
+                            "invocation_source": "invoke",
+                            "invoked_at": now,
+                            "outcome": outcome,
+                            "outcome_source": "agent_marker" if outcome else None,
+                        },
+                    ),
+                )
+
+            # total_count must reflect the full set, not the page size:
+            # request a page smaller than the total and confirm the count
+            # is still the true total.
+            page = await inv_coll.list_for_skill(agent_id, skill_id, limit=2)
+            assert len(page) == 2
+            all_count = await inv_coll.count_for_skill(agent_id, skill_id)
+            assert all_count == 7
+            assert all_count != len(page)
+
+            assert (
+                await inv_coll.count_for_skill(
+                    agent_id,
+                    skill_id,
+                    outcome_filter="success",
+                )
+                == 3
+            )
+            assert (
+                await inv_coll.count_for_skill(
+                    agent_id,
+                    skill_id,
+                    outcome_filter="failure",
+                )
+                == 2
+            )
+            # "unknown" (NULL) is all minus the classified counts.
+            assert all_count - 3 - 2 == 2
         finally:
             await pool.close()

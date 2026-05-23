@@ -476,11 +476,25 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         user_id: UUID,
         *,
         enabled_only: bool = True,
+        tag_filter: Sequence[str] | None = None,
+        query: str | None = None,
     ) -> int:
-        """Return the total skill count for a user.
+        """Return the skill count for a user, honouring the same filters as ``list_for_user``.
 
-        Used by ``skill_list`` to populate ``total_count`` for the
-        paginated UI.
+        Used for two purposes:
+
+        1. The per-user prose-skill cap check (``skill_create`` /
+           ``POST /skills``) -- called with no ``tag_filter`` / ``query``
+           so it returns the unfiltered total the cap is defined against.
+        2. ``total_count`` for a paginated ``skill_list`` /
+           ``GET /skills``. When the list path applies a ``tag_filter``
+           or FTS ``query``, the same predicates MUST be threaded here or
+           ``total_count`` overstates the filtered result set.
+
+        The ``tag_filter`` (``tags && filter`` overlap) and ``query``
+        (``search_vector @@ websearch_to_tsquery``) predicates mirror
+        :meth:`list_for_user` byte-for-byte so the count never drifts
+        from what the list actually returns.
 
         :param agent_id: partition column
         :ptype agent_id: UUID
@@ -488,6 +502,12 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         :ptype user_id: UUID
         :param enabled_only: when ``True`` (default) hide disabled skills
         :ptype enabled_only: bool
+        :param tag_filter: optional tag-overlap filter (matches
+            :meth:`list_for_user`); ``None`` counts every tag
+        :ptype tag_filter: Sequence[str] | None
+        :param query: optional FTS query string (matches
+            :meth:`list_for_user`); ``None`` skips the FTS predicate
+        :ptype query: str | None
         :return: total matching row count
         :rtype: int
         """
@@ -495,8 +515,17 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             return 0
         conditions = ["agent_id = $1", "user_id = $2"]
         params: list[Any] = [agent_id, user_id]
+        param_idx = 3
         if enabled_only:
             conditions.append("enabled = true")
+        if tag_filter:
+            conditions.append(f"tags && ${param_idx}")
+            params.append(list(tag_filter))
+            param_idx += 1
+        if query is not None and query.strip():
+            conditions.append(f"search_vector @@ websearch_to_tsquery('english', ${param_idx})")
+            params.append(query)
+            param_idx += 1
         # cache-bypass: aggregate COUNT(*) is not primary-key
         # addressable; L1 row cache cannot serve.
         where_clause = " AND ".join(conditions)
@@ -763,6 +792,54 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         )
         rows = await self.l3_pool.fetch(sql, *params)
         return [AgentSkillInvocationEntity(dict(row), is_new=False, collection=self) for row in rows]
+
+    async def count_for_skill(
+        self,
+        agent_id: UUID,
+        skill_id: UUID,
+        *,
+        outcome_filter: SkillOutcome | None = None,
+    ) -> int:
+        """Return the total invocation count for a skill, honouring ``outcome_filter``.
+
+        Counterpart to :meth:`list_for_skill`: applies the SAME
+        ``outcome_filter`` predicate so a paginated consumer can report
+        an accurate ``total_count`` independent of the page size. With
+        ``outcome_filter=None`` every invocation row (success, failure,
+        and un-classified) is counted; a concrete ``'success'`` /
+        ``'failure'`` filters to rows with that outcome.
+
+        ``outcome_filter`` here matches :meth:`list_for_skill`'s
+        ``SkillOutcome`` domain (``'success'`` | ``'failure'``).
+        "Unknown" (NULL outcome) is not a ``SkillOutcome`` value, so a
+        consumer that wants the NULL-row count computes it as
+        ``count_for_skill(...) - <success> - <failure>`` (or post-filters
+        the list); this method does not encode an "unknown" predicate so
+        it stays a faithful counterpart of ``list_for_skill``.
+
+        :param agent_id: partition column
+        :ptype agent_id: UUID
+        :param skill_id: skill whose invocations to count
+        :ptype skill_id: UUID
+        :param outcome_filter: optional outcome filter; ``None`` counts
+            all rows
+        :ptype outcome_filter: SkillOutcome | None
+        :return: total matching invocation count
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+        conditions = ["agent_id = $1", "skill_id = $2"]
+        params: list[Any] = [agent_id, skill_id]
+        if outcome_filter is not None:
+            conditions.append("outcome = $3")
+            params.append(outcome_filter)
+        # cache-bypass: aggregate COUNT(*) is not primary-key
+        # addressable; L1 row cache cannot serve.
+        where_clause = " AND ".join(conditions)
+        sql = f"SELECT COUNT(*) FROM agent_skill_invocations WHERE {where_clause}"
+        value = await self.l3_pool.fetchval(sql, *params)
+        return int(value or 0)
 
     async def list_for_conversation(
         self,

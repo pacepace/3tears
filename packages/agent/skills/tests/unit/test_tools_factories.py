@@ -127,14 +127,26 @@ class _FakeSkillsCollection:
         user_id: UUID,
         *,
         enabled_only: bool = True,
+        tag_filter: Any = None,
+        query: str | None = None,
     ) -> int:
-        return sum(
-            1
-            for row in self.rows.values()
-            if row["agent_id"] == agent_id
-            and row["user_id"] == user_id
-            and (not enabled_only or row.get("enabled", True))
-        )
+        needle = (query or "").lower().strip() if query else None
+        count = 0
+        for row in self.rows.values():
+            if row["agent_id"] != agent_id or row["user_id"] != user_id:
+                continue
+            if enabled_only and not row.get("enabled", True):
+                continue
+            if tag_filter:
+                row_tags = list(row.get("tags") or [])
+                if not any(t in row_tags for t in tag_filter):
+                    continue
+            if needle:
+                hay = f"{row.get('name', '')} {row.get('summary', '')} {row.get('body', '') or ''}".lower()
+                if needle not in hay:
+                    continue
+            count += 1
+        return count
 
 
 # parity-with: threetears.agent.skills.collections.AgentSkillInvocationCollection
