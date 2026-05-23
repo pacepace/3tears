@@ -33,6 +33,12 @@ dev-dependencies = [
     "slack-sdk>=3.41",
     "aiohttp>=3.9",
     "discord.py>=2.7",
+    # fastapi + httpx are required by the channels webhook receiver tests
+    # (shard 06): the receiver mounts ``add_api_route`` onto a FastAPI
+    # app and the tests drive it via ``httpx.AsyncClient`` /
+    # ``starlette.testclient.TestClient`` against a real route.
+    "fastapi>=0.110",
+    "httpx>=0.27",
     # testcontainers used by the migration runner integration tests to
     # exercise real Postgres (rollback semantics cannot be verified
     # against the in-memory FakeDataStore).

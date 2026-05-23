@@ -16,6 +16,15 @@ dependencies = [
 slack = ["slack-bolt>=1.28", "slack-sdk>=3.41", "aiohttp>=3.9"]
 discord = ["discord.py>=2.7"]
 websocket = ["starlette>=0.36"]
+# webhook receiver depends on:
+#   * fastapi -- the route-mount target (consumers register the
+#     receiver on their FastAPI app via ``add_api_route``)
+#   * 3tears-agent-wake -- ``webhook_receive`` is the verify+rate-limit+
+#     dispatch entry point the receiver delegates to. This creates a
+#     one-direction edge: channels -> agent-wake -> conversations +
+#     agent-skills. agent-wake does NOT depend on channels (the wake
+#     adapter is a function the channels-side HTTP shim calls into).
+webhook = ["fastapi>=0.110", "3tears-agent-wake>=0.9.0"]
 
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
@@ -25,3 +34,4 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears-observe = { workspace = true }
+3tears-agent-wake = { workspace = true }

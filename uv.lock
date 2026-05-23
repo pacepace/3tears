@@ -34,7 +34,9 @@ dev = [
     { name = "anthropic", specifier = ">=0.94.0" },
     { name = "discord-py", specifier = ">=2.7" },
     { name = "duckdb", specifier = ">=1.0" },
+    { name = "fastapi", specifier = ">=0.110" },
     { name = "freezegun", specifier = ">=1.5" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-anthropic", specifier = ">=1.4" },
     { name = "langchain-openai", specifier = ">=1.1" },
     { name = "langchain-voyageai", specifier = ">=0.3" },
@@ -339,20 +341,26 @@ slack = [
     { name = "slack-bolt" },
     { name = "slack-sdk" },
 ]
+webhook = [
+    { name = "3tears-agent-wake" },
+    { name = "fastapi" },
+]
 websocket = [
     { name = "starlette" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears-agent-wake", marker = "extra == 'webhook'", editable = "packages/agent/wake" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = ">=3.9" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7" },
+    { name = "fastapi", marker = "extra == 'webhook'", specifier = ">=0.110" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = ">=1.28" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.41" },
     { name = "starlette", marker = "extra == 'websocket'", specifier = ">=0.36" },
 ]
-provides-extras = ["slack", "discord", "websocket"]
+provides-extras = ["slack", "discord", "websocket", "webhook"]
 
 [[package]]
 name = "3tears-conversations"
@@ -1080,6 +1088,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
+]
+
+[[package]]
+name = "fastapi"
+version = "0.136.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5d/45/c130091c2dfa061bbfe3150f2a5091ef1adf149f2a8d2ae769ecaf6e99a2/fastapi-0.136.1.tar.gz", hash = "sha256:7af665ad7acfa0a3baf8983d393b6b471b9da10ede59c60045f49fbc89a0fa7f", size = 397448, upload-time = "2026-04-23T16:49:44.046Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5a/ff/2e4eca3ade2c22fe1dea7043b8ee9dabe47753349eb1b56a202de8af6349/fastapi-0.136.1-py3-none-any.whl", hash = "sha256:a6e9d7eeada96c93a4d69cb03836b44fa34e2854accb7244a1ece36cd4781c3f", size = 117683, upload-time = "2026-04-23T16:49:42.437Z" },
 ]
 
 [[package]]
