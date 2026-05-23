@@ -149,22 +149,29 @@ FireSource = Literal["scheduled_tick", "webhook"]
 class WakeTrigger:
     """Immutable envelope describing a single wake fire opportunity.
 
-    Constructed by the tick engine after a schedule is claimed and
-    handed to the consumer-supplied ``dispatch_callback`` so the
-    handler (shard 03) has every field it needs to materialise the
-    fire without re-reading the schedule row. Frozen dataclass so the
+    Constructed by the tick engine after a schedule is claimed (and by
+    the webhook receiver in shard 04 for inbound HTTP fires) and handed
+    to the consumer-supplied ``dispatch_callback`` so the handler
+    (shard 03) has every field it needs to materialise the fire
+    without re-reading the schedule row. Frozen dataclass so the
     callback cannot accidentally mutate fields the platform owns.
 
     Fields mirror the wake schedule row plus the tick-side decisions
     (``fire_source``, ``fired_at``). The handler decides what to do
     with the fire; the platform decides when it fires.
 
+    ``schedule_id`` is ``None`` for webhook fires (no source schedule
+    -- the originator is a :class:`WebhookSubscriptionEntity` row
+    keyed off elsewhere); scheduled fires always carry the source
+    schedule id. The dispatch flow treats ``None`` as "no chain to
+    resolve" and "no per-schedule logging key".
+
     ``agent_id`` is carried so :func:`dispatch_wake` can resolve the
     attached skill (composite ``(agent_id, skill_id)`` PK on
     ``agent_skills``) without re-fetching the schedule row.
     """
 
-    schedule_id: UUID
+    schedule_id: UUID | None
     user_id: UUID
     agent_id: UUID
     conversation_id: UUID

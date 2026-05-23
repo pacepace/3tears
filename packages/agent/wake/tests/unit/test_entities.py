@@ -282,14 +282,19 @@ class TestWakeFireEntity:
 class _FakeEncryptionService:
     """Minimal fake EncryptionService for the decrypt_secret test.
 
-    Satisfies the :class:`EncryptionService` Protocol: ``decrypt(bytes)
-    -> str``. ``@runtime_checkable`` on the production protocol lets
+    Satisfies the :class:`EncryptionService` Protocol:
+    ``encrypt(bytes) -> bytes`` + ``decrypt(bytes) -> str``.
+    ``@runtime_checkable`` on the production protocol lets
     ``isinstance(_FakeEncryptionService(...), EncryptionService)`` pass
     without inheritance.
     """
 
     def __init__(self, secret: str) -> None:
         self._secret = secret
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        """Return the plaintext unchanged (test stand-in, not real crypto)."""
+        return bytes(plaintext)
 
     def decrypt(self, ciphertext: bytes) -> str:
         """Return the canned plaintext regardless of input."""

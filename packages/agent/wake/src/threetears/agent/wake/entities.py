@@ -56,15 +56,32 @@ class EncryptionService(Protocol):
     The 3tears platform does NOT ship a canonical encryption service
     (key management is consumer-specific: metallm has
     ``src.services.encryption`` wrapping Fernet, aibots will have its
-    own, etc.). The Protocol declares only the surface
-    :meth:`WebhookSubscriptionEntity.decrypt_secret` calls -- callers
-    can satisfy it with any object exposing ``decrypt(bytes) -> str |
-    bytes``.
+    own, etc.). The Protocol declares the two surfaces the agent-tools
+    layer uses: :meth:`encrypt` (called by
+    ``webhook_subscription_create`` / ``rotate_secret`` in shard 04 to
+    encrypt newly-minted HMAC secrets) and :meth:`decrypt` (called by
+    :meth:`WebhookSubscriptionEntity.decrypt_secret` at receive time).
 
     ``@runtime_checkable`` is set so an ``isinstance(obj,
     EncryptionService)`` check at the agent-tools layer can confirm
     structural conformance without a hard ABC dependency.
     """
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        """Encrypt ``plaintext`` and return ciphertext bytes.
+
+        Used by the webhook-subscription tools (shard 04) to seal
+        newly-minted HMAC secrets before persistence. The platform
+        does NOT decrypt them again until the webhook receiver fires
+        :meth:`WebhookSubscriptionEntity.decrypt_secret`.
+
+        :param plaintext: secret bytes (typically a hex-encoded
+            ``secrets.token_hex(N)`` payload)
+        :ptype plaintext: bytes
+        :return: ciphertext bytes (Fernet or equivalent)
+        :rtype: bytes
+        """
+        ...
 
     def decrypt(self, ciphertext: bytes) -> str | bytes:
         """Decrypt ``ciphertext`` and return the plaintext.

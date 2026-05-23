@@ -32,6 +32,16 @@ dependencies = [
     # any scheduler they choose; the platform does not own APScheduler
     # integration.
     "apscheduler>=3.10",
+    # LangChain BaseTool is the surface every factory returns (mirrors
+    # ``3tears-agent-skills``'s tools layer). Pydantic is the input
+    # schema toolkit. Both are stable, widely-installed wheels.
+    "langchain-core",
+    "pydantic>=2",
+    # Jinja2's SandboxedEnvironment renders the webhook payload
+    # template (shard 04's ``webhook_subscription_create`` validation
+    # path + ``webhook_receive``'s render). Bounded payload + sandbox
+    # mean the dep is opt-in for safety, not power-tool risk.
+    "jinja2>=3",
 ]
 
 [project.urls]

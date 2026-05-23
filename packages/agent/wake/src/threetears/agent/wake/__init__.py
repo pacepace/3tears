@@ -51,6 +51,26 @@ from threetears.agent.wake.entities import (
 )
 from threetears.agent.wake.migrations import register
 from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
+from threetears.agent.wake.tools import (
+    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+    WakeRegistryClient,
+    load_wake_schedule_create_tool,
+    load_wake_schedule_delete_tool,
+    load_wake_schedule_list_tool,
+    load_wake_schedule_pause_tool,
+    load_wake_schedule_resume_tool,
+    load_wake_schedule_update_tool,
+    load_wake_yield_tool,
+    load_webhook_subscription_create_tool,
+    load_webhook_subscription_delete_tool,
+    load_webhook_subscription_list_tool,
+    load_webhook_subscription_pause_tool,
+    load_webhook_subscription_resume_tool,
+    load_webhook_subscription_rotate_secret_tool,
+    load_webhook_subscription_update_tool,
+    validate_context_from_chain,
+    validate_schedule_config,
+)
 from threetears.agent.wake.types import (
     DeliveryAdapter,
     DeliveryTarget,
@@ -68,8 +88,13 @@ from threetears.agent.wake.types import (
     WakeTrigger,
     WebhookSubscriptionStatus,
 )
+from threetears.agent.wake.webhook_adapter import (
+    WebhookReceiveResult,
+    webhook_receive,
+)
 
 __all__ = [
+    "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
     "DeliveryAdapter",
     "DeliveryTarget",
     "DispatchCallback",
@@ -87,14 +112,33 @@ __all__ = [
     "WakeDispatchResult",
     "WakeFireCollection",
     "WakeFireEntity",
+    "WakeRegistryClient",
     "WakeScheduleCollection",
     "WakeScheduleEntity",
     "WakeTrigger",
+    "WebhookReceiveResult",
     "WebhookSubscriptionCollection",
     "WebhookSubscriptionEntity",
     "WebhookSubscriptionStatus",
     "detect_silent_prefix",
     "dispatch_wake",
+    "load_wake_schedule_create_tool",
+    "load_wake_schedule_delete_tool",
+    "load_wake_schedule_list_tool",
+    "load_wake_schedule_pause_tool",
+    "load_wake_schedule_resume_tool",
+    "load_wake_schedule_update_tool",
+    "load_wake_yield_tool",
+    "load_webhook_subscription_create_tool",
+    "load_webhook_subscription_delete_tool",
+    "load_webhook_subscription_list_tool",
+    "load_webhook_subscription_pause_tool",
+    "load_webhook_subscription_resume_tool",
+    "load_webhook_subscription_rotate_secret_tool",
+    "load_webhook_subscription_update_tool",
     "register",
+    "validate_context_from_chain",
+    "validate_schedule_config",
     "wake_tick_job",
+    "webhook_receive",
 ]
