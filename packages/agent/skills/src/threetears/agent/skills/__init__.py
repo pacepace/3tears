@@ -38,6 +38,10 @@ from threetears.agent.skills.rendering import (
     compose_turn_context,
     render_skill_body_block,
 )
+from threetears.agent.skills.tables import (
+    agent_skill_invocations_table,
+    agent_skills_table,
+)
 from threetears.agent.skills.tools import (
     ActiveSkillProbe,
     ActiveSkillSetter,
@@ -92,6 +96,8 @@ __all__ = [
     "SkillSource",
     "SkillToolIntrospect",
     "SkillUpdateInput",
+    "agent_skill_invocations_table",
+    "agent_skills_table",
     "compose_turn_context",
     "load_skill_create_tool",
     "load_skill_delete_tool",
