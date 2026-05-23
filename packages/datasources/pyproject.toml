@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-datasources"
+# versioned in lockstep with the rest of the 3tears monorepo (every
+# package tracks the framework git tag). do NOT decouple this number.
+version = "0.9.1"
+description = "datasource entities, collections, namespace helpers, agent-yaml config model + driver abstraction for postgres/redshift/snowflake/bigquery backends"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# depends on 3tears core via a compatible-release range; the whole
+# monorepo bumps in lockstep so any 0.9.x core satisfies this.
+dependencies = [
+    "3tears>=0.9.1,<1.0",
+    "pydantic>=2.0",
+    # asyncpg is the baseline backend lib: postgres / yugabyte /
+    # agent_internal coverage is expected of every 3tears consumer,
+    # so the dependency is non-optional. (shard-10 lifts the lib here
+    # from the previous optional-extras slot; the AsyncpgDriver
+    # imports asyncpg at module top.) the other backend libs
+    # (redshift / snowflake / bigquery) stay behind extras keys.
+    "asyncpg>=0.29",
+]
+
+[project.optional-dependencies]
+# every secondary concrete driver backend lives behind an extras key so
+# Hub/agent consumers that don't use a given backend don't pay the
+# import cost. extras keys are part of the package's public API surface;
+# declare all of them up front even though only redshift + asyncpg-
+# backed (postgres / yugabyte / agent_internal) drivers ship today
+# (snowflake / bigquery drivers are stubs).
+redshift = ["redshift-connector>=2.1"]
+snowflake = ["snowflake-connector-python>=3.0"]
+bigquery = ["google-cloud-bigquery>=3.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.8",
+    "ruff>=0.3",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+Documentation = "https://github.com/pacepace/3tears/tree/develop/packages/datasources"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.datasources"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+# no [tool.pytest.ini_options] block: pytest's rootdir detection picks
+# the closest pyproject with [tool.pytest.ini_options], so a per-package
+# block hides the workspace-level conftest.py and unregisters the
+# canonical ``pytest_plugins = ["threetears.core.testing.fixtures"]``
+# line. inherit from the workspace instead -- the workspace registers
+# the ``integration`` marker + asyncio mode + import-mode.
+#
+# the ``live`` marker (env-gated tests against a real external
+# warehouse; see IMPLEMENTING_DRIVERS.md) is added to the workspace
+# pyproject's marker list in shard 10 alongside the AsyncpgDriver
+# integration tests.
