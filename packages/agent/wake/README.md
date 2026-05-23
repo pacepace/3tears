@@ -38,6 +38,19 @@ legal. The same precedent applies in `packages/agent/tools/`
 (`agent_skill_invocations.conversation_id`). Conversation lifecycle is
 governed by app-level cascade through `ConversationsCollection`.
 
+**Orphan-row implication.** Because there is no DB-level FK, deleting a
+row from `conversations` does NOT automatically remove the wake
+schedules, fires, or webhook subscriptions for that conversation —
+they become orphans (rows whose `conversation_id` no longer resolves).
+The partition-column enforcement walker keeps the application blind to
+orphans (every query is filtered by `conversation_id` so an orphan is
+invisible at the read path), but the rows still occupy storage. This
+is the same trade-off agent-tools and agent-skills make. A future
+cross-package cleanup (a TRIGGER on `conversations`-delete that fans
+out to dependent tables, or a periodic GC job in `ConversationsCollection`)
+would close the gap; that work is intentionally cross-cutting and
+out of scope for this package.
+
 ## Migration registration
 
 ```python
