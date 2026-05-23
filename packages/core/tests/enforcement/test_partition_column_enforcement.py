@@ -68,6 +68,10 @@ _PARTITIONED_TABLES: dict[str, str] = {
     # agent-skills
     "agent_skills": "agent_id",
     "agent_skill_invocations": "agent_id",
+    # agent-wake
+    "agent_wake_schedules": "conversation_id",
+    "wake_fires": "conversation_id",
+    "webhook_subscriptions": "conversation_id",
     # agent-workspace
     "workspaces": "agent_id",
     "workspace_files": "workspace_id",
@@ -99,6 +103,7 @@ _PACKAGE_SRC_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "agent" / "memory" / "src",
     _REPO_ROOT / "packages" / "agent" / "workspace" / "src",
     _REPO_ROOT / "packages" / "agent" / "skills" / "src",
+    _REPO_ROOT / "packages" / "agent" / "wake" / "src",
     _REPO_ROOT / "packages" / "agent" / "acl" / "src",
     _REPO_ROOT / "packages" / "agent" / "audit" / "src",
 ]
