@@ -290,32 +290,62 @@ class TestDatasourceNamePlumbing:
         assert driver.datasource_name == "bq-events"  # type: ignore[attr-defined]
 
 
-class TestImportFailureSurfacing:
-    """when the concrete driver module is genuinely absent, ImportError surfaces.
+class TestRealDriverModulesLoadable:
+    """post-shard-12, every driver module the factory can dispatch to exists.
 
-    shard 10 lands ``AsyncpgDriver``; shards 11 / 12 still owe the
-    redshift / snowflake / bigquery driver modules. for backends with
-    no concrete driver yet, calling :func:`create_driver` (without the
-    test fixture stubbing the import) MUST raise
-    :class:`ModuleNotFoundError`. the factory does NOT swallow it.
+    replaces the prior ``test_missing_concrete_driver_raises_importerror``
+    test, which existed pre-shard-12 to verify that the factory
+    surfaced :class:`ModuleNotFoundError` for not-yet-implemented
+    backends. now all five driver modules (asyncpg / redshift /
+    snowflake-stub / bigquery-stub) ship in tree, so the prior
+    failure mode is structurally impossible to reach. instead we
+    invert the assertion: dispatching against the REAL (unstubbed)
+    modules MUST return a valid :class:`Driver` instance for every
+    backend.
+
+    if a future shard removes a concrete driver module, this test
+    fails fast with :class:`ModuleNotFoundError` -- naming exactly
+    which dispatch arm broke.
     """
 
-    def test_missing_concrete_driver_raises_importerror(
+    def test_every_backend_dispatches_against_real_modules(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # clear any stub the prior tests installed so the factory's
-        # match arm hits the real import.
+        # clear any stub the prior tests installed so each match arm
+        # hits the genuine driver module.
         for module_name, _ in _DRIVER_MODULES:
             monkeypatch.delitem(sys.modules, module_name, raising=False)
-        # snowflake driver hasn't landed yet -- the genuine
-        # ModuleNotFoundError path. swap to a different
-        # not-yet-shipped backend once snowflake_driver.py lands.
-        config = SnowflakeConnectionConfig(
-            datasource_type=DataSourceType.SNOWFLAKE,
-            account="acct",
-            warehouse="wh",
-            user="u",
-            password_env="X",
-        )
-        with pytest.raises(ModuleNotFoundError):
-            create_driver(config)
+        configs: list[Any] = [
+            PostgresConnectionConfig(
+                datasource_type=DataSourceType.POSTGRES,
+                host="localhost",
+                database="x",
+            ),
+            YugabyteConnectionConfig(
+                datasource_type=DataSourceType.YUGABYTE,
+                host="localhost",
+                database="x",
+            ),
+            RedshiftConnectionConfig(
+                datasource_type=DataSourceType.REDSHIFT,
+                host="cluster.region.redshift.amazonaws.com",
+                database="analytics",
+            ),
+            SnowflakeConnectionConfig(
+                datasource_type=DataSourceType.SNOWFLAKE,
+                account="acct",
+                warehouse="wh",
+                user="u",
+                password_env="X",
+            ),
+            BigQueryConnectionConfig(
+                datasource_type=DataSourceType.BIGQUERY,
+                project_id="proj",
+                credentials_json_env="X",
+            ),
+        ]
+        for config in configs:
+            driver = create_driver(config)
+            assert isinstance(driver, Driver), (
+                f"{type(config).__name__} did not dispatch to a Driver instance"
+            )

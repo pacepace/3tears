@@ -300,3 +300,98 @@ async def test_against_real_redshift() -> None:
 The `live` marker is registered in `pyproject.toml`. CI runs unit +
 enforcement; live tests run on demand. The env-var pattern keeps
 secrets out of the repo and out of CI defaults.
+
+## Stub driver patterns (post-shard-12)
+
+The Snowflake + BigQuery drivers ship as **stubs** in
+`datasource-task-12` — every abstract method raises
+`NotImplementedError`. They exist to prove the ABC handles two
+different driver shapes (stateful-pooled DB-API vs stateless
+HTTPS) before the concrete implementations land.
+
+When adding a NEW backend that doesn't have a real implementation
+yet, follow this shape:
+
+### 1. Module docstring is the roadmap
+
+The stub's module-level docstring MUST cover, in this order:
+
+1. **Backend library** — PyPI URL + minimum version + extras key on
+   this package's `pyproject.toml`.
+2. **Connection lifecycle** — pool? client? per-call? what's the
+   shape of the long-lived object?
+3. **Placeholder style** — `%s` / `:N` / `@pN`. Reference
+   `_translate_placeholders` with the target style; never reimplement
+   the regex.
+4. **Cancellation mechanism** — the specific API call. Wire it into
+   `Driver._with_cancellation` (NOT a per-method try/except).
+5. **Sync-to-async bridge** — almost always `AsyncSyncBridge` from
+   `_sync_bridge.py`. The next implementer reads this and knows NOT
+   to instantiate `ThreadPoolExecutor` directly.
+6. **Row-shape pinning** — `TableRow` / `ColumnRow`. `is_nullable`
+   MUST be the raw warehouse string (or document the mapping if
+   the backend reports differently, like BigQuery's
+   `NULLABLE`/`REQUIRED`/`REPEATED` modes).
+7. **`information_schema`-equivalent source** — pg-style view? REST
+   API? document the per-table column-shape hash strategy.
+8. **Pool / executor / timeout knobs** — read from the
+   `ConnectionConfig`. NO inline literals. Enforcement test catches.
+9. **Secret handling** — `SecretStr` resolution at last moment +
+   exception sanitization pattern.
+10. **Observability** — same metric names; same `@_observed`
+    decorator (`driver_type=` matches the backend slug).
+11. **Anything that does NOT transfer** — backend-specific
+    deviations (no `pg_sleep`, no `information_schema`-as-table,
+    statement_timeout semantics, etc).
+12. **CI-required live test** — env-gate pattern; CI fails when
+    the live test can't run rather than silently skipping.
+
+### 2. Stub body shape
+
+```python
+async def list_tables(self, schemas: list[str]) -> list[TableRow]:
+    raise NotImplementedError(
+        f"{type(self).__name__}.list_tables is not yet implemented. "
+        "See module docstring + docs/datasource-task-NN-...md "
+        "for the implementation roadmap."
+    )
+```
+
+The message MUST name the method AND point at the doc/docstring.
+"I'll fix this stub later" silent partial implementations are
+caught by the stub tests' message-pattern assertion.
+
+### 3. `__init__` does real work
+
+The stub `__init__` MUST:
+- accept and validate the corresponding `ConnectionConfig` member
+- accept the `datasource_name: str = "unknown"` kwarg matching the
+  AsyncpgDriver / RedshiftDriver contract
+- store both as private attributes for the future impl
+
+This proves:
+- The config schema (shard 08) is consumable.
+- The factory's dispatch returns a usable object.
+- The `isinstance(driver, Driver)` invariant holds at construction.
+- Type-checking `__init__` catches signature mismatches against
+  the factory call site.
+
+### 4. Stub tests are minimal but they exist
+
+Each stub gets a sibling test file under `tests/unit/`:
+- assert `isinstance(driver, Driver)`
+- assert `driver.__abstractmethods__ == frozenset()`
+- assert each method raises `NotImplementedError` when called
+- assert the error message references the roadmap doc / docstring
+- assert importing the stub module does NOT pull the backend lib
+
+~30 LOC per stub file. The stubs from shard 12
+(`test_snowflake_driver_stub.py`, `test_bigquery_driver_stub.py`)
+are the canonical reference.
+
+### 5. NO backend lib imports in the stub source
+
+Stubs MUST NOT `import snowflake.connector` or `import
+google.cloud.bigquery` or equivalent. They're stubs — they don't
+need the backend lib. The real impl adds the import when it lands.
+The lazy-import contract (`test_lazy_imports.py`) verifies this.
