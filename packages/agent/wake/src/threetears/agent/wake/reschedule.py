@@ -21,13 +21,17 @@ design notes
   ``next_fire_at`` forward into the future. ``'catch_up'`` advances
   ``next_fire_at`` by exactly one increment so subsequent ticks fire
   once per missed interval until caught up.
-- **APScheduler is an optional cron utility.** The ``'cron'`` branch
-  is the only place APScheduler enters; its ``CronTrigger`` is
-  imported lazily inside the branch so the rest of the platform does
-  not pay an import cost for a single schedule_type. Consumers using
-  cron schedules MUST install ``apscheduler`` (declared as an extra
-  on the wake package). The function raises ``RuntimeError`` with a
-  pointer to the install if the import fails.
+- **APScheduler is a cron-only utility.** The ``'cron'`` branch is
+  the only place APScheduler enters; its ``CronTrigger`` is imported
+  lazily inside the branch so non-cron consumers pay no import cost
+  for a single schedule_type. APScheduler is declared as a hard
+  dependency on the wake package (small dep, ``cron`` is part of the
+  public ``ScheduleType`` surface, and an extras-install ceremony for
+  one Literal value is more friction than it is worth) but the lazy
+  import keeps the cost of merely importing this module at zero. The
+  function still raises ``RuntimeError`` with install guidance if the
+  import fails, so consumers running a stripped wheel see a clear
+  message instead of a bare ``ImportError``.
 """
 
 from __future__ import annotations
@@ -300,15 +304,19 @@ def _next_cron(
 
     Config: ``{"expr": str}``. Uses APScheduler's ``CronTrigger`` as a
     pure pure-utility import (NOT as scheduler infrastructure -- the
-    tick body is APScheduler-agnostic). Raises ``RuntimeError`` with
-    install guidance if APScheduler is unavailable.
+    tick body is APScheduler-agnostic). APScheduler is a hard dep on
+    the wake package; the import is lazy here so non-cron consumers
+    pay no import cost. Raises ``RuntimeError`` with install guidance
+    if APScheduler is missing (e.g. stripped wheel).
     """
     try:
         from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
     except ImportError as exc:
         msg = (
             "cron schedule_type requires apscheduler; install it via "
-            "`uv add apscheduler` or pin it as an extra on the wake package"
+            "`uv add apscheduler` (it ships as a hard dep of "
+            "3tears-agent-wake, so this should only happen on a "
+            "stripped wheel)"
         )
         raise RuntimeError(msg) from exc
 

@@ -206,6 +206,44 @@ class TestPerFireFailureIsolation:
         finally:
             await pool.close()
 
+    async def test_non_raising_failed_status_records_error(self, pg_schema: tuple[str, str]) -> None:
+        """A dispatch that *returns* ``status='failed'`` (without raising)
+        still routes its ``error`` string onto the ``wake_fires`` row.
+
+        Pins the Critic-flagged asymmetry: previously, only raised
+        exceptions reached ``finalize_failed``; a callback that captured
+        a non-exceptional failure (rate-limited downstream, no eligible
+        model, etc.) into a ``WakeDispatchResult(status='failed',
+        error='...')`` saw its ``error`` silently discarded by
+        ``finalize_success``.
+        """
+        url, schema = pg_schema
+        pool = await _apply_schema(url, schema)
+        try:
+            now = datetime.now(UTC)
+            _, sched = await _seed_schedule(pool, next_fire_at=now - timedelta(seconds=10))
+
+            async def dispatch(_trigger: WakeTrigger, _fire_id: UUID, _pool: object) -> WakeDispatchResult:
+                return WakeDispatchResult(
+                    status="failed",
+                    error="downstream rate-limited; backing off",
+                    latency_ms=42,
+                )
+
+            await wake_tick_job(pool, None, dispatch)
+
+            assert await _count_fires(pool, sched) == 1
+            row = await pool.fetchrow(
+                "SELECT status, error, latency_ms FROM wake_fires WHERE schedule_id = $1",
+                sched,
+            )
+            assert row is not None
+            assert row["status"] == "failed"
+            assert row["error"] == "downstream rate-limited; backing off"
+            assert row["latency_ms"] == 42
+        finally:
+            await pool.close()
+
 
 class TestMissedFirePolicy:
     """``coalesce`` vs ``catch_up`` advance ``next_fire_at`` differently."""

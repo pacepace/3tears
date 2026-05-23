@@ -15,6 +15,18 @@ design notes
   ``bucket.create(key, value)`` (put-if-absent). The KV bucket's
   per-entry TTL bounds the worst-case orphan-lock window when the
   holder dies between heartbeats.
+- **Bucket-level TTL: first caller wins.** :meth:`NatsClient.kv_bucket`
+  caches buckets by name; the bucket's per-entry TTL is fixed at
+  creation time and applies to every key the bucket stores. Per-key
+  TTL (``msg_ttl`` on :meth:`NatsKvBucket.create`) requires
+  ``AllowMsgTTL=True`` on the underlying JetStream stream and
+  nats-server >= 2.11 -- not enabled by default on the
+  ``scheduler-locks`` bucket, so the bucket-level TTL is the only
+  knob this primitive actually controls. To make the
+  first-caller-wins constraint loud rather than silent, the lock
+  asserts that a subsequent caller's ``ttl`` matches the cached
+  bucket's TTL; a mismatch raises :class:`ValueError`. Callers
+  needing distinct TTLs MUST use distinct ``bucket_name`` values.
 - **Background heartbeat.** A dedicated task refreshes the KV entry
   every ``heartbeat`` seconds so a long-running body stays the
   authoritative holder. ``heartbeat`` must be strictly less than
@@ -108,7 +120,16 @@ async def nats_distributed_lock(
         to bind to the same bucket post-lift.
     :ptype bucket_name: str
     :param ttl: KV entry TTL; bounds the orphan-lock window after a
-        holder dies between heartbeats
+        holder dies between heartbeats. **Bucket-level: the first
+        caller to materialise a given ``bucket_name`` pins the TTL
+        for every key in that bucket**, because
+        :meth:`NatsClient.kv_bucket` caches buckets and JetStream KV
+        does not support per-key TTL without ``AllowMsgTTL`` on the
+        stream (nats-server >= 2.11; not enabled by default on
+        ``scheduler-locks``). Subsequent callers passing a different
+        ``ttl`` against the same ``bucket_name`` raise
+        :class:`ValueError`; use a distinct ``bucket_name`` to vary
+        TTL.
     :ptype ttl: timedelta
     :param heartbeat: KV refresh interval; must be strictly less than
         ``ttl`` or the lock will expire under a live holder
@@ -116,6 +137,7 @@ async def nats_distributed_lock(
     :return: async iterator yielding ``None`` while the lock is held
     :rtype: AsyncIterator[None]
     :raises ValueError: when ``heartbeat >= ttl`` (invalid invariant)
+        or when ``ttl`` does not match the bucket's already-cached TTL
     :raises LockHeld: when the key is already owned by another holder
     :raises KvError: on transport / bucket failures (distinct from
         ``LockHeld``)
@@ -128,6 +150,20 @@ async def nats_distributed_lock(
         raise ValueError(msg)
 
     bucket = await client.kv_bucket(name=bucket_name, ttl=ttl)
+    # JetStream KV bucket TTL is bucket-level + fixed-at-creation. The
+    # client caches buckets by name (first-caller wins), so a second
+    # caller passing a different ``ttl`` would silently inherit the
+    # first caller's TTL and the apparent contract of *this* call
+    # ("lock expires after `ttl` seconds") would be wrong. Make the
+    # mismatch loud instead.
+    if bucket.ttl is not None and bucket.ttl != ttl:
+        msg = (
+            f"nats_distributed_lock: bucket {bucket_name!r} was created "
+            f"with ttl={bucket.ttl}; this call passed ttl={ttl}. KV "
+            f"bucket TTL is bucket-level + fixed at creation -- use a "
+            f"distinct bucket_name to vary TTL."
+        )
+        raise ValueError(msg)
     acquired = await bucket.create(key=key, value=b"1")
     if acquired is None:
         raise LockHeld(f"lock already held: {key}")

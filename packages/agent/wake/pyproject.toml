@@ -24,9 +24,13 @@ dependencies = [
     "3tears-agent-skills",
     "uuid-utils",
     # APScheduler is used as a pure utility ONLY by the ``cron`` schedule
-    # branch in ``_compute_next_fire_at`` (lazy local import). Consumers
-    # are still free to drive the tick body with any scheduler they
-    # choose; the platform does not own APScheduler integration.
+    # branch in ``_compute_next_fire_at`` (lazy local import inside that
+    # one branch -- non-cron consumers pay zero import cost). Hard dep
+    # rather than an extra so the public ``ScheduleType`` Literal
+    # (which includes ``'cron'``) Just Works without extras-install
+    # ceremony. Consumers are still free to drive the tick body with
+    # any scheduler they choose; the platform does not own APScheduler
+    # integration.
     "apscheduler>=3.10",
 ]
 

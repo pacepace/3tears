@@ -398,7 +398,7 @@ Pure. No DB, no I/O. Branches on `schedule_type`:
    - `daily_at 09:00 America/Los_Angeles` across fall-back day → advances by 25h not 24h.
    - zoneinfo handles these naturally; the test verifies.
 
-10. **`cron` branch imports APScheduler locally.** The function does `from apscheduler.triggers.cron import CronTrigger` inside the cron branch only. Keeps APScheduler an optional-utility dep, not a platform requirement on `3tears-agent-wake`.
+10. **`cron` branch imports APScheduler locally.** The function does `from apscheduler.triggers.cron import CronTrigger` inside the cron branch only -- non-cron consumers pay zero import cost. APScheduler ships as a hard dep on `3tears-agent-wake` (small dep, `'cron'` is part of the public `ScheduleType` Literal, and an extras-install ceremony for one schedule type is more friction than it is worth). The lazy import keeps the cost of merely importing `reschedule.py` at zero; the hard dep guarantees `cron` Just Works without consumer-side install ceremony.
 
 ---
 

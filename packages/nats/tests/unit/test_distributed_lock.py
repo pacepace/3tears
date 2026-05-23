@@ -299,6 +299,124 @@ async def test_custom_bucket_name_threads_through() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
+    """A second caller against a cached bucket with a different ``ttl``
+    raises ``ValueError`` rather than silently inheriting the first
+    caller's TTL.
+
+    Pins the Critic-flagged footgun: ``NatsClient.kv_bucket`` caches
+    buckets by name and JetStream KV bucket TTL is fixed-at-creation,
+    so passing a different ``ttl`` against an already-materialised
+    bucket would silently use the old TTL. The lock now refuses
+    instead of pretending the new TTL took effect.
+    """
+    fake_kv = _FakeKv()
+
+    class _CachingClient:
+        def __init__(self) -> None:
+            self._cached: NatsKvBucket | None = None
+            self.kv_bucket_calls: list[tuple[str, timedelta | None]] = []
+
+        async def kv_bucket(
+            self,
+            *,
+            name: str,
+            ttl: timedelta | None = None,
+            storage: str = "file",
+            create_if_missing: bool = True,
+            history: int = 1,
+        ) -> NatsKvBucket:
+            del storage, create_if_missing, history
+            self.kv_bucket_calls.append((name, ttl))
+            # mimic NatsClient.kv_bucket: first-caller's ttl pins the
+            # bucket; subsequent calls ignore the new ttl and return
+            # the cached bucket.
+            if self._cached is None:
+                self._cached = NatsKvBucket(
+                    client=None,  # type: ignore[arg-type]
+                    full_name=f"itest-{name}",
+                    kv=fake_kv,  # type: ignore[arg-type]
+                    ttl=ttl,
+                )
+            return self._cached
+
+    client = _CachingClient()
+
+    # first caller pins ttl=10s on the bucket
+    async with nats_distributed_lock(
+        client,  # type: ignore[arg-type]
+        "first",
+        ttl=timedelta(seconds=10),
+        heartbeat=timedelta(milliseconds=10),
+    ):
+        pass
+
+    # second caller against the same default bucket passes ttl=30s.
+    # the cached bucket still reports ttl=10s; the lock must reject
+    # rather than silently use 10s.
+    with pytest.raises(ValueError, match="bucket"):
+        async with nats_distributed_lock(
+            client,  # type: ignore[arg-type]
+            "second",
+            ttl=timedelta(seconds=30),
+            heartbeat=timedelta(milliseconds=10),
+        ):
+            pass  # pragma: no cover - never enters
+
+
+@pytest.mark.asyncio
+async def test_ttl_match_against_existing_bucket_acquires() -> None:
+    """Identical ``ttl`` against the cached bucket is fine: the check
+    is mismatch-only, not first-time-only."""
+    fake_kv = _FakeKv()
+
+    class _CachingClient:
+        def __init__(self) -> None:
+            self._cached: NatsKvBucket | None = None
+            self.kv_bucket_calls: list[tuple[str, timedelta | None]] = []
+
+        async def kv_bucket(
+            self,
+            *,
+            name: str,
+            ttl: timedelta | None = None,
+            storage: str = "file",
+            create_if_missing: bool = True,
+            history: int = 1,
+        ) -> NatsKvBucket:
+            del storage, create_if_missing, history
+            self.kv_bucket_calls.append((name, ttl))
+            if self._cached is None:
+                self._cached = NatsKvBucket(
+                    client=None,  # type: ignore[arg-type]
+                    full_name=f"itest-{name}",
+                    kv=fake_kv,  # type: ignore[arg-type]
+                    ttl=ttl,
+                )
+            return self._cached
+
+    client = _CachingClient()
+
+    async with nats_distributed_lock(
+        client,  # type: ignore[arg-type]
+        "first",
+        ttl=timedelta(seconds=10),
+        heartbeat=timedelta(milliseconds=10),
+    ):
+        pass
+
+    # same ttl on second call: no raise, lock acquires normally
+    async with nats_distributed_lock(
+        client,  # type: ignore[arg-type]
+        "second",
+        ttl=timedelta(seconds=10),
+        heartbeat=timedelta(milliseconds=10),
+    ):
+        pass
+    assert fake_kv.delete_calls == ["first", "second"]
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_failure_does_not_break_release() -> None:
     """A heartbeat-side broker failure is logged + swallowed; release proceeds."""
     fake_kv = _FakeKv()

@@ -275,6 +275,21 @@ async def _dispatch_one(
         )
         return
 
+    # A dispatch callback may either raise (handled above) OR return
+    # ``WakeDispatchResult(status='failed', error='...')`` without
+    # raising -- e.g. a handler that wants to record a non-exceptional
+    # failure (rate-limited downstream, no eligible model, etc.) with
+    # its own error string. Route that case to ``finalize_failed`` so
+    # the ``error`` field is not silently dropped on the floor.
+    if result.status == "failed":
+        await fires.finalize_failed(
+            schedule.conversation_id,
+            fire_id,
+            error=result.error or "dispatch returned status='failed' without an error string",
+            latency_ms=result.latency_ms,
+        )
+        return
+
     await fires.finalize_success(
         schedule.conversation_id,
         fire_id,
