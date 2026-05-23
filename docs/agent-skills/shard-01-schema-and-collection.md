@@ -29,7 +29,7 @@ Land the data model for procedural memory: an `agent_skills` table (one row per 
 | SK-04 | `agent_skills.search_vector` (tsvector) — trigger-maintained over `name || ' ' || trigger_keywords || ' ' || coalesce(body, '')`, weighted A/B/C respectively. GIN index. **Used by `skill_list` for OPTIONAL query-filter ranking when the caller passes a search string. NOT used for auto-load (auto-load is dropped).** | P0 |
 | SK-05 | Migrations are idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION` for the FTS trigger, `DROP TRIGGER IF EXISTS ... ; CREATE TRIGGER ...`). | P0 |
 | SK-06 | All UUID primary keys are UUIDv7 — enforce via package's own enforcement test pattern. | P0 |
-| SK-07 | After migration, a downstream consumer's alembic `revision --autogenerate --sql` against a fresh DB produces zero ops for both new tables. | P0 |
+| SK-07 | Re-applying the canonical `MigrationRunner` against a fresh DB is a no-op (verified via integration test). 3tears uses its own migration runner, not alembic — the original spec text referencing `alembic --autogenerate` was inherited from metallm's planning docs. | P0 |
 | SK-08 | The `success_count` / `failure_count` columns on `agent_skills` are populated by manual classification (parsing `[SUCCESS]` / `[FAILED]` markers from the agent's response in the consumer's post-LLM hook). **No automatic classifier-tick infrastructure.** | P0 |
 
 ## Schema specification
@@ -185,7 +185,7 @@ Same shape. Composite `_id = (agent_id, invocation_id)`. `primary_key_field = "i
 | Method | Purpose |
 |---|---|
 | `get / save_entity / delete` | `BaseCollection`-provided |
-| `record(invocation)` | Convenience wrapper around `save_entity` |
+| `record(agent_id, invocation)` | Convenience wrapper around `save_entity` (partition column explicit, matching the `BaseCollection` convention) |
 | `list_for_skill(agent_id, skill_id, *, limit=20, offset=0, outcome_filter=None) -> list[AgentSkillInvocationEntity]` | For `skill_history` REST endpoint |
 | `list_for_conversation(agent_id, conversation_id, *, limit=20) -> list[AgentSkillInvocationEntity]` | For "what skills loaded in this conversation" |
 | `set_message_id(agent_id, invocation_ids: Sequence[UUID], message_id: UUID)` | Bulk UPDATE — consumer's loader calls this after the assistant response lands |

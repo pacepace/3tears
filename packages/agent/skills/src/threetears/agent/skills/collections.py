@@ -35,7 +35,6 @@ from threetears.agent.skills.entities import (
     AgentSkillInvocationEntity,
 )
 from threetears.agent.skills.types import (
-    InvocationSource,
     OutcomeSource,
     SkillOutcome,
 )
