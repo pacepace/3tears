@@ -136,6 +136,19 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
     # every partition because the migration runs globally before
     # any per-conversation read path is exercised.
     ("long_desc = LEFT(content, 1000)", "one-time-schema-migration"),
+    # rationale: per-user rate-limit aggregate (PLACEMENT §1.9 +
+    # agent-wake shard-05 OBS-14) MUST sum fires across every
+    # conversation the user owns -- the rule is "100 fires per user
+    # per 24h" total, not per-conversation. Partitioning by
+    # conversation_id here would defeat the cap. The query joins
+    # ``wake_fires`` against both source-tables (``agent_wake_schedules``
+    # and ``webhook_subscriptions``) filtered by ``user_id``; the
+    # source-table joins are intrinsically cross-partition. Same
+    # carve-out shape as the dynamic-scope-clause case above.
+    (
+        "JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id",
+        "per-user-rate-limit-aggregate",
+    ),
 )
 
 

@@ -44,6 +44,13 @@ dependencies = [
     "jinja2>=3",
 ]
 
+[project.optional-dependencies]
+# ``prometheus_client`` is optional at runtime -- the metrics module
+# degrades gracefully to no-op when the wheel is absent (mirrors
+# ``3tears-models``'s ``prometheus`` extra). Consumers that want the
+# locked ``3tears_agent_wake_*`` instruments install the extra.
+prometheus = ["prometheus-client>=0.20"]
+
 [project.urls]
 Repository = "https://github.com/pacepace/3tears"
 

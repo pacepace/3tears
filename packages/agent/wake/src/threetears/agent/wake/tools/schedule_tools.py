@@ -38,6 +38,9 @@ from pydantic import BaseModel, Field
 from uuid_utils import uuid7
 
 from threetears.agent.wake.collections import WakeScheduleCollection
+from threetears.agent.wake.config import (
+    DEFAULT_MAX_SCHEDULES_PER_CONVERSATION as _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+)
 from threetears.agent.wake.reschedule import _compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_schedule_id
 from threetears.agent.wake.tools.validators import (
@@ -79,7 +82,10 @@ log = get_logger(__name__)
 
 NAME_MAX_LEN = 256
 TASK_PROMPT_MAX_LEN = 4000
-DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = 10
+# Re-exported from :mod:`threetears.agent.wake.config` so the tool
+# layer and the shard-05 ``WakeConfig`` Protocol share a single source
+# of truth for the per-conv cap default (PLACEMENT §1.9 / §3.5 = 10).
+DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
 
 
 _VALID_EXECUTION_MODES: frozenset[str] = frozenset({"inline", "spawn"})
@@ -518,6 +524,25 @@ def load_wake_schedule_create_tool(
                 f"failed to read active schedule count: {exc}",
             )
         if current_count >= max_schedules_per_conversation:
+            # local import keeps the tool layer's cold-import cost the
+            # same on the happy path; metrics + events only matter on
+            # the rejection branch.
+            from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT  # noqa: PLC0415
+            from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
+
+            get_wake_emitter().inc_schedule_cap_rejection()
+            log.info(
+                EVENT_SCHEDULE_CAP_REJECT,
+                extra={
+                    "extra_data": {
+                        "conversation_id": str(conversation_id),
+                        "user_id": str(user_id),
+                        "agent_id": str(agent_id),
+                        "count": current_count,
+                        "cap": max_schedules_per_conversation,
+                    }
+                },
+            )
             return _tool_error(
                 "wake_schedule_create",
                 f"max {max_schedules_per_conversation} active schedules per conversation (pause or delete one first)",

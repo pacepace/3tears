@@ -55,6 +55,14 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
+from threetears.agent.wake.events import (
+    EVENT_DELIVERY_ATTEMPT,
+    EVENT_DELIVERY_FAILED,
+    EVENT_DELIVERY_SKIPPED_SILENT,
+    EVENT_DELIVERY_SUCCESS,
+    EVENT_FIRE_SILENT,
+)
+from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.types import (
     DeliveryAdapter,
     FireStatus,
@@ -228,6 +236,7 @@ async def dispatch_wake(
     else:
         final_status = handler_result.status
 
+    emitter = get_wake_emitter()
     delivery_status: dict[str, str] = {}
     if handler_result.status in {"fired", "fired_silent"} and trigger.delivery_target != "conversation":
         if is_silent:
@@ -236,8 +245,31 @@ async def dispatch_wake(
             # Record the skip on the result so shard-05 metrics can
             # distinguish "no adapter" from "agent chose silence".
             delivery_status[trigger.delivery_target] = "skipped_silent"
+            log.info(
+                EVENT_DELIVERY_SKIPPED_SILENT,
+                extra={
+                    "extra_data": {
+                        "fire_id": str(fire_id),
+                        "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                        "conversation_id": str(trigger.conversation_id),
+                        "delivery_target": trigger.delivery_target,
+                    }
+                },
+            )
+            emitter.inc_delivery(target=trigger.delivery_target, status="skipped_silent")
         else:
-            delivery_status[trigger.delivery_target] = await _route_delivery(
+            log.info(
+                EVENT_DELIVERY_ATTEMPT,
+                extra={
+                    "extra_data": {
+                        "fire_id": str(fire_id),
+                        "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                        "conversation_id": str(trigger.conversation_id),
+                        "delivery_target": trigger.delivery_target,
+                    }
+                },
+            )
+            delivery_outcome = await _route_delivery(
                 trigger=trigger,
                 prepared=prepared,
                 handler_result=handler_result,
@@ -245,6 +277,36 @@ async def dispatch_wake(
                 pool=pool,
                 fire_id=fire_id,
             )
+            delivery_status[trigger.delivery_target] = delivery_outcome
+            emitter.inc_delivery(target=trigger.delivery_target, status=delivery_outcome)
+            event_name = EVENT_DELIVERY_SUCCESS if delivery_outcome == "delivered" else EVENT_DELIVERY_FAILED
+            log.info(
+                event_name,
+                extra={
+                    "extra_data": {
+                        "fire_id": str(fire_id),
+                        "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                        "conversation_id": str(trigger.conversation_id),
+                        "delivery_target": trigger.delivery_target,
+                        "delivery_status": delivery_outcome,
+                    }
+                },
+            )
+
+    if is_silent:
+        log.info(
+            EVENT_FIRE_SILENT,
+            extra={
+                "extra_data": {
+                    "fire_id": str(fire_id),
+                    "schedule_id": str(trigger.schedule_id) if trigger.schedule_id else None,
+                    "conversation_id": str(trigger.conversation_id),
+                    "schedule_type": trigger.schedule_type,
+                    "execution_mode": trigger.execution_mode,
+                    "fire_source": trigger.fire_source,
+                }
+            },
+        )
 
     log.info(
         "dispatch_wake: handler complete",

@@ -37,6 +37,13 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.entities import EncryptionService
+from threetears.agent.wake.events import (
+    EVENT_WEBHOOK_AUTH_FAILED,
+    EVENT_WEBHOOK_RATE_LIMITED,
+    EVENT_WEBHOOK_RECEIVED,
+    EVENT_WEBHOOK_REJECTED,
+)
+from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.types import (
     DeliveryAdapter,
     HandlerCallback,
@@ -165,6 +172,7 @@ async def webhook_receive(
     :rtype: WebhookReceiveResult
     """
     receive_at = now if now is not None else datetime.now(UTC)
+    emitter = get_wake_emitter()
     # local imports keep the receiver's module-load cost cheap when
     # the platform isn't actually serving webhooks (test runners,
     # CLI tools, etc.). Same pattern as dispatch_wake's lazy
@@ -179,6 +187,11 @@ async def webhook_receive(
     subs = WebhookSubscriptionCollection(registry=registry, config=cfg)
     sub = await subs.find_by_id(subscription_id)
     if sub is None or sub.status != "active":
+        log.info(
+            EVENT_WEBHOOK_REJECTED,
+            extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "not_found"}},
+        )
+        emitter.inc_webhook_received(outcome="not_found")
         return WebhookReceiveResult(
             status_code=404,
             fire_id=None,
@@ -187,6 +200,11 @@ async def webhook_receive(
 
     # HMAC verification ------------------------------------------------
     if not signature_header:
+        log.info(
+            EVENT_WEBHOOK_AUTH_FAILED,
+            extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "missing_header"}},
+        )
+        emitter.inc_webhook_received(outcome="auth_failed")
         return WebhookReceiveResult(
             status_code=401,
             fire_id=None,
@@ -213,6 +231,11 @@ async def webhook_receive(
         ).hexdigest()
     )
     if not hmac.compare_digest(expected, signature_header):
+        log.info(
+            EVENT_WEBHOOK_AUTH_FAILED,
+            extra={"extra_data": {"subscription_id": str(subscription_id), "reason": "bad_signature"}},
+        )
+        emitter.inc_webhook_received(outcome="auth_failed")
         return WebhookReceiveResult(
             status_code=401,
             fire_id=None,
@@ -223,6 +246,16 @@ async def webhook_receive(
     if sub.allowed_source_pattern is not None and source_ip is not None:
         try:
             if not re.match(sub.allowed_source_pattern, source_ip):
+                log.info(
+                    EVENT_WEBHOOK_REJECTED,
+                    extra={
+                        "extra_data": {
+                            "subscription_id": str(subscription_id),
+                            "reason": "source_rejected",
+                        }
+                    },
+                )
+                emitter.inc_webhook_received(outcome="source_rejected")
                 return WebhookReceiveResult(
                     status_code=403,
                     fire_id=None,
@@ -270,6 +303,20 @@ async def webhook_receive(
             message=f"rate-limit query failed: {exc}",
         )
     if window_count >= cap:
+        log.info(
+            EVENT_WEBHOOK_RATE_LIMITED,
+            extra={
+                "extra_data": {
+                    "subscription_id": str(subscription_id),
+                    "conversation_id": str(sub.conversation_id),
+                    "count": window_count,
+                    "cap": cap,
+                    "window_seconds": rate_window_seconds,
+                }
+            },
+        )
+        emitter.inc_webhook_received(outcome="rate_limited")
+        emitter.inc_rate_limit_rejection(scope="webhook")
         return WebhookReceiveResult(
             status_code=429,
             fire_id=None,
@@ -295,6 +342,7 @@ async def webhook_receive(
             "webhook_receive template render failed",
             extra={"extra_data": {"subscription_id": str(subscription_id), "error": str(exc)}},
         )
+        emitter.inc_webhook_received(outcome="bad_template")
         return WebhookReceiveResult(
             status_code=400,
             fire_id=None,
@@ -357,6 +405,13 @@ async def webhook_receive(
             "webhook_receive dispatch failed",
             extra={"extra_data": {"subscription_id": str(subscription_id), "fire_id": str(fire_id)}},
         )
+        emitter.inc_webhook_received(outcome="failed")
+        emitter.inc_fire(
+            status="failed",
+            schedule_type="webhook",
+            execution_mode=trigger.execution_mode,
+        )
+        emitter.inc_failure(reason="handler_exception")
         try:
             await fires.finalize_failed(
                 sub.conversation_id,
@@ -406,14 +461,23 @@ async def webhook_receive(
         )
 
     log.info(
-        "webhook_receive dispatched",
+        EVENT_WEBHOOK_RECEIVED,
         extra={
             "extra_data": {
                 "subscription_id": str(subscription_id),
+                "conversation_id": str(sub.conversation_id),
                 "fire_id": str(fire_id),
                 "status": result.status,
+                "execution_mode": trigger.execution_mode,
+                "delivery_target": trigger.delivery_target,
             }
         },
+    )
+    emitter.inc_webhook_received(outcome="accepted")
+    emitter.inc_fire(
+        status=result.status,
+        schedule_type="webhook",
+        execution_mode=trigger.execution_mode,
     )
     return WebhookReceiveResult(
         status_code=202,

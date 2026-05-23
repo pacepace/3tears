@@ -36,6 +36,7 @@ design notes
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -48,10 +49,25 @@ from threetears.agent.wake.collections import (
     WakeScheduleCollection,
 )
 from threetears.agent.wake.entities import WakeScheduleEntity
+from threetears.agent.wake.events import (
+    EVENT_FIRE_DISPATCHED,
+    EVENT_FIRE_DRIFT,
+    EVENT_FIRE_FAILED,
+    EVENT_TICK_COMPLETED,
+    EVENT_TICK_STARTED,
+)
+from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.reschedule import _compute_next_fire_at
 from threetears.agent.wake.types import WakeDispatchResult, WakeTrigger
 
 __all__ = ["DispatchCallback", "wake_tick_job"]
+
+
+# Drift threshold for the dedicated drift-event log (PLACEMENT §1.8 +
+# spec body's "actual - scheduled > 60s" rule). The histogram in
+# :mod:`threetears.agent.wake.metrics` observes EVERY fire's drift;
+# this constant only gates whether we ALSO emit a Loki event.
+_DRIFT_LOG_THRESHOLD_SECONDS: Final[float] = 60.0
 
 
 log = get_logger(__name__)
@@ -128,6 +144,8 @@ async def _run_tick_body(
     from threetears.core.collections.registry import CollectionRegistry  # noqa: PLC0415
     from threetears.core.config import DefaultCoreConfig  # noqa: PLC0415
 
+    emitter = get_wake_emitter()
+    tick_started = time.monotonic()
     now = datetime.now(UTC)
     registry = CollectionRegistry()
     registry.configure(l3_pool=pool)
@@ -136,13 +154,12 @@ async def _run_tick_body(
     fires = WakeFireCollection(registry=registry, config=cfg)
     due = await schedules.list_due_for_tick(now=now)
     log.info(
-        "wake_tick: %d due",
-        len(due),
+        EVENT_TICK_STARTED,
         extra={"extra_data": {"due_count": len(due), "tick_at": now.isoformat()}},
     )
     for schedule in due:
         try:
-            await _dispatch_one(pool, schedule, schedules, fires, dispatch_callback, now)
+            await _dispatch_one(pool, schedule, schedules, fires, dispatch_callback, now, emitter)
         except Exception:  # noqa: BLE001 - boundary: isolate per-schedule failures
             # _dispatch_one already records a failed wake_fires row;
             # this outer except is defense in depth in case the row
@@ -151,9 +168,12 @@ async def _run_tick_body(
                 "wake_tick: schedule dispatch raised outside per-fire isolation",
                 extra={"extra_data": {"schedule_id": str(schedule.schedule_id)}},
             )
+            emitter.inc_failure(reason="handler_exception")
+    duration = time.monotonic() - tick_started
+    emitter.observe_tick_duration(duration)
     log.info(
-        "wake_tick: complete",
-        extra={"extra_data": {"processed": len(due)}},
+        EVENT_TICK_COMPLETED,
+        extra={"extra_data": {"processed": len(due), "duration_seconds": duration}},
     )
 
 
@@ -164,6 +184,7 @@ async def _dispatch_one(
     fires: WakeFireCollection,
     dispatch_callback: DispatchCallback,
     tick_at: datetime,
+    emitter: Any,
 ) -> None:
     """Claim one due schedule and dispatch its fire.
 
@@ -243,15 +264,38 @@ async def _dispatch_one(
         delivery_target_resolved=schedule.delivery_target,
     )
 
+    # Drift observation: every fire's drift is recorded into the
+    # histogram; the drift event is emitted only above the threshold
+    # so Loki doesn't fill with zero-drift noise.
+    drift_seconds = max(0.0, (tick_at - expected_next_fire).total_seconds())
+    emitter.observe_drift(drift_seconds)
+    if drift_seconds > _DRIFT_LOG_THRESHOLD_SECONDS:
+        log.info(
+            EVENT_FIRE_DRIFT,
+            extra={
+                "extra_data": {
+                    "schedule_id": str(schedule.schedule_id),
+                    "conversation_id": str(schedule.conversation_id),
+                    "fire_id": str(fire_id),
+                    "scheduled_fire_at": expected_next_fire.isoformat(),
+                    "actual_fired_at": tick_at.isoformat(),
+                    "drift_seconds": drift_seconds,
+                    "schedule_type": schedule.schedule_type,
+                }
+            },
+        )
+
     log.info(
-        "wake_tick: dispatching fire",
+        EVENT_FIRE_DISPATCHED,
         extra={
             "extra_data": {
                 "schedule_id": str(schedule.schedule_id),
                 "fire_id": str(fire_id),
                 "conversation_id": str(schedule.conversation_id),
                 "schedule_type": schedule.schedule_type,
+                "execution_mode": schedule.execution_mode,
                 "missed_fire_policy": schedule.missed_fire_policy,
+                "fire_source": "scheduled_tick",
             }
         },
     )
@@ -260,11 +304,15 @@ async def _dispatch_one(
         result = await dispatch_callback(trigger, fire_id, pool)
     except Exception as exc:  # noqa: BLE001 - boundary: per-fire isolation
         log.exception(
-            "wake_tick: dispatch_callback raised",
+            EVENT_FIRE_FAILED,
             extra={
                 "extra_data": {
                     "schedule_id": str(schedule.schedule_id),
                     "fire_id": str(fire_id),
+                    "conversation_id": str(schedule.conversation_id),
+                    "schedule_type": schedule.schedule_type,
+                    "execution_mode": schedule.execution_mode,
+                    "error_type": type(exc).__name__,
                 }
             },
         )
@@ -274,6 +322,12 @@ async def _dispatch_one(
             error=str(exc),
             latency_ms=None,
         )
+        emitter.inc_fire(
+            status="failed",
+            schedule_type=schedule.schedule_type,
+            execution_mode=schedule.execution_mode,
+        )
+        emitter.inc_failure(reason="handler_exception")
         return
 
     # A dispatch callback may either raise (handled above) OR return
@@ -289,6 +343,12 @@ async def _dispatch_one(
             error=result.error or "dispatch returned status='failed' without an error string",
             latency_ms=result.latency_ms,
         )
+        emitter.inc_fire(
+            status="failed",
+            schedule_type=schedule.schedule_type,
+            execution_mode=schedule.execution_mode,
+        )
+        emitter.inc_failure(reason="handler_exception")
         return
 
     await fires.finalize_success(
@@ -299,6 +359,16 @@ async def _dispatch_one(
         latency_ms=result.latency_ms,
         display_suppressed=result.display_suppressed,
     )
+    emitter.inc_fire(
+        status=result.status,
+        schedule_type=schedule.schedule_type,
+        execution_mode=schedule.execution_mode,
+    )
+    # Yielded fires also get the wake-to-yield duration histogram per
+    # PLACEMENT §8.5.1. ``latency_ms`` carries the wall-clock duration
+    # from the dispatch callback (handler-side measurement).
+    if result.status == "yielded" and result.latency_ms is not None:
+        emitter.observe_yield_duration(result.latency_ms / 1000.0)
 
 
 def _generate_fire_id() -> UUID:
