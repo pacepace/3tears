@@ -87,8 +87,8 @@ async def _seed_schedule(
         "INSERT INTO agent_wake_schedules "
         "(conversation_id, schedule_id, user_id, agent_id, schedule_type, "
         " schedule_config, execution_mode, status, next_fire_at, "
-        " missed_fire_policy, delivery_target, delivery_config) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        " missed_fire_policy) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         conv,
         sched,
         _new_uuid(),
@@ -99,8 +99,6 @@ async def _seed_schedule(
         status,
         next_fire_at,
         "coalesce",
-        "conversation",
-        {},
     )
     return conv, sched
 

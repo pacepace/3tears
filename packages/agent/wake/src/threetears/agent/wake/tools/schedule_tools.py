@@ -94,7 +94,6 @@ DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = _CONFIG_DEFAULT_MAX_SCHEDULES_PER_CONVE
 
 
 _VALID_EXECUTION_MODES: frozenset[str] = frozenset({"inline", "spawn"})
-_VALID_DELIVERY_TARGETS: frozenset[str] = frozenset({"conversation", "email"})
 _VALID_MISSED_FIRE_POLICIES: frozenset[str] = frozenset({"coalesce", "catch_up"})
 
 
@@ -217,14 +216,6 @@ class ScheduleCreateInput(BaseModel):
         default="inline",
         description="'inline' fires in this conversation; 'spawn' creates a new conversation.",
     )
-    delivery_target: Literal["conversation", "email"] = Field(
-        default="conversation",
-        description="Where the wake response lands.",
-    )
-    delivery_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Delivery-target-specific config (e.g. email recipient).",
-    )
     missed_fire_policy: Literal["coalesce", "catch_up"] = Field(
         default="coalesce",
         description="'coalesce' fires ONCE on backlog; 'catch_up' fires per missed tick.",
@@ -269,8 +260,6 @@ class ScheduleUpdateInput(BaseModel):
         description="When true, clear the attached skill_id. Must not be combined with skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
-    delivery_target: Literal["conversation", "email"] | None = None
-    delivery_config: dict[str, Any] | None = None
     missed_fire_policy: Literal["coalesce", "catch_up"] | None = None
     task_prompt: str | None = None
     name: str | None = None
@@ -335,28 +324,6 @@ def _validate_task_prompt(prompt: str | None) -> str | None:
         return "task_prompt must be a string or null"
     if len(prompt) > TASK_PROMPT_MAX_LEN:
         return f"task_prompt must be at most {TASK_PROMPT_MAX_LEN} characters"
-    return None
-
-
-def _validate_delivery_target_inputs(
-    delivery_target: str,
-    delivery_config: dict[str, Any],
-    *,
-    user_email_verified: bool,
-) -> str | None:
-    """Reject ``delivery_target='email'`` when the user has no verified email.
-
-    Per Requirement TOOL-14: the platform does not reach into the
-    consumer's users table; the consumer surfaces
-    ``user_email_verified`` at construction time. The tool checks the
-    flag + the presence of an ``email`` field in ``delivery_config``.
-    """
-    if delivery_target == "email":
-        if not user_email_verified:
-            return "delivery_target='email' requires a verified email on file"
-        recipient = delivery_config.get("email") if isinstance(delivery_config, dict) else None
-        if not recipient or not isinstance(recipient, str):
-            return "delivery_target='email' requires delivery_config.email to be a non-empty string"
     return None
 
 
@@ -450,7 +417,6 @@ def load_wake_schedule_create_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
-    user_email_verified: bool = False,
     max_schedules_per_conversation: int = DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_create`` tool bound to the actor triple.
@@ -469,8 +435,6 @@ def load_wake_schedule_create_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry for ACL probes
     :ptype registry: WakeRegistryClient
-    :param user_email_verified: gate for ``delivery_target='email'``
-    :ptype user_email_verified: bool
     :param max_schedules_per_conversation: cap on active+paused
         schedules per conversation (default 10 per PLACEMENT §1.9)
     :ptype max_schedules_per_conversation: int
@@ -484,25 +448,16 @@ def load_wake_schedule_create_tool(
         schedule_config: dict[str, Any],
         skill_id: str | None = None,
         execution_mode: Literal["inline", "spawn"] = "inline",
-        delivery_target: Literal["conversation", "email"] = "conversation",
-        delivery_config: dict[str, Any] | None = None,
         missed_fire_policy: Literal["coalesce", "catch_up"] = "coalesce",
         task_prompt: str | None = None,
         name: str | None = None,
         context_from_schedule_id: str | None = None,
     ) -> str:
         """Create a wake schedule for this conversation."""
-        delivery_cfg = dict(delivery_config or {})
-
         for err in (
             _validate_name(name),
             _validate_task_prompt(task_prompt),
             validate_schedule_config(schedule_type, schedule_config),
-            _validate_delivery_target_inputs(
-                delivery_target,
-                delivery_cfg,
-                user_email_verified=user_email_verified,
-            ),
         ):
             if err is not None:
                 return _tool_error("wake_schedule_create", err)
@@ -625,8 +580,6 @@ def load_wake_schedule_create_tool(
             "name": name,
             "missed_fire_policy": missed_fire_policy,
             "context_from_schedule_id": parsed_context_from,
-            "delivery_target": delivery_target,
-            "delivery_config": delivery_cfg,
             "date_created": now,
             "date_updated": now,
         }
@@ -709,7 +662,6 @@ def load_wake_schedule_create_tool(
         "- schedule_type + schedule_config: WHEN (cron, daily_at, interval, one_shot_at, ...)\n"
         "- skill_id: optional attached skill loaded at fire time\n"
         "- execution_mode 'inline' (this conv) vs 'spawn' (new conv)\n"
-        "- delivery_target 'conversation' or 'email'\n"
         f"Returns [schedule:<id>]. Max {max_schedules_per_conversation} active schedules per conversation."
     )
 
@@ -728,7 +680,6 @@ def load_wake_schedule_update_tool(
     agent_id: UUID,
     schedules_collection: WakeScheduleCollection,
     registry: WakeRegistryClient,
-    user_email_verified: bool = False,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_update`` tool with partial-update semantics.
 
@@ -750,8 +701,6 @@ def load_wake_schedule_update_tool(
     :ptype schedules_collection: WakeScheduleCollection
     :param registry: consumer-supplied registry client
     :ptype registry: WakeRegistryClient
-    :param user_email_verified: gate for ``delivery_target='email'``
-    :ptype user_email_verified: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -764,8 +713,6 @@ def load_wake_schedule_update_tool(
         skill_id: str | None = None,
         detach_skill: bool = False,
         execution_mode: Literal["inline", "spawn"] | None = None,
-        delivery_target: Literal["conversation", "email"] | None = None,
-        delivery_config: dict[str, Any] | None = None,
         missed_fire_policy: Literal["coalesce", "catch_up"] | None = None,
         task_prompt: str | None = None,
         name: str | None = None,
@@ -809,8 +756,6 @@ def load_wake_schedule_update_tool(
 
         merged_type = schedule_type if schedule_type is not None else entity.schedule_type
         merged_config = dict(schedule_config) if schedule_config is not None else dict(entity.schedule_config)
-        merged_target = delivery_target if delivery_target is not None else entity.delivery_target
-        merged_delivery_config = dict(delivery_config) if delivery_config is not None else dict(entity.delivery_config)
 
         # Validation pass over fields the caller changed or that are
         # affected by a changed neighbour.
@@ -821,14 +766,6 @@ def load_wake_schedule_update_tool(
             validation_errors.append(_validate_task_prompt(task_prompt))
         if schedule_type is not None or schedule_config is not None:
             validation_errors.append(validate_schedule_config(merged_type, merged_config))
-        if delivery_target is not None or delivery_config is not None:
-            validation_errors.append(
-                _validate_delivery_target_inputs(
-                    merged_target,
-                    merged_delivery_config,
-                    user_email_verified=user_email_verified,
-                ),
-            )
         for err in validation_errors:
             if err is not None:
                 return _tool_error("wake_schedule_update", err)
@@ -926,10 +863,6 @@ def load_wake_schedule_update_tool(
             entity.missed_fire_policy = missed_fire_policy
         if execution_mode is not None:
             entity.execution_mode = execution_mode
-        if delivery_target is not None:
-            entity.delivery_target = delivery_target
-        if delivery_config is not None:
-            entity.delivery_config = dict(delivery_config)
         if task_prompt is not None:
             entity.task_prompt = task_prompt if task_prompt else None
         if clear_name:

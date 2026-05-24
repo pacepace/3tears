@@ -21,7 +21,6 @@ CHECK constraints:
 - ``status IN ('active', 'paused', 'expired')`` -- CHECK-pinned.
 - ``missed_fire_policy IN ('coalesce', 'catch_up')`` -- CHECK-pinned
   (added per PLACEMENT §1.7 in the 2026-05-19 revision).
-- ``delivery_target IN ('conversation', 'email')`` -- CHECK-pinned.
 
 Self-FK ``context_from_schedule_id UUID REFERENCES
 agent_wake_schedules(schedule_id) ON DELETE SET NULL`` -- single-hop,
@@ -81,8 +80,6 @@ CREATE TABLE IF NOT EXISTS agent_wake_schedules (
     name                      TEXT,
     missed_fire_policy        TEXT         NOT NULL DEFAULT 'coalesce',
     context_from_schedule_id  UUID,
-    delivery_target           TEXT         NOT NULL DEFAULT 'conversation',
-    delivery_config           JSONB        NOT NULL DEFAULT '{}'::jsonb,
     date_created              TIMESTAMPTZ  NOT NULL DEFAULT now(),
     date_updated              TIMESTAMPTZ  NOT NULL DEFAULT now(),
     PRIMARY KEY (conversation_id, schedule_id),
@@ -99,9 +96,7 @@ CREATE TABLE IF NOT EXISTS agent_wake_schedules (
     CONSTRAINT agent_wake_schedules_status_check
         CHECK (status IN ('active', 'paused', 'expired')),
     CONSTRAINT agent_wake_schedules_missed_fire_policy_check
-        CHECK (missed_fire_policy IN ('coalesce', 'catch_up')),
-    CONSTRAINT agent_wake_schedules_delivery_target_check
-        CHECK (delivery_target IN ('conversation', 'email'))
+        CHECK (missed_fire_policy IN ('coalesce', 'catch_up'))
 )
 """
 

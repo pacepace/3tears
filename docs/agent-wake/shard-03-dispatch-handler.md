@@ -1,5 +1,7 @@
 # agent-wake-03: Dispatch handler + `WakeTrigger` abstraction
 
+> **REMOVED 2026-05-24:** the outbound delivery framework (delivery_target / delivery_config / DeliveryAdapter / email-SMTP adapter / delivery_status / delivery routing) was removed as an undesigned parallel abstraction. `dispatch_wake` no longer takes a `delivery_adapters` argument, there is no `DeliveryAdapter` Protocol, and there is no delivery-routing stage. Wake fires now ALWAYS deliver into the conversation via the handler callback; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The text below is retained for history; the delivery-routing requirements (DISPATCH-03, the `delivery_adapters` arg of DISPATCH-04, the `delivery_status` field of DISPATCH-05, DISPATCH-16) are struck — do NOT rebuild them.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.
@@ -27,7 +29,7 @@ Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.
 6. Invoke `handler_callback(trigger, prepared_context)` once. **Between tool-loop iterations inside the handler, the platform runs the pending-user-message detection query** (new per wake-yield, see below); populates `_user_message_pending` state.
 7. Detect `[SILENT]` on result; set `wake_fires.display_suppressed`.
 8. **Detect yield** (new per wake-yield): if handler returned `status='yielded'`, set `wake_fires.status='yielded'` and emit `3tears.agent_wake.fire.yielded` Loki event. Lock releases as normal.
-9. Delivery routing (`conversation` default — already placed by handler — or `email`).
+9. ~~Delivery routing (`conversation` default — already placed by handler — or `email`).~~ ~~[REMOVED 2026-05-24]~~ — no delivery routing; handler always places the message in the conversation.
 10. UPDATE `wake_fires` with final status + `actual_fired_at`.
 
 **Wake-yield additions (cross-shard cooperation per `metallm/docs/long_running/shard-10-cooperative-yield.md`):**
@@ -54,15 +56,14 @@ implements:
 - attached-skill loading
 - invoking the product-supplied `HandlerCallback`
 - `[SILENT]` suppression
-- delivery routing (`conversation` and/or `email`)
+- ~~delivery routing (`conversation` and/or `email`)~~ ~~[REMOVED 2026-05-24]~~
 - final `wake_fires` row UPDATE
 
 The handler is platform; everything inside is generic. The product
 plugs in:
 
 - The `HandlerCallback` (build prompt, inject message, capture response).
-- The `DeliveryAdapter` for non-default `delivery_target` values (e.g.
-  product-specific SMTP wrapper for `email`).
+- ~~The `DeliveryAdapter` for non-default `delivery_target` values (e.g. product-specific SMTP wrapper for `email`).~~ ~~[REMOVED 2026-05-24]~~
 - The `EncryptionService` for any decrypt operations (consumed but not
   owned by the wake package).
 
@@ -74,9 +75,9 @@ plugs in:
 |----|-------------|----------|
 | DISPATCH-01 | Define `WakeTrigger` and `WakeDispatchResult` as `@dataclass(frozen=True, kw_only=True)` in `packages/agent/wake/src/threetears/agent/wake/types.py`. | P0 |
 | DISPATCH-02 | Define the `HandlerCallback` Protocol in `types.py`: `async def __call__(self, trigger: WakeTrigger, prepared_context: PreparedWakeContext, pool: Pool) -> HandlerCallbackResult`. | P0 |
-| DISPATCH-03 | Define the `DeliveryAdapter` Protocol in `types.py`: `async def deliver(self, trigger, message_content, pool) -> DeliveryStatus`. Built-in `'conversation'` adapter is a no-op (message already in the conv). Product supplies `'email'` adapter. | P0 |
-| DISPATCH-04 | Implement `dispatch_wake(trigger, fire_id, pool, *, handler: HandlerCallback, wake_config: WakeConfig, delivery_adapters: dict[str, DeliveryAdapter]) -> WakeDispatchResult` in `dispatch.py`. The caller (tick or webhook receiver) has already INSERTed the initial `wake_fires` row with `status='dispatching'`; `dispatch_wake` UPDATES it to the final status before returning. | P0 |
-| DISPATCH-05 | `dispatch_wake` enforces the same flow on EVERY exit path: UPDATE `wake_fires` with `status`, `error`, `duration_ms`, `pre_check_output`, `delivery_status`, `display_suppressed` before returning. The caller relies on this contract — they don't re-UPDATE the row. | P0 |
+| ~~DISPATCH-03~~ | ~~[REMOVED 2026-05-24]~~ ~~Define the `DeliveryAdapter` Protocol in `types.py`: `async def deliver(self, trigger, message_content, pool) -> DeliveryStatus`. Built-in `'conversation'` adapter is a no-op (message already in the conv). Product supplies `'email'` adapter.~~ Do NOT define a `DeliveryAdapter` Protocol. | ~~P0~~ |
+| DISPATCH-04 | Implement `dispatch_wake(trigger, fire_id, pool, *, handler: HandlerCallback, wake_config: WakeConfig)` in `dispatch.py` (~~the `delivery_adapters: dict[str, DeliveryAdapter]` parameter is REMOVED 2026-05-24~~). The caller (tick or webhook receiver) has already INSERTed the initial `wake_fires` row with `status='dispatching'`; `dispatch_wake` UPDATES it to the final status before returning. | P0 |
+| DISPATCH-05 | `dispatch_wake` enforces the same flow on EVERY exit path: UPDATE `wake_fires` with `status`, `error`, `duration_ms`, `pre_check_output`, ~~`delivery_status` (REMOVED 2026-05-24)~~, `display_suppressed` before returning. The caller relies on this contract — they don't re-UPDATE the row. | P0 |
 | DISPATCH-06 | Pre-check execution: when `trigger.pre_check_type` is set, look up the registered executor and run it with bounded timeout (per-type from `wake_pre_check_types.config_jsonschema.timeout_seconds`, default 10s, max 30s). Cap output at 64KB with `[truncated: <total>B → 64KB]` suffix. | P0 |
 | DISPATCH-07 | Gate semantics: pre-check output that is (a) empty / whitespace-only OR (b) starts with `[SKIP]` short-circuits — return `WakeDispatchResult(status='skipped_gate')` without invoking the handler, without inserting a wake message into the conversation. Schedule keeps polling (tick advances `next_fire_at` per cadence). | P0 |
 | DISPATCH-08 | `no_agent` mode: when `trigger.no_agent=true` AND pre-check produced output, route the pre-check output directly to the delivery adapter chain; LLM never invoked. Handler callback NOT called in this path. | P0 |
@@ -87,7 +88,7 @@ plugs in:
 | DISPATCH-13 | Loki executor enforces "named query" — looks up `config['named_query']` in `wake_config.loki_named_queries: dict[str, str]`, renders with positional params, calls the Loki client (consumer-supplied via `WakeConfig.loki_client`). Inline LogQL rejected. Admin-only enforced at the agent-tool/REST layer (this shard trusts `WakeConfig` has already gated). | P0 |
 | DISPATCH-14 | Postgres executor enforces "named query" — looks up `config['named_query']` in `wake_config.postgres_named_queries: dict[str, str]`, renders with positional params, executes against `pool` with `set local statement_timeout = '5s'`. Returns TSV-formatted rows. Inline SQL rejected. | P0 |
 | DISPATCH-15 | `[SILENT]` suppression: when `HandlerCallbackResult.assistant_message_content` starts with `[SILENT]` (case-insensitive, optional trailing space/newline), set `wake_fires.display_suppressed=true`. The product's callback is responsible for stripping the prefix from the stored content and setting whatever its messages-table column needs to render as hidden (e.g. metallm's `messages.display='hidden'`); platform just records the flag. | P0 |
-| DISPATCH-16 | Delivery routing: after the handler returns, inspect `trigger.delivery_target`. For `'conversation'` (default), the handler-callback has already placed the message in the conversation — no-op. For other values, invoke the matching adapter from `delivery_adapters: dict[str, DeliveryAdapter]`. Record outcome in `wake_fires.delivery_status`. Delivery failure does NOT block the response from landing in the conversation. | P0 |
+| ~~DISPATCH-16~~ | ~~[REMOVED 2026-05-24]~~ ~~Delivery routing: after the handler returns, inspect `trigger.delivery_target`. For `'conversation'` (default), the handler-callback has already placed the message in the conversation — no-op. For other values, invoke the matching adapter from `delivery_adapters: dict[str, DeliveryAdapter]`. Record outcome in `wake_fires.delivery_status`. Delivery failure does NOT block the response from landing in the conversation.~~ There is no delivery-routing stage; the handler callback always places the message in the conversation. Do NOT rebuild this. | ~~P0~~ |
 | DISPATCH-17 | Pre-check failure handling: when an executor raises or times out, record error in `wake_fires.error` AND in `wake_fires.pre_check_output`. Default: STILL invoke the handler with a `(pre-check failed: <error>)` note in the context blocks. Override: per-schedule `pre_check_config.skip_llm_on_failure: true` makes pre-check failure short-circuit like a gate-skip. | P0 |
 
 ---
@@ -187,8 +188,7 @@ class WakeTrigger:
     pre_check_type: str | None = None
     pre_check_config: dict[str, Any] = field(default_factory=dict)
     context_from_schedule_id: UUID | None = None
-    delivery_target: str = "conversation"
-    delivery_config: dict[str, Any] = field(default_factory=dict)
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: tuple[UUID, ...] = ()
 
 
@@ -220,7 +220,7 @@ class WakeDispatchResult:
     should_expire_schedule: bool = False
     pre_check_output: str | None = None
     pre_check_duration_ms: int | None = None
-    delivery_status: str | None = None
+    # delivery_status REMOVED 2026-05-24 — no outbound delivery framework
     display_suppressed: bool = False
 
 
@@ -235,17 +235,21 @@ class HandlerCallback(Protocol):
         ...
 
 
-@runtime_checkable
-class DeliveryAdapter(Protocol):
-    """Product-supplied adapter for non-'conversation' delivery_target values."""
-    async def deliver(
-        self,
-        trigger: WakeTrigger,
-        message_content: str,
-        pool: Pool,
-    ) -> str:
-        """Return one of: 'delivered' | 'delivered_*_failed' (target-specific)."""
-        ...
+# DeliveryAdapter Protocol REMOVED 2026-05-24 — the outbound delivery framework was
+# removed as an undesigned parallel abstraction. Do NOT define this Protocol. The block
+# below is retained for history only.
+#
+# @runtime_checkable
+# class DeliveryAdapter(Protocol):
+#     """Product-supplied adapter for non-'conversation' delivery_target values."""
+#     async def deliver(
+#         self,
+#         trigger: WakeTrigger,
+#         message_content: str,
+#         pool: Pool,
+#     ) -> str:
+#         """Return one of: 'delivered' | 'delivered_*_failed' (target-specific)."""
+#         ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -273,7 +277,7 @@ class PreCheckExecutor(Protocol):
 
 ## Dispatch flow
 
-`dispatch_wake(trigger, fire_id, pool, *, handler, wake_config, delivery_adapters)` — every step can short-circuit with a typed `WakeDispatchResult`; in EVERY exit path the function UPDATES the `wake_fires` row before returning:
+`dispatch_wake(trigger, fire_id, pool, *, handler, wake_config)` (~~`delivery_adapters` REMOVED 2026-05-24~~) — every step can short-circuit with a typed `WakeDispatchResult`; in EVERY exit path the function UPDATES the `wake_fires` row before returning:
 
 ```
 1. Rate-limit check (shard 05's _check_rate_limit)
@@ -291,7 +295,7 @@ class PreCheckExecutor(Protocol):
 4. Pre-check (if trigger.pre_check_type set)
    ├── execute_<type>(config, wake_config, pool)
    ├── output empty / starts with '[SKIP]' → UPDATE status='skipped_gate', pre_check_output=output; return
-   ├── output non-empty + no_agent=true → route DIRECTLY to delivery_adapters; skip handler; goto step 9
+   ├── [REMOVED 2026-05-24] output non-empty + no_agent=true → route DIRECTLY to delivery_adapters — no longer exists (no delivery framework, no no_agent mode)
    ├── execute raises / times out + skip_llm_on_failure=true → UPDATE status='skipped_gate', error=<exc>; return
    └── execute raises / times out + skip_llm_on_failure=false → record error; continue (handler gets a "(pre-check failed)" context note)
 
@@ -312,12 +316,12 @@ class PreCheckExecutor(Protocol):
 9. Detect [SILENT] prefix on handler_result.assistant_message_content
    └── set display_suppressed=true if matched
 
-10. Delivery routing
-    ├── trigger.delivery_target == 'conversation' → no-op (handler already placed the message)
-    ├── otherwise → invoke delivery_adapters[trigger.delivery_target].deliver(trigger, message_content, pool)
-    └── record outcome in delivery_status
+10. [REMOVED 2026-05-24] Delivery routing — no longer exists. The handler callback
+    always places the message in the conversation; there is no delivery_target branch,
+    no delivery_adapters dict, no delivery_status. Do NOT rebuild this step.
 
-11. UPDATE wake_fires with final status='fired', target_conversation_id, pre_check_output, pre_check_duration_ms, delivery_status, display_suppressed, duration_ms; return WakeDispatchResult
+11. UPDATE wake_fires with final status='fired', target_conversation_id, pre_check_output, pre_check_duration_ms, display_suppressed, duration_ms; return WakeDispatchResult
+    # (delivery_status REMOVED 2026-05-24)
 ```
 
 The handler is the ONLY code path that runs steps 1-11. Tick (shard
@@ -420,7 +424,7 @@ unhandled exception). They don't reimplement any step above.
 
 6. **`PreparedWakeContext` is read-only.** Frozen dataclass. The handler does not mutate it; it reads the fields and assembles its prompt.
 
-7. **Delivery adapter registry.** `delivery_adapters` is a dict passed in by the consumer at `dispatch_wake` invocation time. Default contains only `{}` — `conversation` is not in the dict because it's a no-op. metallm injects `{'email': MetallmEmailDeliveryAdapter()}` at the wiring site.
+7. ~~**Delivery adapter registry.** `delivery_adapters` is a dict passed in by the consumer at `dispatch_wake` invocation time. Default contains only `{}` — `conversation` is not in the dict because it's a no-op. metallm injects `{'email': MetallmEmailDeliveryAdapter()}` at the wiring site.~~ ~~[REMOVED 2026-05-24]~~ — no outbound delivery framework; there is no `delivery_adapters` argument. The handler callback always places the message in the conversation.
 
 8. **`wake_config` is the read-side of the platform's `WakeConfig` protocol (shard 05).** Carries: `http_allowed_hosts`, `loki_client`, `loki_named_queries`, `postgres_named_queries`, `max_fires_per_conv_per_day`, `max_fires_per_user_per_day`. The consumer (metallm) supplies an implementation backed by their `system_settings` table; tests supply an in-memory implementation.
 
@@ -451,14 +455,14 @@ unhandled exception). They don't reimplement any step above.
 
 ## Success Criteria
 
-- [ ] All types (`WakeTrigger`, `WakeDispatchResult`, `HandlerCallback`, `DeliveryAdapter`, `PreparedWakeContext`, `HandlerCallbackResult`, `PreCheckResult`, `PreCheckExecutor`) exist as documented.
+- [ ] All types (`WakeTrigger`, `WakeDispatchResult`, `HandlerCallback`, ~~`DeliveryAdapter`~~ ~~[REMOVED 2026-05-24]~~, `PreparedWakeContext`, `HandlerCallbackResult`, `PreCheckResult`, `PreCheckExecutor`) exist as documented.
 - [ ] `dispatch_wake` correctly routes every documented exit path.
 - [ ] Pre-check executors: host allow-list enforced; named-query lookup; timeout; output truncation.
 - [ ] `[SILENT]` detection: case-insensitive, optional trailing space/newline; flag set correctly.
 - [ ] `context_from` resolved single-hop; missing upstream row logs warning, no block.
 - [ ] Skill resolution: enabled=false and missing IDs dropped with warning; resolved skills delivered in `position` order.
 - [ ] `no_agent` mode skips the handler when pre-check produced output; delivery adapter still invoked.
-- [ ] `delivery_target='email'` adapter invoked when supplied; outcome recorded in `delivery_status`.
+- [ ] ~~`delivery_target='email'` adapter invoked when supplied; outcome recorded in `delivery_status`.~~ ~~[REMOVED 2026-05-24]~~ — no delivery framework.
 - [ ] Conv-busy path: `skipped_busy` returned without inserting handler-driven changes.
 - [ ] Conv-missing path: `should_expire_schedule=True` returned; status='failed'.
 - [ ] `./scripts/check-all.sh` clean.

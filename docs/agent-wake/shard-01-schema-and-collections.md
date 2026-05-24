@@ -1,5 +1,7 @@
 # agent-wake-01: Schema + collections + entities
 
+> **REMOVED 2026-05-24:** the outbound delivery framework was removed as an undesigned parallel abstraction. The `delivery_target` / `delivery_config` columns on `agent_wake_schedules` and `webhook_subscriptions`, and the `delivery_target_resolved` / `delivery_status` columns on `wake_fires`, are GONE. Wake fires now always deliver into the conversation; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The DDL below retains these columns for history — do NOT recreate them.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 The design conversation that followed the initial redesign produced these mandatory deltas. Canonical source: `<metallm>/docs/long_running/PLACEMENT.md` and `<metallm>/docs/skills/PLACEMENT.md`.

@@ -347,30 +347,6 @@ class WakeScheduleEntity(BaseEntity):
         BaseEntity.__setattr__(self, "context_from_schedule_id", value)
 
     @property
-    def delivery_target(self) -> str:
-        """Return the ``delivery_target`` enum value."""
-        value: str = self._get_raw("delivery_target")
-        return value
-
-    @delivery_target.setter
-    def delivery_target(self, value: str) -> None:
-        """Set the delivery target."""
-        BaseEntity.__setattr__(self, "delivery_target", value)
-
-    @property
-    def delivery_config(self) -> dict[str, Any]:
-        """Return the delivery-target-specific config JSON."""
-        value = self._get_raw("delivery_config")
-        if value is None:
-            return {}
-        return dict(value)
-
-    @delivery_config.setter
-    def delivery_config(self, value: dict[str, Any]) -> None:
-        """Set the delivery config."""
-        BaseEntity.__setattr__(self, "delivery_config", dict(value))
-
-    @property
     def date_created(self) -> datetime:
         """Return the creation timestamp."""
         value: datetime = self._get_raw("date_created")
@@ -774,30 +750,6 @@ class WebhookSubscriptionEntity(BaseEntity):
     def task_prompt_template(self, value: str | None) -> None:
         """Set the template text."""
         BaseEntity.__setattr__(self, "task_prompt_template", value)
-
-    @property
-    def delivery_target(self) -> str:
-        """Return the ``delivery_target`` enum value."""
-        value: str = self._get_raw("delivery_target")
-        return value
-
-    @delivery_target.setter
-    def delivery_target(self, value: str) -> None:
-        """Set the delivery target."""
-        BaseEntity.__setattr__(self, "delivery_target", value)
-
-    @property
-    def delivery_config(self) -> dict[str, Any]:
-        """Return the delivery-target-specific config JSON."""
-        value = self._get_raw("delivery_config")
-        if value is None:
-            return {}
-        return dict(value)
-
-    @delivery_config.setter
-    def delivery_config(self, value: dict[str, Any]) -> None:
-        """Set the delivery config."""
-        BaseEntity.__setattr__(self, "delivery_config", dict(value))
 
     @property
     def verification_scheme(self) -> str:

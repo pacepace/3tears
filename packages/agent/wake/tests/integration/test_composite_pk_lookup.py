@@ -126,8 +126,6 @@ class TestScheduleRoundTrip:
                 "next_fire_at": now,
                 "name": "morning-brief",
                 "missed_fire_policy": "coalesce",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "date_created": now,
                 "date_updated": now,
             }

@@ -19,10 +19,6 @@ what was said. Tested by
 from __future__ import annotations
 
 __all__ = [
-    "EVENT_DELIVERY_ATTEMPT",
-    "EVENT_DELIVERY_FAILED",
-    "EVENT_DELIVERY_SKIPPED_SILENT",
-    "EVENT_DELIVERY_SUCCESS",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
@@ -65,13 +61,6 @@ EVENT_FIRE_DRIFT: str = "3tears.agent_wake.fire.drift"
 # ``wake_schedule_create`` call would push the conversation past
 # :data:`threetears.agent.wake.config.DEFAULT_MAX_SCHEDULES_PER_CONVERSATION`.
 EVENT_SCHEDULE_CAP_REJECT: str = "3tears.agent_wake.schedule_cap.reject"
-
-# Delivery lifecycle -- emitted by :mod:`threetears.agent.wake.dispatch`
-# around the consumer-supplied :class:`DeliveryAdapter` call.
-EVENT_DELIVERY_ATTEMPT: str = "3tears.agent_wake.delivery.attempt"
-EVENT_DELIVERY_SUCCESS: str = "3tears.agent_wake.delivery.success"
-EVENT_DELIVERY_FAILED: str = "3tears.agent_wake.delivery.failed"
-EVENT_DELIVERY_SKIPPED_SILENT: str = "3tears.agent_wake.delivery.skipped_silent"
 
 # Webhook receiver lifecycle -- emitted by
 # :mod:`threetears.agent.wake.webhook_adapter`.

@@ -45,7 +45,6 @@ from threetears.agent.wake.events import (
 from threetears.agent.wake.hmac_util import verify_generic_hmac_sha256
 from threetears.agent.wake.metrics import get_wake_emitter
 from threetears.agent.wake.types import (
-    DeliveryAdapter,
     HandlerCallback,
     WakeTrigger,
 )
@@ -107,7 +106,6 @@ async def webhook_receive(
     pool: Any,
     encryption_service: EncryptionService,
     handler: HandlerCallback,
-    delivery_adapters: dict[str, DeliveryAdapter] | None = None,
     default_rate_limit_per_minute: int = 60,
     rate_window_seconds: int = DEFAULT_RATE_WINDOW_SECONDS,
     now: datetime | None = None,
@@ -159,10 +157,6 @@ async def webhook_receive(
     :param handler: consumer-supplied :class:`HandlerCallback` for
         :func:`dispatch_wake`
     :ptype handler: HandlerCallback
-    :param delivery_adapters: optional mapping of non-conversation
-        delivery targets to adapters (forwarded to
-        :func:`dispatch_wake`)
-    :ptype delivery_adapters: dict[str, DeliveryAdapter] | None
     :param default_rate_limit_per_minute: cap used when the
         subscription has no per-row override
     :ptype default_rate_limit_per_minute: int
@@ -390,8 +384,6 @@ async def webhook_receive(
         schedule_name=sub.name,
         task_prompt=rendered,
         context_from_schedule_id=None,
-        delivery_target=sub.delivery_target,
-        delivery_config=dict(sub.delivery_config),
         skill_id=sub.default_skill_id,
     )
 
@@ -406,7 +398,6 @@ async def webhook_receive(
             actual_fired_at=receive_at,
             fire_source=trigger.fire_source,
             execution_mode=trigger.execution_mode,
-            delivery_target_resolved=trigger.delivery_target,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -426,7 +417,6 @@ async def webhook_receive(
             fire_id,
             pool,
             handler=handler,
-            delivery_adapters=delivery_adapters,
             wake_config=wake_config,
         )
     except Exception as exc:  # noqa: BLE001 - dispatch boundary
@@ -498,7 +488,6 @@ async def webhook_receive(
                 "fire_id": str(fire_id),
                 "status": result.status,
                 "execution_mode": trigger.execution_mode,
-                "delivery_target": trigger.delivery_target,
             }
         },
     )

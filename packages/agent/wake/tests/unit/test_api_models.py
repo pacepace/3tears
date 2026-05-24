@@ -55,13 +55,11 @@ def test_create_wake_schedule_request_round_trip_with_skill() -> None:
         task_prompt="Check the dashboard",
         name="Morning check",
         skill_id=skill_id,
-        delivery_target="conversation",
     )
     dumped = payload.model_dump()
     again = CreateWakeScheduleRequest.model_validate(dumped)
     assert again.skill_id == skill_id
     assert again.missed_fire_policy == "coalesce"
-    assert again.delivery_config == {}
 
 
 def test_create_wake_schedule_request_rejects_pre_check_fields() -> None:
@@ -122,8 +120,6 @@ def test_wake_schedule_response_round_trip() -> None:
         missed_fire_policy="coalesce",
         skill_id=None,
         context_from_schedule_id=None,
-        delivery_target="conversation",
-        delivery_config={},
         date_created=datetime.now(UTC),
         date_updated=datetime.now(UTC),
     )
@@ -152,8 +148,6 @@ def test_wake_schedule_list_response_round_trip() -> None:
         missed_fire_policy="coalesce",
         skill_id=None,
         context_from_schedule_id=None,
-        delivery_target="conversation",
-        delivery_config={},
         date_created=datetime.now(UTC),
         date_updated=datetime.now(UTC),
     )
@@ -249,7 +243,6 @@ def test_create_webhook_subscription_request_round_trip_with_default_skill() -> 
         name="github-push",
         task_prompt_template="Push to {{event.repository.full_name}}",
         execution_mode="inline",
-        delivery_target="conversation",
         default_skill_id=skill_id,
         allowed_source_pattern=r"^140\.82\.\d+\.\d+$",
         rate_limit_per_minute=30,
@@ -289,8 +282,6 @@ def test_webhook_subscription_response_round_trip() -> None:
         execution_mode="inline",
         status="active",
         task_prompt_template="x",
-        delivery_target="conversation",
-        delivery_config={},
         verification_scheme="generic_hmac_sha256",
         default_skill_id=None,
         allowed_source_pattern=None,
@@ -320,8 +311,6 @@ def test_webhook_subscription_response_accepts_vendor_verification_scheme() -> N
         execution_mode="inline",
         status="active",
         task_prompt_template="x",
-        delivery_target="conversation",
-        delivery_config={},
         verification_scheme="github",
         default_skill_id=None,
         allowed_source_pattern=None,
@@ -348,8 +337,6 @@ def test_webhook_subscription_response_rejects_invalid_scheme_shape() -> None:
         "execution_mode": "inline",
         "status": "active",
         "task_prompt_template": None,
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "default_skill_id": None,
         "allowed_source_pattern": None,
         "rate_limit_per_minute": None,
@@ -373,8 +360,6 @@ def test_create_webhook_subscription_response_carries_plaintext() -> None:
         execution_mode="inline",
         status="active",
         task_prompt_template="x",
-        delivery_target="conversation",
-        delivery_config={},
         verification_scheme="generic_hmac_sha256",
         default_skill_id=None,
         allowed_source_pattern=None,
@@ -400,8 +385,6 @@ def test_webhook_subscription_list_response_round_trip() -> None:
         execution_mode="inline",
         status="active",
         task_prompt_template="x",
-        delivery_target="conversation",
-        delivery_config={},
         verification_scheme="generic_hmac_sha256",
         default_skill_id=None,
         allowed_source_pattern=None,

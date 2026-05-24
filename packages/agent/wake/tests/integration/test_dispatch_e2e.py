@@ -115,15 +115,14 @@ async def _seed_schedule(
     name: str | None = None,
     skill_id: UUID | None = None,
     context_from_schedule_id: UUID | None = None,
-    delivery_target: str = "conversation",
 ) -> UUID:
     sched_id = schedule_id or _new_uuid()
     await pool.execute(
         "INSERT INTO agent_wake_schedules "
         "(conversation_id, schedule_id, user_id, agent_id, skill_id, schedule_type, "
         " schedule_config, execution_mode, status, next_fire_at, missed_fire_policy, "
-        " name, context_from_schedule_id, delivery_target, delivery_config) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+        " name, context_from_schedule_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         conversation_id,
         sched_id,
         user_id,
@@ -137,8 +136,6 @@ async def _seed_schedule(
         "coalesce",
         name,
         context_from_schedule_id,
-        delivery_target,
-        {},
     )
     return sched_id
 
@@ -179,7 +176,6 @@ def _make_trigger(
     skill_id: UUID | None = None,
     context_from_schedule_id: UUID | None = None,
     schedule_name: str | None = None,
-    delivery_target: str = "conversation",
 ) -> WakeTrigger:
     return WakeTrigger(
         schedule_id=schedule_id,
@@ -193,7 +189,6 @@ def _make_trigger(
         schedule_name=schedule_name,
         skill_id=skill_id,
         context_from_schedule_id=context_from_schedule_id,
-        delivery_target=delivery_target,
     )
 
 
@@ -773,7 +768,6 @@ class TestCreateDispatchingPlaceholderIntegration:
                 actual_fired_at=now,
                 fire_source="scheduled_tick",
                 execution_mode="inline",
-                delivery_target_resolved="conversation",
             )
             row = await pool.fetchrow(
                 "SELECT status FROM wake_fires WHERE conversation_id = $1 AND fire_id = $2",
@@ -873,10 +867,6 @@ class TestRateLimitWiringIntegration:
                 @property
                 def max_fires_per_user_per_day(self) -> int:
                     return 1000
-
-                @property
-                def max_email_per_recipient_per_hour(self) -> int:
-                    return 5
 
                 @property
                 def max_webhook_fires_per_subscription_per_hour(self) -> int:

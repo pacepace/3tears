@@ -1,5 +1,7 @@
 # agent-wake-06: Channels webhook receiver framework
 
+> **REMOVED 2026-05-24:** the outbound delivery framework was removed as an undesigned parallel abstraction. `WebhookReceiver` no longer takes a `delivery_adapters` argument and no longer imports `DeliveryAdapter`. The inbound webhook receiver itself (HMAC verification, subscription CRUD, rate-limit, payload templating) is UNCHANGED and fully supported — only the delivery-adapter wiring is gone. Wake fires always deliver into the conversation. The text below retains the `delivery_adapters` plumbing for history — do NOT rebuild it.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.
@@ -43,7 +45,7 @@ the HTTP routing-and-response plumbing.
 | WEBHOOK-01 | New module `packages/channels/src/threetears/channels/webhook.py` exporting `WebhookReceiver` class with `register(app, mount_path: str = "/webhooks")` method that adds a `POST {mount_path}/{subscription_id}` route. | P0 |
 | WEBHOOK-02 | The receiver delegates to `threetears.agent.wake.webhook_receive(...)` (shard 04) for the verify+rate-limit+dispatch flow. It does NOT reimplement HMAC verification or rate-limit logic. | P0 |
 | WEBHOOK-03 | HTTP response mapping: `webhook_receive` returns a `WebhookReceiveResult`; the framework maps to FastAPI/Starlette `JSONResponse(status_code=result.status_code, content={"fire_id": str(result.fire_id) or None, "message": result.message})`. 429 includes a `Retry-After` header pointing to the window rollover. | P0 |
-| WEBHOOK-04 | `WebhookReceiver` is constructed with `(pool, encryption_service, handler, wake_config, delivery_adapters)`. All wiring happens at consumer construction time; no global state. | P0 |
+| WEBHOOK-04 | `WebhookReceiver` is constructed with `(pool, encryption_service, handler, wake_config)` (~~the `delivery_adapters` arg is REMOVED 2026-05-24~~). All wiring happens at consumer construction time; no global state. | P0 |
 | WEBHOOK-05 | Signature header name is configurable; default `"X-3Tears-Webhook-Signature"` (NOT `X-MetaLLM-Signature` — the platform doesn't carry the consumer's brand). metallm's existing endpoints set the override to `"X-MetaLLM-Signature"` for backwards-compat. | P0 |
 | WEBHOOK-06 | `verification_scheme` from the subscription row determines the verification path. v1 ships `'generic_hmac_sha256'` only. Future vendor adapters (`'github'`, `'stripe'`, `'slack'`) extend by registering a verifier callable in `_VERIFIERS: dict[str, Verifier]`. | P0 |
 | WEBHOOK-07 | Source IP detection follows the existing 3tears reverse-proxy convention: read from `X-Forwarded-For` header (first hop), fall back to socket address. Existing convention shared across Slack/Discord adapters. | P0 |
@@ -100,7 +102,7 @@ from fastapi.responses import JSONResponse
 from threetears.observe import get_logger
 
 from threetears.agent.wake.config import WakeConfig
-from threetears.agent.wake.types import DeliveryAdapter, HandlerCallback
+from threetears.agent.wake.types import HandlerCallback  # DeliveryAdapter REMOVED 2026-05-24 — no outbound delivery framework
 from threetears.agent.wake.webhook_adapter import webhook_receive
 
 __all__ = ["WebhookReceiver", "Verifier"]
@@ -138,7 +140,7 @@ class WebhookReceiver:
         encryption_service: Any,
         handler: HandlerCallback,
         wake_config: WakeConfig,
-        delivery_adapters: dict[str, DeliveryAdapter],
+        # delivery_adapters: dict[str, DeliveryAdapter] REMOVED 2026-05-24 — no outbound delivery framework
         signature_header: str = _DEFAULT_SIGNATURE_HEADER,
         max_payload_bytes: int = _DEFAULT_MAX_PAYLOAD_BYTES,
     ) -> None:
@@ -146,7 +148,7 @@ class WebhookReceiver:
         self._encryption_service = encryption_service
         self._handler = handler
         self._wake_config = wake_config
-        self._delivery_adapters = delivery_adapters
+        # self._delivery_adapters REMOVED 2026-05-24 — no outbound delivery framework
         self._signature_header = signature_header
         self._max_payload_bytes = max_payload_bytes
         self._verifiers: dict[str, Verifier] = {
@@ -187,7 +189,7 @@ class WebhookReceiver:
             encryption_service=self._encryption_service,
             handler=self._handler,
             wake_config=self._wake_config,
-            delivery_adapters=self._delivery_adapters,
+            # delivery_adapters REMOVED 2026-05-24 — no outbound delivery framework
         )
 
         headers: dict[str, str] = {}

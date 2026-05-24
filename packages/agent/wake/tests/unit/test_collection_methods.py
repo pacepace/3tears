@@ -71,8 +71,6 @@ class TestScheduleInsertParams:
             "name": "status-check",
             "missed_fire_policy": "coalesce",
             "context_from_schedule_id": None,
-            "delivery_target": "conversation",
-            "delivery_config": {},
             "date_created": now,
             "date_updated": now,
         }
@@ -102,9 +100,7 @@ class TestScheduleInsertParams:
         assert params[_SCHEDULE_INSERT_COLUMNS.index("status")] == "active"
         assert params[_SCHEDULE_INSERT_COLUMNS.index("execution_mode")] == "inline"
         assert params[_SCHEDULE_INSERT_COLUMNS.index("missed_fire_policy")] == "coalesce"
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("delivery_target")] == "conversation"
         assert params[_SCHEDULE_INSERT_COLUMNS.index("schedule_config")] == {}
-        assert params[_SCHEDULE_INSERT_COLUMNS.index("delivery_config")] == {}
         assert params[_SCHEDULE_INSERT_COLUMNS.index("skill_id")] is None
 
     def test_null_jsonb_coerced_to_empty_dict(self) -> None:
@@ -187,8 +183,6 @@ class TestSubscriptionInsertParams:
             "allowed_source_pattern": None,
             "execution_mode": "inline",
             "task_prompt_template": "Investigate {{event}}",
-            "delivery_target": "conversation",
-            "delivery_config": {},
             "verification_scheme": "generic_hmac_sha256",
             "status": "active",
             "rate_limit_per_minute": 60,
@@ -216,10 +210,8 @@ class TestSubscriptionInsertParams:
         }
         params = _subscription_insert_params(data)
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("execution_mode")] == "inline"
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("delivery_target")] == "conversation"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("verification_scheme")] == "generic_hmac_sha256"
         assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("status")] == "active"
-        assert params[_SUBSCRIPTION_INSERT_COLUMNS.index("delivery_config")] == {}
 
     def test_secret_ciphertext_coerced_to_bytes(self) -> None:
         """A bytearray input is normalised to ``bytes``."""

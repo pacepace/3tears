@@ -15,7 +15,7 @@ Naming follows the agent-skills precedent
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID
@@ -24,8 +24,6 @@ if TYPE_CHECKING:
     from threetears.agent.skills.entities import AgentSkillEntity
 
 __all__ = [
-    "DeliveryAdapter",
-    "DeliveryTarget",
     "ExecutionMode",
     "FireSource",
     "FireStatus",
@@ -116,14 +114,6 @@ FireStatus = Literal[
 ]
 
 
-# ``delivery_target`` column on both ``agent_wake_schedules`` and
-# ``webhook_subscriptions``. ``'conversation'`` (default) injects the
-# wake response into the originating conversation; ``'email'`` routes
-# via a consumer-supplied ``DeliveryAdapter`` (PLACEMENT §1.17 / §3.4).
-# CHECK-pinned in the L3 schema.
-DeliveryTarget = Literal["conversation", "email"]
-
-
 # ``verification_scheme`` column on ``webhook_subscriptions``. v1
 # ships ``'generic_hmac_sha256'`` as the platform default; vendor
 # schemes (``'github'``, ``'stripe'``, ``'slack_signing'``, ...)
@@ -189,8 +179,6 @@ class WakeTrigger:
     schedule_name: str | None = None
     task_prompt: str | None = None
     context_from_schedule_id: UUID | None = None
-    delivery_target: str = "conversation"
-    delivery_config: dict[str, Any] = field(default_factory=dict)
     skill_id: UUID | None = None
 
 
@@ -203,19 +191,6 @@ class WakeDispatchResult:
     optional fixups the dispatcher may capture. Shard 03 owns the
     real producer; shard 02 only types the callable so the tick body
     can be exercised end-to-end with a stub callback.
-
-    :ivar delivery_status: per-delivery-target outcome keyed by target
-        name (e.g. ``{'email': 'delivered'}`` or
-        ``{'email': 'no_adapter'}``). Populated by
-        :func:`threetears.agent.wake.dispatch.dispatch_wake` after
-        delivery routing completes. ``'conversation'`` is a no-op
-        (handler already placed the message) so it is OMITTED from this
-        mapping rather than recorded as ``'delivered'``. Silent fires
-        record ``'skipped_silent'`` for the configured non-conversation
-        target. Shard-05 reads this off to emit Prometheus counters.
-        Empty dict when no delivery routing was attempted (i.e. when
-        the trigger's ``delivery_target == 'conversation'`` or when the
-        handler returned a non-fire status).
     """
 
     status: FireStatus
@@ -223,7 +198,6 @@ class WakeDispatchResult:
     latency_ms: int | None = None
     error: str | None = None
     display_suppressed: bool = False
-    delivery_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -347,53 +321,5 @@ class HandlerCallback(Protocol):
         :ptype pool: Any
         :return: outcome of the wake-driven turn
         :rtype: HandlerCallbackResult
-        """
-        ...
-
-
-@runtime_checkable
-class DeliveryAdapter(Protocol):
-    """Product-supplied adapter for non-``'conversation'`` delivery targets.
-
-    The default ``'conversation'`` target is a no-op: the handler
-    already wrote the assistant message into the originating
-    conversation, so there is nothing to "deliver" afterwards.
-
-    For other targets (``'email'`` per PLACEMENT §1.17 / §3.4) the
-    consumer registers a concrete adapter; the platform stays
-    SMTP-agnostic so each product can wrap its own email
-    infrastructure.
-
-    The adapter is invoked AFTER the handler returns and AFTER
-    ``[SILENT]`` detection: if the wake was silent, the delivery
-    adapter is NOT invoked (silent fires have no payload to relay).
-    """
-
-    async def deliver(
-        self,
-        trigger: WakeTrigger,
-        prepared_context: PreparedWakeContext,
-        handler_result: HandlerCallbackResult,
-        pool: Any,
-    ) -> str:
-        """Deliver the wake response to a non-conversation target.
-
-        :param trigger: immutable fire envelope
-        :ptype trigger: WakeTrigger
-        :param prepared_context: same context the handler received
-        :ptype prepared_context: PreparedWakeContext
-        :param handler_result: handler outcome (carries the assistant
-            text + message id)
-        :ptype handler_result: HandlerCallbackResult
-        :param pool: asyncpg-compatible connection pool
-        :ptype pool: Any
-        :return: short status string stored under the target key in
-            :attr:`WakeDispatchResult.delivery_status`. Convention:
-            ``'delivered'`` on success, ``'failed'`` on a non-raising
-            adapter-side failure. Raising is also acceptable -- the
-            platform catches and records ``'failed'`` itself. Do NOT
-            include the target name in this string; the caller keys
-            by target.
-        :rtype: str
         """
         ...

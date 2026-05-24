@@ -43,7 +43,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FORBIDDEN_LABEL_NAMES",
-    "WAKE_DELIVERY_TOTAL",
     "WAKE_DRIFT_SECONDS",
     "WAKE_FAILURES_TOTAL",
     "WAKE_FIRES_TOTAL",
@@ -84,7 +83,6 @@ FORBIDDEN_LABEL_NAMES: Final[frozenset[str]] = frozenset(
 WAKE_FIRES_TOTAL: Final[str] = "threetears_agent_wake_fires_total"
 WAKE_FAILURES_TOTAL: Final[str] = "threetears_agent_wake_failures_total"
 WAKE_TICK_DURATION_SECONDS: Final[str] = "threetears_agent_wake_tick_duration_seconds"
-WAKE_DELIVERY_TOTAL: Final[str] = "threetears_agent_wake_delivery_total"
 WAKE_RATE_LIMIT_REJECTIONS_TOTAL: Final[str] = "threetears_agent_wake_rate_limit_rejections_total"
 WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL: Final[str] = "threetears_agent_wake_schedule_cap_rejections_total"
 WAKE_DRIFT_SECONDS: Final[str] = "threetears_agent_wake_drift_seconds"
@@ -99,7 +97,6 @@ WAKE_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
     WAKE_FIRES_TOTAL,
     WAKE_FAILURES_TOTAL,
     WAKE_TICK_DURATION_SECONDS,
-    WAKE_DELIVERY_TOTAL,
     WAKE_RATE_LIMIT_REJECTIONS_TOTAL,
     WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL,
     WAKE_DRIFT_SECONDS,
@@ -113,7 +110,6 @@ WAKE_PROMETHEUS_NAMES: Final[tuple[str, ...]] = (
 # x 7 schedule_types x 2 modes = 126 series. Acceptable.
 _LABELS_FIRES: Final[tuple[str, ...]] = ("status", "schedule_type", "execution_mode")
 _LABELS_FAILURES: Final[tuple[str, ...]] = ("reason",)
-_LABELS_DELIVERY: Final[tuple[str, ...]] = ("target", "status")
 _LABELS_RATE_LIMIT: Final[tuple[str, ...]] = ("scope",)
 _LABELS_WEBHOOK_RECEIVED: Final[tuple[str, ...]] = ("outcome",)
 
@@ -125,7 +121,6 @@ WAKE_LABEL_SETS: Final[dict[str, tuple[str, ...]]] = {
     WAKE_FIRES_TOTAL: _LABELS_FIRES,
     WAKE_FAILURES_TOTAL: _LABELS_FAILURES,
     WAKE_TICK_DURATION_SECONDS: (),
-    WAKE_DELIVERY_TOTAL: _LABELS_DELIVERY,
     WAKE_RATE_LIMIT_REJECTIONS_TOTAL: _LABELS_RATE_LIMIT,
     WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL: (),
     WAKE_DRIFT_SECONDS: (),
@@ -160,7 +155,6 @@ class WakeMetricsEmitter:
         self._fires: Any = None
         self._failures: Any = None
         self._tick_duration: Any = None
-        self._delivery: Any = None
         self._rate_limit: Any = None
         self._schedule_cap: Any = None
         self._drift: Any = None
@@ -212,11 +206,6 @@ class WakeMetricsEmitter:
             "Wake tick body duration in seconds",
             **_kwargs(()),
         )
-        self._delivery = Counter(
-            WAKE_DELIVERY_TOTAL,
-            "Wake delivery attempts by target and status",
-            **_kwargs(_LABELS_DELIVERY),
-        )
         self._rate_limit = Counter(
             WAKE_RATE_LIMIT_REJECTIONS_TOTAL,
             "Wake rate-limit rejections by scope",
@@ -263,7 +252,6 @@ class WakeMetricsEmitter:
             self._fires,
             self._failures,
             self._tick_duration,
-            self._delivery,
             self._rate_limit,
             self._schedule_cap,
             self._drift,
@@ -286,7 +274,6 @@ class WakeMetricsEmitter:
         self._fires = None
         self._failures = None
         self._tick_duration = None
-        self._delivery = None
         self._rate_limit = None
         self._schedule_cap = None
         self._drift = None
@@ -329,8 +316,8 @@ class WakeMetricsEmitter:
         """Increment :data:`WAKE_FAILURES_TOTAL` by reason.
 
         Reasons (bounded): ``conv_deleted``, ``rate_limited``,
-        ``handler_exception``, ``delivery_failed``, ``cap_exceeded``,
-        ``no_handler``, ``other``.
+        ``handler_exception``, ``cap_exceeded``, ``no_handler``,
+        ``other``.
 
         :param reason: bounded failure reason string
         :ptype reason: str
@@ -349,26 +336,10 @@ class WakeMetricsEmitter:
             return
         self._tick_duration.observe(seconds)
 
-    def inc_delivery(self, *, target: str, status: str) -> None:
-        """Increment :data:`WAKE_DELIVERY_TOTAL` per delivery outcome.
-
-        :param target: ``'conversation'`` | ``'email'`` (consumer
-            extensions register additional targets via the
-            DeliveryAdapter registry)
-        :ptype target: str
-        :param status: ``'delivered'`` | ``'failed'`` | ``'no_adapter'``
-            | ``'skipped_silent'``
-        :ptype status: str
-        """
-        if not self._available:
-            return
-        self._delivery.labels(target=target, status=status).inc()
-
     def inc_rate_limit_rejection(self, *, scope: str) -> None:
         """Increment :data:`WAKE_RATE_LIMIT_REJECTIONS_TOTAL`.
 
-        :param scope: ``'conv'`` | ``'user'`` | ``'webhook'`` |
-            ``'email'``
+        :param scope: ``'conv'`` | ``'user'`` | ``'webhook'``
         :ptype scope: str
         """
         if not self._available:

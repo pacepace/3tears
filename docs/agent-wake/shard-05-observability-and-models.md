@@ -1,5 +1,7 @@
 # agent-wake-05: Observability + rate-limit framework + Pydantic models
 
+> **REMOVED 2026-05-24:** the outbound delivery framework was removed as an undesigned parallel abstraction. The `3tears_agent_wake_delivery_total` counter (OBS-07), the `delivery_failed` failure reason, the `max_email_per_recipient_per_hour` `WakeConfig` field + its default (OBS-15 / OBS-16), and the `delivery_target` / `delivery_config` / `delivery_target_resolved` / `delivery_status` Pydantic model fields are GONE. Wake fires now always deliver into the conversation; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The text below retains these for history — the struck requirements must NOT be rebuilt.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.
@@ -59,11 +61,11 @@ panels).
 |----|-------------|----------|
 | OBS-01 | New module `packages/agent/wake/src/threetears/agent/wake/metrics.py` exporting Prometheus counter / histogram instances. | P0 |
 | OBS-02 | Counter `3tears_agent_wake_fires_total{status, schedule_type, execution_mode}` — 4 statuses × 6 types × 2 modes = 48 series max. | P0 |
-| OBS-03 | Counter `3tears_agent_wake_failures_total{reason}` — bounded set of reasons (`conv_deleted`, `rate_limited`, `pre_check_failed`, `handler_exception`, `delivery_failed`, etc.). | P0 |
+| OBS-03 | Counter `3tears_agent_wake_failures_total{reason}` — bounded set of reasons (`conv_deleted`, `rate_limited`, `pre_check_failed`, `handler_exception`, ~~`delivery_failed`~~ ~~[REMOVED 2026-05-24]~~, etc.). | P0 |
 | OBS-04 | Histogram `3tears_agent_wake_tick_duration_seconds` (no labels — single histogram). | P0 |
 | OBS-05 | Counter `3tears_agent_wake_pre_check_total{pre_check_type, outcome}` — outcome in `output | empty | skip_prefix | failed`. | P0 |
 | OBS-06 | Histogram `3tears_agent_wake_pre_check_duration_seconds{pre_check_type}`. | P0 |
-| OBS-07 | Counter `3tears_agent_wake_delivery_total{target, status}` — target in `conversation | email | future-values`; status in `delivered | failed | suppressed_silent`. | P0 |
+| ~~OBS-07~~ | ~~[REMOVED 2026-05-24]~~ ~~Counter `3tears_agent_wake_delivery_total{target, status}` — target in `conversation | email | future-values`; status in `delivered | failed | suppressed_silent`.~~ No delivery framework; do NOT add this counter. | ~~P0~~ |
 | OBS-08 | Counter `3tears_agent_wake_skill_load_total{outcome}` — outcome in `loaded | skipped_invalid | skipped_missing | skipped_disabled`. | P0 |
 | OBS-09 | Counter `3tears_agent_wake_webhook_received_total{outcome}` — outcome in `accepted | auth_failed | rate_limited | bad_template | source_rejected | not_found`. | P0 |
 | OBS-10 | NO labels including `conversation_id`, `user_id`, `schedule_id`, `subscription_id`. Unbounded cardinality. Enforced via a drift-guard test. | P0 |
@@ -71,8 +73,8 @@ panels).
 | OBS-12 | Loki event payloads include `schedule_id` / `conversation_id` / `user_id` / `schedule_type` / `execution_mode` / `fire_source` for grepability. NEVER include `task_prompt` content (PII risk). | P0 |
 | OBS-13 | New module `packages/agent/wake/src/threetears/agent/wake/rate_limit.py` exporting `_check_rate_limit(trigger, pool, wake_config) -> bool`. Returns True when both per-conv and per-user counts are under cap. | P0 |
 | OBS-14 | Rate-limit query semantics: count `wake_fires` rows in the last 24h with `status='fired'` (rate_limited rows do NOT count toward the cap because their `next_fire_at` already bumped past the window). Per-user count joins through both `agent_wake_schedules` AND `webhook_subscriptions` to cover both fire sources. | P0 |
-| OBS-15 | `WakeConfig` Protocol in `packages/agent/wake/src/threetears/agent/wake/config.py` carrying: `max_fires_per_conv_per_day`, `max_fires_per_user_per_day`, `max_email_per_recipient_per_hour`, `max_webhook_fires_per_subscription_per_hour`, `max_schedules_per_conversation`, `http_allowed_hosts`, `loki_client`, `loki_named_queries`, `postgres_named_queries`. | P0 |
-| OBS-16 | Default values: per-conv 24, per-user 100, per-email 5, per-webhook-sub 60, max-schedules 10. These are the DEFAULT VALUES (consumer can override via their `WakeConfig` impl). | P0 |
+| OBS-15 | `WakeConfig` Protocol in `packages/agent/wake/src/threetears/agent/wake/config.py` carrying: `max_fires_per_conv_per_day`, `max_fires_per_user_per_day`, ~~`max_email_per_recipient_per_hour`~~ ~~[REMOVED 2026-05-24]~~, `max_webhook_fires_per_subscription_per_hour`, `max_schedules_per_conversation`, `http_allowed_hosts`, `loki_client`, `loki_named_queries`, `postgres_named_queries`. | P0 |
+| OBS-16 | Default values: per-conv 24, per-user 100, ~~per-email 5~~ ~~[REMOVED 2026-05-24]~~, per-webhook-sub 60, max-schedules 10. These are the DEFAULT VALUES (consumer can override via their `WakeConfig` impl). | P0 |
 | OBS-17 | Pydantic request/response models: `CreateWakeScheduleRequest`, `UpdateWakeScheduleRequest`, `WakeScheduleResponse`, `WakeScheduleListResponse`, `WakeFireResponse`, `WakeFireListResponse`, `CreateWebhookSubscriptionRequest`, `UpdateWebhookSubscriptionRequest`, `WebhookSubscriptionResponse`, `WebhookSubscriptionListResponse`, `WakePreCheckTypeResponse`, `WakePreCheckTypeListResponse`. | P0 |
 | OBS-18 | Pydantic models live in `packages/agent/wake/src/threetears/agent/wake/api_models.py` so they can be imported by any consuming product's FastAPI router without dragging in the full collection layer. | P0 |
 | OBS-19 | Rate-limited tick handling: when cap is hit on a scheduled-tick fire, insert ONE `wake_fires` row with `status='rate_limited'` AND UPDATE the schedule's `next_fire_at` to the window rollover time. The schedule resumes naturally at the next window. Schedule is NOT paused. | P0 |
@@ -104,8 +106,7 @@ class WakeConfig(Protocol):
     @property
     def max_fires_per_user_per_day(self) -> int: ...
 
-    @property
-    def max_email_per_recipient_per_hour(self) -> int: ...
+    # max_email_per_recipient_per_hour REMOVED 2026-05-24 — no outbound delivery framework
 
     @property
     def max_webhook_fires_per_subscription_per_hour(self) -> int: ...
@@ -130,7 +131,7 @@ class WakeConfig(Protocol):
 
 DEFAULT_MAX_FIRES_PER_CONV_PER_DAY = 24
 DEFAULT_MAX_FIRES_PER_USER_PER_DAY = 100
-DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR = 5
+# DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR REMOVED 2026-05-24 — no outbound delivery framework
 DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR = 60
 DEFAULT_MAX_SCHEDULES_PER_CONVERSATION = 10
 ```
@@ -224,8 +225,7 @@ class CreateWakeScheduleRequest(BaseModel):
     pre_check_type: str | None = None
     pre_check_config: dict[str, Any] = Field(default_factory=dict)
     context_from_schedule_id: str | None = None
-    delivery_target: Literal["conversation", "email"] = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: list[str] = Field(default_factory=list)
 
 
@@ -251,8 +251,7 @@ class WakeScheduleResponse(BaseModel):
     pre_check_type: str | None
     pre_check_config: dict[str, Any]
     context_from_schedule_id: str | None
-    delivery_target: str
-    delivery_config: dict[str, Any]
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: list[str]    # in position order
     date_created: str
     date_updated: str
@@ -277,8 +276,7 @@ class WakeFireResponse(BaseModel):
     duration_ms: int | None
     pre_check_output: str | None
     pre_check_duration_ms: int | None
-    delivery_target_resolved: str
-    delivery_status: str | None
+    # delivery_target_resolved / delivery_status REMOVED 2026-05-24 — no outbound delivery framework
     display_suppressed: bool
 
 
@@ -291,8 +289,7 @@ class CreateWebhookSubscriptionRequest(BaseModel):
     name: str | None = None
     task_prompt_template: str
     execution_mode: Literal["inline", "spawn"] = "inline"
-    delivery_target: Literal["conversation", "email"] = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: list[str] = Field(default_factory=list)
     allowed_source_pattern: str | None = None
 
@@ -311,8 +308,7 @@ class WebhookSubscriptionResponse(BaseModel):
     execution_mode: str
     status: str
     task_prompt_template: str | None
-    delivery_target: str
-    delivery_config: dict[str, Any]
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     verification_scheme: str
     allowed_source_pattern: str | None
     last_fired_at: str | None
@@ -396,7 +392,7 @@ class WakePreCheckTypeListResponse(BaseModel):
 
 9. **`config_jsonschema` rendering on `WakePreCheckTypeResponse`.** The jsonb column is rendered as a Python dict in the response — Pydantic serializes to JSON automatically. The shape is the JSON Schema document, not a re-rendered form schema.
 
-10. **Email rate-limit per recipient.** Lives in the email delivery adapter (product-side). The platform exports the default value via `WakeConfig.max_email_per_recipient_per_hour`; the product's email adapter reads it and applies the limit.
+10. ~~**Email rate-limit per recipient.** Lives in the email delivery adapter (product-side). The platform exports the default value via `WakeConfig.max_email_per_recipient_per_hour`; the product's email adapter reads it and applies the limit.~~ ~~[REMOVED 2026-05-24]~~ — no outbound delivery framework; do NOT build email rate-limiting.
 
 ---
 

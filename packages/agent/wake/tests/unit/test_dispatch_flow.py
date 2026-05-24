@@ -2,10 +2,9 @@
 
 Pool-free unit cases: with ``pool=None`` the context_from + skill
 resolvers short-circuit to ``()`` / ``None`` so the handler-invocation
-+ ``[SILENT]`` detection + delivery routing paths can be exercised
-without touching the database. The DB-touching paths
-(``context_from`` chain resolution, skill resolution) live in the
-integration tests.
++ ``[SILENT]`` detection paths can be exercised without touching the
+database. The DB-touching paths (``context_from`` chain resolution,
+skill resolution) live in the integration tests.
 
 Covered branches:
 
@@ -14,7 +13,7 @@ Covered branches:
   text preserved
 - handler returns ``status='fired'`` with ``[SILENT]`` content ->
   result promoted to ``status='fired_silent'``,
-  ``display_suppressed=True``, no delivery
+  ``display_suppressed=True``
 - handler returns explicit ``status='fired_silent'`` -> result keeps
   that status, ``display_suppressed=True``
 - handler returns ``status='yielded'`` -> result carries that status
@@ -23,18 +22,10 @@ Covered branches:
   preserves both fields
 - handler raises -> ``dispatch_wake`` propagates (the tick caller
   handles the exception per shard-02 contract)
-- delivery_target='email' + adapter registered -> adapter invoked
-  with the handler result, returned status recorded
-- delivery_target='email' + NO adapter registered -> result's
-  ``delivery_status['email'] == 'no_adapter'``, NO raise
-- delivery_target='email' + adapter raises -> result's
-  ``delivery_status['email'] == 'failed'``, NO raise out of dispatch
-- delivery_target='email' + [SILENT] -> adapter NOT invoked + result's
-  ``delivery_status['email'] == 'skipped_silent'``
 - handler explicitly returns ``status='fired_silent'`` WITHOUT the
   ``[SILENT]`` marker -> the self-reported silent is authoritative:
-  ``display_suppressed=True`` AND delivery is skipped (matches the
-  fired_silent + marker case for coherence)
+  ``display_suppressed=True`` (matches the fired_silent + marker case
+  for coherence)
 """
 
 from __future__ import annotations
@@ -53,7 +44,6 @@ from threetears.agent.wake.metrics import (
     reset_wake_emitter_for_testing,
 )
 from threetears.agent.wake.types import (
-    DeliveryAdapter,
     HandlerCallback,
     HandlerCallbackResult,
     PreparedWakeContext,
@@ -67,7 +57,6 @@ def _new_uuid() -> UUID:
 
 def _make_trigger(
     *,
-    delivery_target: str = "conversation",
     skill_id: UUID | None = None,
     context_from_schedule_id: UUID | None = None,
 ) -> WakeTrigger:
@@ -81,7 +70,6 @@ def _make_trigger(
         schedule_type="interval",
         fired_at=datetime.now(UTC),
         schedule_name="unit-test",
-        delivery_target=delivery_target,
         skill_id=skill_id,
         context_from_schedule_id=context_from_schedule_id,
     )
@@ -121,41 +109,6 @@ class _RaisingHandler(HandlerCallback):
     ) -> HandlerCallbackResult:
         del trigger, prepared_context, pool
         raise self._exc
-
-
-# parity-with: threetears.agent.wake.types.DeliveryAdapter
-class _RecordingAdapter(DeliveryAdapter):
-    """Records every invocation; returns a configured status."""
-
-    def __init__(self, status: str = "delivered") -> None:
-        self._status = status
-        self.calls: list[tuple[WakeTrigger, HandlerCallbackResult]] = []
-
-    async def deliver(
-        self,
-        trigger: WakeTrigger,
-        prepared_context: PreparedWakeContext,
-        handler_result: HandlerCallbackResult,
-        pool: Any,
-    ) -> str:
-        del prepared_context, pool
-        self.calls.append((trigger, handler_result))
-        return self._status
-
-
-# parity-with: threetears.agent.wake.types.DeliveryAdapter
-class _RaisingAdapter(DeliveryAdapter):
-    """Raises on deliver -- pins the "delivery failure must not escape" branch."""
-
-    async def deliver(
-        self,
-        trigger: WakeTrigger,
-        prepared_context: PreparedWakeContext,
-        handler_result: HandlerCallbackResult,
-        pool: Any,
-    ) -> str:
-        del trigger, prepared_context, handler_result, pool
-        raise RuntimeError("smtp connection refused")
 
 
 class TestHappyPathFiredStatus:
@@ -246,8 +199,7 @@ class TestSilentPromotion:
         result would carry ``display_suppressed=False`` alongside
         ``status='fired_silent'`` -- an internally inconsistent state.
         """
-        trigger = _make_trigger(delivery_target="email")
-        adapter = _RecordingAdapter(status="delivered")
+        trigger = _make_trigger()
         handler = _StubHandler(
             HandlerCallbackResult(
                 status="fired_silent",
@@ -260,18 +212,12 @@ class TestSilentPromotion:
             _new_uuid(),
             pool=None,
             handler=handler,
-            delivery_adapters={"email": adapter},
         )
         # status stays fired_silent (the handler's self-report wins)
         assert result.status == "fired_silent"
         # display_suppressed is True even without the marker -- the
         # explicit fired_silent self-report is enough on its own
         assert result.display_suppressed is True
-        # delivery routing is skipped on silent fires regardless of
-        # marker presence -- shard-05 distinguishes "no adapter" from
-        # "agent chose silence" via this string
-        assert adapter.calls == []
-        assert result.delivery_status == {"email": "skipped_silent"}
 
 
 class TestYieldedStatusPropagates:
@@ -341,135 +287,6 @@ class TestHandlerExceptionPropagates:
             )
 
 
-class TestDeliveryRoutingEmail:
-    """Non-conversation delivery routes through the registered adapter."""
-
-    async def test_email_adapter_invoked_on_fired(self) -> None:
-        trigger = _make_trigger(delivery_target="email")
-        adapter = _RecordingAdapter(status="delivered")
-        handler = _StubHandler(
-            HandlerCallbackResult(
-                status="fired",
-                assistant_message_content="daily digest",
-                target_conversation_id=trigger.conversation_id,
-            ),
-        )
-        result = await dispatch_wake(
-            trigger,
-            _new_uuid(),
-            pool=None,
-            handler=handler,
-            delivery_adapters={"email": adapter},
-        )
-        assert result.status == "fired"
-        assert len(adapter.calls) == 1
-        # caller passed the trigger + handler result through
-        recv_trigger, recv_result = adapter.calls[0]
-        assert recv_trigger.delivery_target == "email"
-        assert recv_result.assistant_message_content == "daily digest"
-        # adapter's returned status string lands on delivery_status
-        # under the target key for shard-05 metrics
-        assert result.delivery_status == {"email": "delivered"}
-
-    async def test_email_adapter_not_invoked_on_silent(self) -> None:
-        trigger = _make_trigger(delivery_target="email")
-        adapter = _RecordingAdapter(status="delivered")
-        handler = _StubHandler(
-            HandlerCallbackResult(
-                status="fired",
-                assistant_message_content="[SILENT] no digest today",
-                target_conversation_id=trigger.conversation_id,
-            ),
-        )
-        result = await dispatch_wake(
-            trigger,
-            _new_uuid(),
-            pool=None,
-            handler=handler,
-            delivery_adapters={"email": adapter},
-        )
-        assert result.status == "fired_silent"
-        assert adapter.calls == []
-        # silent fires record 'skipped_silent' so shard-05 metrics can
-        # distinguish "no adapter" from "agent chose silence"
-        assert result.delivery_status == {"email": "skipped_silent"}
-
-    async def test_no_adapter_registered_records_audit_status(self) -> None:
-        """Missing adapter records ``delivery_status['email']='no_adapter'``."""
-        trigger = _make_trigger(delivery_target="email")
-        handler = _StubHandler(
-            HandlerCallbackResult(
-                status="fired",
-                assistant_message_content="digest",
-                target_conversation_id=trigger.conversation_id,
-            ),
-        )
-        # passes no delivery_adapters at all -- the registry default is empty
-        result = await dispatch_wake(
-            trigger,
-            _new_uuid(),
-            pool=None,
-            handler=handler,
-        )
-        # delivery failed to route, but the fire still succeeded
-        assert result.status == "fired"
-        # The audit string -- promised by the test name, delivered by
-        # delivery_status (Critic finding #6 + #1: previously the
-        # status string lived only in log output and the test was
-        # asserting only the fire status; now WakeDispatchResult
-        # surfaces it so the audit claim has teeth).
-        assert result.delivery_status == {"email": "no_adapter"}
-
-    async def test_adapter_raise_does_not_escape(self) -> None:
-        trigger = _make_trigger(delivery_target="email")
-        adapter = _RaisingAdapter()
-        handler = _StubHandler(
-            HandlerCallbackResult(
-                status="fired",
-                assistant_message_content="digest",
-                target_conversation_id=trigger.conversation_id,
-            ),
-        )
-        # raising adapter is logged + recorded, but the dispatch
-        # completes -- the assistant message already landed in the
-        # conversation, so a failed side-channel must not invalidate
-        # the fire.
-        result = await dispatch_wake(
-            trigger,
-            _new_uuid(),
-            pool=None,
-            handler=handler,
-            delivery_adapters={"email": adapter},
-        )
-        assert result.status == "fired"
-        assert result.delivery_status == {"email": "failed"}
-
-    async def test_conversation_target_records_empty_delivery_status(self) -> None:
-        """``delivery_target='conversation'`` is a no-op -- delivery_status stays empty.
-
-        The handler placed the message in the conversation; there is
-        no side-channel to route. shard-05's emit treats an empty dict
-        as "no delivery routing attempted" and does NOT increment any
-        delivery counter.
-        """
-        trigger = _make_trigger(delivery_target="conversation")
-        handler = _StubHandler(
-            HandlerCallbackResult(
-                status="fired",
-                assistant_message_content="visible reply",
-                target_conversation_id=trigger.conversation_id,
-            ),
-        )
-        result = await dispatch_wake(
-            trigger,
-            _new_uuid(),
-            pool=None,
-            handler=handler,
-        )
-        assert result.status == "fired"
-        assert result.delivery_status == {}
-
-
 class TestLatencyComputedWhenAbsent:
     """``dispatch_wake`` synthesises latency_ms when the handler omits it."""
 
@@ -532,10 +349,6 @@ class _TinyCapsConfig:
         return self._user_cap
 
     @property
-    def max_email_per_recipient_per_hour(self) -> int:
-        return 5
-
-    @property
     def max_webhook_fires_per_subscription_per_hour(self) -> int:
         return 60
 
@@ -583,10 +396,10 @@ class TestRateLimitWiring:
     counter, and the event constant existed in shard-05 but had no
     production call site. dispatch_wake now invokes
     ``_check_rate_limit`` BEFORE any handler work; on rejection the
-    handler is NEVER invoked, no delivery adapters are called, the
-    matching Prometheus counter increments, and the result carries
-    ``status='skipped_rate_limit'`` so the caller can finalize the
-    ``wake_fires`` row with the terminal status.
+    handler is NEVER invoked, the matching Prometheus counter
+    increments, and the result carries ``status='skipped_rate_limit'``
+    so the caller can finalize the ``wake_fires`` row with the
+    terminal status.
     """
 
     async def test_per_conv_cap_short_circuits_without_invoking_handler(self) -> None:
@@ -608,7 +421,6 @@ class TestRateLimitWiring:
                 target_conversation_id=trigger.conversation_id,
             ),
         )
-        adapter = _RecordingAdapter()
         # per-conv cap = 1; stub returns 1 for the per-conv query so
         # the helper trips on the FIRST fetchval (per-user query is
         # skipped on conv-cap-hit).
@@ -618,7 +430,6 @@ class TestRateLimitWiring:
             _new_uuid(),
             pool=pool,
             handler=handler,
-            delivery_adapters={"email": adapter},
             wake_config=_TinyCapsConfig(conv_cap=1),
         )
         assert result.status == "skipped_rate_limit"
@@ -626,8 +437,6 @@ class TestRateLimitWiring:
         assert "conv" in result.error
         # handler MUST NOT have been invoked
         assert handler.invocations == []
-        # adapter MUST NOT have been invoked
-        assert adapter.calls == []
         # only the per-conv query ran -- per-user is skipped on conv-hit
         assert len(pool.calls) == 1
         # Prometheus counter incremented by 1 with scope='conv'

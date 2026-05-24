@@ -1,5 +1,7 @@
 # agent-wake — long-running agent foundation
 
+> **REMOVED 2026-05-24:** the outbound delivery framework (delivery_target / delivery_config / DeliveryAdapter / email-SMTP adapter / delivery_status / EVENT_DELIVERY_* / inc_delivery / max_email_per_recipient_per_hour / user_email_verified) was removed as an undesigned parallel abstraction. Wake fires now always deliver into the conversation; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The text below is retained for history; `dispatch_wake` no longer takes a `delivery_adapters` argument.
+
 > **Design-decision log:** see `metallm/docs/long_running/PLACEMENT.md` Section 1 for the canonical decision log. Key changes captured below.
 
 ## Why this release exists
@@ -18,7 +20,7 @@ The [`agent-tools-eligibility`](../agent-tools-eligibility/shard-01-tool-eligibi
   - The `wake_fires` history table.
   - The `webhook_subscriptions` table with a NULLABLE `default_skill_id` FK.
   - The tick engine + `_compute_next_fire_at`.
-  - The `dispatch_wake(trigger, fire_id, pool, *, handler, wake_config, delivery_adapters)` convergence point.
+  - The `dispatch_wake(trigger, fire_id, pool, *, handler, wake_config)` convergence point (~~`delivery_adapters` REMOVED 2026-05-24~~).
   - The agent tools for schedule + webhook subscription CRUD (no skill attach/detach tools — skill is set via `_create`/`_update`).
   - Per-conv / per-user rate-limit mechanism (`_check_rate_limit`) reading caps from a product-supplied `WakeConfig` protocol.
 
@@ -59,7 +61,7 @@ These are pre-resolved per the design conversations on 2026-05-19. Shards refere
 | Pre-check tools | Ordinary `TearsTool` subclasses with `tool_eligible=False, skill_eligible=True` in `3tears-agent-tools`. The wake's attached skill surfaces them. | PLACEMENT §1.2 / §1.6 |
 | `[SILENT]` suppression | LLM response starting with `[SILENT]` stored but `wake_fires.display_suppressed=true` + product-side `messages.display='hidden'`. | PLACEMENT §1.4 |
 | `context_from` chains | Single-hop, same-conversation only. | |
-| Delivery routing | `delivery_target` enum starts with `conversation` (default) + `email`. Email rate-limited per-recipient (5/hr default). `DeliveryAdapter` protocol platform; concrete adapters product. | |
+| ~~Delivery routing~~ | ~~[REMOVED 2026-05-24]~~ ~~`delivery_target` enum starts with `conversation` (default) + `email`. Email rate-limited per-recipient (5/hr default). `DeliveryAdapter` protocol platform; concrete adapters product.~~ Wake fires now always deliver into the conversation. Do NOT rebuild this. | |
 | Skill table location | `3tears-agent-skills.agent_skills` (sibling package; ships in same release or earlier). FK in `agent_wake_schedules.skill_id`. | |
 | Webhook receiver host | `3tears-channels`. Per-subscription rate-limit defaults product-supplied. | |
 | Per-conv / per-user rate-limit | Mechanism platform (`_check_rate_limit`); cap values product-supplied via `WakeConfig`. | |
@@ -75,7 +77,7 @@ Shards are sequential. Each one depends on the previous.
 |---|---|---|
 | 01 | [Schema + collections](shard-01-schema-and-collections.md) | `agent_wake_schedules` (with nullable `skill_id` FK), `wake_fires`, `webhook_subscriptions` (with nullable `default_skill_id` FK). **No `wake_pre_check_types`, no junction tables.** Entity classes + Collections + agent-scope migration registration. |
 | 02 | [Tick engine + distributed lock](shard-02-tick-and-distributed-lock.md) | (a) Lift `nats_distributed_lock` into `3tears-nats`. (b) `wake_tick_job` body + `_compute_next_fire_at` + `WakeScheduleCollection.claim_and_reschedule` + missed-fire policy handling. |
-| 03 | [Dispatch handler + WakeTrigger](shard-03-dispatch-handler.md) | `WakeTrigger`, `WakeDispatchResult`, `HandlerCallback` protocol, `dispatch_wake(trigger, fire_id, pool, handler, wake_config, delivery_adapters)` with: rate-limit, conv lookup, skill resolution (SINGLE), context_from resolution, [SILENT] suppression detection, delivery routing. **No pre-check executor framework.** |
+| 03 | [Dispatch handler + WakeTrigger](shard-03-dispatch-handler.md) | `WakeTrigger`, `WakeDispatchResult`, `HandlerCallback` protocol, `dispatch_wake(trigger, fire_id, pool, handler, wake_config)` (~~`delivery_adapters` REMOVED 2026-05-24~~) with: rate-limit, conv lookup, skill resolution (SINGLE), context_from resolution, [SILENT] suppression detection ~~delivery routing (REMOVED 2026-05-24)~~. **No pre-check executor framework.** |
 | 04 | [Agent tools + webhook adapter](shard-04-agent-tools-and-webhook-adapter.md) | 13 `TearsTool` subclasses: six wake-schedule (`Create` with `skill_id` param, `Update` with `skill_id`, `List`, `Pause`, `Resume`, `Delete`) + seven webhook-subscription (`Create` with `default_skill_id`, `Update`, `List`, `Pause`, `Resume`, `Delete`, `RotateSecret`). **No `wake_skill_attach`/`wake_skill_detach`.** Plus `WebhookReceiver → WakeTrigger` adapter glue. |
 | 05 | [Observability + rate-limit + Pydantic models](shard-05-observability-and-models.md) | Prometheus counters with `3tears_agent_wake_*` prefix. Loki event names. `_check_rate_limit` + per-conv active-schedule cap framework. `WakeConfig` protocol. Pydantic request/response models. |
 | 06 | [Channels webhook receiver framework](shard-06-channels-webhook-receiver.md) | `3tears-channels`-side: `WebhookReceiver` (HMAC-SHA256 verification, per-subscription rate-limit, payload templating with sandboxed Jinja2, subscription CRUD primitive). |
@@ -141,5 +143,5 @@ This release stops at the abstraction boundary. Specifically NOT in scope here:
 - **URL allow-list / named-query contents.** Mechanism in `3tears-agent-tools` (the tools themselves read product-supplied config); values configured by the consuming product.
 - **Per-conv / per-user cap values.** Mechanism platform; values supplied by the product's `WakeConfig`.
 - **Grafana dashboards.** Platform emits counters; product builds dashboard.
-- **Email SMTP wrapper.** Framework platform; concrete adapter product.
+- ~~**Email SMTP wrapper.** Framework platform; concrete adapter product.~~ ~~[REMOVED 2026-05-24]~~ — outbound delivery framework removed; do NOT build an email/SMTP adapter.
 - **Skill-body rendering / per-turn composition.** Handled by `3tears-agent-skills.rendering.compose_turn_context`. This package just resolves `skill_id` to an `AgentSkillEntity` and hands it to the consumer via `PreparedWakeContext.attached_skill`.

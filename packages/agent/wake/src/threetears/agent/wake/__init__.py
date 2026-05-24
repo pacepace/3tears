@@ -58,7 +58,6 @@ from threetears.agent.wake.collections import (
 from threetears.agent.wake.config import (
     DEFAULT_HTTP_ALLOWED_HOSTS,
     DEFAULT_LOKI_NAMED_QUERIES,
-    DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR,
     DEFAULT_MAX_FIRES_PER_CONV_PER_DAY,
     DEFAULT_MAX_FIRES_PER_USER_PER_DAY,
     DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR,
@@ -74,10 +73,6 @@ from threetears.agent.wake.entities import (
     WebhookSubscriptionEntity,
 )
 from threetears.agent.wake.events import (
-    EVENT_DELIVERY_ATTEMPT,
-    EVENT_DELIVERY_FAILED,
-    EVENT_DELIVERY_SKIPPED_SILENT,
-    EVENT_DELIVERY_SUCCESS,
     EVENT_FIRE_DISPATCHED,
     EVENT_FIRE_DRIFT,
     EVENT_FIRE_FAILED,
@@ -99,7 +94,6 @@ from threetears.agent.wake.hmac_util import (
 )
 from threetears.agent.wake.metrics import (
     FORBIDDEN_LABEL_NAMES,
-    WAKE_DELIVERY_TOTAL,
     WAKE_DRIFT_SECONDS,
     WAKE_FAILURES_TOTAL,
     WAKE_FIRES_TOTAL,
@@ -150,8 +144,6 @@ from threetears.agent.wake.tools import (
     validate_schedule_config,
 )
 from threetears.agent.wake.types import (
-    DeliveryAdapter,
-    DeliveryTarget,
     ExecutionMode,
     FireSource,
     FireStatus,
@@ -174,17 +166,12 @@ from threetears.agent.wake.webhook_adapter import (
 __all__ = [
     "DEFAULT_HTTP_ALLOWED_HOSTS",
     "DEFAULT_LOKI_NAMED_QUERIES",
-    "DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR",
     "DEFAULT_MAX_FIRES_PER_CONV_PER_DAY",
     "DEFAULT_MAX_FIRES_PER_USER_PER_DAY",
     "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
     "DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR",
     "DEFAULT_POSTGRES_NAMED_QUERIES",
     "DEFAULT_WAKE_CONFIG",
-    "EVENT_DELIVERY_ATTEMPT",
-    "EVENT_DELIVERY_FAILED",
-    "EVENT_DELIVERY_SKIPPED_SILENT",
-    "EVENT_DELIVERY_SUCCESS",
     "EVENT_FIRE_DISPATCHED",
     "EVENT_FIRE_DRIFT",
     "EVENT_FIRE_FAILED",
@@ -204,7 +191,6 @@ __all__ = [
     "RateLimitScope",
     "ScheduleCapExceeded",
     "create_schedule_serialized",
-    "WAKE_DELIVERY_TOTAL",
     "WAKE_DRIFT_SECONDS",
     "WAKE_FAILURES_TOTAL",
     "WAKE_FIRES_TOTAL",
@@ -218,8 +204,6 @@ __all__ = [
     "CreateWakeScheduleRequest",
     "CreateWebhookSubscriptionRequest",
     "CreateWebhookSubscriptionResponse",
-    "DeliveryAdapter",
-    "DeliveryTarget",
     "DispatchCallback",
     "EncryptionService",
     "ExecutionMode",

@@ -50,7 +50,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from threetears.agent.wake.config import WakeConfig
     from threetears.agent.wake.entities import EncryptionService
-    from threetears.agent.wake.types import DeliveryAdapter, HandlerCallback
+    from threetears.agent.wake.types import HandlerCallback
 
 __all__ = [
     "DEFAULT_MAX_PAYLOAD_BYTES",
@@ -128,8 +128,8 @@ class WebhookReceiver:
 
     Consumers construct the receiver at app-startup time and register
     it on their FastAPI app via :meth:`register`. All dependencies
-    (asyncpg pool, encryption service, handler callback, wake config,
-    delivery adapters) are constructor args -- no global state.
+    (asyncpg pool, encryption service, handler callback, wake config)
+    are constructor args -- no global state.
 
     Per PLACEMENT §1.13 the receiver does NOT host subscription CRUD
     endpoints. CRUD belongs in the consumer's REST router or the
@@ -145,8 +145,6 @@ class WebhookReceiver:
         callback for product-specific processing
     :ivar _wake_config: consumer's :class:`WakeConfig`; carries the
         per-conv + per-user caps the dispatcher enforces at fire time
-    :ivar _delivery_adapters: mapping of ``DeliveryTarget`` to adapter;
-        forwarded to the dispatcher for non-conversation targets
     :ivar _signature_header: header carrying the HMAC signature
         (default ``'X-3Tears-Webhook-Signature'``; consumers with an
         existing brand can override -- e.g. ``'X-MetaLLM-Signature'``)
@@ -165,7 +163,6 @@ class WebhookReceiver:
         encryption_service: EncryptionService,
         handler: HandlerCallback,
         wake_config: WakeConfig,
-        delivery_adapters: dict[str, DeliveryAdapter] | None = None,
         signature_header: str = DEFAULT_SIGNATURE_HEADER,
         max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
     ) -> None:
@@ -187,10 +184,6 @@ class WebhookReceiver:
         :ptype handler: HandlerCallback
         :param wake_config: consumer's :class:`WakeConfig`
         :ptype wake_config: WakeConfig
-        :param delivery_adapters: optional mapping of delivery target
-            name to :class:`DeliveryAdapter`; ``None`` means
-            conversation-only delivery (the platform default)
-        :ptype delivery_adapters: dict[str, DeliveryAdapter] | None
         :param signature_header: header name carrying the HMAC
             signature (default
             ``DEFAULT_SIGNATURE_HEADER``)
@@ -203,9 +196,6 @@ class WebhookReceiver:
         self._encryption_service = encryption_service
         self._handler = handler
         self._wake_config = wake_config
-        self._delivery_adapters: dict[str, DeliveryAdapter] = (
-            dict(delivery_adapters) if delivery_adapters is not None else {}
-        )
         self._signature_header = signature_header
         self._max_payload_bytes = max_payload_bytes
         self._verifiers: dict[str, Verifier] = {
@@ -347,7 +337,6 @@ class WebhookReceiver:
                 pool=self._pool,
                 encryption_service=self._encryption_service,
                 handler=self._handler,
-                delivery_adapters=self._delivery_adapters,
                 wake_config=self._wake_config,
             )
             return self._json_response(result)
@@ -425,7 +414,6 @@ class WebhookReceiver:
             pool=self._pool,
             encryption_service=self._encryption_service,
             handler=self._handler,
-            delivery_adapters=self._delivery_adapters,
             wake_config=self._wake_config,
             pre_verified=True,
         )

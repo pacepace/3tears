@@ -267,8 +267,6 @@ async def _dispatch_one(
         schedule_name=schedule.name,
         task_prompt=schedule.task_prompt,
         context_from_schedule_id=schedule.context_from_schedule_id,
-        delivery_target=schedule.delivery_target,
-        delivery_config=schedule.delivery_config,
         skill_id=schedule.skill_id,
     )
     await fires.create_dispatching(
@@ -280,7 +278,6 @@ async def _dispatch_one(
         actual_fired_at=tick_at,
         fire_source="scheduled_tick",
         execution_mode=schedule.execution_mode,
-        delivery_target_resolved=schedule.delivery_target,
     )
 
     # Drift observation: every fire's drift is recorded into the

@@ -6,9 +6,9 @@ Covers the entity contract:
 - Composite ``_id`` tuple is set when ``conversation_id`` + the bare
   id are both present in the constructor data.
 - Field accessors round-trip values through ``BaseEntity.__setattr__``.
-- JSONB columns (``schedule_config``, ``delivery_config``) return a
-  fresh dict on each getter call so callers cannot mutate the cached
-  row state via the accessor.
+- The JSONB ``schedule_config`` column returns a fresh dict on each
+  getter call so callers cannot mutate the cached row state via the
+  accessor.
 - ``secret_ciphertext`` accepts ``bytes`` / ``memoryview`` / other
   byte-like inputs uniformly.
 - ``decrypt_secret`` round-trips a plaintext string via a fake
@@ -61,8 +61,6 @@ class TestWakeScheduleEntity:
                 "execution_mode": "inline",
                 "status": "active",
                 "missed_fire_policy": "coalesce",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "date_created": _now(),
                 "date_updated": _now(),
             },
@@ -95,8 +93,6 @@ class TestWakeScheduleEntity:
                 "name": "inbox-poller",
                 "missed_fire_policy": "catch_up",
                 "context_from_schedule_id": context_from,
-                "delivery_target": "email",
-                "delivery_config": {"to": "ops@example.org"},
                 "date_created": now,
                 "date_updated": now,
             },
@@ -116,8 +112,6 @@ class TestWakeScheduleEntity:
         assert entity.name == "inbox-poller"
         assert entity.missed_fire_policy == "catch_up"
         assert entity.context_from_schedule_id == context_from
-        assert entity.delivery_target == "email"
-        assert entity.delivery_config == {"to": "ops@example.org"}
         assert entity.date_created == now
         assert entity.date_updated == now
 
@@ -135,8 +129,6 @@ class TestWakeScheduleEntity:
                 "execution_mode": "inline",
                 "status": "active",
                 "missed_fire_policy": "coalesce",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "date_created": _now(),
                 "date_updated": _now(),
             },
@@ -156,8 +148,6 @@ class TestWakeScheduleEntity:
                 "execution_mode": "inline",
                 "status": "active",
                 "missed_fire_policy": "coalesce",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "date_created": _now(),
                 "date_updated": _now(),
             },
@@ -179,14 +169,11 @@ class TestWakeScheduleEntity:
                 "execution_mode": "inline",
                 "status": "active",
                 "missed_fire_policy": "coalesce",
-                "delivery_target": "conversation",
-                "delivery_config": None,
                 "date_created": _now(),
                 "date_updated": _now(),
             },
         )
         assert entity.schedule_config == {}
-        assert entity.delivery_config == {}
 
 
 class TestWakeFireEntity:
@@ -321,8 +308,6 @@ class TestWebhookSubscriptionEntity:
                 "agent_id": _new_uuid(),
                 "secret_ciphertext": b"\x00\x01\x02",
                 "execution_mode": "inline",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "verification_scheme": "generic_hmac_sha256",
                 "status": "active",
                 "date_created": _now(),
@@ -351,8 +336,6 @@ class TestWebhookSubscriptionEntity:
                 "allowed_source_pattern": "^140\\.82\\.",
                 "execution_mode": "spawn",
                 "task_prompt_template": "Investigate {{event.action}}",
-                "delivery_target": "email",
-                "delivery_config": {"to": "ops@example.org"},
                 "verification_scheme": "generic_hmac_sha256",
                 "status": "paused",
                 "rate_limit_per_minute": 30,
@@ -371,8 +354,6 @@ class TestWebhookSubscriptionEntity:
         assert entity.allowed_source_pattern == "^140\\.82\\."
         assert entity.execution_mode == "spawn"
         assert entity.task_prompt_template == "Investigate {{event.action}}"
-        assert entity.delivery_target == "email"
-        assert entity.delivery_config == {"to": "ops@example.org"}
         assert entity.verification_scheme == "generic_hmac_sha256"
         assert entity.status == "paused"
         assert entity.rate_limit_per_minute == 30
@@ -388,8 +369,6 @@ class TestWebhookSubscriptionEntity:
                 "agent_id": _new_uuid(),
                 "secret_ciphertext": b"\xde\xad\xbe\xef",
                 "execution_mode": "inline",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "verification_scheme": "generic_hmac_sha256",
                 "status": "active",
                 "date_created": _now(),
@@ -410,8 +389,6 @@ class TestWebhookSubscriptionEntity:
                 "agent_id": _new_uuid(),
                 "secret_ciphertext": memoryview(raw),
                 "execution_mode": "inline",
-                "delivery_target": "conversation",
-                "delivery_config": {},
                 "verification_scheme": "generic_hmac_sha256",
                 "status": "active",
                 "date_created": _now(),

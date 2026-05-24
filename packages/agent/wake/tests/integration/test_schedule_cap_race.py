@@ -120,8 +120,6 @@ def _build_entity(
             "name": None,
             "missed_fire_policy": "coalesce",
             "context_from_schedule_id": None,
-            "delivery_target": "conversation",
-            "delivery_config": {},
             "date_created": now,
             "date_updated": now,
         },

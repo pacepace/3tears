@@ -3,8 +3,7 @@
 Covers:
 
 - ``agent_wake_schedules`` enum CHECK constraints reject invalid
-  ``execution_mode`` / ``status`` / ``missed_fire_policy`` /
-  ``delivery_target`` values.
+  ``execution_mode`` / ``status`` / ``missed_fire_policy`` values.
 - ``wake_fires_status_check`` rejects values outside the eight-value
   enum (including verifying ``'yielded'`` is accepted, per the
   wake-yield revision).
@@ -13,8 +12,7 @@ Covers:
   is ``ON DELETE SET NULL`` (audit history outlives a subscription
   delete; the resulting row has both source fields NULL).
 - ``webhook_subscriptions`` enum CHECK constraints reject invalid
-  ``execution_mode`` / ``delivery_target`` / ``verification_scheme`` /
-  ``status``.
+  ``execution_mode`` / ``verification_scheme`` / ``status``.
 """
 
 from __future__ import annotations
@@ -118,28 +116,6 @@ class TestScheduleCheckConstraints:
                     _new_uuid(),
                     "daily_at",
                     "burst",
-                )
-        finally:
-            await conn.close()
-
-    async def test_delivery_target_rejected(self, pg_schema: tuple[str, str]) -> None:
-        """An out-of-enum ``delivery_target`` raises ``CheckViolationError``."""
-        url, schema = pg_schema
-        conn = await asyncpg.connect(url)
-        try:
-            await _apply(conn, schema)
-            with pytest.raises(asyncpg.exceptions.CheckViolationError):
-                await conn.execute(
-                    "INSERT INTO agent_wake_schedules "
-                    "(conversation_id, schedule_id, user_id, agent_id, "
-                    " schedule_type, delivery_target) "
-                    "VALUES ($1, $2, $3, $4, $5, $6)",
-                    _new_uuid(),
-                    _new_uuid(),
-                    _new_uuid(),
-                    _new_uuid(),
-                    "daily_at",
-                    "slack",
                 )
         finally:
             await conn.close()

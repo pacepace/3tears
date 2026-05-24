@@ -93,7 +93,6 @@ def _build_receiver(
         "encryption_service": _IdentityEncryption(),
         "handler": _NullHandler(),
         "wake_config": DEFAULT_WAKE_CONFIG,
-        "delivery_adapters": None,
     }
     if signature_header is not None:
         kwargs["signature_header"] = signature_header
@@ -136,8 +135,6 @@ def _build_subscription(
             "allowed_source_pattern": None,
             "execution_mode": "inline",
             "task_prompt_template": None,
-            "delivery_target": "conversation",
-            "delivery_config": {},
             "verification_scheme": verification_scheme,
             "status": status,
             "rate_limit_per_minute": None,

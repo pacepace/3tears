@@ -86,10 +86,6 @@ class _StubConfig:
         return DEFAULT_MAX_FIRES_PER_USER_PER_DAY
 
     @property
-    def max_email_per_recipient_per_hour(self) -> int:
-        return 5
-
-    @property
     def max_webhook_fires_per_subscription_per_hour(self) -> int:
         return 60
 

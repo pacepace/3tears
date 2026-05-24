@@ -1,5 +1,7 @@
 # agent-wake-02: Tick engine + `nats_distributed_lock` primitive
 
+> **REMOVED 2026-05-24:** the outbound delivery framework was removed as an undesigned parallel abstraction. The `delivery_target` / `delivery_config` fields on `WakeTrigger` and the `delivery_target_resolved` arg to `create_dispatching(...)` are GONE. Wake fires now always deliver into the conversation; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The code samples below retain these fields for history — do NOT recreate them.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.

@@ -27,7 +27,6 @@ lives at the agent-tool / REST layer in shard 04.
 CHECK constraints:
 
 - ``execution_mode IN ('inline', 'spawn')`` -- CHECK-pinned.
-- ``delivery_target IN ('conversation', 'email')`` -- CHECK-pinned.
 - ``verification_scheme IN ('generic_hmac_sha256')`` -- CHECK-pinned
   on creation; REPLACED by v005 with a slug-format guard once the
   receiver's pluggable verifier registry landed (the hardcoded-value
@@ -73,8 +72,6 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
     allowed_source_pattern  TEXT,
     execution_mode          TEXT         NOT NULL DEFAULT 'inline',
     task_prompt_template    TEXT,
-    delivery_target         TEXT         NOT NULL DEFAULT 'conversation',
-    delivery_config         JSONB        NOT NULL DEFAULT '{}'::jsonb,
     verification_scheme     TEXT         NOT NULL DEFAULT 'generic_hmac_sha256',
     status                  TEXT         NOT NULL DEFAULT 'active',
     rate_limit_per_minute   INTEGER,
@@ -88,8 +85,6 @@ CREATE TABLE IF NOT EXISTS webhook_subscriptions (
         ON DELETE SET NULL,
     CONSTRAINT webhook_subscriptions_execution_mode_check
         CHECK (execution_mode IN ('inline', 'spawn')),
-    CONSTRAINT webhook_subscriptions_delivery_target_check
-        CHECK (delivery_target IN ('conversation', 'email')),
     CONSTRAINT webhook_subscriptions_verification_scheme_check
         CHECK (verification_scheme IN ('generic_hmac_sha256')),
     CONSTRAINT webhook_subscriptions_status_check

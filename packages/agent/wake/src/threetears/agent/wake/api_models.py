@@ -64,7 +64,6 @@ _ScheduleType = Literal[
     "interval",
 ]
 _ExecutionMode = Literal["inline", "spawn"]
-_DeliveryTarget = Literal["conversation", "email"]
 _MissedFirePolicy = Literal["coalesce", "catch_up"]
 _ScheduleStatus = Literal["active", "paused", "expired"]
 _WebhookStatus = Literal["active", "paused"]
@@ -120,8 +119,6 @@ class CreateWakeScheduleRequest(BaseModel):
     name: str | None = None
     skill_id: UUID | None = None
     context_from_schedule_id: UUID | None = None
-    delivery_target: _DeliveryTarget = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateWakeScheduleRequest(BaseModel):
@@ -146,8 +143,6 @@ class UpdateWakeScheduleRequest(BaseModel):
     detach_skill: bool = False
     context_from_schedule_id: UUID | None = None
     detach_context_from: bool = False
-    delivery_target: _DeliveryTarget | None = None
-    delivery_config: dict[str, Any] | None = None
 
 
 class WakeScheduleResponse(BaseModel):
@@ -170,8 +165,6 @@ class WakeScheduleResponse(BaseModel):
     missed_fire_policy: _MissedFirePolicy
     skill_id: UUID | None
     context_from_schedule_id: UUID | None
-    delivery_target: _DeliveryTarget
-    delivery_config: dict[str, Any]
     date_created: datetime
     date_updated: datetime
 
@@ -245,8 +238,6 @@ class CreateWebhookSubscriptionRequest(BaseModel):
     name: str | None = None
     task_prompt_template: str
     execution_mode: _ExecutionMode = "inline"
-    delivery_target: _DeliveryTarget = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
     default_skill_id: UUID | None = None
     allowed_source_pattern: str | None = None
     rate_limit_per_minute: int | None = None
@@ -261,8 +252,6 @@ class UpdateWebhookSubscriptionRequest(BaseModel):
     name: str | None = None
     task_prompt_template: str | None = None
     execution_mode: _ExecutionMode | None = None
-    delivery_target: _DeliveryTarget | None = None
-    delivery_config: dict[str, Any] | None = None
     default_skill_id: UUID | None = None
     detach_default_skill: bool = False
     allowed_source_pattern: str | None = None
@@ -287,8 +276,6 @@ class WebhookSubscriptionResponse(BaseModel):
     execution_mode: str
     status: _WebhookStatus
     task_prompt_template: str | None
-    delivery_target: _DeliveryTarget
-    delivery_config: dict[str, Any]
     verification_scheme: str = Field(
         pattern=_VERIFICATION_SCHEME_PATTERN,
     )

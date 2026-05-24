@@ -1,5 +1,7 @@
 # agent-wake-04: Agent tools (schedule + webhook subscription CRUD) + webhook→trigger adapter
 
+> **REMOVED 2026-05-24:** the outbound delivery framework (delivery_target / delivery_config / DeliveryAdapter / user_email_verified) was removed as an undesigned parallel abstraction. The schedule/subscription tools no longer accept `delivery_target` / `delivery_config` inputs, there is no `user_email_verified` construction-context flag, and `webhook_receive(...)` no longer takes a `delivery_adapters` argument. Wake fires now always deliver into the conversation; outbound delivery, if ever needed, will be a threetears.channels adapter. Inbound webhooks are unaffected. The text below retains these for history — TOOL-14 is struck; do NOT rebuild it.
+
 ## 2026-05-19 revision deltas (apply BEFORE implementing)
 
 Canonical source: `<metallm>/docs/long_running/PLACEMENT.md`.
@@ -72,9 +74,9 @@ Tool descriptions are terse (≤6 short lines) per the existing
 | TOOL-11 | Per-type config validator function exports: `_validate_schedule_config`, `_validate_pre_check_config`, `_validate_context_from_chain` — importable by the product's REST router to reuse the validators. | P0 |
 | TOOL-12 | Cycle detection on `context_from_schedule_id` at create/update time: BFS the chain from target until NULL, revisit `this_schedule_id` (reject as cycle), or max-depth 8 (reject as too-deep). Same-conversation enforced (cross-conv target rejected). | P0 |
 | TOOL-13 | `attached_skill_ids` ownership check: every skill_id passed in must reference an `agent_skills` row owned by the same `user_id`. Rejection with clear per-ID error. | P0 |
-| TOOL-14 | `delivery_target='email'` requires a `user_email_verified: bool` flag set on the tool's construction context (platform doesn't reach into a product's users table). Consumer supplies. Rejection with clear error. | P0 |
+| ~~TOOL-14~~ | ~~[REMOVED 2026-05-24]~~ ~~`delivery_target='email'` requires a `user_email_verified: bool` flag set on the tool's construction context (platform doesn't reach into a product's users table). Consumer supplies. Rejection with clear error.~~ No delivery framework; do NOT rebuild this. | ~~P0~~ |
 | TOOL-15 | Webhook receiver adapter: `webhook_to_wake_trigger(subscription, payload, encryption_service, pool) -> WakeTrigger` builds the trigger from a verified subscription + decoded payload. Renders `task_prompt_template` via `jinja2.sandbox.SandboxedEnvironment` with `{event: <payload>}` as the only variable. | P0 |
-| TOOL-16 | `webhook_receive(subscription_id, payload_bytes, signature_header, source_ip, pool, encryption_service, dispatch_callback, wake_config, delivery_adapters)` — top-level entry point invoked by shard 06's `WebhookReceiver`. Looks up subscription, verifies HMAC, checks `allowed_source_pattern`, rate-limits, INSERTs the `wake_fires` row with `status='dispatching'`, calls `dispatch_wake(...)`. Returns a result object with HTTP status + fire_id. | P0 |
+| TOOL-16 | `webhook_receive(subscription_id, payload_bytes, signature_header, source_ip, pool, encryption_service, dispatch_callback, wake_config)` (~~the `delivery_adapters` arg is REMOVED 2026-05-24~~) — top-level entry point invoked by shard 06's `WebhookReceiver`. Looks up subscription, verifies HMAC, checks `allowed_source_pattern`, rate-limits, INSERTs the `wake_fires` row with `status='dispatching'`, calls `dispatch_wake(...)`. Returns a result object with HTTP status + fire_id. | P0 |
 
 ---
 
@@ -95,8 +97,7 @@ class WakeScheduleCreateInput(BaseModel):
     pre_check_type: str | None = None
     pre_check_config: dict[str, Any] = Field(default_factory=dict)
     context_from_schedule_id: str | None = None  # short or full UUID
-    delivery_target: Literal["conversation", "email"] = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: list[str] = Field(default_factory=list)
 ```
 
@@ -109,7 +110,6 @@ Schedule a wake in THIS conversation. You'll be woken and run through the same l
 - execution_mode — 'inline' (here) vs 'spawn' (new conv, EMPTY context, write task_prompt self-contained)
 - pre_check_type + no_agent — cheap watchdogs without LLM cost
 - context_from_schedule_id — chain off another wake's output
-- delivery_target — 'conversation' or 'email'
 - attached_skill_ids — load skills before running
 
 Returns [schedule:<id>]. Max 10 ACTIVE schedules per conversation (separate from the 24-fires-per-day rate cap). Tip: write task_prompt self-contained — future-you may not have the context that made this worth scheduling.
@@ -169,8 +169,7 @@ class WebhookSubscriptionCreateInput(BaseModel):
     name: str | None = None
     task_prompt_template: str  # Jinja2 sandbox; {{event}} is the entire payload
     execution_mode: Literal["inline", "spawn"] = "inline"
-    delivery_target: Literal["conversation", "email"] = "conversation"
-    delivery_config: dict[str, Any] = Field(default_factory=dict)
+    # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
     attached_skill_ids: list[str] = Field(default_factory=list)
     allowed_source_pattern: str | None = None  # regex against source IP
 ```
@@ -201,7 +200,7 @@ from threetears.agent.wake.collections import (
 )
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.types import (
-    DeliveryAdapter,
+    # DeliveryAdapter REMOVED 2026-05-24 — no outbound delivery framework
     HandlerCallback,
     WakeTrigger,
 )
@@ -228,7 +227,7 @@ async def webhook_receive(
     encryption_service: Any,         # consumer-supplied EncryptionService Protocol
     handler: HandlerCallback,
     wake_config: WakeConfig,
-    delivery_adapters: dict[str, DeliveryAdapter],
+    # delivery_adapters: dict[str, DeliveryAdapter] REMOVED 2026-05-24 — no outbound delivery framework
 ) -> WebhookReceiveResult:
     """Verify, rate-limit, and dispatch an inbound webhook.
 
@@ -282,8 +281,7 @@ async def webhook_receive(
         task_prompt=rendered,
         schedule_name=sub.name,
         fired_at=datetime.now(UTC),
-        delivery_target=sub.delivery_target,
-        delivery_config=sub.delivery_config,
+        # delivery_target / delivery_config REMOVED 2026-05-24 — no outbound delivery framework
         attached_skill_ids=await subs.load_attached_skill_ids(subscription_id),
     )
 
@@ -296,7 +294,7 @@ async def webhook_receive(
         fired_at=trigger.fired_at,
         fire_source=trigger.fire_source,
         execution_mode=trigger.execution_mode,
-        delivery_target_resolved=sub.delivery_target,
+        # delivery_target_resolved REMOVED 2026-05-24 — no outbound delivery framework
     )
 
     try:
@@ -306,7 +304,7 @@ async def webhook_receive(
             pool,
             handler=handler,
             wake_config=wake_config,
-            delivery_adapters=delivery_adapters,
+            # delivery_adapters REMOVED 2026-05-24 — no outbound delivery framework
         )
     except Exception as exc:
         log.exception("webhook dispatch failed for subscription %s", subscription_id)
@@ -414,7 +412,7 @@ flow.
 - [ ] `WakeSchedulePauseTool` → status='paused'; `Resume` → status='active' + recomputed `next_fire_at`.
 - [ ] Cycle detection rejects `A → B → A` and `A → A`.
 - [ ] `attached_skill_ids` ownership check rejects skills owned by other users.
-- [ ] `delivery_target='email'` rejected for unverified email.
+- [ ] ~~`delivery_target='email'` rejected for unverified email.~~ ~~[REMOVED 2026-05-24]~~ — no delivery framework.
 - [ ] `webhook_receive` returns 202 + fire_id for valid signature; 401 for invalid; 429 for over-rate.
 - [ ] `webhook_receive` records a `wake_fires` row + invokes `dispatch_wake` correctly.
 - [ ] `./scripts/check-all.sh` clean.

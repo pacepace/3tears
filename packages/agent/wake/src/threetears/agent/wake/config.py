@@ -22,7 +22,6 @@ from typing import Any, Protocol, runtime_checkable
 __all__ = [
     "DEFAULT_HTTP_ALLOWED_HOSTS",
     "DEFAULT_LOKI_NAMED_QUERIES",
-    "DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR",
     "DEFAULT_MAX_FIRES_PER_CONV_PER_DAY",
     "DEFAULT_MAX_FIRES_PER_USER_PER_DAY",
     "DEFAULT_MAX_SCHEDULES_PER_CONVERSATION",
@@ -44,13 +43,6 @@ DEFAULT_MAX_FIRES_PER_CONV_PER_DAY: int = 24
 # (PLACEMENT §1.9). The two source-tables are unioned in the rate-limit
 # helper's per-user count.
 DEFAULT_MAX_FIRES_PER_USER_PER_DAY: int = 100
-
-
-# Per-recipient email cap (the email DeliveryAdapter reads this off
-# the consumer's :class:`WakeConfig` impl). Platform exposes the value
-# only; the throttle lives in the metallm-side email adapter
-# (PLACEMENT §1.17 / §3.4).
-DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR: int = 5
 
 
 # Per-webhook-subscription rate cap. The webhook receiver's per-minute
@@ -110,8 +102,6 @@ class WakeConfig(Protocol):
     :ivar max_fires_per_user_per_day: trailing-24h cap covering both
         scheduled and webhook fires per user (UNION over both
         source-tables in the rate-limit query)
-    :ivar max_email_per_recipient_per_hour: rolling-hour cap consumed
-        by the email delivery adapter
     :ivar max_webhook_fires_per_subscription_per_hour: rolling-hour
         cap consumed by the webhook receiver (subscription-row override
         wins when present)
@@ -137,9 +127,6 @@ class WakeConfig(Protocol):
 
     @property
     def max_fires_per_user_per_day(self) -> int: ...
-
-    @property
-    def max_email_per_recipient_per_hour(self) -> int: ...
 
     @property
     def max_webhook_fires_per_subscription_per_hour(self) -> int: ...
@@ -183,10 +170,6 @@ class _DefaultWakeConfig:
     @property
     def max_fires_per_user_per_day(self) -> int:
         return DEFAULT_MAX_FIRES_PER_USER_PER_DAY
-
-    @property
-    def max_email_per_recipient_per_hour(self) -> int:
-        return DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR
 
     @property
     def max_webhook_fires_per_subscription_per_hour(self) -> int:

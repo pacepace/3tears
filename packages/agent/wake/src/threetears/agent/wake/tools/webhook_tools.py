@@ -33,7 +33,6 @@ from threetears.agent.wake.tools.schedule_tools import (
     NAME_MAX_LEN,
     WakeRegistryClient,
     _tool_error,
-    _validate_delivery_target_inputs,
     _validate_name,
 )
 from threetears.observe import get_logger
@@ -62,7 +61,6 @@ PAYLOAD_TEMPLATE_MAX_BYTES: Final[int] = 4 * 1024  # 4 KB
 SECRET_BYTE_LEN: Final[int] = 32  # 32 bytes -> 64 hex chars
 
 _VALID_EXECUTION_MODES: frozenset[str] = frozenset({"inline", "spawn"})
-_VALID_DELIVERY_TARGETS: frozenset[str] = frozenset({"conversation", "email"})
 _VALID_VERIFICATION_SCHEMES: frozenset[str] = frozenset({"generic_hmac_sha256"})
 
 # SandboxedEnvironment is thread-safe + cheap to share. ``autoescape``
@@ -96,14 +94,6 @@ class WebhookSubscriptionCreateInput(BaseModel):
     execution_mode: Literal["inline", "spawn"] = Field(
         default="inline",
         description="'inline' fires in this conversation; 'spawn' creates a new conversation.",
-    )
-    delivery_target: Literal["conversation", "email"] = Field(
-        default="conversation",
-        description="Where the webhook response lands.",
-    )
-    delivery_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Delivery-target-specific config (e.g. {email: 'user@host'}).",
     )
     allowed_source_pattern: str | None = Field(
         default=None,
@@ -145,8 +135,6 @@ class WebhookSubscriptionUpdateInput(BaseModel):
         description="When true, clear the default_skill_id. Must not be combined with default_skill_id.",
     )
     execution_mode: Literal["inline", "spawn"] | None = None
-    delivery_target: Literal["conversation", "email"] | None = None
-    delivery_config: dict[str, Any] | None = None
     allowed_source_pattern: str | None = None
     clear_allowed_source_pattern: bool = Field(
         default=False,
@@ -286,7 +274,6 @@ def load_webhook_subscription_create_tool(
     subscriptions_collection: WebhookSubscriptionCollection,
     encryption_service: EncryptionService,
     registry: WakeRegistryClient,
-    user_email_verified: bool = False,
     endpoint_base_url: str | None = None,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_create`` tool.
@@ -309,8 +296,6 @@ def load_webhook_subscription_create_tool(
     :ptype encryption_service: EncryptionService
     :param registry: consumer-supplied registry for skill ACL
     :ptype registry: WakeRegistryClient
-    :param user_email_verified: gate for ``delivery_target='email'``
-    :ptype user_email_verified: bool
     :param endpoint_base_url: optional product-supplied URL prefix
         rendered in the response so the user can copy the receive URL
     :ptype endpoint_base_url: str | None
@@ -324,24 +309,15 @@ def load_webhook_subscription_create_tool(
         name: str | None = None,
         default_skill_id: str | None = None,
         execution_mode: Literal["inline", "spawn"] = "inline",
-        delivery_target: Literal["conversation", "email"] = "conversation",
-        delivery_config: dict[str, Any] | None = None,
         allowed_source_pattern: str | None = None,
         rate_limit_per_minute: int | None = None,
     ) -> str:
         """Create an inbound webhook subscription for this conversation."""
-        delivery_cfg = dict(delivery_config or {})
-
         for err in (
             _validate_name(name),
             _validate_template(task_prompt_template),
             _validate_source_pattern(allowed_source_pattern),
             _validate_rate_limit(rate_limit_per_minute),
-            _validate_delivery_target_inputs(
-                delivery_target,
-                delivery_cfg,
-                user_email_verified=user_email_verified,
-            ),
         ):
             if err is not None:
                 return _tool_error("webhook_subscription_create", err)
@@ -405,8 +381,6 @@ def load_webhook_subscription_create_tool(
             "allowed_source_pattern": allowed_source_pattern,
             "execution_mode": execution_mode,
             "task_prompt_template": task_prompt_template,
-            "delivery_target": delivery_target,
-            "delivery_config": delivery_cfg,
             "verification_scheme": "generic_hmac_sha256",
             "status": "active",
             "rate_limit_per_minute": rate_limit_per_minute,
@@ -477,7 +451,6 @@ def load_webhook_subscription_update_tool(
     agent_id: UUID,
     subscriptions_collection: WebhookSubscriptionCollection,
     registry: WakeRegistryClient,
-    user_email_verified: bool = False,
 ) -> list[BaseTool]:
     """Build a ``webhook_subscription_update`` tool with partial-update semantics.
 
@@ -494,8 +467,6 @@ def load_webhook_subscription_update_tool(
     :ptype subscriptions_collection: WebhookSubscriptionCollection
     :param registry: consumer-supplied registry for skill ACL
     :ptype registry: WakeRegistryClient
-    :param user_email_verified: gate for ``delivery_target='email'``
-    :ptype user_email_verified: bool
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -509,8 +480,6 @@ def load_webhook_subscription_update_tool(
         default_skill_id: str | None = None,
         detach_default_skill: bool = False,
         execution_mode: Literal["inline", "spawn"] | None = None,
-        delivery_target: Literal["conversation", "email"] | None = None,
-        delivery_config: dict[str, Any] | None = None,
         allowed_source_pattern: str | None = None,
         clear_allowed_source_pattern: bool = False,
         rate_limit_per_minute: int | None = None,
@@ -546,23 +515,12 @@ def load_webhook_subscription_update_tool(
         if entity is None or entity.user_id != user_id:
             return _tool_error("webhook_subscription_update", "subscription not found")
 
-        merged_target = delivery_target if delivery_target is not None else entity.delivery_target
-        merged_delivery_config = dict(delivery_config) if delivery_config is not None else dict(entity.delivery_config)
-
         validation_errors: list[str | None] = [
             _validate_name(name) if name is not None else None,
             _validate_template(task_prompt_template),
             _validate_source_pattern(allowed_source_pattern),
             _validate_rate_limit(rate_limit_per_minute),
         ]
-        if delivery_target is not None or delivery_config is not None:
-            validation_errors.append(
-                _validate_delivery_target_inputs(
-                    merged_target,
-                    merged_delivery_config,
-                    user_email_verified=user_email_verified,
-                ),
-            )
         for err in validation_errors:
             if err is not None:
                 return _tool_error("webhook_subscription_update", err)
@@ -610,10 +568,6 @@ def load_webhook_subscription_update_tool(
             entity.task_prompt_template = task_prompt_template
         if execution_mode is not None:
             entity.execution_mode = execution_mode
-        if delivery_target is not None:
-            entity.delivery_target = delivery_target
-        if delivery_config is not None:
-            entity.delivery_config = dict(delivery_config)
         if clear_allowed_source_pattern:
             entity.allowed_source_pattern = None
         elif allowed_source_pattern is not None:

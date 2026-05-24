@@ -19,7 +19,7 @@ collections are :class:`SchemaBackedCollection` subclasses with a
 migrations and are not ``SchemaBackedCollection`` subclasses, because
 the framework's ``TableSchema`` / ``to_sqlalchemy_table`` type system
 has no descriptor for the CHECK constraints these tables carry (the
-``status`` / ``execution_mode`` / ``delivery_target`` /
+``status`` / ``execution_mode`` /
 ``missed_fire_policy`` enum-by-app checks, the ``wake_fires``
 mutually-exclusive-source check, the ``verification_scheme``
 slug-format regex check) nor for the JSONB / BYTEA columns. Adding
@@ -105,12 +105,11 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
     reference the bare column, the nullable ``skill_id`` FK to
     ``agent_skills(skill_id) ON DELETE SET NULL``, the nullable self-FK
     ``context_from_schedule_id REFERENCES
-    agent_wake_schedules(schedule_id) ON DELETE SET NULL``, the two
-    JSONB columns (``schedule_config`` / ``delivery_config``), the four
-    CHECK constraints (``execution_mode`` / ``status`` /
-    ``missed_fire_policy`` / ``delivery_target`` enum-by-app), every NOT
-    NULL DEFAULT, and the four indexes (including the two partial
-    indexes).
+    agent_wake_schedules(schedule_id) ON DELETE SET NULL``, the JSONB
+    ``schedule_config`` column, the three CHECK constraints
+    (``execution_mode`` / ``status`` / ``missed_fire_policy``
+    enum-by-app), every NOT NULL DEFAULT, and the four indexes
+    (including the two partial indexes).
 
     There is no DB CHECK on ``schedule_type`` (app-evolvable; validated
     in the agent-tools layer) nor on the JSONB ``schedule_config`` shape
@@ -172,18 +171,6 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
         ),
         Column("context_from_schedule_id", PgUUID(as_uuid=True), nullable=True),
         Column(
-            "delivery_target",
-            Text(),
-            nullable=False,
-            server_default=sa_text("'conversation'"),
-        ),
-        Column(
-            "delivery_config",
-            JSONB(),
-            nullable=False,
-            server_default=sa_text("'{}'::jsonb"),
-        ),
-        Column(
             "date_created",
             SADateTime(timezone=True),
             nullable=False,
@@ -220,10 +207,6 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
         CheckConstraint(
             "missed_fire_policy IN ('coalesce', 'catch_up')",
             name="agent_wake_schedules_missed_fire_policy_check",
-        ),
-        CheckConstraint(
-            "delivery_target IN ('conversation', 'email')",
-            name="agent_wake_schedules_delivery_target_check",
         ),
         Index(
             "idx_wake_schedules_next_fire",
@@ -376,8 +359,8 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
     (subscription_id)`` so the HTTP receiver can look up by bare id, the
     nullable ``default_skill_id`` FK to ``agent_skills(skill_id) ON
     DELETE SET NULL`` (``webhook_subscriptions_default_skill_fk``), the
-    ``secret_ciphertext`` BYTEA column, the JSONB ``delivery_config``,
-    the ``execution_mode`` / ``delivery_target`` / ``status``
+    ``secret_ciphertext`` BYTEA column, the
+    ``execution_mode`` / ``status``
     enum-by-app CHECKs, and the ``verification_scheme`` CHECK in its
     v005 slug-format form (``~ '^[a-z0-9_]+$' AND length(...) BETWEEN 1
     AND 64``, NOT the v003 hardcoded ``IN ('generic_hmac_sha256')``
@@ -416,18 +399,6 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         ),
         Column("task_prompt_template", Text(), nullable=True),
         Column(
-            "delivery_target",
-            Text(),
-            nullable=False,
-            server_default=sa_text("'conversation'"),
-        ),
-        Column(
-            "delivery_config",
-            JSONB(),
-            nullable=False,
-            server_default=sa_text("'{}'::jsonb"),
-        ),
-        Column(
             "verification_scheme",
             Text(),
             nullable=False,
@@ -464,10 +435,6 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
         CheckConstraint(
             "execution_mode IN ('inline', 'spawn')",
             name="webhook_subscriptions_execution_mode_check",
-        ),
-        CheckConstraint(
-            "delivery_target IN ('conversation', 'email')",
-            name="webhook_subscriptions_delivery_target_check",
         ),
         CheckConstraint(
             "verification_scheme ~ '^[a-z0-9_]+$' AND length(verification_scheme) BETWEEN 1 AND 64",

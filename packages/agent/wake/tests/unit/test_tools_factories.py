@@ -356,8 +356,6 @@ async def test_schedule_create_enforces_cap(
             "status": "active",
             "next_fire_at": datetime.now(UTC) + timedelta(hours=1),
             "missed_fire_policy": "coalesce",
-            "delivery_target": "conversation",
-            "delivery_config": {},
             "date_created": datetime.now(UTC),
             "date_updated": datetime.now(UTC),
         }
@@ -434,32 +432,6 @@ async def test_schedule_create_accepts_permitted_skill(
 
 
 @pytest.mark.asyncio
-async def test_schedule_create_rejects_email_without_verified_email(
-    actor: tuple[UUID, UUID, UUID],
-) -> None:
-    conv_id, user_id, agent_id = actor
-    coll = _FakeScheduleCollection()
-    tools = load_wake_schedule_create_tool(
-        conversation_id=conv_id,
-        user_id=user_id,
-        agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
-        registry=_FakeRegistry(),
-        user_email_verified=False,
-    )
-    result = await tools[0].ainvoke(
-        {
-            "schedule_type": "interval",
-            "schedule_config": {"seconds": 600},
-            "delivery_target": "email",
-            "delivery_config": {"email": "x@y"},
-        },
-    )
-    assert result.startswith("[TOOL ERROR]")
-    assert "verified email" in result
-
-
-@pytest.mark.asyncio
 async def test_schedule_create_rejects_context_from_cycle(
     actor: tuple[UUID, UUID, UUID],
 ) -> None:
@@ -478,8 +450,6 @@ async def test_schedule_create_rejects_context_from_cycle(
         "status": "active",
         "next_fire_at": datetime.now(UTC) + timedelta(hours=1),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
     }
@@ -531,8 +501,6 @@ async def test_schedule_list_filters_other_users(
         "status": "active",
         "next_fire_at": datetime.now(UTC),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
     }
@@ -563,8 +531,6 @@ async def test_schedule_pause_and_resume(actor: tuple[UUID, UUID, UUID]) -> None
         "status": "active",
         "next_fire_at": datetime.now(UTC),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
     }
@@ -605,8 +571,6 @@ def _active_schedule_row(
         "status": status,
         "next_fire_at": datetime.now(UTC) if status == "active" else None,
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
     }
@@ -687,8 +651,6 @@ async def test_schedule_delete_blocks_other_user(actor: tuple[UUID, UUID, UUID])
         "status": "active",
         "next_fire_at": datetime.now(UTC),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
     }
@@ -721,8 +683,6 @@ async def test_schedule_update_changes_name_and_skill(
         "status": "active",
         "next_fire_at": datetime.now(UTC),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "name": "old",
         "date_created": datetime.now(UTC),
         "date_updated": datetime.now(UTC),
@@ -773,8 +733,6 @@ def _seeded_schedule_row(
         "status": "active",
         "next_fire_at": datetime.now(UTC),
         "missed_fire_policy": "coalesce",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "name": name,
         "context_from_schedule_id": context_from_schedule_id,
         "date_created": datetime.now(UTC),
@@ -1150,8 +1108,6 @@ async def test_webhook_rotate_secret_replaces_ciphertext(
         "allowed_source_pattern": None,
         "execution_mode": "inline",
         "task_prompt_template": "x",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "verification_scheme": "generic_hmac_sha256",
         "status": "active",
         "rate_limit_per_minute": None,
@@ -1189,8 +1145,6 @@ async def test_webhook_pause_resume_delete_cycle(
         "allowed_source_pattern": None,
         "execution_mode": "inline",
         "task_prompt_template": "x",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "verification_scheme": "generic_hmac_sha256",
         "status": "active",
         "rate_limit_per_minute": None,
@@ -1241,8 +1195,6 @@ async def test_webhook_update_changes_template_and_pattern(
         "allowed_source_pattern": None,
         "execution_mode": "inline",
         "task_prompt_template": "x",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "verification_scheme": "generic_hmac_sha256",
         "status": "active",
         "rate_limit_per_minute": None,
@@ -1289,8 +1241,6 @@ async def test_webhook_list_filters_other_users(
         "allowed_source_pattern": None,
         "execution_mode": "inline",
         "task_prompt_template": "x",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "verification_scheme": "generic_hmac_sha256",
         "status": "active",
         "rate_limit_per_minute": None,
@@ -1331,8 +1281,6 @@ def _seeded_subscription_row(
         "allowed_source_pattern": allowed_source_pattern,
         "execution_mode": "inline",
         "task_prompt_template": "x",
-        "delivery_target": "conversation",
-        "delivery_config": {},
         "verification_scheme": "generic_hmac_sha256",
         "status": "active",
         "rate_limit_per_minute": None,

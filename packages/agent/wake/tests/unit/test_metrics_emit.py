@@ -22,7 +22,6 @@ import pytest
 from threetears.agent.wake.config import (
     DEFAULT_HTTP_ALLOWED_HOSTS,
     DEFAULT_LOKI_NAMED_QUERIES,
-    DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR,
     DEFAULT_MAX_FIRES_PER_CONV_PER_DAY,
     DEFAULT_MAX_FIRES_PER_USER_PER_DAY,
     DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
@@ -30,7 +29,6 @@ from threetears.agent.wake.config import (
     DEFAULT_POSTGRES_NAMED_QUERIES,
 )
 from threetears.agent.wake.metrics import (
-    WAKE_DELIVERY_TOTAL,
     WAKE_DRIFT_SECONDS,
     WAKE_FAILURES_TOTAL,
     WAKE_FIRES_TOTAL,
@@ -69,7 +67,6 @@ def test_emitter_registers_every_declared_instrument(private_registry: object) -
             WAKE_FIRES_TOTAL,
             WAKE_FAILURES_TOTAL,
             WAKE_TICK_DURATION_SECONDS,
-            WAKE_DELIVERY_TOTAL,
             WAKE_RATE_LIMIT_REJECTIONS_TOTAL,
             WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL,
             WAKE_DRIFT_SECONDS,
@@ -99,27 +96,6 @@ def test_inc_fire_records_labelled_increment(private_registry: object) -> None:
         )
         assert fired_count == 2.0
         assert yielded_count == 1.0
-    finally:
-        emitter.unregister_from_registry()
-
-
-def test_inc_delivery_records_labelled_increment(private_registry: object) -> None:
-    """``inc_delivery`` writes (target, status) labelled samples."""
-    emitter = WakeMetricsEmitter(registry=private_registry)
-    try:
-        emitter.inc_delivery(target="email", status="delivered")
-        emitter.inc_delivery(target="email", status="failed")
-        emitter.inc_delivery(target="email", status="delivered")
-        delivered = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_DELIVERY_TOTAL,
-            {"target": "email", "status": "delivered"},
-        )
-        failed = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_DELIVERY_TOTAL,
-            {"target": "email", "status": "failed"},
-        )
-        assert delivered == 2.0
-        assert failed == 1.0
     finally:
         emitter.unregister_from_registry()
 
@@ -206,17 +182,17 @@ def test_inc_failure_records_reason(private_registry: object) -> None:
     try:
         emitter.inc_failure(reason="handler_exception")
         emitter.inc_failure(reason="handler_exception")
-        emitter.inc_failure(reason="delivery_failed")
+        emitter.inc_failure(reason="cap_exceeded")
         ex = private_registry.get_sample_value(  # type: ignore[attr-defined]
             WAKE_FAILURES_TOTAL,
             {"reason": "handler_exception"},
         )
-        dl = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        ce = private_registry.get_sample_value(  # type: ignore[attr-defined]
             WAKE_FAILURES_TOTAL,
-            {"reason": "delivery_failed"},
+            {"reason": "cap_exceeded"},
         )
         assert ex == 2.0
-        assert dl == 1.0
+        assert ce == 1.0
     finally:
         emitter.unregister_from_registry()
 
@@ -235,7 +211,6 @@ def test_default_wake_caps_match_placement_lock() -> None:
     """
     assert DEFAULT_MAX_FIRES_PER_CONV_PER_DAY == 24
     assert DEFAULT_MAX_FIRES_PER_USER_PER_DAY == 100
-    assert DEFAULT_MAX_EMAIL_PER_RECIPIENT_PER_HOUR == 5
     assert DEFAULT_MAX_WEBHOOK_FIRES_PER_SUBSCRIPTION_PER_HOUR == 60
     assert DEFAULT_MAX_SCHEDULES_PER_CONVERSATION == 10
     assert DEFAULT_HTTP_ALLOWED_HOSTS == ()

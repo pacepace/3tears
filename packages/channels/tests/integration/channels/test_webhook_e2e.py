@@ -208,7 +208,6 @@ def _build_app(pool: asyncpg.Pool, handler: HandlerCallback) -> FastAPI:
         encryption_service=_IdentityEncryption(),
         handler=handler,
         wake_config=DEFAULT_WAKE_CONFIG,
-        delivery_adapters=None,
     )
     app = FastAPI()
     receiver.register(app)
@@ -320,7 +319,6 @@ async def test_webhook_receiver_oversized_body_returns_413(
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,
-            delivery_adapters=None,
             max_payload_bytes=32,
         )
         app = FastAPI()
@@ -394,7 +392,6 @@ async def test_webhook_receiver_custom_vendor_scheme_dispatches_via_registry(
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,
-            delivery_adapters=None,
         )
 
         # The constant-secret verifier ignores the secret + payload
@@ -488,7 +485,6 @@ async def test_webhook_receiver_unknown_scheme_returns_400(
             encryption_service=_IdentityEncryption(),
             handler=handler,
             wake_config=DEFAULT_WAKE_CONFIG,
-            delivery_adapters=None,
         )
         app = FastAPI()
         receiver.register(app)

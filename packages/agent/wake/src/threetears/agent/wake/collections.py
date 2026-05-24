@@ -3,7 +3,7 @@ webhook subscriptions.
 
 The package subclasses :class:`BaseCollection` directly rather than
 :class:`SchemaBackedCollection` because several columns
-(``schedule_config`` / ``delivery_config`` JSONB on schedules,
+(``schedule_config`` JSONB on schedules,
 ``secret_ciphertext`` BYTEA on subscriptions, etc.) require type
 handling beyond the schema-driven CRUD generator's built-in tags. The
 hand-rolled SQL keeps the contract local; asyncpg's native codecs
@@ -87,8 +87,6 @@ _SCHEDULE_FIELD_TYPES: dict[str, Any] = {
     "name": str | None,
     "missed_fire_policy": str,
     "context_from_schedule_id": UUID | None,
-    "delivery_target": str,
-    "delivery_config": dict,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -121,8 +119,6 @@ _SUBSCRIPTION_FIELD_TYPES: dict[str, Any] = {
     "allowed_source_pattern": str | None,
     "execution_mode": str,
     "task_prompt_template": str | None,
-    "delivery_target": str,
-    "delivery_config": dict,
     "verification_scheme": str,
     "status": str,
     "rate_limit_per_minute": int | None,
@@ -149,8 +145,6 @@ _SCHEDULE_INSERT_COLUMNS: tuple[str, ...] = (
     "name",
     "missed_fire_policy",
     "context_from_schedule_id",
-    "delivery_target",
-    "delivery_config",
     "date_created",
     "date_updated",
 )
@@ -203,8 +197,6 @@ _SUBSCRIPTION_INSERT_COLUMNS: tuple[str, ...] = (
     "allowed_source_pattern",
     "execution_mode",
     "task_prompt_template",
-    "delivery_target",
-    "delivery_config",
     "verification_scheme",
     "status",
     "rate_limit_per_minute",
@@ -279,7 +271,7 @@ _AGENT_WAKE_SCHEDULES_FETCH_SQL = (
     "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
     "schedule_type, schedule_config, task_prompt, execution_mode, status, "
     "next_fire_at, last_fired_at, name, missed_fire_policy, "
-    "context_from_schedule_id, delivery_target, delivery_config, "
+    "context_from_schedule_id, "
     "date_created, date_updated "
     "FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
 )
@@ -302,7 +294,7 @@ _WAKE_FIRES_DELETE_SQL = "DELETE FROM wake_fires WHERE conversation_id = $1 AND 
 _WEBHOOK_SUBSCRIPTIONS_FETCH_SQL = (
     "SELECT conversation_id, subscription_id, user_id, agent_id, "
     "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-    "execution_mode, task_prompt_template, delivery_target, delivery_config, "
+    "execution_mode, task_prompt_template, "
     "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
     "date_created, date_updated "
     "FROM webhook_subscriptions WHERE conversation_id = $1 AND subscription_id = $2"
@@ -464,7 +456,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, delivery_target, delivery_config, "
+            "context_from_schedule_id, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
@@ -497,7 +489,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, delivery_target, delivery_config, "
+            "context_from_schedule_id, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 AND status = 'active' "
@@ -526,7 +518,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, delivery_target, delivery_config, "
+            "context_from_schedule_id, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 "
@@ -1027,7 +1019,6 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         actual_fired_at: datetime,
         fire_source: str,
         execution_mode: str,
-        delivery_target_resolved: str,
     ) -> None:
         """Insert an initial in-flight ``wake_fires`` row.
 
@@ -1051,12 +1042,11 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         in-flight row's NULL ``output_text`` and silently produce an
         empty context block.
 
-        ``execution_mode`` / ``delivery_target_resolved`` /
-        ``fire_source`` are not stored on the v1 ``wake_fires`` row
-        (they live on the schedule); they are accepted here for
-        callsite-symmetry with the trigger envelope and so the
-        platform can promote them to fire columns later without
-        churning every callsite.
+        ``execution_mode`` / ``fire_source`` are not stored on the v1
+        ``wake_fires`` row (they live on the schedule); they are
+        accepted here for callsite-symmetry with the trigger envelope
+        and so the platform can promote them to fire columns later
+        without churning every callsite.
 
         :param fire_id: pre-generated UUIDv7
         :ptype fire_id: UUID
@@ -1077,13 +1067,10 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         :ptype fire_source: str
         :param execution_mode: execution mode (reserved for v2)
         :ptype execution_mode: str
-        :param delivery_target_resolved: resolved delivery target
-            (reserved for v2)
-        :ptype delivery_target_resolved: str
         :return: nothing
         :rtype: None
         """
-        del fire_source, execution_mode, delivery_target_resolved
+        del fire_source, execution_mode
         if self.l3_pool is None:
             return None
         # cache-bypass: write-path; the row cache is read-mostly and
@@ -1358,7 +1345,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         row = await self.l3_pool.fetchrow(
             "SELECT conversation_id, subscription_id, user_id, agent_id, "
             "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-            "execution_mode, task_prompt_template, delivery_target, delivery_config, "
+            "execution_mode, task_prompt_template, "
             "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
             "date_created, date_updated "
             "FROM webhook_subscriptions WHERE subscription_id = $1",
@@ -1385,7 +1372,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         rows = await self.l3_pool.fetch(
             "SELECT conversation_id, subscription_id, user_id, agent_id, "
             "default_skill_id, name, secret_ciphertext, allowed_source_pattern, "
-            "execution_mode, task_prompt_template, delivery_target, delivery_config, "
+            "execution_mode, task_prompt_template, "
             "verification_scheme, status, rate_limit_per_minute, last_fired_at, "
             "date_created, date_updated "
             "FROM webhook_subscriptions WHERE conversation_id = $1 "
@@ -1536,10 +1523,10 @@ def _schedule_value_for_column(col: str, data: dict[str, Any]) -> Any:
     """
     if col in data:
         value = data[col]
-        if col in {"schedule_config", "delivery_config"} and value is None:
+        if col == "schedule_config" and value is None:
             return {}
         return value
-    if col in {"schedule_config", "delivery_config"}:
+    if col == "schedule_config":
         return {}
     if col == "execution_mode":
         return "inline"
@@ -1547,8 +1534,6 @@ def _schedule_value_for_column(col: str, data: dict[str, Any]) -> Any:
         return "active"
     if col == "missed_fire_policy":
         return "coalesce"
-    if col == "delivery_target":
-        return "conversation"
     return None
 
 
@@ -1607,15 +1592,9 @@ def _subscription_value_for_column(col: str, data: dict[str, Any]) -> Any:
         value = data[col]
         if col == "secret_ciphertext" and value is not None and not isinstance(value, bytes):
             return bytes(value)
-        if col == "delivery_config" and value is None:
-            return {}
         return value
-    if col == "delivery_config":
-        return {}
     if col == "execution_mode":
         return "inline"
-    if col == "delivery_target":
-        return "conversation"
     if col == "verification_scheme":
         return "generic_hmac_sha256"
     if col == "status":
