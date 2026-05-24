@@ -11,6 +11,7 @@ exclude = ["packages/agent"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "mypy>=1.8",
     "ruff>=0.3",
     "opentelemetry-api>=1.28",
@@ -54,6 +55,15 @@ dev-dependencies = [
     # ``now`` across DST-transition test cases. Time-sensitive logic
     # cannot be tested deterministically otherwise.
     "freezegun>=1.5",
+    # datasources backend libs installed in dev so the redshift / snowflake /
+    # bigquery driver test modules collect and run rather than erroring at
+    # import. declared as 3tears-datasources extras (datasources[redshift] /
+    # [snowflake] / [bigquery]); pinning them in dev-deps ensures the
+    # workspace pytest run exercises every driver module (same rationale as
+    # prometheus-client above). the libs are still OPTIONAL for consumers.
+    "redshift-connector>=2.1",
+    "snowflake-connector-python>=3.0",
+    "google-cloud-bigquery>=3.0",
 ]
 
 [tool.ruff]
@@ -130,9 +140,20 @@ select = ["SLF"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"
+# Multiple packages carry a same-named ``tests`` package (e.g.
+# ``packages/agent/workspace/tests`` and ``packages/datasources/tests``
+# both define ``tests/integration/conftest.py``). Under importlib mode
+# without this flag, the second one collides ("Plugin already registered
+# under a different name") and relative ``from ._helpers`` imports
+# resolve into whichever ``tests.unit`` package was imported first.
+# Treating the test trees as namespace packages gives each module a
+# unique, rootdir-relative dotted name so the whole workspace collects
+# cleanly under ``pytest packages/ tests/``.
+consider_namespace_packages = true
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests that require docker-backed services; run with -m integration",
+    "live: tests that connect to a real external warehouse (env-gated); not run by default",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

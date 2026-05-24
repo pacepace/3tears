@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 16 workspace
+This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
 ## v0.10.0 -- 2026-05-23
@@ -217,6 +217,50 @@ release on the metallm side that pins this 3tears version).
   Migration v005 in `agent-wake` opens a previously-stricter
   CHECK constraint (additive); no schema breaks. All new tables
   and columns are additive. Existing consumers continue to work.
+
+## v0.9.1 -- 2026-05-23
+
+### Changed
+
+- **`3tears-datasources` — pluggable secret resolution (Path A).**
+  Datasource credentials are no longer named by an env var
+  (`password_env` / `credentials_json_env`). They now carry a
+  `scheme://locator` *reference* in `password_ref` /
+  `credentials_json_ref`, resolved at driver-creation time (Hub-side,
+  scoped to one datasource) by a pluggable backend in the new
+  `threetears.datasources.secrets` module. The secret value never
+  lives in agent.yaml, never lands plaintext in the Hub DB, and never
+  sits in a long-lived process variable — it is only ever held inside
+  a `SecretStr` and unwrapped at the last moment when handed to the
+  backend lib. Shipped backends:
+    - `env://NAME` — read process env var `NAME` (the devx backend;
+      devx mounts the agent project `.env` into the Hub container so
+      every datasource credential resolves on a fresh stack with no
+      per-secret hand-listing).
+    - `k8s://rel/path` — read a projected-Secret file under
+      `AIBOTS_DATASOURCE_SECRETS_DIR` (default `/var/run/secrets/aibots`);
+      the prod shape (k8s `Secret` as a volume).
+  `vault://`, `aws-secretsmanager://` and `gcp-sm://` are registered
+  but raise a clear "not implemented" error so the scheme surface is
+  stable for config authors today. Config validators call
+  `validate_ref` at load time (shape/scheme check, no env/fs touch);
+  resolution stays a use-time concern. This is a hard rename with no
+  backwards-compatibility shim.
+- **`3tears-datasources` realigned to the monorepo lockstep version.**
+  The package had been on an independent `0.1.x` line; it now versions
+  with every other workspace package (`0.9.1`). Its README "Versioning
+  policy" and CHANGELOG were rewritten accordingly.
+
+### Notes
+
+- Patch bump: the only behavioural change is internal to
+  `3tears-datasources` (the credential-reference rename + resolver).
+  No other package's public API changed.
+- All 17 workspace packages bumped to 0.9.1 in lock-step (the
+  `3tears-datasources` package joined the lockstep this release).
+- The platform Docker image stamp tracks this tag (`v0.9.1`); the
+  devx compose now injects the whole agent `.env` into the Hub
+  container generically, retiring the per-secret passthrough.
 
 ## v0.9.0 -- 2026-05-20
 
