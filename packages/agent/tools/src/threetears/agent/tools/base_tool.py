@@ -83,7 +83,43 @@ class TearsTool(ABC):
     ``execute``. subclasses override ``execute`` and never ``run``;
     the ``__init_subclass__`` guard below enforces that contract at
     class-creation time so the coercion step can never be bypassed.
+
+    Visibility flags decouple "is this tool in the agent's default tool
+    surface?" from "is this tool discoverable via the skills catalog?".
+    They govern default visibility only -- ACL still governs
+    authorization. The four-state matrix is:
+
+    - ``tool_eligible=True, skill_eligible=False`` (default): regular
+      tool; appears in the agent's default tool surface, NOT in the
+      skills catalog.
+    - ``tool_eligible=True, skill_eligible=True``: tool-shaped skill;
+      in the default surface AND surfaced via the skills catalog.
+    - ``tool_eligible=False, skill_eligible=True``: skill-only tool;
+      not in the default surface, available only when a skill lists
+      it in ``tool_additions``. The "code-skill without sandbox"
+      pattern.
+    - ``tool_eligible=False, skill_eligible=False``: registers but
+      never visible. Almost certainly a configuration error;
+      :class:`~threetears.agent.tools.server.ToolServer` emits a
+      WARNING at registration time.
+
+    Subclasses set these as class attributes, not instance attributes;
+    they are part of the tool's authored declaration and do not change
+    at runtime. Per-customer overrides live in the ACL grant layer, not
+    in these flags.
+
+    :cvar tool_eligible: whether this tool appears in the agent's
+        default tool surface. Defaults to ``True`` so existing tools
+        keep their pre-shard behaviour without opting in.
+    :cvar skill_eligible: whether this tool is discoverable via the
+        skills catalog (e.g. via ``skill_list`` queries or
+        ``list_skill_eligible_tools``). Defaults to ``False`` so no
+        existing tool leaks into the skills catalog without explicit
+        opt-in.
     """
+
+    tool_eligible: bool = True
+    skill_eligible: bool = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """enforce the run/execute contract at subclass-creation time.

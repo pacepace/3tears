@@ -79,6 +79,13 @@ from threetears.agent.acl.authorize import (
     authorize_on_entity,
     authorize_with_trail,
 )
+from threetears.agent.acl.builtin_roles import (
+    PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES,
+    PLATFORM_BUILTIN_TOOL_USER_ROLE_DESCRIPTION,
+    PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME,
+    PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS,
+    ensure_platform_builtin_tool_user_role,
+)
 from threetears.agent.acl.cache import (
     AclCache,
     ActorMembershipEntry,
@@ -165,6 +172,10 @@ __all__ = [
     "NamespaceCollection",
     "NamespaceEntity",
     "NamespaceNotFound",
+    "PLATFORM_BUILTIN_PRE_CHECK_TOOL_NAMES",
+    "PLATFORM_BUILTIN_TOOL_USER_ROLE_DESCRIPTION",
+    "PLATFORM_BUILTIN_TOOL_USER_ROLE_NAME",
+    "PLATFORM_BUILTIN_TOOL_USER_ROLE_PERMISSIONS",
     "READ_FILE_MATCHING_PREFIX",
     "RBAC_AUDIT_ACTIONS",
     "RBAC_AUDIT_EVENT_TYPES",
@@ -186,6 +197,7 @@ __all__ = [
     "authorize",
     "authorize_on_entity",
     "authorize_with_trail",
+    "ensure_platform_builtin_tool_user_role",
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",

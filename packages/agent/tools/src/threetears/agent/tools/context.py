@@ -165,7 +165,7 @@ class ToolContextManager:
         }
 
         returned_id = await self._collection.upsert_variable(self.conversation_id, data)
-        context_id_str = str(returned_id)
+        context_id_str = str(returned_id)  # convert at border: tool-facing context-id string handle returned to caller
 
         # Update local projection
         self.items = [i for i in self.items if not (i["context_type"] == "variable" and i["key"] == key)]
@@ -322,14 +322,14 @@ class ToolContextManager:
                 if evicted_ids:
                     self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
 
-        return str(context_id)
+        return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     async def get_context_item(self, context_id: str) -> dict[str, Any] | None:
         """Retrieve a context item by id.
 
         Accessing an item updates its ``date_accessed`` for LRU tracking.
         """
-        cid = str(context_id)
+        cid = context_id
         if cid.startswith("ctx:"):
             cid = cid[4:]
         for item in self.items:
@@ -350,7 +350,7 @@ class ToolContextManager:
         :return: long_desc or None if not found
         :rtype: str | None
         """
-        cid = str(context_id)
+        cid = context_id
         for item in self.items:
             if str(item["context_id"]) == cid:
                 val: str | None = item.get("long_desc", "")
@@ -365,7 +365,7 @@ class ToolContextManager:
         :return: context item data or None
         :rtype: dict[str, Any] | None
         """
-        cid = str(context_id)
+        cid = context_id
         for item in self.items:
             if str(item["context_id"]) == cid:
                 return item
@@ -465,7 +465,7 @@ class ToolContextManager:
             )
         )
         self.items.append(data)
-        return str(context_id)
+        return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     async def delete_item_by_type_and_key(
         self,
@@ -522,7 +522,7 @@ class ToolContextManager:
             self._collection.entity_class(data, is_new=True, collection=self._collection)
         )
         self.items.append(data)
-        return str(context_id)
+        return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     def get_slots(self) -> dict[str, dict[str, Any]]:
         """Return all registered media slots."""

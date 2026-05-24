@@ -778,6 +778,16 @@ class TestSlackAdapterResponseRouting:
         router = _MockRouter(response=response)
         mock_app = MagicMock()
         mock_client = AsyncMock()
+        # ``_resolve_user_locale`` calls
+        # ``await self._app.client.users_info(...)`` then reads
+        # ``response.get("user", {})`` synchronously. without a real
+        # return_value the auto-generated ``users_info`` mock returns
+        # an ``AsyncMock``, whose ``.get`` is itself async -- calling
+        # it produces an orphan coroutine the production code never
+        # awaits. an explicit empty-dict return value collapses the
+        # ``if response else {}`` branch and avoids the auto-generated
+        # async child entirely.
+        mock_client.users_info = AsyncMock(return_value={})
         mock_app.client = mock_client
         mock_app_cls.return_value = mock_app
 

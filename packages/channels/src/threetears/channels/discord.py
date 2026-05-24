@@ -168,7 +168,7 @@ def _build_channel_message(message: Any) -> ChannelMessage:
     attachments = _map_discord_attachments(message.attachments)
 
     metadata: dict[str, Any] = {
-        "message_id": str(message.id),
+        "message_id": str(message.id),  # convert at border: ChannelMessage metadata field (Discord snowflake id)
     }
 
     # locale: best-effort from guild.preferred_locale when the message

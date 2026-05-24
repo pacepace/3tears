@@ -140,7 +140,7 @@ _PLATFORM_SCHEMA_DDL = (
     """,
     """
     CREATE TABLE IF NOT EXISTS platform.namespaces (
-        id UUID PRIMARY KEY,
+        namespace_id UUID PRIMARY KEY,
         name VARCHAR(255) NOT NULL UNIQUE,
         namespace_type VARCHAR(20) NOT NULL,
         owner_agent_id UUID,

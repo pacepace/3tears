@@ -241,6 +241,7 @@ def _format_memory_context(
     if memory_chunks:
         for chunk in memory_chunks:
             chunk_media_id = chunk.get("media_id")
+            # convert at border: dedup-key normalization into str-keyed media_ids_covered set
             if chunk_media_id and str(chunk_media_id) in media_ids_covered:
                 continue
             deduped_chunks.append(chunk)
