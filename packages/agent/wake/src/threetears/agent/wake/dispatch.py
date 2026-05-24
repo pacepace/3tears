@@ -356,12 +356,13 @@ async def _resolve_context_from(
         schedule_id=upstream_id,
     )
     if upstream_fire is None or upstream_fire.status not in {"fired", "fired_silent"}:
+        log_upstream_id = str(upstream_id)  # convert at border: context_from no-fire log extra_data field
         log.warning(
             "dispatch_wake: context_from upstream has no successful fire",
             extra={
                 "extra_data": {
                     "downstream_schedule_id": str(trigger.schedule_id),
-                    "upstream_schedule_id": str(upstream_id),
+                    "upstream_schedule_id": log_upstream_id,
                     "conversation_id": str(trigger.conversation_id),
                 }
             },
@@ -386,12 +387,13 @@ async def _resolve_context_from(
         truncated = encoded[:_CONTEXT_BLOCK_BUDGET_BYTES].decode("utf-8", errors="ignore")
         suffix = f"\n[truncated: {len(encoded)}B -> {_CONTEXT_BLOCK_BUDGET_BYTES}B]"
         block = truncated + suffix
+        log_upstream_id = str(upstream_id)  # convert at border: context_from truncated log extra_data field
         log.warning(
             "dispatch_wake: context_from block truncated",
             extra={
                 "extra_data": {
                     "downstream_schedule_id": str(trigger.schedule_id),
-                    "upstream_schedule_id": str(upstream_id),
+                    "upstream_schedule_id": log_upstream_id,
                     "original_bytes": len(encoded),
                     "budget_bytes": _CONTEXT_BLOCK_BUDGET_BYTES,
                 }

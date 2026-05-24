@@ -20,13 +20,45 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.wake.entities import (
     WakeFireEntity,
     WakeScheduleEntity,
     WebhookSubscriptionEntity,
+    _as_uuid,
 )
+
+
+class TestAsUuidDefensive:
+    """``_as_uuid`` must fail clearly on a None / empty non-UUID value.
+
+    ``_as_uuid`` is only called for NON-nullable UUID columns (nullable
+    ones short-circuit on ``None`` before reaching it). If such a field
+    ever reads ``None`` -- e.g. a cache-coherence miss -- the stdlib
+    ``UUID(str(None))`` raises the misleading "badly formed hexadecimal
+    UUID string", which masks the real problem (a missing field) as a
+    UUID-format problem. The helper must instead raise a clear,
+    diagnosable error.
+    """
+
+    def test_as_uuid_passthrough_uuid(self) -> None:
+        u = UUID(str(uuid7()))
+        assert _as_uuid(u) is u
+
+    def test_as_uuid_coerces_string(self) -> None:
+        u = UUID(str(uuid7()))
+        assert _as_uuid(str(u)) == u
+
+    def test_as_uuid_none_raises_clear_error(self) -> None:
+        with pytest.raises((ValueError, TypeError)) as exc_info:
+            _as_uuid(None)
+        msg = str(exc_info.value).lower()
+        # must NOT surface the misleading stdlib message
+        assert "badly formed hexadecimal" not in msg
+        # must name the real problem
+        assert "none" in msg
 
 
 def _new_uuid() -> UUID:

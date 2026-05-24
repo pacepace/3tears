@@ -110,6 +110,18 @@ def _as_uuid(value: object) -> UUID:
     """
     if isinstance(value, UUID):
         return value
+    if value is None:
+        # _as_uuid is only called for NON-nullable UUID columns (nullable
+        # ones short-circuit on None before reaching here). A None here
+        # means a non-nullable field read empty -- almost always a
+        # cache-coherence miss. Raise a clear, diagnosable error instead
+        # of the stdlib's misleading "badly formed hexadecimal UUID
+        # string", which masks a missing-field problem as a parse problem.
+        raise ValueError(
+            "expected a UUID-shaped value but got None -- a non-nullable "
+            "UUID field read empty (likely a cache-coherence miss, not a "
+            "malformed UUID)"
+        )
     return UUID(str(value))
 
 

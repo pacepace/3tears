@@ -292,7 +292,7 @@ async def _dispatch_one(
                 "extra_data": {
                     "schedule_id": str(schedule.schedule_id),
                     "conversation_id": str(schedule.conversation_id),
-                    "fire_id": str(fire_id),
+                    "fire_id": str(fire_id),  # convert at border: fire-drift log extra_data field
                     "scheduled_fire_at": expected_next_fire.isoformat(),
                     "actual_fired_at": tick_at.isoformat(),
                     "drift_seconds": drift_seconds,
@@ -306,7 +306,7 @@ async def _dispatch_one(
         extra={
             "extra_data": {
                 "schedule_id": str(schedule.schedule_id),
-                "fire_id": str(fire_id),
+                "fire_id": str(fire_id),  # convert at border: fire-dispatched log extra_data field
                 "conversation_id": str(schedule.conversation_id),
                 "schedule_type": schedule.schedule_type,
                 "execution_mode": schedule.execution_mode,
@@ -324,7 +324,7 @@ async def _dispatch_one(
             extra={
                 "extra_data": {
                     "schedule_id": str(schedule.schedule_id),
-                    "fire_id": str(fire_id),
+                    "fire_id": str(fire_id),  # convert at border: fire-failed log extra_data field
                     "conversation_id": str(schedule.conversation_id),
                     "schedule_type": schedule.schedule_type,
                     "execution_mode": schedule.execution_mode,

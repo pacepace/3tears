@@ -327,7 +327,9 @@ class Workspace(BaseEntity):
         :return: namespace name in canonical ``workspaces.<uuid>`` form
         :rtype: str
         """
-        return build_namespace_name(PLURAL_PREFIX_WORKSPACE, str(self.id))
+        return build_namespace_name(
+            PLURAL_PREFIX_WORKSPACE, str(self.id)
+        )  # convert at border: canonical namespace-name token segment
 
     @property
     def customer_id(self) -> UUID | None:

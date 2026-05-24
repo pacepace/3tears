@@ -1549,6 +1549,7 @@ async def load_chunk_search_tool(
         for r in results:
             chunk_id = str(r.get("chunk_id", ""))
             memory_id = r.get("memory_id")
+            # convert at border: agent-facing tool-result display text
             memory_id_str = str(memory_id) if memory_id is not None else "?"
             content = str(r.get("content", "") or "")
             preview = content[:200]

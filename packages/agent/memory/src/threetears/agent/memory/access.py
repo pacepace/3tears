@@ -181,7 +181,7 @@ class MemoryAccessService:
                 extra={
                     "extra_data": {
                         "caller_user_id": str(caller_user_id),
-                        "customer_id": str(customer_id),
+                        "customer_id": str(customer_id),  # convert at border: no-authorized-agents log extra_data field
                         "candidate_count": len(candidate),
                     },
                 },
@@ -193,7 +193,7 @@ class MemoryAccessService:
             extra={
                 "extra_data": {
                     "caller_user_id": str(caller_user_id),
-                    "customer_id": str(customer_id),
+                    "customer_id": str(customer_id),  # convert at border: fan-out log extra_data field
                     "authorized_count": len(authorized),
                 },
             },

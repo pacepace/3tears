@@ -485,7 +485,7 @@ async def webhook_receive(
             "extra_data": {
                 "subscription_id": str(subscription_id),
                 "conversation_id": str(sub.conversation_id),
-                "fire_id": str(fire_id),
+                "fire_id": str(fire_id),  # convert at border: webhook-received log extra_data field
                 "status": result.status,
                 "execution_mode": trigger.execution_mode,
             }

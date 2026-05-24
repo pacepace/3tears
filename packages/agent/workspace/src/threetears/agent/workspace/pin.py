@@ -84,7 +84,7 @@ async def set_pin(
     metadata = {
         "workspace_name": workspace_name,
         "date_pinned": date_pinned.isoformat(),
-        "pinned_by_actor_id": str(pinned_by_actor_id),
+        "pinned_by_actor_id": str(pinned_by_actor_id),  # convert at border: persisted context-item metadata field
     }
     await context.save_item_by_type_and_key(
         context_type=_CONTEXT_TYPE,

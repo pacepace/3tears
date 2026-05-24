@@ -363,7 +363,9 @@ async def create_schedule_serialized(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(_ADVISORY_XACT_LOCK_SQL, str(conversation_id))
+            await conn.execute(
+                _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
+            )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
             value = await conn.fetchval(_COUNT_ACTIVE_SQL, conversation_id)
             count = int(value or 0)
             if count >= cap:
@@ -442,7 +444,9 @@ async def resume_schedule_serialized(
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(_ADVISORY_XACT_LOCK_SQL, str(conversation_id))
+            await conn.execute(
+                _ADVISORY_XACT_LOCK_SQL, str(conversation_id)
+            )  # convert at border: pg_advisory_xact_lock(hashtext($1)) text arg
             value = await conn.fetchval(
                 _COUNT_ACTIVE_EXCLUDING_SQL,
                 conversation_id,
@@ -455,7 +459,7 @@ async def resume_schedule_serialized(
                     extra={
                         "extra_data": {
                             "conversation_id": str(conversation_id),
-                            "schedule_id": str(schedule_id),
+                            "schedule_id": str(schedule_id),  # convert at border: cap-exceeded log extra_data field
                             "count": count,
                             "cap": cap,
                         }

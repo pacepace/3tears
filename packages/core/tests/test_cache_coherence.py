@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
+from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
@@ -763,3 +764,239 @@ class TestListenerLifecycle:
 
         # Pod B's L1 is NOT evicted (no listener)
         assert "e1" in pod_b
+
+
+# ---------------------------------------------------------------------------
+# Read-after-write on the SAME pod -- a pod must not evict its own L1 from
+# an invalidation IT published. This is the gap the cross-pod tests above
+# never cover: every test there asserts the OTHER pod is evicted and reads
+# it back via .get() (pull-through). None checks that the WRITER can still
+# read its own just-written entity via the L1-only accessor while its own
+# invalidation listener is live -- which is exactly the production path that
+# broke wake_schedule_create.
+# ---------------------------------------------------------------------------
+
+
+class TestWriterDoesNotEvictOwnL1:
+    """A pod must not act on cache invalidations it published itself."""
+
+    @pytest.mark.asyncio
+    async def test_writer_reads_own_entity_after_save(
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+    ) -> None:
+        """save_entity then an L1-only read of the same entity must hit.
+
+        The writer subscribes to the same invalidation subject it
+        publishes to (single-pod prod topology). Before the origin-skip
+        fix, the writer's own listener evicts the row save_entity just
+        wrote, so the immediate L1-only read returns nothing.
+        """
+        pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
+        await reg_a.start_invalidation_listener(shared_nats)
+
+        entity = pod_a.create({"id": "e1", "name": "New", "score": 0})
+        await pod_a.save_entity(entity)
+
+        # The writer must still find its own freshly-written row in L1.
+        assert pod_a.get_row_sync("e1") is not None, "writer evicted its own L1 row from an invalidation it published"
+        assert pod_a["e1", "name"] == "New"
+
+    @pytest.mark.asyncio
+    async def test_other_pod_still_evicted_after_fix(
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+    ) -> None:
+        """Cross-pod eviction MUST survive the origin-skip change.
+
+        Guards against an over-broad fix that suppresses all eviction:
+        a DIFFERENT pod's L1 must still be evicted by pod A's write.
+        """
+        pod_a, reg_a = _make_pod(shared_nats, shared_pg, config_always)
+        pod_b, reg_b = _make_pod(shared_nats, shared_pg, config_always)
+        await reg_a.start_invalidation_listener(shared_nats)
+        await reg_b.start_invalidation_listener(shared_nats)
+
+        shared_pg["e1"] = {"id": "e1", "name": "Alice", "score": 42}
+        await pod_a.ensure("e1")
+        await pod_b.ensure("e1")
+
+        entity_a = await pod_a.get("e1")
+        entity_a.name = "Updated"
+        await pod_a.save_entity(entity_a)
+
+        # Writer keeps its own row; the OTHER pod is still evicted.
+        assert pod_a.get_row_sync("e1") is not None
+        assert "e1" not in pod_b
+
+
+# ---------------------------------------------------------------------------
+# UUID type-discipline contract: a composite-UUID entity round-tripped
+# through the real three-tier stack must expose its PK columns as UUID
+# objects via the entity accessor -- never str, never None. Mirrors the
+# wake_schedule_create path (composite (conversation_id, schedule_id) PK,
+# create -> save -> read-back the PK). Strings are allowed ONLY inside the
+# serialization border (the L1 row), and this test pins that the border
+# converts back to UUID on the way out.
+# ---------------------------------------------------------------------------
+
+
+def _coerce_uuid(value: object) -> uuid.UUID:
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
+
+
+def _make_uuid_metadata() -> MetaData:
+    metadata = MetaData()
+    Table(
+        "uuid_entities",
+        metadata,
+        Column("conversation_id", PgUUID, primary_key=True),
+        Column("entity_id", PgUUID, primary_key=True),
+        Column("name", String(255)),
+        Column("date_created", DateTime),
+        Column("date_updated", DateTime),
+    )
+    return metadata
+
+
+class CompUuidEntity(BaseEntity):
+    """Composite-PK entity with UUID columns, mirroring WakeScheduleEntity."""
+
+    primary_key_field = "entity_id"
+
+    def __init__(self, data: dict[str, Any], is_new: bool = True, collection: Any = None) -> None:
+        super().__init__(data, is_new=is_new, collection=collection)
+        if "conversation_id" in data and "entity_id" in data:
+            object.__setattr__(self, "_id", (data["conversation_id"], data["entity_id"]))
+
+    @property
+    def conversation_id(self) -> uuid.UUID:
+        return _coerce_uuid(self._get_raw("conversation_id"))
+
+    @property
+    def entity_id(self) -> uuid.UUID:
+        return _coerce_uuid(self._get_raw("entity_id"))
+
+    @property
+    def name(self) -> str | None:
+        value: str | None = self._get_raw("name")
+        return value
+
+
+class CompUuidCollection(BaseCollection[CompUuidEntity]):
+    """Composite-PK collection for the UUID type-discipline contract test."""
+
+    primary_key_column: str | tuple[str, ...] = ("conversation_id", "entity_id")
+
+    def __init__(
+        self,
+        registry: CollectionRegistry,
+        config: DefaultCoreConfig,
+        nats_client: Any = None,
+        write_buffer: WriteBuffer | None = None,
+        pg_store: dict[str, dict] | None = None,
+    ) -> None:
+        self._pg_store = pg_store if pg_store is not None else {}
+        super().__init__(registry, config, nats_client, write_buffer)
+
+    @property
+    def table_name(self) -> str:
+        return "uuid_entities"
+
+    @property
+    def entity_class(self) -> type[CompUuidEntity]:
+        return CompUuidEntity
+
+    @staticmethod
+    def _key(entity_id: Any) -> str:
+        conv, ent = entity_id
+        return f"{conv}:{ent}"
+
+    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
+        return self._pg_store.get(self._key(entity_id))
+
+    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+        self._pg_store[self._key((data["conversation_id"], data["entity_id"]))] = dict(data)
+        return 1
+
+    async def delete_from_postgres(self, entity_id: object) -> None:
+        self._pg_store.pop(self._key(entity_id), None)
+
+    def serialize(self, data: dict) -> bytes:
+        return json.dumps(data, default=str).encode()
+
+    def deserialize(self, data: bytes) -> dict:
+        raw = json.loads(data)
+        for key in ("date_created", "date_updated"):
+            if key in raw and isinstance(raw[key], str):
+                raw[key] = datetime.fromisoformat(raw[key])
+        return raw
+
+
+def _make_uuid_pod(
+    nats: InMemoryNatsBus,
+    pg_store: dict[str, dict],
+    config: DefaultCoreConfig,
+) -> tuple[CompUuidCollection, CollectionRegistry]:
+    l1 = SQLiteBackend(db_name=f"test_uuidpod_{uuid.uuid4().hex[:8]}")
+    l1.initialize(_make_uuid_metadata())
+    reg = CollectionRegistry()
+    reg.configure(l1_backend=l1, l2_client=nats)
+    coll = CompUuidCollection(reg, config, nats_client=nats, pg_store=pg_store)
+    return coll, reg
+
+
+class TestUuidTypeDisciplineRoundTrip:
+    """Composite-UUID entity must read back as UUID, not str, not None."""
+
+    @pytest.mark.asyncio
+    async def test_pk_columns_are_uuid_after_create_and_save(
+        self, shared_nats: InMemoryNatsBus, shared_pg: dict, config_always: DefaultCoreConfig
+    ) -> None:
+        """create -> save -> read-back PK via accessor yields UUID objects.
+
+        This is the wake_schedule_create shape: a freshly created
+        composite-UUID entity, saved with its own invalidation listener
+        live, then its PK read back through the entity accessor. The
+        accessor must return UUID instances (strings live only inside
+        the L1 row), and the row must not have been self-evicted.
+        """
+        coll, reg = _make_uuid_pod(shared_nats, shared_pg, config_always)
+        await reg.start_invalidation_listener(shared_nats)
+
+        conv = uuid.uuid4()
+        ent = uuid.uuid4()
+        entity = coll.create({"conversation_id": conv, "entity_id": ent, "name": "x"})
+        await coll.save_entity(entity)
+
+        # not self-evicted
+        assert coll.get_row_sync((conv, ent)) is not None, "composite-UUID entity self-evicted after save"
+        # type discipline: accessor returns UUID, never str, never None
+        assert isinstance(entity.conversation_id, uuid.UUID)
+        assert isinstance(entity.entity_id, uuid.UUID)
+        assert entity.entity_id == ent
+        assert entity.conversation_id == conv
+
+    def test_accessor_coerces_string_pk_to_uuid(self) -> None:
+        """Negative-proof: when the raw field is a STRING, the accessor
+        still returns a UUID.
+
+        Guards the type-discipline test against silently becoming a
+        no-op. A cache/JSON round-trip can surface a pk as a bare string
+        (the allowed border representation); the entity accessor MUST
+        re-coerce it to UUID. If a future edit drops the ``_coerce_uuid``
+        call from the accessor, this fails -- the accessor would leak the
+        raw string and the ``isinstance`` check below would catch it.
+        """
+        conv = uuid.uuid4()
+        ent = uuid.uuid4()
+        # transient entity (no collection) holds the raw dict in _changes;
+        # the pk values are strings, as a serialization round-trip yields.
+        entity = CompUuidEntity(
+            {"conversation_id": str(conv), "entity_id": str(ent), "name": "x"},
+            collection=None,
+        )
+        assert isinstance(entity.entity_id, uuid.UUID)
+        assert isinstance(entity.conversation_id, uuid.UUID)
+        assert entity.entity_id == ent
+        assert entity.conversation_id == conv

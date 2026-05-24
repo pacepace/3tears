@@ -606,13 +606,16 @@ def load_wake_schedule_create_tool(
             from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
 
             get_wake_emitter().inc_schedule_cap_rejection()
+            # convert at border: schedule-cap-reject (create) log extra_data fields
+            log_user_id = str(user_id)
+            log_agent_id = str(agent_id)
             log.info(
                 EVENT_SCHEDULE_CAP_REJECT,
                 extra={
                     "extra_data": {
                         "conversation_id": str(conversation_id),
-                        "user_id": str(user_id),
-                        "agent_id": str(agent_id),
+                        "user_id": log_user_id,
+                        "agent_id": log_agent_id,
                         "cap": max_schedules_per_conversation,
                     }
                 },
@@ -1137,7 +1140,7 @@ def load_wake_schedule_resume_tool(
                 extra={
                     "extra_data": {
                         "conversation_id": str(conversation_id),
-                        "user_id": str(user_id),
+                        "user_id": str(user_id),  # convert at border: schedule-cap-reject (resume) log extra_data field
                         "schedule_id": str(parsed),
                         "cap": max_schedules_per_conversation,
                     }

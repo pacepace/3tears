@@ -1060,7 +1060,7 @@ class ToolServer:
                     "tool_name": schema.name,
                     "tool_version": schema.version,
                     "namespace_name": name,
-                    "namespace_id": str(namespace_id),
+                    "namespace_id": str(namespace_id),  # convert at border: emitted-tool-namespace log extra_data field
                     "owner_agent_id": (str(self._agent_id) if self._agent_id is not None else None),
                     "customer_id": (str(self._customer_id) if self._customer_id is not None else None),
                 }
@@ -1103,13 +1103,14 @@ class ToolServer:
                 self._agent_id,
             )
             await self._namespace_collection.delete(namespace_id)
+            log_namespace_id = str(namespace_id)  # convert at border: deleted-tool-namespace log extra_data field
             log.info(
                 "deleted tool namespace",
                 extra={
                     "extra_data": {
                         "mcp_name": mcp_name,
                         "tool_version": version,
-                        "namespace_id": str(namespace_id),
+                        "namespace_id": log_namespace_id,
                     }
                 },
             )

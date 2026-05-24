@@ -648,7 +648,7 @@ class MemoryExtractor:
                     await self._memories.save_entity(new_entity)
                     if self._summary_callback:
                         await self._summary_callback(
-                            str(memory_id),
+                            str(memory_id),  # convert at border: summary_callback Callable[[str, str], ...] contract
                             candidate["content"],
                         )
                     if self._on_memory_created:
@@ -671,13 +671,16 @@ class MemoryExtractor:
                         try:
                             await self._on_memory_created(new_entity)
                         except Exception as cb_exc:
+                            # convert at border: callback-failed log extra_data fields
+                            log_user_id = str(user_id)
+                            log_conversation_id = str(conversation_id)
                             log.warning(
                                 "on_memory_created callback failed",
                                 extra={
                                     "extra_data": {
                                         "memory_id": str(memory_id),
-                                        "user_id": str(user_id),
-                                        "conversation_id": str(conversation_id),
+                                        "user_id": log_user_id,
+                                        "conversation_id": log_conversation_id,
                                         "error_type": type(cb_exc).__name__,
                                         "error": str(cb_exc),
                                     },

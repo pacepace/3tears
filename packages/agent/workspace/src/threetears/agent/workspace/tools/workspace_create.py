@@ -348,6 +348,7 @@ class WorkspaceCreateTool(TearsTool):
                                 "scope or constructor; workspace was created "
                                 "without an owning customer."
                             )
+                        audit_resource_id = str(workspace_id)  # convert at border: AuditEvent details field
                         event = AuditEvent(
                             id=uuid7(),
                             timestamp=datetime.now(UTC),
@@ -362,7 +363,7 @@ class WorkspaceCreateTool(TearsTool):
                             outcome="success",
                             correlation_id=correlation_id,
                             details={
-                                "workspace_resource_id": str(workspace_id),
+                                "workspace_resource_id": audit_resource_id,
                                 "name": name,
                                 "template_name": effective_template,
                                 "files_changed": files_count,

@@ -1493,13 +1493,16 @@ def load_skill_invoke_tool(
             )
             return _tool_error("skill_invoke", f"invocation persist failed: {exc}")
 
+        # convert at border: skill_invoke-fired log extra_data fields
+        log_invocation_id = str(invocation_id)
+        log_conversation_id = str(conversation_id)
         log.info(
             "skill_invoke fired",
             extra={
                 "extra_data": {
                     "skill_id": str(entity.skill_id),
-                    "invocation_id": str(invocation_id),
-                    "conversation_id": str(conversation_id),
+                    "invocation_id": log_invocation_id,
+                    "conversation_id": log_conversation_id,
                     "prompt_mode": entity.prompt_mode,
                 }
             },
