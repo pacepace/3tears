@@ -8,7 +8,16 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    LargeBinary,
+    MetaData,
+    String,
+    Table,
+)
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
 from threetears.core.cache.sqlite import SQLiteBackend
@@ -266,6 +275,65 @@ class TestSerializationRoundTrip:
         assert serialized == "[1, 2, 3]"
         deserialized = backend.deserialize_field(serialized, "TEXT_ARRAY")
         assert deserialized == [1, 2, 3]
+
+    def test_generic_largebinary_round_trip(self) -> None:
+        """A generic ``sqlalchemy.LargeBinary`` column must round-trip bytes
+        losslessly through SQLite (proving it maps to ``TEXT_BYTEA``).
+
+        Regression: ``webhook_subscriptions.secret_ciphertext`` is declared
+        with the generic ``sqlalchemy.LargeBinary`` (not the postgresql
+        ``BYTEA`` dialect type). The mapper previously only matched
+        ``PgBYTEA``, so generic ``LargeBinary`` fell through to plain
+        ``TEXT``: bytes were written as a hex string but never decoded back
+        to ``bytes`` on read, crashing ``save_entity`` downstream with
+        ``TypeError: string argument without an encoding``. A clean
+        byte-for-byte round trip here proves the ``TEXT_BYTEA`` mapping.
+        """
+        metadata = MetaData()
+        Table(
+            "lb_entities",
+            metadata,
+            Column("id", UUID, primary_key=True),
+            Column("blob", LargeBinary),
+        )
+        b = SQLiteBackend(db_name=f"test_lb_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            entity_id = str(uuid.uuid4())
+            raw = b"\x00\x01\xfe\xff secret-bytes"
+            b.upsert("lb_entities", {"id": entity_id, "blob": raw})
+            result = b.select_by_id("lb_entities", entity_id)
+            assert result is not None
+            assert result["blob"] == raw
+            assert isinstance(result["blob"], bytes)
+        finally:
+            b.reset()
+
+    def test_pg_bytea_still_round_trips(self) -> None:
+        """The postgresql ``BYTEA`` dialect type must still round-trip
+        bytes losslessly (no regression from broadening the mapper's check
+        to the ``LargeBinary`` base class — ``BYTEA`` subclasses
+        ``LargeBinary``).
+        """
+        metadata = MetaData()
+        Table(
+            "pg_bytea_entities",
+            metadata,
+            Column("id", UUID, primary_key=True),
+            Column("blob", BYTEA),
+        )
+        b = SQLiteBackend(db_name=f"test_pgbytea_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            entity_id = str(uuid.uuid4())
+            raw = b"\xca\xfe\xba\xbe"
+            b.upsert("pg_bytea_entities", {"id": entity_id, "blob": raw})
+            result = b.select_by_id("pg_bytea_entities", entity_id)
+            assert result is not None
+            assert result["blob"] == raw
+            assert isinstance(result["blob"], bytes)
+        finally:
+            b.reset()
 
     def test_none_round_trip(self, backend: SQLiteBackend) -> None:
         entity_id = str(uuid.uuid4())

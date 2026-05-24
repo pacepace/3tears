@@ -482,8 +482,16 @@ class SQLiteBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to SQLite equivalent with serialization hints."""
-        from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, Text
-        from sqlalchemy.dialects.postgresql import BYTEA as PgBYTEA
+        from sqlalchemy import (
+            Boolean,
+            DateTime,
+            Float,
+            Integer,
+            LargeBinary,
+            Numeric,
+            String,
+            Text,
+        )
         from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
         from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
@@ -510,7 +518,9 @@ class SQLiteBackend:
             return "TEXT_DATETIME"
         if isinstance(sa_type, (String, Text)):
             return "TEXT"
-        if isinstance(sa_type, PgBYTEA):
+        # Generic LargeBinary covers both sqlalchemy.LargeBinary and the
+        # postgresql BYTEA dialect type (PgBYTEA subclasses LargeBinary).
+        if isinstance(sa_type, LargeBinary):
             return "TEXT_BYTEA"
 
         # PostgreSQL-only types that map cleanly to TEXT in SQLite
