@@ -76,10 +76,16 @@ class _CapLockConn:
     async def fetchval(self, sql: str, *args: Any) -> int:
         del sql
         conversation_id = args[0]
+        # resume_schedule_serialized passes (conversation_id, schedule_id)
+        # and counts active rows EXCLUDING the schedule being resumed;
+        # create_schedule_serialized passes (conversation_id,) only.
+        exclude_schedule_id = args[1] if len(args) > 1 else None
         return sum(
             1
-            for r in self._collection.rows.values()
-            if r["conversation_id"] == conversation_id and r["status"] == "active"
+            for sid, r in self._collection.rows.items()
+            if r["conversation_id"] == conversation_id
+            and r["status"] == "active"
+            and (exclude_schedule_id is None or sid[1] != exclude_schedule_id)
         )
 
 
@@ -158,7 +164,9 @@ class _FakeScheduleCollection:
         schedule_id: UUID,
         *,
         next_fire_at: datetime,
+        conn: Any = None,
     ) -> None:
+        del conn
         row = self.rows.get((conversation_id, schedule_id))
         if row is None:
             return
@@ -577,6 +585,89 @@ async def test_schedule_pause_and_resume(actor: tuple[UUID, UUID, UUID]) -> None
     result = await resume_tools[0].ainvoke({"schedule_id": str(schedule_id)})
     assert "Resumed" in result
     assert coll.rows[(conv_id, schedule_id)]["status"] == "active"
+
+
+def _active_schedule_row(
+    *,
+    conv_id: UUID,
+    user_id: UUID,
+    agent_id: UUID,
+    status: str = "active",
+) -> dict[str, Any]:
+    return {
+        "conversation_id": conv_id,
+        "schedule_id": _new_uuid(),
+        "user_id": user_id,
+        "agent_id": agent_id,
+        "schedule_type": "interval",
+        "schedule_config": {"seconds": 600},
+        "execution_mode": "inline",
+        "status": status,
+        "next_fire_at": datetime.now(UTC) if status == "active" else None,
+        "missed_fire_policy": "coalesce",
+        "delivery_target": "conversation",
+        "delivery_config": {},
+        "date_created": datetime.now(UTC),
+        "date_updated": datetime.now(UTC),
+    }
+
+
+@pytest.mark.asyncio
+async def test_schedule_resume_rejected_at_cap(actor: tuple[UUID, UUID, UUID]) -> None:
+    """Re-activating a paused schedule respects the active-schedule cap.
+
+    pause -> create-to-fill -> resume must NOT push the active count over
+    the cap (PLACEMENT §1.9 / LR-50). With ``cap`` active schedules already
+    present, resuming a paused one is rejected.
+    """
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    cap = 2
+    # Fill the conversation to the cap with active schedules.
+    for _ in range(cap):
+        row = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id)
+        coll.rows[(conv_id, row["schedule_id"])] = row
+    # A paused schedule the user now tries to resume.
+    paused = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id, status="paused")
+    paused_id = paused["schedule_id"]
+    coll.rows[(conv_id, paused_id)] = paused
+
+    resume_tools = load_wake_schedule_resume_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        max_schedules_per_conversation=cap,
+    )
+    result = await resume_tools[0].ainvoke({"schedule_id": str(paused_id)})
+    assert "TOOL ERROR" in result or "max" in result.lower()
+    # Still paused -- the cap rejection blocked the flip.
+    assert coll.rows[(conv_id, paused_id)]["status"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_schedule_resume_succeeds_under_cap(
+    actor: tuple[UUID, UUID, UUID],
+) -> None:
+    """Resuming a paused schedule works when the conversation is under cap."""
+    conv_id, user_id, agent_id = actor
+    coll = _FakeScheduleCollection()
+    cap = 3
+    # One active schedule -- under the cap of 3.
+    row = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id)
+    coll.rows[(conv_id, row["schedule_id"])] = row
+    paused = _active_schedule_row(conv_id=conv_id, user_id=user_id, agent_id=agent_id, status="paused")
+    paused_id = paused["schedule_id"]
+    coll.rows[(conv_id, paused_id)] = paused
+
+    resume_tools = load_wake_schedule_resume_tool(
+        conversation_id=conv_id,
+        user_id=user_id,
+        schedules_collection=coll,  # type: ignore[arg-type]
+        max_schedules_per_conversation=cap,
+    )
+    result = await resume_tools[0].ainvoke({"schedule_id": str(paused_id)})
+    assert "Resumed" in result
+    assert coll.rows[(conv_id, paused_id)]["status"] == "active"
 
 
 @pytest.mark.asyncio

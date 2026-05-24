@@ -645,6 +645,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         schedule_id: UUID,
         *,
         next_fire_at: datetime,
+        conn: Any = None,
     ) -> None:
         """Flip ``status`` to ``'active'`` and set ``next_fire_at``.
 
@@ -653,19 +654,30 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         provides it). Idempotent: replay on an already-active schedule
         overwrites the timestamp.
 
+        ``conn`` lets the cap-serialized resume path
+        (:func:`threetears.agent.wake.rate_limit.resume_schedule_serialized`)
+        bind the UPDATE to the same transaction that holds the
+        per-conversation advisory lock + active-count, so the
+        re-activation cap holds atomically. When ``conn`` is ``None`` the
+        UPDATE runs on the pool (the direct, non-cap path).
+
         :param conversation_id: partition column
         :ptype conversation_id: UUID
         :param schedule_id: target schedule
         :ptype schedule_id: UUID
         :param next_fire_at: when the resumed schedule should next fire
         :ptype next_fire_at: datetime
+        :param conn: optional asyncpg-compatible connection (binds the
+            UPDATE to a caller-owned transaction)
+        :ptype conn: Any
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is None:
+        target = conn if conn is not None else self.l3_pool
+        if target is None:
             return None
         # cache-bypass: targeted UPDATE flipping paused -> active.
-        await self.l3_pool.execute(
+        await target.execute(
             "UPDATE agent_wake_schedules "
             "SET status = 'active', next_fire_at = $3, date_updated = now() "
             "WHERE conversation_id = $1 AND schedule_id = $2 AND status != 'expired'",

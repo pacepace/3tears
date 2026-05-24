@@ -44,6 +44,7 @@ from threetears.agent.wake.config import (
 from threetears.agent.wake.rate_limit import (
     ScheduleCapExceeded,
     create_schedule_serialized,
+    resume_schedule_serialized,
 )
 from threetears.agent.wake.reschedule import _compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_schedule_id
@@ -1119,8 +1120,16 @@ def load_wake_schedule_resume_tool(
     conversation_id: UUID,
     user_id: UUID,
     schedules_collection: WakeScheduleCollection,
+    max_schedules_per_conversation: int = DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
 ) -> list[BaseTool]:
     """Build a ``wake_schedule_resume`` tool (status -> 'active'; recompute next_fire_at).
+
+    Re-activation is RACE-PROOF cap-checked (PLACEMENT §1.9): the persist
+    step routes through :func:`resume_schedule_serialized`, which takes
+    the per-conversation advisory lock, re-counts active schedules
+    (excluding the one being resumed), and flips paused -> active inside
+    one transaction. Without this a pause -> create-to-fill -> resume
+    sequence could push the active count past the cap.
 
     :param conversation_id: caller's conversation UUID
     :ptype conversation_id: UUID
@@ -1128,6 +1137,9 @@ def load_wake_schedule_resume_tool(
     :ptype user_id: UUID
     :param schedules_collection: three-tier schedules collection
     :ptype schedules_collection: WakeScheduleCollection
+    :param max_schedules_per_conversation: cap on active schedules per
+        conversation (default 10 per PLACEMENT §1.9)
+    :ptype max_schedules_per_conversation: int
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     """
@@ -1170,10 +1182,37 @@ def load_wake_schedule_resume_tool(
             )
 
         try:
-            await schedules_collection.resume(
-                conversation_id,
-                parsed,
+            # Race-proof cap + flip: the helper takes a per-conversation
+            # advisory lock, re-counts active schedules (excluding this
+            # one), and flips paused -> active inside one transaction
+            # (PLACEMENT §1.9).
+            await resume_schedule_serialized(
+                collection=schedules_collection,
+                conversation_id=conversation_id,
+                schedule_id=parsed,
                 next_fire_at=next_fire_at,
+                cap=max_schedules_per_conversation,
+                pool=schedules_collection.l3_pool,
+            )
+        except ScheduleCapExceeded:
+            from threetears.agent.wake.events import EVENT_SCHEDULE_CAP_REJECT  # noqa: PLC0415
+            from threetears.agent.wake.metrics import get_wake_emitter  # noqa: PLC0415
+
+            get_wake_emitter().inc_schedule_cap_rejection()
+            log.info(
+                EVENT_SCHEDULE_CAP_REJECT,
+                extra={
+                    "extra_data": {
+                        "conversation_id": str(conversation_id),
+                        "user_id": str(user_id),
+                        "schedule_id": str(parsed),
+                        "cap": max_schedules_per_conversation,
+                    }
+                },
+            )
+            return _tool_error(
+                "wake_schedule_resume",
+                f"max {max_schedules_per_conversation} active schedules per conversation (pause or delete one first)",
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error("wake_schedule_resume", f"persist failed: {exc}")

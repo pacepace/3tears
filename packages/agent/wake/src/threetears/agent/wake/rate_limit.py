@@ -43,6 +43,7 @@ __all__ = [
     "_check_active_schedule_cap",
     "_check_rate_limit",
     "create_schedule_serialized",
+    "resume_schedule_serialized",
 ]
 
 
@@ -53,6 +54,18 @@ __all__ = [
 # pool -- the lock + count + insert MUST share one connection / txn for
 # the cap to hold under concurrency.
 _COUNT_ACTIVE_SQL = "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'"
+
+
+# Active-schedule COUNT for the resume/activate path, EXCLUDING the
+# schedule being (re)activated. Excluding the target means an idempotent
+# replay (resuming an already-active schedule) cannot self-reject at
+# exactly cap -- the target's own row never counts against the cap it is
+# trying to (re)join. A genuinely-paused target is also excluded, which
+# is correct: the cap counts OTHER active schedules, then this one makes
+# it ``other + 1 <= cap`` iff ``other < cap``.
+_COUNT_ACTIVE_EXCLUDING_SQL = (
+    "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active' AND schedule_id != $2"
+)
 
 
 # Per-conversation advisory lock taken for the transaction's lifetime.
@@ -370,3 +383,103 @@ async def create_schedule_serialized(
                     cap=cap,
                 )
             await collection.save_entity(entity, conn=conn)
+
+
+async def resume_schedule_serialized(
+    *,
+    collection: WakeScheduleCollection,
+    conversation_id: UUID,
+    schedule_id: UUID,
+    next_fire_at: datetime,
+    cap: int,
+    pool: Any,
+) -> None:
+    """Re-activate a schedule under a per-conversation advisory lock.
+
+    The mirror of :func:`create_schedule_serialized` for transitions
+    INTO ``status='active'`` (the agent ``wake_schedule_resume`` tool and
+    the metallm REST ``PATCH status=active``). Without this, a
+    pause -> create-to-fill -> resume sequence could push the active
+    count past the cap because the resume path never re-checked it
+    (PLACEMENT §1.9).
+
+    Within a SINGLE transaction on one pooled connection:
+
+    1. ``pg_advisory_xact_lock(hashtext(conversation_id::text))`` --
+       serializes every concurrent create/resume for the SAME
+       conversation against the shared lock key (so a create and a resume
+       cannot both pass a stale count). Transaction-scoped: releases on
+       COMMIT/ROLLBACK.
+    2. Re-count ``status='active'`` rows for the conversation EXCLUDING
+       the target schedule, ON THE SAME connection. Excluding the target
+       makes an idempotent re-resume of an already-active schedule a
+       no-op-safe path instead of a spurious self-rejection at cap.
+    3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` -- BEFORE
+       the UPDATE, so re-activation can never exceed the cap.
+    4. ``collection.resume(..., conn=conn)`` -- the L3 UPDATE flips
+       paused -> active bound to the locked transaction.
+
+    The caller owns ``next_fire_at`` computation (the platform does not
+    own scheduling math) and any status/ownership pre-validation; this
+    helper only enforces the cap atomically and persists the flip.
+
+    :param collection: three-tier wake-schedules collection
+    :ptype collection: WakeScheduleCollection
+    :param conversation_id: partition column + advisory-lock key
+    :ptype conversation_id: UUID
+    :param schedule_id: schedule being re-activated (excluded from count)
+    :ptype schedule_id: UUID
+    :param next_fire_at: recomputed next fire instant for the resumed row
+    :ptype next_fire_at: datetime
+    :param cap: maximum allowed active schedules for the conversation
+    :ptype cap: int
+    :param pool: asyncpg-compatible pool exposing ``acquire()`` +
+        per-connection ``transaction()`` / ``fetchval()`` / ``execute()``
+    :ptype pool: Any
+    :return: nothing
+    :rtype: None
+    :raises ScheduleCapExceeded: when the conversation is at/over cap
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(_ADVISORY_XACT_LOCK_SQL, str(conversation_id))
+            value = await conn.fetchval(
+                _COUNT_ACTIVE_EXCLUDING_SQL,
+                conversation_id,
+                schedule_id,
+            )
+            count = int(value or 0)
+            if count >= cap:
+                log.info(
+                    "rate-limit: active-schedule cap exceeded (serialized resume)",
+                    extra={
+                        "extra_data": {
+                            "conversation_id": str(conversation_id),
+                            "schedule_id": str(schedule_id),
+                            "count": count,
+                            "cap": cap,
+                        }
+                    },
+                )
+                raise ScheduleCapExceeded(
+                    conversation_id=conversation_id,
+                    count=count,
+                    cap=cap,
+                )
+            await collection.resume(
+                conversation_id,
+                schedule_id,
+                next_fire_at=next_fire_at,
+                conn=conn,
+            )
+    # NOTE: like :meth:`WakeScheduleCollection.resume` / ``.pause``, the
+    # flip is a cache-bypass L3 UPDATE -- the L1/L2 row cache is "read-
+    # mostly, invalidated naturally on the next fetch" (the established
+    # contract for these status transitions). We deliberately do NOT call
+    # ``invalidate_cache`` here: an eviction would strip the row out from
+    # under any LIVE entity proxy the caller still holds (the proxy reads
+    # every field through L1 via ``get_field_sync``), turning a subsequent
+    # ``entity.schedule_id`` read into ``None``. The metallm REST caller
+    # reflects the new ``status`` / ``next_fire_at`` onto its proxy via
+    # field setters (which write through to L1) for the response; the
+    # agent tool caller returns a string and re-reads on the next ``get``.
