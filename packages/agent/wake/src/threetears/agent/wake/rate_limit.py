@@ -32,14 +32,35 @@ from threetears.observe import get_logger
 from threetears.agent.wake.config import WakeConfig
 
 if TYPE_CHECKING:
+    from threetears.agent.wake.collections import WakeScheduleCollection
+    from threetears.agent.wake.entities import WakeScheduleEntity
     from threetears.agent.wake.types import WakeTrigger
 
 __all__ = [
     "RATE_LIMIT_WINDOW_HOURS",
+    "ScheduleCapExceeded",
     "RateLimitScope",
     "_check_active_schedule_cap",
     "_check_rate_limit",
+    "create_schedule_serialized",
 ]
+
+
+# Active-schedule COUNT executed INSIDE the per-conversation advisory
+# lock (so the count + insert serialize). Identical predicate to
+# :meth:`WakeScheduleCollection.count_active_for_conversation`, but bound
+# to the caller's transaction connection rather than the collection's
+# pool -- the lock + count + insert MUST share one connection / txn for
+# the cap to hold under concurrency.
+_COUNT_ACTIVE_SQL = "SELECT COUNT(*) FROM agent_wake_schedules WHERE conversation_id = $1 AND status = 'active'"
+
+
+# Per-conversation advisory lock taken for the transaction's lifetime.
+# ``hashtext`` maps the conversation_id text to an int4; the ``::bigint``
+# cast selects the single-argument ``pg_advisory_xact_lock(bigint)`` form.
+# The lock auto-releases at COMMIT/ROLLBACK (xact-scoped), so no explicit
+# unlock is needed and a crashed/rolled-back create never strands the lock.
+_ADVISORY_XACT_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)"
 
 
 # Which cap was hit by :func:`_check_rate_limit`. ``None`` means
@@ -244,3 +265,108 @@ async def _check_active_schedule_cap(
         )
         return False
     return True
+
+
+class ScheduleCapExceeded(Exception):
+    """Raised by :func:`create_schedule_serialized` when the cap is hit.
+
+    Carries the conversation, the observed active count, and the cap so
+    both consumers (the agent ``wake_schedule_create`` tool and the
+    metallm REST router) can render their own surface-appropriate error
+    (a ``[TOOL ERROR]`` string vs. an HTTP 400) without re-counting.
+
+    :ivar conversation_id: conversation whose cap was hit
+    :ivar count: active-schedule count observed under the lock
+    :ivar cap: the configured per-conversation cap
+    """
+
+    def __init__(self, *, conversation_id: UUID, count: int, cap: int) -> None:
+        self.conversation_id = conversation_id
+        self.count = count
+        self.cap = cap
+        super().__init__(
+            f"active-schedule cap reached for conversation {conversation_id}: {count} >= {cap}",
+        )
+
+
+async def create_schedule_serialized(
+    *,
+    collection: WakeScheduleCollection,
+    entity: WakeScheduleEntity,
+    conversation_id: UUID,
+    cap: int,
+    pool: Any,
+) -> None:
+    """Insert a wake schedule under a per-conversation advisory lock.
+
+    Closes the check-then-insert TOCTOU race on the active-schedule cap
+    (PLACEMENT §1.9). Within a SINGLE transaction on one pooled
+    connection:
+
+    1. ``pg_advisory_xact_lock(hashtext(conversation_id::text))`` --
+       serializes every concurrent create for the SAME conversation;
+       creates for different conversations do not contend (distinct lock
+       keys). The lock is transaction-scoped, so it releases on
+       COMMIT/ROLLBACK with no explicit unlock.
+    2. Re-count ``status='active'`` rows for the conversation ON THE
+       SAME connection (so the count reflects rows committed by any
+       create that already released the lock).
+    3. Raise :class:`ScheduleCapExceeded` when ``count >= cap`` --
+       BEFORE the insert, so the cap holds exactly.
+    4. ``collection.save_entity(entity, conn=conn)`` -- the L3 INSERT
+       binds to the locked transaction; the L1/L2/invalidation tiers run
+       through the normal :meth:`save_entity` path.
+
+    Two concurrent creates against a full conversation thus serialize:
+    the first commits (releasing the lock), the second re-counts under
+    the lock, sees the cap, and raises. The cap can never be exceeded by
+    a race because the count + insert are atomic per conversation.
+
+    The single ``COUNT`` runs inside the lock rather than relying on a DB
+    trigger / CHECK constraint (which cannot express "count < cap" without
+    a subquery in the constraint, unsupported by PostgreSQL). The advisory
+    lock is the least-invasive race-proof primitive that needs no schema
+    change.
+
+    The caller owns entity construction (id, next_fire_at, skill ACL,
+    context_from validation all happen before this call) so the helper
+    stays agnostic of the create surface's validation order. Both the
+    agent tool and the REST router route their persist step through here.
+
+    :param collection: three-tier wake-schedules collection
+    :ptype collection: WakeScheduleCollection
+    :param entity: the fully-constructed (not-yet-persisted) schedule
+    :ptype entity: WakeScheduleEntity
+    :param conversation_id: partition column + advisory-lock key
+    :ptype conversation_id: UUID
+    :param cap: maximum allowed active schedules for the conversation
+    :ptype cap: int
+    :param pool: asyncpg-compatible pool exposing ``acquire()`` +
+        per-connection ``transaction()`` / ``fetchval()`` / ``execute()``
+    :ptype pool: Any
+    :return: nothing
+    :rtype: None
+    :raises ScheduleCapExceeded: when the conversation is at/over cap
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(_ADVISORY_XACT_LOCK_SQL, str(conversation_id))
+            value = await conn.fetchval(_COUNT_ACTIVE_SQL, conversation_id)
+            count = int(value or 0)
+            if count >= cap:
+                log.info(
+                    "rate-limit: active-schedule cap exceeded (serialized create)",
+                    extra={
+                        "extra_data": {
+                            "conversation_id": str(conversation_id),
+                            "count": count,
+                            "cap": cap,
+                        }
+                    },
+                )
+                raise ScheduleCapExceeded(
+                    conversation_id=conversation_id,
+                    count=count,
+                    cap=cap,
+                )
+            await collection.save_entity(entity, conn=conn)

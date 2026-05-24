@@ -33,8 +33,10 @@ from threetears.agent.wake.config import (
     DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
 )
 from threetears.agent.wake.rate_limit import (
+    ScheduleCapExceeded,
     _check_active_schedule_cap,
     _check_rate_limit,
+    create_schedule_serialized,
 )
 from threetears.agent.wake.types import WakeTrigger
 
@@ -249,3 +251,119 @@ async def test_check_active_schedule_cap_count_func_at_cap_rejects() -> None:
         )
         is False
     )
+
+
+# ---------------------------------------------------------------------------
+# create_schedule_serialized (advisory-lock + count + insert)
+# ---------------------------------------------------------------------------
+
+
+# parity-with: asyncpg.Connection (the lock/count seam create_schedule_serialized
+# drives: execute(advisory-lock) -> fetchval(count) -> save_entity(conn=self)).
+class _SerializedConn:
+    """Records the advisory-lock SQL + serves a scripted active count.
+
+    The COUNT value is supplied by the test so the at-cap / under-cap
+    branch can be exercised without a DB. ``executed`` captures every
+    ``execute`` call so a test can assert the advisory lock was taken.
+    """
+
+    def __init__(self, count_value: int) -> None:
+        self._count_value = count_value
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+        self.txn_entered = False
+
+    def transaction(self) -> "_SerializedConn":
+        return self
+
+    async def __aenter__(self) -> "_SerializedConn":
+        self.txn_entered = True
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.executed.append((sql, args))
+        return "SELECT 1"
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        del sql, args
+        return self._count_value
+
+
+# parity-with: asyncpg.Pool (acquire() context manager).
+class _SerializedPool:
+    """Yields a single :class:`_SerializedConn` from ``acquire()``."""
+
+    def __init__(self, conn: _SerializedConn) -> None:
+        self._conn = conn
+
+    def acquire(self) -> _SerializedConn:
+        return self._conn
+
+
+# parity-with: threetears.agent.wake.collections.WakeScheduleCollection
+# (only the seam create_schedule_serialized touches: save_entity(conn=...)).
+class _RecordingCollection:
+    """Captures the ``save_entity`` call (or proves it never happened)."""
+
+    def __init__(self) -> None:
+        self.saved: list[Any] = []
+        self.saved_conn: Any = None
+
+    async def save_entity(self, entity: Any, *, conn: Any = None) -> None:
+        self.saved.append(entity)
+        self.saved_conn = conn
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_serialized_inserts_under_cap() -> None:
+    """Under cap -> takes the advisory lock then inserts on the txn conn."""
+    conn = _SerializedConn(count_value=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION - 1)
+    pool = _SerializedPool(conn)
+    collection = _RecordingCollection()
+    entity = object()
+    conv_id = uuid4()
+
+    await create_schedule_serialized(
+        collection=collection,  # type: ignore[arg-type]
+        entity=entity,  # type: ignore[arg-type]
+        conversation_id=conv_id,
+        cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+        pool=pool,
+    )
+
+    # The advisory lock was acquired inside a transaction before the insert.
+    assert conn.txn_entered is True
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in conn.executed)
+    # The entity was persisted, bound to the locked transaction connection.
+    assert collection.saved == [entity]
+    assert collection.saved_conn is conn
+
+
+@pytest.mark.asyncio
+async def test_create_schedule_serialized_rejects_at_cap_without_insert() -> None:
+    """At cap -> raises ScheduleCapExceeded and never calls save_entity."""
+    conn = _SerializedConn(count_value=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION)
+    pool = _SerializedPool(conn)
+    collection = _RecordingCollection()
+    conv_id = uuid4()
+
+    with pytest.raises(ScheduleCapExceeded) as exc_info:
+        await create_schedule_serialized(
+            collection=collection,  # type: ignore[arg-type]
+            entity=object(),  # type: ignore[arg-type]
+            conversation_id=conv_id,
+            cap=DEFAULT_MAX_SCHEDULES_PER_CONVERSATION,
+            pool=pool,
+        )
+
+    # The advisory lock was taken (the count ran under it) before rejecting.
+    assert any("pg_advisory_xact_lock" in sql for sql, _ in conn.executed)
+    # The typed error carries the observed count + cap + conversation.
+    assert exc_info.value.cap == DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+    assert exc_info.value.count == DEFAULT_MAX_SCHEDULES_PER_CONVERSATION
+    assert exc_info.value.conversation_id == conv_id
+    # No insert happened.
+    assert collection.saved == []

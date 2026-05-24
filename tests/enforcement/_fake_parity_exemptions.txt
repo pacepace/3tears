@@ -156,10 +156,10 @@ packages/agent/skills/tests/unit/test_tools_factories.py:181:_FakeRegistry
 
 # agent-wake shard-04 agent-tools unit tests
 # rationale: WakeScheduleCollection subset for the schedule tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/list_active_for_conversation/count_active_for_conversation/pause/resume so the cache+l2/l3 SQL methods on the production class are not part of the tool API contract
-packages/agent/wake/tests/unit/test_tools_factories.py:51:_FakeScheduleCollection
+packages/agent/wake/tests/unit/test_tools_factories.py:98:_FakeScheduleCollection
 # rationale: WebhookSubscriptionCollection subset for the webhook tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/pause/resume/rotate_secret and the cache+l2/l3 + find_by_id methods are exercised in the integration suite instead
-packages/agent/wake/tests/unit/test_tools_factories.py:120:_FakeSubscriptionsCollection
+packages/agent/wake/tests/unit/test_tools_factories.py:170:_FakeSubscriptionsCollection
 # rationale: in-memory WakeRegistryClient implementation subclassing the production protocol; the fake declares its parity via subclass declaration but the strict walker also requires this entry to satisfy the cross-file Protocol lookup performed during walker analysis
-packages/agent/wake/tests/unit/test_tools_factories.py:177:_FakeRegistry
+packages/agent/wake/tests/unit/test_tools_factories.py:227:_FakeRegistry
 # rationale: identity-encryption stand-in matching the two-method EncryptionService Protocol; production parity is declared via the parity-with marker on the class but the strict walker requires this entry for the cross-file lookup
-packages/agent/wake/tests/unit/test_tools_factories.py:211:_FakeEncryption
+packages/agent/wake/tests/unit/test_tools_factories.py:261:_FakeEncryption

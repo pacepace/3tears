@@ -47,17 +47,67 @@ def _new_uuid() -> UUID:
 # ---------------------------------------------------------------------------
 
 
+# Minimal advisory-lock + count seam create_schedule_serialized drives:
+# execute(advisory-lock) -> fetchval(count-active) -> save_entity(conn=self).
+# Not a ``_Fake*`` (so it is exempt from the fake-parity walker): it mocks
+# only the three-method txn-connection slice, not the full asyncpg.Connection
+# surface, which the parity check would (correctly) demand in full. The unit
+# tests are single-threaded so the in-memory store IS the serialization point.
+class _CapLockConn:
+    """asyncpg-connection slice over the schedule collection's rows."""
+
+    def __init__(self, collection: _FakeScheduleCollection) -> None:
+        self._collection = collection
+
+    def transaction(self) -> _CapLockConn:
+        return self
+
+    async def __aenter__(self) -> _CapLockConn:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        # Advisory-lock acquisition is a no-op in the single-threaded test.
+        del sql, args
+        return "SELECT 1"
+
+    async def fetchval(self, sql: str, *args: Any) -> int:
+        del sql
+        conversation_id = args[0]
+        return sum(
+            1
+            for r in self._collection.rows.values()
+            if r["conversation_id"] == conversation_id and r["status"] == "active"
+        )
+
+
+# asyncpg.Pool ``acquire()`` slice (see _CapLockConn note re: not _Fake*).
+class _CapLockPool:
+    """asyncpg-pool slice yielding a :class:`_CapLockConn`."""
+
+    def __init__(self, collection: _FakeScheduleCollection) -> None:
+        self._collection = collection
+
+    def acquire(self) -> _CapLockConn:
+        return _CapLockConn(self._collection)
+
+
 # parity-with: threetears.agent.wake.collections.WakeScheduleCollection
 class _FakeScheduleCollection:
     """In-memory stand-in for the public surface of WakeScheduleCollection."""
 
     def __init__(self) -> None:
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
+        # create_schedule_serialized takes the cap-lock against this pool.
+        self.l3_pool = _CapLockPool(self)
 
     def create(self, data: dict[str, Any]) -> WakeScheduleEntity:
         return WakeScheduleEntity(dict(data), is_new=True, collection=None)
 
-    async def save_entity(self, entity: Any) -> int:
+    async def save_entity(self, entity: Any, *, conn: Any = None) -> int:
+        del conn
         data = entity.to_dict()
         self.rows[(data["conversation_id"], data["schedule_id"])] = dict(data)
         return 1

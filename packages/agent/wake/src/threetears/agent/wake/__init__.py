@@ -123,8 +123,10 @@ from threetears.agent.wake.tables import (
 from threetears.agent.wake.rate_limit import (
     RATE_LIMIT_WINDOW_HOURS,
     RateLimitScope,
+    ScheduleCapExceeded,
     _check_active_schedule_cap,
     _check_rate_limit,
+    create_schedule_serialized,
 )
 from threetears.agent.wake.tick import DispatchCallback, wake_tick_job
 from threetears.agent.wake.tools import (
@@ -200,6 +202,8 @@ __all__ = [
     "FORBIDDEN_LABEL_NAMES",
     "RATE_LIMIT_WINDOW_HOURS",
     "RateLimitScope",
+    "ScheduleCapExceeded",
+    "create_schedule_serialized",
     "WAKE_DELIVERY_TOTAL",
     "WAKE_DRIFT_SECONDS",
     "WAKE_FAILURES_TOTAL",
