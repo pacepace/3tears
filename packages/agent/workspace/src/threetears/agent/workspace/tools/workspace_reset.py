@@ -226,6 +226,7 @@ class WorkspaceResetTool(TearsTool):
                 try:
                     if self._namespace is not None:
                         identity = workspace_audit_identity(workspace)
+                        audit_resource_id = str(workspace.id)  # convert at border: AuditEvent details field
                         event = AuditEvent(
                             id=uuid7(),
                             timestamp=datetime.now(UTC),
@@ -240,7 +241,7 @@ class WorkspaceResetTool(TearsTool):
                             outcome="success",
                             correlation_id=correlation_id,
                             details={
-                                "workspace_resource_id": str(workspace.id),
+                                "workspace_resource_id": audit_resource_id,
                                 "template_name": workspace.template_name,
                                 "files_changed": n_changed,
                             },

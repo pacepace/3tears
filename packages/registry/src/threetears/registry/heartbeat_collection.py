@@ -221,7 +221,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         if self._l1 is not None:
             self._l1.delete_by_id(
                 self.table_name,
-                str(entity_id),
+                str(entity_id),  # convert at border: L1 SQLite cache text-key delete
                 self.primary_key_column,
             )
         await self._delete_from_l2(entity_id)

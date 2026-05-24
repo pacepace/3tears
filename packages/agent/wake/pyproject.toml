@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-agent-wake"
+version = "0.10.0"
+description = "Long-running-agent foundation -- wake schedules, fires, webhook subscriptions"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = [
+    "3tears",
+    "3tears-agent-skills",
+    "uuid-utils",
+    # APScheduler is used as a pure utility ONLY by the ``cron`` schedule
+    # branch in ``_compute_next_fire_at`` (lazy local import inside that
+    # one branch -- non-cron consumers pay zero import cost). Hard dep
+    # rather than an extra so the public ``ScheduleType`` Literal
+    # (which includes ``'cron'``) Just Works without extras-install
+    # ceremony. Consumers are still free to drive the tick body with
+    # any scheduler they choose; the platform does not own APScheduler
+    # integration.
+    "apscheduler>=3.10",
+    # LangChain BaseTool is the surface every factory returns (mirrors
+    # ``3tears-agent-skills``'s tools layer). Pydantic is the input
+    # schema toolkit. Both are stable, widely-installed wheels.
+    "langchain-core",
+    "pydantic>=2",
+    # Jinja2's SandboxedEnvironment renders the webhook payload
+    # template (shard 04's ``webhook_subscription_create`` validation
+    # path + ``webhook_receive``'s render). Bounded payload + sandbox
+    # mean the dep is opt-in for safety, not power-tool risk.
+    "jinja2>=3",
+]
+
+[project.optional-dependencies]
+# ``prometheus_client`` is optional at runtime -- the metrics module
+# degrades gracefully to no-op when the wheel is absent (mirrors
+# ``3tears-models``'s ``prometheus`` extra). Consumers that want the
+# locked ``3tears_agent_wake_*`` instruments install the extra.
+prometheus = ["prometheus-client>=0.20"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.uv.sources]
+3tears = { workspace = true }
+"3tears-agent-skills" = { workspace = true }

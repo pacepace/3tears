@@ -4,6 +4,13 @@ requires docker; mark integration. covers connect / publish_typed /
 subscribe_typed / request / kv_bucket round-trips against a real
 JetStream-enabled NATS server.
 
+uses the canonical session-scoped ``nats_container`` fixture from
+:mod:`threetears.core.testing.fixtures` (registered at the workspace
+root conftest). ``check_docker_available`` inside that fixture gates
+the suite on the docker daemon -- a fresh checkout without docker
+skips cleanly rather than erroring on ``DockerException`` from a raw
+``DockerContainer.start()``.
+
 run with:
 
 ::
@@ -32,35 +39,11 @@ class _Echo(BaseModel):
     n: int
 
 
-@pytest.fixture(scope="module")
-async def nats_url() -> str:
-    """boot a NATS testcontainer with JetStream and yield its URL.
-
-    :return: NATS server URL
-    :rtype: str
-    """
-    try:
-        from testcontainers.core.container import DockerContainer
-    except ImportError:
-        pytest.skip("testcontainers not installed")
-
-    container = DockerContainer("nats:2.10-alpine").with_command("-js").with_exposed_ports(4222)
-    container.start()
-    try:
-        host = container.get_container_host_ip()
-        port = container.get_exposed_port(4222)
-        await asyncio.sleep(1.0)  # let server settle
-        yield f"nats://{host}:{port}"
-    finally:
-        container.stop()
-
-
-@pytest.mark.asyncio
-async def test_publish_subscribe_round_trip(nats_url: str) -> None:
+async def test_publish_subscribe_round_trip(nats_container: str) -> None:
     """typed publish lands on subscribe_typed callback."""
     set_default_namespace("itest")
     async with await NatsClient.connect(
-        nats_url=nats_url,
+        nats_url=nats_container,
         nats_subject_namespace="itest",
         client_name="round-trip",
     ) as nc:
@@ -84,12 +67,11 @@ async def test_publish_subscribe_round_trip(nats_url: str) -> None:
         assert received == [_Echo(text="hello", n=1)]
 
 
-@pytest.mark.asyncio
-async def test_request_response_round_trip(nats_url: str) -> None:
+async def test_request_response_round_trip(nats_container: str) -> None:
     """request encodes message and decodes typed response."""
     set_default_namespace("itest")
     async with await NatsClient.connect(
-        nats_url=nats_url,
+        nats_url=nats_container,
         nats_subject_namespace="itest",
         client_name="rr",
     ) as nc:
@@ -115,12 +97,11 @@ async def test_request_response_round_trip(nats_url: str) -> None:
             await nc.unsubscribe(sub)
 
 
-@pytest.mark.asyncio
-async def test_kv_bucket_round_trip(nats_url: str) -> None:
+async def test_kv_bucket_round_trip(nats_container: str) -> None:
     """KV bucket put / get / delete round-trip."""
     set_default_namespace("itest")
     async with await NatsClient.connect(
-        nats_url=nats_url,
+        nats_url=nats_container,
         nats_subject_namespace="itest",
         client_name="kv",
     ) as nc:

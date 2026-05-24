@@ -218,10 +218,25 @@ class SQLiteBackend:
         :rtype: None
         """
         pk_cols = self._pk_columns(primary_key)
-        columns = list(data.keys())
+        schema = self._schema_info.get(table, {})
+        # Filter ``data`` to columns the L1 table actually has. The
+        # framework's ``BaseCollection.save_entity`` unconditionally
+        # injects ``date_created`` / ``date_updated`` for new entities,
+        # but not every entity's table carries those columns -- e.g.
+        # ``agent_skill_invocations`` uses ``invoked_at`` and has neither
+        # timestamp column. Writing an unknown column to SQLite raises
+        # ``OperationalError: table X has no column named date_created``.
+        # The L3 path already projects to declared columns
+        # (``save_to_postgres``); mirror that here so the L1 write never
+        # diverges from the table shape. When the schema is unknown
+        # (table not registered via ``_generate_create_table``), fall
+        # back to writing every key so existing behaviour is preserved.
+        if schema:
+            columns = [c for c in data if c in schema]
+        else:
+            columns = list(data.keys())
         placeholders = ", ".join(["?" for _ in columns])
         column_names = ", ".join(columns)
-        schema = self._schema_info.get(table, {})
 
         values = []
         for col_name in columns:
@@ -467,8 +482,16 @@ class SQLiteBackend:
     @staticmethod
     def _map_sqlalchemy_type(sa_type: Any) -> str:
         """Map SQLAlchemy type to SQLite equivalent with serialization hints."""
-        from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, Text
-        from sqlalchemy.dialects.postgresql import BYTEA as PgBYTEA
+        from sqlalchemy import (
+            Boolean,
+            DateTime,
+            Float,
+            Integer,
+            LargeBinary,
+            Numeric,
+            String,
+            Text,
+        )
         from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
         from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
@@ -495,7 +518,9 @@ class SQLiteBackend:
             return "TEXT_DATETIME"
         if isinstance(sa_type, (String, Text)):
             return "TEXT"
-        if isinstance(sa_type, PgBYTEA):
+        # Generic LargeBinary covers both sqlalchemy.LargeBinary and the
+        # postgresql BYTEA dialect type (PgBYTEA subclasses LargeBinary).
+        if isinstance(sa_type, LargeBinary):
             return "TEXT_BYTEA"
 
         # PostgreSQL-only types that map cleanly to TEXT in SQLite

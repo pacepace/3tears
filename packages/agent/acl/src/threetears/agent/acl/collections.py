@@ -1204,16 +1204,30 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             "get_by_agent_id",
             "get_by_owner_and_customer",
             "find_by_id",
+            "list_tool_namespaces_for_actor",
+            "list_skill_eligible_tool_namespaces",
         }
     )
     # v0.8.0 hygiene enrichment: ``metadata`` carries the test
     # fixture's ``DEFAULT '{}'::jsonb`` server default (line 144).
-    # Platform-managed table -- 3tears has no migration; the
-    # ``row_scope`` partition column is 3tears-side only.
+    # Most columns on this table are platform-managed (the deploying
+    # app owns the canonical DDL); the ``row_scope`` partition column
+    # is 3tears-side only.
     # v0.8.0 shard 04.6: bare-``id`` PK renamed to ``namespace_id``
     # to standardize on ``<entity>_id`` across all entity tables. The
     # rename happens at the platform DDL side (outside 3tears); the
     # schema declaration here reflects the post-rename column.
+    # agent-tools-eligibility shard 01: ``tool_eligible`` /
+    # ``skill_eligible`` columns added by the 3tears-side
+    # ``agent_tools_platform`` migration package (v001 ``ALTER TABLE
+    # namespaces ADD COLUMN IF NOT EXISTS ...``). NOT NULL with
+    # DB-side defaults so existing rows keep their pre-shard
+    # visibility shape without a backfill. The columns apply to every
+    # namespace type but are only meaningful on ``tool``-type rows;
+    # other types (``workspace``, ``agent`` ...) inherit the defaults
+    # and the eligibility query helpers below additionally filter on
+    # ``namespace_type='tool'`` so the flags never widen visibility
+    # for non-tool namespaces.
     schema = TableSchema(
         name="namespaces",
         primary_key=("row_scope", "namespace_id"),
@@ -1231,6 +1245,8 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 nullable=True,
                 server_default="'{}'::jsonb",
             ),
+            Column("tool_eligible", BOOL_TYPE, server_default="true"),
+            Column("skill_eligible", BOOL_TYPE, server_default="false"),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -1516,4 +1532,180 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
                 "SELECT namespace_id FROM namespaces WHERE row_scope IN ('platform', 'customer')",
             )
             result = [row["namespace_id"] for row in rows if row["namespace_id"] is not None]
+        return result
+
+    async def list_tool_namespaces_for_actor(
+        self,
+        *,
+        actor_user_id: UUID,
+        actor_agent_id: UUID,
+        cache: Any,
+    ) -> list[NamespaceEntity]:
+        """list every ``tool``-type namespace this actor may see by default.
+
+        agent-tools-eligibility shard 01 (TE-06). Returns the
+        ACL-permitted subset of tool namespaces with
+        ``tool_eligible=TRUE`` -- the set the consuming graph build
+        step uses as the agent's default tool surface for a turn. The
+        ``tool_eligible`` filter is applied INSIDE this method
+        (database side) and the ACL filter is applied AFTER fetch (in
+        Python via :func:`~threetears.agent.acl.evaluate_decision`)
+        because the unified evaluator already has the in-process
+        cache to answer per-namespace decisions cheaply.
+
+        Skills cannot widen the default surface via this path; tools
+        with ``tool_eligible=FALSE`` are excluded here even when the
+        actor would otherwise have ACL grant. Skill-mode visibility
+        flows through :meth:`list_skill_eligible_tool_namespaces`
+        instead.
+
+        :param actor_user_id: invoking user UUID
+        :ptype actor_user_id: UUID
+        :param actor_agent_id: invoking agent UUID
+        :ptype actor_agent_id: UUID
+        :param cache: shared :class:`AclCache` instance used by
+            :func:`evaluate_decision` to resolve per-namespace
+            ``tool.call`` decisions. Typed ``Any`` because importing
+            :class:`AclCache` at module scope would create a circular
+            import (the cache module imports the value types this
+            module re-uses).
+        :ptype cache: Any
+        :return: list of namespace entities the actor can see in the
+            default tool surface; empty list (never ``None``) when no
+            tool is permitted
+        :rtype: list[NamespaceEntity]
+        """
+        return await self._list_tool_namespaces_filtered(
+            actor_user_id=actor_user_id,
+            actor_agent_id=actor_agent_id,
+            cache=cache,
+            filter_column="tool_eligible",
+        )
+
+    async def list_skill_eligible_tool_namespaces(
+        self,
+        *,
+        actor_user_id: UUID,
+        actor_agent_id: UUID,
+        cache: Any,
+    ) -> list[NamespaceEntity]:
+        """list every ACL-permitted tool whose skills-catalog flag is set.
+
+        agent-tools-eligibility shard 01 (TE-05). Returns the
+        ACL-permitted subset of tool namespaces with
+        ``skill_eligible=TRUE`` -- the set the
+        ``3tears-agent-skills`` ``skill_list`` tool UNIONs with prose-
+        skill rows so the LLM sees one unified catalog. The
+        ``skill_eligible`` filter is applied INSIDE this method
+        (database side) and the ACL filter is applied AFTER fetch via
+        :func:`~threetears.agent.acl.evaluate_decision`.
+
+        Excluding ACL-denied tools here keeps the catalog truthful:
+        the LLM never sees a skill it cannot actually invoke. Skills
+        compose visibility within the ACL-permitted set; they cannot
+        bypass ACL.
+
+        :param actor_user_id: invoking user UUID
+        :ptype actor_user_id: UUID
+        :param actor_agent_id: invoking agent UUID
+        :ptype actor_agent_id: UUID
+        :param cache: shared :class:`AclCache` instance
+        :ptype cache: Any
+        :return: list of namespace entities the actor may discover
+            via the skills catalog; empty list when none qualify
+        :rtype: list[NamespaceEntity]
+        """
+        return await self._list_tool_namespaces_filtered(
+            actor_user_id=actor_user_id,
+            actor_agent_id=actor_agent_id,
+            cache=cache,
+            filter_column="skill_eligible",
+        )
+
+    async def _list_tool_namespaces_filtered(
+        self,
+        *,
+        actor_user_id: UUID,
+        actor_agent_id: UUID,
+        cache: Any,
+        filter_column: str,
+    ) -> list[NamespaceEntity]:
+        """shared body for the tool-eligibility / skill-eligibility queries.
+
+        the two public methods differ only in which boolean column
+        they filter against; everything else (canonical query shape,
+        ACL evaluation, list construction) is identical. one private
+        helper keeps the two paths bit-identical so a future tweak
+        (additional filter, ordering, caching) lands once.
+
+        :param actor_user_id: invoking user UUID
+        :ptype actor_user_id: UUID
+        :param actor_agent_id: invoking agent UUID
+        :ptype actor_agent_id: UUID
+        :param cache: shared :class:`AclCache` instance
+        :ptype cache: Any
+        :param filter_column: boolean column name to filter against
+            (``"tool_eligible"`` or ``"skill_eligible"``); whitelisted
+            to those two values so the f-string interpolation is
+            safe against SQL injection regardless of caller input
+        :ptype filter_column: str
+        :return: list of namespace entities matching the filter AND
+            permitted by the unified ACL evaluator
+        :rtype: list[NamespaceEntity]
+        :raises ValueError: if ``filter_column`` is not one of the
+            whitelisted column names
+        """
+        # whitelist the column name -- the canonical evaluator path
+        # would also reject an injected predicate but explicit
+        # validation here makes the intent obvious to a reader.
+        if filter_column not in ("tool_eligible", "skill_eligible"):
+            raise ValueError(
+                f"_list_tool_namespaces_filtered: filter_column must "
+                f"be 'tool_eligible' or 'skill_eligible'; got {filter_column!r}",
+            )
+        result: list[NamespaceEntity] = []
+        if self.l3_pool is None:
+            return result
+        rows = await self.l3_pool.fetch(
+            "SELECT * FROM namespaces "
+            "WHERE row_scope IN ('platform', 'customer') "
+            "AND namespace_type = 'tool' "
+            f"AND {filter_column} = TRUE",
+        )
+        candidates: list[NamespaceEntity] = [
+            self.entity_class(
+                self._coerce_row(dict(row)),
+                is_new=False,
+                collection=self,
+            )
+            for row in rows
+        ]
+        # local imports keep this collection module free of a
+        # circular dep on the evaluator stack: types -> cache ->
+        # collections -> evaluator -> types would close the loop if
+        # we imported at module scope. the per-call cost is one
+        # attribute lookup, dwarfed by the fetch above.
+        from threetears.agent.acl.evaluator import evaluate_decision  # noqa: PLC0415
+        from threetears.agent.acl.types import (  # noqa: PLC0415
+            EvaluationContext,
+            Namespace as AclNamespace,
+        )
+
+        for entity in candidates:
+            data = entity.to_dict()
+            ns = AclNamespace(
+                id=_coerce_uuid(data.get("namespace_id")),  # type: ignore[arg-type]
+                customer_id=_coerce_uuid(data.get("customer_id")),
+                namespace_type=str(data.get("namespace_type") or "tool"),
+                owner_agent_id=_coerce_uuid(data.get("owner_agent_id")),
+            )
+            ctx = EvaluationContext(
+                namespace=ns,
+                action="tool.call",
+                user_id=actor_user_id,
+                agent_id=actor_agent_id,
+            )
+            permitted = await evaluate_decision(ctx, cache=cache)
+            if permitted:
+                result.append(entity)
         return result

@@ -37,6 +37,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.acl import (
+    AclCache,
+    GroupMembership,
+    Namespace,
+    Role,
+    RoleAssignment,
+)
 from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 
@@ -50,6 +57,152 @@ from _helpers.workspace_shims import (
     FakeWorkspaceFileVersionCollection,
     FakeWorkspaceSandbox,
 )
+
+
+# ---------------------------------------------------------------------------
+# acl loader stubs
+# ---------------------------------------------------------------------------
+
+
+class _CountingMembershipLoader:
+    """membership loader stub that records per-side call counts.
+
+    mirrors the empty-loader pattern from
+    ``packages/agent/workspace/tests/unit/tools/conftest.py``
+    (``_EmptyMembershipLoader``) and the memory authorize-test
+    ``_MembershipLoader`` fake, but also tracks how many times each
+    side was consulted. owner-path tests assert
+    ``load_for_agent_count == 0`` to prove the agent-side owner short-
+    circuit bypassed the membership layer; grant-deny tests rely on
+    the natural empty-grants deny rather than a bespoke side_effect.
+
+    :ivar load_for_user_count: number of user-side load calls observed
+    :ivar load_for_agent_count: number of agent-side load calls observed
+    """
+
+    def __init__(self) -> None:
+        """initialize counters at zero."""
+        self.load_for_user_count = 0
+        self.load_for_agent_count = 0
+
+    async def load_for_user(
+        self,
+        user_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """return no memberships; bump user-side counter.
+
+        :param user_id: user UUID (ignored)
+        :ptype user_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del user_id
+        self.load_for_user_count += 1
+        return ()
+
+    async def load_for_agent(
+        self,
+        agent_id: UUID,
+    ) -> tuple[GroupMembership, ...]:
+        """return no memberships; bump agent-side counter.
+
+        :param agent_id: agent UUID (ignored)
+        :ptype agent_id: UUID
+        :return: empty tuple
+        :rtype: tuple[GroupMembership, ...]
+        """
+        del agent_id
+        self.load_for_agent_count += 1
+        return ()
+
+
+class _EmptyGrantLoader:
+    """grant loader stub yielding no assignments / roles / groups.
+
+    mirrors the empty-loader pattern from
+    ``packages/agent/workspace/tests/unit/tools/conftest.py``
+    (``_EmptyGrantLoader``). evaluator walks per-group resolution
+    against this loader only when a membership row survived the
+    membership-filter step; since the counterpart membership loader
+    returns no rows, this loader is rarely consulted in the test
+    matrix -- it exists so the cache is structurally honest and a
+    future test that wires real memberships will not break on
+    protocol drift.
+    """
+
+    async def load_assignments_for_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+        namespace: Namespace,
+    ) -> tuple[RoleAssignment, ...]:
+        """return empty tuple for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :param namespace: namespace (ignored)
+        :ptype namespace: Namespace
+        :return: empty tuple
+        :rtype: tuple[RoleAssignment, ...]
+        """
+        del group_ids, namespace
+        return ()
+
+    async def load_roles(
+        self,
+        role_ids: tuple[UUID, ...],
+    ) -> dict[UUID, Role]:
+        """return empty mapping for every role set.
+
+        :param role_ids: role UUIDs (ignored)
+        :ptype role_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, Role]
+        """
+        del role_ids
+        return {}
+
+    async def load_groups(
+        self,
+        group_ids: tuple[UUID, ...],
+    ) -> dict[UUID, object]:
+        """return empty mapping for every group set.
+
+        :param group_ids: group UUIDs (ignored)
+        :ptype group_ids: tuple[UUID, ...]
+        :return: empty mapping
+        :rtype: dict[UUID, object]
+        """
+        del group_ids
+        return {}
+
+
+def _make_acl_cache() -> tuple[AclCache, _CountingMembershipLoader]:
+    """build a real :class:`AclCache` wired with empty loader stubs.
+
+    matches the established pattern across the test tree (see
+    ``permissive_acl_cache`` in
+    ``packages/agent/workspace/tests/unit/tools/conftest.py`` and
+    ``_build_deps`` in ``packages/agent/memory/tests/test_authorize.py``):
+    a real cache + lightweight in-memory loader fakes. raw
+    ``AsyncMock()`` was used here previously and produced orphan
+    coroutine warnings because the production code calls cache methods
+    that ``AsyncMock`` auto-generated as async children (returning
+    coroutines that the synchronous cache call sites never awaited).
+    a real cache exposes the right (sync) method shapes so no orphan
+    coroutines are minted.
+
+    :return: ``(cache, membership_loader)`` pair; tests assert on the
+        membership loader's per-side counters to verify owner-path
+        short-circuit semantics
+    :rtype: tuple[AclCache, _CountingMembershipLoader]
+    """
+    membership_loader = _CountingMembershipLoader()
+    cache = AclCache(
+        membership_loader=membership_loader,
+        grant_loader=_EmptyGrantLoader(),
+        ttl_seconds=60,
+    )
+    return cache, membership_loader
 
 
 # ---------------------------------------------------------------------------
@@ -929,8 +1082,7 @@ async def test_tool_invokes_authorize_with_correct_operation(case: _ToolCase) ->
     caller_agent = uuid4()
     caller_user = uuid4()
     ws = _make_workspace(customer_id=customer_id)
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(return_value=None)
+    cache, _ = _make_acl_cache()
 
     tool, kwargs = case.builder(ws, cache, caller_agent)
     scope = _scope_for(
@@ -966,8 +1118,7 @@ async def test_tool_surfaces_cross_customer_deny_as_data(case: _ToolCase) -> Non
     caller_agent = uuid4()
     caller_user = uuid4()
     ws = _make_workspace(customer_id=customer_a)
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(return_value=None)
+    cache, _ = _make_acl_cache()
 
     tool, kwargs = case.builder(ws, cache, caller_agent)
     scope = _scope_for(
@@ -991,8 +1142,7 @@ async def test_tool_surfaces_missing_customer_as_data(case: _ToolCase) -> None:
     caller_agent = uuid4()
     caller_user = uuid4()
     ws = _make_workspace(customer_id=customer_id)
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(return_value=None)
+    cache, _ = _make_acl_cache()
 
     tool, kwargs = case.builder(ws, cache, caller_agent)
     scope = _scope_for(
@@ -1010,16 +1160,22 @@ async def test_tool_surfaces_missing_customer_as_data(case: _ToolCase) -> None:
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
 @pytest.mark.asyncio
 async def test_tool_surfaces_grant_deny_as_data(case: _ToolCase) -> None:
-    """same-customer non-owner with cache-deny gets errors-as-data."""
+    """same-customer non-owner with no grants gets errors-as-data.
+
+    a non-owner caller resolves the workspace's customer wall, then
+    falls through to the evaluator. with empty membership + grant
+    loaders the evaluator naturally denies (no group memberships ->
+    no assignments -> no actions in the effective set). the tool's
+    ``except WorkspaceAccessDenied`` block surfaces that denial as a
+    ``ToolResult(success=False, ...)`` rather than letting the
+    exception escape.
+    """
     customer_id = uuid4()
     caller_agent = uuid4()
     caller_user = uuid4()
     # workspace owned by a different agent within the same customer
     ws = _make_workspace(customer_id=customer_id)
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(
-        side_effect=RuntimeError("no grant"),
-    )
+    cache, _ = _make_acl_cache()
 
     tool, kwargs = case.builder(ws, cache, caller_agent)
     scope = _scope_for(
@@ -1037,14 +1193,25 @@ async def test_tool_surfaces_grant_deny_as_data(case: _ToolCase) -> None:
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.name)
 @pytest.mark.asyncio
 async def test_tool_allows_owner_path(case: _ToolCase) -> None:
-    """owner (same agent + same user) proceeds past authorize without cache."""
+    """owner (same agent + same user) bypasses agent-side membership lookup.
+
+    when the calling agent owns the workspace's namespace, the
+    evaluator's agent-side owner short-circuit fires before any
+    membership / grant loader trip. we assert that by checking the
+    membership loader's :attr:`load_for_agent_count` is zero after
+    the dispatch: a non-owner path would consult the loader to find
+    eligible groups for the agent side. user-side membership lookup
+    may still happen (the owner shortcut only covers the agent side),
+    so we do not assert on :attr:`load_for_user_count`.
+
+    we deliberately do not assert on ``result.success`` because some
+    tools fail after authorize for unrelated reasons (e.g. pool not
+    wired for the post-authorize write). the contract under test is
+    "authorize did not raise + agent-side owner short-circuit fired".
+    """
     customer_id = uuid4()
     ws = _make_workspace(customer_id=customer_id)
-    # cache that raises if consulted -- owner path must not hit cache
-    cache = AsyncMock()
-    cache.check_access = AsyncMock(
-        side_effect=RuntimeError("must not be consulted"),
-    )
+    cache, membership_loader = _make_acl_cache()
 
     tool, kwargs = case.builder(ws, cache, ws.owner_agent_id)
     scope = _scope_for(
@@ -1054,12 +1221,12 @@ async def test_tool_allows_owner_path(case: _ToolCase) -> None:
     )
 
     async with enter_call_scope(scope):
-        # we don't assert on result.success because some tools fail
-        # after authorize (e.g. pool not wired) -- the contract we
-        # test is "authorize did not raise + cache was not consulted".
         await tool.execute(**kwargs)
 
-    assert cache.check_access.await_count == 0, f"{case.name} consulted ACL cache on owner path"
+    assert membership_loader.load_for_agent_count == 0, (
+        f"{case.name} consulted agent-side membership loader on owner path; "
+        "owner short-circuit should bypass the agent side without a loader trip"
+    )
 
 
 def test_authorize_matrix_covers_all_19_tools() -> None:

@@ -817,7 +817,7 @@ class _ProxyConnection:
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
             "agent_id": self._backend.agent_id,
-            "tx_id": str(tx_id),
+            "tx_id": str(tx_id),  # convert at border: NATS l3.tx.rollback request payload field
         }
         subject = f"{self._backend.ns}.l3.tx.rollback"
         try:
@@ -942,7 +942,7 @@ class _ProxyTransaction:
         payload: dict[str, Any] = {
             "correlation_id": str(uuid7()),
             "agent_id": self._backend.agent_id,
-            "tx_id": str(tx_id),
+            "tx_id": str(tx_id),  # convert at border: NATS l3.tx.commit/rollback request payload field
         }
         action = "rollback" if exc_type is not None else "commit"
         subject = f"{self._backend.ns}.l3.tx.{action}"

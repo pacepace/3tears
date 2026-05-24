@@ -156,6 +156,7 @@ def load_todo_tools(
     async def _snapshot(conv_id: UUID) -> list[dict[str, Any]]:
         todos = await storage.list_all(conv_id)
         if snapshot_callback:
+            # convert at border: snapshot_callback Callable[..., str | None] contract
             msg_str = str(message_id) if message_id else None
             await snapshot_callback(todos, msg_str)
         return todos

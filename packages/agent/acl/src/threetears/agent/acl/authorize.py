@@ -181,15 +181,18 @@ async def authorize_on_entity(
     result = await evaluate_with_trail(eval_ctx, cache=cache)
     if not result.decision:
         ns_label = namespace_name if namespace_name is not None else str(ns_entity.id)
+        # convert at border: authorize-denied log extra_data fields
+        log_user_id = str(user_id) if user_id else None
+        log_agent_id = str(agent_id) if agent_id else None
         log.info(
             "authorize: denied",
             extra={
                 "extra_data": {
                     "action": action,
                     "namespace_name": namespace_name,
-                    "namespace_id": str(ns_entity.id),
-                    "user_id": str(user_id) if user_id else None,
-                    "agent_id": str(agent_id) if agent_id else None,
+                    "namespace_id": str(ns_entity.id),  # convert at border: authorize-denied log extra_data field
+                    "user_id": log_user_id,
+                    "agent_id": log_agent_id,
                 },
             },
         )
@@ -253,14 +256,17 @@ async def authorize(
     """
     ns_entity = await namespace_collection.get_by_name(namespace_name)
     if ns_entity is None:
+        # convert at border: authorize namespace-missing log extra_data fields
+        log_user_id = str(user_id) if user_id else None
+        log_agent_id = str(agent_id) if agent_id else None
         log.warning(
             "authorize: namespace row missing",
             extra={
                 "extra_data": {
                     "action": action,
                     "namespace_name": namespace_name,
-                    "user_id": str(user_id) if user_id else None,
-                    "agent_id": str(agent_id) if agent_id else None,
+                    "user_id": log_user_id,
+                    "agent_id": log_agent_id,
                 },
             },
         )
@@ -321,14 +327,17 @@ async def authorize_with_trail(
     """
     ns_entity = await namespace_collection.get_by_name(namespace_name)
     if ns_entity is None:
+        # convert at border: authorize_with_trail namespace-missing log extra_data fields
+        log_user_id = str(user_id) if user_id else None
+        log_agent_id = str(agent_id) if agent_id else None
         log.warning(
             "authorize_with_trail: namespace row missing",
             extra={
                 "extra_data": {
                     "action": action,
                     "namespace_name": namespace_name,
-                    "user_id": str(user_id) if user_id else None,
-                    "agent_id": str(agent_id) if agent_id else None,
+                    "user_id": log_user_id,
+                    "agent_id": log_agent_id,
                 },
             },
         )

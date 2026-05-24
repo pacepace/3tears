@@ -118,8 +118,8 @@ class UsageRecord:
     :param conversation_id: optional conversation UUID (metallm tenant context)
     :ptype conversation_id: UUID | None
     :param invocation_ref: optional free-form reference to the underlying
-        invocation (metallm passes ``str(tool_llm_id)``; 14-eng-ai-bot
-        typically passes ``None``)
+        invocation (metallm passes its tool-LLM invocation id rendered as a
+        string; 14-eng-ai-bot typically passes ``None``)
     :ptype invocation_ref: str | None
     :param category: optional consumer-defined usage category (metallm:
         ``chat`` / ``sycophancy`` / ``tool`` / ``embedding`` /

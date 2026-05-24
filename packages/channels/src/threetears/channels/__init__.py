@@ -66,3 +66,18 @@ try:
     __all__.append("DiscordAdapter")
 except ImportError:
     pass
+
+# The webhook receiver requires the ``webhook`` extra (fastapi +
+# 3tears-agent-wake). Guarded the same way as the slack / discord
+# adapters so consumers without the extra installed can still import
+# the rest of the channels package.
+try:
+    from threetears.channels.webhook import (  # noqa: F401
+        Verifier,
+        WebhookReceiver,
+        verify_generic_hmac_sha256,
+    )
+
+    __all__.extend(["Verifier", "WebhookReceiver", "verify_generic_hmac_sha256"])
+except ImportError:
+    pass

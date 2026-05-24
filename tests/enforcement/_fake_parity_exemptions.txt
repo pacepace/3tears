@@ -65,6 +65,12 @@ packages/nats/tests/unit/test_client.py:69:_FakeNatsPyClient
 packages/nats/tests/unit/test_kv.py:20:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour
 packages/nats/tests/unit/test_kv.py:26:_FakeKv
+# rationale: minimal Entry dataclass for the distributed-lock unit tests carrying only value+revision; mirrors test_kv.py:_FakeEntry exemption
+packages/nats/tests/unit/test_distributed_lock.py:21:_FakeEntry
+# rationale: subset shim for nats.js.KeyValue used by the distributed-lock unit tests; tracks call/state for assertions, same surface as test_kv.py's _FakeKv
+packages/nats/tests/unit/test_distributed_lock.py:27:_FakeKv
+# rationale: minimal NatsClient stand-in exposing only kv_bucket(); the distributed-lock body touches only that surface, so full NatsClient parity would be over-mocking
+packages/nats/tests/unit/test_distributed_lock.py:87:_FakeClient
 
 # mcp http transport
 # rationale: httpx.AsyncBaseTransport stand-in for unit-testing the MCP http client; full transport surface includes connection-pool primitives the tests do not exercise
@@ -95,6 +101,8 @@ packages/conversations/tests/unit/test_migrations.py:32:_FakeDataStore
 packages/agent/tools/tests/unit/test_bootstrap.py:14:_FakeToolServer
 # rationale: in-memory DataStore for the agent-tools migration runner unit test; identical execute+query subset shape as the conversations and core fakes
 packages/agent/tools/tests/unit/test_migrations.py:32:_FakeDataStore
+# rationale: in-memory DataStore for the agent-tools platform-scope migration runner unit test; identical execute+query subset shape as the agent-scope sibling fake
+packages/agent/tools/tests/unit/test_platform_migrations.py:30:_FakeDataStore
 # rationale: ToolProvisioningStrategy stand-in for the strategy-resolution unit test; the test only exercises provision+teardown so subset parity against the production strategy is intentional
 packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
 # rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
@@ -137,3 +145,21 @@ packages/agent/workspace/tests/unit/tools/test_workspace_history.py:66:_FakeVers
 packages/agent/workspace/tests/unit/tools/test_workspace_list.py:34:_FakeDiscoveryClient
 # rationale: workspace-collection subset for the workspace_use tool unit; the test exercises pin-resolution only
 packages/agent/workspace/tests/unit/tools/test_workspace_use.py:35:_FakeCollection
+
+# agent-skills shard-02 agent-tools unit tests
+# rationale: AgentSkillCollection subset for the seven tool factory unit tests; the tools call only create/save_entity/get/delete/find_by_name_for_user/list_for_user/count_for_user and the three-tier-cache + l2/l3 SQL methods on the production class are not part of the tool API contract
+packages/agent/skills/tests/unit/test_tools_factories.py:50:_FakeSkillsCollection
+# rationale: AgentSkillInvocationCollection subset for skill_invoke unit coverage; the tools call only create/save_entity/record so the cache/persistence methods on the production class are out of scope
+packages/agent/skills/tests/unit/test_tools_factories.py:153:_FakeInvocationsCollection
+# rationale: in-memory SkillRegistryClient implementation; the production protocol is the SkillRegistryClient defined in tools.py and the fake declares parity-with via the marker on the class, but the strict walker also requires this entry to satisfy the cross-file Protocol lookup
+packages/agent/skills/tests/unit/test_tools_factories.py:181:_FakeRegistry
+
+# agent-wake shard-04 agent-tools unit tests
+# rationale: WakeScheduleCollection subset for the schedule tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/list_active_for_conversation/count_active_for_conversation/pause/resume so the cache+l2/l3 SQL methods on the production class are not part of the tool API contract
+packages/agent/wake/tests/unit/test_tools_factories.py:104:_FakeScheduleCollection
+# rationale: WebhookSubscriptionCollection subset for the webhook tool factory unit tests; the tools call only create/save_entity/get/delete/list_for_conversation/pause/resume/rotate_secret and the cache+l2/l3 + find_by_id methods are exercised in the integration suite instead
+packages/agent/wake/tests/unit/test_tools_factories.py:178:_FakeSubscriptionsCollection
+# rationale: in-memory WakeRegistryClient implementation subclassing the production protocol; the fake declares its parity via subclass declaration but the strict walker also requires this entry to satisfy the cross-file Protocol lookup performed during walker analysis
+packages/agent/wake/tests/unit/test_tools_factories.py:235:_FakeRegistry
+# rationale: identity-encryption stand-in matching the two-method EncryptionService Protocol; production parity is declared via the parity-with marker on the class but the strict walker requires this entry for the cross-file lookup
+packages/agent/wake/tests/unit/test_tools_factories.py:269:_FakeEncryption

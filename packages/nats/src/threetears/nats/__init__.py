@@ -14,6 +14,7 @@ from threetears.nats.client import (
     NatsClient,
     Subscription,
 )
+from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.nats.errors import (
     KvError,
     NatsClientError,
@@ -53,6 +54,9 @@ __all__ = [
     "set_default_namespace",
     # KV
     "NatsKvBucket",
+    # distributed lock
+    "LockHeld",
+    "nats_distributed_lock",
     # transport Protocols + message envelope
     "IncomingMessage",
     "MessageCallback",

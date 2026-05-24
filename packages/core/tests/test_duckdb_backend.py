@@ -9,7 +9,16 @@ from decimal import Decimal
 from unittest import mock
 
 import pytest
-from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Table
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    LargeBinary,
+    MetaData,
+    String,
+    Table,
+)
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
 
@@ -194,6 +203,64 @@ class TestSerializationRoundTrip:
         result = backend.select_by_id("test_entities", entity_id)
         assert result is not None
         assert result["raw_bytes"] == raw
+
+    def test_generic_largebinary_round_trip(self) -> None:
+        """A generic ``sqlalchemy.LargeBinary`` column must round-trip bytes
+        losslessly through DuckDB (proving it maps to ``VARCHAR_BYTEA``).
+
+        Regression: ``webhook_subscriptions.secret_ciphertext`` is declared
+        with the generic ``sqlalchemy.LargeBinary`` (not the postgresql
+        ``BYTEA`` dialect type). The L2 DuckDB mapper previously only matched
+        ``PgBYTEA``, so generic ``LargeBinary`` fell through to plain
+        ``VARCHAR``: bytes were written as a hex string but never decoded
+        back to ``bytes`` on read, crashing ``save_entity`` downstream. A
+        clean byte-for-byte round trip here proves the ``VARCHAR_BYTEA``
+        mapping (parity with the SQLite L1 fix).
+        """
+        metadata = MetaData()
+        Table(
+            "lb_entities",
+            metadata,
+            Column("id", UUID, primary_key=True),
+            Column("blob", LargeBinary),
+        )
+        b = DuckDBBackend()
+        b.initialize(metadata)
+        try:
+            entity_id = str(uuid.uuid4())
+            raw = b"\x00\x01\xfe\xff secret-bytes"
+            b.upsert("lb_entities", {"id": entity_id, "blob": raw})
+            result = b.select_by_id("lb_entities", entity_id)
+            assert result is not None
+            assert result["blob"] == raw
+            assert isinstance(result["blob"], bytes)
+        finally:
+            b.reset()
+
+    def test_pg_bytea_still_round_trips(self) -> None:
+        """The postgresql ``BYTEA`` dialect type must still round-trip bytes
+        losslessly (no regression from broadening the mapper's check to the
+        ``LargeBinary`` base class — ``BYTEA`` subclasses ``LargeBinary``).
+        """
+        metadata = MetaData()
+        Table(
+            "pg_bytea_entities",
+            metadata,
+            Column("id", UUID, primary_key=True),
+            Column("blob", BYTEA),
+        )
+        b = DuckDBBackend()
+        b.initialize(metadata)
+        try:
+            entity_id = str(uuid.uuid4())
+            raw = b"\xca\xfe\xba\xbe"
+            b.upsert("pg_bytea_entities", {"id": entity_id, "blob": raw})
+            result = b.select_by_id("pg_bytea_entities", entity_id)
+            assert result is not None
+            assert result["blob"] == raw
+            assert isinstance(result["blob"], bytes)
+        finally:
+            b.reset()
 
     def test_list_round_trip(self, backend: DuckDBBackend) -> None:
         val = [1, 2, 3]

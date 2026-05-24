@@ -65,6 +65,13 @@ _PARTITIONED_TABLES: dict[str, str] = {
     "media_content": "agent_id",
     "memory_chunks": "agent_id",
     "conversation_memory_refs": "conversation_id",
+    # agent-skills
+    "agent_skills": "agent_id",
+    "agent_skill_invocations": "agent_id",
+    # agent-wake
+    "agent_wake_schedules": "conversation_id",
+    "wake_fires": "conversation_id",
+    "webhook_subscriptions": "conversation_id",
     # agent-workspace
     "workspaces": "agent_id",
     "workspace_files": "workspace_id",
@@ -89,6 +96,16 @@ _PACKAGE_SRC_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "agent-workspace" / "src",
     _REPO_ROOT / "packages" / "agent-memory" / "src",
     _REPO_ROOT / "packages" / "conversations" / "src",
+    # Post agent-namespace move, agent-* packages live under packages/agent/<name>/src.
+    # The dash-named paths above are kept for any historical layout that survives;
+    # paths that do not exist are skipped silently by ``_walk_python_files``.
+    _REPO_ROOT / "packages" / "agent" / "tools" / "src",
+    _REPO_ROOT / "packages" / "agent" / "memory" / "src",
+    _REPO_ROOT / "packages" / "agent" / "workspace" / "src",
+    _REPO_ROOT / "packages" / "agent" / "skills" / "src",
+    _REPO_ROOT / "packages" / "agent" / "wake" / "src",
+    _REPO_ROOT / "packages" / "agent" / "acl" / "src",
+    _REPO_ROOT / "packages" / "agent" / "audit" / "src",
 ]
 
 
@@ -119,6 +136,19 @@ _EXEMPT_LITERAL_FRAGMENTS: tuple[tuple[str, str], ...] = (
     # every partition because the migration runs globally before
     # any per-conversation read path is exercised.
     ("long_desc = LEFT(content, 1000)", "one-time-schema-migration"),
+    # rationale: per-user rate-limit aggregate (PLACEMENT §1.9 +
+    # agent-wake shard-05 OBS-14) MUST sum fires across every
+    # conversation the user owns -- the rule is "100 fires per user
+    # per 24h" total, not per-conversation. Partitioning by
+    # conversation_id here would defeat the cap. The query joins
+    # ``wake_fires`` against both source-tables (``agent_wake_schedules``
+    # and ``webhook_subscriptions``) filtered by ``user_id``; the
+    # source-table joins are intrinsically cross-partition. Same
+    # carve-out shape as the dynamic-scope-clause case above.
+    (
+        "JOIN agent_wake_schedules ws ON wf.schedule_id = ws.schedule_id",
+        "per-user-rate-limit-aggregate",
+    ),
 )
 
 

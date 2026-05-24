@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 from threetears.nats import NatsClient, Subjects
 from threetears.nats.errors import PublishError, SubscribeError
 from threetears.observe import get_logger
+from uuid_utils import uuid7
 
 __all__ = [
     "CacheInvalidationMessage",
@@ -35,10 +36,20 @@ class CacheInvalidationMessage(BaseModel):
 
     :ivar table: target table name (matches :attr:`BaseCollection.table_name`)
     :ivar ids: stringified pk values in declared column order
+    :ivar origin: opaque per-registry id of the publisher. a receiving
+        registry skips any message carrying its OWN origin -- a single
+        pod both publishes and subscribes on this subject, and acting on
+        its own invalidation would evict the L1 row it just wrote (the
+        fresh value is already local; the broadcast is for OTHER pods).
+        ``None`` for messages from a pre-origin publisher -> the receiver
+        cannot prove self-origin and evicts (the historical behaviour),
+        which is safe: a redundant local eviction only forces a
+        pull-through, never stale data.
     """
 
     table: str
     ids: list[str]
+    origin: str | None = None
 
 
 class CollectionRegistry:
@@ -55,6 +66,11 @@ class CollectionRegistry:
         self._l3_pool: Any = None
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
+        # Per-registry (effectively per-pod) identity stamped on every
+        # invalidation this registry publishes, so its own listener can
+        # skip self-published messages and avoid evicting rows it just
+        # wrote. An opaque token, never used as a UUID.
+        self._origin_id: str = str(uuid7())  # convert at border: invalidation wire-envelope origin token
 
     def configure(
         self,
@@ -189,6 +205,15 @@ class CollectionRegistry:
         self._nats_client = nats_client
 
         async def _on_invalidation(message: CacheInvalidationMessage) -> None:
+            # Skip invalidations this registry published itself. A single
+            # pod both publishes and subscribes on this subject; acting on
+            # our own broadcast would evict the L1 row save_entity just
+            # wrote, so a subsequent L1-only read of that entity (e.g. an
+            # entity field accessor) would miss. The broadcast exists to
+            # evict OTHER pods, which carry a different origin.
+            if message.origin is not None and message.origin == self._origin_id:
+                return
+
             collection = self._collections.get(message.table)
             if collection is None:
                 # unknown-table receipts are expected during partial
@@ -262,8 +287,8 @@ class CollectionRegistry:
             values = entity_id
         else:
             values = (entity_id,)
-        ids = [str(v) for v in values]
-        message = CacheInvalidationMessage(table=table_name, ids=ids)
+        ids = [str(v) for v in values]  # convert at border: invalidation wire-envelope pk values
+        message = CacheInvalidationMessage(table=table_name, ids=ids, origin=self._origin_id)
         try:
             await nats_client.publish(
                 subject=Subjects.cache_invalidate(),
@@ -275,7 +300,9 @@ class CollectionRegistry:
                 extra={
                     "extra_data": {
                         "table": table_name,
-                        "entity_id": str(entity_id),
+                        "entity_id": str(
+                            entity_id
+                        ),  # convert at border: invalidation-publish-failed log extra_data field
                         "error": str(exc),
                     },
                 },
@@ -290,7 +317,9 @@ class CollectionRegistry:
                 extra={
                     "extra_data": {
                         "table": table_name,
-                        "entity_id": str(entity_id),
+                        "entity_id": str(
+                            entity_id
+                        ),  # convert at border: invalidation-envelope-invalid log extra_data field
                         "error": str(exc),
                     },
                 },
