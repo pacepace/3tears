@@ -421,9 +421,7 @@ class TestRollbackOnError:
     """
 
     @pytest.mark.asyncio
-    async def test_session_not_poisoned_after_query_error(
-        self, redshift_creds: dict[str, Any]
-    ) -> None:
+    async def test_session_not_poisoned_after_query_error(self, redshift_creds: dict[str, Any]) -> None:
         """bad SELECT raises; subsequent good SELECT on same driver succeeds."""
         config = _make_config(redshift_creds)
         driver = RedshiftDriver(config, datasource_name="central-reporting")
@@ -432,9 +430,7 @@ class TestRollbackOnError:
             # Redshift returns ``42P01: relation does not exist``.
             with pytest.raises(Exception) as exc_info:
                 await asyncio.wait_for(
-                    driver.fetch(
-                        "SELECT 1 FROM reporting_prod.does_not_exist_zzz_rollback_probe"
-                    ),
+                    driver.fetch("SELECT 1 FROM reporting_prod.does_not_exist_zzz_rollback_probe"),
                     timeout=30.0,
                 )
             # make sure the failure was the expected relation-missing

@@ -873,8 +873,7 @@ class RedshiftDriver(Driver):
                     # re-raise below so callers see the real failure
                     # they need to act on.
                     log.warning(
-                        "redshift rollback after query error failed: %s; "
-                        "evicting connection",
+                        "redshift rollback after query error failed: %s; evicting connection",
                         rb_exc,
                     )
                     connection_poisoned = True

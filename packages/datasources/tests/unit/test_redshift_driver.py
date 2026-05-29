@@ -667,6 +667,7 @@ class TestRollbackOnError:
     ) -> None:
         """failed SELECT runs ROLLBACK and returns conn to cache (not evicted)."""
         conn = _build_mock_connection()
+
         # build a fresh exception type so the assertion below can match
         # by identity instead of accidentally matching one raised
         # elsewhere in the driver.
@@ -703,6 +704,7 @@ class TestRollbackOnError:
     ) -> None:
         """rollback raising drops the conn from cache + logs WARNING, original error still raised."""
         conn = _build_mock_connection()
+
         class _ProgrammingError(Exception):
             pass
 
@@ -754,6 +756,7 @@ class TestRollbackOnError:
             fetchall_rows=[(1,)],
             description=[("ok", None)],
         )
+
         class _ProgrammingError(Exception):
             pass
 
