@@ -837,6 +837,50 @@ class RedshiftDriver(Driver):
                 lambda: op(conn),
                 cancel_callback=_on_cancel,
             )
+        except Exception:  # noqa: BLE001
+            # query raised. Redshift uses redshift_connector with the
+            # DB-API default of autocommit=False, which means every
+            # statement implicitly opens a transaction. when a
+            # statement raises, the transaction is left in
+            # ``aborted`` state -- the server then rejects every
+            # subsequent statement on this connection with
+            # ``25P02: current transaction is aborted, commands
+            # ignored until end of transaction block`` until an
+            # explicit ROLLBACK runs. without this rollback, the next
+            # caller to acquire this connection from the cache would
+            # inherit a poisoned session and every retry would fail.
+            #
+            # ``except Exception`` (not ``BaseException``) matches the
+            # surrounding convention in this file:
+            # :class:`asyncio.CancelledError` is rooted at
+            # ``BaseException`` and propagates unchanged so the
+            # dedicated cancel path (``_on_cancel`` closed the
+            # socket + evicted the connection above) is not
+            # double-handled here.
+            if not connection_poisoned:
+                try:
+                    await self._bridge.to_thread_with_cancel(
+                        conn.rollback,
+                        cancel_cb=lambda: None,
+                    )
+                except Exception as rb_exc:  # noqa: BLE001
+                    # rollback itself failed -- the connection is
+                    # doubly poisoned. log + evict + skip the release
+                    # in the finally below so we never put a broken
+                    # connection back in the cache for the next
+                    # caller to trip over. the ORIGINAL query
+                    # exception (not the rollback's) is what we
+                    # re-raise below so callers see the real failure
+                    # they need to act on.
+                    log.warning(
+                        "redshift rollback after query error failed: %s; "
+                        "evicting connection",
+                        rb_exc,
+                    )
+                    connection_poisoned = True
+                    with self._suppress_close():
+                        await self._evict_connection(conn)
+            raise
         finally:
             if saturation is not None:
                 saturation.add(-1, attributes={"datasource_name": self._datasource_name})

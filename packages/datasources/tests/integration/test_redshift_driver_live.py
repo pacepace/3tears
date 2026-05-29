@@ -403,6 +403,58 @@ class TestCancellationObservable:
 
 
 # ---------------------------------------------------------------------------
+# Rollback on query error: a bad SELECT does not poison the session
+# ---------------------------------------------------------------------------
+
+
+class TestRollbackOnError:
+    """live counterpart to the unit-tested rollback-before-release contract.
+
+    pins the user-observed shape against a real Redshift cluster:
+    asking the agent two questions in a row, where the first hits a
+    bad query, used to leave the cached connection in
+    ``25P02: current transaction is aborted, commands ignored until
+    end of transaction block`` and break every subsequent query in
+    the conversation. these unit-test mocks can't catch a real
+    pgwire ``ABORT`` transition or a sync-bridge ordering bug, so
+    this case re-runs the shape against the live cluster.
+    """
+
+    @pytest.mark.asyncio
+    async def test_session_not_poisoned_after_query_error(
+        self, redshift_creds: dict[str, Any]
+    ) -> None:
+        """bad SELECT raises; subsequent good SELECT on same driver succeeds."""
+        config = _make_config(redshift_creds)
+        driver = RedshiftDriver(config, datasource_name="central-reporting")
+        try:
+            # deliberately bad query: this table does not exist.
+            # Redshift returns ``42P01: relation does not exist``.
+            with pytest.raises(Exception) as exc_info:
+                await asyncio.wait_for(
+                    driver.fetch(
+                        "SELECT 1 FROM reporting_prod.does_not_exist_zzz_rollback_probe"
+                    ),
+                    timeout=30.0,
+                )
+            # make sure the failure was the expected relation-missing
+            # one and not a higher-level wrapper that would hide a
+            # different bug.
+            assert "does_not_exist_zzz_rollback_probe" in str(exc_info.value) or "42P01" in str(exc_info.value)
+
+            # the second query must succeed on the SAME cached
+            # connection. without rollback-before-release this call
+            # would raise ``25P02 current transaction is aborted``.
+            rows = await asyncio.wait_for(
+                driver.fetch("SELECT 1 AS ok"),
+                timeout=30.0,
+            )
+            assert rows == [{"ok": 1}]
+        finally:
+            await driver.close()
+
+
+# ---------------------------------------------------------------------------
 # close() drains cache cleanly
 # ---------------------------------------------------------------------------
 

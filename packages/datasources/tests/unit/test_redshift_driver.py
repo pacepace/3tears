@@ -640,3 +640,154 @@ class TestCancellation:
             warnings = [r for r in caplog.records if r.levelname == "WARNING"]
             assert any("cancel" in r.getMessage().lower() for r in warnings)
             await driver.close()
+
+
+# ---------------------------------------------------------------------------
+# Rollback on query error
+# ---------------------------------------------------------------------------
+
+
+class TestRollbackOnError:
+    """on query error the connection is rolled back before release.
+
+    Redshift uses :mod:`redshift_connector` with the DB-API default of
+    ``autocommit=False``: every statement implicitly opens a
+    transaction and a failed statement leaves that transaction in
+    ``aborted`` state. without an explicit ``ROLLBACK`` the server
+    rejects every subsequent statement on the connection with
+    ``25P02: current transaction is aborted, commands ignored until
+    end of transaction block``. these tests pin the driver's
+    rollback-before-release contract: a single bad query must not
+    poison the cached connection for the next caller.
+    """
+
+    @pytest.mark.asyncio
+    async def test_query_error_triggers_rollback_and_releases_connection(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """failed SELECT runs ROLLBACK and returns conn to cache (not evicted)."""
+        conn = _build_mock_connection()
+        # build a fresh exception type so the assertion below can match
+        # by identity instead of accidentally matching one raised
+        # elsewhere in the driver.
+        class _ProgrammingError(Exception):
+            pass
+
+        def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
+            if args and _is_set_stmt_timeout(args[0]):
+                return
+            raise _ProgrammingError("relation does not exist")
+
+        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(_ProgrammingError, match="relation does not exist"):
+                await driver.fetch("SELECT * FROM missing")
+            # rollback fired exactly once on the connection that ran
+            # the bad query
+            conn.rollback.assert_called_once()
+            # connection survived: it's the one in the cache, ready
+            # for the next caller (post-rollback the session is clean)
+            assert list(driver._cache) == [conn]  # noqa: SLF001
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_rollback_failure_evicts_connection_and_logs_warning(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """rollback raising drops the conn from cache + logs WARNING, original error still raised."""
+        conn = _build_mock_connection()
+        class _ProgrammingError(Exception):
+            pass
+
+        class _RollbackError(Exception):
+            pass
+
+        def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
+            if args and _is_set_stmt_timeout(args[0]):
+                return
+            raise _ProgrammingError("relation does not exist")
+
+        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+        conn.rollback.side_effect = _RollbackError("connection broken")
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            # the caller sees the ORIGINAL query error, not the
+            # rollback's secondary error -- callers act on the real
+            # failure, the rollback failure is observability only.
+            with pytest.raises(_ProgrammingError, match="relation does not exist"):
+                await driver.fetch("SELECT * FROM missing")
+            # the doubly-poisoned connection is NOT in the cache:
+            # never hand a broken connection to the next caller.
+            assert conn not in driver._cache  # noqa: SLF001
+            # WARNING captured so the rollback failure is not silently
+            # swallowed even though it does not replace the raised
+            # exception. matches the project no-silent-swallow rule.
+            warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+            assert any("rollback" in r.getMessage().lower() for r in warnings)
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_second_fetch_after_first_failure_succeeds_on_cached_conn(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """end-to-end shape: first fetch raises, second fetch succeeds on same cached conn.
+
+        this is the user-observed shape of the bug -- a single bad
+        SELECT in the agent's tool-loop used to poison every
+        subsequent SELECT in the same conversation with ``25P02``.
+        post-fix the cached connection is rolled back so the next
+        ``fetch`` runs cleanly and ``redshift_connector.connect`` is
+        called only once across both queries.
+        """
+        conn = _build_mock_connection(
+            fetchall_rows=[(1,)],
+            description=[("ok", None)],
+        )
+        class _ProgrammingError(Exception):
+            pass
+
+        # first non-SET execute raises; subsequent ones succeed.
+        call_count = {"non_set": 0}
+
+        def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
+            if args and _is_set_stmt_timeout(args[0]):
+                return
+            call_count["non_set"] += 1
+            if call_count["non_set"] == 1:
+                raise _ProgrammingError("relation does not exist")
+            return None
+
+        conn._cursor.execute.side_effect = _execute_side_effect  # noqa: SLF001
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
+            driver = RedshiftDriver(redshift_config)
+            with pytest.raises(_ProgrammingError):
+                await driver.fetch("SELECT * FROM missing")
+            # second call must succeed on the cached (rolled-back)
+            # connection; if rollback had not fired the connection
+            # would be in the aborted-transaction state and this call
+            # would never have reached the cached-hit path with
+            # working semantics.
+            rows = await driver.fetch("SELECT 1 AS ok")
+            assert rows == [{"ok": 1}]
+            # exactly one connect: cache hit on the second fetch
+            # proves the same connection was reused without eviction
+            connect_mock.assert_called_once()
+            # rollback fired once (on the first error) and not on
+            # the successful second fetch
+            conn.rollback.assert_called_once()
+            await driver.close()
