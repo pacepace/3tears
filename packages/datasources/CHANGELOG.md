@@ -7,22 +7,7 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
-## [0.9.1]
-
-### Changed
-
-- Credentials are now referenced by a `scheme://locator` string
-  (`password_ref` / `credentials_json_ref`) instead of an env-var
-  name (`password_env` / `credentials_json_env`). The value is
-  resolved at use time by a pluggable backend in
-  `threetears.datasources.secrets`. Shipped backends: `env://NAME`
-  (process env) and `k8s://rel/path` (projected-Secret file under
-  `AIBOTS_DATASOURCE_SECRETS_DIR`). `vault://`, `aws-secretsmanager://`
-  and `gcp-sm://` are registered but raise until implemented.
-- Package version realigned to the monorepo lockstep (`0.9.1`); the
-  earlier independent-SemVer experiment (`0.1.x`) is retired.
-
-## [Unreleased]
+## [0.10.1]
 
 ### Fixed
 
@@ -41,6 +26,23 @@ and the package version moves in **lockstep** with the rest of the
   to the caller. Covered by `TestRollbackOnError` unit tests
   (mocked-cursor positive / failure / two-fetch end-to-end shapes)
   and one live integration test against `central-reporting`.
+
+## [0.9.1]
+
+### Changed
+
+- Credentials are now referenced by a `scheme://locator` string
+  (`password_ref` / `credentials_json_ref`) instead of an env-var
+  name (`password_env` / `credentials_json_env`). The value is
+  resolved at use time by a pluggable backend in
+  `threetears.datasources.secrets`. Shipped backends: `env://NAME`
+  (process env) and `k8s://rel/path` (projected-Secret file under
+  `AIBOTS_DATASOURCE_SECRETS_DIR`). `vault://`, `aws-secretsmanager://`
+  and `gcp-sm://` are registered but raise until implemented.
+- Package version realigned to the monorepo lockstep (`0.9.1`); the
+  earlier independent-SemVer experiment (`0.1.x`) is retired.
+
+## [Unreleased]
 
 Future enhancements after the initial driver migration ships:
 

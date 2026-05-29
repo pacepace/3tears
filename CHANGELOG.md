@@ -4,6 +4,38 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.10.1 -- 2026-05-29
+
+Single-fix release on top of v0.10.0. `RedshiftDriver` now runs
+`ROLLBACK` on a query error before returning the connection to its
+cache so a single bad SELECT no longer poisons the cached session
+for the rest of the consumer's conversation.
+
+### Fixed — `3tears-datasources`
+
+- `RedshiftDriver._acquire_and_run` catches the query exception,
+  runs `conn.rollback()` through the existing sync bridge, and
+  releases the rolled-back connection back to the cache. Cancel
+  path stays as-is (`asyncio.CancelledError` is `BaseException`-
+  rooted and propagates through the dedicated `_on_cancel`
+  callback, not double-handled here). If the rollback itself
+  raises, the connection is evicted instead of released and a
+  WARNING is logged; the ORIGINAL query exception is what
+  propagates to callers in every branch. Coverage: three new
+  unit tests (mocked-cursor positive / rollback-failure / two-
+  fetch end-to-end) plus one new live integration test against
+  `central-reporting` gated on `OTS_REDSHIFT_PASSWORD`.
+
+  Background: `redshift_connector` uses the DB-API default of
+  `autocommit=False`. A failed statement leaves the connection's
+  implicit transaction in `aborted` state and the server then
+  rejects every subsequent statement on that connection with
+  `25P02: current transaction is aborted, commands ignored until
+  end of transaction block` until an explicit `ROLLBACK` runs.
+  Without the rollback, the agent's tool loop on a typo'd SELECT
+  spins through its recursion budget retrying because every retry
+  inherits the same poisoned cached connection.
+
 ## v0.10.0 -- 2026-05-23
 
 The long-running-agent foundation release. Three new platform features
