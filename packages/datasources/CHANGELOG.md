@@ -24,6 +24,24 @@ and the package version moves in **lockstep** with the rest of the
 
 ## [Unreleased]
 
+### Fixed
+
+- `RedshiftDriver` now runs `ROLLBACK` on a query error before
+  returning the connection to its cache. `redshift_connector` uses
+  the DB-API default of `autocommit=False`, so a failed statement
+  leaves the connection's implicit transaction in `aborted` state;
+  without the rollback the next caller to acquire that cached
+  connection trips `25P02: current transaction is aborted, commands
+  ignored until end of transaction block` on every subsequent
+  statement until eviction. The fix lives in `_acquire_and_run`, the
+  central wrapper every query method routes through (so `fetch`,
+  `execute`, and `fetch_iter` all benefit). If the rollback itself
+  raises, the connection is evicted instead of released and a
+  WARNING is logged; the ORIGINAL query exception is what propagates
+  to the caller. Covered by `TestRollbackOnError` unit tests
+  (mocked-cursor positive / failure / two-fetch end-to-end shapes)
+  and one live integration test against `central-reporting`.
+
 Future enhancements after the initial driver migration ships:
 
 - Snowflake + BigQuery concrete driver implementations (stubs today
