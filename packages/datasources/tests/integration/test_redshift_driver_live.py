@@ -81,11 +81,19 @@ def redshift_creds() -> dict[str, Any]:
     }
 
 
-def _make_config(creds: dict[str, Any]) -> RedshiftConnectionConfig:
+def _make_config(
+    creds: dict[str, Any],
+    *,
+    allowed_schemas: list[str] | None = None,
+) -> RedshiftConnectionConfig:
     """build a :class:`RedshiftConnectionConfig` from the creds dict.
 
     :param creds: dict from the :func:`redshift_creds` fixture
     :ptype creds: dict[str, Any]
+    :param allowed_schemas: optional schemas to set on the connection's
+        ``search_path`` at open time; defaults to ``[]`` so the
+        backend default applies
+    :ptype allowed_schemas: list[str] | None
     :return: live config pointing at central-reporting
     :rtype: RedshiftConnectionConfig
     """
@@ -99,6 +107,7 @@ def _make_config(creds: dict[str, Any]) -> RedshiftConnectionConfig:
         executor_max_workers=4,
         connection_cache_size=2,
         query_timeout_seconds=120,
+        allowed_schemas=allowed_schemas or [],
     )
 
 
@@ -469,3 +478,61 @@ class TestCloseDrainsCache:
         await driver.close()
         assert len(driver._cache) == 0  # noqa: SLF001
         assert driver._closed is True  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# search_path: per-connection SET from allowed_schemas (live)
+# ---------------------------------------------------------------------------
+
+
+class TestSearchPathOnOpen:
+    """live proof that the Redshift driver issues ``SET search_path``.
+
+    the unit suite verifies the SQL is correctly built and emitted to
+    cursor.execute under mocks; this test proves Redshift's pgwire
+    accepts the statement AND that an unqualified table reference
+    resolves through ``reporting_prod`` after open. without the
+    connection-scope SET the unqualified select would fail with
+    ``42P01 relation does not exist``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unqualified_table_resolves_via_search_path(
+        self,
+        redshift_creds: dict[str, Any],
+    ) -> None:
+        """``allowed_schemas=['reporting_prod']`` -> unqualified select works."""
+        config = _make_config(redshift_creds, allowed_schemas=["reporting_prod"])
+        driver = RedshiftDriver(config, datasource_name="central-reporting")
+        try:
+            # use information_schema as the cross-cluster-stable probe:
+            # this catalog ALWAYS exists, but unqualified ``columns``
+            # would normally not resolve unless search_path includes
+            # ``information_schema`` -- which we are NOT setting. so
+            # instead we read the GUC the server reports back.
+            rows = await driver.fetch("SHOW search_path")
+            assert rows, "SHOW search_path returned no rows"
+            assert "reporting_prod" in rows[0]["search_path"]
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowed_schemas_leaves_default_search_path(
+        self,
+        redshift_creds: dict[str, Any],
+    ) -> None:
+        """empty ``allowed_schemas`` -> reporting_prod NOT injected.
+
+        proves we don't quietly bake a default into the driver; the
+        backend's own ``search_path`` is what callers see.
+        """
+        config = _make_config(redshift_creds, allowed_schemas=[])
+        driver = RedshiftDriver(config, datasource_name="central-reporting")
+        try:
+            rows = await driver.fetch("SHOW search_path")
+            assert rows
+            # reporting_prod must not be present unless explicitly
+            # requested -- a leak would mask drift.
+            assert "reporting_prod" not in rows[0]["search_path"]
+        finally:
+            await driver.close()

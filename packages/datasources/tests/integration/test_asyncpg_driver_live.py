@@ -68,11 +68,18 @@ def _parse_db_url(db_url: str) -> dict[str, Any]:
 def _make_config_for_container(
     db_url: str,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    allowed_schemas: list[str] | None = None,
 ) -> PostgresConnectionConfig:
     """build a :class:`PostgresConnectionConfig` for the seeded container.
 
     sets the password env var the config expects via monkeypatch so
     the test doesn't write to the real process env.
+
+    :param allowed_schemas: optional list to thread into the config's
+        ``allowed_schemas``; defaults to ``[]`` so the backend's
+        default ``search_path`` applies
+    :ptype allowed_schemas: list[str] | None
     """
     parsed = _parse_db_url(db_url)
     monkeypatch.setenv("ASYNCPG_DRIVER_TEST_PW", parsed["password"])
@@ -86,6 +93,7 @@ def _make_config_for_container(
         pool_min_size=1,
         pool_max_size=2,
         command_timeout_seconds=10,
+        allowed_schemas=allowed_schemas or [],
     )
 
 
@@ -241,6 +249,74 @@ class TestHappyPath:
             assert weight_col["is_nullable"] == "YES"
             # NOT a bool
             assert isinstance(id_col["is_nullable"], str)
+        finally:
+            await driver.close()
+
+
+# ---------------------------------------------------------------------------
+# search_path: connection-scope ``SET search_path`` from allowed_schemas
+# ---------------------------------------------------------------------------
+
+
+class TestSearchPathOnOpen:
+    """live proof that ``allowed_schemas`` -> per-conn ``SET search_path``.
+
+    the unit suite verifies the SQL we ship to asyncpg; this test
+    proves Postgres actually accepts it AND that an unqualified
+    table reference resolves through the seeded schema after the
+    pool's ``init`` callback fires.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unqualified_table_resolves_via_search_path(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """with ``allowed_schemas=[seeded]``, ``SELECT * FROM widgets`` works.
+
+        without the search_path set the same statement would fail with
+        ``UndefinedTableError`` because the table lives in a non-default
+        schema. seeing the row come back is the live signal that the
+        connection-scope ``SET`` took effect.
+        """
+        db_url, schema = seeded_schema
+        config = _make_config_for_container(db_url, monkeypatch, allowed_schemas=[schema])
+        driver = AsyncpgDriver(config)
+        try:
+            rows = await driver.fetch("SELECT name FROM widgets WHERE id = $1", 1)
+            assert rows == [{"name": "alpha"}]
+            # cross-check the session-scope GUC the server reports
+            current = await driver.fetch("SHOW search_path")
+            # asyncpg returns the raw quoted form; assert via substring
+            assert schema in current[0]["search_path"]
+        finally:
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_empty_allowed_schemas_leaves_default_search_path(
+        self,
+        seeded_schema: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """no ``allowed_schemas`` -> backend default ``search_path`` is intact.
+
+        proves the absence of the init callback doesn't bleed into a
+        connection's state in any other way.
+        """
+        db_url, schema = seeded_schema
+        # explicit empty (the default) -- prove the table is unreachable
+        # without qualification when no search_path is wired.
+        config = _make_config_for_container(db_url, monkeypatch, allowed_schemas=[])
+        driver = AsyncpgDriver(config)
+        try:
+            # default Postgres search_path is ``"$user", public`` -- the
+            # seeded schema is NOT in it; unqualified select must fail.
+            with pytest.raises(Exception, match="widgets"):
+                await driver.fetch("SELECT * FROM widgets")
+            # but qualified access still works
+            rows = await driver.fetch(f'SELECT name FROM "{schema}"."widgets" WHERE id = $1', 1)
+            assert rows == [{"name": "alpha"}]
         finally:
             await driver.close()
 
