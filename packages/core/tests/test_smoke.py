@@ -9,6 +9,6 @@ def test_cross_package_imports():
     from threetears.agent.memory import __version__ as memory_version
     from threetears.agent.tools import __version__ as tools_version
 
-    assert core_version == "0.10.1"
-    assert memory_version == "0.10.1"
-    assert tools_version == "0.10.1"
+    assert core_version == "0.10.2"
+    assert memory_version == "0.10.2"
+    assert tools_version == "0.10.2"
