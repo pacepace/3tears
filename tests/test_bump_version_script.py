@@ -213,6 +213,78 @@ class TestBumpVersionScript:
         assert result.returncode != 0
         assert "explicit X.Y.Z" in result.stderr or "Usage" in result.stderr
 
+    def test_verify_catches_aliased_version_drift(self, tmp_path: Path) -> None:
+        """``assert <alias>_version == "X.Y.Z"`` drift is caught.
+
+        Regression guard for v0.10.2: the cross-package smoke test in
+        ``packages/core/tests/test_smoke.py`` uses
+        ``from threetears.core import __version__ as core_version``
+        and then ``assert core_version == "X.Y.Z"``. Pre-fix the
+        verify regex matched only the literal ``__version__`` token,
+        so the aliased assertions silently held the old value and CI
+        only caught the drift after the bump PR shipped. This test
+        pins the aliased shape so the regression cannot recur.
+        """
+        _build_fixture(tmp_path)
+        # rewrite the fixture smoke to use the aliased shape that
+        # broke v0.10.2. one aliased line at the old version, the
+        # rest at the canonical -- exactly what packages/core looked
+        # like when the v0.10.2 bump went out.
+        smoke = tmp_path / "packages" / "core" / "tests" / "test_smoke.py"
+        smoke.write_text(
+            textwrap.dedent(
+                """\
+                def test_aliased_import() -> None:
+                    from fixture_pkg import __version__ as core_version
+                    assert core_version == "0.0.99"
+                """,
+            ).strip()
+            + "\n",
+        )
+
+        result = _run(tmp_path, "--verify", "0.1.0")
+        assert result.returncode != 0, (
+            "--verify failed to catch aliased ``core_version`` drift; "
+            "regex must match both ``__version__`` and ``<alias>_version``"
+        )
+        combined = result.stdout + result.stderr
+        assert "core_version" in combined
+        assert "packages/core/tests/test_smoke.py" in combined
+
+    def test_bump_rewrites_aliased_version_assertions(self, tmp_path: Path) -> None:
+        """bump mode rewrites ``<alias>_version == "..."`` and preserves
+        the alias name on the LHS.
+
+        Co-regression-guard for v0.10.2. The bump regex's capture group
+        must preserve ``core_version`` / ``memory_version`` / etc. on
+        rewrite -- a naive ``s/.../__version__/g`` would have
+        unilaterally replaced the alias with ``__version__`` and
+        broken the imports.
+        """
+        _build_fixture(tmp_path)
+        smoke = tmp_path / "packages" / "core" / "tests" / "test_smoke.py"
+        smoke.write_text(
+            textwrap.dedent(
+                """\
+                def test_aliased_import() -> None:
+                    from fixture_pkg import __version__ as core_version
+                    assert core_version == "0.0.99"
+                """,
+            ).strip()
+            + "\n",
+        )
+
+        result = _run(tmp_path, "0.2.0")
+        assert result.returncode == 0, f"{result.stdout}{result.stderr}"
+
+        smoke_after = smoke.read_text()
+        # the LHS alias is preserved; the RHS is bumped to the new version
+        assert 'assert core_version == "0.2.0"' in smoke_after, smoke_after
+        # the import line is untouched (the script must not rewrite
+        # the import alias to ``__version__`` -- that would break the
+        # cross-package import contract)
+        assert "from fixture_pkg import __version__ as core_version" in smoke_after
+
     @pytest.mark.parametrize(
         "keyword,starting,expected",
         [

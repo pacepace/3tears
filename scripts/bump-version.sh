@@ -125,9 +125,19 @@ if [ "$VERIFY_ONLY" -eq 1 ]; then
     done < <(find "$REPO_ROOT/packages" -name pyproject.toml -type f)
 
     # 2. test_smoke.py __version__ assertions.
+    #
+    # Two shapes appear in the wild:
+    #   - assert __version__ == "X.Y.Z"           (single-package import)
+    #   - assert <alias>_version == "X.Y.Z"       (aliased cross-package
+    #     import, e.g. ``from threetears.core import __version__ as
+    #     core_version``)
+    # The lockstep guarantee covers both -- a stale aliased assertion
+    # is the exact regression that broke v0.10.2 CI (packages/core
+    # asserted ``core_version == "0.10.1"`` while every other location
+    # had bumped to 0.10.2).
     while IFS= read -r FILE; do
         REL="${FILE#$REPO_ROOT/}"
-        BAD=$(grep -oE '__version__ == "[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
+        BAD=$(grep -oE '(__version__|[a-zA-Z_]+_version) == "[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
               | grep -v "\"$NEW\"" || true)
         if [ -n "$BAD" ]; then
             echo "  MISMATCH $REL: $BAD (expected $NEW)" >&2
@@ -205,14 +215,24 @@ done < <(find "$REPO_ROOT/packages" -name pyproject.toml -type f)
 # 2. test_smoke.py __version__ assertions. Replace any value (the
 # files might have been at a different prior version than the
 # canonical) so the lockstep is fully restored.
+#
+# Handle both shapes:
+#   - assert __version__ == "X.Y.Z"           (single-package import)
+#   - assert <alias>_version == "X.Y.Z"       (aliased cross-package
+#     import; the capture group preserves the LHS name on rewrite)
+# The aliased shape is what slipped past v0.10.1 -> 0.10.2's first
+# bump attempt: packages/core/tests/test_smoke.py's
+# test_cross_package_imports() asserts against ``core_version``,
+# ``memory_version``, ``tools_version`` aliases, none of which match
+# the literal ``__version__`` token.
 SMOKE_UPDATED=0
 while IFS= read -r FILE; do
     REL="${FILE#$REPO_ROOT/}"
     # only rewrite if at least one assertion is NOT already at $NEW
-    BAD=$(grep -oE '__version__ == "[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
+    BAD=$(grep -oE '(__version__|[a-zA-Z_]+_version) == "[0-9]+\.[0-9]+\.[0-9]+"' "$FILE" \
           | grep -v "\"$NEW\"" || true)
     if [ -n "$BAD" ]; then
-        _sed_i -E "s/__version__ == \"[0-9]+\\.[0-9]+\\.[0-9]+\"/__version__ == \"$NEW\"/g" "$FILE"
+        _sed_i -E "s/(__version__|[a-zA-Z_]+_version) == \"[0-9]+\\.[0-9]+\\.[0-9]+\"/\\1 == \"$NEW\"/g" "$FILE"
         echo "  updated $REL"
         SMOKE_UPDATED=$((SMOKE_UPDATED + 1))
     fi
