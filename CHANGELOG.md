@@ -4,6 +4,35 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.10.2 -- 2026-06-01
+
+Single-feature release on top of v0.10.1. `DatasourceConfig` now
+threads `allowed_schemas` onto the connection's `search_path` at
+open time so agents can write unqualified table names in their SQL
+instead of fully qualifying every reference. Closes the Hub-side
+pairing of the long-standing "agent must qualify every table" UX
+papercut.
+
+### Added — `3tears-datasources`
+
+- `RedshiftConnectionConfig`, `PostgresConnectionConfig`, and
+  `YugabyteConnectionConfig` carry a new `allowed_schemas: list[str]`
+  field (default `[]` means "leave the backend default in place").
+- Shared helpers `build_search_path_value` /
+  `build_set_search_path_sql` in
+  `threetears.datasources.drivers._util` with identifier-quoting
+  for adversarial schema names.
+- Redshift driver issues `SET search_path TO "<schemas>"` via
+  `cursor.execute` after the existing `SET statement_timeout` block
+  on every connection open.
+- asyncpg driver passes `server_settings={"search_path": "..."}`
+  through `create_pool`, landing the value in the pgwire STARTUP
+  packet so it survives `DISCARD ALL` reset on pool release. An
+  `init=` callback would NOT — that was the trip-wire surfaced by
+  the live testcontainer pass.
+- Coverage: 8 new unit tests (4 per driver), 4 new live integration
+  tests against Redshift and the asyncpg testcontainer.
+
 ## v0.10.1 -- 2026-05-29
 
 Single-fix release on top of v0.10.0. `RedshiftDriver` now runs

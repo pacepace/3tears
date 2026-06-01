@@ -74,7 +74,10 @@ from threetears.datasources.config import (
     PostgresConnectionConfig,
     YugabyteConnectionConfig,
 )
-from threetears.datasources.drivers._util import _translate_placeholders
+from threetears.datasources.drivers._util import (
+    _translate_placeholders,
+    build_search_path_value,
+)
 from threetears.datasources.drivers.base import (
     ColumnRow,
     Driver,
@@ -380,7 +383,27 @@ class AsyncpgDriver(Driver):
         # ``.get_secret_value()`` is called inside the ``create_pool``
         # call site to keep the value off any intermediate variable
         # (see DS-10-10).
+        #
+        # search_path: when ``allowed_schemas`` is non-empty, pass the
+        # value through asyncpg's ``server_settings`` connect kwarg.
+        # this sends ``search_path=...`` in the pgwire STARTUP packet
+        # so the value is the connection's "session default" -- which
+        # means ``DISCARD ALL`` / ``RESET ALL`` (asyncpg's default
+        # pool-release reset) leaves it intact instead of wiping it
+        # back to ``"$user", public``. an ``init=`` cursor.execute
+        # would lose the value between acquires; a ``setup=`` would
+        # add a round trip on every acquire. STARTUP is the only path
+        # that's both correct and zero-cost.
+        search_path_value = build_search_path_value(cfg.allowed_schemas)
+        server_settings = {"search_path": search_path_value} if search_path_value is not None else None
         try:
+            # ``server_settings`` is accepted by asyncpg.connect (and
+            # forwarded by create_pool via **connect_kwargs). only set
+            # it when non-empty to avoid sending an empty dict that
+            # would still trigger the startup-parameter code path.
+            connect_kwargs: dict[str, Any] = {}
+            if server_settings is not None:
+                connect_kwargs["server_settings"] = server_settings
             pool = await asyncpg.create_pool(
                 host=cfg.host,
                 port=cfg.port,
@@ -390,6 +413,7 @@ class AsyncpgDriver(Driver):
                 min_size=cfg.pool_min_size,
                 max_size=cfg.pool_max_size,
                 command_timeout=cfg.command_timeout_seconds,
+                **connect_kwargs,
                 **get_pg_pool_kwargs(),
             )
         except Exception:

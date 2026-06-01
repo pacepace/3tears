@@ -7,6 +7,38 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.10.2]
+
+### Added
+
+- New `allowed_schemas: list[str]` field on
+  `RedshiftConnectionConfig`, `PostgresConnectionConfig`, and
+  `YugabyteConnectionConfig`. Drivers thread the value onto the
+  connection's `search_path` at open time so agents can write
+  unqualified table names (`SELECT … FROM report_geofacts_joined_data`)
+  instead of having to fully qualify every reference. Empty default
+  preserves the backend's default `search_path`.
+- `build_search_path_value` and `build_set_search_path_sql`
+  helpers in `threetears.datasources.drivers._util` with
+  identifier-quoting suitable for adversarial schema names.
+- Redshift driver issues `SET search_path TO "<schemas>"` via
+  `cursor.execute` after the existing `SET statement_timeout`
+  block on every connection open. Cached connection lifecycle
+  applies the SET once per backend session.
+- asyncpg driver passes `server_settings={"search_path": "..."}`
+  through `create_pool`. The value rides the pgwire STARTUP
+  packet and is preserved across `DISCARD ALL` (the default
+  asyncpg pool-release reset), where an `init=` callback would
+  have been wiped. The live testcontainer pass caught the reset
+  issue before release.
+- 8 new unit tests (4 Redshift, 4 asyncpg) pin the SQL / kwargs
+  both drivers ship to the client library, including the
+  identifier-quoting paths. 4 new live integration tests (2
+  Redshift against `central-reporting`, 2 asyncpg against the
+  testcontainer) prove unqualified-table-name resolution
+  end-to-end and confirm empty `allowed_schemas` leaves the
+  default `search_path` intact.
+
 ## [0.10.1]
 
 ### Fixed

@@ -152,6 +152,14 @@ class PostgresConnectionConfig(BaseModel):
         default=120,
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
     )
+    allowed_schemas: list[str] = Field(
+        default_factory=list,
+        description="schemas to set on the connection's ``search_path`` at open "
+        "time so agents do not have to qualify table names in SQL. typically "
+        "threaded from the higher-level ``DatasourceConfig.schemas`` at driver "
+        'construction time. empty list means "do not issue a SET search_path; '
+        "the backend's default applies\".",
+    )
 
     @field_validator("password_ref")
     @classmethod
@@ -211,6 +219,14 @@ class YugabyteConnectionConfig(BaseModel):
     command_timeout_seconds: int = Field(
         default=120,
         description="per-query asyncpg timeout; balances slow-but-valid queries vs runaway protection",
+    )
+    allowed_schemas: list[str] = Field(
+        default_factory=list,
+        description="schemas to set on the connection's ``search_path`` at open "
+        "time so agents do not have to qualify table names in SQL. typically "
+        "threaded from the higher-level ``DatasourceConfig.schemas`` at driver "
+        'construction time. empty list means "do not issue a SET search_path; '
+        "the backend's default applies\".",
     )
 
     @field_validator("password_ref")
@@ -293,6 +309,16 @@ class RedshiftConnectionConfig(BaseModel):
     query_timeout_seconds: int = Field(
         default=300,
         description="redshift statement_timeout; caps individual queries",
+    )
+    allowed_schemas: list[str] = Field(
+        default_factory=list,
+        description="schemas to set on the connection's ``search_path`` at open "
+        "time so agents do not have to qualify table names in SQL. typically "
+        "threaded from the higher-level ``DatasourceConfig.schemas`` at driver "
+        'construction time. empty list means "do not issue a SET search_path; '
+        "the backend's default applies\". order is preserved (matches the "
+        "Redshift / Postgres precedence semantics: leftmost schema wins on "
+        "unqualified-name resolution).",
     )
 
     @field_validator("password_ref")

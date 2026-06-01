@@ -205,6 +205,18 @@ def _resolve_uv_workspace_members(
         for match in sorted(target.glob(entry)):
             if not match.is_dir():
                 continue
+            # Skip directories that match the glob but are not real
+            # workspace members. Bare dirs without a pyproject (e.g.
+            # stale empty leftovers from a packages/agent-memory ->
+            # packages/agent/memory rename, a parent grouping dir
+            # someone forgot to add to ``exclude``, a half-finished
+            # scaffolding) would otherwise blow up the downstream
+            # ``_visit`` walk with ``no pyproject.toml in <path>``
+            # even though they are not actually members. uv's own
+            # discovery silently treats them as non-members; do the
+            # same here.
+            if not (match / "pyproject.toml").is_file():
+                continue
             resolved_path = match.resolve()
             if resolved_path in excluded:
                 continue

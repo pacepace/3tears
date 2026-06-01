@@ -50,24 +50,17 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
 
-      - name: Verify version matches tag
+      - name: Verify version matches tag (full lockstep)
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          # all 16 packages under packages/, including the agent-namespace
-          # move sub-paths (agent/acl, agent/audit, agent/memory, agent/tools,
-          # agent/workspace). every pyproject.toml under packages/ must be
-          # at the exact tag version; otherwise the release is mismatched.
-          MISMATCH=0
-          for PKG_TOML in $(find packages -maxdepth 4 -name pyproject.toml | sort); do
-            PKG_PATH="$(dirname "$PKG_TOML")"
-            PKG_VERSION=$(grep '^version = ' "$PKG_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
-            if [ "$PKG_VERSION" != "$TAG" ]; then
-              echo "Version mismatch in $PKG_PATH: expected $TAG, got $PKG_VERSION"
-              MISMATCH=1
-            fi
-          done
-          [ "$MISMATCH" -eq 0 ] || exit 1
-          echo "All packages at version $TAG"
+          # Single source of truth: scripts/bump-version.sh --verify
+          # checks every place the version string lives (pyproject *.19,
+          # test_smoke.py *.5, docker-bake.hcl VERSION + image tags).
+          # If `bump-version.sh X.Y.Z` is the inverse "set everything to
+          # X.Y.Z", `--verify X.Y.Z` is "confirm everything is at X.Y.Z".
+          # Extending coverage only needs editing one place (the script);
+          # this workflow step automatically inherits.
+          ./scripts/bump-version.sh --verify "$TAG"
 
       - name: Build packages
         run: |
