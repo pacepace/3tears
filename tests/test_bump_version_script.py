@@ -34,29 +34,36 @@ _SCRIPT = _REPO_ROOT / "scripts" / "bump-version.sh"
 # the script's REPO_ROOT comes from the script's own directory; the
 # fixture below stages the script in tmp_path/scripts/ so the
 # resolved REPO_ROOT is tmp_path.
-_FIXTURE_PYPROJECT = textwrap.dedent(
-    """\
+_FIXTURE_PYPROJECT = (
+    textwrap.dedent(
+        """\
     [project]
     name = "fixture-pkg"
     version = "0.1.0"
     """
-).strip() + "\n"
+    ).strip()
+    + "\n"
+)
 
-_FIXTURE_SMOKE = textwrap.dedent(
-    """\
+_FIXTURE_SMOKE = (
+    textwrap.dedent(
+        """\
     from fixture_pkg import __version__
 
 
     def test_version() -> None:
         assert __version__ == "0.1.0"
     """
-).strip() + "\n"
+    ).strip()
+    + "\n"
+)
 
 # docker-bake.hcl mimicking the shape of the real bake file: the
 # VERSION variable + two hardcoded image-tag references the script
 # is meant to keep in sync with VERSION.
-_FIXTURE_BAKE = textwrap.dedent(
-    """\
+_FIXTURE_BAKE = (
+    textwrap.dedent(
+        """\
     variable "VERSION" {
       default = "v0.1.0"
     }
@@ -73,7 +80,9 @@ _FIXTURE_BAKE = textwrap.dedent(
       }
     }
     """
-).strip() + "\n"
+    ).strip()
+    + "\n"
+)
 
 
 def _build_fixture(root: Path) -> None:
@@ -122,9 +131,7 @@ class TestBumpVersionScript:
         succeeds when asked to verify ``0.1.0``."""
         _build_fixture(tmp_path)
         result = _run(tmp_path, "--verify", "0.1.0")
-        assert result.returncode == 0, (
-            f"--verify against unchanged fixture failed: {result.stdout}{result.stderr}"
-        )
+        assert result.returncode == 0, f"--verify against unchanged fixture failed: {result.stdout}{result.stderr}"
         assert "All version locations at 0.1.0" in result.stdout
 
     def test_verify_catches_drift_on_each_target(self, tmp_path: Path) -> None:
@@ -172,14 +179,10 @@ class TestBumpVersionScript:
         bake.write_text(bake.read_text().replace('"v0.1.0"', '"v0.0.99"').replace(":v0.1.0", ":v0.0.99"))
 
         result = _run(tmp_path, "0.1.0")
-        assert result.returncode == 0, (
-            f"bump failed: {result.stdout}{result.stderr}"
-        )
+        assert result.returncode == 0, f"bump failed: {result.stdout}{result.stderr}"
 
         verify = _run(tmp_path, "--verify", "0.1.0")
-        assert verify.returncode == 0, (
-            f"verify after bump still failed: {verify.stdout}{verify.stderr}"
-        )
+        assert verify.returncode == 0, f"verify after bump still failed: {verify.stdout}{verify.stderr}"
 
     def test_bump_to_new_version_moves_every_target(self, tmp_path: Path) -> None:
         """canonical 0.1.0 -> 0.2.0 bump from a clean fixture: every

@@ -100,8 +100,7 @@ class TestUvWorkspace:
         # the bad dir contributes no src root (it was silently skipped)
         for r in roots:
             assert "broken-no-pyproject" not in str(r), (
-                f"discover_src_roots returned {r} but broken-no-pyproject "
-                "has no pyproject and should have been skipped"
+                f"discover_src_roots returned {r} but broken-no-pyproject has no pyproject and should have been skipped"
             )
 
     def test_workspace_clean(self, tmp_path: Path) -> None:
