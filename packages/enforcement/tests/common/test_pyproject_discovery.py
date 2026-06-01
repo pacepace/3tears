@@ -64,22 +64,44 @@ class TestPoetryPathDeps:
 
 
 class TestUvWorkspace:
-    def test_workspace_globs_expand(self, tmp_path: Path) -> None:
+    def test_workspace_globs_skip_dirs_without_pyproject(self, tmp_path: Path) -> None:
+        """workspace globs silently skip dirs without ``pyproject.toml``.
+
+        Models the real-world case where a packages/* (or
+        packages/agent/*) glob picks up a directory that exists on
+        disk but is not a workspace member: a stale leftover dir from
+        a packages/agent-memory -> packages/agent/memory rename, a
+        scaffolded-but-not-yet-finished new package, a parent
+        grouping dir already silently shadowed by another glob.
+        ``uv`` itself silently treats these as non-members; the
+        walker matches that behaviour so anyone with a leftover dir
+        from a refactor does not have to chase a
+        ``PyprojectError: no pyproject.toml in <stale-path>`` every
+        time enforcement runs. Real scaffolding errors are caught at
+        package-init time / by uv's own commands.
+        """
         root = tmp_path / "monorepo"
         root.mkdir()
         (root / "pyproject.toml").write_text('[tool.uv.workspace]\nmembers = ["packages/*"]\n')
-        # workspace root itself has no top-level src
         for name in ("core", "observe"):
             pkg = root / "packages" / name
             pkg.mkdir(parents=True)
             (pkg / "src").mkdir()
             (pkg / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
-        # decoy: a packages/* dir without a pyproject — must raise
-        bad = root / "packages" / "broken"
+        # decoy: a packages/* dir without a pyproject. before the fix
+        # this raised on every walk; now it is silently skipped.
+        bad = root / "packages" / "broken-no-pyproject"
         bad.mkdir(parents=True)
-        # don't write pyproject.toml so visiting it raises
-        with pytest.raises(PyprojectError, match="no pyproject.toml"):
-            discover_src_roots(root)
+
+        roots = discover_src_roots(root)
+
+        assert (root / "packages" / "core" / "src").resolve() in roots
+        assert (root / "packages" / "observe" / "src").resolve() in roots
+        # the bad dir contributes no src root (it was silently skipped)
+        for r in roots:
+            assert "broken-no-pyproject" not in str(r), (
+                f"discover_src_roots returned {r} but broken-no-pyproject has no pyproject and should have been skipped"
+            )
 
     def test_workspace_clean(self, tmp_path: Path) -> None:
         root = tmp_path / "monorepo"
