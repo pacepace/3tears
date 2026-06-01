@@ -37,7 +37,7 @@ variable "VERSION" {
   # the cross-target ``contexts`` keys below, which MUST match the
   # Dockerfile ARG defaults exactly so buildx substitutes the
   # in-flight base target instead of pulling from the registry.
-  default = "v0.9.1"
+  default = "v0.10.1"
 }
 
 variable "REGISTRY" {
@@ -112,10 +112,10 @@ target "aibots-base" {
     # Wires the in-flight threetears-base target as a build context, so
     # `bake all` builds the framework base then immediately consumes it
     # without a registry round-trip during local development.
-    "ghcr.io/pacepace/threetears-base:v0.9.1" = "target:threetears-base"
+    "ghcr.io/pacepace/threetears-base:v0.10.1" = "target:threetears-base"
   }
   args = {
-    THREETEARS_BASE = "ghcr.io/pacepace/threetears-base:v0.9.1"
+    THREETEARS_BASE = "ghcr.io/pacepace/threetears-base:v0.10.1"
   }
   tags = [
     "${REGISTRY}/aibots-base:${VERSION}",
@@ -132,10 +132,10 @@ target "hub" {
   context    = "../14-eng-ai-bot"
   dockerfile = "Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.9.1" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.10.1" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.1"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.10.1"
   }
   tags = [
     "${REGISTRY}/aibots-hub:${VERSION}",
@@ -148,10 +148,10 @@ target "admin" {
   context    = "../14-eng-ai-bot-agent-admin"
   dockerfile = "Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.9.1" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.10.1" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.1"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.10.1"
   }
   tags = [
     "${REGISTRY}/aibots-admin:${VERSION}",
@@ -164,10 +164,10 @@ target "schema" {
   context    = "../14-eng-ai-bot-agents"
   dockerfile = "docker/schema-agent/Dockerfile"
   contexts = {
-    "ghcr.io/pacepace/aibots-base:v0.9.1" = "target:aibots-base"
+    "ghcr.io/pacepace/aibots-base:v0.10.1" = "target:aibots-base"
   }
   args = {
-    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.9.1"
+    AIBOTS_BASE = "ghcr.io/pacepace/aibots-base:v0.10.1"
   }
   tags = [
     "${REGISTRY}/aibots-schema:${VERSION}",
