@@ -1,7 +1,7 @@
 def test_core_import():
     from threetears.core import __version__
 
-    assert __version__ == "0.10.1"
+    assert __version__ == "0.10.2"
 
 
 def test_cross_package_imports():
