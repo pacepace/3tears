@@ -518,3 +518,115 @@ class TestPoolCreation:
         # message carries identity but no backend internals
         assert "localhost" in str(exc_info.value)
         assert "kapow" not in str(exc_info.value)
+
+
+class TestServerSettingsSearchPath:
+    """``_create_owned_pool`` wires ``allowed_schemas`` -> startup ``search_path``.
+
+    asyncpg's pool RESETs every released connection (``DISCARD ALL``)
+    so a session-level ``SET search_path`` would not survive between
+    acquires. instead we pass the value through ``server_settings``,
+    which asyncpg sends in the pgwire STARTUP packet -- making it
+    the connection's documented "session default", which RESET ALL /
+    DISCARD ALL preserve. these tests pin the kwarg the driver hands
+    to :func:`asyncpg.create_pool`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_server_settings_carries_search_path_when_allowed_schemas_non_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """non-empty ``allowed_schemas`` -> ``server_settings['search_path']`` is set."""
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            allowed_schemas=["reporting_prod", "audit"],
+        )
+        fake_pool = _build_mock_pool()
+        create_pool_mock = AsyncMock(return_value=fake_pool)
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(cfg)
+        await driver.fetch("SELECT 1")
+        await_args = create_pool_mock.await_args
+        assert await_args is not None
+        server_settings = await_args.kwargs.get("server_settings")
+        assert server_settings == {"search_path": '"reporting_prod", "audit"'}
+
+    @pytest.mark.asyncio
+    async def test_no_server_settings_when_allowed_schemas_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        postgres_config: PostgresConnectionConfig,
+    ) -> None:
+        """empty ``allowed_schemas`` -> ``server_settings`` is NOT passed.
+
+        empty is the explicit signal "leave the backend default in
+        place"; we must not send an empty server_settings dict (which
+        would still hit the startup-parameter code path and be a
+        latent gotcha).
+        """
+        # default fixture has allowed_schemas=[]
+        assert postgres_config.allowed_schemas == []
+        fake_pool = _build_mock_pool()
+        create_pool_mock = AsyncMock(return_value=fake_pool)
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(postgres_config)
+        await driver.fetch("SELECT 1")
+        await_args = create_pool_mock.await_args
+        assert await_args is not None
+        # server_settings must be absent
+        assert "server_settings" not in await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_server_settings_quotes_schema_names_safely(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """adversarial schema names are identifier-quoted via the shared helper."""
+        cfg = PostgresConnectionConfig(
+            datasource_type=DataSourceType.POSTGRES,
+            host="h",
+            database="x",
+            allowed_schemas=['my"schema'],
+        )
+        fake_pool = _build_mock_pool()
+        create_pool_mock = AsyncMock(return_value=fake_pool)
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(cfg)
+        await driver.fetch("SELECT 1")
+        server_settings = create_pool_mock.await_args.kwargs["server_settings"]
+        assert server_settings == {"search_path": '"my""schema"'}
+
+    @pytest.mark.asyncio
+    async def test_server_settings_applied_for_yugabyte_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """the same code path applies to :class:`YugabyteConnectionConfig`."""
+        cfg = YugabyteConnectionConfig(
+            datasource_type=DataSourceType.YUGABYTE,
+            host="h",
+            database="x",
+            allowed_schemas=["app"],
+        )
+        fake_pool = _build_mock_pool()
+        create_pool_mock = AsyncMock(return_value=fake_pool)
+        monkeypatch.setattr(
+            "threetears.datasources.drivers.asyncpg_driver.asyncpg.create_pool",
+            create_pool_mock,
+        )
+        driver = AsyncpgDriver(cfg)
+        await driver.fetch("SELECT 1")
+        server_settings = create_pool_mock.await_args.kwargs["server_settings"]
+        assert server_settings == {"search_path": '"app"'}

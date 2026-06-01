@@ -307,6 +307,130 @@ class TestConnectionCaching:
             assert str(expected_ms) in stmt_timeout_calls[0].args[0]
 
 
+class TestSetSearchPathOnOpen:
+    """``allowed_schemas`` config flows into a ``SET search_path`` at open.
+
+    contract: a non-empty ``allowed_schemas`` causes the connection-open
+    path to issue exactly one ``SET search_path TO "schema1", "schema2"``
+    cursor.execute alongside the existing ``SET statement_timeout``. an
+    empty list issues no search_path statement (the backend default
+    applies). identifier quoting is the standard Postgres double-quote
+    form (internal quotes doubled) so arbitrary schema names cannot
+    smuggle SQL.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_path_issued_when_allowed_schemas_non_empty(self) -> None:
+        """non-empty allowed_schemas issues one SET search_path on open."""
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            port=5439,
+            database="analytics",
+            username="rs_user",
+            password_ref=None,
+            allowed_schemas=["reporting_prod", "audit"],
+        )
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(config)
+            await driver.fetch("SELECT 1")
+            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
+            assert len(search_path_calls) == 1, (
+                f"expected exactly one SET search_path on open, got {len(search_path_calls)}: "
+                f"{[c.args[0] for c in search_path_calls]}"
+            )
+            sql = search_path_calls[0].args[0]
+            # leftmost-wins schema ordering preserved; each name is
+            # identifier-quoted (no naked names that could collide with
+            # SQL keywords like 'user' / 'order')
+            assert sql == 'SET search_path TO "reporting_prod", "audit"'
+
+    @pytest.mark.asyncio
+    async def test_no_search_path_when_allowed_schemas_empty(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+    ) -> None:
+        """empty allowed_schemas issues no SET search_path; backend default applies."""
+        # the default redshift_config fixture has allowed_schemas=[] -- no
+        # explicit assignment needed
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
+            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
+            assert search_path_calls == [], (
+                f"expected zero SET search_path statements, got: {[c.args[0] for c in search_path_calls]}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_search_path_quotes_schema_names_safely(self) -> None:
+        """schema names with double-quotes are SQL-injection-safe via doubled-quote escape."""
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            port=5439,
+            database="analytics",
+            username="rs_user",
+            password_ref=None,
+            # adversarial schema name carrying an embedded double quote
+            allowed_schemas=['my"schema'],
+        )
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(config)
+            await driver.fetch("SELECT 1")
+            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
+            assert len(search_path_calls) == 1
+            # internal double-quote is doubled per SQL-standard quoting
+            assert search_path_calls[0].args[0] == 'SET search_path TO "my""schema"'
+
+    @pytest.mark.asyncio
+    async def test_search_path_applied_after_statement_timeout(self) -> None:
+        """on a fresh connection, SET statement_timeout fires before SET search_path.
+
+        timeout must apply to the whole session including the search_path
+        statement itself, so the order matters: timeout first, then any
+        other session config.
+        """
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            port=5439,
+            database="analytics",
+            username="rs_user",
+            password_ref=None,
+            allowed_schemas=["reporting_prod"],
+        )
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(config)
+            await driver.fetch("SELECT 1")
+            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            set_calls = [c.args[0] for c in calls if c.args and c.args[0].startswith("SET ")]
+            assert len(set_calls) >= 2
+            timeout_idx = next(i for i, s in enumerate(set_calls) if _is_set_stmt_timeout(s))
+            search_idx = next(i for i, s in enumerate(set_calls) if s.startswith("SET search_path"))
+            assert timeout_idx < search_idx, (
+                f"expected SET statement_timeout before SET search_path, got order: {set_calls}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Query routing
 # ---------------------------------------------------------------------------

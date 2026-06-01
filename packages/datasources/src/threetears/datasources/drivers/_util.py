@@ -23,9 +23,91 @@ from typing import Literal
 
 __all__ = [
     "PlaceholderStyle",
+    "build_search_path_value",
+    "build_set_search_path_sql",
 ]
 
 PlaceholderStyle = Literal["asyncpg", "pyformat", "numeric", "named-at"]
+
+
+def _quote_pg_identifier(name: str) -> str:
+    """quote a single Postgres / Redshift identifier safely.
+
+    wraps the name in double quotes and escapes any internal double
+    quote by doubling it, matching the SQL standard identifier-quoting
+    rules accepted by Postgres, Yugabyte, and Redshift. callers MUST
+    use this when interpolating user-controllable identifiers into a
+    SQL fragment (e.g. schema names threaded from an agent's
+    ``allowed_schemas`` config); parameter placeholders are not
+    accepted for identifiers in any of these backends.
+
+    :param name: identifier to quote
+    :ptype name: str
+    :return: quoted identifier (with the wrapping double quotes)
+    :rtype: str
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+def build_search_path_value(schemas: list[str]) -> str | None:
+    """build the VALUE portion of a ``search_path`` setting for ``schemas``.
+
+    returns the comma-separated, identifier-quoted form Postgres /
+    Yugabyte / Redshift accept as the ``search_path`` value, e.g.::
+
+        "reporting_prod", "audit"
+
+    suitable for either:
+
+    - asyncpg's :class:`create_pool` ``server_settings={"search_path": ...}``
+      kwarg (sent in the STARTUP packet so the value survives
+      ``DISCARD ALL`` / ``RESET ALL`` issued during pool release; this
+      is the only safe asyncpg approach because the pool's reset
+      otherwise wipes session-level ``SET`` state between acquires)
+    - any caller that wants to interpolate the value clause without
+      the ``SET search_path TO`` SQL prefix
+
+    each schema name is identifier-quoted via :func:`_quote_pg_identifier`
+    so callers can pass arbitrary names without SQL-injection risk.
+    order is preserved: leftmost-wins semantics for unqualified-name
+    resolution, which matches both Postgres' documented behaviour and
+    what callers expect when threading from a ``DatasourceConfig.schemas``
+    list authored in priority order. returns ``None`` when ``schemas``
+    is empty so callers can branch on "do not configure search_path".
+
+    :param schemas: ordered list of schema names
+    :ptype schemas: list[str]
+    :return: comma-separated quoted value, or ``None`` when empty
+    :rtype: str | None
+    """
+    if not schemas:
+        return None
+    return ", ".join(_quote_pg_identifier(s) for s in schemas)
+
+
+def build_set_search_path_sql(schemas: list[str]) -> str | None:
+    """build a ``SET search_path TO ...`` SQL statement for ``schemas``.
+
+    convenience wrapper over :func:`build_search_path_value` that
+    prepends the ``SET search_path TO `` SQL prefix; used by drivers
+    whose underlying client library does NOT expose a server-settings
+    startup hook (e.g. :mod:`redshift_connector`), which need to
+    issue the SET via ``cursor.execute`` after connect.
+
+    drivers whose client library DOES support startup-time server
+    settings (e.g. asyncpg) should call :func:`build_search_path_value`
+    directly so the search_path survives connection reset on pool
+    release.
+
+    :param schemas: ordered list of schema names to set
+    :ptype schemas: list[str]
+    :return: the SET statement, or ``None`` when ``schemas`` is empty
+    :rtype: str | None
+    """
+    value = build_search_path_value(schemas)
+    if value is None:
+        return None
+    return "SET search_path TO " + value
 
 
 # match ``$N`` where N is a positive integer AND it isn't part of an

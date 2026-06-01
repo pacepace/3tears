@@ -107,7 +107,10 @@ if TYPE_CHECKING:
 
 from threetears.datasources.config import RedshiftConnectionConfig
 from threetears.datasources.drivers._sync_bridge import AsyncSyncBridge
-from threetears.datasources.drivers._util import _translate_placeholders
+from threetears.datasources.drivers._util import (
+    _translate_placeholders,
+    build_set_search_path_sql,
+)
 from threetears.datasources.drivers.base import (
     ColumnRow,
     Driver,
@@ -638,6 +641,35 @@ class RedshiftDriver(Driver):
             raise DriverConnectError(
                 f"failed to set statement_timeout on {cfg.host}:{cfg.port}/{cfg.database}"
             ) from None
+        # apply the configured ``search_path`` once per connection so
+        # agents can write unqualified table references in SQL
+        # (``SELECT * FROM report_geofacts_joined_data`` resolves
+        # through the search_path instead of requiring
+        # ``reporting_prod.report_geofacts_joined_data`` everywhere).
+        # this must run AFTER statement_timeout so the timeout caps
+        # the search_path SET itself; the build helper returns None
+        # when ``allowed_schemas`` is empty, which is the explicit
+        # "leave the backend default in place" signal.
+        search_path_sql = build_set_search_path_sql(cfg.allowed_schemas)
+        if search_path_sql is not None:
+            try:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(search_path_sql)
+                finally:
+                    cursor.close()
+            except Exception:
+                # same failure shape as statement_timeout: wrap so the
+                # original redshift_connector error (which can carry the
+                # password in nested context) does not leak via the
+                # exception cause chain. allowed_schemas is the
+                # adversarial surface here -- a malformed identifier
+                # would land in the server-side syntax error path; we
+                # still don't want to surface it to the agent because
+                # the wrapper's message is the only thing callers see.
+                with self._suppress_close():
+                    conn.close()
+                raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
         return conn
 
     @staticmethod
