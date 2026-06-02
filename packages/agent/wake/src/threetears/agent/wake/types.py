@@ -180,6 +180,7 @@ class WakeTrigger:
     task_prompt: str | None = None
     context_from_schedule_id: UUID | None = None
     skill_id: UUID | None = None
+    include_conversation_history: bool = True
 
 
 @dataclass(frozen=True)

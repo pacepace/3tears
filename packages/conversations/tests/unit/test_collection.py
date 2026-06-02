@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID
 
+import pytest
 from uuid import uuid7
 
 from threetears.conversations.collection import ConversationsCollection
@@ -419,3 +420,107 @@ class TestSearch:
         assert "ts_rank_cd(search_vector," in sql
         assert "AS rank" in sql
         assert "ORDER BY rank DESC" in sql
+
+    async def test_date_bounds_default_field_is_created(self) -> None:
+        """``date_after`` / ``date_before`` default to filtering
+        ``date_created`` as appended binds, leaving the fixed $1..$6 slots
+        and the $4/$5 LIMIT/OFFSET binds intact."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        after = datetime(2026, 5, 1, tzinfo=UTC)
+        before = datetime(2026, 5, 31, tzinfo=UTC)
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="moon colony",
+            date_after=after,
+            date_before=before,
+        )
+
+        sql, *params = pg.fetch.call_args.args
+        # Default exclude-closed keeps status at $7; the date bounds
+        # append from $8.
+        assert "status != $7" in sql
+        assert "date_created >= $8" in sql
+        assert "date_created <= $9" in sql
+        # LIMIT/OFFSET stay positionally bound to $4/$5.
+        assert "LIMIT $4 OFFSET $5" in sql
+        assert params[7] == after
+        assert params[8] == before
+
+    async def test_date_field_updated_filters_date_updated(self) -> None:
+        """``date_field='updated'`` filters the ``date_updated`` column."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        after = datetime(2026, 5, 1, tzinfo=UTC)
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="x",
+            date_field="updated",
+            date_after=after,
+        )
+
+        sql, *_ = pg.fetch.call_args.args
+        assert "date_updated >= $8" in sql
+        assert "date_created >=" not in sql
+
+    async def test_invalid_date_field_raises(self) -> None:
+        """An unknown ``date_field`` raises before touching the DB, so a
+        column expression can never reach the SQL."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        with pytest.raises(ValueError, match="date_field must be one of"):
+            await collection.search(
+                agent_id=uuid7(),
+                user_id=uuid7(),
+                query="x",
+                date_field="date_created; DROP TABLE conversations",
+                date_after=datetime(2026, 5, 1, tzinfo=UTC),
+            )
+        pg.fetch.assert_not_called()
+
+    async def test_only_lower_bound_emits_single_predicate(self) -> None:
+        """Passing only ``date_after`` emits just the lower-bound
+        predicate; ``include_closed=True`` frees $7 for the date bind."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        after = datetime(2026, 5, 1, tzinfo=UTC)
+        await collection.search(
+            agent_id=uuid7(),
+            user_id=uuid7(),
+            query="x",
+            include_closed=True,
+            date_after=after,
+        )
+
+        sql, *params = pg.fetch.call_args.args
+        assert "status !=" not in sql
+        assert "date_created >= $7" in sql
+        assert "date_created <=" not in sql
+        assert params[6] == after
+
+    async def test_no_date_bounds_omit_predicates(self) -> None:
+        """No date filters -> no ``date_created`` range predicates."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        await collection.search(agent_id=uuid7(), user_id=uuid7(), query="x")
+
+        sql, *_ = pg.fetch.call_args.args
+        assert "date_created >=" not in sql
+        assert "date_created <=" not in sql

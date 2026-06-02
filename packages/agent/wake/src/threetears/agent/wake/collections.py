@@ -87,6 +87,7 @@ _SCHEDULE_FIELD_TYPES: dict[str, Any] = {
     "name": str | None,
     "missed_fire_policy": str,
     "context_from_schedule_id": UUID | None,
+    "include_conversation_history": bool,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -145,6 +146,7 @@ _SCHEDULE_INSERT_COLUMNS: tuple[str, ...] = (
     "name",
     "missed_fire_policy",
     "context_from_schedule_id",
+    "include_conversation_history",
     "date_created",
     "date_updated",
 )
@@ -271,7 +273,7 @@ _AGENT_WAKE_SCHEDULES_FETCH_SQL = (
     "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
     "schedule_type, schedule_config, task_prompt, execution_mode, status, "
     "next_fire_at, last_fired_at, name, missed_fire_policy, "
-    "context_from_schedule_id, "
+    "context_from_schedule_id, include_conversation_history, "
     "date_created, date_updated "
     "FROM agent_wake_schedules WHERE conversation_id = $1 AND schedule_id = $2"
 )
@@ -456,7 +458,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, "
+            "context_from_schedule_id, include_conversation_history, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE status = 'active' AND next_fire_at IS NOT NULL AND next_fire_at <= $1 "
@@ -489,7 +491,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, "
+            "context_from_schedule_id, include_conversation_history, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 AND status = 'active' "
@@ -518,7 +520,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             "SELECT conversation_id, schedule_id, user_id, agent_id, skill_id, "
             "schedule_type, schedule_config, task_prompt, execution_mode, status, "
             "next_fire_at, last_fired_at, name, missed_fire_policy, "
-            "context_from_schedule_id, "
+            "context_from_schedule_id, include_conversation_history, "
             "date_created, date_updated "
             "FROM agent_wake_schedules "
             "WHERE conversation_id = $1 "
@@ -1534,6 +1536,8 @@ def _schedule_value_for_column(col: str, data: dict[str, Any]) -> Any:
         return "active"
     if col == "missed_fire_policy":
         return "coalesce"
+    if col == "include_conversation_history":
+        return True
     return None
 
 

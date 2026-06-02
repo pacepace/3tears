@@ -72,14 +72,19 @@ class FakePool:
     async def fetchrow(self, sql: str, *args: object) -> dict[str, Any] | None:
         sql_lower = sql.strip().lower()
         if "returning context_id" in sql_lower:
-            # upsert_variable: (context_id, conversation_id, context_type, key, ...)
+            # _upsert_keyed: (context_id, conversation_id, context_type,
+            # key, ...). context_type is bound ($3), not hardcoded -- the
+            # same codepath serves both 'variable' and 'tool_result'
+            # upserts, and the partial-unique index they conflict on is
+            # per-type.
             context_id, conversation_id = args[0], args[1]
+            context_type = args[2]
             key = args[3]
             for row in self.rows.values():
                 if (
                     str(row["conversation_id"]) == str(conversation_id)
                     and row["key"] == key
-                    and row["context_type"] == "variable"
+                    and row["context_type"] == context_type
                 ):
                     row["short_desc"] = args[4]
                     row["long_desc"] = args[5]
@@ -91,7 +96,7 @@ class FakePool:
             row_data = {
                 "context_id": context_id,
                 "conversation_id": conversation_id,
-                "context_type": "variable",
+                "context_type": context_type,
                 "key": key,
                 "short_desc": args[4],
                 "long_desc": args[5],

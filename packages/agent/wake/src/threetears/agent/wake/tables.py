@@ -171,6 +171,12 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
         ),
         Column("context_from_schedule_id", PgUUID(as_uuid=True), nullable=True),
         Column(
+            "include_conversation_history",
+            SABoolean(),
+            nullable=False,
+            server_default=sa_text("true"),
+        ),
+        Column(
             "date_created",
             SADateTime(timezone=True),
             nullable=False,

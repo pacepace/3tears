@@ -46,6 +46,9 @@ from threetears.agent.tools.migrations.v002_datetime_to_datetimetz import (
 from threetears.agent.tools.migrations.v003_align_context_items_shape import (
     align_context_items_shape,
 )
+from threetears.agent.tools.migrations.v004_tool_result_dedup_index import (
+    tool_result_dedup_index,
+)
 from threetears.core.data.migrations import (
     MigrationRunner,
     MigrationScope,
@@ -76,6 +79,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(1)(create_context_items_table)
     pkg.version(2)(datetime_to_datetimetz)
     pkg.version(3)(align_context_items_shape)
+    pkg.version(4)(tool_result_dedup_index)
     runner.register(pkg)
     return pkg
 
@@ -86,4 +90,5 @@ __all__ = [
     "create_context_items_table",
     "datetime_to_datetimetz",
     "register",
+    "tool_result_dedup_index",
 ]

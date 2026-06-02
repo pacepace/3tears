@@ -134,13 +134,14 @@ class TestRegisterAgentToolsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ("conversations",)
 
-    async def test_register_populates_versions_one_through_three(self) -> None:
+    async def test_register_populates_versions_one_through_four(self) -> None:
         """register attaches v001 (create), v002 (datetime promote),
-        v003 (align context_items shape with prod parity).
+        v003 (align context_items shape with prod parity), v004
+        (tool_result dedup partial-unique index).
         """
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4}
 
     async def test_apply_in_isolation_runs_all_versions(self) -> None:
         """
@@ -152,8 +153,8 @@ class TestRegisterAgentToolsMigrations:
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_package(store, PACKAGE_NAME)
-        assert first_count == 3
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3]
+        assert first_count == 4
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4]
 
     async def test_apply_emits_context_items_create_statement(self) -> None:
         """the CREATE TABLE statement carries every column and type."""
