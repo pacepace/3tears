@@ -232,6 +232,10 @@ class ScheduleCreateInput(BaseModel):
         default=None,
         description="Optional [schedule:<id>] whose last fire output is injected as context.",
     )
+    include_conversation_history: bool = Field(
+        default=True,
+        description="When true (default), the wake fires with this conversation's recent history so the agent continues the live thread. When false, the wake fires without conversation history (a self-directed run). Independent of the attached skill's persona setting.",
+    )
 
 
 class ScheduleUpdateInput(BaseModel):
@@ -271,6 +275,10 @@ class ScheduleUpdateInput(BaseModel):
     detach_context_from: bool = Field(
         default=False,
         description="When true, clear context_from_schedule_id. Must not be combined with context_from_schedule_id.",
+    )
+    include_conversation_history: bool | None = Field(
+        default=None,
+        description="When set, change whether the wake fires with this conversation's recent history (true) or without it (false). Omit to leave unchanged.",
     )
 
 
@@ -342,10 +350,15 @@ def _format_schedule_line(
     """Render a one-line catalog entry for a schedule row."""
     name = entity.name or "untitled"
     skill_segment = f" · skill: {skill_name}" if skill_name else ""
+    # Surface the history switch only when OFF -- the default (on) is the
+    # common case and would add noise to every catalog line.
+    history_segment = (
+        "" if entity.include_conversation_history else " · history: off"
+    )
     return (
         f"[schedule:{entity.schedule_id}] · {name} · {entity.schedule_type}"
         f" · next: {_format_next_fire(entity.next_fire_at)}"
-        f" · mode: {entity.execution_mode} · {entity.status}{skill_segment}"
+        f" · mode: {entity.execution_mode} · {entity.status}{skill_segment}{history_segment}"
     )
 
 
@@ -452,6 +465,7 @@ def load_wake_schedule_create_tool(
         task_prompt: str | None = None,
         name: str | None = None,
         context_from_schedule_id: str | None = None,
+        include_conversation_history: bool = True,
     ) -> str:
         """Create a wake schedule for this conversation."""
         for err in (
@@ -580,6 +594,7 @@ def load_wake_schedule_create_tool(
             "name": name,
             "missed_fire_policy": missed_fire_policy,
             "context_from_schedule_id": parsed_context_from,
+            "include_conversation_history": include_conversation_history,
             "date_created": now,
             "date_updated": now,
         }
@@ -722,6 +737,7 @@ def load_wake_schedule_update_tool(
         clear_name: bool = False,
         context_from_schedule_id: str | None = None,
         detach_context_from: bool = False,
+        include_conversation_history: bool | None = None,
     ) -> str:
         """Edit a wake schedule in place. Pass only fields to change."""
         # Contradictory-input guards. Attach value + detach flag is
@@ -876,6 +892,8 @@ def load_wake_schedule_update_tool(
             entity.skill_id = skill_change[0]
         if context_from_changed:
             entity.context_from_schedule_id = new_context_from
+        if include_conversation_history is not None:
+            entity.include_conversation_history = include_conversation_history
 
         # Recompute next_fire_at if WHEN-relevant fields changed and
         # the schedule is active (paused schedules have NULL

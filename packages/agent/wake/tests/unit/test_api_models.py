@@ -120,6 +120,7 @@ def test_wake_schedule_response_round_trip() -> None:
         missed_fire_policy="coalesce",
         skill_id=None,
         context_from_schedule_id=None,
+        include_conversation_history=True,
         date_created=datetime.now(UTC),
         date_updated=datetime.now(UTC),
     )
@@ -128,6 +129,7 @@ def test_wake_schedule_response_round_trip() -> None:
     assert again.schedule_id == schedule_id
     assert again.missed_fire_policy == "coalesce"
     assert again.status == "active"
+    assert again.include_conversation_history is True
 
 
 def test_wake_schedule_list_response_round_trip() -> None:
@@ -148,6 +150,7 @@ def test_wake_schedule_list_response_round_trip() -> None:
         missed_fire_policy="coalesce",
         skill_id=None,
         context_from_schedule_id=None,
+        include_conversation_history=False,
         date_created=datetime.now(UTC),
         date_updated=datetime.now(UTC),
     )
@@ -155,6 +158,7 @@ def test_wake_schedule_list_response_round_trip() -> None:
     again = WakeScheduleListResponse.model_validate(wrapper.model_dump())
     assert again.total_count == 1
     assert len(again.schedules) == 1
+    assert again.schedules[0].include_conversation_history is False
 
 
 # ---------------------------------------------------------------------------

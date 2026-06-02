@@ -268,6 +268,7 @@ async def _dispatch_one(
         task_prompt=schedule.task_prompt,
         context_from_schedule_id=schedule.context_from_schedule_id,
         skill_id=schedule.skill_id,
+        include_conversation_history=schedule.include_conversation_history,
     )
     await fires.create_dispatching(
         fire_id=fire_id,

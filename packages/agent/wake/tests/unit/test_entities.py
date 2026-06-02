@@ -125,6 +125,7 @@ class TestWakeScheduleEntity:
                 "name": "inbox-poller",
                 "missed_fire_policy": "catch_up",
                 "context_from_schedule_id": context_from,
+                "include_conversation_history": False,
                 "date_created": now,
                 "date_updated": now,
             },
@@ -144,6 +145,7 @@ class TestWakeScheduleEntity:
         assert entity.name == "inbox-poller"
         assert entity.missed_fire_policy == "catch_up"
         assert entity.context_from_schedule_id == context_from
+        assert entity.include_conversation_history is False
         assert entity.date_created == now
         assert entity.date_updated == now
 
