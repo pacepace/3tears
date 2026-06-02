@@ -13,9 +13,31 @@ from threetears.agent.tools.collections import ContextItemCollection
 
 __all__ = [
     "ToolContextManager",
+    "make_tool_result_dedup_key",
 ]
 
 _MEMORY_REF_FIFO_CAPACITY = 50
+
+
+def make_tool_result_dedup_key(tool_name: str, input_fingerprint: str) -> str:
+    """Deterministic dedup key for a tool result: ``tool_name`` + input hash.
+
+    A repeated call with the same ``input_fingerprint`` yields the same
+    key, so :meth:`ToolContextManager.save_tool_result` upserts (refreshes)
+    the existing row on the v004 partial-unique index instead of appending
+    a duplicate. Shared with consumers that LOOK UP a cached result by the
+    same key (e.g. metallm's per-tool TTL reuse), so storage and lookup
+    can never disagree on the key shape.
+
+    :param tool_name: the tool's registered name
+    :ptype tool_name: str
+    :param input_fingerprint: a stable string derived from the tool input
+    :ptype input_fingerprint: str
+    :return: ``"<tool_name>:<sha256(input)[:16]>"``
+    :rtype: str
+    """
+    digest = hashlib.sha256(input_fingerprint.encode()).hexdigest()[:16]
+    return f"{tool_name}:{digest}"
 
 
 class ToolContextManager:
@@ -308,8 +330,7 @@ class ToolContextManager:
         # have no dedup index).
         if context_type == "tool_result":
             if input_fingerprint is not None:
-                digest = hashlib.sha256(input_fingerprint.encode()).hexdigest()[:16]
-                key = f"{tool_name}:{digest}"
+                key = make_tool_result_dedup_key(tool_name, input_fingerprint)
             else:
                 key = f"{tool_name}:{context_id}"
         else:
