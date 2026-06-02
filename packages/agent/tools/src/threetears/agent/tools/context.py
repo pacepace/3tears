@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid7
@@ -12,9 +13,31 @@ from threetears.agent.tools.collections import ContextItemCollection
 
 __all__ = [
     "ToolContextManager",
+    "make_tool_result_dedup_key",
 ]
 
 _MEMORY_REF_FIFO_CAPACITY = 50
+
+
+def make_tool_result_dedup_key(tool_name: str, input_fingerprint: str) -> str:
+    """Deterministic dedup key for a tool result: ``tool_name`` + input hash.
+
+    A repeated call with the same ``input_fingerprint`` yields the same
+    key, so :meth:`ToolContextManager.save_tool_result` upserts (refreshes)
+    the existing row on the v004 partial-unique index instead of appending
+    a duplicate. Shared with consumers that LOOK UP a cached result by the
+    same key (e.g. metallm's per-tool TTL reuse), so storage and lookup
+    can never disagree on the key shape.
+
+    :param tool_name: the tool's registered name
+    :ptype tool_name: str
+    :param input_fingerprint: a stable string derived from the tool input
+    :ptype input_fingerprint: str
+    :return: ``"<tool_name>:<sha256(input)[:16]>"``
+    :rtype: str
+    """
+    digest = hashlib.sha256(input_fingerprint.encode()).hexdigest()[:16]
+    return f"{tool_name}:{digest}"
 
 
 class ToolContextManager:
@@ -253,11 +276,23 @@ class ToolContextManager:
         status: str | None = None,
         duration_ms: int | None = None,
         error: str | None = None,
+        input_fingerprint: str | None = None,
     ) -> str:
-        """Save a tool result.  Returns the generated context_id.
+        """Save a tool result.  Returns the authoritative context_id.
 
         If ``result_limit`` is set and the count of tool_result items
         exceeds it, the least-recently-accessed items are evicted.
+
+        :param input_fingerprint: when given (and ``context_type`` is
+            ``'tool_result'``), the row is keyed
+            ``tool_name + ':' + sha256(input_fingerprint)`` and upserted on
+            the v004 dedup index -- a repeat call with the same input
+            refreshes the existing row (bumping it to the top of the LRU)
+            instead of appending a duplicate. When ``None`` the key is made
+            unique per call (``tool_name:context_id``) so no dedup occurs
+            but the unique index never rejects the insert. The returned id
+            is the authoritative row id (the existing row's on a dedup hit).
+        :ptype input_fingerprint: str | None
 
         :param status: optional invocation status (e.g. ``"completed"``,
             ``"failed"``). When provided, merged into ``metadata["status"]``.
@@ -287,11 +322,25 @@ class ToolContextManager:
             merged_meta.setdefault("error", error[:1000])
         if short_desc is None and status == "failed" and error:
             short_desc = f"FAILED: {error[:280]}"
+        # Key derivation. tool_result rows dedup on the v004 partial-unique
+        # index: with an input fingerprint, repeats with the same input
+        # collide and upsert (refresh); without one, the key is made unique
+        # per call so the index never rejects it. Non-tool_result types
+        # keep their bare-tool_name key and the legacy insert path (they
+        # have no dedup index).
+        if context_type == "tool_result":
+            if input_fingerprint is not None:
+                key = make_tool_result_dedup_key(tool_name, input_fingerprint)
+            else:
+                key = f"{tool_name}:{context_id}"
+        else:
+            key = tool_name
+
         data = {
             "context_id": context_id,
             "conversation_id": self.conversation_id,
             "context_type": context_type,
-            "key": tool_name,
+            "key": key,
             "short_desc": short_desc or result[:200],
             "long_desc": long_desc[:1000] if long_desc else "",
             "content": result,
@@ -301,9 +350,32 @@ class ToolContextManager:
             "date_updated": now,
         }
 
-        await self._collection.save_entity(
-            self._collection.entity_class(data, is_new=True, collection=self._collection)
-        )
+        if context_type == "tool_result":
+            returned_id = await self._collection.upsert_tool_result(
+                self.conversation_id,
+                data,
+            )
+        else:
+            await self._collection.save_entity(
+                self._collection.entity_class(
+                    data,
+                    is_new=True,
+                    collection=self._collection,
+                )
+            )
+            returned_id = context_id
+
+        # Reconcile the in-memory projection. On a dedup hit the upsert
+        # refreshes an existing row (``returned_id`` differs from the
+        # freshly-minted ``context_id``), so replace that row rather than
+        # appending a duplicate. ``date_updated`` carries the refresh time
+        # that a TTL check reads.
+        data["context_id"] = returned_id
+        if returned_id != context_id:
+            # Drop the pre-existing projection row for the upserted id
+            # (UUID comparison -- identifiers stay UUID internally per the
+            # border discipline) before re-appending the refreshed data.
+            self.items = [i for i in self.items if i.get("context_id") != returned_id]
         self.items.append(data)
 
         # LRU eviction
@@ -322,7 +394,7 @@ class ToolContextManager:
                 if evicted_ids:
                     self.items = [i for i in self.items if str(i["context_id"]) not in evicted_ids]
 
-        return str(context_id)  # convert at border: tool-facing context-id string handle returned to caller
+        return str(returned_id)  # convert at border: tool-facing context-id string handle returned to caller
 
     async def get_context_item(self, context_id: str) -> dict[str, Any] | None:
         """Retrieve a context item by id.

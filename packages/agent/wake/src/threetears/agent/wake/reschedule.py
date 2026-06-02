@@ -321,7 +321,14 @@ def _next_cron(
         raise RuntimeError(msg) from exc
 
     expr = config["expr"]
-    trigger = CronTrigger.from_crontab(expr)
+    # Pin the cron to the configured timezone (UTC by default), matching
+    # every other schedule type's use of ``_tz(config)``. Without an
+    # explicit timezone, ``from_crontab`` adopts the SYSTEM local tz, so a
+    # non-UTC server fires cron schedules at the wrong wall-clock instant
+    # (e.g. ``0 */3`` resolves to local hours ≡0 mod 3, which convert to
+    # UTC hours ≡offset mod 3). The fire times are stored/compared in UTC,
+    # so the cron must be evaluated in a fixed zone, not the host's.
+    trigger = CronTrigger.from_crontab(expr, timezone=_tz(config))
 
     if missed_fire_policy == "catch_up" and last_fired_at is not None:
         anchor = _ensure_utc(last_fired_at)

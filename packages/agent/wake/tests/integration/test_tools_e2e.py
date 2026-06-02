@@ -239,6 +239,71 @@ async def test_schedule_lifecycle_create_list_pause_resume_delete(
 
 
 @pytest.mark.asyncio
+async def test_schedule_include_conversation_history_persists_and_updates(
+    pg_schema: tuple[str, str],
+) -> None:
+    """The history switch defaults on, persists when set off, and flips on update."""
+    url, schema = pg_schema
+    pool = await _apply_schema(url, schema)
+    try:
+        schedules, _ = _build_collections(pool)
+        conv_id = _new_uuid()
+        user_id = _new_uuid()
+        agent_id = _new_uuid()
+        registry = _PermissiveRegistry()
+
+        create_tool = load_wake_schedule_create_tool(
+            conversation_id=conv_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=registry,
+        )[0]
+        update_tool = load_wake_schedule_update_tool(
+            conversation_id=conv_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            schedules_collection=schedules,
+            registry=registry,
+        )[0]
+
+        # Default: omitting the flag persists ``True`` (prior behavior).
+        default_result = await create_tool.ainvoke(
+            {"schedule_type": "interval", "schedule_config": {"seconds": 600}},
+        )
+        default_id = UUID(default_result.split("]")[0].removeprefix("[schedule:"))
+        default_row = await schedules.get((conv_id, default_id))
+        assert default_row is not None
+        assert default_row.include_conversation_history is True
+
+        # Explicit off persists ``False``.
+        off_result = await create_tool.ainvoke(
+            {
+                "schedule_type": "interval",
+                "schedule_config": {"seconds": 600},
+                "include_conversation_history": False,
+            },
+        )
+        off_id = UUID(off_result.split("]")[0].removeprefix("[schedule:"))
+        off_row = await schedules.get((conv_id, off_id))
+        assert off_row is not None
+        assert off_row.include_conversation_history is False
+
+        # Update flips it back on.
+        await update_tool.ainvoke(
+            {
+                "schedule_id": str(off_id),
+                "include_conversation_history": True,
+            },
+        )
+        updated_row = await schedules.get((conv_id, off_id))
+        assert updated_row is not None
+        assert updated_row.include_conversation_history is True
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
 async def test_schedule_create_enforces_cap_of_10(
     pg_schema: tuple[str, str],
 ) -> None:

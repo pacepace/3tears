@@ -40,6 +40,13 @@ __all__ = [
 
 log = get_logger(__name__)
 
+# context_types that have a ``(conversation_id, key)`` partial unique
+# index and may therefore be upserted on key. ``variable`` ships from
+# v003; ``tool_result`` from v004. Membership is checked before the
+# value reaches the literal-only ON CONFLICT predicate in
+# :meth:`ContextItemCollection._upsert_keyed`.
+_UPSERTABLE_CONTEXT_TYPES: frozenset[str] = frozenset({"variable", "tool_result"})
+
 
 def context_items_table(metadata: MetaData) -> Table:
     """register the ``context_items`` table on the given SA metadata.
@@ -130,6 +137,16 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
                 unique=True,
                 where="context_type = 'variable'",
             ),
+            # Dedup index for tool_results (v004 migration). Mirrors the
+            # variable key index so upsert_tool_result's ON CONFLICT has a
+            # matching partial-unique index.
+            SchemaIndex(
+                "ix_context_items_tool_result_key",
+                "conversation_id",
+                "key",
+                unique=True,
+                where="context_type = 'tool_result'",
+            ),
         ),
     )
 
@@ -179,24 +196,37 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             entities.append(entity)
         return entities
 
-    async def upsert_variable(self, conversation_id: UUID, data: dict[str, Any]) -> UUID:
-        """upsert a variable using the partial unique index.
+    async def _upsert_keyed(
+        self,
+        conversation_id: UUID,
+        context_type: str,
+        data: dict[str, Any],
+    ) -> UUID:
+        """upsert a keyed context item via its partial unique index.
 
-        returns the context_id (may differ from input on conflict). uses
-        the ``(conversation_id, key) WHERE context_type = 'variable'``
-        partial unique index so a name collision returns the existing
-        row's id rather than inserting a duplicate. ``conversation_id``
-        is the partition column and is also read from ``data`` for
-        backwards compatibility with existing callers; the explicit
-        positional argument satisfies the partition-column contract.
+        Shared codepath for :meth:`upsert_variable` and
+        :meth:`upsert_tool_result`. ``context_type`` selects the matching
+        ``(conversation_id, key) WHERE context_type = '<type>'`` partial
+        unique index, so a key collision refreshes the existing row's
+        content / metadata / ``date_accessed`` instead of inserting a
+        duplicate, and returns that row's id. ``context_type`` is checked
+        against a fixed allow-list before it reaches the (literal-only)
+        ON CONFLICT predicate, so it can never carry SQL.
 
-        :param conversation_id: conversation partition the variable lives in
+        :param conversation_id: conversation partition the item lives in
         :ptype conversation_id: UUID
+        :param context_type: ``"variable"`` or ``"tool_result"``
+        :ptype context_type: str
         :param data: row dict keyed by column name
         :ptype data: dict[str, Any]
         :return: authoritative context_id (existing on conflict, new on insert)
         :rtype: UUID
+        :raises ValueError: when ``context_type`` has no dedup index
         """
+        if context_type not in _UPSERTABLE_CONTEXT_TYPES:
+            msg = f"context_type must be one of {sorted(_UPSERTABLE_CONTEXT_TYPES)}; got {context_type!r}"
+            raise ValueError(msg)
+
         context_id = data["context_id"]
         if not isinstance(context_id, UUID):
             context_id = UUID(str(context_id))
@@ -209,13 +239,13 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             metadata_val = json.dumps(metadata_val)
 
         row = await self.l3_pool.fetchrow(
-            """
+            f"""
             INSERT INTO context_items (
                 context_id, conversation_id, context_type, key,
                 short_desc, long_desc, content, metadata,
                 date_accessed, date_created, date_updated
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-            ON CONFLICT (conversation_id, key) WHERE context_type = 'variable'
+            ON CONFLICT (conversation_id, key) WHERE context_type = '{context_type}'
             DO UPDATE SET
                 short_desc = EXCLUDED.short_desc,
                 long_desc = EXCLUDED.long_desc,
@@ -227,7 +257,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             """,
             context_id,
             conversation_id,
-            "variable",
+            context_type,
             data["key"],
             data["short_desc"],
             data.get("long_desc", ""),
@@ -250,6 +280,51 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         await self._publish_invalidation(pk)
 
         return returned_id
+
+    async def upsert_variable(self, conversation_id: UUID, data: dict[str, Any]) -> UUID:
+        """upsert a variable using the partial unique index.
+
+        returns the context_id (may differ from input on conflict). uses
+        the ``(conversation_id, key) WHERE context_type = 'variable'``
+        partial unique index so a name collision returns the existing
+        row's id rather than inserting a duplicate. ``conversation_id``
+        is the partition column and is also read from ``data`` for
+        backwards compatibility with existing callers; the explicit
+        positional argument satisfies the partition-column contract.
+
+        :param conversation_id: conversation partition the variable lives in
+        :ptype conversation_id: UUID
+        :param data: row dict keyed by column name
+        :ptype data: dict[str, Any]
+        :return: authoritative context_id (existing on conflict, new on insert)
+        :rtype: UUID
+        """
+        return await self._upsert_keyed(conversation_id, "variable", data)
+
+    async def upsert_tool_result(
+        self,
+        conversation_id: UUID,
+        data: dict[str, Any],
+    ) -> UUID:
+        """upsert a tool_result using the partial unique index.
+
+        Mirrors :meth:`upsert_variable` for ``context_type =
+        'tool_result'`` (the ``ix_context_items_tool_result_key`` partial
+        unique index, agent-tools v004). The caller keys the row
+        ``tool_name + ':' + hash(input)`` so a repeat call with the same
+        input refreshes the existing row (bumping ``date_accessed`` back
+        to the top of the LRU) instead of appending a duplicate -- the
+        dedup half of the context-bloat fix.
+
+        :param conversation_id: conversation partition the result lives in
+        :ptype conversation_id: UUID
+        :param data: row dict keyed by column name (``key`` already
+            encodes tool name + input hash)
+        :ptype data: dict[str, Any]
+        :return: authoritative context_id (existing on conflict, new on insert)
+        :rtype: UUID
+        """
+        return await self._upsert_keyed(conversation_id, "tool_result", data)
 
     async def touch(self, conversation_id: UUID, context_id: str | UUID) -> None:
         """update ``date_accessed`` for LRU tracking.

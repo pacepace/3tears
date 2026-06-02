@@ -340,6 +340,26 @@ class WakeScheduleEntity(BaseEntity):
         BaseEntity.__setattr__(self, "missed_fire_policy", value)
 
     @property
+    def include_conversation_history(self) -> bool:
+        """Whether a fire of this schedule carries the conversation history.
+
+        When ``True`` (the default, preserving the pre-flag behavior) the
+        consumer injects the recent conversation messages into the wake's
+        LLM context so the agent continues the live thread. When ``False``
+        the wake fires without the conversation history -- a self-directed
+        run that still knows it is a wake and its origin. Independent of
+        the skill's ``prompt_mode`` (persona injection), so all four
+        combinations are valid.
+        """
+        value: bool = self._get_raw("include_conversation_history")
+        return value
+
+    @include_conversation_history.setter
+    def include_conversation_history(self, value: bool) -> None:
+        """Set whether the fire carries the conversation history."""
+        BaseEntity.__setattr__(self, "include_conversation_history", value)
+
+    @property
     def context_from_schedule_id(self) -> UUID | None:
         """Return the optional context-source schedule id.
 

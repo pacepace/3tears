@@ -119,6 +119,7 @@ class CreateWakeScheduleRequest(BaseModel):
     name: str | None = None
     skill_id: UUID | None = None
     context_from_schedule_id: UUID | None = None
+    include_conversation_history: bool = True
 
 
 class UpdateWakeScheduleRequest(BaseModel):
@@ -143,6 +144,7 @@ class UpdateWakeScheduleRequest(BaseModel):
     detach_skill: bool = False
     context_from_schedule_id: UUID | None = None
     detach_context_from: bool = False
+    include_conversation_history: bool | None = None
 
 
 class WakeScheduleResponse(BaseModel):
@@ -165,6 +167,7 @@ class WakeScheduleResponse(BaseModel):
     missed_fire_policy: _MissedFirePolicy
     skill_id: UUID | None
     context_from_schedule_id: UUID | None
+    include_conversation_history: bool
     date_created: datetime
     date_updated: datetime
 

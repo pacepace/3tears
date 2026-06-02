@@ -49,6 +49,15 @@ __all__ = [
 
 log = get_logger(__name__)
 
+# Allow-list mapping ``search(date_field=...)`` values to real column
+# names. Lookups go through this map so a caller can never inject a
+# column expression into the date predicate -- an unknown value raises
+# rather than reaching the SQL.
+_SEARCH_DATE_COLUMNS: dict[str, str] = {
+    "created": "date_created",
+    "updated": "date_updated",
+}
+
 
 class ConversationsCollection(SchemaBackedCollection[Conversation]):
     """three-tier collection for :class:`Conversation` entities.
@@ -261,6 +270,9 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         offset: int = 0,
         include_closed: bool = False,
         query_language: str = "english",
+        date_field: str = "created",
+        date_after: datetime | None = None,
+        date_before: datetime | None = None,
     ) -> list[Conversation]:
         """full-text search across conversations the user participates in.
 
@@ -322,6 +334,21 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             surfaces as a clean postgres error rather than a silent
             wrong-tokenization match
         :ptype query_language: str
+        :param date_field: which timestamp the date bounds filter on --
+            ``"created"`` (when the conversation started; default) or
+            ``"updated"`` (last activity). Selected from a fixed column
+            map, never interpolated, so it cannot carry SQL. Raises
+            ``ValueError`` for any other value.
+        :ptype date_field: str
+        :param date_after: when set, restrict to conversations whose
+            chosen ``date_field`` is at or after this instant (inclusive
+            lower bound). ``None`` leaves the lower bound open.
+        :ptype date_after: datetime | None
+        :param date_before: when set, restrict to conversations whose
+            chosen ``date_field`` is at or before this instant (inclusive
+            upper bound). ``None`` leaves the upper bound open. Combine
+            with ``date_after`` for a closed date range.
+        :ptype date_before: datetime | None
         :return: matching conversations, most-relevant-first
         :rtype: list[Conversation]
         """
@@ -331,36 +358,52 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         if not query or not query.strip():
             return []
 
-        if include_closed:
-            status_predicate = ""
-            params: tuple[Any, ...] = (
-                agent_id,
-                user_id,
-                query,
-                limit,
-                offset,
-                query_language,
-            )
-        else:
-            status_predicate = " AND status != $7"
-            params = (
-                agent_id,
-                user_id,
-                query,
-                limit,
-                offset,
-                query_language,
-                "closed",
-            )
+        # $1..$6 are fixed (agent/user/query/limit/offset/language); $4 and
+        # $5 stay positionally bound to LIMIT/OFFSET in the SQL below.
+        # Optional predicates (status, date bounds) append params from $7
+        # on, so the query scales without re-numbering the fixed slots.
+        params: list[Any] = [
+            agent_id,
+            user_id,
+            query,
+            limit,
+            offset,
+            query_language,
+        ]
+        predicates = [
+            "agent_id = $1",
+            "user_id = $2",
+            "search_vector @@ websearch_to_tsquery($6::regconfig, $3)",
+        ]
+        next_param = 7
+        if not include_closed:
+            predicates.append(f"status != ${next_param}")
+            params.append("closed")
+            next_param += 1
+        # Date bounds apply to whichever timestamp the caller chose:
+        # ``"created"`` (when the conversation started) or ``"updated"``
+        # (last activity). The column name is selected from a fixed map,
+        # never interpolated from raw input, so the predicate can never
+        # carry caller-controlled SQL.
+        date_column = _SEARCH_DATE_COLUMNS.get(date_field)
+        if date_column is None:
+            msg = f"date_field must be one of {sorted(_SEARCH_DATE_COLUMNS)}; got {date_field!r}"
+            raise ValueError(msg)
+        if date_after is not None:
+            predicates.append(f"{date_column} >= ${next_param}")
+            params.append(date_after)
+            next_param += 1
+        if date_before is not None:
+            predicates.append(f"{date_column} <= ${next_param}")
+            params.append(date_before)
+            next_param += 1
 
+        where_clause = " AND ".join(predicates)
         rows = await self.l3_pool.fetch(
             "SELECT *, ts_rank_cd(search_vector, websearch_to_tsquery($6::regconfig, $3)) AS rank "
             "FROM conversations "
-            "WHERE agent_id = $1 "
-            "  AND user_id = $2 "
-            "  AND search_vector @@ websearch_to_tsquery($6::regconfig, $3)"
-            + status_predicate
-            + " ORDER BY rank DESC, date_updated DESC "
+            f"WHERE {where_clause}"
+            " ORDER BY rank DESC, date_updated DESC "
             "LIMIT $4 OFFSET $5",
             *params,
         )

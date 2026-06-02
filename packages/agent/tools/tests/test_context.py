@@ -129,7 +129,45 @@ async def test_save_tool_result(ctx: ToolContextManager) -> None:
     item = await ctx.get_context_item(cid)
     assert item is not None
     assert item["content"] == "42"
-    assert item["key"] == "calc"
+    # Without an input fingerprint the key is made unique per call
+    # (tool_name:context_id) so the v004 tool_result dedup index never
+    # rejects the insert; the tool-name prefix is preserved.
+    assert item["key"].startswith("calc:")
+
+
+@pytest.mark.asyncio
+async def test_save_tool_result_dedups_same_input_fingerprint(
+    ctx: ToolContextManager,
+) -> None:
+    """Same tool + same input fingerprint upserts one row (dedup); a
+    different fingerprint creates a distinct row."""
+    cid1 = await ctx.save_tool_result(
+        "web_search",
+        "old results",
+        input_fingerprint="query=moon",
+    )
+    cid2 = await ctx.save_tool_result(
+        "web_search",
+        "fresh results",
+        input_fingerprint="query=moon",
+    )
+    # Same fingerprint -> same row, refreshed content.
+    assert cid1 == cid2
+    item = await ctx.get_context_item(cid2)
+    assert item is not None
+    assert item["content"] == "fresh results"
+    tool_results = [i for i in ctx.items if i["context_type"] == "tool_result"]
+    assert len(tool_results) == 1
+
+    # Different fingerprint -> separate row.
+    cid3 = await ctx.save_tool_result(
+        "web_search",
+        "mars results",
+        input_fingerprint="query=mars",
+    )
+    assert cid3 != cid1
+    tool_results = [i for i in ctx.items if i["context_type"] == "tool_result"]
+    assert len(tool_results) == 2
 
 
 @pytest.mark.asyncio

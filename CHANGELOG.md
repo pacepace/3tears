@@ -4,6 +4,48 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.10.3 -- 2026-06-02
+
+Three platform features consumed by metallm: a per-schedule wake
+conversation-history switch, conversation-search date filters, and
+tool-result dedup (the foundation for bounding agent context bloat).
+Plus a cron-scheduling correctness fix.
+
+### Added — `3tears-agent-wake`
+
+- `agent_wake_schedules.include_conversation_history` (BOOLEAN NOT NULL
+  DEFAULT true, migration v006): per-schedule switch for whether a fire
+  carries the conversation's recent history into the wake's LLM context.
+  Threaded through the entity, collection, `WakeTrigger`, tick, the
+  create/update/response API models, and the `wake_schedule_create` /
+  `wake_schedule_update` tools. Independent of the attached skill's
+  `prompt_mode` (persona) — the two compose.
+
+### Fixed — `3tears-agent-wake`
+
+- `CronTrigger.from_crontab` no longer adopts the host's local timezone:
+  fire times are stored/compared in UTC, so a non-UTC host fired cron
+  schedules at the wrong wall-clock instant. Now pinned to `_tz(config)`
+  (UTC by default), matching every other schedule type.
+
+### Added — `3tears-conversations`
+
+- `ConversationsCollection.search` gains `date_field` (`"created"` |
+  `"updated"`, allow-listed to a real column — never interpolated, raises
+  `ValueError` otherwise) plus inclusive `date_after` / `date_before`
+  bounds.
+
+### Added — `3tears-agent-tools`
+
+- Tool results dedup on `(tool, input)`: `ContextItemCollection`
+  `upsert_tool_result` (sharing the extracted `_upsert_keyed` codepath
+  with `upsert_variable`) on a new `ix_context_items_tool_result_key`
+  partial-unique index (migration v004, non-destructive legacy-key
+  suffix first). `context.save_tool_result(input_fingerprint=)` keys
+  `tool_name + ':' + sha256(input)` and upserts; the shared
+  `make_tool_result_dedup_key` lets storage and lookup agree (consumed by
+  metallm's per-tool TTL result reuse).
+
 ## v0.10.2 -- 2026-06-01
 
 Single-feature release on top of v0.10.1. `DatasourceConfig` now

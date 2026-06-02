@@ -56,6 +56,11 @@ Version history:
   useless) with a slug-format guard (``^[a-z0-9_]+$``, length 1-64).
   Registered-scheme validation happens at handle time in the
   receiver.
+- v006 adds ``agent_wake_schedules.include_conversation_history``
+  (``BOOLEAN NOT NULL DEFAULT true``): a per-schedule switch for
+  whether a fire carries the conversation's recent history into the
+  wake's LLM context. Default ``true`` preserves the prior always-on
+  behavior; independent of the attached skill's persona setting.
 """
 
 from __future__ import annotations
@@ -74,6 +79,9 @@ from threetears.agent.wake.migrations.v004_add_dispatching_status import (
 )
 from threetears.agent.wake.migrations.v005_open_verification_scheme_check import (
     open_verification_scheme_check,
+)
+from threetears.agent.wake.migrations.v006_add_include_conversation_history import (
+    add_include_conversation_history,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -107,6 +115,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(3)(create_webhook_subscriptions)
     pkg.version(4)(add_dispatching_status)
     pkg.version(5)(open_verification_scheme_check)
+    pkg.version(6)(add_include_conversation_history)
     runner.register(pkg)
     return pkg
 
@@ -114,6 +123,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "add_dispatching_status",
+    "add_include_conversation_history",
     "create_agent_wake_schedules",
     "create_wake_fires",
     "create_webhook_subscriptions",
