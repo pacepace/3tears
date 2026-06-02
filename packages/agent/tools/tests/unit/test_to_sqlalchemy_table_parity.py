@@ -70,6 +70,13 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
             unique=True,
             postgresql_where=sa_text("context_type = 'variable'"),
         ),
+        SAIndex(
+            "ix_context_items_tool_result_key",
+            "conversation_id",
+            "key",
+            unique=True,
+            postgresql_where=sa_text("context_type = 'tool_result'"),
+        ),
     )
 
 
