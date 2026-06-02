@@ -308,9 +308,7 @@ class ToolContextManager:
         # have no dedup index).
         if context_type == "tool_result":
             if input_fingerprint is not None:
-                digest = hashlib.sha256(
-                    input_fingerprint.encode()
-                ).hexdigest()[:16]
+                digest = hashlib.sha256(input_fingerprint.encode()).hexdigest()[:16]
                 key = f"{tool_name}:{digest}"
             else:
                 key = f"{tool_name}:{context_id}"
@@ -333,12 +331,15 @@ class ToolContextManager:
 
         if context_type == "tool_result":
             returned_id = await self._collection.upsert_tool_result(
-                self.conversation_id, data,
+                self.conversation_id,
+                data,
             )
         else:
             await self._collection.save_entity(
                 self._collection.entity_class(
-                    data, is_new=True, collection=self._collection,
+                    data,
+                    is_new=True,
+                    collection=self._collection,
                 )
             )
             returned_id = context_id
@@ -353,10 +354,7 @@ class ToolContextManager:
             # Drop the pre-existing projection row for the upserted id
             # (UUID comparison -- identifiers stay UUID internally per the
             # border discipline) before re-appending the refreshed data.
-            self.items = [
-                i for i in self.items
-                if i.get("context_id") != returned_id
-            ]
+            self.items = [i for i in self.items if i.get("context_id") != returned_id]
         self.items.append(data)
 
         # LRU eviction

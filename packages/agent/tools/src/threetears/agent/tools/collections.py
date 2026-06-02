@@ -197,7 +197,10 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         return entities
 
     async def _upsert_keyed(
-        self, conversation_id: UUID, context_type: str, data: dict[str, Any],
+        self,
+        conversation_id: UUID,
+        context_type: str,
+        data: dict[str, Any],
     ) -> UUID:
         """upsert a keyed context item via its partial unique index.
 
@@ -221,10 +224,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         :raises ValueError: when ``context_type`` has no dedup index
         """
         if context_type not in _UPSERTABLE_CONTEXT_TYPES:
-            msg = (
-                f"context_type must be one of "
-                f"{sorted(_UPSERTABLE_CONTEXT_TYPES)}; got {context_type!r}"
-            )
+            msg = f"context_type must be one of {sorted(_UPSERTABLE_CONTEXT_TYPES)}; got {context_type!r}"
             raise ValueError(msg)
 
         context_id = data["context_id"]
@@ -302,7 +302,9 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         return await self._upsert_keyed(conversation_id, "variable", data)
 
     async def upsert_tool_result(
-        self, conversation_id: UUID, data: dict[str, Any],
+        self,
+        conversation_id: UUID,
+        data: dict[str, Any],
     ) -> UUID:
         """upsert a tool_result using the partial unique index.
 

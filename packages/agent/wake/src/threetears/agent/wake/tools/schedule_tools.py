@@ -352,9 +352,7 @@ def _format_schedule_line(
     skill_segment = f" · skill: {skill_name}" if skill_name else ""
     # Surface the history switch only when OFF -- the default (on) is the
     # common case and would add noise to every catalog line.
-    history_segment = (
-        "" if entity.include_conversation_history else " · history: off"
-    )
+    history_segment = "" if entity.include_conversation_history else " · history: off"
     return (
         f"[schedule:{entity.schedule_id}] · {name} · {entity.schedule_type}"
         f" · next: {_format_next_fire(entity.next_fire_at)}"

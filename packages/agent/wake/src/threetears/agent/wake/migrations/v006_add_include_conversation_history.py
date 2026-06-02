@@ -44,8 +44,5 @@ async def add_include_conversation_history(store: DataStore) -> None:
     :return: nothing
     :rtype: None
     """
-    log.info(
-        "adding agent_wake_schedules.include_conversation_history "
-        "(NOT NULL DEFAULT true) (v006)"
-    )
+    log.info("adding agent_wake_schedules.include_conversation_history (NOT NULL DEFAULT true) (v006)")
     await store.execute(_ADD_COLUMN_SQL)

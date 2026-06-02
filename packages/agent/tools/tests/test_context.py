@@ -142,10 +142,14 @@ async def test_save_tool_result_dedups_same_input_fingerprint(
     """Same tool + same input fingerprint upserts one row (dedup); a
     different fingerprint creates a distinct row."""
     cid1 = await ctx.save_tool_result(
-        "web_search", "old results", input_fingerprint="query=moon",
+        "web_search",
+        "old results",
+        input_fingerprint="query=moon",
     )
     cid2 = await ctx.save_tool_result(
-        "web_search", "fresh results", input_fingerprint="query=moon",
+        "web_search",
+        "fresh results",
+        input_fingerprint="query=moon",
     )
     # Same fingerprint -> same row, refreshed content.
     assert cid1 == cid2
@@ -157,7 +161,9 @@ async def test_save_tool_result_dedups_same_input_fingerprint(
 
     # Different fingerprint -> separate row.
     cid3 = await ctx.save_tool_result(
-        "web_search", "mars results", input_fingerprint="query=mars",
+        "web_search",
+        "mars results",
+        input_fingerprint="query=mars",
     )
     assert cid3 != cid1
     tool_results = [i for i in ctx.items if i["context_type"] == "tool_result"]

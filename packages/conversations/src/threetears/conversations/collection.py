@@ -387,10 +387,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         # carry caller-controlled SQL.
         date_column = _SEARCH_DATE_COLUMNS.get(date_field)
         if date_column is None:
-            msg = (
-                f"date_field must be one of {sorted(_SEARCH_DATE_COLUMNS)}; "
-                f"got {date_field!r}"
-            )
+            msg = f"date_field must be one of {sorted(_SEARCH_DATE_COLUMNS)}; got {date_field!r}"
             raise ValueError(msg)
         if date_after is not None:
             predicates.append(f"{date_column} >= ${next_param}")
