@@ -11,7 +11,8 @@ The caller owns the SQL (table, filters, and the column allow-list -- the ``Keys
 fiddly, easy-to-get-wrong parts:
 
 - an opaque ``cursor`` (encode/decode of the composite sort-key tuple),
-- the ``ORDER BY`` clause and the keyset ``WHERE`` predicate for that key + direction,
+- the ``ORDER BY`` clause and the keyset ``WHERE`` predicate for that key + direction
+  (string cursor values are bound as ``text`` and cast, e.g. ``$1::text::timestamptz``),
 - page assembly: fetch ``page_size + 1``, trim the sentinel, emit the ``next_cursor``.
 
 Usage::
@@ -94,8 +95,13 @@ class Keyset:
     (mixed directions need the expanded OR-form and are intentionally out of scope).
 
     ``casts`` optionally gives a Postgres type per column for the keyset placeholders (e.g.
-    ``("timestamptz", "uuid")``); since cursor values arrive as strings, the cast restores
-    the column type for the comparison (``$1::timestamptz``). Empty = no casts.
+    ``("timestamptz", "uuid")``). A cursor round-trips through JSON, so any key value that is
+    not JSON-native (a ``datetime``, ``UUID``, ``Decimal``) is serialized to a string by
+    :func:`encode_cursor`; the cast turns that string back into the column type for the
+    comparison, binding it as ``text`` first so the driver accepts the string and Postgres
+    parses it (``$1::text::timestamptz``). Give a cast for exactly those string-serialized
+    keys; a JSON-native key (``int``/``bigint`` primary key) needs no cast -- it binds
+    directly. Empty = no casts.
 
     :param columns: composite sort-key columns, tiebreaker last
     :param casts: optional Postgres type per column for placeholder casts
@@ -120,7 +126,11 @@ class Keyset:
     def _placeholder(self, index: int, position: int) -> str:
         ph = f"${index}"
         if self.casts:
-            ph = f"{ph}::{self.casts[position]}"
+            # Bind as text, then cast: the cursor value is a string (JSON-serialized),
+            # and drivers (asyncpg) reject a string bound straight to a typed
+            # placeholder like ``$1::timestamptz``. ``$1::text::timestamptz`` binds the
+            # string as text and lets Postgres parse it to the column type.
+            ph = f"{ph}::text::{self.casts[position]}"
         return ph
 
     def predicate(self, cursor: str | None, first_param: int) -> tuple[str, list[Any]]:

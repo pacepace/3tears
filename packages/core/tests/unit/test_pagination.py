@@ -33,10 +33,8 @@ class TestCursorCodec:
 
     def test_decode_rejects_non_array(self) -> None:
         # base64 of a JSON object, not an array
-        token = encode_cursor(["x"]).replace("=", "")
         with pytest.raises(CursorError):
             decode_cursor("eyJhIjogMX0=")  # {"a": 1}
-        del token
 
 
 class TestKeysetValidation:
@@ -67,14 +65,14 @@ class TestPredicate:
         ks = Keyset(("message_id",), casts=("uuid",))
         cursor = encode_cursor(["019e3e26-9870-7a03-8f04-8cc6a4f5f418"])
         sql, params = ks.predicate(cursor, first_param=1)
-        assert sql == "(message_id) < ($1::uuid)"
+        assert sql == "(message_id) < ($1::text::uuid)"
         assert params == ["019e3e26-9870-7a03-8f04-8cc6a4f5f418"]
 
     def test_composite_with_casts_and_offset_params(self) -> None:
         ks = Keyset(("date_created", "message_id"), casts=("timestamptz", "uuid"))
         cursor = encode_cursor(["2026-06-03T12:00:00+00:00", "019e-..."])
         sql, params = ks.predicate(cursor, first_param=5)
-        assert sql == "(date_created, message_id) < ($5::timestamptz, $6::uuid)"
+        assert sql == "(date_created, message_id) < ($5::text::timestamptz, $6::text::uuid)"
         assert params == ["2026-06-03T12:00:00+00:00", "019e-..."]
 
     def test_ascending_uses_gt(self) -> None:
