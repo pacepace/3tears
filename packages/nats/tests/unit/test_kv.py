@@ -87,6 +87,39 @@ def _make_bucket() -> tuple[NatsKvBucket, _FakeKv]:
     return bucket, kv
 
 
+class _FakeJetStream:
+    """Returns a pre-seeded healed KV from create_key_value / key_value (re-open path)."""
+
+    def __init__(self, healed_kv: _FakeKv) -> None:
+        self._healed_kv = healed_kv
+
+    async def create_key_value(self, _config: Any) -> _FakeKv:
+        return self._healed_kv
+
+    async def key_value(self, _name: str) -> _FakeKv:
+        return self._healed_kv
+
+
+class _FakeClient:
+    """Minimal NatsClient stand-in whose jetstream re-open yields ``healed_kv``."""
+
+    def __init__(self, healed_kv: _FakeKv) -> None:
+        self._js = _FakeJetStream(healed_kv)
+
+    def jetstream_context(self) -> _FakeJetStream:
+        return self._js
+
+
+def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvBucket:
+    """A bucket whose initial handle is ``broken_kv`` and whose re-open yields ``healed_kv``."""
+    return NatsKvBucket(
+        client=_FakeClient(healed_kv),  # type: ignore[arg-type]
+        full_name="aibots-tests",
+        kv=broken_kv,  # type: ignore[arg-type]
+        ttl=timedelta(seconds=60),
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_returns_none_on_miss() -> None:
     bucket, _ = _make_bucket()
@@ -179,6 +212,63 @@ async def test_get_wraps_transport_failure() -> None:
 async def test_put_wraps_transport_failure() -> None:
     bucket, kv = _make_bucket()
     kv.fail_next = RuntimeError("transport down")
+    with pytest.raises(KvError):
+        await bucket.put(key="k", value=b"v")
+
+
+@pytest.mark.asyncio
+async def test_create_self_heals_after_stream_vanishes() -> None:
+    """A vanished stream (NATS restart on ephemeral storage) is re-opened + retried.
+
+    Regression for the production wake outage: the cached bucket handle failed forever on
+    "nats: no response from stream" until a process restart. The op now re-opens once and
+    retries against the recreated bucket.
+    """
+    broken_kv = _FakeKv()
+    broken_kv.fail_next = RuntimeError("nats: no response from stream")
+    healed_kv = _FakeKv()
+    bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+    rev = await bucket.create(key="agent_wake_tick", value=b"1")
+
+    assert rev is not None and rev > 0
+    assert "agent_wake_tick" in healed_kv.store  # the retry wrote to the recreated bucket
+
+
+@pytest.mark.asyncio
+async def test_put_self_heals_after_stream_vanishes() -> None:
+    broken_kv = _FakeKv()
+    broken_kv.fail_next = RuntimeError("nats: no response from stream")
+    healed_kv = _FakeKv()
+    bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
+    rev = await bucket.put(key="k", value=b"v")
+
+    assert rev > 0
+    assert healed_kv.store["k"][0] == b"v"
+
+
+@pytest.mark.asyncio
+async def test_miss_does_not_trigger_reopen() -> None:
+    """A normal KeyNotFound miss is control flow, NOT a transport failure -- no re-open."""
+    kv = _FakeKv()
+    healed_kv = _FakeKv()
+    bucket = _make_self_healing_bucket(kv, healed_kv)
+
+    assert await bucket.get(key="absent") is None
+    # The handle was never swapped: a miss must not pay a re-open round trip.
+    assert bucket._kv is kv  # noqa: SLF001 - asserting no self-heal on a normal miss
+
+
+@pytest.mark.asyncio
+async def test_persistent_failure_after_reopen_surfaces_kverror() -> None:
+    """If the op still fails AFTER a re-open (NATS genuinely down), surface KvError."""
+    broken_kv = _FakeKv()
+    broken_kv.fail_next = RuntimeError("down")
+    healed_kv = _FakeKv()
+    healed_kv.fail_next = RuntimeError("still down")  # the retry fails too
+    bucket = _make_self_healing_bucket(broken_kv, healed_kv)
+
     with pytest.raises(KvError):
         await bucket.put(key="k", value=b"v")
 

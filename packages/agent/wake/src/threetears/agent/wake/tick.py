@@ -127,12 +127,29 @@ async def wake_tick_job(
     # local import to keep the lock module out of the wake package's
     # always-paid import cost (consumers without NATS skip this).
     from threetears.nats import LockHeld, nats_distributed_lock  # noqa: PLC0415
+    from threetears.nats.errors import KvError  # noqa: PLC0415
 
     try:
         async with nats_distributed_lock(nats_client, _LOCK_KEY):
             await _run_tick_body(pool, dispatch_callback)
     except LockHeld:
         log.debug("wake_tick: lock held by another pod, skipping")
+    except KvError as exc:
+        # Lock INFRASTRUCTURE failed (bucket/stream gone, NATS unreachable) --
+        # distinct from LockHeld. The cross-pod lock is only a redundant-work
+        # optimization: per-schedule mutual exclusion is the Postgres
+        # optimistic-CAS in WakeScheduleCollection.claim_and_reschedule, so
+        # _run_tick_body needs zero NATS to be correct. Degrade open -- run the
+        # tick body without the lock rather than silently dropping every tick
+        # until a process restart (a single-node NATS wipe would otherwise
+        # silence the wake heartbeat for hours). Worst case: every pod runs the
+        # due-scan and contends on the CAS, which is the handled SKIPPED_BUSY
+        # path -- no double-fires, no data loss.
+        log.warning(
+            "wake_tick: cross-pod lock unavailable; proceeding without it (CAS still guards fires)",
+            extra={"extra_data": {"error_type": type(exc).__name__, "error": str(exc)}},
+        )
+        await _run_tick_body(pool, dispatch_callback)
 
 
 async def _run_tick_body(
