@@ -24,7 +24,7 @@ design notes
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
@@ -60,7 +60,7 @@ class NatsKvBucket:
     :ptype ttl: timedelta | None
     """
 
-    __slots__ = ("_client", "_full_name", "_kv", "_ttl")
+    __slots__ = ("_client", "_create_if_missing", "_full_name", "_history", "_kv", "_storage", "_ttl")
 
     def __init__(
         self,
@@ -69,11 +69,20 @@ class NatsKvBucket:
         full_name: str,
         kv: KeyValue,
         ttl: timedelta | None,
+        storage: str = "file",
+        create_if_missing: bool = True,
+        history: int = 1,
     ) -> None:
         self._client = client
         self._full_name = full_name
         self._kv = kv
         self._ttl = ttl
+        # Retained for self-heal: if the underlying stream/bucket vanishes (a NATS restart
+        # on ephemeral storage wipes JetStream), an op can re-open the bucket with its
+        # original config and retry instead of failing forever on a dead cached handle.
+        self._storage = storage
+        self._create_if_missing = create_if_missing
+        self._history = history
 
     @property
     def name(self) -> str:
@@ -175,7 +184,56 @@ class NatsKvBucket:
             except Exception as exc:
                 raise KvError(f"bind KV bucket failed: bucket={full_name}: {exc}") from exc
 
-        return cls(client=client, full_name=full_name, kv=kv, ttl=ttl)
+        return cls(
+            client=client,
+            full_name=full_name,
+            kv=kv,
+            ttl=ttl,
+            storage=storage,
+            create_if_missing=create_if_missing,
+            history=history,
+        )
+
+    # ------------------------------------------------------------------
+    # self-heal
+    # ------------------------------------------------------------------
+
+    async def _reopen(self) -> None:
+        """Rebind ``self._kv`` after the underlying stream/bucket vanished.
+
+        A single-node NATS restart on ephemeral JetStream storage wipes every stream and
+        KV bucket. The client caches this bucket handle, so without a re-open every op on
+        it fails forever ("nats: no response from stream") until the process restarts --
+        which is what silenced the wake scheduler in production. Re-running the opener with
+        the bucket's original config recreates the bucket (when ``create_if_missing``) and
+        refreshes the handle in place, so the cached bucket self-heals; no client-cache
+        flush is needed because the same object is mutated.
+        """
+        rebound = await NatsKvBucket.open(
+            client=self._client,
+            full_name=self._full_name,
+            ttl=self._ttl,
+            storage=self._storage,
+            create_if_missing=self._create_if_missing,
+            history=self._history,
+        )
+        self._kv = rebound._kv  # noqa: SLF001 - sibling instance of the same class
+
+    async def _run_with_reopen(self, op: Any, *, passthrough: tuple[type[BaseException], ...]) -> Any:
+        """Run a KV op; on a TRANSPORT failure, re-open the bucket once and retry.
+
+        ``passthrough`` exceptions (KeyNotFound / CAS-mismatch) are normal control flow and
+        are re-raised immediately -- only an unexpected failure (a vanished stream, a
+        transient transport error) triggers the single re-open + retry. A second failure
+        propagates to the caller's ``KvError`` wrap.
+        """
+        try:
+            return await op()
+        except passthrough:
+            raise
+        except Exception:  # noqa: BLE001 - transport failure: self-heal once, then let it surface
+            await self._reopen()
+            return await op()
 
     # ------------------------------------------------------------------
     # operations
@@ -194,7 +252,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            entry = await self._kv.get(key)
+            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
             return None
         except Exception as exc:
@@ -211,7 +269,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            entry = await self._kv.get(key)
+            entry = await self._run_with_reopen(lambda: self._kv.get(key), passthrough=(KeyNotFoundError,))
         except KeyNotFoundError:
             return None
         except Exception as exc:
@@ -232,7 +290,7 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            revision = await self._kv.put(key, value)
+            revision = await self._run_with_reopen(lambda: self._kv.put(key, value), passthrough=())
         except Exception as exc:
             raise KvError(f"KV put failed: bucket={self._full_name} key={key}: {exc}") from exc
         return int(revision)
@@ -249,7 +307,9 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            revision = await self._kv.create(key, value)
+            revision = await self._run_with_reopen(
+                lambda: self._kv.create(key, value), passthrough=(KeyWrongLastSequenceError,)
+            )
         except KeyWrongLastSequenceError:
             return None
         except Exception as exc:
@@ -270,7 +330,9 @@ class NatsKvBucket:
         :raises KvError: on transport failure
         """
         try:
-            new_revision = await self._kv.update(key, value, revision)
+            new_revision = await self._run_with_reopen(
+                lambda: self._kv.update(key, value, revision), passthrough=(KeyWrongLastSequenceError,)
+            )
         except KeyWrongLastSequenceError:
             return None
         except Exception as exc:
@@ -295,11 +357,15 @@ class NatsKvBucket:
         :rtype: bool
         :raises KvError: on transport failure
         """
-        try:
+
+        async def _do_delete() -> None:
             if revision is None:
                 await self._kv.delete(key)
             else:
                 await self._kv.delete(key, last=revision)
+
+        try:
+            await self._run_with_reopen(_do_delete, passthrough=(KeyNotFoundError, KeyWrongLastSequenceError))
         except KeyNotFoundError:
             return True
         except KeyWrongLastSequenceError:
