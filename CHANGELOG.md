@@ -4,6 +4,33 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.10.4 -- 2026-06-03
+
+Single-node NATS resilience: the platform now survives a NATS restart on
+ephemeral JetStream storage instead of silently losing the wake heartbeat.
+
+### Fixed — `3tears-agent-wake`
+
+- `wake_tick_job` degrades open when the cross-pod lock cannot be acquired
+  (`KvError` -- the bucket/stream is gone after a NATS restart on ephemeral
+  storage -- distinct from `LockHeld`): the tick body runs anyway, since
+  per-schedule mutual exclusion is the Postgres optimistic-CAS in
+  `WakeScheduleCollection.claim_and_reschedule`, not the lock. A NATS wipe no
+  longer silences the wake heartbeat for hours until a process restart. Worst
+  case under a NATS outage: every pod runs the due-scan and contends on the
+  CAS (the handled `SKIPPED_BUSY` path) -- no double-fires, no data loss.
+
+### Fixed — `3tears-nats`
+
+- `NatsKvBucket` self-heals a vanished stream/bucket. A single-node NATS
+  restart on ephemeral JetStream storage wipes every stream and KV bucket;
+  the client caches bucket handles, so every op then failed forever
+  (`nats: no response from stream`) until the process restarted. The bucket
+  now retains its open config and, on a transport failure (not KeyNotFound /
+  CAS-conflict), re-opens once -- recreating the bucket when `create_if_missing`
+  -- and retries the op. The handle heals in place, so the client bucket cache
+  needs no flush; a second failure surfaces as `KvError` as before.
+
 ## v0.10.3 -- 2026-06-02
 
 Three platform features consumed by metallm: a per-schedule wake
