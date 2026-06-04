@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.10.5 -- 2026-06-03
+
+A reusable keyset (seek) paginator in `threetears.core` for paging large,
+append-heavy ordered lists without `LIMIT`/`OFFSET` drift.
+
+### Added — `3tears` (core)
+
+- `threetears.core.pagination` — a shared cursor-pagination primitive. `Keyset`
+  builds the `ORDER BY` clause and the composite row-value seek predicate
+  (`(a, b) < ($1::text::t1, $2::text::t2)`) for a sort key + direction;
+  `encode_cursor`/`decode_cursor` give an opaque, URL-safe base64-JSON cursor;
+  `Keyset.page` trims the `+1` sentinel and emits the next cursor. The caller
+  owns the SQL (columns are a trusted allow-list, never user input). Replaces
+  ad-hoc `OFFSET` (which skips/repeats rows as the list grows under you) and
+  hand-rolled "list-since" cursors. Exported from `threetears.core`:
+  `Keyset`, `Page`, `CursorError`, `encode_cursor`, `decode_cursor`.
+- Cursor values round-trip through JSON, so non-native key types (`datetime`,
+  `UUID`, `Decimal`) serialize to strings; the keyset binds them as `text` and
+  casts (`$1::text::timestamptz`) so drivers like asyncpg accept the string and
+  Postgres parses it — the paginator pages by a timestamp key, the common case.
+
 ## v0.10.4 -- 2026-06-03
 
 Single-node NATS resilience: the platform now survives a NATS restart on
