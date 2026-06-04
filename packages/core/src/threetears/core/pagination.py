@@ -77,7 +77,9 @@ class Page(Generic[T]):
     """One page of results plus the cursor to fetch the next page.
 
     :param items: the rows for this page (at most ``page_size``)
+    :ptype items: list[T]
     :param next_cursor: opaque token for the next page, or ``None`` when exhausted
+    :ptype next_cursor: str | None
     """
 
     items: list[T]
@@ -104,8 +106,11 @@ class Keyset:
     directly. Empty = no casts.
 
     :param columns: composite sort-key columns, tiebreaker last
+    :ptype columns: tuple[str, ...]
     :param casts: optional Postgres type per column for placeholder casts
+    :ptype casts: tuple[str, ...]
     :param descending: ``True`` for ``DESC`` (newest-first / scroll-back), the common case
+    :ptype descending: bool
     """
 
     columns: tuple[str, ...]
@@ -141,7 +146,9 @@ class Keyset:
         for the first page (``cursor is None``).
 
         :param cursor: opaque token from a prior :class:`Page`, or ``None`` for page one
+        :ptype cursor: str | None
         :param first_param: the next free ``$N`` index in the caller's param list
+        :ptype first_param: int
         :returns: ``(sql_fragment, params)`` to splice into the ``WHERE`` and bind in order
         :raises CursorError: if the cursor's arity does not match ``columns``
         """
@@ -168,8 +175,11 @@ class Keyset:
         sort-key tuple from a row (the same columns, in the same order, as ``columns``).
 
         :param rows: rows from a query that used ``LIMIT page_size + 1`` and this ``order_by``
+        :ptype rows: Sequence[T]
         :param page_size: the requested page size (the ``+ 1`` is the sentinel)
+        :ptype page_size: int
         :param key_of: extracts the sort-key tuple from a row, for the next cursor
+        :ptype key_of: Callable[[T], Sequence[Any]]
         :returns: the trimmed page + its ``next_cursor`` (``None`` when no sentinel row)
         """
         items = list(rows[:page_size])
