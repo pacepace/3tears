@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -204,13 +203,13 @@ def _make_pod(
     return coll, reg
 
 
-def _wait_for_publish(nats: InMemoryNatsBus, target_count: int, timeout: float = 5.0) -> None:
+async def _wait_for_publish(nats: InMemoryNatsBus, target_count: int, timeout: float = 5.0) -> None:
     """Poll until the NATS bus has received at least target_count publishes."""
-    deadline = time.monotonic() + timeout
+    deadline = asyncio.get_event_loop().time() + timeout
     while nats.publish_count < target_count:
-        if time.monotonic() > deadline:
+        if asyncio.get_event_loop().time() > deadline:
             raise TimeoutError(f"Timed out waiting for {target_count} publishes (got {nats.publish_count})")
-        time.sleep(0.02)
+        await asyncio.sleep(0.02)
 
 
 @pytest.fixture()
@@ -357,7 +356,7 @@ class TestSetterEmitsSignal:
         pod_a["e1", "name"] = "Bob"
 
         # Wait for fire-and-forget to propagate
-        _wait_for_publish(shared_nats, initial_publish + 1)
+        await _wait_for_publish(shared_nats, initial_publish + 1)
 
         # Pod B's L1 should be evicted by the signal
         assert "e1" not in pod_b
@@ -385,7 +384,7 @@ class TestSetterEmitsSignal:
 
         # Pod A writes full dict
         pod_a["e1"] = {"id": "e1", "name": "Replaced", "score": 99}
-        _wait_for_publish(shared_nats, initial_publish + 1)
+        await _wait_for_publish(shared_nats, initial_publish + 1)
 
         # Pod B's L1 evicted
         assert "e1" not in pod_b

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -612,16 +613,14 @@ class TestSubscriptSetterPropagation:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """collection[id, field] = value propagates to L2 non-blocking."""
-        import time
-
         nats = _make_nats_mock()
         coll = StubCollection(registry, config_always, nats_client=nats)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
-        # Give the fire-and-forget a moment to complete
-        time.sleep(0.1)
+        # Yield to the event loop so the fire-and-forget task can complete
+        await asyncio.sleep(0.1)
 
         assert "test_entities.e1" in nats.store
         l2_data = json.loads(nats.store["test_entities.e1"])
@@ -632,8 +631,6 @@ class TestSubscriptSetterPropagation:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """With ALWAYS strategy, setter propagates to L3 non-blocking."""
-        import time
-
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
@@ -641,8 +638,7 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        # Give fire-and-forget time to complete
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         assert "e1" in pg_store
         assert pg_store["e1"]["name"] == "Bob"
@@ -652,8 +648,6 @@ class TestSubscriptSetterPropagation:
         self, registry: CollectionRegistry, config_deferred: DefaultCoreConfig
     ) -> None:
         """With deferred strategy, setter buffers for L3 instead of writing immediately."""
-        import time
-
         nats = _make_nats_mock()
         buf = WriteBuffer()
         pg_store: dict[str, dict] = {}
@@ -662,7 +656,7 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         # NOT in L3
         assert "e1" not in pg_store
@@ -674,15 +668,13 @@ class TestSubscriptSetterPropagation:
     @pytest.mark.asyncio
     async def test_dict_setter_propagates(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] = data_dict propagates to L1, L2, and L3."""
-        import time
-
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
 
         coll["e1"] = {"id": "e1", "name": "Alice", "score": 99}
 
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         # L1
         row = coll.get_row_sync("e1")
@@ -699,8 +691,6 @@ class TestSubscriptSetterPropagation:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """Setter sets date_updated on the propagated data."""
-        import time
-
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
@@ -708,7 +698,7 @@ class TestSubscriptSetterPropagation:
 
         before = datetime.now(UTC)
         coll["e1", "name"] = "Bob"
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         assert "e1" in pg_store
         du = pg_store["e1"].get("date_updated")
@@ -764,8 +754,6 @@ class TestMultiPodSimulation:
 
         This demonstrates the cache coherence gap that signaling will fix.
         """
-        import time
-
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         pod_a = self._make_pod(nats, pg_store, config_always)
@@ -778,7 +766,7 @@ class TestMultiPodSimulation:
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Bob"
-        time.sleep(0.1)  # Let propagation complete
+        await asyncio.sleep(0.1)  # Let propagation complete
 
         # Pod B's L1 is stale (still "Alice")
         stale_name = pod_b.get_field_sync("e1", "name")
@@ -799,8 +787,6 @@ class TestMultiPodSimulation:
     @pytest.mark.asyncio
     async def test_setter_propagation_reaches_l3(self, config_always: DefaultCoreConfig) -> None:
         """Setter with ALWAYS strategy writes through to shared L3."""
-        import time
-
         nats = _make_nats_mock()
         pg_store: dict[str, dict] = {}
         pod_a = self._make_pod(nats, pg_store, config_always)
@@ -812,7 +798,7 @@ class TestMultiPodSimulation:
 
         # Pod A updates via setter
         pod_a["e1", "name"] = "Updated"
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         # L3 (shared postgres) has the update
         assert pg_store["e1"]["name"] == "Updated"
@@ -826,8 +812,6 @@ class TestMultiPodSimulation:
     @pytest.mark.asyncio
     async def test_setter_deferred_does_not_reach_l3(self, config_deferred: DefaultCoreConfig) -> None:
         """Setter with deferred strategy buffers but doesn't write L3."""
-        import time
-
         nats = _make_nats_mock()
         buf = WriteBuffer()
         pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
@@ -835,7 +819,7 @@ class TestMultiPodSimulation:
         await pod_a.ensure("e1")
 
         pod_a["e1", "name"] = "Deferred"
-        time.sleep(0.1)
+        await asyncio.sleep(0.1)
 
         # L3 still has old value
         assert pg_store["e1"]["name"] == "Alice"
