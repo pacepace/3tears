@@ -228,6 +228,14 @@ point. CRUD is identical across all three — only the wiring differs.
 The smallest *correct* configuration: an in-memory L1 cache in front of a durable
 PostgreSQL L3. No NATS.
 
+> ⚠️ **Verified caveat (executed against `develop`):** this exact shape — the
+> `DataStore` dynamic path with a **raw `asyncpg` pool** and a **`uuid` primary key** —
+> does **not** round-trip today. Two framework-level issues bite the L3→L1 re-promotion
+> (§13 items 7 & 8). Until they're fixed, the working variants are: give the registry an
+> L3 pool that yields **dict rows** (a thin wrapper over the asyncpg pool) **and** use an
+> **L1-bindable PK type** such as `text`. The sample below is the *intended* shape; treat
+> the `uuid` PK and raw pool as aspirational until §13/7–8 are resolved.
+
 ```python
 import asyncio
 import uuid
@@ -650,6 +658,27 @@ Flagged honestly for expert review. Verify each against current source.
    schema before DDL runs (see `how-to-add-a-migration.md`), so migration/table bodies
    use **unqualified** names. The `DataStore` `agent_id` computes the schema name; the
    pool/broker binds it.
+
+7. **CONFIRMED BUG (executed) — dynamic collections return raw asyncpg `Record`s, which
+   break L1 re-promotion.** `create_dynamic_collection.fetch_from_postgres` returns
+   `rows[0]` (an `asyncpg.Record`) unchanged. On an L1 miss, `_pull_through` passes it to
+   `SQLiteBackend.upsert`, which does `[c for c in data if c in schema]` — but iterating
+   an `asyncpg.Record` yields **values, not keys**, so it builds
+   `INSERT INTO <t> () VALUES ()` → `sqlite3.OperationalError: near ")"`. The repo's own
+   integration test masks this by using a **dict-returning stub pool**. Likely fix:
+   `fetch_from_postgres` should return `dict(rows[0])`. *Workaround:* wrap the L3 pool so
+   `fetch`/`fetchrow` return `dict(row)`.
+
+8. **CONFIRMED BUG (executed) — asyncpg `pgproto.UUID` PK values can't bind to L1.** Even
+   with dict rows, asyncpg deserializes `uuid` columns to `asyncpg.pgproto.pgproto.UUID`.
+   `SQLiteBackend.select_by_id` binds the PK value **raw** (no `serialize_value` on the
+   way in), and sqlite3 only has an adapter for stdlib `uuid.UUID`, so a re-promoted
+   uuid id raises `sqlite3.ProgrammingError: type 'asyncpg.pgproto.pgproto.UUID' is not
+   supported`. *Workaround:* use a `text` PK, or register an sqlite3 adapter for
+   asyncpg's UUID. Likely fix: serialize PK values at the L1 boundary the same way
+   `upsert` serializes column values. (Items 7 + 8 verified end-to-end against a
+   testcontainers Postgres: raw-pool+uuid fails, dict-pool+uuid fails, dict-pool+text
+   round-trips.)
 
 ---
 
