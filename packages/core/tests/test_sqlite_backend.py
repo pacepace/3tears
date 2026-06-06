@@ -356,3 +356,131 @@ class TestSerializationRoundTrip:
         assert result["data"] is None
         assert result["created_at"] is None
         assert result["raw_bytes"] is None
+
+
+# parity-with: asyncpg.pgproto.pgproto.UUID
+class _FakePgprotoUUID(uuid.UUID):
+    """stands in for asyncpg's UUID subclass.
+
+    asyncpg deserializes ``uuid`` columns to a C-implemented subclass of
+    :class:`uuid.UUID`. sqlite3 adapter lookup is exact-type, so the
+    subclass misses the ``register_adapter(uuid.UUID, str)`` registration
+    and raises ``ProgrammingError`` when bound raw.
+    """
+
+
+class TestPkBindingSerialization:
+    """issue #86: pk values are serialized at the L1 boundary like columns."""
+
+    def _seeded_backend(self) -> tuple[SQLiteBackend, uuid.UUID]:
+        b = SQLiteBackend(db_name=f"test_pkbind_{uuid.uuid4().hex[:8]}")
+        b.initialize(_make_metadata())
+        entity_id = uuid.uuid4()
+        b.upsert("test_entities", {"id": entity_id, "name": "sprocket", "age": 1})
+        return b, entity_id
+
+    def test_select_by_id_accepts_uuid_subclass(self) -> None:
+        b, entity_id = self._seeded_backend()
+        try:
+            result = b.select_by_id("test_entities", _FakePgprotoUUID(str(entity_id)))
+            assert result is not None
+            assert result["name"] == "sprocket"
+        finally:
+            b.reset()
+
+    def test_select_batch_accepts_uuid_subclass(self) -> None:
+        b, entity_id = self._seeded_backend()
+        try:
+            rows = b.select_batch("test_entities", [_FakePgprotoUUID(str(entity_id))])
+            assert len(rows) == 1
+            assert rows[0]["name"] == "sprocket"
+        finally:
+            b.reset()
+
+    def test_delete_by_id_accepts_uuid_subclass(self) -> None:
+        b, entity_id = self._seeded_backend()
+        try:
+            b.delete_by_id("test_entities", _FakePgprotoUUID(str(entity_id)))
+            assert b.select_by_id("test_entities", entity_id) is None
+        finally:
+            b.reset()
+
+    def test_select_by_id_accepts_datetime_pk(self) -> None:
+        """datetime pks serialize at the read boundary like the write side."""
+        metadata = MetaData()
+        Table(
+            "dt_keyed",
+            metadata,
+            Column("at", DateTime, primary_key=True),
+            Column("name", String(255)),
+        )
+        b = SQLiteBackend(db_name=f"test_dtpk_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            at = datetime(2026, 6, 6, 12, 0, 0)
+            b.upsert("dt_keyed", {"at": at, "name": "tick"}, primary_key="at")
+            result = b.select_by_id("dt_keyed", at, primary_key="at")
+            assert result is not None
+            assert result["name"] == "tick"
+        finally:
+            b.reset()
+
+
+class TestAdditiveInitialize:
+    """initialize() registers new tables on subsequent calls."""
+
+    def _table_metadata(self, table_name: str) -> MetaData:
+        metadata = MetaData()
+        Table(
+            table_name,
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("name", String(255)),
+        )
+        return metadata
+
+    def test_second_initialize_registers_new_table(self) -> None:
+        b = SQLiteBackend(db_name=f"test_additive_{uuid.uuid4().hex[:8]}")
+        b.initialize(self._table_metadata("first_table"))
+        b.initialize(self._table_metadata("second_table"))
+        try:
+            b.upsert("first_table", {"id": "a", "name": "alpha"})
+            b.upsert("second_table", {"id": "b", "name": "beta"})
+            first = b.select_by_id("first_table", "a")
+            second = b.select_by_id("second_table", "b")
+            assert first is not None and first["name"] == "alpha"
+            assert second is not None and second["name"] == "beta"
+        finally:
+            b.reset()
+
+    def test_reinitialize_same_table_preserves_data(self) -> None:
+        b = SQLiteBackend(db_name=f"test_reinit_{uuid.uuid4().hex[:8]}")
+        b.initialize(self._table_metadata("stable_table"))
+        try:
+            b.upsert("stable_table", {"id": "a", "name": "alpha"})
+            b.initialize(self._table_metadata("stable_table"))
+            result = b.select_by_id("stable_table", "a")
+            assert result is not None
+            assert result["name"] == "alpha"
+        finally:
+            b.reset()
+
+    def test_initialize_remains_one_shot_for_multi_table_metadata(self) -> None:
+        """the established consumer shape (one metadata, all tables) still works."""
+        metadata = MetaData()
+        for name in ("multi_a", "multi_b"):
+            Table(
+                name,
+                metadata,
+                Column("id", String(255), primary_key=True),
+                Column("name", String(255)),
+            )
+        b = SQLiteBackend(db_name=f"test_multi_{uuid.uuid4().hex[:8]}")
+        b.initialize(metadata)
+        try:
+            b.upsert("multi_a", {"id": "a", "name": "alpha"})
+            b.upsert("multi_b", {"id": "b", "name": "beta"})
+            assert b.select_by_id("multi_a", "a") is not None
+            assert b.select_by_id("multi_b", "b") is not None
+        finally:
+            b.reset()

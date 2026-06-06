@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
@@ -32,7 +32,47 @@ _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
     "jsonb": dict,
     "decimal": Decimal,
     "bytea": bytes,
+    "vector": list,
 }
+
+
+def _vector_to_text(value: Any) -> Any:
+    """convert a vector value to pgvector's bracketed text form.
+
+    the dynamic write path binds vector parameters as text with a
+    ``::vector`` cast (mirroring ``SchemaBackedCollection``), so vector
+    columns work against a plain asyncpg pool without the pgvector
+    codec registered. non-sequence values pass through unchanged.
+
+    :param value: vector value (``list``/``tuple`` of floats) or
+        anything else (already-text, ``None``)
+    :ptype value: Any
+    :return: bracketed text form, or the value unchanged
+    :rtype: Any
+    """
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(str(float(v)) for v in value) + "]"
+    return value
+
+
+def _vector_from_text(value: Any) -> Any:
+    """convert pgvector's text form back to ``list[float]``.
+
+    asyncpg returns ``vector`` columns as their text form (``"[1,2,3]"``)
+    when the pgvector codec is not registered on the pool; that text is
+    valid JSON, so the parse is a plain ``json.loads``. list values
+    (pgvector codec registered, or rows from L1/L2) pass through.
+
+    :param value: raw column value from L3
+    :ptype value: Any
+    :return: ``list[float]``, or the value unchanged when not text
+    :rtype: Any
+    """
+    if isinstance(value, str):
+        import json
+
+        return [float(v) for v in json.loads(value)]
+    return value
 
 
 def _build_field_types(table_def: TableDef) -> dict[str, type]:
@@ -67,11 +107,18 @@ def _build_fetch_sql(table_name: str, pk_column: str) -> str:
     return result
 
 
-def _build_upsert_sql(table_name: str, columns: list[str], pk_column: str) -> str:
+def _build_upsert_sql(
+    table_name: str,
+    columns: list[str],
+    pk_column: str,
+    vector_columns: frozenset[str] = frozenset(),
+) -> str:
     """build INSERT ON CONFLICT UPDATE SQL for persisting entity data.
 
     generates parameterized INSERT with ON CONFLICT DO UPDATE for all
-    non-primary-key columns. parameter placeholders use $N style.
+    non-primary-key columns. parameter placeholders use $N style;
+    vector columns get a ``::vector`` cast so their bracketed text
+    form binds without the pgvector asyncpg codec.
 
     :param table_name: name of database table
     :ptype table_name: str
@@ -79,10 +126,14 @@ def _build_upsert_sql(table_name: str, columns: list[str], pk_column: str) -> st
     :ptype columns: list[str]
     :param pk_column: primary key column name
     :ptype pk_column: str
+    :param vector_columns: names of columns declared ``vector``
+    :ptype vector_columns: frozenset[str]
     :return: parameterized upsert SQL string
     :rtype: str
     """
-    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
+    placeholders = ", ".join(
+        f"${i + 1}::vector" if col in vector_columns else f"${i + 1}" for i, col in enumerate(columns)
+    )
     cols_str = ", ".join(columns)
     update_cols = [c for c in columns if c != pk_column]
     set_parts = [f"{c} = EXCLUDED.{c}" for c in update_cols]
@@ -147,7 +198,14 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
     metadata = MetaData()
     sa_columns: list[Column[Any]] = []
     for col in table_def.columns:
-        sa_type = sa_type_map.get(col.column_type, String(255))
+        if col.column_type == "vector":
+            # lazy pgvector import (raises a legible ImportError at
+            # collection construction when pgvector is not installed)
+            from threetears.core.collections.schema_backed import _require_pgvector
+
+            sa_type = _require_pgvector()(col.vector_dim)
+        else:
+            sa_type = sa_type_map.get(col.column_type, String(255))
         sa_columns.append(Column(col.name, sa_type, primary_key=col.primary_key, nullable=col.nullable))
     Table(table_def.name, metadata, *sa_columns)
     return metadata
@@ -172,7 +230,7 @@ def create_dynamic_collection(
     table_def: TableDef,
     registry: CollectionRegistry,
     config: CoreConfig,
-    nats_client: Any = None,
+    nats_client: Any = NATS_CLIENT_FROM_REGISTRY,
 ) -> BaseCollection[Any]:
     """create a BaseCollection subclass dynamically from a TableDef.
 
@@ -192,7 +250,9 @@ def create_dynamic_collection(
     :ptype registry: CollectionRegistry
     :param config: core configuration for flush strategy
     :ptype config: CoreConfig
-    :param nats_client: optional NATS client for L2 caching
+    :param nats_client: NATS client for L2 caching. omitted -> resolved
+        from the registry (``configure(l2_client=...)`` / ``bind_table``);
+        explicit ``None`` -> L2 disabled for this collection
     :ptype nats_client: Any
     :return: instantiated BaseCollection for the given table; parameterized
         over the dynamically generated entity class so the concrete type is
@@ -203,8 +263,9 @@ def create_dynamic_collection(
     pk_column = _find_pk_column(table_def)
     field_types = _build_field_types(table_def)
     column_names = [col.name for col in table_def.columns]
+    vector_columns = frozenset(col.name for col in table_def.columns if col.column_type == "vector")
     fetch_sql = _build_fetch_sql(tbl_name, pk_column)
-    upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column)
+    upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column, vector_columns)
     delete_sql = _build_delete_sql(tbl_name, pk_column)
     sa_metadata = _build_sa_metadata(table_def)
 
@@ -236,6 +297,13 @@ def create_dynamic_collection(
         async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
             """fetch single entity from L3 by primary key.
 
+            converts the driver row to a plain ``dict`` at the L3
+            border: asyncpg ``Record``s iterate values (not keys), which
+            silently breaks the L1 re-promotion path downstream
+            (``SQLiteBackend.upsert`` filters columns by iterating the
+            row). vector columns are coerced from pgvector text form to
+            ``list[float]`` so the row shape is identical across tiers.
+
             :param entity_id: primary key value
             :ptype entity_id: Any
             :return: entity data as dict, or None if not found
@@ -245,7 +313,12 @@ def create_dynamic_collection(
             if pool is None:
                 return None
             rows = await pool.fetch(fetch_sql, entity_id)
-            result = rows[0] if rows else None
+            if not rows:
+                return None
+            result = dict(rows[0])
+            for vec_col in vector_columns:
+                if vec_col in result:
+                    result[vec_col] = _vector_from_text(result[vec_col])
             return result
 
         async def save_to_postgres(
@@ -274,7 +347,10 @@ def create_dynamic_collection(
             executor: Any = conn if conn is not None else self.l3_pool
             if executor is None:
                 return 0
-            values = [data.get(col, None) for col in column_names]
+            values = [
+                _vector_to_text(data.get(col, None)) if col in vector_columns else data.get(col, None)
+                for col in column_names
+            ]
             result_str = await executor.execute(upsert_sql, *values)
             result = 1 if result_str else 0
             return result

@@ -117,34 +117,43 @@ class SQLiteBackend:
         Creates a named in-memory database and initializes all tables.
         The anchor connection is kept open to prevent garbage collection.
         Builds a schema registry for type-aware serialization.
+
+        Additive across calls: every call registers the tables in
+        ``sa_metadata`` that this backend has not seen yet and leaves
+        already-registered tables untouched, so several single-table
+        initializations (the dynamic-collection path) compose on one
+        shared backend exactly like a single all-tables metadata.
         """
-        if self._initialized:
-            log.debug("SQLite already initialized, skipping")
-            return
+        if self._anchor_conn is None:
+            self._anchor_conn = self._make_connection()
 
-        self._anchor_conn = self._make_connection()
-
+        new_tables = 0
         for table in sa_metadata.tables.values():
+            if table.name in self._schema_info:
+                log.debug(f"SQLite table already registered, skipping: {table.name}")
+                continue
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
             self._schema_info[table.name] = {col.name: self._map_sqlalchemy_type(col.type) for col in table.columns}
+            new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
 
-        # Register type adapters so UUID/datetime values are automatically
-        # serialized at the SQLite boundary.
-        sqlite3.register_adapter(uuid.UUID, str)
-        sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
-        try:
-            from uuid_utils import UUID as UuidUtilsUUID
+        if not self._initialized:
+            # Register type adapters so UUID/datetime values are automatically
+            # serialized at the SQLite boundary.
+            sqlite3.register_adapter(uuid.UUID, str)
+            sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
+            try:
+                from uuid_utils import UUID as UuidUtilsUUID
 
-            sqlite3.register_adapter(UuidUtilsUUID, str)
-        except ImportError:
-            pass
+                sqlite3.register_adapter(UuidUtilsUUID, str)
+            except ImportError:
+                pass
+            self._initialized = True
 
-        self._initialized = True
         log.debug(
             "SQLite L1 cache initialized",
-            extra={"extra_data": {"table_count": len(sa_metadata.tables)}},
+            extra={"extra_data": {"table_count": len(self._schema_info), "new_tables": new_tables}},
         )
 
     def get_connection(self) -> _PooledConnection:
@@ -200,6 +209,37 @@ class SQLiteBackend:
                 f"primary key arity mismatch: got {len(values)} value(s) for {len(pk_cols)} column(s) {pk_cols}"
             )
         return values
+
+    def _serialize_pk_values(
+        self,
+        table: str,
+        pk_cols: tuple[str, ...],
+        pk_vals: tuple[Any, ...],
+    ) -> tuple[Any, ...]:
+        """serialize pk values for SQLite parameter binding.
+
+        mirrors the :meth:`upsert` write path, which routes every column
+        value through :meth:`serialize_value`. the read/delete paths used
+        to bind pk values raw and rely on sqlite3's adapter registry --
+        but adapter lookup is exact-type, so asyncpg's
+        ``pgproto.pgproto.UUID`` (a :class:`uuid.UUID` subclass returned
+        for every L3 ``uuid`` column) raised ``ProgrammingError`` instead
+        of matching the ``uuid.UUID`` adapter. serializing at this
+        boundary keys on ``isinstance``, which covers subclasses.
+
+        :param table: target table name (resolves the schema registry)
+        :ptype table: str
+        :param pk_cols: normalized tuple of pk column names
+        :ptype pk_cols: tuple[str, ...]
+        :param pk_vals: tuple of pk values matching ``pk_cols``
+        :ptype pk_vals: tuple[Any, ...]
+        :return: tuple of serialized pk values safe to bind
+        :rtype: tuple[Any, ...]
+        """
+        schema = self._schema_info.get(table, {})
+        return tuple(
+            self.serialize_value(value, schema.get(col, "TEXT")) for col, value in zip(pk_cols, pk_vals, strict=True)
+        )
 
     def upsert(self, table: str, data: dict[str, Any], primary_key: str | tuple[str, ...] = "id") -> None:
         """insert or update row atomically.
@@ -284,7 +324,7 @@ class SQLiteBackend:
         :rtype: dict[str, Any] | None
         """
         pk_cols = self._pk_columns(primary_key)
-        pk_vals = self._pk_values(entity_id, pk_cols)
+        pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
         sql = f"SELECT * FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
@@ -322,14 +362,16 @@ class SQLiteBackend:
         if len(pk_cols) == 1:
             placeholders = ", ".join(["?" for _ in entity_ids])
             sql = f"SELECT * FROM {table} WHERE {pk_cols[0]} IN ({placeholders})"
-            params: tuple[Any, ...] = tuple(entity_ids)
+            params: tuple[Any, ...] = tuple(
+                self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols))[0] for eid in entity_ids
+            )
         else:
             per_key = " AND ".join(f"{c} = ?" for c in pk_cols)
             disjunct = " OR ".join([f"({per_key})" for _ in entity_ids])
             sql = f"SELECT * FROM {table} WHERE {disjunct}"
             flat: list[Any] = []
             for eid in entity_ids:
-                flat.extend(self._pk_values(eid, pk_cols))
+                flat.extend(self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
             params = tuple(flat)
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
@@ -357,7 +399,7 @@ class SQLiteBackend:
         :rtype: None
         """
         pk_cols = self._pk_columns(primary_key)
-        pk_vals = self._pk_values(entity_id, pk_cols)
+        pk_vals = self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
         where_clause = " AND ".join(f"{c} = ?" for c in pk_cols)
         sql = f"DELETE FROM {table} WHERE {where_clause}"
         conn = self.get_connection()
