@@ -667,7 +667,7 @@ Flagged honestly for expert review. Verify each against current source.
    `INSERT INTO <t> () VALUES ()` → `sqlite3.OperationalError: near ")"`. The repo's own
    integration test masks this by using a **dict-returning stub pool**. Likely fix:
    `fetch_from_postgres` should return `dict(rows[0])`. *Workaround:* wrap the L3 pool so
-   `fetch`/`fetchrow` return `dict(row)`.
+   `fetch`/`fetchrow` return `dict(row)`. Tracked as #85.
 
 8. **CONFIRMED BUG (executed) — asyncpg `pgproto.UUID` PK values can't bind to L1.** Even
    with dict rows, asyncpg deserializes `uuid` columns to `asyncpg.pgproto.pgproto.UUID`.
@@ -676,9 +676,9 @@ Flagged honestly for expert review. Verify each against current source.
    uuid id raises `sqlite3.ProgrammingError: type 'asyncpg.pgproto.pgproto.UUID' is not
    supported`. *Workaround:* use a `text` PK, or register an sqlite3 adapter for
    asyncpg's UUID. Likely fix: serialize PK values at the L1 boundary the same way
-   `upsert` serializes column values. (Items 7 + 8 verified end-to-end against a
-   testcontainers Postgres: raw-pool+uuid fails, dict-pool+uuid fails, dict-pool+text
-   round-trips.)
+   `upsert` serializes column values. Tracked as #86. (Items 7 + 8 verified end-to-end
+   against a testcontainers Postgres: raw-pool+uuid fails, dict-pool+uuid fails,
+   dict-pool+text round-trips.)
 
 ---
 
