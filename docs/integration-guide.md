@@ -543,24 +543,48 @@ environments; only *what you inject* changes.
 - **NATS**: **skip it.** Run L1 + L3 (the §8.1 wiring); the cache degrades to L1+L3.
 - Inject the L3 DSN however your app already does config.
 
-### Orchestrated / multi-pod (e.g. Kubernetes)
+### Deploying to an orchestrator (Kubernetes)
 
-- **PostgreSQL + pgvector**: a managed service or in-cluster operator/StatefulSet.
-  Inject the DSN via secret → env → your asyncpg pool. Size for your corpus.
-- **NATS with JetStream**: deploy once you run **>1 pod**. JetStream must be
-  **enabled with file storage** so the `*-collections` KV bucket survives restarts.
-  Inject the URL (e.g. `THREETEARS_NATS_URL`).
-- **Cache coherence is opt-in:** call `registry.start_invalidation_listener(nats)`
-  on **every** pod at startup, and construct collections with `nats_client=` (§8.2).
-  Without the listener, pods can serve stale L1 after a peer writes.
-- **L3 topology per pod class:** trusted services → direct pool with DB creds;
-  sandboxed workers → `NatsProxyL3Backend` + a central broker you provide (§13).
-- **Cross-pod mutual exclusion:** use `KVLease` (NATS-backed) when pods must
-  coordinate (singleton jobs, leader election) rather than rolling your own.
-- **Secrets**: PostgreSQL DSN and NATS URL belong in your platform's secret store,
-  surfaced as env vars and read by *your* wiring — never hard-coded into 3tears.
-- **Lifecycle**: create the pool / `NatsClient` during startup; **close the pool and
-  `await nats.shutdown()` on shutdown**. 3tears does not manage process lifecycle.
+No manifests are shipped. Below is the **minimum set of things to configure** and the
+**app-side counterpart** for each — enough for a human or agent to execute the
+bring-up without copy-paste YAML. Kubernetes names are used for concreteness; the
+wiring is identical on any orchestrator.
+
+**Bring-up order**
+
+1. **PostgreSQL (L3)** reachable in-cluster (operator/StatefulSet) or managed. Create
+   the database + the app/agent schema; `CREATE EXTENSION vector` only for agent-memory.
+2. **Apply migrations** once against each schema (a one-shot `Job` or init container)
+   before pods serve traffic.
+3. **NATS + JetStream (L2)** — only if you run more than one replica.
+4. **Secrets** for the Postgres DSN and NATS URL.
+5. **App Deployment** with startup wiring + graceful shutdown.
+
+**What to configure ↔ app-side counterpart**
+
+| Configure in k8s | Critical setting / why | App-side counterpart |
+|---|---|---|
+| Postgres (Service + storage) | reachable DNS; `CREATE EXTENSION vector` only for agent-memory | `pool = await asyncpg.create_pool(dsn=...)`; `registry.configure(l3_pool=pool)` |
+| Migration `Job` / init container | runs once per schema before serving; idempotent and `(version, package)`-keyed, but use a **single** runner so N pods don't race the same DDL | `await store.run_migrations(runner)` (= `runner.apply_for_agent_schema(store)`) |
+| NATS Deployment/StatefulSet | **JetStream enabled** + **file storage on a PVC** so the KV survives restarts. You do **not** pre-create the bucket — the app creates `{namespace}-collections` lazily | `nats = await NatsClient.connect(nats_url=, nats_subject_namespace=, client_name=)`; build collections with `nats_client=`; `await registry.start_invalidation_listener(nats)` on **every** pod |
+| `Secret` (DSN, NATS URL, any auth token) | mounted as env vars; never baked into the image | read `THREETEARS_NATS_URL` + your DSN env in wiring code, then construct pool / client |
+| Deployment `replicas` | **>1 ⇒ NATS is required** for cache coherence; `=1` ⇒ skip NATS entirely (L1+L3) | single-pod path = §8.1; multi-pod path = §8.2 |
+| `readinessProbe` / `livenessProbe` | gate traffic on dependencies being live | a health endpoint can call `await nats.ping()` and a `SELECT 1` on the pool |
+| `terminationGracePeriodSeconds` | long enough to drain (NATS drain default ~30s) | on SIGTERM: `await nats.shutdown()` then `await pool.close()` |
+
+**Single pod.** Set `replicas: 1`, skip NATS entirely, and use the §8.1 wiring
+(L1 + L3). Nothing else changes.
+
+**Sandboxed pods (no DB creds).** Don't mount the DSN secret; configure
+`NatsProxyL3Backend` (§8.3) and run the L3 broker you provide (§13) as its own
+Deployment that *does* hold the DSN. App counterpart:
+`registry.configure(l3_pool=NatsProxyL3Backend(nats_client=nats, namespace_prefix=..., agent_id=...))`.
+
+**Cross-pod mutual exclusion.** For singleton jobs / leader election use `KVLease`
+(NATS-backed) rather than rolling your own.
+
+3tears does not manage process lifecycle — creating the pool/`NatsClient` on startup
+and closing them on shutdown is the host's responsibility (last two rows above).
 
 ### Scaling notes
 
