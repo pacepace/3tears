@@ -1,10 +1,25 @@
 # 3tears Integration Guide
 
-> **Status: DRAFT.** This is an early, source-derived starting point intended for
-> expert review. It documents the framework as the code currently behaves, including
-> several sharp edges flagged in [§13 Known sharp edges & open questions](#13-known-sharp-edges--open-questions).
-> Treat code as the source of truth; where this guide and the code disagree, the code wins —
-> and please file a correction.
+> **Status: DRAFT — NOT YET ACCURATE FOR `develop`. Do not implement from this yet.**
+>
+> This draft was authored against an older branch snapshot and has **not** been
+> re-verified against `develop`, the merge target. Several sections are known to be
+> **stale** as of this commit:
+>
+> - **§1 / §7 (packages & install)** — `develop` has ~16 packages (not 7); names differ.
+> - **§8.2 (NATS / L2)** — `NatsClient` now lives in the separate **`3tears-nats`**
+>   package (`threetears.nats`); the L2 cache module is `threetears.core.cache.kv`
+>   (not `cache.nats`). The shown API is from the old branch.
+> - **§9 (migrations)** — the migration system was **redesigned** on `develop`
+>   (canonical `MigrationRunner` with `MigrationScope` / `PackageMigrations`,
+>   per-package `migrations/` subpackages, topological ordering; alembic retired).
+>   The authoritative reference is **[`how-to-add-a-migration.md`](./how-to-add-a-migration.md)**.
+>
+> The conceptual material (mental model, tier roles, design principles, decision
+> framing, deployment considerations) is believed to still hold, but **treat code as
+> the source of truth** and re-verify before relying on any concrete API or import.
+> A full re-authoring pass against `develop` is pending. See
+> [§13 Known sharp edges & open questions](#13-known-sharp-edges--open-questions).
 
 This guide explains how to wire 3tears into a host application as its data layer:
 the mental model, the design decisions you have to make, and copy-pasteable
