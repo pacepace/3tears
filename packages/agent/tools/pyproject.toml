@@ -26,8 +26,10 @@ dependencies = [
     "3tears",
     "3tears-agent-audit",
     "3tears-agent-memory",
-    "3tears-conversations",
     "3tears-langgraph",
+    "3tears-media-contracts",
+    "3tears-nats",
+    "3tears-observe",
     "langchain-core",
     "httpx",
 ]
@@ -56,5 +58,7 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-audit = { workspace = true }
 3tears-agent-memory = { workspace = true }
-3tears-conversations = { workspace = true }
 3tears-langgraph = { workspace = true }
+3tears-media-contracts = { workspace = true }
+3tears-nats = { workspace = true }
+3tears-observe = { workspace = true }
