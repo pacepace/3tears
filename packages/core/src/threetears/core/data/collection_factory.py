@@ -9,6 +9,7 @@ from uuid import UUID
 
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.collections.schema_backed import _decode_vector, _encode_vector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -34,45 +35,6 @@ _COLUMN_TYPE_TO_PYTHON: dict[str, type] = {
     "bytea": bytes,
     "vector": list,
 }
-
-
-def _vector_to_text(value: Any) -> Any:
-    """convert a vector value to pgvector's bracketed text form.
-
-    the dynamic write path binds vector parameters as text with a
-    ``::vector`` cast (mirroring ``SchemaBackedCollection``), so vector
-    columns work against a plain asyncpg pool without the pgvector
-    codec registered. non-sequence values pass through unchanged.
-
-    :param value: vector value (``list``/``tuple`` of floats) or
-        anything else (already-text, ``None``)
-    :ptype value: Any
-    :return: bracketed text form, or the value unchanged
-    :rtype: Any
-    """
-    if isinstance(value, (list, tuple)):
-        return "[" + ",".join(str(float(v)) for v in value) + "]"
-    return value
-
-
-def _vector_from_text(value: Any) -> Any:
-    """convert pgvector's text form back to ``list[float]``.
-
-    asyncpg returns ``vector`` columns as their text form (``"[1,2,3]"``)
-    when the pgvector codec is not registered on the pool; that text is
-    valid JSON, so the parse is a plain ``json.loads``. list values
-    (pgvector codec registered, or rows from L1/L2) pass through.
-
-    :param value: raw column value from L3
-    :ptype value: Any
-    :return: ``list[float]``, or the value unchanged when not text
-    :rtype: Any
-    """
-    if isinstance(value, str):
-        import json
-
-        return [float(v) for v in json.loads(value)]
-    return value
 
 
 def _build_field_types(table_def: TableDef) -> dict[str, type]:
@@ -318,7 +280,7 @@ def create_dynamic_collection(
             result = dict(rows[0])
             for vec_col in vector_columns:
                 if vec_col in result:
-                    result[vec_col] = _vector_from_text(result[vec_col])
+                    result[vec_col] = _decode_vector(result[vec_col])
             return result
 
         async def save_to_postgres(
@@ -348,7 +310,7 @@ def create_dynamic_collection(
             if executor is None:
                 return 0
             values = [
-                _vector_to_text(data.get(col, None)) if col in vector_columns else data.get(col, None)
+                _encode_vector(data.get(col, None)) if col in vector_columns else data.get(col, None)
                 for col in column_names
             ]
             result_str = await executor.execute(upsert_sql, *values)
