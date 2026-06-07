@@ -6,7 +6,7 @@ import base64
 
 import httpx
 
-from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
+from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
 
 __all__ = [
     "OpenAIImageProvider",

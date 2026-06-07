@@ -23,6 +23,7 @@ members = [
     "3tears-epoch",
     "3tears-langgraph",
     "3tears-mcp",
+    "3tears-media-contracts",
     "3tears-models",
     "3tears-nats",
     "3tears-observe",
@@ -193,6 +194,7 @@ dependencies = [
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
     { name = "3tears-langgraph" },
+    { name = "3tears-media-contracts" },
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "httpx" },
@@ -248,6 +250,7 @@ requires-dist = [
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
+    { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx" },
@@ -532,11 +535,16 @@ requires-dist = [
 ]
 
 [[package]]
+name = "3tears-media-contracts"
+version = "0.10.6"
+source = { editable = "packages/media-contracts" }
+
+[[package]]
 name = "3tears-models"
 version = "0.10.5"
 source = { editable = "packages/models" }
 dependencies = [
-    { name = "3tears-agent-tools" },
+    { name = "3tears-media-contracts" },
     { name = "3tears-observe" },
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
@@ -561,7 +569,7 @@ whisper = [
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears-agent-tools", editable = "packages/agent/tools" },
+    { name = "3tears-media-contracts", editable = "packages/media-contracts" },
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx", marker = "extra == 'image'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'whisper'", specifier = ">=0.27" },

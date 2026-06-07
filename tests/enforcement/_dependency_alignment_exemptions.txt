@@ -1,0 +1,16 @@
+# dependency-alignment exemptions file.
+#
+# every entry is an exact (file, line, symbol) triple; LINE may be '*'
+# for any line. each entry requires a preceding '# rationale: <reason>'
+# line. distribution names are sanitized into the symbol grammar:
+# '3tears' -> 'core'; otherwise the '3tears-' prefix is stripped and
+# dashes become underscores ('3tears-agent-wake' -> 'agent_wake').
+#
+# format:
+#   # rationale: why this declared/actual mismatch is intentional
+#   packages/<pkg>/src/path.py:42:agent_wake        (dependency.missing)
+#   packages/<pkg>/pyproject.toml:*:agent_wake      (dependency.stale)
+#
+# maintained in lockstep with the import-context rules in
+# threetears.enforcement.dependency_alignment.walkers: guarded,
+# deferred, and TYPE_CHECKING imports never need exemptions.
