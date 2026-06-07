@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "3tears-observe",
     "pydantic>=2.0",
 ]
 
@@ -32,6 +33,7 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-observe = { workspace = true }
 
 [tool.mypy]
 strict = true

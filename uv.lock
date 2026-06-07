@@ -112,12 +112,14 @@ version = "0.10.5"
 source = { editable = "packages/agent/acl" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-observe" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
 
@@ -126,13 +128,15 @@ name = "3tears-agent-audit"
 version = "0.10.5"
 source = { editable = "packages/agent/audit" }
 dependencies = [
-    { name = "3tears" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "3tears", editable = "packages/core" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "pydantic", specifier = ">=2.0" },
 ]
 
@@ -143,9 +147,8 @@ source = { editable = "packages/agent/memory" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
-    { name = "3tears-agent-tools" },
-    { name = "3tears-conversations" },
     { name = "3tears-langgraph" },
+    { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
 ]
@@ -154,9 +157,8 @@ dependencies = [
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
-    { name = "3tears-agent-tools", editable = "packages/agent/tools" },
-    { name = "3tears-conversations", editable = "packages/conversations" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pgvector" },
 ]
@@ -167,6 +169,7 @@ version = "0.10.5"
 source = { editable = "packages/agent/skills" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
     { name = "uuid-utils" },
@@ -175,6 +178,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "langchain-core" },
     { name = "pydantic" },
     { name = "uuid-utils" },
@@ -188,8 +192,9 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-memory" },
-    { name = "3tears-conversations" },
     { name = "3tears-langgraph" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
     { name = "httpx" },
     { name = "langchain-core" },
 ]
@@ -242,8 +247,9 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-memory", editable = "packages/agent/memory" },
-    { name = "3tears-conversations", editable = "packages/conversations" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "openpyxl", marker = "extra == 'all'" },
@@ -277,6 +283,8 @@ source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-skills" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
     { name = "apscheduler" },
     { name = "jinja2" },
     { name = "langchain-core" },
@@ -293,6 +301,8 @@ prometheus = [
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-skills", editable = "packages/agent/skills" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "jinja2", specifier = ">=3" },
     { name = "langchain-core" },
@@ -311,6 +321,8 @@ dependencies = [
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-audit" },
     { name = "3tears-agent-tools" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
     { name = "jsonpath-ng" },
     { name = "pydantic" },
     { name = "ruamel-yaml" },
@@ -323,6 +335,8 @@ requires-dist = [
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-audit", editable = "packages/agent/audit" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "jsonpath-ng", specifier = ">=1.6" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
@@ -375,6 +389,7 @@ dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-acl" },
     { name = "3tears-langgraph" },
+    { name = "3tears-observe" },
 ]
 
 [package.metadata]
@@ -382,6 +397,7 @@ requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-langgraph", editable = "packages/langgraph" },
+    { name = "3tears-observe", editable = "packages/observe" },
 ]
 
 [[package]]
@@ -390,6 +406,7 @@ version = "0.10.5"
 source = { editable = "packages/datasources" }
 dependencies = [
     { name = "3tears" },
+    { name = "3tears-observe" },
     { name = "asyncpg" },
     { name = "pydantic" },
 ]
@@ -414,6 +431,7 @@ snowflake = [
 [package.metadata]
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8" },
@@ -470,6 +488,8 @@ name = "3tears-langgraph"
 version = "0.10.5"
 source = { editable = "packages/langgraph" }
 dependencies = [
+    { name = "3tears" },
+    { name = "3tears-observe" },
     { name = "asyncpg" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
@@ -478,6 +498,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears", editable = "packages/core" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "asyncpg" },
     { name = "langgraph", specifier = ">=0.4" },
     { name = "langgraph-checkpoint", specifier = ">=4.0" },
@@ -599,15 +621,21 @@ name = "3tears-registry"
 version = "0.10.5"
 source = { editable = "packages/registry" }
 dependencies = [
+    { name = "3tears" },
     { name = "3tears-agent-acl" },
     { name = "3tears-agent-tools" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
     { name = "nats-py" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-acl", editable = "packages/agent/acl" },
     { name = "3tears-agent-tools", editable = "packages/agent/tools" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
     { name = "nats-py", specifier = ">=2.0" },
 ]
 

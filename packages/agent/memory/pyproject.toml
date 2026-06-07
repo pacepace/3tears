@@ -25,9 +25,8 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-agent-acl",
-    "3tears-agent-tools",
-    "3tears-conversations",
     "3tears-langgraph",
+    "3tears-observe",
     "pgvector",
     "langchain-core",
 ]
@@ -41,6 +40,5 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
-3tears-agent-tools = { workspace = true }
-3tears-conversations = { workspace = true }
 3tears-langgraph = { workspace = true }
+3tears-observe = { workspace = true }
