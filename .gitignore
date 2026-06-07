@@ -208,3 +208,6 @@ __marimo__/
 
 # Claude Code local state
 .claude/
+
+# prawduct session evidence (local governance artifacts, never shipped)
+.prawduct/

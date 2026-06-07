@@ -110,3 +110,13 @@ packages/models/tests/unit/models/test_tracking.py:717:_prom
 packages/models/tests/unit/models/test_tracking.py:762:_prom
 # rationale: test reads UsageTracker._prom to assert two trackers with distinct registries get distinct emitters; pins the distinct-by-identity contract.
 packages/models/tests/unit/models/test_tracking.py:779:_prom
+# rationale: test asserts the L2 client resolved from the registry default at construction; _nats_client is the resolved-dependency anchor and a public accessor would add API surface only tests need
+packages/core/tests/unit/data/test_collection_factory.py:176:_nats_client
+# rationale: test asserts explicit nats_client=None disables L2 despite a registry default; same resolved-dependency anchor as line 176
+packages/core/tests/unit/data/test_collection_factory.py:189:_nats_client
+# rationale: test asserts a constructor-supplied client wins over the registry default; same resolved-dependency anchor as line 176
+packages/core/tests/unit/data/test_collection_factory.py:203:_nats_client
+# rationale: test asserts a bind_table per-table override wins over the registry default; same resolved-dependency anchor as line 176
+packages/core/tests/unit/data/test_collection_factory.py:218:_nats_client
+# rationale: test asserts DataStore.create_table collections resolve L2 from the registry; same resolved-dependency anchor as line 176
+packages/core/tests/unit/data/test_collection_factory.py:229:_nats_client

@@ -102,6 +102,12 @@ select = ["SLF"]
 # because the only legitimate caller is this test fixture. paired entry
 # lives in tests/enforcement/_underscore_exemptions.txt.
 "packages/agent/workspace/tests/unit/test_validators.py" = ["SLF001"]
+# tests assert which L2 client a collection resolved at construction
+# (constructor arg vs registry default vs bind_table override vs explicit
+# None). _nats_client is the resolved-dependency anchor with no public
+# accessor; exposing one would add API surface only tests need. paired
+# entries live in tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/unit/data/test_collection_factory.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
 # (callbacks, validation); calling delegate.arun/run would double-fire

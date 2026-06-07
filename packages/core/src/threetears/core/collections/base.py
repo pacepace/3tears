@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Final, Generic, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.cache import MISSING
@@ -29,11 +29,26 @@ from threetears.nats import NatsClient, NatsKvBucket
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger, traced
 
-__all__ = ["BaseCollection", "EntityT"]
+__all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "EntityT"]
 
 log = get_logger(__name__)
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
+
+
+class _NatsClientFromRegistry:
+    """sentinel type for :data:`NATS_CLIENT_FROM_REGISTRY`."""
+
+    __slots__ = ()
+
+
+# default for the ``nats_client`` constructor argument: resolve the L2
+# client from the registry (``CollectionRegistry.get_l2_client``), so
+# ``registry.configure(l2_client=...)`` / ``bind_table(..., l2_client=...)``
+# are effective wiring paths. distinguishes "argument omitted" from an
+# explicit ``None`` (which keeps its historical meaning: L2 disabled for
+# this collection regardless of registry state).
+NATS_CLIENT_FROM_REGISTRY: Final = _NatsClientFromRegistry()
 
 
 class BaseCollection(ABC, Generic[EntityT]):
@@ -83,12 +98,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         self,
         registry: CollectionRegistry,
         config: CoreConfig,
-        nats_client: NatsClient | None = None,
+        nats_client: NatsClient | _NatsClientFromRegistry | None = NATS_CLIENT_FROM_REGISTRY,
         write_buffer: WriteBuffer | None = None,
     ) -> None:
         self._registry = registry
         self._config = config
-        self._nats_client: NatsClient | None = nats_client
+        # L2 resolution mirrors L1/L3: when the argument is omitted, the
+        # registry is the wiring path (``configure(l2_client=...)`` /
+        # ``bind_table``). an explicit client always wins; an explicit
+        # ``None`` disables L2 for this collection.
+        if isinstance(nats_client, _NatsClientFromRegistry):
+            self._nats_client: NatsClient | None = registry.get_l2_client(self.table_name)
+        else:
+            self._nats_client = nats_client
         self._kv: NatsKvBucket | None = None
         self._write_buffer = write_buffer
         self._flush_strategy = FlushStrategy(config.collection_flush)
