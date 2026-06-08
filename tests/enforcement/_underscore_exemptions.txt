@@ -120,3 +120,15 @@ packages/core/tests/unit/data/test_collection_factory.py:203:_nats_client
 packages/core/tests/unit/data/test_collection_factory.py:218:_nats_client
 # rationale: test asserts DataStore.create_table collections resolve L2 from the registry; same resolved-dependency anchor as line 176
 packages/core/tests/unit/data/test_collection_factory.py:229:_nats_client
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+packages/core/tests/test_lazy_init.py:48:_LAZY
+# rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 48
+packages/core/tests/test_lazy_init.py:52:_LAZY
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+packages/agent/tools/tests/test_lazy_init.py:48:_LAZY
+# rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 48
+packages/agent/tools/tests/test_lazy_init.py:52:_LAZY
+# rationale: lazy-surface consistency test asserts __all__ is a subset of the package's _LAZY resolution table; _LAZY is the internal PEP 562 map and a public accessor would add API surface only this test needs
+packages/agent/memory/tests/test_lazy_init.py:47:_LAZY
+# rationale: lazy-surface consistency test asserts the TYPE_CHECKING import block matches the _LAZY resolution table; same internal-anchor reasoning as line 47
+packages/agent/memory/tests/test_lazy_init.py:51:_LAZY
