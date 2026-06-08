@@ -9,9 +9,12 @@ description = "MCP-compatible tool registry for 3tears tool system"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
 dependencies = [
-    "nats-py>=2.0",
-    "3tears-agent-tools>=0.5.0",
+    "3tears",
     "3tears-agent-acl>=0.1.0",
+    "3tears-agent-tools>=0.5.0",
+    "3tears-nats",
+    "3tears-observe",
+    "nats-py>=2.0",
 ]
 
 [project.urls]
@@ -21,5 +24,8 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
-3tears-agent-tools = { workspace = true }
+3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
+3tears-agent-tools = { workspace = true }
+3tears-nats = { workspace = true }
+3tears-observe = { workspace = true }

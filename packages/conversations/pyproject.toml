@@ -22,6 +22,7 @@ dependencies = [
     "3tears",
     "3tears-agent-acl",
     "3tears-langgraph",
+    "3tears-observe",
 ]
 
 [project.urls]
@@ -34,6 +35,7 @@ packages = ["src/threetears"]
 3tears = { workspace = true }
 3tears-agent-acl = { workspace = true }
 3tears-langgraph = { workspace = true }
+3tears-observe = { workspace = true }
 
 [tool.mypy]
 strict = true

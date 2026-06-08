@@ -20,6 +20,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "3tears",
+    "3tears-observe",
     "langgraph>=0.4",
     "langgraph-checkpoint>=4.0",
     "asyncpg",
@@ -32,3 +34,6 @@ Repository = "https://github.com/pacepace/3tears"
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
 
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-observe = { workspace = true }

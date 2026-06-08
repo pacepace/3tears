@@ -167,3 +167,5 @@ packages/agent/wake/tests/unit/test_tools_factories.py:178:_FakeSubscriptionsCol
 packages/agent/wake/tests/unit/test_tools_factories.py:235:_FakeRegistry
 # rationale: identity-encryption stand-in matching the two-method EncryptionService Protocol; production parity is declared via the parity-with marker on the class but the strict walker requires this entry for the cross-file lookup
 packages/agent/wake/tests/unit/test_tools_factories.py:269:_FakeEncryption
+# rationale: the L3 seam is duck-typed (async fetch/fetchrow/execute per BaseCollection.l3_pool docs); the fake implements exactly that consumed subset, and asyncpg.Pool's connection-management surface (acquire/release/copy_*/sizing) is outside the collection contract
+packages/core/tests/unit/data/test_collection_factory.py:67:FakeAsyncpgPool

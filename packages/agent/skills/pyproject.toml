@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "3tears-observe",
     "langchain-core",
     "pydantic",
     "uuid-utils",
@@ -34,3 +35,4 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-observe = { workspace = true }

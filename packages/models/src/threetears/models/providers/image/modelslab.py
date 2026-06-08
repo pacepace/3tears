@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from threetears.agent.tools.protocols import GeneratedImage, ImageGenerationBackend
+from threetears.media.contracts import GeneratedImage, ImageGenerationBackend
 
 __all__ = [
     "ModelsLabImageProvider",

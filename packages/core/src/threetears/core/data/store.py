@@ -69,6 +69,11 @@ class DataStore:
         then creates and executes any index SQL. generates a dynamic
         BaseCollection subclass and registers it with the CollectionRegistry.
 
+        the collection resolves its L2 (NATS) client from the registry:
+        wire it via ``registry.configure(l2_client=...)`` or
+        ``registry.bind_table(table_name, l2_client=...)`` before calling
+        this method.
+
         :param table_def: complete table definition with columns, indexes, and foreign keys
         :ptype table_def: TableDef
         :return: BaseCollection instance for created table
@@ -104,7 +109,10 @@ class DataStore:
         :rtype: list[dict[str, Any]]
         """
         l3_pool = self._registry.get_l3_pool("_raw")
-        result: list[dict[str, Any]] = await l3_pool.fetch(sql, *params)
+        rows = await l3_pool.fetch(sql, *params)
+        # convert at border: asyncpg Records iterate values, not keys --
+        # honor the declared dict row shape regardless of pool driver.
+        result: list[dict[str, Any]] = [dict(row) for row in rows]
         return result
 
     @traced

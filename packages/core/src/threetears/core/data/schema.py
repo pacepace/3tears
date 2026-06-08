@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from threetears.observe import get_logger
 
@@ -30,6 +30,7 @@ _ALLOWED_COLUMN_TYPES = frozenset(
         "jsonb",
         "decimal",
         "bytea",
+        "vector",
     }
 )
 
@@ -73,6 +74,9 @@ class ColumnDef(BaseModel):
     :ptype default: str | None
     :param primary_key: whether column is part of primary key
     :ptype primary_key: bool
+    :param vector_dim: pgvector dimension; required for (and only valid
+        with) ``column_type == "vector"``
+    :ptype vector_dim: int | None
     """
 
     name: str
@@ -80,6 +84,7 @@ class ColumnDef(BaseModel):
     nullable: bool = True
     default: str | None = None
     primary_key: bool = False
+    vector_dim: int | None = Field(default=None, gt=0)
 
     @field_validator("name")
     @classmethod
@@ -110,6 +115,23 @@ class ColumnDef(BaseModel):
             msg = f"column_type must be one of {sorted(_ALLOWED_COLUMN_TYPES)}, got: {value!r}"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def validate_vector_dim(self) -> ColumnDef:
+        """cross-validate vector_dim against column_type.
+
+        :return: validated column definition
+        :rtype: ColumnDef
+        :raises ValueError: if vector_dim is missing for a vector column
+            or present on a non-vector column
+        """
+        if self.column_type == "vector" and self.vector_dim is None:
+            msg = f"column {self.name!r}: column_type 'vector' requires vector_dim to be set"
+            raise ValueError(msg)
+        if self.column_type != "vector" and self.vector_dim is not None:
+            msg = f"column {self.name!r}: vector_dim is only valid with column_type 'vector'"
+            raise ValueError(msg)
+        return self
 
 
 class IndexDef(BaseModel):
