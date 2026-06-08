@@ -108,6 +108,15 @@ select = ["SLF"]
 # accessor; exposing one would add API surface only tests need. paired
 # entries live in tests/enforcement/_underscore_exemptions.txt.
 "packages/core/tests/unit/data/test_collection_factory.py" = ["SLF001"]
+# lazy-surface consistency tests pin the three-way agreement between
+# __all__, the _LAZY map, and the TYPE_CHECKING block in each lazy
+# package __init__ (docs/separate-concerns-decisions.md). _LAZY is the
+# internal lazy-resolution table; a public accessor would add API
+# surface only these consistency tests need. paired entries live in
+# tests/enforcement/_underscore_exemptions.txt.
+"packages/core/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/tools/tests/test_lazy_init.py" = ["SLF001"]
+"packages/agent/memory/tests/test_lazy_init.py" = ["SLF001"]
 # NameMangledToolProxy._arun/_run forward to delegate._arun/_run because
 # the proxy already executed the LangChain BaseTool wrapper chain
 # (callbacks, validation); calling delegate.arun/run would double-fire
