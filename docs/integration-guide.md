@@ -1,12 +1,12 @@
 # 3tears Integration Guide
 
-> **Status: DRAFT — re-authored against `develop`.**
+> **Status: current as of the L2-registry-wiring / vector-column / lazy-init work
+> (PRs #87, #89, #90).**
 >
 > Every concrete API, import path, and code sample below was verified against the
-> `develop` source tree (the merge target). `develop` moves fast, so **treat code as
-> the source of truth** and re-verify before relying on a specific signature. Open
-> questions and known sharp edges are in
-> [§13](#13-known-sharp-edges--open-questions). Intended for expert review.
+> `develop` source tree. `develop` moves fast, so **treat code as the source of
+> truth** and re-verify before relying on a specific signature. Remaining known
+> sharp edges are in [§13](#13-known-sharp-edges--open-questions).
 
 This guide explains how to wire 3tears into a host application as its data layer:
 the mental model, the design decisions you have to make, and copy-pasteable
@@ -70,24 +70,27 @@ or installs a log handler on your behalf. **You** construct the backing clients 
 PostgreSQL pool, optionally a `NatsClient`), hand them to 3tears, and **you own
 their lifecycle** (create on startup, close on shutdown).
 
-Most wiring funnels through one dependency-injection seam — the
-**`CollectionRegistry`** — with one deliberate exception: the **L2 (NATS) client is
-passed to each collection at construction**, not through the registry (see §4 and
-§13).
+All three tiers funnel through one dependency-injection seam — the
+**`CollectionRegistry`**. You `configure(l1_backend=, l2_client=, l3_pool=)` once;
+every collection (including those `DataStore` builds for you) resolves all three
+tiers from the registry. A collection's L2 client can still be overridden per
+construction (an explicit `nats_client=` argument wins, and an explicit `None`
+disables L2 for that collection regardless of the registry), but the registry is
+the default wiring path — see §4.
 
 ```text
         ┌─────────────────────── your host app process ───────────────────────┐
         │                                                                      │
         │   you create:   SQLiteBackend       asyncpg pool      NatsClient*    │
         │                      │                   │                 │         │
-        │                      ▼                   ▼                 │         │
-        │   CollectionRegistry.configure(l1_backend=, l3_pool=)      │         │
-        │                      │                              (constructor arg)│
-        │                      ▼                                     ▼         │
+        │                      ▼                   ▼                 ▼         │
+        │   CollectionRegistry.configure(l1_backend=, l3_pool=, l2_client=)    │
+        │                      │                                               │
+        │                      ▼                                               │
         │   DataStore(namespace_id, registry) ─► collections ─► entities       │
         │                                                                      │
         └──────────────────────────────────────────────────────────────────────┘
-                * NATS / L2 is optional — single-pod apps skip it (§3, §8.2, §13).
+                * NATS / L2 is optional — single-pod apps skip it (§3, §8.2).
 ```
 
 ---
@@ -130,10 +133,13 @@ Consequences:
 Unless noted, these are exported from `threetears.core` (see §15).
 
 - **`CollectionRegistry`** — DI container + table-name lookup + cache coherence.
-  Holds default L1/L3 backends; `configure(l1_backend=, l2_client=, l3_pool=)` sets
-  defaults, `bind_table(table_name, ...)` pins per-table overrides **before** a
-  collection is constructed (needed because a collection snaps its L3 pool from the
-  registry at `__init__`). Drives cross-pod invalidation via
+  Holds default L1/L2/L3 backends; `configure(l1_backend=, l2_client=, l3_pool=)`
+  sets defaults, `bind_table(table_name, l1_backend=, l2_client=, l3_pool=)` pins
+  per-table overrides **before** a collection is constructed (needed because a
+  collection snaps its backends from the registry at `__init__`). A collection
+  resolves its L2 client from the registry (`get_l2_client(table_name)`) when no
+  `nats_client=` constructor argument is supplied; an explicit argument wins, and an
+  explicit `None` disables L2 for that collection. Drives cross-pod invalidation via
   `start_invalidation_listener(nats)` / `publish_invalidation(...)` using a typed
   `CacheInvalidationMessage` on `Subjects.cache_invalidate()`.
 - **`DataStore`** — the ergonomic front door. Wraps a registry, creates tables from
@@ -167,8 +173,9 @@ Unless noted, these are exported from `threetears.core` (see §15).
 3. **Graceful degradation.** A missing/unhealthy cache tier falls through to the
    next. The L2 path narrows its exception scope to real transport errors (`KvError`)
    and degrades to L1+L3; programming errors still surface.
-4. **Explicit dependency injection.** One registry, configured once. (L2 is the one
-   per-collection constructor arg — see §13.)
+4. **Explicit dependency injection.** One registry, configured once; all three tiers
+   resolve through it. (A collection may still override its L2 client at construction
+   — see §4.)
 5. **Caller owns concurrency boundaries.** Optimistic locking raises on conflict; the
    host decides retry/merge policy. `KVLease` is available for cross-pod mutual
    exclusion.
@@ -185,7 +192,7 @@ Unless noted, these are exported from `threetears.core` (see §15).
 |---|---|---|
 | **Single pod or multiple?** | one / many | One → **skip L2/NATS**. Many → add NATS for L2 and cross-pod invalidation. |
 | **How does the process reach L3?** | direct pool / NATS proxy | Trusted service with DB creds → direct pool. Sandboxed worker without creds → proxy (and you must provide the broker — §13). |
-| **How are tables defined?** | `DataStore` dynamic / hand-written `BaseCollection` | Start with `DataStore`. Drop to hand-written subclasses for bespoke serialization, composite-PK control, or to attach L2 cleanly (§13). |
+| **How are tables defined?** | `DataStore` dynamic / hand-written `BaseCollection` | Start with `DataStore` — its collections inherit all three tiers (incl. L2) from the registry. Drop to hand-written subclasses for bespoke serialization or composite-PK control. |
 | **Which packages?** | `core` (+ `3tears-nats`) / + `agent-memory` | KV/relational caching → `core` (+ `3tears-nats` for L2). Semantic memory/search → add `agent-memory` and **enable pgvector**. |
 | **Flush strategy** | `ALWAYS`, `ON_CHECKPOINT`, `ON_SCHEDULE`, `ON_SHUTDOWN` | `ALWAYS` = write-through, simplest to reason about. Buffered strategies trade durability latency for throughput (§10). |
 
@@ -193,8 +200,9 @@ Unless noted, these are exported from `threetears.core` (see §15).
 
 ## 7. Prerequisites & installation
 
-**Host runtime** — Python (check package metadata for the floor) and an `async`
-runtime; the data API is `async`/`await` end to end.
+**Host runtime** — Python **3.14+** (the `requires-python` floor; re-check package
+metadata as it moves) and an `async` runtime; the data API is `async`/`await` end to
+end.
 
 **Backing services**
 
@@ -226,15 +234,9 @@ point. CRUD is identical across all three — only the wiring differs.
 ### 8.1 Minimal: L1 + L3 (single pod, no NATS)
 
 The smallest *correct* configuration: an in-memory L1 cache in front of a durable
-PostgreSQL L3. No NATS.
-
-> ⚠️ **Verified caveat (executed against `develop`):** this exact shape — the
-> `DataStore` dynamic path with a **raw `asyncpg` pool** and a **`uuid` primary key** —
-> does **not** round-trip today. Two framework-level issues bite the L3→L1 re-promotion
-> (§13 items 7 & 8). Until they're fixed, the working variants are: give the registry an
-> L3 pool that yields **dict rows** (a thin wrapper over the asyncpg pool) **and** use an
-> **L1-bindable PK type** such as `text`. The sample below is the *intended* shape; treat
-> the `uuid` PK and raw pool as aspirational until §13/7–8 are resolved.
+PostgreSQL L3. No NATS. This exact shape — the `DataStore` dynamic path with a raw
+`asyncpg` pool and a `uuid` primary key — round-trips end to end (covered by an
+asyncpg-backed integration test in `threetears.core`).
 
 ```python
 import asyncio
@@ -319,29 +321,21 @@ They gate on Docker and `pytest.skip` cleanly when it's unavailable.
 ### 8.2 Add L2 (NATS) for multi-pod caching + coherence
 
 When you run more than one pod, add NATS so pods share an L2 cache **and** a write in
-one pod evicts the stale copy in others.
-
-> ⚠️ **Wiring caveat (see §13):** a collection reads its L2 client from the
-> **collection constructor**, *not* from `registry.configure(l2_client=...)`. The
-> `DataStore.create_table` convenience path does **not** thread a NATS client into
-> the collections it builds (those collections log a one-shot warning on first write
-> and run L1+L3 only). To attach L2 today, build the dynamic collection yourself with
-> `create_dynamic_collection(..., nats_client=...)`. The registry-level invalidation
-> listener is independent and works regardless.
+one pod evicts the stale copy in others. The only change from §8.1 is connecting a
+`NatsClient` and handing it to the registry — `DataStore` collections then pick up L2
+automatically, and each pod subscribes once for cross-pod invalidation.
 
 ```python
 import os
+import uuid
 
-from threetears.core import CollectionRegistry, DefaultCoreConfig, TableDef, ColumnDef
+from threetears.core import CollectionRegistry, DataStore, DefaultCoreConfig, TableDef, ColumnDef
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.nats import NatsClient
 
 
 async def wire_with_l2(pg_pool) -> None:
     l1 = SQLiteBackend(db_name="hello_world")
-    registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l3_pool=pg_pool)
 
     # --- Connect NATS (classmethod). The namespace prefixes the KV bucket,
     #     which collections create lazily as "{namespace}-collections". ---
@@ -351,29 +345,37 @@ async def wire_with_l2(pg_pool) -> None:
         client_name="myapp-pod-1",
     )
 
-    config = DefaultCoreConfig(collection_flush="ALWAYS")
-    table = TableDef(
-        name="widgets",
-        columns=[
-            ColumnDef(name="id", column_type="uuid", primary_key=True),
-            ColumnDef(name="name", column_type="text", nullable=False),
-        ],
-    )
+    # --- Configure all three tiers on the registry. Collections (including the
+    #     ones DataStore builds) resolve their L2 client from here. ---
+    registry = CollectionRegistry()
+    registry.configure(l1_backend=l1, l3_pool=pg_pool, l2_client=nats)
 
-    # Create the L3 DDL however you prefer (DataStore.create_table, a migration, or
-    # raw SQL), then build the collection WITH the NATS client so L2 is active:
-    widgets = create_dynamic_collection(
-        table_def=table, registry=registry, config=config, nats_client=nats,
+    store = DataStore(uuid.uuid4(), registry, DefaultCoreConfig(collection_flush="ALWAYS"))
+    await store.create_table(
+        TableDef(
+            name="widgets",
+            columns=[
+                ColumnDef(name="id", column_type="uuid", primary_key=True),
+                ColumnDef(name="name", column_type="text", nullable=False),
+            ],
+        )
     )
+    widgets = store["widgets"]   # L2 is active: reads/writes traverse L1 -> L2 -> L3
 
     # --- Cross-pod cache coherence: each pod subscribes once at startup so writes
     #     elsewhere evict this pod's stale L1 entry. ---
     await registry.start_invalidation_listener(nats)
 
-    # ... use `widgets` exactly as in §8.1; reads/writes now traverse L1 -> L2 -> L3 ...
+    # ... use `widgets` exactly as in §8.1 ...
 
     await nats.shutdown()   # graceful drain on shutdown
 ```
+
+> Need L2 on for some tables but off for others? Override per table with
+> `registry.bind_table("widgets", l2_client=nats)` before the collection is built, or
+> pass `nats_client=None` to a hand-built collection to force L1+L3 for it. A
+> collection with no resolvable L2 client logs a one-shot warning on its first write
+> so the wiring gap is visible.
 
 ### 8.3 L3 over a proxy (no DB credentials in the pod)
 
@@ -405,10 +407,14 @@ registry.configure(l1_backend=l1, l3_pool=l3)
 Validated Pydantic models:
 
 - **`ColumnDef`**: `name`, `column_type`, `nullable=True`, `default=None`,
-  `primary_key=False`. Allowed `column_type`: `text`, `integer`, `bigint`,
-  `boolean`, `timestamp`, `uuid`, `jsonb`, `decimal`, `bytea`. *(There is no
-  `vector` type — pgvector columns must be added via raw DDL, e.g. `store.execute`,
-  not `ColumnDef`.)*
+  `primary_key=False`, `vector_dim=None`. Allowed `column_type`: `text`, `integer`,
+  `bigint`, `boolean`, `timestamp`, `uuid`, `jsonb`, `decimal`, `bytea`, `vector`.
+  A `vector` column **requires** `vector_dim` (a positive int, the pgvector
+  dimension) and `vector_dim` is only valid on a `vector` column — both are validated
+  at construction. It renders `VECTOR(<dim>)` DDL, binds with a `::vector` cast on
+  write, and reads back as `list[float]`, so vector columns work over a plain asyncpg
+  pool without registering the pgvector codec. (Materialising a `vector` column needs
+  `pgvector` installed and `CREATE EXTENSION vector` in the database.)
 - **`IndexDef`**: `name`, `columns`, `unique=False`.
 - **`ForeignKeyDef`**: `name`, `columns`, `references_table`, `references_columns`,
   `on_delete="CASCADE"`, `on_update="NO ACTION"` (actions: `CASCADE`, `SET NULL`,
@@ -620,65 +626,41 @@ A separate L3 broker that you provide (§13) holds the real DSN and answers thei
 
 ## 13. Known sharp edges & open questions
 
-Flagged honestly for expert review. Verify each against current source.
+Flagged honestly. Verify each against current source.
 
-1. **L2 is wired via the collection constructor, not the registry — by design.**
-   `BaseCollection` resolves L1/L3 from the registry but reads its NATS client only
-   from its constructor. `registry.configure(l2_client=...)` / `get_l2_client()` exist
-   and are tested, but **no read/write path in `BaseCollection` consumes them** — the
-   collection's L2 comes from `nats_client=`, and the invalidation listener takes the
-   client explicitly. A missing client triggers a deliberate one-shot warning
-   (DS-06-04), so this is intentional, not silent breakage. *Open question:* is the
-   registry's `l2_client` slot vestigial, or intended to become the wiring path?
-
-2. **`DataStore.create_table` does not thread NATS into its collections.** It calls
-   `create_dynamic_collection(...)` without a `nats_client`, so collections created
-   through `DataStore` have **L2 disabled** (and warn once on first write). To get L2,
-   call `create_dynamic_collection(..., nats_client=...)` yourself (§8.2). *Open
-   question:* should `DataStore` accept/propagate a NATS client?
-
-3. **L1 `initialize()` is one-shot.** `SQLiteBackend.initialize()` returns early once
-   initialized, and `create_dynamic_collection` calls it with a single table's
-   metadata. On a **single shared L1 backend**, only the **first** table created
-   registers its L1 schema; later tables may be skipped. *Mitigation / open
-   question:* use per-table L1 backends via `registry.bind_table(table, l1_backend=...)`,
-   or one backend per table — confirm the intended multi-table pattern with
-   maintainers. (Single-table examples here avoid the issue.)
-
-4. **The L3 proxy broker is not part of `threetears.core`.** `NatsProxyL3Backend` is
+1. **The L3 proxy broker is not part of `threetears.core`.** `NatsProxyL3Backend` is
    only the client; the service answering `*.l3.query` / `*.l3.batch` must be provided
    separately. Budget for it if you choose the sandboxed-pod topology.
 
-5. **No `vector` column type in `TableDef`.** pgvector columns (for `agent-memory`)
-   must be created via raw DDL, not `ColumnDef`. Confirm the supported path for vector
-   schema if you build on agent-memory.
+2. **Schema namespacing.** The migration runner and L3 layer set `search_path` to the
+   target schema before DDL runs (see `how-to-add-a-migration.md`), so migration/table
+   bodies use **unqualified** names. The `DataStore` `agent_id` computes the schema
+   name; the pool/broker binds it.
 
-6. **Schema namespacing — resolved.** Earlier drafts asked how multi-tenant schema
-   isolation works. The migration runner and L3 layer set `search_path` to the target
-   schema before DDL runs (see `how-to-add-a-migration.md`), so migration/table bodies
-   use **unqualified** names. The `DataStore` `agent_id` computes the schema name; the
-   pool/broker binds it.
+### Resolved since the earlier draft
 
-7. **CONFIRMED BUG (executed) — dynamic collections return raw asyncpg `Record`s, which
-   break L1 re-promotion.** `create_dynamic_collection.fetch_from_postgres` returns
-   `rows[0]` (an `asyncpg.Record`) unchanged. On an L1 miss, `_pull_through` passes it to
-   `SQLiteBackend.upsert`, which does `[c for c in data if c in schema]` — but iterating
-   an `asyncpg.Record` yields **values, not keys**, so it builds
-   `INSERT INTO <t> () VALUES ()` → `sqlite3.OperationalError: near ")"`. The repo's own
-   integration test masks this by using a **dict-returning stub pool**. Likely fix:
-   `fetch_from_postgres` should return `dict(rows[0])`. *Workaround:* wrap the L3 pool so
-   `fetch`/`fetchrow` return `dict(row)`. Tracked as #85.
+The first draft of this guide, written before the L2-registry-wiring / vector-column
+work landed (PRs #87, #89, #90), flagged six sharp edges that are now fixed. Recorded
+here so anyone holding the old draft knows the workarounds are no longer needed:
 
-8. **CONFIRMED BUG (executed) — asyncpg `pgproto.UUID` PK values can't bind to L1.** Even
-   with dict rows, asyncpg deserializes `uuid` columns to `asyncpg.pgproto.pgproto.UUID`.
-   `SQLiteBackend.select_by_id` binds the PK value **raw** (no `serialize_value` on the
-   way in), and sqlite3 only has an adapter for stdlib `uuid.UUID`, so a re-promoted
-   uuid id raises `sqlite3.ProgrammingError: type 'asyncpg.pgproto.pgproto.UUID' is not
-   supported`. *Workaround:* use a `text` PK, or register an sqlite3 adapter for
-   asyncpg's UUID. Likely fix: serialize PK values at the L1 boundary the same way
-   `upsert` serializes column values. Tracked as #86. (Items 7 + 8 verified end-to-end
-   against a testcontainers Postgres: raw-pool+uuid fails, dict-pool+uuid fails,
-   dict-pool+text round-trips.)
+- **L2 wiring via the registry** — `registry.configure(l2_client=...)` /
+  `bind_table(..., l2_client=...)` are now the wiring path: a collection resolves its
+  NATS client from the registry when no constructor argument is given (§4, §8.2). The
+  old "L2 only via the collection constructor" caveat is gone.
+- **`DataStore.create_table` threads L2** — collections built by `DataStore` inherit
+  the registry's L2 client, so the "build the dynamic collection yourself" workaround
+  is no longer required.
+- **`SQLiteBackend.initialize()` is additive** — it registers unseen tables on each
+  call and skips already-registered ones, so multiple single-table inits compose on
+  one shared L1 backend. The "first table only" caveat is gone.
+- **`vector` column type** — `ColumnDef(column_type="vector", vector_dim=...)` is now
+  first-class (§9); raw DDL is no longer the only path.
+- **Raw asyncpg `Record` re-promotion (#85)** — `fetch_from_postgres` now converts
+  rows to dicts at the L3 border, so L3→L1 re-promotion works with a raw asyncpg pool.
+  Closed.
+- **asyncpg `pgproto.UUID` PK binding (#86)** — PK values are now serialized at the L1
+  boundary the same way column values are, so a `uuid` PK round-trips. Closed. The
+  §8.1 raw-pool + uuid-PK shape is covered by an asyncpg-backed integration test.
 
 ---
 
@@ -688,15 +670,17 @@ Flagged honestly for expert review. Verify each against current source.
 - [ ] Stand up PostgreSQL; enable pgvector if using `agent-memory`.
 - [ ] Create the L3 pool at startup; close it on shutdown.
 - [ ] `CollectionRegistry().configure(l1_backend=SQLiteBackend(...), l3_pool=pool)`.
-- [ ] (Multi-pod) `await NatsClient.connect(...)`; build collections with
-      `nats_client=` (§8.2 caveat); `await registry.start_invalidation_listener(nats)`
-      on every pod; `await nats.shutdown()` on exit.
+- [ ] (Multi-pod) `await NatsClient.connect(...)`; pass it as
+      `registry.configure(..., l2_client=nats)` so collections pick up L2 (§8.2);
+      `await registry.start_invalidation_listener(nats)` on every pod;
+      `await nats.shutdown()` on exit.
 - [ ] Define schema with `TableDef`/`ColumnDef`/…; author migrations per
       [`how-to-add-a-migration.md`](./how-to-add-a-migration.md); apply at startup.
 - [ ] Choose `collection_flush` (start with `ALWAYS`).
 - [ ] Route the `threetears` logger into your logging; optionally configure OTel.
 - [ ] Put DSN/NATS URL in secrets; read them in your wiring, not in 3tears.
-- [ ] Re-read §13 and verify the sharp edges that touch your design.
+- [ ] Re-read §13 and confirm the remaining sharp edges (proxy broker, schema
+      namespacing) against your design.
 
 ---
 
