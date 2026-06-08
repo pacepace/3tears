@@ -1,0 +1,340 @@
+"""read-time merge across the three scopes of playbook entries (D4).
+
+the effective view of a domain's playbook knowledge is the ADDITIVE
+UNION of the caller-visible platform + customer + user entries
+attached to that domain (KNW-11). an entry that carries an
+``origin_entry_id`` SHADOWS the ancestor it points at: whole-body
+replace at read time, nearest scope wins (user > customer > platform,
+D4). entries WITHOUT an origin link pass through untouched — two
+contradictory unlinked entries are both emitted (the author chose not
+to declare a shadow, so neither is suppressed).
+
+shadow resolution is WHOLE-ENTRY: the nearest-scope member of a chain
+is emitted verbatim and the rest are dropped from the effective view.
+entry bodies are NEVER concatenated or spliced — an entry body is one
+atomic procedure and merging two procedures hands the model
+contradictory instructions (D4). this module deliberately reuses the
+effective/layered SPLIT pattern (``XxxEffective`` / ``XxxLayered``)
+but NOT any per-field merge rules.
+
+the ``always_inject`` invariant flag (KNW-17 / D9) RIDES THROUGH shadow
+resolution like any other field: the nearest-scope winner's flag
+governs. a user may shadow a platform invariant with a non-invariant
+override (or the reverse) — the merge does not special-case the flag.
+the flag is surfaced on :class:`EntryEffective` so the SDK retrieval
+node can honour the trim-exemption tier; the budget logic itself lives
+in the SDK node, not here.
+
+cycle safety is a WRITE-time concern: :func:`assert_no_origin_cycle`
+walks the prospective ``origin_entry_id`` chain with a visited set and
+bounded depth, rejecting a cycle before it can be persisted. the
+read-time merge therefore assumes acyclic chains; it still guards its
+own walk with a visited set so a corrupted row never spins the merge.
+
+this module is the SINGLE authority on the entry merge shared by the
+hub (eval fingerprint builder) and the SDK (turn-time retrieval node):
+both import :func:`merge_entry_views` from here so a fingerprint and a
+live turn agree byte-for-byte on the effective view (knowledge-task-04).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from uuid import UUID
+
+from threetears.observe import get_logger
+
+from threetears.knowledge.scope import Scope
+
+__all__ = [
+    "MAX_SHADOW_CHAIN_DEPTH",
+    "EntryEffective",
+    "EntryLayered",
+    "EntrySnapshot",
+    "OriginCycleError",
+    "assert_no_origin_cycle",
+    "merge_entry_views",
+]
+
+log = get_logger(__name__)
+
+
+#: bound on shadow-chain length. a chain longer than this is treated as
+#: pathological (likely a cycle or an abuse) and rejected at write time.
+#: three real scopes (user -> customer -> platform) need a depth of at
+#: most three links; the generous bound leaves room without admitting a
+#: runaway walk.
+MAX_SHADOW_CHAIN_DEPTH = 32
+
+
+#: scope precedence for "nearest scope wins": higher integer = nearer
+#: the caller. user shadows customer shadows platform (D4).
+_SCOPE_RANK: Mapping[Scope, int] = {
+    Scope.PLATFORM: 0,
+    Scope.CUSTOMER: 1,
+    Scope.USER: 2,
+}
+
+
+class OriginCycleError(ValueError):
+    """raised when an ``origin_entry_id`` chain forms a cycle.
+
+    rejected at WRITE time: a cyclic shadow chain has no nearest-scope
+    member and would spin the read-time walk. the workflow surfaces
+    this as a 4xx at the create / update endpoint rather than
+    persisting an un-resolvable row.
+    """
+
+
+@dataclass(frozen=True)
+class EntrySnapshot:
+    """immutable snapshot of one playbook-entry row for the merge.
+
+    the merge consumes snapshots, not live entities, so the algorithm
+    is pure and unit-testable without a Collection. every field is the
+    value at that entry's own scope; ``origin_entry_id`` is the shadow
+    link (``None`` for an unlinked entry).
+
+    :ivar id: entry id
+    :ivar scope: derived scope of this entry (user / customer / platform)
+    :ivar origin_entry_id: ancestor this entry shadows, or ``None``
+    :ivar title: short procedure title
+    :ivar body: atomic procedure body (consumed verbatim; never spliced)
+    :ivar tags: routing / search tags
+    :ivar always_inject: KNW-17 invariant flag (rides through shadow
+        resolution like any field)
+    :ivar datasource_id: attached datasource domain, or ``None``
+    :ivar namespace_id: attached namespace domain, or ``None``
+    """
+
+    id: UUID
+    scope: Scope
+    origin_entry_id: UUID | None = None
+    title: str = ""
+    body: str = ""
+    tags: tuple[str, ...] = ()
+    always_inject: bool = False
+    datasource_id: UUID | None = None
+    namespace_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class EntryEffective:
+    """effective (winner) view of one shadow chain returned to callers.
+
+    the winner is the nearest-scope member of the chain (D4). when the
+    winner shadows an ancestor, ``shadows_scope`` names the scope of
+    the NEAREST shadowed ancestor so the task-07 provenance footer can
+    disclose the override (D5). ``always_inject`` is the winner's own
+    flag (KNW-17) — the SDK retrieval node reads it to exempt the entry
+    from similarity-trim.
+
+    :ivar entry: the winning entry snapshot (emitted verbatim)
+    :ivar shadows_scope: scope of the nearest shadowed ancestor, or
+        ``None`` when the winner shadows nothing
+    """
+
+    entry: EntrySnapshot
+    shadows_scope: Scope | None = None
+
+    @property
+    def always_inject(self) -> bool:
+        """expose the winner's invariant flag at the effective view.
+
+        the SDK retrieval node reads this to decide whether the entry
+        is exempt from similarity-trim / token-budget eviction (KNW-17).
+
+        :return: the winning entry's ``always_inject`` flag
+        :rtype: bool
+        """
+        return self.entry.always_inject
+
+
+@dataclass(frozen=True)
+class EntryLayered:
+    """layered provenance view of one shadow chain (KNW-12 / D5).
+
+    retains the winner plus the shadowed ancestors (nearest-first) with
+    their scope labels so a UI / review surface can show "this user
+    entry shadows the platform entry: ...". the read-time effective
+    view drops the ancestors; the layered view keeps them for display.
+
+    :ivar effective: the winner (same object the effective view emits)
+    :ivar shadowed: shadowed ancestors ordered nearest-scope-first
+        (the member directly under the winner first, the chain root
+        last); empty for an unlinked entry
+    """
+
+    effective: EntryEffective
+    shadowed: tuple[EntrySnapshot, ...] = field(default_factory=tuple)
+
+
+def assert_no_origin_cycle(
+    *,
+    entry_id: UUID,
+    origin_entry_id: UUID | None,
+    origin_of: Mapping[UUID, UUID | None],
+) -> None:
+    """reject an ``origin_entry_id`` assignment that would form a cycle.
+
+    walks the prospective chain from the proposed ``origin_entry_id``
+    upward through ``origin_of`` (the ``id -> origin_entry_id`` map of
+    the already-persisted entries), with a visited set seeded by
+    ``entry_id`` so a self-link or any back-link onto the entry being
+    written is caught. also rejects a chain that exceeds
+    :data:`MAX_SHADOW_CHAIN_DEPTH` (a runaway / pathological link).
+
+    called at WRITE time by the entry create / update path; the source
+    entry is never mutated (the check is read-only over the map).
+
+    :param entry_id: id of the entry being written (its own link is
+        ``origin_entry_id``)
+    :ptype entry_id: UUID
+    :param origin_entry_id: the prospective shadow link, or ``None``
+        (``None`` is trivially acyclic)
+    :ptype origin_entry_id: UUID | None
+    :param origin_of: map of every persisted entry id to its
+        ``origin_entry_id`` (used to walk ancestors)
+    :ptype origin_of: Mapping[UUID, UUID | None]
+    :return: nothing on success
+    :rtype: None
+    :raises OriginCycleError: when the chain revisits ``entry_id`` or
+        any earlier node, or exceeds the depth bound
+    """
+    if origin_entry_id is None:
+        return
+    visited: set[UUID] = {entry_id}
+    cursor: UUID | None = origin_entry_id
+    depth = 0
+    while cursor is not None:
+        depth += 1
+        if depth > MAX_SHADOW_CHAIN_DEPTH:
+            raise OriginCycleError(
+                f"origin_entry_id chain from {entry_id} exceeds max depth "
+                f"{MAX_SHADOW_CHAIN_DEPTH} (likely a cycle)",
+            )
+        if cursor in visited:
+            raise OriginCycleError(
+                f"origin_entry_id cycle detected writing {entry_id}: "
+                f"chain revisits {cursor}",
+            )
+        visited.add(cursor)
+        cursor = origin_of.get(cursor)
+
+
+def _chain_root(
+    entry_id: UUID,
+    origin_of: Mapping[UUID, UUID | None],
+) -> UUID:
+    """walk ``origin_entry_id`` links to the root of the shadow chain.
+
+    the root is the deepest ancestor reachable from ``entry_id`` that
+    is still present in ``origin_of`` (an entry whose
+    ``origin_entry_id`` is ``None`` OR points outside the visible set).
+    the walk is guarded by a visited set so a corrupted (cyclic) row
+    terminates at the entry where the cycle closes rather than spinning.
+
+    :param entry_id: id of the entry to walk up from
+    :ptype entry_id: UUID
+    :param origin_of: map of visible entry id to its ``origin_entry_id``
+    :ptype origin_of: Mapping[UUID, UUID | None]
+    :return: the chain-root entry id
+    :rtype: UUID
+    """
+    visited: set[UUID] = set()
+    current = entry_id
+    while True:
+        visited.add(current)
+        parent = origin_of.get(current)
+        # parent is the chain root anchor when it is None or points at
+        # an entry outside the visible set (a shadowed platform entry
+        # the caller cannot see still anchors the chain by its id, but
+        # we cannot walk into it, so we stop here).
+        if parent is None or parent not in origin_of:
+            result = current
+            break
+        if parent in visited:
+            # corrupted cyclic row: stop at the current node so the
+            # merge still terminates. write-time validation prevents
+            # this; the guard is defence in depth.
+            log.warning(
+                "origin_entry_id cycle encountered during merge at %s; "
+                "anchoring chain here",
+                current,
+            )
+            result = current
+            break
+        current = parent
+    return result
+
+
+def merge_entry_views(
+    entries: list[EntrySnapshot],
+) -> tuple[list[EntryEffective], list[EntryLayered]]:
+    """merge a domain's caller-visible entries into effective + layered.
+
+    additive union of the supplied entries (KNW-11), then whole-entry
+    shadow resolution per chain: entries linked by ``origin_entry_id``
+    are grouped into chains, and each chain emits exactly its
+    nearest-scope member (D4). unlinked entries each form a
+    single-member chain and pass through untouched.
+
+    the supplied list is the ALREADY-FILTERED caller-visible set for one
+    domain — visibility + domain routing happen in the serving SQL, not
+    here. the merge is a pure function of the snapshots.
+
+    returns both views together so callers that need both (effective
+    for injection, layered for the provenance footer) do not double-walk
+    the data. ordering of the returned lists is stable: chains are
+    emitted in ascending winner scope rank (platform first, then
+    customer, then user) and ties broken by winner id, so two merges of
+    the same input produce the same order.
+
+    :param entries: caller-visible entry snapshots for one domain
+    :ptype entries: list[EntrySnapshot]
+    :return: tuple ``(effective_views, layered_views)`` aligned by index
+    :rtype: tuple[list[EntryEffective], list[EntryLayered]]
+    """
+    origin_of: dict[UUID, UUID | None] = {
+        e.id: e.origin_entry_id for e in entries
+    }
+
+    # group visible entries by chain root; each group is one chain.
+    chains: dict[UUID, list[EntrySnapshot]] = {}
+    for entry in entries:
+        root = _chain_root(entry.id, origin_of)
+        chains.setdefault(root, []).append(entry)
+
+    effective_views: list[EntryEffective] = []
+    layered_views: list[EntryLayered] = []
+    for members in chains.values():
+        # winner = nearest scope; tie-break on id for determinism (two
+        # entries at the SAME scope in one chain is itself a malformed
+        # shadow, but we still resolve deterministically).
+        ordered = sorted(
+            members,
+            key=lambda e: (_SCOPE_RANK[e.scope], e.id.bytes),
+            reverse=True,
+        )
+        winner = ordered[0]
+        shadowed = tuple(ordered[1:])
+        shadows_scope = shadowed[0].scope if shadowed else None
+        effective = EntryEffective(entry=winner, shadows_scope=shadows_scope)
+        effective_views.append(effective)
+        layered_views.append(
+            EntryLayered(effective=effective, shadowed=shadowed),
+        )
+
+    # stable output ordering: platform winners first, then customer,
+    # then user, ties broken by winner id.
+    paired = sorted(
+        zip(effective_views, layered_views, strict=True),
+        key=lambda pair: (
+            _SCOPE_RANK[pair[0].entry.scope],
+            pair[0].entry.id.bytes,
+        ),
+    )
+    effective_sorted = [p[0] for p in paired]
+    layered_sorted = [p[1] for p in paired]
+    return effective_sorted, layered_sorted
