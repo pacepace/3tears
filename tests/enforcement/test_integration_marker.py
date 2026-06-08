@@ -18,6 +18,19 @@ docker-rooted fixture (the testcontainer fixtures rooted at
 "integration" tests that need no docker are deliberately NOT required to
 carry the marker — they run correctly in the no-docker job.
 
+**Heuristic boundary.** The walker parses each test file in isolation
+and detects a docker dependency only when a docker-rooted fixture name
+appears as a parameter *in that file* (directly, or via a local fixture
+defined in the same file — the live case today). It does NOT resolve the
+fixture graph across conftests, so a test that requests *only* a
+conftest-defined fixture which itself chains off docker — without naming
+a docker-rooted fixture in its own source — would escape the guard. Nor
+does it detect ``@pytest.mark.usefixtures(...)`` injection. Both are
+currently moot (every docker-chained conftest fixture is itself named
+``pg_url`` / ``pg_schema`` and is already tracked; no suite uses
+``usefixtures`` for docker), but if either pattern appears, add the new
+fixture name to ``_DOCKER_ROOTED_FIXTURES`` or extend the detector.
+
 AST-based, side-effect-free, well under the 15s budget.
 """
 
