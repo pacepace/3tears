@@ -35,6 +35,12 @@ this module is the SINGLE authority on the entry merge shared by the
 hub (eval fingerprint builder) and the SDK (turn-time retrieval node):
 both import :func:`merge_entry_views` from here so a fingerprint and a
 live turn agree byte-for-byte on the effective view (knowledge-task-04).
+the group-by-root + nearest-scope-wins WALK itself is shared one level
+down in :mod:`threetears.knowledge.chains`
+(:func:`resolve_shadow_chains`) so the concept merge (knowledge-task-03)
+reuses the identical resolution; this module only adapts entries onto
+that generic walk and surfaces the entry-shaped effective / layered
+views.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from uuid import UUID
 
 from threetears.observe import get_logger
 
+from threetears.knowledge.chains import resolve_shadow_chains
 from threetears.knowledge.scope import Scope
 
 __all__ = [
@@ -66,15 +73,6 @@ log = get_logger(__name__)
 #: most three links; the generous bound leaves room without admitting a
 #: runaway walk.
 MAX_SHADOW_CHAIN_DEPTH = 32
-
-
-#: scope precedence for "nearest scope wins": higher integer = nearer
-#: the caller. user shadows customer shadows platform (D4).
-_SCOPE_RANK: Mapping[Scope, int] = {
-    Scope.PLATFORM: 0,
-    Scope.CUSTOMER: 1,
-    Scope.USER: 2,
-}
 
 
 class OriginCycleError(ValueError):
@@ -223,52 +221,6 @@ def assert_no_origin_cycle(
         cursor = origin_of.get(cursor)
 
 
-def _chain_root(
-    entry_id: UUID,
-    origin_of: Mapping[UUID, UUID | None],
-) -> UUID:
-    """walk ``origin_entry_id`` links to the root of the shadow chain.
-
-    the root is the deepest ancestor reachable from ``entry_id`` that
-    is still present in ``origin_of`` (an entry whose
-    ``origin_entry_id`` is ``None`` OR points outside the visible set).
-    the walk is guarded by a visited set so a corrupted (cyclic) row
-    terminates at the entry where the cycle closes rather than spinning.
-
-    :param entry_id: id of the entry to walk up from
-    :ptype entry_id: UUID
-    :param origin_of: map of visible entry id to its ``origin_entry_id``
-    :ptype origin_of: Mapping[UUID, UUID | None]
-    :return: the chain-root entry id
-    :rtype: UUID
-    """
-    visited: set[UUID] = set()
-    current = entry_id
-    while True:
-        visited.add(current)
-        parent = origin_of.get(current)
-        # parent is the chain root anchor when it is None or points at
-        # an entry outside the visible set (a shadowed platform entry
-        # the caller cannot see still anchors the chain by its id, but
-        # we cannot walk into it, so we stop here).
-        if parent is None or parent not in origin_of:
-            result = current
-            break
-        if parent in visited:
-            # corrupted cyclic row: stop at the current node so the
-            # merge still terminates. write-time validation prevents
-            # this; the guard is defence in depth.
-            log.warning(
-                "origin_entry_id cycle encountered during merge at %s; "
-                "anchoring chain here",
-                current,
-            )
-            result = current
-            break
-        current = parent
-    return result
-
-
 def merge_entry_views(
     entries: list[EntrySnapshot],
 ) -> tuple[list[EntryEffective], list[EntryLayered]]:
@@ -279,6 +231,12 @@ def merge_entry_views(
     are grouped into chains, and each chain emits exactly its
     nearest-scope member (D4). unlinked entries each form a
     single-member chain and pass through untouched.
+
+    the group-by-root + nearest-scope-wins walk is delegated to the
+    shared :func:`threetears.knowledge.chains.resolve_shadow_chains` (the
+    same walk the concept merge uses); this function only adapts entry
+    snapshots onto that walk and wraps the resolved chains into the
+    entry-shaped :class:`EntryEffective` / :class:`EntryLayered` views.
 
     the supplied list is the ALREADY-FILTERED caller-visible set for one
     domain — visibility + domain routing happen in the serving SQL, not
@@ -296,45 +254,21 @@ def merge_entry_views(
     :return: tuple ``(effective_views, layered_views)`` aligned by index
     :rtype: tuple[list[EntryEffective], list[EntryLayered]]
     """
-    origin_of: dict[UUID, UUID | None] = {
-        e.id: e.origin_entry_id for e in entries
-    }
-
-    # group visible entries by chain root; each group is one chain.
-    chains: dict[UUID, list[EntrySnapshot]] = {}
-    for entry in entries:
-        root = _chain_root(entry.id, origin_of)
-        chains.setdefault(root, []).append(entry)
+    resolved = resolve_shadow_chains(
+        entries,
+        id_of=lambda e: e.id,
+        scope_of=lambda e: e.scope,
+        origin_id_of=lambda e: e.origin_entry_id,
+    )
 
     effective_views: list[EntryEffective] = []
     layered_views: list[EntryLayered] = []
-    for members in chains.values():
-        # winner = nearest scope; tie-break on id for determinism (two
-        # entries at the SAME scope in one chain is itself a malformed
-        # shadow, but we still resolve deterministically).
-        ordered = sorted(
-            members,
-            key=lambda e: (_SCOPE_RANK[e.scope], e.id.bytes),
-            reverse=True,
+    for chain in resolved:
+        effective = EntryEffective(
+            entry=chain.winner, shadows_scope=chain.shadows_scope,
         )
-        winner = ordered[0]
-        shadowed = tuple(ordered[1:])
-        shadows_scope = shadowed[0].scope if shadowed else None
-        effective = EntryEffective(entry=winner, shadows_scope=shadows_scope)
         effective_views.append(effective)
         layered_views.append(
-            EntryLayered(effective=effective, shadowed=shadowed),
+            EntryLayered(effective=effective, shadowed=chain.shadowed),
         )
-
-    # stable output ordering: platform winners first, then customer,
-    # then user, ties broken by winner id.
-    paired = sorted(
-        zip(effective_views, layered_views, strict=True),
-        key=lambda pair: (
-            _SCOPE_RANK[pair[0].entry.scope],
-            pair[0].entry.id.bytes,
-        ),
-    )
-    effective_sorted = [p[0] for p in paired]
-    layered_sorted = [p[1] for p in paired]
-    return effective_sorted, layered_sorted
+    return effective_views, layered_views
