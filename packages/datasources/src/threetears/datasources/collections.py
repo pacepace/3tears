@@ -157,22 +157,21 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
     rationales).
     """
 
-    primary_key_column: tuple[str, ...] = ("customer_id", "id")
-    # rationale: find_by_id resolves a datasource by its public id from
-    # the admin URL and the agent-side tool flow; the v054 UNIQUE (id)
-    # constraint preserves uniqueness without forcing every caller to
-    # know the customer_id partition up front. iter_active_ids is the
-    # canonical cross-partition sweep primitive (consumed by the
-    # Hub-owned datasource-task-04 introspect scheduler); cross-customer
-    # is the intended behaviour, not a leak.
-    _partition_exempt_methods = frozenset({"find_by_id", "iter_active_ids"})
+    primary_key_column: str = "id"
     schema = TableSchema(
         name="datasources",
-        primary_key=("customer_id", "id"),
+        primary_key="id",
         columns=[
             Column("id", UUID_TYPE),
             Column("name", STRING_TYPE),
-            Column("customer_id", UUID_TYPE, partition=True),
+            # customer_id is nullable + a plain column post-knowledge-
+            # task-08 (KNW-76): a platform-shared datasource (visibility
+            # != 'private') carries customer_id NULL. v016 rebuilt the
+            # table PK on ``id`` alone (dropping the v001 composite
+            # partition PK) so the addressing key is the global ``id``,
+            # backed by datasources_id_unique; a NULL customer_id never
+            # blocks resolution.
+            Column("customer_id", UUID_TYPE, nullable=True),
             Column("datasource_type", STRING_TYPE, immutable=True),
             # connection_config is nullable post-v056: agent_internal
             # rows carry no external connection config because the
@@ -191,6 +190,14 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
             # routing target is part of the row's identity once
             # materialized.
             Column("schema_name", STRING_TYPE, immutable=True, nullable=True),
+            # knowledge-task-08 (KNW-76/77): cross-customer sharing. a
+            # platform-shared datasource carries visibility 'public' /
+            # 'restricted' + customer_id NULL; a customer datasource links
+            # to its canonical platform-shared form via
+            # origin_datasource_id (the table-LEVEL origin link the merge
+            # retrieval gathers across: datasource_id IN (D, P)).
+            Column("visibility", STRING_TYPE),
+            Column("origin_datasource_id", UUID_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -290,6 +297,40 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
                 self.write_to_cache_sync(data)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+    async def resolve_origin_datasource_id(
+        self,
+        datasource_id: UUID,
+    ) -> UUID | None:
+        """return a datasource's ``origin_datasource_id`` (its shared link).
+
+        knowledge-task-08 (KNW-77): a customer datasource D links to its
+        canonical platform-shared datasource P via ``origin_datasource_id``;
+        turn-time retrieval gathers knowledge across ``datasource_id IN
+        (D, P)``. this is the single read both the hub effective-view
+        serving query and the SDK retrieval call use to resolve P from D
+        without threading module-level state — a fresh per-call lookup
+        over the (rbac-read / hub) pool.
+
+        :param datasource_id: the customer datasource D to resolve P for
+        :ptype datasource_id: UUID
+        :return: the linked platform-shared datasource id P, or ``None``
+            when D carries no origin link
+        :rtype: UUID | None
+        """
+        origin: UUID | None = None
+        if self.l3_pool is not None:
+            # cache-bypass: one-column projection by id; the by-pk
+            # Collection get would decode the full row + write the L1
+            # cache, but this is a hot per-turn lookup that only needs
+            # the single origin column.
+            row = await self.l3_pool.fetchrow(
+                "SELECT origin_datasource_id FROM datasources WHERE id = $1",
+                datasource_id,
+            )
+            if row is not None:
+                origin = row["origin_datasource_id"]
+        return origin
 
 
 class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
