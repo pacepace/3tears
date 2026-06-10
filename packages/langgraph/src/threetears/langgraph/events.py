@@ -37,6 +37,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from langchain_core.callbacks import adispatch_custom_event
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 __all__ = [
@@ -298,7 +299,7 @@ class ImageGeneratedEvent(FrameworkEvent):
 async def dispatch_event(
     event: FrameworkEvent,
     *,
-    config: dict[str, Any] | None = None,
+    config: RunnableConfig | None = None,
 ) -> None:
     """publish a typed framework event via langchain's custom-event channel.
 
@@ -312,7 +313,7 @@ async def dispatch_event(
     :param event: typed framework event to dispatch
     :ptype event: FrameworkEvent
     :param config: langchain runtime config (passed through verbatim)
-    :ptype config: dict[str, Any] | None
+    :ptype config: RunnableConfig | None
     :return: nothing
     :rtype: None
     """
