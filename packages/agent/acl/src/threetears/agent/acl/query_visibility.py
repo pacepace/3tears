@@ -48,6 +48,8 @@ from threetears.observe import get_logger
 
 __all__ = [
     "caller_visible_customer_clause",
+    "customer_scope_visibility_clause",
+    "three_scope_visibility_clause",
 ]
 
 log = get_logger(__name__)
@@ -120,3 +122,100 @@ def caller_visible_customer_clause(
            )
     )"""
     return fragment, [user_id]
+
+
+def customer_scope_visibility_clause(
+    *,
+    user_id: UUID,
+    customer_id_column: str,
+    param_offset: int = 1,
+) -> tuple[str, list[Any]]:
+    """build the customer-scope read wrap: platform rows OR caller-visible ones.
+
+    the customer-scope read rule for a row carrying a nullable
+    ``customer_id``: the row is visible iff it is platform-scope
+    (``customer_id IS NULL``) OR its customer is one the caller's RBAC
+    grants admit. the customer-side decision is delegated verbatim to
+    :func:`caller_visible_customer_clause` so the EXISTS subquery is never
+    re-implemented; this wrap only adds the platform-scope ``OR`` arm.
+
+    admin-review lists where a user-scope row is NOT private to its author
+    (e.g. promotion-request lists, where a ``customer_admin`` must see every
+    requester's pending row) compose THIS clause; entity lists that DO want
+    user-privacy compose :func:`three_scope_visibility_clause` instead.
+
+    :param user_id: caller user UUID (``auth["user_id"]``)
+    :ptype user_id: UUID
+    :param customer_id_column: SQL identifier for the row's ``customer_id``
+        column (e.g. ``"pe.customer_id"``); embedded verbatim, callers pass
+        a trusted identifier (never user input)
+    :ptype customer_id_column: str
+    :param param_offset: 1-based position of the FIRST ``$N`` placeholder
+        this fragment allocates; allocates exactly one bind (caller user_id)
+    :ptype param_offset: int
+    :return: tuple ``(sql_fragment, bind_params)``; ``bind_params`` has
+        exactly one element (the caller user_id)
+    :rtype: tuple[str, list[Any]]
+    """
+    customer_clause, params = caller_visible_customer_clause(
+        user_id=user_id,
+        customer_id_column=customer_id_column,
+        param_offset=param_offset,
+    )
+    fragment = f"({customer_id_column} IS NULL OR ({customer_clause}))"
+    return fragment, params
+
+
+def three_scope_visibility_clause(
+    *,
+    user_id: UUID,
+    customer_id_column: str,
+    user_id_column: str,
+    param_offset: int = 1,
+) -> tuple[str, list[Any]]:
+    """build the full three-scope-ladder entity-list read rule (D10).
+
+    a row carrying nullable ``customer_id`` + ``user_id`` (the three-scope
+    ladder: platform / customer / user) is visible to the caller iff it
+    passes BOTH halves:
+
+    - customer-scope (:func:`customer_scope_visibility_clause`): platform
+      row OR caller-visible customer row, and
+    - user-privacy: the row is platform/customer-scope (``user_id IS NULL``)
+      OR the caller's own (``user_id = caller``) — a user-scope row is
+      admitted only to its owner, so a peer in the same customer never sees
+      it even though the customer grant admits the row's customer.
+
+    the user predicate REUSES the single bind the customer clause already
+    allocates: a user-scope row's owner IS the caller the EXISTS subquery
+    binds at ``$param_offset``, so both halves reference the same placeholder
+    and the clause returns exactly ONE bind. every user-scopable knowledge
+    entity list (playbook entries, concepts, eval cases, and any future
+    type) composes this clause; no list site hand-rolls the wrapping.
+
+    :param user_id: caller user UUID (``auth["user_id"]``)
+    :ptype user_id: UUID
+    :param customer_id_column: SQL identifier for the row's ``customer_id``
+        column (e.g. ``"pe.customer_id"``); embedded verbatim
+    :ptype customer_id_column: str
+    :param user_id_column: SQL identifier for the row's ``user_id`` column
+        (e.g. ``"pe.user_id"``); embedded verbatim into the privacy predicate
+    :ptype user_id_column: str
+    :param param_offset: 1-based position of the FIRST ``$N`` placeholder
+        this fragment allocates; allocates exactly one bind (caller user_id),
+        referenced by BOTH the EXISTS membership match and the user predicate
+    :ptype param_offset: int
+    :return: tuple ``(sql_fragment, bind_params)``; ``bind_params`` has
+        exactly one element (the caller user_id), reused across both halves
+    :rtype: tuple[str, list[Any]]
+    """
+    customer_scope, params = customer_scope_visibility_clause(
+        user_id=user_id,
+        customer_id_column=customer_id_column,
+        param_offset=param_offset,
+    )
+    user_predicate = (
+        f"({user_id_column} IS NULL OR {user_id_column} = ${param_offset})"
+    )
+    fragment = f"{customer_scope} AND {user_predicate}"
+    return fragment, params
