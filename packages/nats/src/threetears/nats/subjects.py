@@ -542,6 +542,35 @@ class Subjects:
         return Subject(path=f"{_ns()}.workspaces.create", kind="point")
 
     # ------------------------------------------------------------------
+    # knowledge (correction-harvest drafts)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def knowledge_draft(cls) -> Subject:
+        """publish subject for correction-harvest draft events + commands.
+
+        every agent-side correction harvest (knowledge-task-06) publishes
+        one :class:`threetears.knowledge.KnowledgeDraftEvent` (new draft)
+        or :class:`threetears.knowledge.KnowledgeDraftCommand` (confirm /
+        edit / discard of the author's own draft) on this subject. the
+        hub-side ``KnowledgeDraftEmitter`` subscribes (no queue group,
+        every replica observes) and materializes / mutates the
+        ``status='draft'`` row through the hub's knowledge Collections.
+
+        decoupling the knowledge write from the agent is the canonical
+        platform pattern (mirrors :meth:`workspaces_create`): the
+        agent-side L3 proxy is admitted only SELECT traffic against the
+        ``platform.*`` knowledge tables (the broker's read-only
+        carve-out), so the hub — sole writer of platform-scoped rows —
+        owns the write. the deterministic ``draft_id`` keying makes the
+        upsert idempotent under at-least-once delivery.
+
+        :return: subject ``{ns}.knowledge.draft``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.knowledge.draft", kind="point")
+
+    # ------------------------------------------------------------------
     # l3 broker
     # ------------------------------------------------------------------
 

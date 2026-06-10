@@ -109,9 +109,12 @@ class FakePool:
             self.rows[str(context_id)] = row_data
             return {"context_id": context_id}
 
-        # composite-pk fetch: WHERE conversation_id = $1 AND context_id = $2
+        # composite-pk fetch: WHERE conversation_id = $1 AND context_id = $2.
+        # the by-pk fetch projects the declared column list (not ``SELECT
+        # *``) since the schema-backed fetch switched to an explicit
+        # projection, so match on the FROM + WHERE shape, not ``select *``.
         if (
-            "select * from context_items" in sql_lower
+            "from context_items" in sql_lower
             and "where conversation_id" in sql_lower
             and "and context_id" in sql_lower
         ):

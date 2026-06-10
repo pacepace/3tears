@@ -32,6 +32,13 @@ from threetears.knowledge.concept_merge import (
     ConceptSnapshot,
     merge_concept_views,
 )
+from threetears.knowledge.events import (
+    DraftCommandOp,
+    DraftTarget,
+    KnowledgeDraftCommand,
+    KnowledgeDraftEvent,
+    KnowledgeDraftMessage,
+)
 from threetears.knowledge.merge import (
     MAX_SHADOW_CHAIN_DEPTH,
     EntryEffective,
@@ -48,9 +55,14 @@ __all__ = [
     "ConceptEffective",
     "ConceptLayered",
     "ConceptSnapshot",
+    "DraftCommandOp",
+    "DraftTarget",
     "EntryEffective",
     "EntryLayered",
     "EntrySnapshot",
+    "KnowledgeDraftCommand",
+    "KnowledgeDraftEvent",
+    "KnowledgeDraftMessage",
     "OriginCycleError",
     "ResolvedChain",
     "Scope",
