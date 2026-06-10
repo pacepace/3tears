@@ -1,77 +1,82 @@
 # Channels: cross-pod, NATS-backed, 3tears-native WebSocket — design + decisions
 
-**Status:** DECIDED (2026-06-10) — design captured; build sharded below (`channels-task-01..03`).
+**Status:** DECIDED (2026-06-10) — design captured; build sharded below.
 **Driver:** Scriob (live collaboration — editor-ops + presence + co-typing on one socket), but the
-enhancement is **generic** and must keep serving existing chat consumers (aibots/metallm) unchanged.
-This is a 3tears framework decision; Scriob consumes it.
+enhancement is **generic** 3tears framework work; Scriob is its first full consumer, and existing chat
+consumers (aibots/metallm) migrate to it. This is a 3tears framework decision.
 
-> Captured here because the conclusion previously lived only in a design chat, evaporated, and got
-> re-litigated. Two recorded failures, both with standing learnings: **(1)** we designed against a
-> 3tears capability (`channels` "rooms with broadcast") without verifying the code — it is
-> *in-process*, not cross-pod; **(2)** the decision was never written down. This file is the fix.
->
-> **Design rule for this whole effort:** *compose existing 3tears primitives; build only what
-> genuinely does not exist.* No bespoke dict-based reinventions of things 3tears already ships
-> (collections, RBAC, typed NATS pub/sub, subjects, leases). Every claim below is grounded in the
-> actual code (file:line) — see "3tears primitives composed".
+> Captured because the conclusion previously lived only in a design chat, evaporated, and got
+> re-litigated. Standing failures it records against: **(1)** designed against a 3tears capability
+> (`channels` "rooms with broadcast") without verifying the code — it is *in-process*, not cross-pod;
+> **(2)** the decision was never written down. This file is the fix.
+
+> **Design rules for this whole effort:**
+> 1. **Compose existing 3tears primitives; build only what genuinely does not exist.** No bespoke
+>    reinventions of things 3tears already ships (collections, RBAC, typed NATS pub/sub, subjects,
+>    leases). Every claim below is grounded in actual code.
+> 2. **Do the structurally-best thing — backward-compat is a *consideration, not a constraint*.** If
+>    the right shape changes `channels` for aibots/metallm, change it and migrate them (we own the
+>    consumers). Change because it's right, never gratuitously.
+> 3. **No dicts for shared/queryable state.** This stack is **async *and* threaded** (asyncio +
+>    `run_in_threadpool`); a `dict` for shared state races (iterate-while-mutate across awaits +
+>    threadpool) and is slow at scale. Shared/queryable/growable state goes in the concurrency-safe
+>    store (the collection: **L1 SQLite + L2 NATS**, indexed). The one exception is a minimal,
+>    synchronized map of `connection_id → live socket` (a non-serializable handle).
+> 4. **Build tenancy-ready.** Thread the tenant dimension (`customer_id`, the ACL namespace) through
+>    everything now, with all users under **one fixed customer**; multi-tenancy later = issue real
+>    customer ids, **zero re-architecture**.
 
 ---
 
 ## The requirement (decided — user direction 2026-06-10)
 
-> "The WebSocket should connect to a pod, and then be able to interact with WebSockets on other
-> pods. Yes, the WebSocket is a stateful connection, but **everything else should be NATS-backed**.
-> That pod goes down? The WebSocket reconnects, **nothing is lost**, things go on, **the user never
-> knows**." — *and it must use 3tears objects everywhere they exist (collections, RBAC, …), and
-> respect namespacing + RBAC.*
+> "The WebSocket should connect to a pod, and then be able to interact with WebSockets on other pods.
+> Yes, the WebSocket is a stateful connection, but **everything else should be NATS-backed**. That pod
+> goes down? The WebSocket reconnects, **nothing is lost**, things go on, **the user never knows**."
 
 Distilled:
-- **The socket is the only pod-local, stateful thing.** A client connects to *one* pod (via the LB)
-  and holds a stateful WebSocket there. Live sockets are the one thing that genuinely cannot be
-  moved off the pod.
-- **Everything else is NATS-backed and lives in a 3tears primitive** — room membership/presence in a
-  `BaseCollection` (L1+L2), broadcast over typed NATS pub/sub, authorization in `agent-acl`,
-  ordering from the durable op-log. Any pod can serve any client.
+- **The socket is the only pod-local, stateful thing** — a live connection genuinely cannot be moved
+  off its pod. Everything else lives in a concurrency-safe, NATS-backed 3tears primitive.
+- **Any pod serves any client.** Membership/presence in a `BaseCollection` (L1 SQLite + L2 NATS),
+  broadcast over typed NATS pub/sub, authorization in `agent-acl`, ordering from the durable op-log.
 - **Pod loss is invisible.** Pod dies → socket drops → client reconnects to *any* pod → re-auths,
-  re-joins its rooms, **resumes from its last-seen sequence** → no data lost → at most a reconnect blip.
+  re-joins, **resumes from its last-seen sequence** → no data lost → at most a reconnect blip.
 
 ---
 
 ## Current state (VERIFIED in the code, not assumed)
 
 `packages/channels/src/threetears/channels/websocket.py`, as committed:
-- **No `nats` import anywhere in the `channels` package** (grepped the whole package — zero hits).
-- `ConnectionRegistry` is two in-process dicts (`_connections`, `_rooms`); `broadcast_to_room`
-  iterates `self._rooms.get(room_id, [])` and `send_text`s — **this pod's sockets only**.
+- **No `nats` import anywhere in the `channels` package.**
+- `ConnectionRegistry` is two in-process **dicts** (`_connections`, `_rooms`). `broadcast_to_room`
+  iterates `self._rooms.get(room_id, [])` **with `await` inside the loop** while `join_room`/`leave_room`
+  mutate the same dict — single-pod **and** concurrency-unsafe (iterate-while-mutate race).
 - No 3tears package wires a WebSocket to NATS.
 
-So **channels today is single-pod**: a client on pod A cannot reach a member on pod B, and a pod
-death loses that pod's sockets with no resume. api.md's "channels … already give us rooms with
-broadcast" is true only for *in-process* rooms — it over-claims the cross-pod fanout the multi-pod
-design needs (corrected in scriob `docs/arch/api.md`).
-
-The cross-pod substrate already exists in 3tears — just not wired to sockets. We compose it.
+So channels today is single-pod, racy, and unresumable. api.md's "channels … already give us rooms
+with broadcast" is true only for *in-process* rooms — it over-claims the cross-pod fanout the design
+needs (corrected in scriob `docs/arch/api.md`). We **replace** this state layer (not preserve it) and
+**compose** the cross-pod substrate 3tears already ships.
 
 ---
 
 ## 3tears primitives composed (use what exists; build only the gap)
 
-| Need | 3tears primitive (file) | Reuse or new |
+| Need | 3tears primitive | Reuse / new |
 |---|---|---|
-| Pod-local live sockets | `channels.ConnectionRegistry` (dicts of *sockets*) | **reuse** — sockets are legitimately pod-local |
-| Socket lifecycle + auth | `channels.WebSocketHandler` + `auth_validator` | **reuse** |
-| Cross-pod presence / room-membership roster | `core.collections.BaseCollection` (L1+L2-only), mirroring `registry/heartbeat_collection.py` `HeartbeatCollection` | **reuse the framework**; new `PresenceCollection` subclass |
-| Cross-pod state coherence | the collection **invalidation envelope** (`core.collections.registry.INVALIDATION_SUBJECT`) — built into `BaseCollection`'s L2 write path | **reuse** (free with the collection) |
-| Self-heal on pod death | `date_last_heartbeat` timestamp + a sweep loop, exactly like `registry/health.py` `HeartbeatSubscriber` (NOT raw KV-TTL) | **reuse the pattern** |
-| Cross-pod room **message fanout** (live delivery to sockets) | thin pub/sub on the `NatsClient` wrapper + a new `Subjects.room(...)` family | **NEW** — the one piece that genuinely does not exist |
-| Subjects / namespace prefixing | `nats.Subjects` (`{ns}.…`) + `NatsClient.kv_bucket` (`{ns}-…`) | **reuse** |
-| Authorization (join / broadcast / op) | `agent.acl.authorize_on_entity(ns_entity, action, user_id, agent_id, cache)` → `AccessDenied` | **reuse** |
-| Cross-pod ACL coherence | `agent.acl.invalidation` + the `Subjects.acl_invalidate(...)` family | **reuse** |
+| Cross-pod room-membership + presence state | `core.collections.BaseCollection` (L1 SQLite + L2 NATS), modelled on `registry/heartbeat_collection.py` `HeartbeatCollection` | **reuse the framework**; new `PresenceCollection` — concurrency-safe + indexed, **replaces the dicts** |
+| Cross-pod state coherence | the collection **invalidation envelope** (`core.collections.registry.INVALIDATION_SUBJECT`) | **reuse** (free with the collection) |
+| Self-heal on pod death | `date_last_heartbeat` + a sweep loop, like `registry/health.py` `HeartbeatSubscriber` (NOT raw KV-TTL) | **reuse the pattern** |
+| Pod-local live-socket handles | a **minimal, synchronized** `connection_id → live socket` map (asyncio.Lock; snapshot-iterate) | **NEW, minimal** — the one unavoidable in-process structure (non-serializable handles); **not a dict for shared state** |
+| Cross-pod room **message fanout** (live delivery) | thin pub/sub on the `NatsClient` wrapper + a new `Subjects.room(...)` family | **NEW** — the only mechanism that genuinely does not exist |
+| Socket lifecycle + auth | `channels.WebSocketHandler` + `auth_validator` | **reuse** (reshaped as needed) |
+| Subjects / namespace prefixing | `nats.Subjects` (`{ns}.…`) + `kv_bucket` (`{ns}-…`) | **reuse** |
+| Authorization (join / broadcast / op) | `agent.acl.authorize_on_entity(ns_entity, action, user_id, agent_id, cache)` | **reuse** |
+| Cross-pod ACL coherence | `agent.acl.invalidation` + `Subjects.acl_invalidate(...)` | **reuse** |
 | Logging / tracing | `observe.get_logger` / `@traced` | **reuse** |
 
-**The only net-new mechanism is the room *fanout*** (live message delivery to sockets) — it is not
-cache invalidation (that's the collection's job) and no 3tears primitive provides it, so it is built,
-thinly, *in channels*. Everything else is composition.
+Net-new: the **live room fanout** (message delivery to sockets — not cache invalidation, which the
+collection owns) and the **minimal synchronized socket-handle map**. Everything else is composition.
 
 ---
 
@@ -79,155 +84,158 @@ thinly, *in channels*. Everything else is composition.
 
 ```
    client ── stateful WS ──▶ POD A                        POD B ◀── stateful WS ── client
-                              │ ConnectionRegistry (LOCAL live sockets — the only pod-local state)
+                              │ minimal synced connection_id→socket map (live handles; the only
+                              │ in-process state — NOT a dict for shared/queryable data)
                               ▼                                          ▼
-   ┌──────────────────────────────── NATS (the shared plane) ─────────────────────────────────┐
-   │  • room fanout      Subjects.room(ns, room) → publish; every pod with a local member       │
-   │                     subscribes + delivers to ITS sockets (thin pub/sub; the only new bit)  │
-   │  • presence roster  PresenceCollection : BaseCollection (L1+L2) keyed by room — who is in   │
-   │                     room X across pods; heartbeat-timestamp + sweep self-heals on pod death │
-   │  • authorization    agent-acl authorize_on_entity(story/branch ns, action, user) gates      │
-   │                     join / broadcast / op — RBAC + namespace, cross-pod coherent            │
-   │  • ordering/resume   the op-log (R3) is the durable source of truth; NATS is the fast notify │
-   └───────────────────────────────────────────────────────────────────────────────────────────┘
+   ┌──────────────────────────── NATS (the shared plane) + the collections ─────────────────────────┐
+   │  • membership + presence   PresenceCollection : BaseCollection (L1 SQLite + L2 NATS), keyed by    │
+   │                            (customer, story, branch, file) room — concurrency-safe, indexed,      │
+   │                            queryable from any pod; heartbeat + sweep self-heals on pod death      │
+   │  • room fanout             Subjects.room(...) → publish; every pod with a local member subscribes │
+   │                            + delivers to its sockets (thin pub/sub; the only net-new mechanism)   │
+   │  • authorization           agent-acl authorize_on_entity(ns=story/branch under customer, action,  │
+   │                            user) gates join / broadcast / op — RBAC + tenant, cross-pod coherent  │
+   │  • ordering / resume       the op-log (R3) is the durable source of truth; NATS is the fast notify │
+   └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+- **Membership/presence/rooms = a `BaseCollection`, not dicts.** A `PresenceCollection` (L1 SQLite +
+  L2 NATS, modelled on `HeartbeatCollection`: `l3_pool=None`, L3 methods raise). It is concurrency-safe
+  (SQLite handles concurrent access; no iterate-while-mutate race), **indexed** ("who is in room X" is
+  an indexed query, fast at scale), and **cross-pod** (L2 NATS + the invalidation envelope). **Self-heal**
+  is the heartbeat pattern: each membership row carries `date_last_heartbeat`; the socket lifecycle
+  refreshes it; a sweep loop (modelled on `HeartbeatSubscriber`) evicts stale rows — a dead pod's
+  members disappear automatically.
+- **The only pod-local structure is a minimal, synchronized `connection_id → live socket` map.** Live
+  sockets are non-serializable handles that must live on the pod. The map is bounded by concurrent
+  connections on this pod, guarded by an `asyncio.Lock` (event-loop-confined), and **iterated over a
+  snapshot** — never mutated while awaiting. Delivery: query the collection for the local connection-ids
+  in room X, then resolve handles from this map.
 - **Cross-pod rooms = NATS fanout.** `broadcast_to_room` publishes to `Subjects.room(...)`; every pod
   with a local member subscribes (on first local join, ref-counted) and delivers to *its* sockets.
-  One delivery path (publish-only; every pod incl. the sender fans on receive — no double delivery).
-  Mirrors the `epoch` publish→siblings-act-locally pattern.
-- **Presence/membership = a `BaseCollection` (L1+L2), not a hand-rolled roster.** A `PresenceCollection`
-  subclass keyed by room, modelled exactly on `HeartbeatCollection` (L1+L2-only, `l3_pool=None`,
-  L3 methods raise). Cross-pod coherence rides the collection's invalidation envelope; "who is in
-  room X" is a collection query, answerable from any pod. **Self-heal** is the heartbeat pattern: each
-  membership row carries `date_last_heartbeat`, the socket lifecycle refreshes it, and a presence
-  sweep loop (modelled on `HeartbeatSubscriber`) evicts rows whose heartbeat went stale — so a dead
-  pod's members disappear automatically.
-- **Authorization is `agent-acl`, woven through.** Identity comes from the `auth_validator` (user_id,
-  established once on connect). **Every** join, broadcast target, and editor-op is gated by
-  `authorize_on_entity(ns_entity=<story/branch>, action=<canonical>, user_id=…, cache=AclCache)` —
-  `AccessDenied` → error frame / refused op. A presence row is only written *after* a successful
-  `room.join` authorization, so the roster cannot contain an unauthorized member.
-- **Ordering/resume from the durable source, never in-process.** The resume sequence is the **op-log
-  sequence** (editor-ops) / the durable chat cursor — never a per-process counter (resets on restart,
-  cannot order across pods — the spike's exact trap).
-- **Reconnect is the failover story.** Socket drop → reconnect to any pod → re-auth → re-authorize +
-  re-join rooms (re-assert the presence row) → **resume from last-seen seq** (replay the op-log tail).
-  Nothing is lost: the durable state (op-log R3 + the PresenceCollection's L2 + NATS) outlives the pod.
+  One delivery path (publish-only; every pod incl. sender fans on receive — no double delivery), the
+  `epoch` pattern.
+- **Authorization is `agent-acl`, woven through.** Identity from the shared `auth_validator` (user_id,
+  once on connect). Every join/broadcast-target/op is gated by `authorize_on_entity(ns_entity=<story/
+  branch under the customer>, action=<canonical>, user_id=…, cache=AclCache)` → `AccessDenied` → error
+  frame / refused op. A presence row is written only **after** `room.join` passes — the roster is
+  authorization-clean by construction.
+- **Ordering/resume from the durable source.** The resume sequence is the **op-log sequence** /
+  durable chat cursor — never an in-process counter (resets on restart, can't order cross-pod).
+- **Reconnect is the failover story.** Drop → reconnect to any pod → re-auth → re-authorize + re-join
+  (re-assert the presence row) → **resume from last-seen seq** (replay the op-log tail). Nothing is
+  lost: the durable state (op-log R3 + the collection's L2 + NATS) outlives the pod.
 
 ---
 
-## Namespacing (structural isolation, via the primitives — not bolted on)
+## Namespacing + tenancy (structural; built tenancy-ready under one customer)
 
-Isolation is enforced at three composed layers, none bespoke:
-- **Environment / deployment** — every NATS subject is namespace-prefixed by `Subjects` (`{ns}.…`,
-  bound at `NatsClient.connect`); every KV bucket is `{ns}-…`; the `PresenceCollection`'s L2 bucket
-  inherits the prefix. Two envs on one NATS cluster **cannot** cross streams.
+Isolation is enforced at composed layers, none bespoke, and the tenant dimension is plumbed from day one:
+- **Environment / deployment** — every subject is `{ns}.…` (`Subjects`, bound at connect); every bucket
+  is `{ns}-…`; the collection's L2 inherits both. Two envs on one NATS cluster cannot cross.
 - **Tenant** — authorization and presence are scoped to the **ACL namespace** (`customer_id` +
-  `namespace_type` on the `ns_entity`); `agent-acl` is namespace-native. The tenant boundary and the
-  authorization boundary are the **same object**, so a user in tenant A can never be authorized into,
-  or appear present in, tenant B.
-- **Resource** — the room id encodes story/workspace + branch + file (`{story}:{branch}:{file}`), so
-  story A's `(branch,file)` rooms are disjoint from story B's even within one tenant + env.
-
-So a room id is qualified `{ns}` (subject/bucket) · tenant (ACL namespace) · resource
-(story/branch/file). Leakage is impossible by construction, not by remembering to filter.
+  `namespace_type` on `ns_entity`). `agent-acl` is namespace-native, so **the tenant boundary and the
+  authorization boundary are the same object**. **Scriob runs all users under one fixed `customer_id`
+  now** — but `customer_id` is threaded through room ids, the `PresenceCollection` keys, and every authz
+  call from the start. **Adding multi-tenancy later = issue real `customer_id`s; no schema or
+  architecture change.** (This is the right seam, built now because it's nearly free and murder to
+  retrofit — not a deferred corner.)
+- **Resource** — the room id is `{customer}:{story}:{branch}:{file}`, so rooms are disjoint across
+  customer, story, and resource by construction.
 
 ---
 
 ## RBAC / authorization (CO-5, via `agent-acl` — not a new check)
 
-- **Identity** is established once, on connect, by the shared `auth_validator` (the same callable the
-  HTTP side uses — one validation path, ID-3) → `user_id` (+ claims). No per-message re-auth of
-  identity; the socket carries the authenticated principal.
-- **Authorization** is per-action, every time, via `agent.acl.authorize_on_entity`:
-  - `room.join` (presence) — may this user be present in this `(branch,file)` room?
-  - `entry.read` / `entry.write` — gates which editor-ops/broadcasts a user may send/receive (CO-5
-    per-story/branch ACL; the same gate the write path already names, api.md §6).
-  - Deny → `AccessDenied` → an `error` frame to that socket / a refused op; never a silent allow.
-- **Cross-pod coherence** — a revoked grant propagates to every pod via `agent.acl.invalidation`
-  (`Subjects.acl_invalidate(...)`) before the next check, so authorization is consistent fleet-wide.
-- **The roster is authorization-clean by construction** — a member is only written to the
-  `PresenceCollection` after `room.join` passed, so "who is in room X" never lists an unauthorized user.
+- **Identity** is established once, on connect, by the shared `auth_validator` (the same callable HTTP
+  uses — one validation path, ID-3) → `user_id` (+ claims). The socket carries the authenticated principal.
+- **Authorization** is per-action, every time, via `agent.acl.authorize_on_entity`: `room.join`
+  (presence), `entry.read`/`entry.write` (which ops/broadcasts a user may send/receive — CO-5). Deny →
+  `AccessDenied` → error frame / refused op; never a silent allow.
+- **Cross-pod coherence** — a revoked grant propagates fleet-wide via `agent.acl.invalidation` before
+  the next check.
+- **The roster is authorization-clean by construction** — a member is written only after `room.join`
+  passes, so "who is in room X" never lists an unauthorized user.
 
 ---
 
-## Backward compatibility — existing consumers MUST keep working
+## Existing consumers (aibots/metallm) — migrate, don't preserve
 
-Additive and opt-in, never breaking:
-- The cross-pod machinery (room backplane + presence + authz) is injected; **absent it,
-  `ConnectionRegistry`/`WebSocketHandler` behave exactly as today** (in-process rooms). Every current
-  chat consumer (aibots/metallm) is byte-for-byte unaffected.
-- A consumer opts into cross-pod by wiring the NATS-backed pieces at construction; **its
-  message-handling code does not change** — `broadcast_to_room` just reaches farther. New consumers
-  (Scriob) wire them from day one.
-- The chat envelope (`ChannelMessage`/`ChannelResponse`/`StreamingChannelRouter`) is untouched; typed
-  editor-event frames (`channels-task-03`) are a *disjoint* frame family multiplexed over the same
-  socket, so chat + editor-ops coexist.
+Backward-compat is a *consideration, not a constraint*. The dict-based `ConnectionRegistry` is
+concurrency-unsafe and single-pod; the structurally-correct replacement is the collection-backed
+membership + the synchronized socket map + the fanout. **We change `channels` to the right shape and
+migrate aibots/metallm** (we own them). Where a pure single-pod, NATS-free deployment is genuinely
+wanted (tests, tiny installs), it remains a deliberate **config** (no fanout/collection-L2 wired) — not
+a preserved legacy dict path kept alive to avoid touching anyone. Change because it's right; never
+gratuitously.
 
 ---
 
 ## The 3tears / scriob boundary (decided)
 
-- **3tears owns the generic, reusable collaborative *transport + state*:** the socket + auth
-  (`channels`), cross-pod **room fanout** (`channels` + `nats`), the **presence/membership roster**
-  (`core.collections`), **authorization** (`agent-acl`), namespacing (`nats.Subjects`/`kv`), and the
-  reconnect/resume scaffolding. App-agnostic; every 3tears app gets it.
-- **Scriob owns what is ours and cannot be generic:** the op *semantics* (replace-range over
-  markdown, stable position IDs — `A14`), the **op-log** (the authoritative `seq` value + durable
-  resume source), git-as-L3, provenance markup, and the per-story ACL *policy* (the roles/grants;
-  the *mechanism* is `agent-acl`).
-- Clean line: **channels/collections/acl = generic cross-pod transport + state + authz; scriob = op
-  semantics + the authoritative durable sequencer + the policy.**
+- **3tears owns the generic cross-pod transport + state + authz:** the socket + auth (`channels`),
+  membership/presence (`core.collections`), room fanout (`channels` + `nats`), authorization
+  (`agent-acl`), namespacing/tenancy (`nats.Subjects`/`kv` + the ACL namespace), reconnect/resume
+  scaffolding. App-agnostic.
+- **Scriob owns what is ours and cannot be generic:** op semantics (replace-range, stable position IDs
+  — `A14`), the **op-log** (the authoritative `seq` + durable resume source), git-as-L3, provenance,
+  and the per-story ACL *policy* (roles/grants; the *mechanism* is `agent-acl`).
 
 ---
 
 ## Decisions
 
-- **D1 — Cross-pod rooms via NATS fanout.** `broadcast_to_room` publishes to `Subjects.room(...)`;
-  each pod delivers to its local members. Additive, backward-compatible.
-- **D2 — Presence/membership = `BaseCollection` (L1+L2), modelled on `HeartbeatCollection`.** Cross-pod
-  coherence via the invalidation envelope; self-heal via heartbeat-timestamp + a sweep loop. **No
-  bespoke KV roster, no dicts for shared state.**
-- **D3 — The socket is the only pod-local state.** Everything shared is in a 3tears primitive backed by
-  NATS; reconnect to any pod resumes from the durable sequence — pod loss is transparent.
-- **D4 — Ordering/seq comes from the durable source** (the op-log), never an in-process counter.
-- **D5 — Additive & opt-in.** Absent the injected NATS pieces, behavior is exactly today's in-process
-  rooms; existing consumers untouched.
-- **D6 — Namespacing is structural** via `Subjects`/`kv` prefixes (env) + the ACL namespace (tenant) +
-  the scoped room id (resource). Not a filter we remember to apply.
-- **D7 — Authorization is `agent-acl`** (`authorize_on_entity`) on every join/broadcast/op (CO-5),
-  cross-pod coherent via `agent-acl.invalidation`. Identity from the shared `auth_validator`.
+- **D1 — Cross-pod rooms via NATS fanout** (`Subjects.room(...)`; each pod delivers to its local
+  members).
+- **D2 — Membership/presence = `BaseCollection` (L1 SQLite + L2 NATS)**, modelled on
+  `HeartbeatCollection`; cross-pod coherence via the invalidation envelope; self-heal via heartbeat +
+  sweep. **Concurrency-safe + indexed — never dicts.**
+- **D3 — The socket is the only pod-local state**; the only in-process structure is a minimal,
+  `asyncio.Lock`-synchronized `connection_id → live socket` map (snapshot-iterated). Reconnect resumes
+  from the durable sequence — pod loss is transparent.
+- **D4 — Ordering/seq from the durable source** (the op-log), never an in-process counter.
+- **D5 — Structurally-best over backward-compat.** Change `channels` to the right shape and migrate
+  existing consumers; backward-compat is a consideration, not a constraint. Single-pod/NATS-free stays
+  a deliberate config, not a preserved legacy path.
+- **D6 — No dicts for shared/queryable state.** Async + threaded ⇒ dicts race + slow; shared state goes
+  in the concurrency-safe store (the collection). Only the live-socket handle map is in-process, synchronized.
+- **D7 — Namespacing is structural** (`Subjects`/`kv` env prefix + ACL namespace tenant + scoped room
+  id), and **tenancy-ready**: `customer_id` threaded everywhere, one fixed customer now, real
+  customer ids later with zero re-architecture.
+- **D8 — Authorization is `agent-acl`** (`authorize_on_entity`) on every join/broadcast/op (CO-5),
+  cross-pod coherent; identity from the shared `auth_validator`.
 
 ---
 
 ## Build (task shards — 3tears `<area>-task-NN` convention; in this `docs/` dir)
 
-- **`channels-task-01`: Cross-pod room fanout** — `Subjects.room(...)` + the thin publish→per-pod-local-
-  deliver backplane + optional injection into `ConnectionRegistry`/`WebSocketHandler` (default `None`
-  = in-process). Proven with a real-NATS, two-registry cross-pod integration test. *(The one net-new
-  mechanism.)*
-- **`channels-task-02`: `PresenceCollection` (BaseCollection L1+L2) + presence sweep** — subclass
-  `BaseCollection`, L1+L2-only, mirroring `HeartbeatCollection`; keyed by room; join/leave/heartbeat/
-  query; a sweep loop (modelled on `HeartbeatSubscriber`) evicts stale members. Real-NATS integration
-  test: two pods see each other; kill one's heartbeat, its members expire.
-- **`channels-task-03`: Authorization + typed frames + reconnect-resume** — gate join/broadcast/op with
+Dependency order (the state layer is foundational; the existing `channels-task-01` fanout shard will be
+renumbered/reframed to match this):
+
+- **A — Membership/presence state layer** — `PresenceCollection : BaseCollection` (L1 SQLite + L2 NATS,
+  modelled on `HeartbeatCollection`), keyed by `(customer, story, branch, file)` room; the
+  `connection_id → live socket` synchronized map; the heartbeat + sweep self-heal (modelled on
+  `HeartbeatSubscriber`). **Replaces the dict `ConnectionRegistry`.** Proof: real-NATS two-registry —
+  membership written on A is queryable on B; a stale heartbeat expires.
+- **B — Cross-pod room fanout** — `Subjects.room(...)` + the thin publish→per-pod-local-deliver
+  backplane, delivering to local members resolved via layer A. Proof: real-NATS two-registry broadcast.
+- **C — Authorization + typed frames + reconnect-resume** — gate join/broadcast/op with
   `authorize_on_entity`; a frame-type router so `editor.op`/`presence`/`cursor`/`typing` are first-class
   (chat unchanged); a generic event envelope carrying `version`/`seq`; the resume-from-seq handshake.
 
 ---
 
-## Anti-patterns (the traps — verified against the spike + this study)
+## Anti-patterns
 
-- **DO NOT hand-roll the roster** with dicts or a raw `NatsKvBucket` — it is a `BaseCollection`
-  (L1+L2), modelled on `HeartbeatCollection`. Reinventing it is the exact "bespoke dict thing" to avoid.
-- **DO NOT write a new authorization path** — join/broadcast/op go through `agent-acl`
-  `authorize_on_entity`. CO-5 is policy on top of that mechanism, not a fresh check.
-- **DO NOT keep an in-process `seq`** — it resets on restart and cannot order across pods. The seq is
-  the durable op-log sequence.
-- **DO NOT broadcast only in-process** — a room message must NATS-fan to every pod with a member.
-- **DO NOT skip namespacing** — every subject/bucket/room id is namespace + tenant + resource scoped.
-- **DO NOT break existing consumers** — the cross-pod pieces are optional; absent them, behavior is
-  unchanged.
-- **DO NOT make reconnect "re-fetch everything over HTTP and hope"** — resume is replay-from-seq off
-  the durable op-log; that is the whole point of having one.
+- **DO NOT use dicts for room/membership/presence/shared state** — concurrency-unsafe (iterate-while-
+  mutate across awaits/threads) + slow at scale; use the `BaseCollection`. The only in-process map is the
+  minimal synchronized `connection_id → live socket` handle, snapshot-iterated.
+- **DO NOT hand-roll the roster** with a raw `NatsKvBucket` — it is a `BaseCollection`.
+- **DO NOT write a new authorization path** — join/broadcast/op go through `agent-acl`.
+- **DO NOT keep an in-process `seq`** — the seq is the durable op-log sequence.
+- **DO NOT broadcast only in-process** — a room message NATS-fans to every pod with a member.
+- **DO NOT hardcode away the tenant dimension** — thread `customer_id` everywhere now (one fixed
+  customer) so multi-tenancy is a config change later, not a rewrite.
+- **DO NOT preserve the legacy dict path to avoid touching aibots/metallm** — migrate them; keep
+  single-pod only as a deliberate config.
+- **DO NOT make reconnect "re-fetch over HTTP and hope"** — resume is replay-from-seq off the op-log.
