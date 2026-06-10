@@ -18,11 +18,14 @@ from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
 from threetears.nats.errors import (
     KvError,
     NatsClientError,
+    OpLogError,
+    OpLogSequenceConflict,
     PublishError,
     RequestError,
     SubscribeError,
 )
 from threetears.nats.kv import NatsKvBucket
+from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 from threetears.nats.subjects import (
     DEFAULT_NAMESPACE,
     Subject,
@@ -54,6 +57,10 @@ __all__ = [
     "set_default_namespace",
     # KV
     "NatsKvBucket",
+    # op-log (durable write-path WAL)
+    "AppendResult",
+    "OpLog",
+    "OpRecord",
     # distributed lock
     "LockHeld",
     "nats_distributed_lock",
@@ -65,6 +72,8 @@ __all__ = [
     # errors
     "KvError",
     "NatsClientError",
+    "OpLogError",
+    "OpLogSequenceConflict",
     "PublishError",
     "RequestError",
     "SubscribeError",

@@ -542,6 +542,37 @@ class Subjects:
         return Subject(path=f"{_ns()}.workspaces.create", kind="point")
 
     # ------------------------------------------------------------------
+    # op-log (durable write-path WAL)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def oplog(cls, repo: str, branch: str) -> Subject:
+        """publish/replay subject for one ``(repo, branch)`` op-log.
+
+        the durable write path keeps one JetStream stream per
+        ``(repo, branch)``; this is the single subject that stream is
+        bound to. ``repo`` and ``branch`` are sanitized (``.`` -> ``-``)
+        so a dotted ref name never overloads the subject separator.
+        consumed by :class:`threetears.nats.OpLog`.
+
+        :param repo: repository identifier
+        :ptype repo: str
+        :param branch: branch / ref name
+        :ptype branch: str
+        :return: subject ``{ns}.oplog.{repo}.{branch}``
+        :rtype: Subject
+        :raises ValueError: if repo or branch is empty
+        """
+        if not repo:
+            raise ValueError("repo must be non-empty")
+        if not branch:
+            raise ValueError("branch must be non-empty")
+        return Subject(
+            path=f"{_ns()}.oplog.{_sanitize(repo)}.{_sanitize(branch)}",
+            kind="point",
+        )
+
+    # ------------------------------------------------------------------
     # l3 broker
     # ------------------------------------------------------------------
 

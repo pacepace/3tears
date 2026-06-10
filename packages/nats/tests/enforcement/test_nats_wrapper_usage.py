@@ -53,6 +53,7 @@ ENFORCEMENT_MODE = os.environ.get("NATS_ENFORCEMENT_MODE", "strict")
 _WRAPPER_MODULES: set[str] = {
     "threetears.nats.client",
     "threetears.nats.kv",
+    "threetears.nats.oplog",
 }
 
 
