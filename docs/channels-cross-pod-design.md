@@ -64,7 +64,7 @@ needs (corrected in scriob `docs/arch/api.md`). We **replace** this state layer 
 
 | Need | 3tears primitive | Reuse / new |
 |---|---|---|
-| Cross-pod room-membership + presence state | `core.collections.BaseCollection` (L1 SQLite + L2 NATS), modelled on `registry/heartbeat_collection.py` `HeartbeatCollection` | **reuse the framework**; new `PresenceCollection` — concurrency-safe + indexed, **replaces the dicts** |
+| Cross-pod room-membership + presence state | `core.collections.BaseCollection` (L1 SQLite + L2 NATS, **pk-keyed**), modelled on `registry/heartbeat_collection.py` `HeartbeatCollection` | **reuse the framework**; new pk-keyed `PresenceCollection` (per-connection entry + room-index) — concurrency-safe, **replaces the dicts** |
 | Cross-pod state coherence | the collection **invalidation envelope** (`core.collections.registry.INVALIDATION_SUBJECT`) | **reuse** (free with the collection) |
 | Self-heal on pod death | `date_last_heartbeat` + a sweep loop, like `registry/health.py` `HeartbeatSubscriber` (NOT raw KV-TTL) | **reuse the pattern** |
 | Pod-local live-socket handles | a **minimal, synchronized** `connection_id → live socket` map (asyncio.Lock; snapshot-iterate) | **NEW, minimal** — the one unavoidable in-process structure (non-serializable handles); **not a dict for shared state** |
@@ -99,13 +99,19 @@ collection owns) and the **minimal synchronized socket-handle map**. Everything 
    └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Membership/presence/rooms = a `BaseCollection`, not dicts.** A `PresenceCollection` (L1 SQLite +
-  L2 NATS, modelled on `HeartbeatCollection`: `l3_pool=None`, L3 methods raise). It is concurrency-safe
-  (SQLite handles concurrent access; no iterate-while-mutate race), **indexed** ("who is in room X" is
-  an indexed query, fast at scale), and **cross-pod** (L2 NATS + the invalidation envelope). **Self-heal**
-  is the heartbeat pattern: each membership row carries `date_last_heartbeat`; the socket lifecycle
-  refreshes it; a sweep loop (modelled on `HeartbeatSubscriber`) evicts stale rows — a dead pod's
-  members disappear automatically.
+- **Membership/presence/rooms = `BaseCollection`(s), not dicts — and PK-KEYED (verified constraint).**
+  `BaseCollection` is **pk-keyed only** (no secondary-field query — verified in the code), its L2
+  (NATS-KV) coherence is **eviction-based**, and the KV wrapper exposes **no key-listing**; the
+  secondary-query variant (`SchemaBackedCollection`) is **L3/postgres-backed** (wrong for ephemeral
+  presence). So "who is in room X" must be a **pk-get, never a secondary scan.** Model it pk-keyed:
+  a **per-connection entry** (`pk = connection_id`; carries the heartbeat — no contention) plus a
+  **room-index entry** (`pk = room` = `{customer}:{story}:{branch}:{file}`; the member set), updated
+  only on join/leave. "Who's in room X" = `get(room-index)` → its members (each then a pk-get). Both
+  are L1+L2-only (`l3_pool=None`, like `HeartbeatCollection`): concurrency-safe (SQLite L1, no
+  iterate-while-mutate race), cross-pod via the invalidation envelope. CAS contention is on
+  join/leave only (low churn), not on heartbeats. **Self-heal**: each connection entry carries
+  `date_last_heartbeat`; a sweep loop (modelled on `HeartbeatSubscriber`) evicts stale connections
+  and prunes them from the room-index — a dead pod's members vanish automatically.
 - **The only pod-local structure is a minimal, synchronized `connection_id → live socket` map.** Live
   sockets are non-serializable handles that must live on the pod. The map is bounded by concurrent
   connections on this pod, guarded by an `asyncio.Lock` (event-loop-confined), and **iterated over a
