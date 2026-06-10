@@ -17,8 +17,13 @@ Make `ConnectionRegistry` room broadcast reach room members **on every pod**, vi
 publish a room message to a per-room NATS subject; each pod that has a local member of that room
 re-broadcasts to its **own** sockets. The cross-pod path is **opt-in**: an injected NATS backplane
 turns it on; without one, behaviour is exactly today's in-process broadcast (existing chat consumers
-untouched). This is the **fast-notify transient fanout** only — durable ordering/resume is the
-op-log's job (`channels-task-03` / the consuming app), not this layer.
+untouched). This is the **fast-notify transient fanout** only — the one genuinely net-new mechanism
+(no 3tears primitive provides live room delivery). **Out of scope here (other shards — reuse 3tears,
+do NOT hand-roll):** the cross-pod **membership/presence roster** is `channels-task-02` (a
+`BaseCollection`, L1+L2, modelled on `registry/heartbeat_collection.py` — not dicts, not a raw KV
+roster); **authorization** of join/broadcast is `channels-task-03` (`agent-acl`
+`authorize_on_entity`); durable ordering/resume is the op-log's job. The room subject is
+namespace + resource scoped via `Subjects.room(...)`.
 
 ---
 
