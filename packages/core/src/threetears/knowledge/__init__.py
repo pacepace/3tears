@@ -42,6 +42,7 @@ from threetears.knowledge.events import (
 from threetears.knowledge.merge import (
     MAX_SHADOW_CHAIN_DEPTH,
     EntryEffective,
+    EntryEnforcement,
     EntryLayered,
     EntrySnapshot,
     OriginCycleError,
@@ -58,6 +59,7 @@ __all__ = [
     "DraftCommandOp",
     "DraftTarget",
     "EntryEffective",
+    "EntryEnforcement",
     "EntryLayered",
     "EntrySnapshot",
     "KnowledgeDraftCommand",

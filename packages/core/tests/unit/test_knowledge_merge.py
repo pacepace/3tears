@@ -21,6 +21,7 @@ import pytest
 
 from threetears.knowledge import (
     MAX_SHADOW_CHAIN_DEPTH,
+    EntryEnforcement,
     EntrySnapshot,
     OriginCycleError,
     Scope,
@@ -271,6 +272,92 @@ class TestCycleRejectionAtWrite:
                 origin_entry_id=ids[-1],
                 origin_of=origin_of,
             )
+
+
+class TestEntryEnforcementPassThrough:
+    """the structured ``enforcement`` constraint rides the merge unchanged.
+
+    ``enforcement`` is a snapshot-level passthrough like ``always_inject``:
+    the merge does NOT apply any per-field merge semantics to it — the
+    governing entry carries its own constraint and the winner's value
+    governs. the default is ``None`` for every existing entry.
+    """
+
+    def test_default_enforcement_is_none(self) -> None:
+        entry = _entry(Scope.PLATFORM)
+        assert entry.enforcement is None
+
+    def test_enforcement_rides_through_merge_unchanged(self) -> None:
+        rule = EntryEnforcement(
+            table="early_vote_current",
+            required_predicates=["county_code"],
+            forbidden_bare_aggregate=True,
+            canonical_sql="SELECT count(*) FROM early_vote_current",
+            note="always filter by county",
+        )
+        platform = EntrySnapshot(
+            id=uuid7(),
+            scope=Scope.PLATFORM,
+            title="t",
+            body="b",
+            enforcement=rule,
+        )
+        effective, _layered = merge_entry_views([platform])
+        assert len(effective) == 1
+        # the same constraint object passes through unchanged.
+        assert effective[0].entry.enforcement == rule
+        assert effective[0].entry.enforcement is rule
+
+    def test_winner_enforcement_governs_in_shadow_chain(self) -> None:
+        # a platform entry with a constraint is shadowed by a user entry
+        # WITHOUT one -> the winner (user) governs; enforcement is None.
+        platform_rule = EntryEnforcement(
+            table="early_vote_current",
+            required_predicates=["county_code"],
+            forbidden_bare_aggregate=True,
+            canonical_sql=None,
+            note="platform rule",
+        )
+        platform = EntrySnapshot(
+            id=uuid7(),
+            scope=Scope.PLATFORM,
+            body="platform body",
+            enforcement=platform_rule,
+        )
+        user = EntrySnapshot(
+            id=uuid7(),
+            scope=Scope.USER,
+            origin_entry_id=platform.id,
+            body="user body",
+        )
+        effective, _layered = merge_entry_views([platform, user])
+        assert len(effective) == 1
+        assert effective[0].entry.body == "user body"
+        assert effective[0].entry.enforcement is None
+
+    def test_enforcement_is_immutable(self) -> None:
+        rule = EntryEnforcement(
+            table="t",
+            required_predicates=["c"],
+            forbidden_bare_aggregate=False,
+            canonical_sql=None,
+            note="n",
+        )
+        with pytest.raises((TypeError, ValueError)):
+            rule.table = "other"  # type: ignore[misc]
+
+    def test_enforcement_round_trips_through_model_dump(self) -> None:
+        rule = EntryEnforcement(
+            table="early_vote_current",
+            required_predicates=["county_code", "election_date"],
+            forbidden_bare_aggregate=True,
+            canonical_sql="SELECT count(*) FROM early_vote_current",
+            note="n",
+        )
+        dumped = rule.model_dump()
+        assert isinstance(dumped, dict)
+        rebuilt = EntryEnforcement.model_validate(dumped)
+        assert rebuilt == rule
 
 
 class TestMergeDeterminism:

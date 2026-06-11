@@ -49,6 +49,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from pydantic import BaseModel, ConfigDict
 from threetears.observe import get_logger
 
 from threetears.knowledge.chains import resolve_shadow_chains
@@ -57,6 +58,7 @@ from threetears.knowledge.scope import Scope
 __all__ = [
     "MAX_SHADOW_CHAIN_DEPTH",
     "EntryEffective",
+    "EntryEnforcement",
     "EntryLayered",
     "EntrySnapshot",
     "OriginCycleError",
@@ -85,6 +87,50 @@ class OriginCycleError(ValueError):
     """
 
 
+class EntryEnforcement(BaseModel):
+    """machine-checkable query constraint carried by a governing entry.
+
+    the deterministic query guard (query-enforcement-task-03) reads this
+    structured shape to reject an aggregate over the governed ``table``
+    that omits the ``required_predicates``; the human-readable entry
+    ``body`` is untouched (the verify node still reads it). this is the
+    MINIMAL vocabulary the real traps need — it is deliberately NOT a
+    general SQL policy language; grow it only when a concrete trap needs
+    a new field.
+
+    a Pydantic ``BaseModel`` (not a stdlib dataclass) so it round-trips
+    through FastAPI request validation, the OpenAPI schema, AND the SDK
+    codegen — the path proven for ``WorkspaceConfig`` (codegen follows
+    ``BaseModel`` / ``Enum`` refs, not dataclasses). serialized at the
+    persistence + HTTP borders via :meth:`pydantic.BaseModel.model_dump`
+    and reconstructed via :meth:`pydantic.BaseModel.model_validate`.
+
+    ``frozen=True`` makes the constraint object immutable (matching
+    :class:`EntrySnapshot`'s frozen-dataclass immutability); nothing
+    hashes the snapshot (``required_predicates`` is a list, so a snapshot
+    carrying enforcement is unhashable regardless).
+
+    :ivar table: table within the entry's datasource this rule governs
+    :ivar required_predicates: column names that MUST appear in a filter
+        on any aggregate over ``table`` (matched case-insensitively by
+        the analyzer)
+    :ivar forbidden_bare_aggregate: reject ``SUM`` / ``COUNT`` / ``AVG``
+        / ``MIN`` / ``MAX`` over ``table`` lacking the required predicates
+    :ivar canonical_sql: the single correct query for the governed total,
+        returned verbatim as the suggested fix (``None`` when there is no
+        canonical form)
+    :ivar note: short human reason, surfaced in the rejection message
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    table: str
+    required_predicates: list[str]
+    forbidden_bare_aggregate: bool
+    canonical_sql: str | None
+    note: str
+
+
 @dataclass(frozen=True)
 class EntrySnapshot:
     """immutable snapshot of one playbook-entry row for the merge.
@@ -104,6 +150,13 @@ class EntrySnapshot:
         resolution like any field)
     :ivar datasource_id: attached datasource domain, or ``None``
     :ivar namespace_id: attached namespace domain, or ``None``
+    :ivar enforcement: optional machine-checkable query constraint the
+        deterministic guard reads (query-enforcement-task-01); ``None``
+        (the default for every existing entry) means no deterministic
+        guard — the verify node still reads the entry ``body``. a
+        snapshot-level passthrough: the merge applies NO per-field
+        semantics to it (the winner's value governs, like
+        ``always_inject``)
     """
 
     id: UUID
@@ -115,6 +168,7 @@ class EntrySnapshot:
     always_inject: bool = False
     datasource_id: UUID | None = None
     namespace_id: UUID | None = None
+    enforcement: EntryEnforcement | None = None
 
 
 @dataclass(frozen=True)
