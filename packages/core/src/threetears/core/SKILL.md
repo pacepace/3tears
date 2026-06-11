@@ -137,15 +137,17 @@ from threetears.models import UsageTracker, create_chat_model
 
 tracker = UsageTracker()
 model = create_chat_model(
-    "claude-sonnet-4-6",
+    "claude-sonnet-4-20250514",  # ids resolve via the capability registry, not string parsing
     api_key=my_api_key,  # keyword-only; the host supplies secrets, never the library
     tracker=tracker,
 )
 ```
 
 The blessed path is the factory, not hand-constructing `ChatAnthropic` etc. — the factory
-resolves the provider from the model id, validates capabilities, and wires the
-`UsageTrackingCallback`/`CircuitBreaker` for you. `UsageTracker.record(...)` emits the OTel
+resolves the provider from the model id **via its capability registry**, validates
+capabilities, and wires the `UsageTrackingCallback`/`CircuitBreaker` for you. An id the
+registry does not know raises `ValueError` — pass `provider="anthropic"` (etc.) explicitly or
+`register_capabilities(...)` first; do not assume new model ids resolve. `UsageTracker.record(...)` emits the OTel
 span and Prometheus instruments; per-product fan-out goes through optional `UsageAuditSink` /
 `UsageCounterSink`, not by subclassing the tracker.
 
@@ -185,9 +187,9 @@ discoverability only — **authorization is always the ACL layer's job, not thes
 
 Extraction (`MemoryExtractor`), retrieval (`MemoryRetriever`), hybrid search. Requires
 pgvector (`CREATE EXTENSION vector` — the pgvector/pgvector Docker images for tests).
-Conversations live in the separate `3tears-conversations` package; memory depends on it.
-Embeddings are LangChain `Embeddings` subclasses — the `EmbeddingProvider` protocol is
-retired here too.
+Conversations live in the separate `3tears-conversations` package; memory rows key off
+`conversation_id`, so the two are deployed together in practice. Embeddings are LangChain
+`Embeddings` subclasses — the `EmbeddingProvider` protocol is retired here too.
 
 ## Webhooks / wake (`pip install 3tears-agent-wake`, import `threetears.agent.wake`)
 
@@ -203,10 +205,13 @@ Sharp edges, all of which hand-rolled receivers get wrong:
 - The HMAC is computed over the **raw, un-decoded body bytes** (constant-time compare). If you
   decode JSON first and re-serialize, verification breaks.
 - Do not invent your own status mapping: `WebhookReceiveResult.status_code` already encodes
-  the contract (202 accepted, 401 bad signature, 403 IP not allowed, 404 unknown/paused
-  subscription, 429 rate-limited, 500 dispatch failure).
-- Subscription secrets are Fernet-encrypted at rest via `EncryptionService` — you never store
-  or compare plaintext secrets.
+  the contract (202 accepted, 400 payload/template error, 401 bad signature, 403 IP not
+  allowed, 404 unknown/paused subscription, 429 rate-limited, 500 downstream failure —
+  decrypt, rate-limit query, or dispatch).
+- Subscription secrets are stored encrypted at rest (Fernet or equivalent) and never compared
+  in plaintext. `EncryptionService` is a **Protocol you implement** — the platform
+  deliberately ships no canonical implementation because key management is consumer-specific.
+  Satisfy the Protocol; do not try to instantiate it.
 - Everything is conversation-partitioned; wake tables carry `conversation_id` predicates by
   contract.
 
@@ -248,6 +253,7 @@ Knowing the negative space prevents the worst integration mistakes:
 - No L3 proxy broker: `NatsProxyL3Backend` is only the client side; the broker holding real
   DB credentials is yours to provide.
 - No deployment artifacts: no manifests, charts, or compose files ship with any package.
+- No key management: wake's `EncryptionService` is a Protocol; the implementation is yours.
 - No alternative migration paths: the canonical runner is the only one.
 - L1 is never durable storage, and L2 is never required for a single pod.
 

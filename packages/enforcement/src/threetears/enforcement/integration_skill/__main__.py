@@ -54,9 +54,16 @@ def _update(skill_path: Path) -> int:
 
 def _verify(skill_path: Path) -> int:
     doc = parse_skill_document(skill_path)
+    if not doc.attested:
+        print(f"{skill_path}: no 'attested:' block -- nothing is verified.")
+        return 1
     drift = 0
     for component, attested in sorted(doc.attested.items()):
-        computed = compute_surface_fingerprint(resolve_component_dir(component))
+        try:
+            computed = compute_surface_fingerprint(resolve_component_dir(component))
+        except ModuleNotFoundError:
+            print(f"{component:30} attested {attested.fingerprint} @ {attested.version:12} not installed (skipped)")
+            continue
         status = "ok" if computed == attested.fingerprint else "STALE"
         drift += status == "STALE"
         print(f"{component:30} attested {attested.fingerprint} @ {attested.version:12} computed {computed} {status}")

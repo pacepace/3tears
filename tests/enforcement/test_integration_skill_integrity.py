@@ -8,7 +8,7 @@ pinned here: the exact sentinel disclaimer opens the body, every
 ``threetears.*`` import in its fenced code blocks resolves, and every
 component section's public-surface attestation is current. surface
 drift fails with instructions to re-verify the section and re-attest
-(``python -m threetears.enforcement.integration_skill --update``).
+(``python -m threetears.enforcement.integration_skill --update <skill_path>``).
 
 design rationale: ``docs/experiments/integration-skill/DESIGN.md``.
 """

@@ -116,7 +116,7 @@ def compute_surface_fingerprint(package_dir: Path) -> str:
     """
     lines: list[str] = []
     for path in sorted(package_dir.rglob("*.py")):
-        rel_module = str(path.relative_to(package_dir).with_suffix("")).replace("/", ".")
+        rel_module = path.relative_to(package_dir).with_suffix("").as_posix().replace("/", ".")
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         lines.extend(_module_surface_lines(rel_module, tree))
     digest = hashlib.sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()

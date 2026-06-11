@@ -44,7 +44,11 @@ def _attestation_violations(config: IntegrationSkillConfig) -> list[str]:
     if not doc.attested:
         return [f"{config.skill_path}: frontmatter has no 'attested:' block"]
     for component, attested in sorted(doc.attested.items()):
-        computed = compute_surface_fingerprint(resolve_component_dir(component))
+        try:
+            computed = compute_surface_fingerprint(resolve_component_dir(component))
+        except ModuleNotFoundError:
+            violations.append(f"skill attests {component} but it is not importable in this environment")
+            continue
         if computed != attested.fingerprint:
             violations.append(
                 f"public surface of {component} changed since attestation "

@@ -12,7 +12,7 @@ lies is worse than no guidance, so this domain pins three contracts:
 - every component section is attested against a public-surface
   fingerprint; surface drift fails CI until a human re-verifies the
   section and re-attests via
-  ``python -m threetears.enforcement.integration_skill --update``.
+  ``python -m threetears.enforcement.integration_skill --update <skill_path>``.
 
 per-repo configuration goes through :class:`IntegrationSkillConfig`;
 :func:`run_integration_skill_enforcement` is the pytest-friendly
