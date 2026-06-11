@@ -250,3 +250,55 @@ def test_subject_is_frozen_dataclass() -> None:
     sub = Subjects.tools_call()
     with pytest.raises(Exception):  # FrozenInstanceError subclasses AttributeError
         sub.path = "different"  # type: ignore[misc]
+
+
+def test_room_subject_is_namespaced_and_sha256_tokened() -> None:
+    """room subject is ``{ns}.channels.room.{sha256hex(room_id)}``."""
+    import hashlib
+
+    room_id = "cust:story-1:main:scene.md"
+    expected_token = hashlib.sha256(room_id.encode("utf-8")).hexdigest()
+    sub = Subjects.room(room_id)
+    assert sub.path == f"aibots.channels.room.{expected_token}"
+    assert sub.kind == "point"
+    # the token is subject-safe: lowercase hex only, no separators/wildcards.
+    assert set(expected_token) <= set("0123456789abcdef")
+    assert len(expected_token) == 64
+
+
+def test_room_subject_is_deterministic() -> None:
+    """the same room id always derives the same subject."""
+    room_id = "cust:story-1:main:scene.md"
+    assert Subjects.room(room_id).path == Subjects.room(room_id).path
+
+
+def test_room_subject_distinct_ids_distinct_subjects() -> None:
+    """two distinct room ids derive distinct subjects."""
+    a = Subjects.room("cust:story-1:main:scene.md")
+    b = Subjects.room("cust:story-1:main:other.md")
+    assert a.path != b.path
+
+
+def test_room_subject_handles_out_of_grammar_room_ids() -> None:
+    """colons, dots, spaces, and NATS wildcards all yield a valid subject token.
+
+    a raw room id carrying characters illegal/ambiguous in a NATS subject
+    (space, ``*``, ``>``, ``.``) must NOT leak into the subject token —
+    the SHA-256 digest is always pure hex, so the resulting subject is a
+    single, valid, point subject regardless of the room id's contents.
+    """
+    nasty = "cust:my story:main:a *weird* file > name.md"
+    sub = Subjects.room(nasty)
+    token = sub.path.rsplit(".", 1)[-1]
+    assert set(token) <= set("0123456789abcdef")
+    assert len(token) == 64
+    # no overloaded separators / wildcards bled into the subject path.
+    for illegal in (" ", "*", ">"):
+        assert illegal not in sub.path
+    assert sub.path.startswith("aibots.channels.room.")
+
+
+def test_room_subject_rejects_empty_room_id() -> None:
+    """an empty room id is a programming error."""
+    with pytest.raises(ValueError):
+        Subjects.room("")

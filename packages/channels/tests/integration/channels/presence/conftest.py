@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import pytest
 
 from threetears.channels.presence.collection import PresenceCollection
+from threetears.channels.presence.fanout import RoomFanout
 from threetears.channels.presence.l1_cache import create_presence_l1_backend
 from threetears.channels.presence.room_state import RoomState
 from threetears.channels.presence.sweeper import PresenceSweeper
@@ -39,6 +40,7 @@ class Pod:
     collection: PresenceCollection
     state: RoomState
     sweeper: PresenceSweeper
+    fanout: RoomFanout
 
 
 async def _make_pod(nats_url: str, pod_id: str) -> Pod:
@@ -60,7 +62,15 @@ async def _make_pod(nats_url: str, pod_id: str) -> Pod:
     await registry.start_invalidation_listener(client)
     state = RoomState(collection, pod_id=pod_id)
     sweeper = PresenceSweeper(collection, check_interval=100.0, timeout=30.0)
-    return Pod(client=client, registry=registry, collection=collection, state=state, sweeper=sweeper)
+    fanout = RoomFanout(state, client)
+    return Pod(
+        client=client,
+        registry=registry,
+        collection=collection,
+        state=state,
+        sweeper=sweeper,
+        fanout=fanout,
+    )
 
 
 @pytest.fixture

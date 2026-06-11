@@ -38,6 +38,7 @@ rule.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -571,6 +572,42 @@ class Subjects:
             path=f"{_ns()}.oplog.{_sanitize(repo)}.{_sanitize(branch)}",
             kind="point",
         )
+
+    # ------------------------------------------------------------------
+    # channels (cross-pod room fanout)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def room(cls, room_id: str) -> Subject:
+        """publish/subscribe subject for one room's cross-pod message fanout.
+
+        the live room fanout (channels cross-pod design D1 / shard B)
+        publishes one frame to this subject; every pod holding a local
+        member of the room subscribes and delivers to its own sockets.
+
+        the room id is ``{customer}:{story}:{branch}:{file}`` — arbitrary
+        app-supplied segments may carry ``.``, spaces, ``*``, ``>`` (all
+        illegal or ambiguous in a NATS subject token), so the room id is
+        NOT :func:`_sanitize`-mapped (a colon/space room id would still
+        leave illegal characters or collide across distinct ids). instead
+        the token is the **SHA-256 hex digest** of the room id: a
+        subject-safe (``[0-9a-f]`` only), collision-resistant,
+        deterministic token. the raw room id rides in the wire envelope
+        (:class:`threetears.channels.presence.wire.RoomFrame`), so the
+        one-way digest needs no reversibility — the same robustness move
+        the presence KV key uses. consumed by
+        :class:`threetears.channels.presence.fanout.RoomFanout`.
+
+        :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
+        :ptype room_id: str
+        :return: subject ``{ns}.channels.room.{sha256hex(room_id)}``
+        :rtype: Subject
+        :raises ValueError: if room_id is empty
+        """
+        if not room_id:
+            raise ValueError("room_id must be non-empty")
+        token = hashlib.sha256(room_id.encode("utf-8")).hexdigest()
+        return Subject(path=f"{_ns()}.channels.room.{token}", kind="point")
 
     # ------------------------------------------------------------------
     # l3 broker

@@ -295,6 +295,28 @@ class RoomState:
             # snapshot under the lock; iterate it (not the live map) after release
             return [self._sockets[cid] for cid in member_ids if cid in self._sockets]
 
+    async def local_member_sockets(self, room_id: str) -> list[tuple[str, Any]]:
+        """return ``(connection_id, socket)`` pairs for this pod's room members.
+
+        like :meth:`local_sockets` but pairs each live handle with its
+        connection-id, so the fanout can skip an excluded connection
+        precisely (by id) without socket-identity guesswork. resolves the
+        room's member ids (cross-pod), then snapshots — under the lock —
+        the pairs this pod holds. the snapshot is built and the lock
+        released BEFORE the caller fans out, so delivery never holds the
+        lock across a send and never iterates the live map.
+
+        :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
+        :ptype room_id: str
+        :return: ``(connection_id, live socket)`` pairs for the local
+            members (a snapshot list)
+        :rtype: list[tuple[str, Any]]
+        """
+        member_ids = await self._collection.rooms.members(room_id)
+        async with self._lock:
+            # snapshot under the lock; iterate it (not the live map) after release
+            return [(cid, self._sockets[cid]) for cid in member_ids if cid in self._sockets]
+
     async def local_socket(self, connection_id: str) -> Any | None:
         """return the live socket handle for one connection, if local.
 

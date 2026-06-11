@@ -29,6 +29,7 @@ from threetears.channels.presence.entities import (
     PresenceConnectionEntity,
     RoomIndexEntity,
 )
+from threetears.channels.presence.fanout import RoomFanout
 from threetears.channels.presence.l1_cache import (
     PRESENCE_L1_METADATA,
     PRESENCE_L1_TABLE_NAMES,
@@ -36,6 +37,7 @@ from threetears.channels.presence.l1_cache import (
 )
 from threetears.channels.presence.room_state import RoomMember, RoomState
 from threetears.channels.presence.sweeper import PresenceSweeper
+from threetears.channels.presence.wire import RoomFrame
 
 __all__ = [
     "PRESENCE_L1_METADATA",
@@ -44,6 +46,8 @@ __all__ = [
     "PresenceConnectionCollection",
     "PresenceConnectionEntity",
     "PresenceSweeper",
+    "RoomFanout",
+    "RoomFrame",
     "RoomIndexCollection",
     "RoomIndexEntity",
     "RoomMember",
