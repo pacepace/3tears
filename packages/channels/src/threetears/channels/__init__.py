@@ -26,9 +26,11 @@ from threetears.channels.formatting import (
 )
 from threetears.channels.frames import (
     Frame,
+    FrameHandler,
     NsEntity,
     NsResolver,
     OpHandler,
+    OpRejected,
     OpResult,
     ReplaySource,
 )
@@ -69,9 +71,11 @@ __all__ = [
     "ChannelRouter",
     "ConnectionRegistry",
     "Frame",
+    "FrameHandler",
     "NsEntity",
     "NsResolver",
     "OpHandler",
+    "OpRejected",
     "OpResult",
     "PresenceCollection",
     "PresenceConnectionCollection",

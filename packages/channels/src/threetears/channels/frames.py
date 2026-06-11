@@ -24,7 +24,7 @@ on (``docs/channels-task-03-authz-typed-frames-resume.md``):
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -32,12 +32,39 @@ from pydantic import BaseModel, ConfigDict
 
 __all__ = [
     "Frame",
+    "FrameHandler",
     "NsEntity",
     "NsResolver",
     "OpHandler",
+    "OpRejected",
     "OpResult",
     "ReplaySource",
 ]
+
+
+class OpRejected(Exception):
+    """an injected :class:`OpHandler` rejected an op for a **recoverable** reason.
+
+    raised by the app's ``op_handler`` when an ``editor.op`` cannot be
+    applied but the connection should survive — e.g. an op-log
+    expected-sequence CAS conflict (the client is behind and must resync),
+    or an unknown entry. the router catches it, sends the sender an
+    ``error`` frame carrying :attr:`message`, and does **not** broadcast —
+    so a normal optimistic-concurrency miss never crashes the socket. a
+    handler that raises any *other* exception is treated as a genuine
+    fault, not a recoverable rejection.
+
+    :ivar message: client-facing reason (e.g. ``"sequence-conflict"``)
+    """
+
+    def __init__(self, message: str) -> None:
+        """capture the client-facing rejection reason.
+
+        :param message: client-facing reason
+        :ptype message: str
+        """
+        super().__init__(message)
+        self.message = message
 
 
 class Frame(BaseModel):
@@ -207,5 +234,47 @@ class ReplaySource(Protocol):
         :ptype from_seq: int
         :return: async iterator of wire-ready frame payloads, in seq order
         :rtype: AsyncIterator[str]
+        """
+        ...
+
+
+@runtime_checkable
+class FrameHandler(Protocol):
+    """injected seam: handle an app-specific inbound frame type.
+
+    the typed-frame router (``WebSocketHandler``) dispatches a fixed core
+    vocabulary (``message`` / ``join`` / ``leave`` / ``editor.op`` /
+    ``cursor`` / ``typing`` / ``presence`` / ``resume``). an app registers
+    handlers for ITS OWN frame types via ``frame_handlers={type: handler}``
+    so it extends the router without forking channels — e.g. scriob's
+    ``commit`` (intent-commit + push). a handler receives the parsed frame,
+    the connection's identity, and a ``send`` callback to reply to the
+    sender; it owns its own authorization (channels gates only its built-in
+    frames). it may NOT register a built-in type (rejected at construction).
+    """
+
+    async def __call__(
+        self,
+        frame: Frame,
+        *,
+        user_id: str,
+        customer_id: str,
+        connection_id: str,
+        send: Callable[[str], Awaitable[None]],
+    ) -> None:
+        """handle one inbound frame of the registered app type.
+
+        :param frame: the parsed inbound frame
+        :ptype frame: Frame
+        :param user_id: authenticated principal
+        :ptype user_id: str
+        :param customer_id: tenant id
+        :ptype customer_id: str
+        :param connection_id: this socket's stable id
+        :ptype connection_id: str
+        :param send: reply callback (sends wire text to THIS socket)
+        :ptype send: Callable[[str], Awaitable[None]]
+        :return: nothing
+        :rtype: None
         """
         ...

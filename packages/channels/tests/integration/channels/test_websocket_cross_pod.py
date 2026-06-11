@@ -367,10 +367,15 @@ async def test_vertical_slice_cross_pod_editor_op(
     assert op_frames[0]["seq"] == 500, "broadcast op frame did not carry the op-log handler's seq"
     assert op_frames[0]["payload"] == "replace(0,1,'x')"
 
-    # grace, then the negatives: A excluded (no editor.op echo), C (other room) silent.
+    # server-authoritative OT: A ALSO receives its own op back carrying the
+    # authoritative seq (the ack — A advances its version off this), while C
+    # (a different room) stays silent.
+    assert await _await_until(lambda: any(json.loads(s).get("type") == "editor.op" for s in ws_a.sent)), (
+        "A never received its own editor.op back (the OT ack carrying the assigned seq)"
+    )
+    a_ops = [json.loads(s) for s in ws_a.sent if json.loads(s).get("type") == "editor.op"]
+    assert a_ops[0]["seq"] == 500, "A's echoed op did not carry the authoritative seq"
     await asyncio.sleep(0.3)
-    a_op_echo = [s for s in ws_a.sent if json.loads(s).get("type") == "editor.op"]
-    assert a_op_echo == [], "A received its own editor.op (exclude failed)"
     c_ops = [s for s in ws_c.sent if json.loads(s).get("type") == "editor.op"]
     assert c_ops == [], "C (different room) received the op frame"
 

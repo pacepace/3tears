@@ -12,8 +12,11 @@ Contracts asserted here (design T3-D1..D5):
   ``error`` frame (the pre-task-03 silent ``continue`` is gone).
 - each typed frame hits the right path: ``join``/``leave`` → fanout (after
   ``room.join`` authz); ``editor.op`` → op_handler then broadcast carrying
-  the returned seq, ``exclude`` = the author's connection id; transient
-  ``cursor``/``typing``/``presence`` → broadcast with no seq.
+  the returned seq to ALL members (the author needs its own op echoed back
+  with the seq — the OT ack); an ``OpRejected`` → ``error`` frame, no
+  broadcast; transient ``cursor``/``typing``/``presence`` → broadcast with
+  no seq, author-excluded; app-registered ``frame_handlers`` extend the
+  router with the app's own types.
 - a denied ``join`` (authorizer raising ``AccessDenied``) → ``error`` frame,
   NO ``join_room``, NO broadcast; a denied ``editor.op`` → refused.
 - enforcement: no in-process seq on the handler; unknown-not-dropped;
@@ -265,8 +268,12 @@ class TestTypedRouting:
         assert fanout.left[0][0] == room
 
     @pytest.mark.asyncio
-    async def test_editor_op_appends_then_broadcasts_with_seq(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``editor.op`` → op_handler (durable) → broadcast carrying its seq, excluding author."""
+    async def test_editor_op_appends_then_broadcasts_with_seq_to_all(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``editor.op`` → op_handler (durable) → broadcast carrying its seq to ALL (author incl.).
+
+        server-authoritative OT: the author needs its own op echoed back with
+        the assigned seq (the ack), so the broadcast is NOT author-excluded.
+        """
         op = _FakeOpHandler(start=100)
         handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
         handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
@@ -281,15 +288,41 @@ class TestTypedRouting:
 
         # op handler was called once
         assert len(op.appended) == 1
-        # exactly one broadcast, carrying the op-log seq, excluding the author's connection id
+        # exactly one broadcast, carrying the op-log seq, to ALL members (no exclude)
         assert len(fanout.broadcasts) == 1
         b_room, b_payload, b_exclude = fanout.broadcasts[0]
         assert b_room == room
-        assert b_exclude is not None  # the author's connection id
+        assert b_exclude is None  # broadcast to everyone incl. the author (the OT ack)
         broadcast_frame = json.loads(b_payload)
         assert broadcast_frame["seq"] == 100
         # write authz ran for the op
         assert "entry.write" in [a for a, _ in recorded]
+
+    @pytest.mark.asyncio
+    async def test_editor_op_rejected_sends_error_and_does_not_broadcast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """an ``OpRejected`` from the op_handler → ``error`` frame, NO broadcast, socket survives."""
+        from threetears.channels.frames import OpRejected
+
+        class _RejectingOpHandler:
+            async def __call__(self, room_id: str, user_id: str, frame: Frame) -> OpResult:
+                raise OpRejected("sequence-conflict")
+
+        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=_RejectingOpHandler())
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+
+        room = "cust:story:main:scene.md"
+        msgs = [
+            json.dumps({"type": "join", "room": room}),
+            json.dumps({"type": "editor.op", "room": room, "payload": "op"}),
+            json.dumps({"type": "editor.op", "room": room, "payload": "op2"}),  # socket still serving
+        ]
+        ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 2, "each rejected op should error; the socket must keep serving"
+        assert any("sequence-conflict" in e.get("message", "") for e in errors)
+        assert fanout.broadcasts == [], "a rejected op must not broadcast"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("ttype", ["cursor", "typing", "presence"])
@@ -588,3 +621,165 @@ class TestResumeFrame:
 
         replayed = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "editor.op"]
         assert [f["seq"] for f in replayed] == [8, 9, 10], "resume frame did not replay the tail in order"
+
+
+# ============================================================
+# app-registered frame handlers (extensibility seam)
+# ============================================================
+
+
+class TestAppFrameHandlers:
+    """apps register handlers for their own frame types (e.g. scriob ``commit``)."""
+
+    @pytest.mark.asyncio
+    async def test_registered_app_frame_dispatched_with_context_and_can_reply(self) -> None:
+        """a registered app frame reaches its handler with identity + a reply ``send``."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        calls: list[tuple[str, str | None, str]] = []
+
+        async def _commit(frame: Frame, *, user_id: str, customer_id: str, connection_id: str, send: Any) -> None:
+            calls.append((frame.type, frame.room, user_id))
+            await send(json.dumps({"type": "committed", "op_seq": 42}))
+
+        handler = WebSocketHandler(
+            router=_EchoRouter(),
+            auth_validator=_valid_auth,
+            frame_handlers={"commit": _commit},
+        )
+        ws = MockWebSocket(
+            messages=[json.dumps({"type": "commit", "room": "cust:s:main:f.md"})],
+            query_params={"token": "valid-token"},
+        )
+        await handler.handle_connection(ws)
+
+        assert len(calls) == 1
+        assert calls[0][0] == "commit"
+        assert calls[0][1] == "cust:s:main:f.md"
+        committed = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "committed"]
+        assert committed and committed[0]["op_seq"] == 42
+
+    @pytest.mark.asyncio
+    async def test_unregistered_type_still_errors_not_dropped(self) -> None:
+        """a type covered by NO app handler still yields an ``error`` (never a silent drop)."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _noop(frame: Frame, **_: Any) -> None: ...
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _noop})
+        ws = MockWebSocket(messages=[json.dumps({"type": "no-such"})], query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 1
+
+    def test_app_handler_cannot_shadow_a_builtin_frame_type(self) -> None:
+        """registering a built-in type (e.g. ``editor.op``) is rejected — apps can't break core routing."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _h(frame: Frame, **_: Any) -> None: ...
+
+        with pytest.raises(ValueError, match="reserved"):
+            WebSocketHandler(
+                router=_EchoRouter(),
+                auth_validator=_valid_auth,
+                frame_handlers={"editor.op": _h},
+            )
+
+
+# ============================================================
+# the per-frame safety net: a handler's stray exception must NOT crash the socket
+# ============================================================
+
+
+class TestFrameDispatchIsCrashSafe:
+    """an unexpected exception from any typed-frame handler → error frame, socket survives."""
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_in_app_handler_does_not_crash_socket(self) -> None:
+        """an app frame handler that raises an UNEXPECTED error → error frame, loop keeps serving."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        async def _boom(frame: Frame, **_: Any) -> None:
+            raise RuntimeError("kaboom from the app handler")
+
+        handler = WebSocketHandler(router=_EchoRouter(), auth_validator=_valid_auth, frame_handlers={"commit": _boom})
+        msgs = [json.dumps({"type": "commit", "room": "r"}), json.dumps({"type": "unknown-x"})]
+        ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 2, "the boom should error AND the later frame still serve (socket alive)"
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception_in_op_handler_does_not_crash_socket(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """a non-``OpRejected`` raise from the op_handler → error frame, no broadcast, socket survives."""
+
+        class _BoomOpHandler:
+            async def __call__(self, room_id: str, user_id: str, frame: Frame) -> OpResult:
+                raise RuntimeError("unexpected op_handler fault")
+
+        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=_BoomOpHandler())
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+
+        room = "cust:story:main:scene.md"
+        msgs = [
+            json.dumps({"type": "join", "room": room}),
+            json.dumps({"type": "editor.op", "room": room, "payload": "op"}),
+            json.dumps({"type": "editor.op", "room": room, "payload": "op2"}),
+        ]
+        ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)  # must NOT raise
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 2, "each faulting op errors; the socket keeps serving"
+        assert fanout.broadcasts == [], "a faulting op must not broadcast"
+
+
+# ============================================================
+# membership gate: editor.op / transient require a prior join
+# ============================================================
+
+
+class TestEditRequiresJoin:
+    """editing/broadcasting to a room requires having joined it (no silent no-ack)."""
+
+    @pytest.mark.asyncio
+    async def test_editor_op_before_join_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """an ``editor.op`` for a room the connection never joined → error, no op, no broadcast."""
+        op = _FakeOpHandler(start=100)
+        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+
+        room = "cust:story:main:scene.md"
+        # editor.op WITHOUT a preceding join.
+        ws = MockWebSocket(
+            messages=[json.dumps({"type": "editor.op", "room": room, "payload": "op"})],
+            query_params={"token": "valid-token"},
+        )
+        await handler.handle_connection(ws)
+
+        errors = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "error"]
+        assert len(errors) == 1
+        assert op.appended == [], "an op for an unjoined room must not be appended"
+        assert fanout.broadcasts == [], "an op for an unjoined room must not broadcast"
+
+    @pytest.mark.asyncio
+    async def test_editor_op_after_join_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """a ``join`` then ``editor.op`` for that room is accepted (the gate allows members)."""
+        op = _FakeOpHandler(start=100)
+        handler, state, fanout, recorded = _room_seam_handler(monkeypatch, op_handler=op)
+        handler._auth_validator = _auth_with_customer("valid-token")  # noqa: SLF001
+
+        room = "cust:story:main:scene.md"
+        msgs = [
+            json.dumps({"type": "join", "room": room}),
+            json.dumps({"type": "editor.op", "room": room, "payload": "op"}),
+        ]
+        ws = MockWebSocket(messages=msgs, query_params={"token": "valid-token"})
+        await handler.handle_connection(ws)
+
+        assert len(op.appended) == 1, "a joined member's op is appended"
+        assert len(fanout.broadcasts) == 1

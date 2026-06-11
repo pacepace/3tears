@@ -34,13 +34,13 @@ from uuid import UUID, uuid7
 from pydantic import ValidationError
 
 from threetears.agent.acl import AccessDenied, authorize_on_entity
-from threetears.channels.frames import Frame
+from threetears.channels.frames import Frame, OpRejected
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
     from threetears.agent.acl import AclCache
-    from threetears.channels.frames import NsResolver, OpHandler, ReplaySource
+    from threetears.channels.frames import FrameHandler, NsResolver, OpHandler, ReplaySource
     from threetears.channels.presence.fanout import RoomFanout
     from threetears.channels.presence.room_state import RoomState
 
@@ -62,6 +62,11 @@ _DEFAULT_WRITE_ACTION = "entry.write"
 
 # the typed frame vocabulary the cross-pod router dispatches on (T3-D2).
 _TRANSIENT_FRAME_TYPES = frozenset({"cursor", "typing", "presence"})
+
+# the built-in frame types the router owns; an app may NOT register a
+# handler for one of these (it would shadow core routing). app-specific
+# frame types (e.g. scriob ``commit``) go through ``frame_handlers``.
+_BUILTIN_FRAME_TYPES = frozenset({"message", "join", "leave", "editor.op", "resume", *_TRANSIENT_FRAME_TYPES})
 
 
 @runtime_checkable
@@ -245,6 +250,7 @@ class WebSocketHandler:
         ns_resolver: NsResolver | None = None,
         op_handler: OpHandler | None = None,
         replay_source: ReplaySource | None = None,
+        frame_handlers: dict[str, FrameHandler] | None = None,
         join_action: str = _DEFAULT_JOIN_ACTION,
         write_action: str = _DEFAULT_WRITE_ACTION,
     ) -> None:
@@ -289,6 +295,11 @@ class WebSocketHandler:
         :ptype op_handler: OpHandler | None
         :param replay_source: durable op-log replay tail for resume
         :ptype replay_source: ReplaySource | None
+        :param frame_handlers: app-specific frame type → handler, extending
+            the router with the app's own frames (e.g. scriob ``commit``)
+            without forking channels; a key naming a built-in frame type is
+            rejected
+        :ptype frame_handlers: dict[str, FrameHandler] | None
         :param join_action: canonical ``agent-acl`` action gating join
             (default ``room.join``)
         :ptype join_action: str
@@ -311,6 +322,12 @@ class WebSocketHandler:
         # or neither, so the only un-authorized config is an explicit one.
         if (acl_cache is None) != (ns_resolver is None):
             raise ValueError("acl_cache and ns_resolver must be provided together (both or neither)")
+        # app frame handlers extend the router with app-specific types; they
+        # may not shadow a built-in type (that would break core routing).
+        self._frame_handlers: dict[str, FrameHandler] = dict(frame_handlers or {})
+        reserved = _BUILTIN_FRAME_TYPES & self._frame_handlers.keys()
+        if reserved:
+            raise ValueError(f"frame_handlers may not register reserved built-in frame type(s): {sorted(reserved)}")
         self._room_state = room_state
         self._room_fanout = room_fanout
         self._acl_cache = acl_cache
@@ -499,14 +516,21 @@ class WebSocketHandler:
                     log.warning("received malformed websocket frame from user %s", user_id)
                     await websocket.send_text(json.dumps({"type": "error", "message": "invalid frame"}))
                     continue
-                await self._route_frame(
-                    websocket,
-                    frame,
-                    user_id=user_id,
-                    customer_id=customer_id,
-                    connection_id=connection_id,
-                    joined_rooms=joined_rooms,
-                )
+                try:
+                    await self._route_frame(
+                        websocket,
+                        frame,
+                        user_id=user_id,
+                        customer_id=customer_id,
+                        connection_id=connection_id,
+                        joined_rooms=joined_rooms,
+                    )
+                except Exception:  # prawduct:allow prawduct/broad-except -- per-frame safety net: a single frame's handler (a built-in path, an injected op_handler/frame_handler, a bad room id) must NEVER crash the whole socket; an unanticipated error becomes one error frame + a log and the connection keeps serving (recoverable rejections are already an OpRejected/error frame upstream)
+                    log.exception(
+                        "frame handler raised; surfacing an error and keeping the socket alive",
+                        extra={"extra_data": {"user_id": user_id, "frame_type": frame.type}},
+                    )
+                    await websocket.send_text(Frame.error("internal error handling frame"))
                 continue
 
             content = data.get("content", "")
@@ -627,11 +651,21 @@ class WebSocketHandler:
         elif frame.type == "leave":
             await self._handle_leave(frame, connection_id, joined_rooms)
         elif frame.type == "editor.op":
-            await self._handle_editor_op(websocket, frame, user_id, connection_id)
+            await self._handle_editor_op(websocket, frame, user_id, joined_rooms)
         elif frame.type in _TRANSIENT_FRAME_TYPES:
-            await self._handle_transient(websocket, frame, user_id, connection_id)
+            await self._handle_transient(websocket, frame, user_id, connection_id, joined_rooms)
         elif frame.type == "resume":
             await self._handle_resume(websocket, frame)
+        elif frame.type in self._frame_handlers:
+            # app-registered frame type (e.g. scriob ``commit``): hand it the
+            # frame + identity + a reply ``send``; the app owns its own authz.
+            await self._frame_handlers[frame.type](
+                frame,
+                user_id=user_id,
+                customer_id=customer_id,
+                connection_id=connection_id,
+                send=websocket.send_text,
+            )
         else:
             await websocket.send_text(Frame.error(f"unknown frame type: {frame.type}"))
 
@@ -737,13 +771,21 @@ class WebSocketHandler:
         await self._room_fanout.leave_room(room_id, connection_id)
         joined_rooms.discard(room_id)
 
-    async def _handle_editor_op(self, websocket: Any, frame: Frame, user_id: str, connection_id: str) -> None:
+    async def _handle_editor_op(self, websocket: Any, frame: Frame, user_id: str, joined_rooms: set[str]) -> None:
         """authorize ``entry.write``, append durably, then broadcast with the seq.
 
         the durable append is the injected ``op_handler`` (scriob's op-log,
-        design T3-D3); channels broadcasts the op frame carrying the
-        **returned** seq (the op-log's, never an in-process counter; T3-D4),
-        excluding the author's own connection so it does not echo.
+        design T3-D3) which assigns the authoritative op-log seq (T3-D4). on
+        success the op frame — carrying that seq — is broadcast to **every**
+        room member **including the author**: in server-authoritative OT the
+        author needs its own op echoed back with the assigned seq to advance
+        its version (the broadcast is the acknowledgement), and peers apply
+        and rebase. (The author's client reconciles its optimistic copy by
+        the op id it embedded in ``payload``.) A recoverable rejection —
+        :class:`~threetears.channels.frames.OpRejected`, e.g. an op-log
+        expected-sequence CAS miss — sends the sender an ``error`` frame and
+        does **not** broadcast, so an everyday optimistic-concurrency miss
+        never crashes the socket.
 
         :param websocket: the live socket
         :ptype websocket: Any
@@ -751,8 +793,8 @@ class WebSocketHandler:
         :ptype frame: Frame
         :param user_id: authenticated principal
         :ptype user_id: str
-        :param connection_id: this socket's stable id (the broadcast exclude)
-        :ptype connection_id: str
+        :param joined_rooms: connection-local joined-room set (membership gate)
+        :ptype joined_rooms: set[str]
         """
         room_id = frame.room
         if room_id is None:
@@ -761,18 +803,36 @@ class WebSocketHandler:
         if self._room_fanout is None or self._op_handler is None:
             await websocket.send_text(Frame.error("editor.op is not supported on this connection"))
             return
+        if room_id not in joined_rooms:
+            # editing a room requires having joined it: the author needs its
+            # pod subscribed to receive its own op back (the OT ack), and a
+            # member is the authorization-clean unit. fail explicitly rather
+            # than silently appending an op whose ack the author never sees.
+            await websocket.send_text(Frame.error("not joined to room"))
+            return
         if not await self._authorize(websocket, room_id, self._write_action, user_id):
             return
-        result = await self._op_handler(room_id, user_id, frame)
+        try:
+            result = await self._op_handler(room_id, user_id, frame)
+        except OpRejected as rejected:
+            # recoverable (e.g. an op-log CAS miss — the client is behind):
+            # tell the sender, do NOT broadcast, keep the socket alive.
+            await websocket.send_text(Frame.error(rejected.message))
+            return
         op_frame = Frame(type="editor.op", room=room_id, payload=frame.payload, seq=result.seq)
-        await self._room_fanout.broadcast(room_id, op_frame.model_dump_json(), exclude=connection_id)
+        # broadcast to ALL members (no exclude): the author needs its own op
+        # back carrying the authoritative seq (the ack), peers apply + rebase.
+        await self._room_fanout.broadcast(room_id, op_frame.model_dump_json())
 
-    async def _handle_transient(self, websocket: Any, frame: Frame, user_id: str, connection_id: str) -> None:
+    async def _handle_transient(
+        self, websocket: Any, frame: Frame, user_id: str, connection_id: str, joined_rooms: set[str]
+    ) -> None:
         """authorize ``entry.write`` then transient-broadcast (no seq, no durability).
 
         ``cursor`` / ``typing`` / ``presence`` are fast-notify only — there is
-        no op-log append and the broadcast carries **no** seq. excludes the
-        author so they do not receive their own frame.
+        no op-log append and the broadcast carries **no** seq. requires having
+        joined the room (you broadcast only to rooms you are in) and excludes
+        the author so they do not receive their own frame.
 
         :param websocket: the live socket
         :ptype websocket: Any
@@ -782,10 +842,15 @@ class WebSocketHandler:
         :ptype user_id: str
         :param connection_id: this socket's stable id (the broadcast exclude)
         :ptype connection_id: str
+        :param joined_rooms: connection-local joined-room set (membership gate)
+        :ptype joined_rooms: set[str]
         """
         room_id = frame.room
         if room_id is None or self._room_fanout is None:
             await websocket.send_text(Frame.error(f"{frame.type} requires a room"))
+            return
+        if room_id not in joined_rooms:
+            await websocket.send_text(Frame.error("not joined to room"))
             return
         if not await self._authorize(websocket, room_id, self._write_action, user_id):
             return
