@@ -24,6 +24,14 @@ from threetears.channels.formatting import (
     build_slack_payload,
     should_use_rich_formatting,
 )
+from threetears.channels.frames import (
+    Frame,
+    NsEntity,
+    NsResolver,
+    OpHandler,
+    OpResult,
+    ReplaySource,
+)
 from threetears.channels.protocol import (
     Attachment,
     ChannelMessage,
@@ -60,10 +68,16 @@ __all__ = [
     "ChannelResponse",
     "ChannelRouter",
     "ConnectionRegistry",
+    "Frame",
+    "NsEntity",
+    "NsResolver",
+    "OpHandler",
+    "OpResult",
     "PresenceCollection",
     "PresenceConnectionCollection",
     "PresenceConnectionEntity",
     "PresenceSweeper",
+    "ReplaySource",
     "RoomFanout",
     "RoomFrame",
     "RoomIndexCollection",
