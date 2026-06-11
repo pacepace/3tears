@@ -127,7 +127,11 @@ class EntryEnforcement(BaseModel):
     table: str
     required_predicates: list[str]
     forbidden_bare_aggregate: bool
-    canonical_sql: str | None
+    # optional: a table with no single canonical total (e.g. a tall
+    # metric table queried per-metric) carries none. without the default
+    # pydantic treats ``str | None`` as required-but-nullable, which 422s a
+    # constraint that legitimately omits it.
+    canonical_sql: str | None = None
     note: str
 
 
