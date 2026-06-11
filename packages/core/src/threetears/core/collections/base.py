@@ -14,9 +14,12 @@ array and composite-pk emits a length-N array.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Final, Generic, TypeVar
+from typing import Any, ClassVar, Final, Generic, Literal, TypeVar
 
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.cache import MISSING
@@ -34,6 +37,13 @@ __all__ = ["NATS_CLIENT_FROM_REGISTRY", "BaseCollection", "EntityT"]
 log = get_logger(__name__)
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
+
+#: the JetStream KV key grammar enforced by ``nats-server`` (``kv.go``).
+#: a key (or, here, a key *body*) that falls outside this character set
+#: is rejected with ``nats: JetStream.InvalidKeyError`` at runtime, so a
+#: pk value carrying a colon / space / other out-of-grammar character
+#: cannot be interpolated raw into a KV key. matched as a whole string.
+_KV_KEY_GRAMMAR: Final = re.compile(r"^[-/_=.a-zA-Z0-9]+$")
 
 
 class _NatsClientFromRegistry:
@@ -433,38 +443,56 @@ class BaseCollection(ABC, Generic[EntityT]):
         return self._kv
 
     def l2_key(self, entity_id: Any) -> str:
-        """build NATS KV key for given pk.
+        """build a grammar-safe NATS KV key for given pk.
 
         single-pk shape: ``{table_name}.{value}``. composite-pk shape:
         ``{table_name}.{v1}_{v2}_...`` -- pk values stringified at the
         NATS boundary (per CLAUDE.md UUID/datetime border-conversion
-        rule) and joined with ``"_"``.
+        rule) and joined with ``"_"`` to form the **key body**.
 
-        the separator is constrained by the JetStream KV grammar
-        (``^[-/_=.a-zA-Z0-9]+$`` per ``nats-server`` ``kv.go``):
-        any colon ``:`` in the key is rejected with
-        ``nats: JetStream.InvalidKeyError``. ``_`` is JetStream-safe,
-        unambiguous against the realistic pk types used in this
-        codebase (UUIDs use ``-``, integers/postgres oids are pure
-        digits, slug strings used as composite-pk components do not
-        contain ``_``), and visually distinct from the leading
-        table-name namespace dot.
+        the body is constrained by the JetStream KV grammar
+        (``^[-/_=.a-zA-Z0-9]+$`` per ``nats-server`` ``kv.go``): a body
+        carrying a colon ``:``, a space, or any other out-of-grammar
+        character is rejected with ``nats: JetStream.InvalidKeyError``.
+        so the body is checked against the grammar:
 
-        **edge case**: if a pk value naturally contains ``"_"`` the
-        composite form is ambiguous with a pk value that contains the
-        resulting joined substring. callers that introduce
-        underscore-bearing pk values MUST either escape them before
-        passing or override this method.
+        - **grammar-safe** (the common case -- UUIDs use ``-``,
+          integers/postgres oids are pure digits, slugs stay in
+          ``[-_a-zA-Z0-9]``): the readable body is kept verbatim, so
+          every existing pk in the codebase keeps its current,
+          human-readable key (backward-compatible).
+        - **out-of-grammar**: the body is replaced by a **SHA-256 hex
+          digest** of it -- always grammar-valid (hex is in-grammar) and
+          collision-resistant (distinct bodies map to distinct digests,
+          unlike a naive ``:``->``=`` replace which silently collides).
+
+        the ``{table_name}.`` prefix is always grammar-safe (table names
+        are ``[a-z_]`` identifiers) and is never hashed, so it stays a
+        readable namespace. only the body is conditionally hashed. the
+        raw pk continues to round-trip through L1, the stored value, and
+        the invalidation envelope, so reversibility is not needed.
+
+        deterministic: the same pk always yields the same key (the
+        grammar check and the digest are both pure functions of the
+        stringified pk values).
+
+        **edge case**: if a *grammar-safe* pk value naturally contains
+        ``"_"`` the composite form is ambiguous with a pk value that
+        contains the resulting joined substring. callers that introduce
+        underscore-bearing grammar-safe pk values MUST either escape
+        them before passing or override this method.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             in declared order (composite-pk)
         :ptype entity_id: Any
-        :return: nats KV key, scoped by table name
+        :return: grammar-safe nats KV key, scoped by table name
         :rtype: str
         """
         pk_values = self.normalize_pk(entity_id)
-        joined = "_".join(str(v) for v in pk_values)
-        return f"{self.table_name}.{joined}"
+        body = "_".join(str(v) for v in pk_values)
+        if not _KV_KEY_GRAMMAR.match(body):
+            body = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        return f"{self.table_name}.{body}"
 
     async def _get_from_l2(self, entity_id: Any) -> dict[str, Any] | None:
         """read entity payload from the L2 NATS KV bucket.
@@ -949,6 +977,166 @@ class BaseCollection(ABC, Generic[EntityT]):
         await self._delete_from_l2(entity_id)
         await self._publish_invalidation(entity_id)
         return True
+
+    @traced()
+    async def l2_cas_mutate(
+        self,
+        entity_id: Any,
+        mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]],
+        *,
+        max_retries: int = 8,
+    ) -> None:
+        """atomically read-modify-write one entity's L2 value under revision CAS.
+
+        the framework's optimistic-lock fence lives in the L3 write
+        path (:meth:`save_to_postgres` returning ``0`` rows), so an
+        L1+L2-only collection (no L3 pool) has no ``save_entity``-level
+        CAS for atomically mutating a single value. this primitive
+        fills that gap: it compare-and-swaps the entity's single L2
+        (NATS-KV) value directly, using the wrapper's documented
+        revision primitives, then reconciles L1 and fires the cross-pod
+        invalidation. it operates on exactly one pk-keyed value (not a
+        key-listing), so it stays within the pk-keyed collection
+        contract.
+
+        the ``mutate`` callback receives the current row dict (or
+        ``None`` when the value is absent) and returns
+        ``(action, new_row)``:
+
+        - ``("noop", None)`` -- nothing to do; returns without writing.
+        - ``("delete", *)`` -- CAS-delete the value (e.g. the last
+          member left). ``new_row`` is ignored. deleting an
+          already-absent value is a successful idempotent no-op, so a
+          callback may return ``"delete"`` on a ``None`` row without
+          special-casing.
+        - ``("upsert", new_row)`` -- create-if-absent (so a racing
+          creator loses the row) when the value was absent, else
+          CAS-update against the read revision. ``new_row`` MUST be
+          non-``None``.
+
+        ``date_created`` / ``date_updated`` are stamped on an upsert
+        consistently with :meth:`save_entity` (``date_created`` only
+        when the value is newly created; ``date_updated`` on every
+        upsert). the callback MUST be **idempotent and side-effect
+        free** -- it is re-invoked from the freshly-read state on every
+        retry.
+
+        **L1-only fallback**: when no NATS client is wired
+        (:meth:`_ensure_kv` is ``None`` -- unit / single-pod), there is
+        no cross-pod contention to CAS against, so the method degrades
+        to a single uncontended L1 read-modify-write via :meth:`get` /
+        :meth:`save_entity` / :meth:`delete`.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values in
+            declared column order (composite-pk)
+        :ptype entity_id: Any
+        :param mutate: pure callback computing the next value from the
+            current row (or ``None`` when absent)
+        :ptype mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]]
+        :param max_retries: how many times to retry on a CAS conflict
+            before surfacing the error
+        :ptype max_retries: int
+        :return: nothing
+        :rtype: None
+        :raises ConcurrentModificationError: when the retry budget is
+            exhausted (a genuine livelock, never the common case)
+        """
+        self._set_span_table()
+        kv = await self._ensure_kv()
+        if kv is None:
+            await self._l1_only_cas_mutate(entity_id, mutate)
+            return
+
+        key = self.l2_key(entity_id)
+        for attempt in range(max_retries):
+            entry = await kv.get_entry(key=key)
+            if entry is None:
+                row: dict[str, Any] | None = None
+                revision: int | None = None
+            else:
+                raw_bytes, revision = entry
+                row = self.deserialize(raw_bytes)
+
+            action, new_row = mutate(row)
+            if action == "noop":
+                return
+
+            now = datetime.now(UTC)
+            ok: bool
+            if action == "delete":
+                ok = await kv.delete(key=key, revision=revision)
+            else:
+                assert new_row is not None, "'upsert' action must carry a non-None new_row"
+                new_row["date_updated"] = now
+                if revision is None:
+                    # value absent: create-if-absent so a racing creator loses.
+                    new_row.setdefault("date_created", now)
+                    ok = await kv.create(key=key, value=self.serialize(new_row)) is not None
+                else:
+                    ok = await kv.update(key=key, value=self.serialize(new_row), revision=revision) is not None
+
+            if not ok:
+                if attempt == max_retries - 1:
+                    raise ConcurrentModificationError(self.table_name, entity_id, datetime.min)
+                log.info(
+                    "L2 CAS conflict; retrying",
+                    extra={
+                        "extra_data": {
+                            "entity_id": str(entity_id),
+                            "table": self.table_name,
+                            "attempt": attempt + 1,
+                            "action": action,
+                        }
+                    },
+                )
+                continue
+
+            # CAS won: reconcile L1 and notify peers.
+            if action == "delete":
+                if self._l1 is not None:
+                    self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
+            else:
+                assert new_row is not None  # narrow: "upsert" always carries a row
+                if self._l1 is not None:
+                    self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
+            await self._publish_invalidation(entity_id)
+            return
+
+    async def _l1_only_cas_mutate(
+        self,
+        entity_id: Any,
+        mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]],
+    ) -> None:
+        """uncontended L1 read-modify-write fallback for :meth:`l2_cas_mutate`.
+
+        used when no NATS client is wired (L1-only unit / single-pod
+        mode): there is no cross-pod contention to CAS against, so a
+        plain read-modify-write via :meth:`get` + :meth:`save_entity` /
+        :meth:`delete` is correct. ``date_created`` / ``date_updated``
+        stamping is owned by :meth:`save_entity`, so this path does not
+        re-stamp.
+
+        :param entity_id: pk value (single-pk) or tuple of pk values
+        :ptype entity_id: Any
+        :param mutate: same callback contract as :meth:`l2_cas_mutate`
+        :ptype mutate: Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]]
+        :return: nothing
+        :rtype: None
+        """
+        entity = await self.get(entity_id)
+        row = entity.to_dict() if entity is not None else None
+        action, new_row = mutate(row)
+        if action == "noop":
+            return
+        if action == "delete":
+            await self.delete(entity_id)
+            return
+        assert new_row is not None, "'upsert' action must carry a non-None new_row"
+        if entity is None:
+            await self.save_entity(self.create(new_row))
+        else:
+            entity.set_data(new_row)
+            await self.save_entity(entity)
 
     @traced()
     async def invalidate_cache(self, entity_id: Any) -> None:

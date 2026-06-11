@@ -71,10 +71,11 @@ presence_connections_table = Table(
 #
 # one row per room. the room id is the composite
 # ``{customer}:{story}:{branch}:{file}`` string (colons and all — the
-# Collection's ``l2_key`` override sanitizes them for the JetStream KV
-# key grammar; the raw id round-trips through L1 + the invalidation
-# envelope). ``members`` is the JSONB set of member connection ids,
-# updated only on join/leave under optimistic-concurrency CAS.
+# framework ``BaseCollection.l2_key`` hashes the out-of-grammar id for
+# the JetStream KV key grammar; the raw id round-trips through L1 + the
+# invalidation envelope). ``members`` is the JSONB set of member
+# connection ids, updated only on join/leave under optimistic-concurrency
+# CAS (``BaseCollection.l2_cas_mutate``).
 presence_rooms_table = Table(
     "presence_rooms",
     PRESENCE_L1_METADATA,

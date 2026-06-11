@@ -894,3 +894,315 @@ class TestL3PoolAccessor:
         reg = CollectionRegistry()
         coll = StubCollection(reg, config_always)
         assert coll.l3_pool is None
+
+
+# ---------------------------------------------------------------------------
+# IMPROVEMENT 1 — l2_key is grammar-safe by default
+# ---------------------------------------------------------------------------
+
+
+class CompositeStubEntity(BaseEntity):
+    primary_key_field = "a"
+
+
+class CompositeStubCollection(BaseCollection[CompositeStubEntity]):
+    """composite-pk concrete collection, for l2_key shape tests."""
+
+    primary_key_column = ("a", "b")
+
+    @property
+    def table_name(self) -> str:
+        return "test_entities"
+
+    @property
+    def entity_class(self) -> type[CompositeStubEntity]:
+        return CompositeStubEntity
+
+    async def fetch_from_postgres(self, entity_id: object) -> dict | None:  # pragma: no cover - unused
+        return None
+
+    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:  # pragma: no cover
+        return 1
+
+    async def delete_from_postgres(self, entity_id: object) -> None:  # pragma: no cover - unused
+        return None
+
+    def serialize(self, data: dict) -> bytes:
+        return json.dumps(data, default=str).encode()
+
+    def deserialize(self, data: bytes) -> dict:
+        return json.loads(data)
+
+
+_HEX = set("0123456789abcdef")
+
+
+class TestL2KeyGrammarSafe:
+    """l2_key keeps grammar-safe pks readable and hashes out-of-grammar ones."""
+
+    def test_safe_single_pk_unchanged(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
+        """a grammar-safe single pk keeps its readable key (backward-compatible)."""
+        coll = StubCollection(registry, config_always)
+        assert coll.l2_key("e1") == "test_entities.e1"
+        # uuid-shaped pk (dashes are in-grammar) stays readable too.
+        uid = "550e8400-e29b-41d4-a716-446655440000"
+        assert coll.l2_key(uid) == f"test_entities.{uid}"
+
+    def test_safe_composite_pk_unchanged(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
+        """a grammar-safe composite pk keeps the readable underscore-joined body."""
+        coll = CompositeStubCollection(registry, config_always)
+        assert coll.l2_key(("scope1", "grp7")) == "test_entities.scope1_grp7"
+
+    def test_out_of_grammar_pk_is_hashed_and_valid(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a colon-bearing (out-of-grammar) pk yields a valid SHA-256-hashed key."""
+        coll = StubCollection(registry, config_always)
+        prefix, _, body = coll.l2_key("cust:story:main:scene.md").partition(".")
+        assert prefix == "test_entities"
+        assert ":" not in body
+        assert len(body) == 64 and set(body) <= _HEX
+
+    def test_space_pk_is_hashed_and_valid(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
+        """a space (out-of-grammar) yields a valid hashed key, never a raw space."""
+        coll = StubCollection(registry, config_always)
+        body = coll.l2_key("my file.md").partition(".")[2]
+        assert " " not in body
+        assert len(body) == 64 and set(body) <= _HEX
+
+    def test_naive_colon_to_eq_collision_is_avoided(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """two pks a naive ':'->'=' replace would collide map to DISTINCT keys."""
+        coll = StubCollection(registry, config_always)
+        # both collapse to "x=y=z" under a ':'->'=' replace.
+        assert coll.l2_key("x=y:z") != coll.l2_key("x:y=z")
+
+    def test_deterministic(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
+        """same pk always yields the same key (safe and hashed paths alike)."""
+        coll = StubCollection(registry, config_always)
+        assert coll.l2_key("e1") == coll.l2_key("e1")
+        assert coll.l2_key("cust:story:f.md") == coll.l2_key("cust:story:f.md")
+
+
+# ---------------------------------------------------------------------------
+# IMPROVEMENT 2 — l2_cas_mutate (generic L1+L2 atomic read-modify-write)
+# ---------------------------------------------------------------------------
+
+
+class _CasKvBucket:
+    """CAS-capable typed-wrapper KV bucket stand-in, matching ``NatsKvBucket``.
+
+    optional ``conflict_first`` makes the first ``update``/``create``/``delete``
+    return a conflict (``None``/``False``) regardless of revision, to drive the
+    retry branch; ``always_conflict`` forces every write to conflict, to drive
+    retry-budget exhaustion.
+    """
+
+    def __init__(self, *, conflict_first: bool = False, always_conflict: bool = False) -> None:
+        self._store: dict[str, tuple[bytes, int]] = {}
+        self._seq = 0
+        self._conflict_first = conflict_first
+        self._always_conflict = always_conflict
+
+    def _next(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    def _should_conflict(self) -> bool:
+        if self._always_conflict:
+            return True
+        if self._conflict_first:
+            self._conflict_first = False
+            return True
+        return False
+
+    async def get(self, *, key: str) -> bytes | None:
+        entry = self._store.get(key)
+        return entry[0] if entry is not None else None
+
+    async def get_entry(self, *, key: str) -> tuple[bytes, int] | None:
+        return self._store.get(key)
+
+    async def put(self, *, key: str, value: bytes) -> int:
+        rev = self._next()
+        self._store[key] = (value, rev)
+        return rev
+
+    async def create(self, *, key: str, value: bytes) -> int | None:
+        if self._should_conflict() or key in self._store:
+            return None
+        rev = self._next()
+        self._store[key] = (value, rev)
+        return rev
+
+    async def update(self, *, key: str, value: bytes, revision: int) -> int | None:
+        if self._should_conflict():
+            return None
+        entry = self._store.get(key)
+        if entry is None or entry[1] != revision:
+            return None
+        rev = self._next()
+        self._store[key] = (value, rev)
+        return rev
+
+    async def delete(self, *, key: str, revision: int | None = None) -> bool:
+        if self._should_conflict():
+            return False
+        entry = self._store.get(key)
+        if entry is None:
+            return True
+        if revision is not None and entry[1] != revision:
+            return False
+        del self._store[key]
+        return True
+
+
+def _make_cas_nats(bucket: _CasKvBucket) -> AsyncMock:
+    """wrap a ``_CasKvBucket`` in a NATS-client mock for collection wiring."""
+    nats = AsyncMock()
+    nats.kv_bucket = AsyncMock(return_value=bucket)
+    nats.publish = AsyncMock()
+    nats.subscribe_typed = AsyncMock()
+    nats.bucket = bucket
+    return nats
+
+
+def _append_member(member: str) -> "object":
+    """build a mutate callback that appends ``member`` to a CSV ``name`` field.
+
+    the stub L1 schema has no list column, so the "set" is modelled as a
+    comma-separated string in the ``name`` column — the CAS contract is
+    identical (read current → compute next → write), and the test reads
+    members back by splitting on ``,``.
+    """
+
+    def _mutate(row: dict | None) -> tuple[str, dict | None]:
+        if row is None:
+            return "upsert", {"id": "r1", "name": member}
+        members = [m for m in row.get("name", "").split(",") if m]
+        if member in members:
+            return "noop", None
+        members.append(member)
+        return "upsert", {**row, "name": ",".join(members)}
+
+    return _mutate
+
+
+def _members(row: dict | None) -> list[str]:
+    """read the CSV ``name`` field back as a member list."""
+    if row is None:
+        return []
+    return [m for m in row.get("name", "").split(",") if m]
+
+
+class TestL2CasMutate:
+    """the generic L1+L2 compare-and-swap read-modify-write primitive."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_creates_when_absent(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """an upsert on an absent value create-if-absents it into L2 + L1."""
+        bucket = _CasKvBucket()
+        coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+
+        await coll.l2_cas_mutate("r1", _append_member("conn-1"))
+
+        raw = await bucket.get(key="test_entities.r1")
+        assert raw is not None
+        assert _members(json.loads(raw)) == ["conn-1"]
+        # L1 reconciled.
+        assert _members(coll.get_row_sync("r1")) == ["conn-1"]
+
+    @pytest.mark.asyncio
+    async def test_upsert_updates_existing(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a second upsert CAS-updates the existing value."""
+        bucket = _CasKvBucket()
+        coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+
+        await coll.l2_cas_mutate("r1", _append_member("conn-1"))
+        await coll.l2_cas_mutate("r1", _append_member("conn-2"))
+
+        raw = await bucket.get(key="test_entities.r1")
+        assert _members(json.loads(raw)) == ["conn-1", "conn-2"]
+
+    @pytest.mark.asyncio
+    async def test_noop_returns_without_writing(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a 'noop' action writes nothing and publishes no invalidation."""
+        bucket = _CasKvBucket()
+        nats = _make_cas_nats(bucket)
+        coll = StubCollection(registry, config_always, nats_client=nats)
+
+        await coll.l2_cas_mutate("r1", lambda _row: ("noop", None))
+
+        assert await bucket.get(key="test_entities.r1") is None
+        nats.publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_action_removes_value(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """a 'delete' action CAS-deletes the value from L2 and L1."""
+        bucket = _CasKvBucket()
+        coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+        await coll.l2_cas_mutate("r1", _append_member("conn-1"))
+        assert coll.get_row_sync("r1") is not None  # L1 populated by the upsert
+
+        await coll.l2_cas_mutate("r1", lambda _row: ("delete", None))
+
+        assert await bucket.get(key="test_entities.r1") is None
+        assert coll.get_row_sync("r1") is None
+
+    @pytest.mark.asyncio
+    async def test_retry_on_single_conflict_then_succeeds(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """one CAS conflict then success — the loop retries and lands the write."""
+        # seed the value so the write path is update (which conflicts once).
+        bucket = _CasKvBucket(conflict_first=True)
+        await bucket.put(key="test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
+        coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+
+        await coll.l2_cas_mutate("r1", _append_member("conn-1"))
+
+        raw = await bucket.get(key="test_entities.r1")
+        assert _members(json.loads(raw)) == ["seed", "conn-1"]
+
+    @pytest.mark.asyncio
+    async def test_retry_budget_exhaustion_raises(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """an always-conflicting bucket exhausts the budget and raises CME."""
+        bucket = _CasKvBucket(always_conflict=True)
+        await bucket.put(key="test_entities.r1", value=json.dumps({"id": "r1", "name": "seed"}).encode())
+        coll = StubCollection(registry, config_always, nats_client=_make_cas_nats(bucket))
+
+        with pytest.raises(ConcurrentModificationError):
+            await coll.l2_cas_mutate("r1", _append_member("conn-1"), max_retries=3)
+
+    @pytest.mark.asyncio
+    async def test_l1_only_fallback_upsert_and_delete(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        """with no NATS wired, the primitive degrades to an L1 read-modify-write."""
+        # nats_client=None -> _ensure_kv() resolves to None -> L1-only fallback path.
+        coll = StubCollection(registry, config_always, nats_client=None)
+
+        await coll.l2_cas_mutate("r1", _append_member("conn-1"))
+        await coll.l2_cas_mutate("r1", _append_member("conn-2"))
+        assert _members(coll.get_row_sync("r1")) == ["conn-1", "conn-2"]
+
+        def _drop_conn1(row: dict | None) -> tuple[str, dict | None]:
+            members = [m for m in _members(row) if m != "conn-1"]
+            return "upsert", {**row, "name": ",".join(members)}
+
+        await coll.l2_cas_mutate("r1", _drop_conn1)
+        assert _members(coll.get_row_sync("r1")) == ["conn-2"]
+
+        await coll.l2_cas_mutate("r1", lambda _row: ("delete", None))
+        assert coll.get_row_sync("r1") is None

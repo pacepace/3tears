@@ -31,7 +31,6 @@ room-index, and B refills from L2 on its next ``members`` read.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -40,7 +39,6 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
-from threetears.core.exceptions import ConcurrentModificationError
 from threetears.observe import get_logger
 
 from threetears.channels.presence.entities import (
@@ -324,43 +322,22 @@ class RoomIndexCollection(_L1L2OnlyCollection):
 
     one row per ``{customer}:{story}:{branch}:{file}`` room carrying the
     member ``connection_id`` set. updated only on join/leave under
-    optimistic-concurrency CAS (retry on revision conflict).
+    optimistic-concurrency CAS (retry on revision conflict) via the
+    framework primitive :meth:`~threetears.core.collections.base.BaseCollection.l2_cas_mutate`.
 
     the room id (``{customer}:{story}:{branch}:{file}``) carries ``:``
     separators AND app-supplied segments (branch/file) that may hold any
     character — neither fits the JetStream KV key grammar
-    (``^[-/_=.a-zA-Z0-9]+$``). :meth:`l2_key` keys off a SHA-256 hex digest
-    of the raw room id (always grammar-valid, collision-resistant). the
-    raw room id round-trips unchanged through L1 and the invalidation
-    envelope, so cross-pod coherence is unaffected.
+    (``^[-/_=.a-zA-Z0-9]+$``). the framework
+    :meth:`~threetears.core.collections.base.BaseCollection.l2_key` now
+    detects the out-of-grammar body and keys off a SHA-256 hex digest of
+    it (always grammar-valid, collision-resistant), so this collection
+    needs no ``l2_key`` override. the raw room id round-trips unchanged
+    through L1 and the invalidation envelope, so cross-pod coherence is
+    unaffected.
     """
 
     primary_key_column: str = "room_id"
-
-    def l2_key(self, entity_id: Any) -> str:
-        """build the JetStream-safe KV key for a room id (SHA-256 digest).
-
-        The room id carries ``:`` separators and app-supplied segments
-        (branch/file) that can hold any character, so it does NOT fit the
-        JetStream KV key grammar (``^[-/_=.a-zA-Z0-9]+$``). Key off a
-        **SHA-256 hex digest** of the raw room id: always grammar-valid
-        (hex is in-grammar), **collision-resistant** (distinct room ids map
-        to distinct keys — unlike a ``:``→``=`` replace, which silently
-        collides two rooms when a segment contains ``=``, or a bare
-        interpolation, which throws ``KvError`` on any out-of-grammar
-        character). Only the KV key is hashed; the raw room id round-trips
-        unchanged through L1, the stored value, and the invalidation key,
-        so cross-pod coherence is unaffected. Deterministic, so reads,
-        writes, and the CAS all resolve the same key.
-
-        :param entity_id: room id pk value
-        :ptype entity_id: Any
-        :return: JetStream-safe NATS KV key, scoped by table name
-        :rtype: str
-        """
-        (room_id,) = self.normalize_pk(entity_id)
-        digest = hashlib.sha256(str(room_id).encode("utf-8")).hexdigest()
-        return f"{self.table_name}.{digest}"
 
     @property
     def table_name(self) -> str:
@@ -420,7 +397,11 @@ class RoomIndexCollection(_L1L2OnlyCollection):
         :raises ConcurrentModificationError: if the CAS retry budget is
             exhausted (a genuine livelock, never the common case)
         """
-        await self._mutate_members(room_id, customer_id, connection_id, add=True)
+        await self.l2_cas_mutate(
+            room_id,
+            lambda row: self._apply_member_change(row, room_id, customer_id, connection_id, add=True),
+            max_retries=_CAS_MAX_RETRIES,
+        )
 
     async def remove_member(self, room_id: str, connection_id: str) -> None:
         """remove a connection from a room's member set under L2 CAS.
@@ -440,103 +421,11 @@ class RoomIndexCollection(_L1L2OnlyCollection):
         :raises ConcurrentModificationError: if the CAS retry budget is
             exhausted
         """
-        await self._mutate_members(room_id, None, connection_id, add=False)
-
-    async def _mutate_members(
-        self,
-        room_id: str,
-        customer_id: str | None,
-        connection_id: str,
-        *,
-        add: bool,
-    ) -> None:
-        """shared add/remove read-modify-write CAS loop for a room set.
-
-        the framework's optimistic-lock fence lives in the L3 write path
-        (``save_to_postgres``), which is off for this L1+L2-only
-        Collection — so there is no ``save_entity``-level CAS to lean on.
-        the room-index member set instead CAS-writes directly against the
-        collection's own L2 (NATS KV) tier via the wrapper's documented
-        ``get_entry`` / ``create`` / ``update`` revision primitives, then
-        keeps L1 coherent and fires the cross-pod invalidation. this is
-        the single mutated value (not a key-listing), so it stays
-        squarely within the pk-keyed contract.
-
-        when no L2 client is wired (L1-only unit/test mode) the loop
-        degrades to a single uncontended L1 read-modify-write via
-        :meth:`save_entity` / :meth:`delete`.
-
-        :param room_id: room key
-        :ptype room_id: str
-        :param customer_id: tenant id (required when ``add`` may create
-            the row; ignored on remove)
-        :ptype customer_id: str | None
-        :param connection_id: connection to add or remove
-        :ptype connection_id: str
-        :param add: ``True`` to add, ``False`` to remove
-        :ptype add: bool
-        :return: nothing
-        :rtype: None
-        :raises ConcurrentModificationError: on retry-budget exhaustion
-        """
-        kv = await self._ensure_kv()
-        if kv is None:
-            await self._mutate_members_l1_only(room_id, customer_id, connection_id, add=add)
-            return
-
-        key = self.l2_key(room_id)
-        for attempt in range(_CAS_MAX_RETRIES):
-            entry = await kv.get_entry(key=key)
-            if entry is None:
-                row, revision = None, None
-            else:
-                raw_bytes, revision = entry
-                row = self.deserialize(raw_bytes)
-
-            action, new_row = self._apply_member_change(row, room_id, customer_id, connection_id, add=add)
-            if action == "noop":
-                return
-
-            now = datetime.now(UTC)
-            ok: bool
-            if action == "delete":
-                # last member left: CAS-delete the row.
-                ok = await kv.delete(key=key, revision=revision)
-            else:
-                assert new_row is not None  # narrow: "upsert" always carries a row
-                if revision is None:
-                    # row absent: create-if-absent so a racing creator loses.
-                    new_row.setdefault("date_created", now)
-                    new_row["date_updated"] = now
-                    ok = await kv.create(key=key, value=self.serialize(new_row)) is not None
-                else:
-                    new_row["date_updated"] = now
-                    ok = await kv.update(key=key, value=self.serialize(new_row), revision=revision) is not None
-
-            if not ok:
-                if attempt == _CAS_MAX_RETRIES - 1:
-                    raise ConcurrentModificationError(self.table_name, room_id, datetime.min)
-                log.info(
-                    "room-index CAS conflict; retrying",
-                    extra={
-                        "extra_data": {
-                            "room_id": room_id,
-                            "connection_id": connection_id,
-                            "attempt": attempt + 1,
-                            "operation": "add" if add else "remove",
-                        }
-                    },
-                )
-                continue
-
-            # CAS won: reconcile L1 and notify peers.
-            if action == "delete":
-                if self._l1 is not None:
-                    self._l1.delete_by_id(self.table_name, self.normalize_pk(room_id), self.primary_key_columns)
-            elif new_row is not None and self._l1 is not None:
-                self._l1.upsert(self.table_name, new_row, self.primary_key_columns)
-            await self._publish_invalidation(room_id)
-            return
+        await self.l2_cas_mutate(
+            room_id,
+            lambda row: self._apply_member_change(row, room_id, None, connection_id, add=False),
+            max_retries=_CAS_MAX_RETRIES,
+        )
 
     def _apply_member_change(
         self,
@@ -586,57 +475,6 @@ class RoomIndexCollection(_L1L2OnlyCollection):
         if not members:
             return "delete", None
         return "upsert", {**row, "members": members}
-
-    async def _mutate_members_l1_only(
-        self,
-        room_id: str,
-        customer_id: str | None,
-        connection_id: str,
-        *,
-        add: bool,
-    ) -> None:
-        """L1-only fallback member mutation (no L2 client wired).
-
-        used by single-pod / unit-test configurations with no NATS
-        client: there is no cross-pod contention to CAS against, so a
-        plain read-modify-write via :meth:`get` + :meth:`save_entity` /
-        :meth:`delete` is correct.
-
-        :param room_id: room key
-        :ptype room_id: str
-        :param customer_id: tenant id (required to create on add)
-        :ptype customer_id: str | None
-        :param connection_id: connection to add or remove
-        :ptype connection_id: str
-        :param add: ``True`` to add, ``False`` to remove
-        :ptype add: bool
-        :return: nothing
-        :rtype: None
-        """
-        entity = await self.get(room_id)
-        row = entity.to_dict() if entity is not None else None
-        action, new_row = self._apply_member_change(row, room_id, customer_id, connection_id, add=add)
-        if action == "noop":
-            return
-        if action == "delete":
-            await self.delete(room_id)
-            return
-        assert new_row is not None  # narrow: "upsert" always carries a row
-        await self.save_entity(self.create(new_row) if entity is None else self._reuse(entity, new_row))
-
-    @staticmethod
-    def _reuse(entity: RoomIndexEntity, new_row: dict[str, Any]) -> RoomIndexEntity:
-        """update an existing room-index entity's member set in place.
-
-        :param entity: existing entity (carries the CAS token)
-        :ptype entity: RoomIndexEntity
-        :param new_row: computed next row
-        :ptype new_row: dict[str, Any]
-        :return: the same entity with ``members`` applied
-        :rtype: RoomIndexEntity
-        """
-        entity.members = list(new_row["members"])
-        return entity
 
 
 class PresenceCollection:
