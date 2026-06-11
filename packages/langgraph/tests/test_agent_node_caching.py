@@ -14,7 +14,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from threetears.langgraph import PromptCachingHook, agent_node
-from threetears.langgraph.hooks import _BOUND_MODEL_CACHE
+from threetears.langgraph.hooks import _BOUND_MODEL_CACHE, _memoize_bound_model
 
 
 class _StubPydanticArgsSchema:
@@ -486,3 +486,52 @@ class TestSystemPromptAnnotationIsIdempotent:
         # one block, not nested; idempotent re-annotation
         assert len(first.content) == 1
         assert first.content[0]["cache_control"] == {"type": "ephemeral"}
+
+
+class _UnhashableChatModel:
+    """a chat model that is UNHASHABLE (Pydantic-v2-non-frozen shape).
+
+    stands in for any non-conformant model reaching the identity-keyed
+    bound-model cache: ``__hash__ = None`` makes it unusable as a
+    ``WeakKeyDictionary`` key.
+    """
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        """count bind_tools calls."""
+        self.bind_tools_calls = 0
+
+    def bind_tools(self, tools: list[Any]) -> _UnhashableChatModel:
+        """record the bind and return self (the bound handle).
+
+        :param tools: tool instances to bind
+        :ptype tools: list[Any]
+        :return: the bound model (self)
+        :rtype: _UnhashableChatModel
+        """
+        self.bind_tools_calls += 1
+        return self
+
+
+class TestMemoizeBoundModelDegradesGracefully:
+    """an unhashable model must bind-fresh + warn, never crash the turn."""
+
+    def test_unhashable_model_binds_fresh_without_crashing(self) -> None:
+        """a non-conformant unhashable model degrades to bind-fresh.
+
+        regression: the cache is a ``WeakKeyDictionary`` keyed on the model;
+        an unhashable model made the lookup raise ``TypeError`` and killed
+        the caller's turn. the shared-library cache must degrade to
+        bind-fresh instead of crashing over a missed optimization.
+
+        :raises AssertionError: when the call crashes or fails to bind
+        """
+        _BOUND_MODEL_CACHE.clear()
+        model = _UnhashableChatModel()
+        bound, tools_out = _memoize_bound_model(model, [_StubTool("t")])
+        assert bound is model
+        assert tools_out == []
+        assert model.bind_tools_calls == 1
+        # nothing was cached (the model cannot be a key)
+        assert len(_BOUND_MODEL_CACHE) == 0
