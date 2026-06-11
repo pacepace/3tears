@@ -77,6 +77,17 @@ def create_voyageai_embedding(
 # -- capability registration -------------------------------------------------
 
 _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "voyage-3-large": ModelCapabilities(
+        model_name="voyage-3-large",
+        provider_name=VOYAGEAI_PROVIDER_NAME,
+        model_type=ModelType.EMBEDDING,
+        model_tier=ModelTier.LARGE,
+        model_status=ModelStatus.ACTIVE,
+        embedding_dimensions=1024,
+        max_embedding_tokens=32_000,
+        supports_batch_embedding=True,
+        cost_per_input_token=Decimal("0.00000018"),
+    ),
     "voyage-3": ModelCapabilities(
         model_name="voyage-3",
         provider_name=VOYAGEAI_PROVIDER_NAME,
