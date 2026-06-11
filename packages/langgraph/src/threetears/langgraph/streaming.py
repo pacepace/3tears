@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "NOSTREAM_TAG",
     "StreamStartEvent",
     "StreamTokenEvent",
     "StreamEndEvent",
@@ -54,6 +55,18 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: tag a node's INTERNAL model call carries (via
+#: ``model.ainvoke(..., {"tags": [NOSTREAM_TAG]})``) when its tokens must
+#: NOT reach the user's stream. :meth:`StreamingResponse.run_graph`
+#: consumes ``astream_events`` indiscriminately -- every
+#: ``on_chat_model_stream`` event accumulates into the user-facing answer
+#: REGARDLESS of which node emitted it. an auxiliary model call (an
+#: adversarial reviewer refuting a draft, a summarizer compacting history)
+#: is not the agent's answer; without this opt-out its deliberation tokens
+#: leak verbatim into what the user sees. the run loop drops any
+#: ``on_chat_model_stream`` whose event ``tags`` include this marker.
+NOSTREAM_TAG = "threetears:nostream"
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +438,30 @@ class StreamingResponse:
         """
         return self._accumulated_content
 
+    def replace_content(self, content: str) -> None:
+        """replace the accumulated buffer so the terminal carries ``content``.
+
+        a post-hoc node may supersede the answer that already streamed:
+        an adversarial reviewer revises a challenged draft, or a blocked
+        query routes back to the agent to re-run. the superseding text is
+        the authoritative answer, but the draft's tokens already landed in
+        :attr:`accumulated_content`. resetting the buffer makes the terminal
+        :class:`StreamEndEvent.content` (and any consumer reading it, e.g.
+        the non-incremental chat surface) carry the corrected answer rather
+        than the stale draft. already-published per-token envelopes cannot
+        be unsent -- incremental UIs saw the draft live -- but the final
+        content is made correct. pass ``""`` to clear ahead of a re-run.
+        a no-op once the stream has closed (the terminal already fired).
+
+        :param content: text to set as the accumulated buffer
+        :ptype content: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        self._accumulated_content = content
+
     @traced
     async def start(self) -> None:
         """publish the lifecycle :class:`StreamStartEvent` once.
@@ -659,6 +696,13 @@ class StreamingResponse:
             ):
                 event_kind = event.get("event")
                 if event_kind == "on_chat_model_stream":
+                    # drop tokens from a node's internal model call (an
+                    # adversarial reviewer / summarizer) so its deliberation
+                    # never leaks into the user-facing answer; the call opts
+                    # out by tagging itself NOSTREAM_TAG. untagged model
+                    # calls (the agent's answer) stream as before.
+                    if NOSTREAM_TAG in (event.get("tags") or []):
+                        continue
                     token = _extract_token(event)
                     if token:
                         await self.emit_token(token)

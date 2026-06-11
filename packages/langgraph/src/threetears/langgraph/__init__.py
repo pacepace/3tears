@@ -64,6 +64,7 @@ from threetears.langgraph.protocols import (
 )
 from threetears.langgraph.serde import UUIDSafeSerializer
 from threetears.langgraph.streaming import (
+    NOSTREAM_TAG,
     StreamEndEvent,
     StreamErrorEvent,
     StreamEvent,
@@ -79,6 +80,7 @@ from threetears.langgraph.streaming import (
 )
 
 __all__ = [
+    "NOSTREAM_TAG",
     "AgentNodeHook",
     "AsyncQueryExecutor",
     "AsyncpgPoolAdapter",
