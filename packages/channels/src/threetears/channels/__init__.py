@@ -30,6 +30,19 @@ from threetears.channels.protocol import (
     ChannelResponse,
     ChannelRouter,
 )
+from threetears.channels.presence import (
+    PRESENCE_L1_METADATA,
+    PRESENCE_L1_TABLE_NAMES,
+    PresenceCollection,
+    PresenceConnectionCollection,
+    PresenceConnectionEntity,
+    PresenceSweeper,
+    RoomIndexCollection,
+    RoomIndexEntity,
+    RoomMember,
+    RoomState,
+    create_presence_l1_backend,
+)
 from threetears.channels.websocket import (
     ConnectionRegistry,
     StreamingChannelRouter,
@@ -38,11 +51,21 @@ from threetears.channels.websocket import (
 )
 
 __all__ = [
+    "PRESENCE_L1_METADATA",
+    "PRESENCE_L1_TABLE_NAMES",
     "Attachment",
     "ChannelMessage",
     "ChannelResponse",
     "ChannelRouter",
     "ConnectionRegistry",
+    "PresenceCollection",
+    "PresenceConnectionCollection",
+    "PresenceConnectionEntity",
+    "PresenceSweeper",
+    "RoomIndexCollection",
+    "RoomIndexEntity",
+    "RoomMember",
+    "RoomState",
     "StreamingChannelRouter",
     "WebSocketHandler",
     "WebSocketProtocol",
@@ -50,6 +73,7 @@ __all__ = [
     "build_discord_payload",
     "build_slack_blocks",
     "build_slack_payload",
+    "create_presence_l1_backend",
     "should_use_rich_formatting",
 ]
 

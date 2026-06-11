@@ -195,7 +195,16 @@ class TestWebSocketProtocol:
 
 
 class TestConnectionRegistry:
-    """tests for ConnectionRegistry."""
+    """tests for the synchronized pod-local ConnectionRegistry.
+
+    channels-task-01 superseded the racy dict-based registry: room
+    membership/presence + broadcast moved to the cross-pod
+    ``PresenceCollection`` / ``RoomState`` (and the task-02 fanout), so
+    the obsolete ``join_room`` / ``leave_room`` / ``broadcast_to_room``
+    tests are removed here and re-asserted at the new home
+    (``tests/unit/channels/presence/``). what stays is the handler's
+    live-handle bookkeeping, now lock-synchronized and snapshot-returning.
+    """
 
     def test_register_adds_connection(self) -> None:
         """register adds websocket to user's connection list."""
@@ -225,6 +234,17 @@ class TestConnectionRegistry:
         registry = ConnectionRegistry()
         connections = registry.get_connections("unknown-user")
         assert connections == []
+
+    def test_get_connections_returns_snapshot_not_live_list(self) -> None:
+        """get_connections returns a fresh list; mutating it does not affect the registry."""
+        from threetears.channels.websocket import ConnectionRegistry
+
+        registry = ConnectionRegistry()
+        ws = MockWebSocket()
+        registry.register("user-1", ws)
+        snapshot = registry.get_connections("user-1")
+        snapshot.clear()  # mutating the snapshot must not touch internal state
+        assert registry.get_connections("user-1") == [ws]
 
     def test_multiple_connections_per_user(self) -> None:
         """user can have multiple active websocket connections."""
@@ -262,68 +282,53 @@ class TestConnectionRegistry:
         assert len(connections) == 1
         assert ws_b in connections
 
-    def test_room_join(self) -> None:
-        """join_room adds websocket to room."""
+    def test_unregister_last_connection_drops_user_bucket(self) -> None:
+        """removing a user's last handle leaves no empty bucket behind."""
         from threetears.channels.websocket import ConnectionRegistry
 
         registry = ConnectionRegistry()
         ws = MockWebSocket()
-        registry.join_room("room-1", ws)
-        # verify by broadcasting
-        # (tested more thoroughly in broadcast tests)
+        registry.register("user-1", ws)
+        registry.unregister("user-1", ws)
+        # bucket is gone, not a lingering empty list
+        assert registry.get_connections("user-1") == []
+        assert "user-1" not in registry._connections  # noqa: SLF001 -- migration assertion on internal state
 
-    def test_room_leave(self) -> None:
-        """leave_room removes websocket from room."""
+    def test_concurrent_register_unregister_does_not_race(self) -> None:
+        """parallel register/unregister from threads keeps a consistent map.
+
+        the previous bare-dict registry could lose updates or raise under
+        concurrent thread access (this stack runs handler coroutines plus
+        ``run_in_threadpool`` workers). the lock makes the final state
+        deterministic.
+        """
+        import threading
+
         from threetears.channels.websocket import ConnectionRegistry
 
         registry = ConnectionRegistry()
-        ws = MockWebSocket()
-        registry.join_room("room-1", ws)
-        registry.leave_room("room-1", ws)
+        survivors = [MockWebSocket() for _ in range(20)]
+        for i, ws in enumerate(survivors):
+            registry.register(f"user-{i}", ws)
 
-    def test_leave_room_nonexistent_is_safe(self) -> None:
-        """leave_room for websocket not in room does not raise."""
-        from threetears.channels.websocket import ConnectionRegistry
+        def churn() -> None:
+            for j in range(200):
+                key = f"churn-{j % 10}"
+                ws = MockWebSocket()
+                registry.register(key, ws)
+                registry.unregister(key, ws)
 
-        registry = ConnectionRegistry()
-        ws = MockWebSocket()
-        registry.leave_room("room-1", ws)
+        threads = [threading.Thread(target=churn) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-    @pytest.mark.asyncio
-    async def test_broadcast_to_room_sends_to_all(self) -> None:
-        """broadcast_to_room sends message to all connections in room."""
-        from threetears.channels.websocket import ConnectionRegistry
-
-        registry = ConnectionRegistry()
-        ws_a = MockWebSocket()
-        ws_b = MockWebSocket()
-        registry.join_room("room-1", ws_a)
-        registry.join_room("room-1", ws_b)
-        await registry.broadcast_to_room("room-1", "hello room")
-        assert "hello room" in ws_a.sent
-        assert "hello room" in ws_b.sent
-
-    @pytest.mark.asyncio
-    async def test_broadcast_to_room_excludes_specified(self) -> None:
-        """broadcast_to_room excludes specified websocket from broadcast."""
-        from threetears.channels.websocket import ConnectionRegistry
-
-        registry = ConnectionRegistry()
-        ws_a = MockWebSocket()
-        ws_b = MockWebSocket()
-        registry.join_room("room-1", ws_a)
-        registry.join_room("room-1", ws_b)
-        await registry.broadcast_to_room("room-1", "hello room", exclude=ws_a)
-        assert "hello room" not in ws_a.sent
-        assert "hello room" in ws_b.sent
-
-    @pytest.mark.asyncio
-    async def test_broadcast_to_empty_room_is_safe(self) -> None:
-        """broadcast_to_room on empty or nonexistent room does not raise."""
-        from threetears.channels.websocket import ConnectionRegistry
-
-        registry = ConnectionRegistry()
-        await registry.broadcast_to_room("empty-room", "hello")
+        # every survivor is intact; churn left no residue
+        for i, ws in enumerate(survivors):
+            assert registry.get_connections(f"user-{i}") == [ws]
+        for j in range(10):
+            assert registry.get_connections(f"churn-{j}") == []
 
 
 # ============================================================

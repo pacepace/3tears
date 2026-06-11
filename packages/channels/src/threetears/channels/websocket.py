@@ -2,14 +2,30 @@
 
 provides WebSocketHandler for managing websocket connection lifecycle
 including authentication, message routing, and optional streaming.
-ConnectionRegistry tracks active connections and supports optional room
-broadcasting. all websocket interaction goes through WebSocketProtocol
-so the handler works with starlette, fastapi, or any conforming object.
+ConnectionRegistry is the pod-local, **synchronized** map of live
+``user_id → socket`` handles the handler keeps for its connections. all
+websocket interaction goes through WebSocketProtocol so the handler
+works with starlette, fastapi, or any conforming object.
+
+channels-task-01 superseded the previous racy, dict-based
+``ConnectionRegistry`` — two un-synchronized in-process dicts
+(``_connections`` + ``_rooms``) whose ``broadcast_to_room`` iterated a
+room's member list *with ``await`` inside the loop* while
+``join_room`` / ``leave_room`` mutated the same dict (an
+iterate-while-mutate race) and which could only see members on its own
+pod. cross-pod room **membership/presence** now lives in the
+concurrency-safe, L1+L2 ``PresenceCollection`` and is reshaped through
+:class:`~threetears.channels.presence.room_state.RoomState` (which owns
+the ``connection_id → live socket`` map and snapshot-iterates it); the
+cross-pod room **message fanout** is channels-task-02. what remains here
+is only the handler's own live-handle bookkeeping, kept correct under
+concurrency by a lock rather than left as a bare racing dict.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
@@ -107,121 +123,81 @@ class StreamingChannelRouter(Protocol):
 
 
 class ConnectionRegistry:
-    """tracks active websocket connections by user and optional rooms.
+    """synchronized pod-local map of live ``user_id → socket`` handles.
 
-    provides user-level connection tracking for the websocket handler
-    and optional room-based broadcasting for collaborative features.
-    consumers that do not need rooms can ignore room methods entirely.
+    the handler's own bookkeeping of the live, non-serializable socket
+    handles it is currently servicing. **not** a store of cross-pod
+    membership/presence — that lives in
+    :class:`~threetears.channels.presence.collection.PresenceCollection`
+    (channels-task-01) and is reshaped through
+    :class:`~threetears.channels.presence.room_state.RoomState`. this
+    registry holds only what genuinely cannot leave the pod: the live
+    handles.
+
+    every access is guarded by a :class:`threading.Lock` so the map is
+    safe under this stack's concurrency (asyncio handler coroutines plus
+    ``run_in_threadpool`` worker threads) — the previous bare-dict shape
+    raced (iterate-while-mutate across awaits/threads). reads return a
+    fresh snapshot list so a caller never iterates the live map.
     """
 
     def __init__(self) -> None:
-        """initialize empty connection and room registries."""
+        """initialize the empty, lock-guarded connection map."""
         self._connections: dict[str, list[Any]] = {}
-        self._rooms: dict[str, list[Any]] = {}
+        self._lock = threading.Lock()
 
     def register(self, user_id: str, websocket: Any) -> None:
-        """add websocket connection for specified user.
+        """add a live socket handle for a user.
 
         :param user_id: identifier of authenticated user
         :ptype user_id: str
-        :param websocket: websocket connection to register
+        :param websocket: live socket handle to register
         :ptype websocket: Any
+        :return: nothing
+        :rtype: None
         """
-        if user_id not in self._connections:
-            self._connections[user_id] = []
-        self._connections[user_id].append(websocket)
+        with self._lock:
+            self._connections.setdefault(user_id, []).append(websocket)
 
     def unregister(self, user_id: str, websocket: Any) -> None:
-        """remove websocket connection for specified user.
+        """remove a user's live socket handle.
 
-        safe to call when user_id or websocket is not registered.
+        safe to call when ``user_id`` or ``websocket`` is not
+        registered. drops the user's bucket entirely when its last
+        handle leaves so the map does not accrete empty lists.
 
         :param user_id: identifier of authenticated user
         :ptype user_id: str
-        :param websocket: websocket connection to remove
+        :param websocket: live socket handle to remove
         :ptype websocket: Any
+        :return: nothing
+        :rtype: None
         """
-        connections = self._connections.get(user_id)
-        if connections is None:
-            return
-        try:
-            connections.remove(websocket)
-        except ValueError:
-            pass
+        with self._lock:
+            connections = self._connections.get(user_id)
+            if connections is None:
+                return
+            try:
+                connections.remove(websocket)
+            except ValueError:
+                return
+            if not connections:
+                del self._connections[user_id]
 
     def get_connections(self, user_id: str) -> list[Any]:
-        """return list of active websocket connections for user.
+        """return a snapshot of a user's live socket handles.
 
-        returns empty list if user has no active connections.
+        returns a fresh list (never the live one), so the caller can
+        iterate/await over it without racing a concurrent register /
+        unregister.
 
         :param user_id: identifier of authenticated user
         :ptype user_id: str
-        :return: list of active websocket connections
+        :return: snapshot list of live socket handles (empty when none)
         :rtype: list[Any]
         """
-        result = list(self._connections.get(user_id, []))
-        return result
-
-    def join_room(self, room_id: str, websocket: Any) -> None:
-        """add websocket connection to specified room.
-
-        :param room_id: identifier of room to join
-        :ptype room_id: str
-        :param websocket: websocket connection to add to room
-        :ptype websocket: Any
-        """
-        if room_id not in self._rooms:
-            self._rooms[room_id] = []
-        self._rooms[room_id].append(websocket)
-
-    def leave_room(self, room_id: str, websocket: Any) -> None:
-        """remove websocket connection from specified room.
-
-        safe to call when room_id or websocket is not in room.
-
-        :param room_id: identifier of room to leave
-        :ptype room_id: str
-        :param websocket: websocket connection to remove from room
-        :ptype websocket: Any
-        """
-        members = self._rooms.get(room_id)
-        if members is None:
-            return
-        try:
-            members.remove(websocket)
-        except ValueError:
-            pass
-
-    async def broadcast_to_room(
-        self,
-        room_id: str,
-        message: str,
-        exclude: Any | None = None,
-    ) -> None:
-        """send message to all websocket connections in room.
-
-        optionally excludes one connection from the broadcast
-        (typically the sender). safe to call on empty or
-        nonexistent rooms.
-
-        :param room_id: identifier of room to broadcast to
-        :ptype room_id: str
-        :param message: text message to broadcast
-        :ptype message: str
-        :param exclude: websocket connection to exclude from broadcast
-        :ptype exclude: Any | None
-        """
-        members = self._rooms.get(room_id, [])
-        for ws in members:
-            if ws is exclude:
-                continue
-            try:
-                await ws.send_text(message)
-            except Exception:
-                log.warning(
-                    "failed to broadcast to room member in room %s",
-                    room_id,
-                )
+        with self._lock:
+            return list(self._connections.get(user_id, []))
 
 
 class WebSocketHandler:

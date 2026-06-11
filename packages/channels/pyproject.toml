@@ -9,6 +9,8 @@ description = "Unified message protocol for channel adapters in the 3tears platf
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
 dependencies = [
+    "3tears",
+    "3tears-nats",
     "3tears-observe",
 ]
 
@@ -33,5 +35,7 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
+3tears = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-agent-wake = { workspace = true }
