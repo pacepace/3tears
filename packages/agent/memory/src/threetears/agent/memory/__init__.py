@@ -111,6 +111,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryRefEntity": ("threetears.agent.memory.entities", "MemoryRefEntity"),
     "MemoryRefsCollection": ("threetears.agent.memory.collections", "MemoryRefsCollection"),
     "MemoryRetrievedEvent": ("threetears.agent.memory.events", "MemoryRetrievedEvent"),
+    "MemoryRepointResult": ("threetears.agent.memory.merge", "MemoryRepointResult"),
     "MemoryRetriever": ("threetears.agent.memory.retrieval", "MemoryRetriever"),
     "MemorySearchInput": ("threetears.agent.memory.tools", "MemorySearchInput"),
     "MemoryType": ("threetears.agent.memory.types", "MemoryType"),
@@ -125,6 +126,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "load_memory_recall_tool": ("threetears.agent.memory.tools", "load_memory_recall_tool"),
     "load_memory_search_tool": ("threetears.agent.memory.tools", "load_memory_search_tool"),
     "memory_namespace_name": ("threetears.agent.memory.authorize", "memory_namespace_name"),
+    "repoint_user": ("threetears.agent.memory.merge", "repoint_user"),
 }
 
 __all__ = [
@@ -156,6 +158,7 @@ __all__ = [
     "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
+    "MemoryRepointResult",
     "MemoryRetrievedEvent",
     "MemoryRetriever",
     "MemorySearchInput",
@@ -171,6 +174,7 @@ __all__ = [
     "load_memory_recall_tool",
     "load_memory_search_tool",
     "memory_namespace_name",
+    "repoint_user",
 ]
 
 

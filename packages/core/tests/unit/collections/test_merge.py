@@ -10,7 +10,7 @@ import pytest
 from threetears.core.collections.merge import repoint_user_rows
 
 
-class _FakeConn:
+class _RecordingConn:
     """records the executed UPDATE and returns canned RETURNING rows."""
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
@@ -30,7 +30,7 @@ async def test_builds_scoped_update_with_touch() -> None:
     from_id = uuid4()
     to_id = uuid4()
     pk1 = uuid4()
-    conn = _FakeConn([{"id": pk1}])
+    conn = _RecordingConn([{"id": pk1}])
 
     result = await repoint_user_rows(
         conn,
@@ -55,7 +55,7 @@ async def test_builds_scoped_update_with_touch() -> None:
 @pytest.mark.asyncio
 async def test_composite_pk_returns_tuples() -> None:
     """composite-pk tables return the full key tuple per row."""
-    conn = _FakeConn([
+    conn = _RecordingConn([
         {"agent_id": "a1", "id": "c1"},
         {"agent_id": "a2", "id": "c2"},
     ])
@@ -76,7 +76,7 @@ async def test_composite_pk_returns_tuples() -> None:
 @pytest.mark.asyncio
 async def test_no_touch_column_omits_set() -> None:
     """touch_column=None issues only the user-column SET (two params)."""
-    conn = _FakeConn([])
+    conn = _RecordingConn([])
 
     await repoint_user_rows(
         conn,
@@ -96,7 +96,7 @@ async def test_no_touch_column_omits_set() -> None:
 @pytest.mark.asyncio
 async def test_custom_user_column() -> None:
     """a non-default ownership column (e.g. member_id) is honored."""
-    conn = _FakeConn([])
+    conn = _RecordingConn([])
 
     await repoint_user_rows(
         conn,
