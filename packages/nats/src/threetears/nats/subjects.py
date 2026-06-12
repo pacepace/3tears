@@ -454,6 +454,20 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.user.resolve", kind="point")
 
     @classmethod
+    def hub_channel_installs(cls) -> Subject:
+        """request/reply subject for a channel adapter to fetch its installs.
+
+        the adapter is sandboxed (NATS-only, no DB credentials), so it
+        asks the hub for the active bot installs of a channel type
+        (bot token refs + the agent each routes to) instead of reading
+        ``platform.channel_configs`` directly.
+
+        :return: subject ``{ns}.hub.channel.installs``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.channel.installs", kind="point")
+
+    @classmethod
     def hub_usage_track(cls) -> Subject:
         """publish subject for usage-tracking events posted to hub.
 
