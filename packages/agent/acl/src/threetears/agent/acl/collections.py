@@ -165,7 +165,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "list_all",
             "get_many",
             "get_by_managed_key",
-            "delete_from_postgres",
+            "delete_from_store",
             "save_entity",
             "create",
             "find_by_id",
@@ -472,7 +472,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
         {
             "load_for_user",
             "load_for_agent",
-            "delete_from_postgres",
+            "delete_from_store",
             "save_entity",
         }
     )
@@ -840,7 +840,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             "load_for_groups",
             "ensure_group_role_assignment",
             "delete_by_group_and_scope",
-            "delete_from_postgres",
+            "delete_from_store",
             "save_entity",
             "create",
             "find_by_id",
@@ -1250,7 +1250,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
     primary_key_column: tuple[str, ...] = ("row_scope", "namespace_id")
     _partition_exempt_methods = frozenset(
         {
-            "delete_from_postgres",
+            "delete_from_store",
             "save_entity",
             "create",
             "find_by_type_and_customer",

@@ -3,7 +3,7 @@
 covers the framework-level findings from the integration-guide review
 (PR #84):
 
-- issue #85: ``fetch_from_postgres`` must return a plain ``dict`` even
+- issue #85: ``fetch_from_store`` must return a plain ``dict`` even
   when the L3 pool yields ``asyncpg.Record`` rows -- iterating a Record
   yields values, not keys, which silently breaks
   ``SQLiteBackend.upsert`` during L3 -> L1 re-promotion.
@@ -110,7 +110,7 @@ def _make_l1() -> SQLiteBackend:
 class TestFetchReturnsDict:
     """issue #85: Record rows must be converted to dicts at the L3 border."""
 
-    async def test_fetch_from_postgres_returns_plain_dict(self) -> None:
+    async def test_fetch_from_store_returns_plain_dict(self) -> None:
         pool = FakeAsyncpgPool(rows={"w1": {"id": "w1", "name": "sprocket", "score": 42}})
         registry = CollectionRegistry()
         registry.configure(l3_pool=pool)
@@ -120,7 +120,7 @@ class TestFetchReturnsDict:
             config=DefaultCoreConfig(collection_flush="ALWAYS"),
         )
 
-        result = await collection.fetch_from_postgres("w1")
+        result = await collection.fetch_from_store("w1")
 
         assert type(result) is dict
         assert result == {"id": "w1", "name": "sprocket", "score": 42}
@@ -252,7 +252,7 @@ class TestVectorColumns:
             config=DefaultCoreConfig(collection_flush="ALWAYS"),
         )
 
-        await collection.save_to_postgres({"id": "e1", "embedding": [0.1, 0.2, 0.3]})
+        await collection.save_to_store({"id": "e1", "embedding": [0.1, 0.2, 0.3]})
 
         sql, args = pool.executed[-1]
         assert "::vector" in sql
@@ -270,7 +270,7 @@ class TestVectorColumns:
             config=DefaultCoreConfig(collection_flush="ALWAYS"),
         )
 
-        result = await collection.fetch_from_postgres("e1")
+        result = await collection.fetch_from_store("e1")
 
         assert result is not None
         assert result["embedding"] == [0.1, 0.2, 0.3]

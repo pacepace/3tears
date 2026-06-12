@@ -345,7 +345,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
 
     # --- BaseCollection contract ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch a row by composite pk.
 
         :param entity_id: tuple ``(conversation_id, schedule_id)``
@@ -365,7 +365,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
             return None
         return dict(row)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: Any = None,
@@ -393,7 +393,7 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         await target.execute(_AGENT_WAKE_SCHEDULES_UPSERT_SQL, *params)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a schedule row by composite pk.
 
         ``ON DELETE CASCADE`` on ``wake_fires.schedule_id`` ensures
@@ -813,7 +813,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
 
     # --- BaseCollection contract ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch a row by composite pk."""
         if self.l3_pool is None:
             return None
@@ -827,7 +827,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
             return None
         return dict(row)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: Any = None,
@@ -853,7 +853,7 @@ class WakeFireCollection(BaseCollection[WakeFireEntity]):
         await target.execute(_WAKE_FIRES_UPSERT_SQL, *params)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a fire row by composite pk."""
         if self.l3_pool is None:
             return None
@@ -1253,7 +1253,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
 
     # --- BaseCollection contract ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch a row by composite pk."""
         if self.l3_pool is None:
             return None
@@ -1267,7 +1267,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
             return None
         return dict(row)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: Any = None,
@@ -1295,7 +1295,7 @@ class WebhookSubscriptionCollection(BaseCollection[WebhookSubscriptionEntity]):
         await target.execute(_WEBHOOK_SUBSCRIPTIONS_UPSERT_SQL, *params)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a subscription row by composite pk.
 
         The FK on ``wake_fires.webhook_subscription_id`` is ``ON

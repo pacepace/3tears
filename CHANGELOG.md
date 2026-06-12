@@ -4,6 +4,27 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## Unreleased
+
+### Changed — `3tears` (core) — BREAKING
+
+- **Neutral L3 store seam (`collections-task-06`).** The collection framework's L3
+  (durable) tier extension points were renamed to be storage-agnostic so a non-SQL
+  backend (e.g. a git working tree) can be an L3: `fetch_from_postgres` →
+  `fetch_from_store`, `save_to_postgres` → `save_to_store`, `delete_from_postgres` →
+  `delete_from_store`, `persist_to_postgres` → `persist_to_store`. Behavior unchanged;
+  `SchemaBackedCollection` generates the new names. `l3_pool`/`get_l3_pool` and
+  `serialize`/`deserialize` are unchanged. **Consumers: see
+  `docs/migrating-to-l3-store-seam.md`.**
+
+### Added — `3tears` (core)
+
+- `threetears.core.backends.L3Backend` (raw-SQL transport) and `DurableStore` (SQL-free
+  structured ops: `fetch_one`/`upsert`/`delete`/`scan`) protocols; `SqlL3Backend`
+  implementing both over an asyncpg pool; `DurableStoreCollection` (a collection whose L3
+  tier is a `DurableStore` — the base a git-backed collection subclasses); and
+  `parse_rowcount`, the one framework-owned asyncpg status-tag parser.
+
 ## v0.10.5 -- 2026-06-03
 
 A reusable keyset (seek) paginator in `threetears.core` for paging large,

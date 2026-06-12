@@ -31,25 +31,25 @@ class TestL3Guards:
     """presence is ephemeral; every L3 path must raise loudly."""
 
     @pytest.mark.parametrize("table", ["connections", "rooms"])
-    async def test_fetch_from_postgres_raises(self, bus: InMemoryNatsBus, table: str) -> None:
+    async def test_fetch_from_store_raises(self, bus: InMemoryNatsBus, table: str) -> None:
         collection, _ = make_pod(bus)
         sub = getattr(collection, table)
         with pytest.raises(RuntimeError):
-            await sub.fetch_from_postgres("anything")
+            await sub.fetch_from_store("anything")
 
     @pytest.mark.parametrize("table", ["connections", "rooms"])
-    async def test_save_to_postgres_raises(self, bus: InMemoryNatsBus, table: str) -> None:
+    async def test_save_to_store_raises(self, bus: InMemoryNatsBus, table: str) -> None:
         collection, _ = make_pod(bus)
         sub = getattr(collection, table)
         with pytest.raises(RuntimeError):
-            await sub.save_to_postgres({"x": 1})
+            await sub.save_to_store({"x": 1})
 
     @pytest.mark.parametrize("table", ["connections", "rooms"])
-    async def test_delete_from_postgres_raises(self, bus: InMemoryNatsBus, table: str) -> None:
+    async def test_delete_from_store_raises(self, bus: InMemoryNatsBus, table: str) -> None:
         collection, _ = make_pod(bus)
         sub = getattr(collection, table)
         with pytest.raises(RuntimeError):
-            await sub.delete_from_postgres("anything")
+            await sub.delete_from_store("anything")
 
     async def test_l3_pool_is_none(self, bus: InMemoryNatsBus) -> None:
         collection, _ = make_pod(bus)

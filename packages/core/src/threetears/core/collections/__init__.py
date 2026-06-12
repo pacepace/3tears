@@ -3,6 +3,7 @@ from threetears.core.collections.asyncpg_init import (
     register_jsonb_text_codec,
 )
 from threetears.core.collections.base import BaseCollection
+from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
@@ -33,6 +34,7 @@ __all__ = [
     "CollectionRegistry",
     "Column",
     "DATETIMETZ_TYPE",
+    "DurableStoreCollection",
     "FlushStrategy",
     "INT_TYPE",
     "JSONB_TYPE",

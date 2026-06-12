@@ -445,7 +445,7 @@ class TestDataSourceColumnGetByNaturalKey:
         entity = await coll.get_by_natural_key(ds_id, "s", "t", "c")
         assert entity is not None
         # the method MUST json-decode the tags array so callers see a list
-        # (matches the existing fetch_from_postgres behaviour)
+        # (matches the existing fetch_from_store behaviour)
         assert entity.tags == ["pii", "email"]
 
     @pytest.mark.asyncio

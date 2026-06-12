@@ -432,7 +432,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         for row in evict_rows:
             eid = row["context_id"]
             pk = (cid, eid)
-            await self.delete_from_postgres(pk)
+            await self.delete_from_store(pk)
             if self._l1 is not None:
                 self._l1.delete_by_id(self.table_name, pk, self.primary_key_columns)
             await self._delete_from_l2(pk)

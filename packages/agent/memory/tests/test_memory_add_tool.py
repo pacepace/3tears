@@ -283,7 +283,7 @@ class TestLoadAddMemoryTool:
         result = await tools[0].ainvoke({"content": "User prefers Rust", "memory_type": "preference"})
 
         assert "Stored as [memory:" in result
-        # the Collection's save_to_postgres emitted an INSERT via execute
+        # the Collection's save_to_store emitted an INSERT via execute
         pool.execute.assert_called()
         call_sql = pool.execute.call_args[0][0]
         assert "INSERT INTO memories" in call_sql

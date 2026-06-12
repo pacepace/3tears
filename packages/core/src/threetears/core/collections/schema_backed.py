@@ -2,8 +2,8 @@
 
 collapses the CRUD boilerplate that every
 :class:`~threetears.core.collections.base.BaseCollection` subclass used
-to hand-roll (``fetch_from_postgres`` / ``save_to_postgres`` /
-``delete_from_postgres`` / ``serialize`` / ``deserialize``) into one
+to hand-roll (``fetch_from_store`` / ``save_to_store`` /
+``delete_from_store`` / ``serialize`` / ``deserialize``) into one
 schema-driven implementation. subclasses declare a
 :class:`TableSchema` as a class attribute and stop writing SQL by hand
 for the standard row lifecycle. domain-specific query methods
@@ -42,6 +42,7 @@ from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 from uuid import UUID
 
+from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.observe import get_logger
 
@@ -652,12 +653,12 @@ class TableSchema:
     :cvar cas_column: column used as the optimistic-concurrency fence
         on the UPDATE path. when set (typical value: ``"date_updated"``)
         and the caller passes a non-``None`` ``original_timestamp`` to
-        :meth:`SchemaBackedCollection.save_to_postgres`, the generator
+        :meth:`SchemaBackedCollection.save_to_store`, the generator
         emits a separate UPDATE fenced on ``cas_column = $N``. when
         ``None``, the ``original_timestamp`` argument is silently
         ignored
     :cvar on_conflict: behaviour of
-        :meth:`SchemaBackedCollection.save_to_postgres` on primary-key
+        :meth:`SchemaBackedCollection.save_to_store` on primary-key
         conflict. ``"update"`` (default) emits ``ON CONFLICT (pk) DO
         UPDATE SET <mutable>`` -- the standard upsert path. ``"raise"``
         emits plain INSERT with no ``ON CONFLICT`` clause; duplicate
@@ -1521,8 +1522,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             primary_key_column = "id"
 
     and inherit the full CRUD implementation:
-    :meth:`fetch_from_postgres`, :meth:`save_to_postgres`,
-    :meth:`delete_from_postgres`, :meth:`serialize`, :meth:`deserialize`.
+    :meth:`fetch_from_store`, :meth:`save_to_store`,
+    :meth:`delete_from_store`, :meth:`serialize`, :meth:`deserialize`.
     domain-specific query methods (e.g. ``find_by_agent``) stay on the
     subclass because query shape is per-collection.
 
@@ -1819,7 +1820,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         server-default columns the caller omitted are dropped from
         both the SET clause and the params) in declared order, then
         the CAS fence value as the last parameter. callers match this
-        layout in :meth:`save_to_postgres`.
+        layout in :meth:`save_to_store`.
 
         :param data: row dict to drive column selection. ``None`` is
             accepted for backward compatibility with call-sites that
@@ -1948,7 +1949,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = None
         else:
             raise KeyError(
-                f"{self.schema.name}.save_to_postgres: required column {column.name!r} missing from data",
+                f"{self.schema.name}.save_to_store: required column {column.name!r} missing from data",
             )
         return result
 
@@ -2011,7 +2012,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     # --- BaseCollection contract implementations ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch one row from L3 by primary key.
 
         accepts scalar ``entity_id`` for single-pk tables or a tuple of
@@ -2041,7 +2042,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 result = self._coerce_row(dict(row))
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -2106,7 +2107,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             result = self._parse_rowcount(status)
         return result
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """delete one row from L3 by primary key.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
@@ -2174,29 +2175,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     @staticmethod
     def _parse_rowcount(status: Any) -> int:
-        """parse asyncpg's command-tag string into a row count.
+        """Parse asyncpg's command-tag string into a row count.
 
-        asyncpg returns a string like ``"INSERT 0 1"`` /
-        ``"UPDATE 1"`` / ``"DELETE 1"``. empty / falsy values
-        (mock pools sometimes return ``None`` or ``""``) resolve to 0.
-
-        :param status: asyncpg status tag
-        :ptype status: Any
-        :return: rows-affected count
-        :rtype: int
+        Delegates to the framework-owned :func:`threetears.core.backends.parse_rowcount`
+        (the single canonical parser, ``collections-task-06`` L3B-05) so the raw-SQL
+        status-tag idiom lives in exactly one place.
         """
-        result: int
-        if not status:
-            result = 0
-        elif isinstance(status, str):
-            parts = status.split()
-            if parts:
-                try:
-                    result = int(parts[-1])
-                except ValueError:
-                    result = 0
-            else:
-                result = 0
-        else:
-            result = 0
-        return result
+        return parse_rowcount(status)

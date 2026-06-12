@@ -99,7 +99,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
     forces ``l3_pool = None`` and raises on every L3 method so an
     accidental framework invocation surfaces loudly rather than silently
     no-opping. ``get`` is overridden so an L1+L2 total-miss resolves to
-    ``None`` instead of falling through to ``fetch_from_postgres`` (which
+    ``None`` instead of falling through to ``fetch_from_store`` (which
     raises by design). exactly the ``HeartbeatCollection`` shape.
 
     subclasses supply :attr:`table_name`, :attr:`entity_class`,
@@ -107,7 +107,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
     """
 
     #: datetime columns the L2 codec must rehydrate to aware-UTC.
-    _datetime_columns: tuple[str, ...] = ("date_created", "date_updated")
+    datetime_columns: tuple[str, ...] = ("date_created", "date_updated")
 
     def __init__(
         self,
@@ -147,7 +147,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         """read from L1 first, pull-through L2 on miss; ``None`` on total-miss.
 
         overrides the three-tier read so an L1+L2 miss resolves to
-        ``None`` rather than tripping ``fetch_from_postgres`` (which
+        ``None`` rather than tripping ``fetch_from_store`` (which
         raises by design). mirrors :meth:`HeartbeatCollection.get`.
 
         :param entity_id: primary key value
@@ -172,7 +172,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         """persist entity to L1 + L2 (no L3), then publish invalidation.
 
         overrides the three-tier write: the base path starts with
-        ``save_to_postgres`` (which raises here). lays down L1 first,
+        ``save_to_store`` (which raises here). lays down L1 first,
         then L2, then the cross-pod invalidation. mirrors
         :meth:`HeartbeatCollection.save_entity`.
 
@@ -210,7 +210,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         await self._publish_invalidation(entity_id)
         return True
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """unreachable — presence is L1+L2 only.
 
         :param entity_id: ignored; kept for signature symmetry
@@ -220,11 +220,11 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :raises RuntimeError: always; no L3 pool is bound for presence
         """
         raise RuntimeError(
-            f"{type(self).__name__} is L1+L2 only; fetch_from_postgres must "
+            f"{type(self).__name__} is L1+L2 only; fetch_from_store must "
             f"never be reached (no L3 pool bound for '{self.table_name}')",
         )
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -244,11 +244,11 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :raises RuntimeError: always; no L3 pool is bound for presence
         """
         raise RuntimeError(
-            f"{type(self).__name__} is L1+L2 only; save_to_postgres must "
+            f"{type(self).__name__} is L1+L2 only; save_to_store must "
             f"never be reached (save_entity is overridden to skip L3)",
         )
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """unreachable — presence is L1+L2 only.
 
         :param entity_id: ignored; kept for signature symmetry
@@ -258,7 +258,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :raises RuntimeError: always; no L3 pool is bound for presence
         """
         raise RuntimeError(
-            f"{type(self).__name__} is L1+L2 only; delete_from_postgres must "
+            f"{type(self).__name__} is L1+L2 only; delete_from_store must "
             f"never be reached (delete is overridden to skip L3)",
         )
 
@@ -284,7 +284,7 @@ class _L1L2OnlyCollection(BaseCollection[Any]):
         :rtype: dict[str, Any]
         """
         raw: dict[str, Any] = json.loads(data.decode("utf-8"))
-        _coerce_datetimes(raw, self._datetime_columns)
+        _coerce_datetimes(raw, self.datetime_columns)
         return raw
 
 
@@ -296,7 +296,7 @@ class PresenceConnectionCollection(_L1L2OnlyCollection):
     """
 
     primary_key_column: str = "connection_id"
-    _datetime_columns = ("date_last_heartbeat", "date_created", "date_updated")
+    datetime_columns = ("date_last_heartbeat", "date_created", "date_updated")
 
     @property
     def table_name(self) -> str:

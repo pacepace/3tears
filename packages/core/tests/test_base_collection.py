@@ -47,9 +47,9 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: AsyncMock | None = None,
         write_buffer: WriteBuffer | None = None,
-        pg_store: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict] | None = None,
     ) -> None:
-        self._pg_store = pg_store if pg_store is not None else {}
+        self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -60,20 +60,20 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
-        return self._pg_store.get(str(entity_id))
+    async def fetch_from_store(self, entity_id: object) -> dict | None:
+        return self._l3_rows.get(str(entity_id))
 
-    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
-            existing = self._pg_store.get(str(pk))
+            existing = self._l3_rows.get(str(pk))
             if existing and existing.get("date_updated") != original_timestamp:
                 return 0  # Optimistic lock failure
-        self._pg_store[str(pk)] = dict(data)
+        self._l3_rows[str(pk)] = dict(data)
         return 1
 
-    async def delete_from_postgres(self, entity_id: object) -> None:
-        self._pg_store.pop(str(entity_id), None)
+    async def delete_from_store(self, entity_id: object) -> None:
+        self._l3_rows.pop(str(entity_id), None)
 
     def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
@@ -158,8 +158,8 @@ class TestThreeTierGet:
     async def test_l1_hit(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """L1 hit returns entity without touching L2/L3."""
         nats = _make_nats_mock()
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # Pre-populate L1
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 100})
@@ -192,8 +192,8 @@ class TestThreeTierGet:
     async def test_l1_l2_miss_l3_hit(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """L1+L2 miss, L3 hit promotes to both caches."""
         nats = _make_nats_mock()
-        pg_store = {"e3": {"id": "e3", "name": "Carol", "score": 75}}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows = {"e3": {"id": "e3", "name": "Carol", "score": 75}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = await coll.get("e3")
 
@@ -223,15 +223,15 @@ class TestSaveEntity:
     async def test_immediate_save(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """Immediate save writes to L3 first, then caches."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
         await coll.save_entity(entity)
 
         # Written to postgres
-        assert "e1" in pg_store
-        assert pg_store["e1"]["name"] == "Alice"
+        assert "e1" in l3_rows
+        assert l3_rows["e1"]["name"] == "Alice"
         # Written to L1
         l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
@@ -246,14 +246,14 @@ class TestSaveEntity:
         """Deferred save writes L1+L2+buffer, skips L3."""
         nats = _make_nats_mock()
         buf = WriteBuffer()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
         await coll.save_entity(entity)
 
         # NOT written to postgres
-        assert "e1" not in pg_store
+        assert "e1" not in l3_rows
         # Written to L1
         l1_row = coll.get_row_sync("e1")
         assert l1_row is not None
@@ -272,7 +272,7 @@ class TestSaveEntity:
         nats = _make_nats_mock()
         ts_old = datetime(2025, 1, 1, tzinfo=UTC)
         ts_new = datetime(2025, 6, 1, tzinfo=UTC)
-        pg_store = {
+        l3_rows = {
             "e1": {
                 "id": "e1",
                 "name": "Alice",
@@ -280,7 +280,7 @@ class TestSaveEntity:
                 "date_updated": ts_new,
             }
         }
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # Load entity with old timestamp
         coll.write_to_cache_sync(
@@ -303,14 +303,14 @@ class TestReloadEntity:
     async def test_reload_from_l3(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """Reload fetches from L3 and updates caches."""
         nats = _make_nats_mock()
-        pg_store = {"e1": {"id": "e1", "name": "Original", "score": 10}}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Original", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Original", "score": 10})
         await coll.save_entity(entity)
 
         # Modify in postgres directly
-        pg_store["e1"]["name"] = "Updated"
+        l3_rows["e1"]["name"] = "Updated"
 
         await coll.reload_entity(entity)
 
@@ -340,8 +340,8 @@ class TestDelete:
     async def test_delete_from_all_tiers(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """Delete removes from all tiers."""
         nats = _make_nats_mock()
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # Populate all tiers
         entity = await coll.get("e1")
@@ -351,7 +351,7 @@ class TestDelete:
 
         assert result is True
         # Removed from L3
-        assert "e1" not in pg_store
+        assert "e1" not in l3_rows
         # Removed from L1
         assert coll.get_row_sync("e1") is None
         # Removed from L2
@@ -466,8 +466,8 @@ class TestNoL1Backend:
         self, no_l1_registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """Can still read from L3 when L1 is None."""
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
-        coll = StubCollection(no_l1_registry, config_always, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(no_l1_registry, config_always, l3_rows=l3_rows)
 
         entity = await coll.get("e1")
 
@@ -517,8 +517,8 @@ class TestSubscriptGetterPullThrough:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """collection[id] transparently pulls through L3 on L1 miss."""
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
-        coll = StubCollection(registry, config_always, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
+        coll = StubCollection(registry, config_always, l3_rows=l3_rows)
 
         entity = coll["e1"]
 
@@ -532,8 +532,8 @@ class TestSubscriptGetterPullThrough:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """collection[id, field] transparently pulls through L3 on L1 miss."""
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
-        coll = StubCollection(registry, config_always, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 100}}
+        coll = StubCollection(registry, config_always, l3_rows=l3_rows)
 
         assert coll["e1", "name"] == "Alice"
 
@@ -573,16 +573,16 @@ class TestSubscriptGetterPullThrough:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         """collection[id, field] raises KeyError if field doesn't exist on entity."""
-        pg_store = {"e1": {"id": "e1", "name": "Alice"}}
-        coll = StubCollection(registry, config_always, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice"}}
+        coll = StubCollection(registry, config_always, l3_rows=l3_rows)
 
         with pytest.raises(KeyError, match="field not found"):
             _ = coll["e1", "nonexistent_field"]
 
     def test_contains_checks_l1_only(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """'in' operator checks L1 only, does not pull through."""
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
-        coll = StubCollection(registry, config_always, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, l3_rows=l3_rows)
 
         # In L3 but not L1
         assert "e1" not in coll
@@ -632,16 +632,16 @@ class TestSubscriptSetterPropagation:
     ) -> None:
         """With ALWAYS strategy, setter propagates to L3 non-blocking."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
 
         await asyncio.sleep(0.1)
 
-        assert "e1" in pg_store
-        assert pg_store["e1"]["name"] == "Bob"
+        assert "e1" in l3_rows
+        assert l3_rows["e1"]["name"] == "Bob"
 
     @pytest.mark.asyncio
     async def test_field_setter_deferred_l3_write(
@@ -650,8 +650,8 @@ class TestSubscriptSetterPropagation:
         """With deferred strategy, setter buffers for L3 instead of writing immediately."""
         nats = _make_nats_mock()
         buf = WriteBuffer()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         coll["e1", "name"] = "Bob"
@@ -659,7 +659,7 @@ class TestSubscriptSetterPropagation:
         await asyncio.sleep(0.1)
 
         # NOT in L3
-        assert "e1" not in pg_store
+        assert "e1" not in l3_rows
         # But IS in L2
         assert "test_entities.e1" in nats.store
         # And IS in write buffer
@@ -669,8 +669,8 @@ class TestSubscriptSetterPropagation:
     async def test_dict_setter_propagates(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] = data_dict propagates to L1, L2, and L3."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         coll["e1"] = {"id": "e1", "name": "Alice", "score": 99}
 
@@ -683,8 +683,8 @@ class TestSubscriptSetterPropagation:
         # L2
         assert "test_entities.e1" in nats.store
         # L3
-        assert "e1" in pg_store
-        assert pg_store["e1"]["name"] == "Alice"
+        assert "e1" in l3_rows
+        assert l3_rows["e1"]["name"] == "Alice"
 
     @pytest.mark.asyncio
     async def test_setter_updates_date_updated(
@@ -692,16 +692,16 @@ class TestSubscriptSetterPropagation:
     ) -> None:
         """Setter sets date_updated on the propagated data."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
         before = datetime.now(UTC)
         coll["e1", "name"] = "Bob"
         await asyncio.sleep(0.1)
 
-        assert "e1" in pg_store
-        du = pg_store["e1"].get("date_updated")
+        assert "e1" in l3_rows
+        du = l3_rows["e1"].get("date_updated")
         assert du is not None
         # date_updated should be close to now
         assert du >= before
@@ -720,7 +720,7 @@ class TestMultiPodSimulation:
     def _make_pod(
         self,
         nats: AsyncMock,
-        pg_store: dict[str, dict],
+        l3_rows: dict[str, dict],
         config: DefaultCoreConfig,
         write_buffer: WriteBuffer | None = None,
     ) -> StubCollection:
@@ -729,15 +729,15 @@ class TestMultiPodSimulation:
         l1.initialize(_make_metadata())
         reg = CollectionRegistry()
         reg.configure(l1_backend=l1)
-        return StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, pg_store=pg_store)
+        return StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, l3_rows=l3_rows)
 
     @pytest.mark.asyncio
     async def test_write_on_pod_a_visible_on_pod_b_via_l2(self, config_always: DefaultCoreConfig) -> None:
         """Data written on pod A is visible on pod B through shared L2."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        pod_a = self._make_pod(nats, pg_store, config_always)
-        pod_b = self._make_pod(nats, pg_store, config_always)
+        l3_rows: dict[str, dict] = {}
+        pod_a = self._make_pod(nats, l3_rows, config_always)
+        pod_b = self._make_pod(nats, l3_rows, config_always)
 
         # Pod A creates and saves entity
         entity = pod_a.create({"id": "e1", "name": "Alice", "score": 42})
@@ -755,12 +755,12 @@ class TestMultiPodSimulation:
         This demonstrates the cache coherence gap that signaling will fix.
         """
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        pod_a = self._make_pod(nats, pg_store, config_always)
-        pod_b = self._make_pod(nats, pg_store, config_always)
+        l3_rows: dict[str, dict] = {}
+        pod_a = self._make_pod(nats, l3_rows, config_always)
+        pod_b = self._make_pod(nats, l3_rows, config_always)
 
         # Both pods load the same entity
-        pg_store["e1"] = {"id": "e1", "name": "Alice", "score": 42}
+        l3_rows["e1"] = {"id": "e1", "name": "Alice", "score": 42}
         await pod_a.ensure("e1")
         await pod_b.ensure("e1")
 
@@ -788,12 +788,12 @@ class TestMultiPodSimulation:
     async def test_setter_propagation_reaches_l3(self, config_always: DefaultCoreConfig) -> None:
         """Setter with ALWAYS strategy writes through to shared L3."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        pod_a = self._make_pod(nats, pg_store, config_always)
-        pod_b = self._make_pod(nats, pg_store, config_always)
+        l3_rows: dict[str, dict] = {}
+        pod_a = self._make_pod(nats, l3_rows, config_always)
+        pod_b = self._make_pod(nats, l3_rows, config_always)
 
         # Seed data
-        pg_store["e1"] = {"id": "e1", "name": "Alice", "score": 42}
+        l3_rows["e1"] = {"id": "e1", "name": "Alice", "score": 42}
         await pod_a.ensure("e1")
 
         # Pod A updates via setter
@@ -801,7 +801,7 @@ class TestMultiPodSimulation:
         await asyncio.sleep(0.1)
 
         # L3 (shared postgres) has the update
-        assert pg_store["e1"]["name"] == "Updated"
+        assert l3_rows["e1"]["name"] == "Updated"
 
         # Pod B can see it via L3 even after its caches are cleared
         await pod_b.invalidate_cache("e1")
@@ -814,15 +814,15 @@ class TestMultiPodSimulation:
         """Setter with deferred strategy buffers but doesn't write L3."""
         nats = _make_nats_mock()
         buf = WriteBuffer()
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
-        pod_a = self._make_pod(nats, pg_store, config_deferred, write_buffer=buf)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
+        pod_a = self._make_pod(nats, l3_rows, config_deferred, write_buffer=buf)
         await pod_a.ensure("e1")
 
         pod_a["e1", "name"] = "Deferred"
         await asyncio.sleep(0.1)
 
         # L3 still has old value
-        assert pg_store["e1"]["name"] == "Alice"
+        assert l3_rows["e1"]["name"] == "Alice"
         # L2 has new value
         l2_data = json.loads(nats.store["test_entities.e1"])
         assert l2_data["name"] == "Deferred"
@@ -838,8 +838,8 @@ class TestInvalidateCache:
         self, registry: CollectionRegistry, config_always: DefaultCoreConfig
     ) -> None:
         nats = _make_nats_mock()
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
-        coll = StubCollection(registry, config_always, nats_client=nats, pg_store=pg_store)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 10}}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # Populate caches
         await coll.get("e1")
@@ -918,13 +918,13 @@ class CompositeStubCollection(BaseCollection[CompositeStubEntity]):
     def entity_class(self) -> type[CompositeStubEntity]:
         return CompositeStubEntity
 
-    async def fetch_from_postgres(self, entity_id: object) -> dict | None:  # pragma: no cover - unused
+    async def fetch_from_store(self, entity_id: object) -> dict | None:  # pragma: no cover - unused
         return None
 
-    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:  # pragma: no cover
+    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:  # pragma: no cover
         return 1
 
-    async def delete_from_postgres(self, entity_id: object) -> None:  # pragma: no cover - unused
+    async def delete_from_store(self, entity_id: object) -> None:  # pragma: no cover - unused
         return None
 
     def serialize(self, data: dict) -> bytes:
@@ -1206,3 +1206,44 @@ class TestL2CasMutate:
 
         await coll.l2_cas_mutate("r1", lambda _row: ("delete", None))
         assert coll.get_row_sync("r1") is None
+
+
+class TestStorageAgnosticL3Contract:
+    """The L3 durable tier is a PLUGGABLE backend — storage-agnostic.
+
+    A collection reaches L3 only through three methods: ``fetch_from_store`` /
+    ``save_to_store`` / ``delete_from_store``. It never assumes SQL. ``StubCollection``
+    backs them with a plain in-memory dict; the SQL backend backs them with
+    Postgres; a ``GitL3Backend`` backs them with files in a git working tree —
+    all three are first-class. This pins that contract: a NON-SQL L3 backend
+    drives the full three-tier save → evict → pull-through → delete round-trip,
+    so a git L3 implementing the same three methods slots in unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_sql_l3_backend_drives_full_three_tier_roundtrip(
+        self, registry: CollectionRegistry, config_always: DefaultCoreConfig
+    ) -> None:
+        nats = _make_nats_mock()
+        # The ENTIRE durable store is a plain dict — no SQL anywhere. This is the
+        # exact shape a GitL3Backend presents (fetch/save/delete a record by pk).
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
+
+        # save → save_to_store persists to the non-SQL durable tier
+        await coll.save_entity(StubEntity({"id": "g1", "name": "Gitish", "score": 7}, is_new=True))
+        assert l3_rows["g1"]["name"] == "Gitish"  # durable tier holds it; no SQL involved
+
+        # evict L1 + L2 so the next read MUST fall through to the non-SQL L3
+        await coll.invalidate_cache("g1")
+        assert coll.get_row_sync("g1") is None  # L1 evicted
+
+        # get → L1+L2 miss → fetch_from_store (the non-SQL backend) serves it + promotes up
+        got = await coll.get("g1")
+        assert got is not None and got.name == "Gitish"
+        assert coll.get_row_sync("g1") is not None  # promoted back to L1
+        assert "test_entities.g1" in nats.store  # promoted to L2
+
+        # delete → delete_from_store removes it from the non-SQL durable tier
+        await coll.delete("g1")
+        assert "g1" not in l3_rows

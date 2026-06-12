@@ -32,6 +32,12 @@ _CONFIG = CacheEnforcementConfig(
             # sanctioned construction site is the per-process factory.
             # every other site is a bespoke wrapper in disguise.
             "packages/registry/src/threetears/registry/l1_cache.py",
+            # channels presence: the same sanctioned per-process L1 factory shape
+            # as the registry above — presence's two L1+L2-only Collections
+            # (``_L1L2OnlyCollection``, "exactly the HeartbeatCollection shape")
+            # share one process-owned SQLiteBackend built here and wired into the
+            # registry as the default L1 tier.
+            "packages/channels/src/threetears/channels/presence/l1_cache.py",
         }
     ),
     collection_table_allowlist={

@@ -33,7 +33,7 @@ layer the fanout (task-02) delivers through and authz (task-03) gates.
     member `connection_id`s. Updated only on **join/leave** (low churn). "Who's in room X" =
     `get(room_index)` → member ids → (optionally) pk-get each connection entry.
 - **Ephemeral L1+L2 (no L3).** Mirror `HeartbeatCollection`: set `self.l3_pool = None`; override
-  `fetch_from_postgres`/`save_to_postgres`/`delete_from_postgres` to raise. Presence is transient.
+  `fetch_from_store`/`save_to_store`/`delete_from_store` to raise. Presence is transient.
 - **Cross-pod coherence = the collection's invalidation envelope** (`INVALIDATION_SUBJECT`) — free with
   `BaseCollection`'s L2 write path; peers evict L1 and refill from L2 on the next pk-get.
 - **Self-heal = heartbeat + sweep**, NOT KV-TTL. Each connection entry carries `date_last_heartbeat`;

@@ -6,7 +6,8 @@ shape) or ``primary_key_column = ("conversation_id", "item_id")`` for
 composite-pk tables. internally, every cache-keying path normalizes
 the declared pk and caller-supplied id into a tuple via
 :meth:`BaseCollection.normalize_pk`; the L1 (SQLite / DuckDB), L2
-(NATS KV), and L3 (postgres) tiers all accept the tuple uniformly.
+(NATS KV), and L3 (pluggable durable backend — SQL, git, …) tiers all
+accept the tuple uniformly.
 the invalidation wire envelope carries ``ids`` (plural, always an
 array) matching the pk column order, so single-pk emits a length-1
 array and composite-pk emits a length-N array.
@@ -72,25 +73,24 @@ class BaseCollection(ABC, Generic[EntityT]):
         :attr:`primary_key_columns` is the internal-use normalized
         tuple form; callers iterating pk columns MUST read that
         property rather than inspecting the attribute directly.
-    :ivar l3_pool: asyncpg-compatible connection pool bound to the
-        agent's L3 schema (or ``None`` when the collection is configured
-        without L3, e.g. unit tests using only L1+L2). this is the
-        public extension seam for ad-hoc SQL: subclasses and external
-        callers (hub endpoints implementing keyset pagination, JOINs,
-        bulk queries) may invoke ``await self.l3_pool.fetch(...)`` /
-        ``execute(...)`` / ``fetchrow(...)`` directly when the query
-        cannot be expressed through the Collection API. prefer the
-        collection methods (``get``, ``save_entity``, ``delete``,
-        ``__getitem__``, ``__setitem__``) for standard CRUD; drop to
-        raw SQL only when no Collection method fits. the pool is
-        shared across every collection bound to the same agent schema
-        (resolved through :class:`CollectionRegistry`); callers MUST
-        NOT call ``close()`` on it from a collection method or in any
-        per-request flow -- the pool's lifecycle is owned by the
-        process that constructed the registry. ``None`` is a valid
-        value: callers that need to operate without an L3 pool must
-        guard with ``if self.l3_pool is not None`` rather than
-        assuming presence.
+    :ivar l3_pool: the L3 durable-store handle for this collection. its
+        concrete type depends on the configured backend (an **asyncpg pool**
+        for the SQL backend; a git store for a git backend; ``None`` when the
+        collection is configured without L3, e.g. unit tests using only L1+L2).
+        for the **SQL backend** this is the public extension seam for ad-hoc
+        SQL: subclasses and external callers (hub endpoints implementing keyset
+        pagination, JOINs, bulk queries) may invoke ``await self.l3_pool.fetch(...)``
+        / ``execute(...)`` / ``fetchrow(...)`` directly when the query cannot be
+        expressed through the Collection API. prefer the collection methods
+        (``get``, ``save_entity``, ``delete``, ``__getitem__``, ``__setitem__``)
+        for standard CRUD; drop to a backend-specific handle only when no
+        Collection method fits. the handle is shared across every collection
+        bound to the same backend (resolved through :class:`CollectionRegistry`);
+        callers MUST NOT call ``close()`` on it from a collection method or in
+        any per-request flow -- its lifecycle is owned by the process that
+        constructed the registry. ``None`` is a valid value: callers that need
+        to operate without L3 must guard with ``if self.l3_pool is not None``
+        rather than assuming presence.
     """
 
     primary_key_column: str | tuple[str, ...] = "id"
@@ -189,21 +189,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         return values
 
     @abstractmethod
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch row from L3 keyed by pk.
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch one entity's row from the L3 durable tier, keyed by pk.
 
-        public extension point. subclasses override to emit their
-        own SELECT. framework invokes on L1+L2 miss via
-        :meth:`_pull_through` and on :meth:`reload_entity`. callers
-        that need a direct-to-L3 read without cache side-effects may
-        invoke this method from outside the collection; prefer
-        :meth:`ensure` or :meth:`get` for the normal three-tier path.
+        public extension point — the L3 backend is **pluggable** (storage-
+        agnostic): the SQL backend issues a SELECT, a git backend reads the
+        entity's file, an in-memory backend reads a dict — the framework only
+        requires a row dict on hit / ``None`` on miss. invoked on an L1+L2 miss
+        via :meth:`_pull_through` and on :meth:`reload_entity`. callers needing
+        a direct-to-L3 read without cache side-effects may invoke it directly;
+        prefer :meth:`ensure` or :meth:`get` for the normal three-tier path.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
-            (composite-pk). subclass implementations that hand-roll
-            SQL for a composite-pk table MUST accept the tuple shape;
-            existing single-pk subclasses accept the scalar shape
-            unchanged.
+            (composite-pk). composite-pk backends MUST accept the tuple shape;
+            single-pk backends accept the scalar shape.
         :ptype entity_id: Any
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
@@ -211,19 +210,20 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
         *,
         conn: Any = None,
     ) -> int:
-        """persist row to L3.
+        """persist one entity's row to the L3 durable tier.
 
-        public extension point. subclasses override to emit their
-        own INSERT ... ON CONFLICT DO UPDATE. framework invokes on
-        every non-deferred :meth:`save_entity` and from
-        :meth:`persist_to_postgres` during write-buffer flush.
+        public extension point — the L3 backend is **pluggable** (storage-
+        agnostic): the SQL backend issues an upsert, a git backend writes +
+        stages the entity's file, an in-memory backend writes a dict. invoked
+        on every non-deferred :meth:`save_entity` and from :meth:`persist_to_store`
+        during write-buffer flush.
 
         :param data: row data keyed by column name; pk columns named in
             :attr:`primary_key_columns` MUST be present
@@ -231,15 +231,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         :param original_timestamp: pre-modification ``date_updated``
             for optimistic-lock validation, ``None`` for inserts
         :ptype original_timestamp: datetime | None
-        :param conn: optional asyncpg-compatible connection that
-            overrides :attr:`l3_pool` for this single write. when
-            supplied, the INSERT/UPDATE binds to the caller's
-            transaction so the write commits atomically with whatever
-            other operations the caller already issued on the same
-            connection. ``None`` defers to the collection's own pool
-            (legacy behaviour). subclasses MUST honor this parameter
-            so the framework's transactional save_entity path stays
-            atomic
+        :param conn: optional **backend-specific transaction handle** (e.g. an
+            asyncpg connection for the SQL backend) that overrides
+            :attr:`l3_pool` for this single write, so it commits atomically
+            with whatever other operations the caller already issued on the
+            same transaction. ``None`` uses the collection's own L3 store.
+            backends MUST honor this so the framework's transactional
+            save_entity path stays atomic.
         :ptype conn: Any
         :return: rows affected (0 on optimistic-lock failure, 1 on success)
         :rtype: int
@@ -247,11 +245,13 @@ class BaseCollection(ABC, Generic[EntityT]):
         ...
 
     @abstractmethod
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """delete row from L3 keyed by pk.
+    async def delete_from_store(self, entity_id: Any) -> None:
+        """delete one entity's row from the L3 durable tier, keyed by pk.
 
-        public extension point. subclasses override to emit their
-        own DELETE. framework invokes from :meth:`delete`.
+        public extension point — the L3 backend is **pluggable** (storage-
+        agnostic): the SQL backend issues a DELETE, a git backend removes the
+        entity's file, an in-memory backend drops the dict entry. invoked from
+        :meth:`delete`.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk)
@@ -592,7 +592,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, l2_data, self.primary_key_columns)
             return l2_data
-        pg_data = await self.fetch_from_postgres(entity_id)
+        pg_data = await self.fetch_from_store(entity_id)
         if pg_data is not None:
             if self._l1 is not None:
                 self._l1.upsert(self.table_name, pg_data, self.primary_key_columns)
@@ -695,7 +695,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             await self._write_buffer.add(self.table_name, entity_id, data)
         else:
             try:
-                await self.save_to_postgres(data)
+                await self.save_to_store(data)
             except Exception as exc:
                 log.error(
                     "Background L3 write failed",
@@ -849,15 +849,14 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param entity: entity instance to persist
         :ptype entity: BaseEntity
-        :param conn: optional asyncpg-compatible connection that
-            overrides :attr:`l3_pool` for the L3 write only. when
-            supplied, the L3 INSERT/UPDATE binds to the caller's
-            transaction (the caller is responsible for COMMIT /
-            ROLLBACK), which makes the write atomic with whatever
-            other DDL/DML the caller already issued on the same
-            connection. L1 / L2 / invalidation publish run unchanged.
-            ``None`` keeps the legacy behaviour: the collection's
-            own pool services the write
+        :param conn: optional **backend-specific transaction handle** (e.g. an
+            asyncpg connection for the SQL backend) that overrides
+            :attr:`l3_pool` for the L3 write only. when supplied, the L3 write
+            binds to the caller's transaction (the caller owns commit /
+            rollback), making the write atomic with whatever other operations
+            the caller already issued on the same transaction. L1 / L2 /
+            invalidation publish run unchanged. ``None`` lets the collection's
+            own L3 store service the write
         :ptype conn: Any
         :return: nothing
         :rtype: None
@@ -889,7 +888,7 @@ class BaseCollection(ABC, Generic[EntityT]):
             data["date_updated"] = now
 
         # Datetime values flow through aware-UTC end to end. Per-column
-        # coercion at the L3 SQL border is the responsibility of
+        # coercion at the L3 backend border is the responsibility of
         # subclasses (SchemaBackedCollection drives this from declared
         # column types). collections-task-05 eliminated DATETIME_TYPE /
         # TIMESTAMP from the platform; the unconditional tzinfo strip
@@ -912,19 +911,19 @@ class BaseCollection(ABC, Generic[EntityT]):
             entity.original_date_updated = data.get("date_updated")
         else:
             if conn is not None:
-                rows_affected = await self.save_to_postgres(
+                rows_affected = await self.save_to_store(
                     data,
                     original_timestamp,
                     conn=conn,
                 )
             else:
-                rows_affected = await self.save_to_postgres(
+                rows_affected = await self.save_to_store(
                     data,
                     original_timestamp,
                 )
             if rows_affected == 0:
                 if entity.is_new:
-                    raise RuntimeError(f"INSERT failed for {self.table_name} entity {entity_id}: 0 rows affected")
+                    raise RuntimeError(f"L3 insert failed for {self.table_name} entity {entity_id}: 0 rows affected")
                 raise ConcurrentModificationError(self.table_name, entity_id, original_timestamp or datetime.min)
             entity.mark_clean()
             entity.original_date_updated = data.get("date_updated")
@@ -937,9 +936,9 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         await self._publish_invalidation(entity_id)
 
-    async def persist_to_postgres(self, data: dict[str, Any]) -> int:
+    async def persist_to_store(self, data: dict[str, Any]) -> int:
         """Used by flush_pending."""
-        return await self.save_to_postgres(data)
+        return await self.save_to_store(data)
 
     @traced()
     async def reload_entity(self, entity: BaseEntity) -> None:
@@ -948,7 +947,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         entity_id = entity.id
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        data = await self.fetch_from_postgres(entity_id)
+        data = await self.fetch_from_store(entity_id)
         if data is None:
             raise ValueError(f"Entity {entity_id} not found in storage")
         entity.set_data(data)
@@ -971,7 +970,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._set_span_table()
         if self._write_buffer is not None:
             await self._write_buffer.remove(self.table_name, entity_id)
-        await self.delete_from_postgres(entity_id)
+        await self.delete_from_store(entity_id)
         if self._l1 is not None:
             self._l1.delete_by_id(self.table_name, self.normalize_pk(entity_id), self.primary_key_columns)
         await self._delete_from_l2(entity_id)
@@ -989,7 +988,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """atomically read-modify-write one entity's L2 value under revision CAS.
 
         the framework's optimistic-lock fence lives in the L3 write
-        path (:meth:`save_to_postgres` returning ``0`` rows), so an
+        path (:meth:`save_to_store` returning ``0`` rows), so an
         L1+L2-only collection (no L3 pool) has no ``save_entity``-level
         CAS for atomically mutating a single value. this primitive
         fills that gap: it compare-and-swaps the entity's single L2

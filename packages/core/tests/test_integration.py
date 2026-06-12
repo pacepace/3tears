@@ -137,9 +137,9 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: AsyncMock | None = None,
         write_buffer: WriteBuffer | None = None,
-        pg_store: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict] | None = None,
     ) -> None:
-        self._pg_store = pg_store if pg_store is not None else {}
+        self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -150,20 +150,20 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
-        return self._pg_store.get(str(entity_id))
+    async def fetch_from_store(self, entity_id: object) -> dict | None:
+        return self._l3_rows.get(str(entity_id))
 
-    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
-            existing = self._pg_store.get(str(pk))
+            existing = self._l3_rows.get(str(pk))
             if existing and existing.get("date_updated") != original_timestamp:
                 return 0
-        self._pg_store[str(pk)] = dict(data)
+        self._l3_rows[str(pk)] = dict(data)
         return 1
 
-    async def delete_from_postgres(self, entity_id: object) -> None:
-        self._pg_store.pop(str(entity_id), None)
+    async def delete_from_store(self, entity_id: object) -> None:
+        self._l3_rows.pop(str(entity_id), None)
 
     def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
@@ -243,8 +243,8 @@ class TestThreeTierIntegration:
         8. Delete from all tiers
         """
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         # 1. Create entity
         entity = coll.create({"id": "item-1", "name": "Widget", "score": 42})
@@ -257,8 +257,8 @@ class TestThreeTierIntegration:
         await entity.save()
         assert entity.is_new is False
         assert entity.is_dirty is False
-        assert "item-1" in pg_store
-        assert pg_store["item-1"]["name"] == "Widget"
+        assert "item-1" in l3_rows
+        assert l3_rows["item-1"]["name"] == "Widget"
         # L1 populated
         l1_row = coll.get_row_sync("item-1")
         assert l1_row is not None
@@ -295,12 +295,12 @@ class TestThreeTierIntegration:
         assert fetched2.is_dirty is True
         await fetched2.save()
         assert fetched2.is_dirty is False
-        assert pg_store["item-1"]["name"] == "Gadget"
-        assert pg_store["item-1"]["score"] == 99
+        assert l3_rows["item-1"]["name"] == "Gadget"
+        assert l3_rows["item-1"]["score"] == 99
 
         # 7. Modify in "postgres" directly and reload
-        pg_store["item-1"]["name"] = "Thingamajig"
-        pg_store["item-1"]["score"] = 7
+        l3_rows["item-1"]["name"] = "Thingamajig"
+        l3_rows["item-1"]["score"] = 7
         await fetched2.reload()
         assert fetched2.name == "Thingamajig"
         assert fetched2.score == 7
@@ -313,7 +313,7 @@ class TestThreeTierIntegration:
         # 8. Delete from all tiers
         result = await coll.delete("item-1")
         assert result is True
-        assert "item-1" not in pg_store
+        assert "item-1" not in l3_rows
         assert coll.get_row_sync("item-1") is None
         assert "stub_items.item-1" not in nats.store
 
@@ -327,8 +327,8 @@ class TestThreeTierIntegration:
     ) -> None:
         """When L1 is invalidated but L2 still has data, get() hits L2 and re-promotes to L1."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "item-2", "name": "Sprocket", "score": 5})
         await entity.save()
@@ -356,7 +356,7 @@ class TestThreeTierIntegration:
         nats = _make_nats_mock()
         ts_v1 = datetime(2025, 1, 1, tzinfo=UTC)
         ts_v2 = datetime(2025, 6, 1, tzinfo=UTC)
-        pg_store = {
+        l3_rows = {
             "item-3": {
                 "id": "item-3",
                 "name": "Original",
@@ -364,7 +364,7 @@ class TestThreeTierIntegration:
                 "date_updated": ts_v1,
             }
         }
-        coll = StubCollection(registry, config, nats_client=nats, pg_store=pg_store)
+        coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         # Load entity (L3 -> L1 promotion)
         entity = await coll.get("item-3")
@@ -372,8 +372,8 @@ class TestThreeTierIntegration:
         assert entity.original_date_updated == ts_v1
 
         # Simulate another process updating L3 behind our back
-        pg_store["item-3"]["date_updated"] = ts_v2
-        pg_store["item-3"]["name"] = "Modified by other"
+        l3_rows["item-3"]["date_updated"] = ts_v2
+        l3_rows["item-3"]["name"] = "Modified by other"
 
         # Our modification should fail with ConcurrentModificationError
         entity.name = "My update"
@@ -384,8 +384,8 @@ class TestThreeTierIntegration:
     async def test_multiple_entities_independent(self, registry: CollectionRegistry, config: DefaultCoreConfig) -> None:
         """Multiple entities in the same collection are independent."""
         nats = _make_nats_mock()
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(registry, config, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(registry, config, nats_client=nats, l3_rows=l3_rows)
 
         e1 = coll.create({"id": "a", "name": "Alpha", "score": 1})
         e2 = coll.create({"id": "b", "name": "Beta", "score": 2})

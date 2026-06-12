@@ -248,7 +248,7 @@ async def flush_pending(
             )
             continue
         try:
-            await collection.persist_to_postgres(pw.data)
+            await collection.persist_to_store(pw.data)
             flushed += 1
         except Exception as exc:
             # FK violations are "my parent hasn't landed yet" -- treat
