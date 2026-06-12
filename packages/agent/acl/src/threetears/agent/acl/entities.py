@@ -51,7 +51,11 @@ class GroupEntity(BaseEntity):
     ``row_scope='platform' <-> customer_id IS NULL``.
 
     fields: ``row_scope`` / ``group_id`` / ``customer_id`` / ``name``
-    / ``description`` / ``date_created`` / ``date_updated``.
+    / ``managed_key`` / ``description`` / ``date_created`` /
+    ``date_updated``. ``managed_key`` is a nullable deterministic
+    find-or-create handle (set only on a consuming app's auto-managed
+    groups; ``name`` is a non-unique human label); it flows through
+    ``data`` like every other declared column.
 
     v0.8.0 shard 04.6: the bare-``id`` PK column was renamed to
     ``group_id`` to standardize on ``<entity>_id`` across all entity

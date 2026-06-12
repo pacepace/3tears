@@ -147,8 +147,15 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
     assignment rows in the same transaction, so the collection only
     needs to delete the group row itself. CRUD comes from the
     declarative :class:`TableSchema`; the evaluator-loader / introspection
-    helpers (``list_by_customer`` / ``list_all`` / ``get_many``) stay on
-    the canonical class because every rbac-consuming app needs them.
+    helpers (``list_by_customer`` / ``list_all`` / ``get_many`` /
+    ``get_by_managed_key``) stay on the canonical class because every
+    rbac-consuming app needs them.
+
+    a group's identity is ``group_id`` alone; ``name`` is a non-unique
+    human label and there is deliberately no ``get_by_name`` (a label is
+    not a key). a consuming app that auto-manages groups stamps a
+    nullable ``managed_key`` and resolves *the* managed group
+    deterministically via :meth:`get_by_managed_key`.
     """
 
     primary_key_column: tuple[str, ...] = ("row_scope", "group_id")
@@ -157,6 +164,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             "list_by_customer",
             "list_all",
             "get_many",
+            "get_by_managed_key",
             "delete_from_postgres",
             "save_entity",
             "create",
@@ -185,6 +193,11 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             Column("group_id", UUID_TYPE),
             Column("customer_id", UUID_TYPE, nullable=True, immutable=True),
             Column("name", STRING_TYPE),
+            # nullable deterministic find-or-create handle: set only on a
+            # consuming app's auto-managed groups, NULL for user-created
+            # ones. unique-per-scope when present -- the platform DDL owns
+            # the partial-unique index (3tears carries the column only).
+            Column("managed_key", STRING_TYPE, nullable=True),
             Column("description", STRING_TYPE, nullable=True),
             Column(
                 "date_created",
@@ -263,6 +276,49 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             row = await self.l3_pool.fetchrow(
                 "SELECT * FROM groups WHERE group_id = $1",
                 group_id,
+            )
+            if row is not None:
+                data = self._coerce_row(dict(row))
+                self.write_to_cache_sync(data)
+                result = self.entity_class(data, is_new=False, collection=self)
+        return result
+
+    async def get_by_managed_key(
+        self,
+        managed_key: str,
+        customer_id: UUID | None,
+    ) -> GroupEntity | None:
+        """resolve the auto-managed group for ``(managed_key, customer_id)``.
+
+        the deterministic find-or-create lookup a consuming app uses
+        for the groups it auto-manages. ``managed_key`` is unique per
+        scope (per ``customer_id``; platform groups are
+        ``customer_id IS NULL``), so this returns at most one row.
+        user-created groups carry ``managed_key IS NULL`` and are never
+        resolved here. the resolved row is promoted into L1/L2 caches.
+
+        the ``customer_id`` predicate uses ``IS NOT DISTINCT FROM`` so a
+        ``None`` scope matches the platform partition's NULL exactly
+        (mirrors :meth:`get_by_owner_and_customer`).
+
+        :param managed_key: the deterministic handle to resolve
+        :ptype managed_key: str
+        :param customer_id: owning customer UUID, or ``None`` for a
+            platform-scoped managed group
+        :ptype customer_id: UUID | None
+        :return: group entity or ``None`` when no managed group matches
+        :rtype: GroupEntity | None
+        """
+        result: GroupEntity | None = None
+        if self.l3_pool is not None:
+            row = await self.l3_pool.fetchrow(
+                """
+                SELECT * FROM groups
+                 WHERE managed_key = $1
+                   AND customer_id IS NOT DISTINCT FROM $2
+                """,
+                managed_key,
+                customer_id,
             )
             if row is not None:
                 data = self._coerce_row(dict(row))

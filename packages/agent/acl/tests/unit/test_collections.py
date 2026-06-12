@@ -58,13 +58,17 @@ def _group_row(
     *,
     customer_id: UUID | None = None,
     name: str = "Engineering",
+    managed_key: str | None = None,
 ) -> dict[str, Any]:
     """build a fake ``groups`` row.
 
     :param customer_id: owning customer UUID
     :ptype customer_id: UUID | None
-    :param name: group name
+    :param name: group name (non-unique human label)
     :ptype name: str
+    :param managed_key: deterministic find-or-create handle, or
+        ``None`` for a user-created group
+    :ptype managed_key: str | None
     :return: row dict
     :rtype: dict[str, Any]
     """
@@ -75,6 +79,7 @@ def _group_row(
         "group_id": uuid7(),
         "customer_id": cid,
         "name": name,
+        "managed_key": managed_key,
         "description": f"{name} description",
         "date_created": now,
         "date_updated": now,
@@ -237,6 +242,84 @@ class TestGroupCollectionGetMany:
         result = await coll.get_many([gid])
         assert len(result) == 1
         assert isinstance(result[0].id, UUID)
+
+
+class TestGroupManagedKeyRoundTrips:
+    """``managed_key`` is a first-class column that survives the entity round-trip."""
+
+    @pytest.mark.asyncio
+    async def test_managed_key_present_on_entity(self) -> None:
+        """a row carrying a ``managed_key`` surfaces it on the entity ``data``."""
+        gid = uuid7()
+        row = _group_row(name="Tenant administrators", managed_key="tenant-admins")
+        row["group_id"] = gid
+        pool = AsyncMock()
+        pool.fetch.return_value = [row]
+        coll = _make_collection(GroupCollection, l3_pool=pool)
+        result = await coll.get_many([gid])
+        assert len(result) == 1
+        assert result[0].to_dict()["managed_key"] == "tenant-admins"
+        # the human label is independent of the managed_key handle.
+        assert result[0].name == "Tenant administrators"
+
+    @pytest.mark.asyncio
+    async def test_managed_key_null_for_user_created_group(self) -> None:
+        """a user-created group (no ``managed_key``) round-trips a NULL handle."""
+        gid = uuid7()
+        row = _group_row(name="Marketing", managed_key=None)
+        row["group_id"] = gid
+        pool = AsyncMock()
+        pool.fetch.return_value = [row]
+        coll = _make_collection(GroupCollection, l3_pool=pool)
+        result = await coll.get_many([gid])
+        assert result[0].to_dict()["managed_key"] is None
+
+
+class TestGroupGetByManagedKey:
+    """``GroupCollection.get_by_managed_key`` is the deterministic managed-group lookup."""
+
+    @pytest.mark.asyncio
+    async def test_resolves_customer_scoped_managed_group(self) -> None:
+        """a customer-scoped managed group resolves by ``(managed_key, customer_id)``."""
+        cid = uuid7()
+        row = _group_row(customer_id=cid, name="Tenant administrators", managed_key="tenant-admins")
+        pool = AsyncMock()
+        pool.fetchrow.return_value = row
+        coll = _make_collection(GroupCollection, l3_pool=pool)
+        result = await coll.get_by_managed_key("tenant-admins", cid)
+        assert result is not None
+        assert result.to_dict()["managed_key"] == "tenant-admins"
+        assert result.customer_id == cid
+        # the query keys on managed_key + customer_id (IS NOT DISTINCT FROM), never name.
+        pool.fetchrow.assert_awaited_once()
+        sql = pool.fetchrow.await_args.args[0]
+        assert "managed_key = $1" in sql
+        assert "customer_id IS NOT DISTINCT FROM $2" in sql
+        assert pool.fetchrow.await_args.args[1] == "tenant-admins"
+        assert pool.fetchrow.await_args.args[2] == cid
+
+    @pytest.mark.asyncio
+    async def test_resolves_platform_scoped_managed_group_with_none_customer(self) -> None:
+        """a platform managed group resolves with ``customer_id=None`` (NULL partition)."""
+        row = _group_row(customer_id=None, name="Platform administrators", managed_key="platform-admins")
+        row["customer_id"] = None
+        row["row_scope"] = "platform"
+        pool = AsyncMock()
+        pool.fetchrow.return_value = row
+        coll = _make_collection(GroupCollection, l3_pool=pool)
+        result = await coll.get_by_managed_key("platform-admins", None)
+        assert result is not None
+        assert result.to_dict()["managed_key"] == "platform-admins"
+        assert pool.fetchrow.await_args.args[2] is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_absent(self) -> None:
+        """no matching managed group yields ``None`` (find-or-create's create branch)."""
+        pool = AsyncMock()
+        pool.fetchrow.return_value = None
+        coll = _make_collection(GroupCollection, l3_pool=pool)
+        result = await coll.get_by_managed_key("repo-editor:does-not-exist", uuid7())
+        assert result is None
 
 
 class TestGroupMemberLoadForUser:
