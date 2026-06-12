@@ -4,6 +4,7 @@ from threetears.core.collections.asyncpg_init import (
 )
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
+from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
@@ -47,6 +48,7 @@ __all__ = [
     "flush_pending",
     "init_connection",
     "register_jsonb_text_codec",
+    "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",
 ]
