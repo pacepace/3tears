@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.10.5"
+version = "0.11.0"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
