@@ -277,7 +277,7 @@ def _extract_model_name(chat_model: Any) -> str:
 
     :param chat_model: langchain chat-model instance
     :ptype chat_model: Any
-    :return: model identifier (e.g. ``"claude-sonnet-4-5"``,
+    :return: model identifier (e.g. ``"claude-sonnet-4-6"``,
         ``"gpt-4o"``) or empty string
     :rtype: str
     """

@@ -146,7 +146,7 @@ from threetears.models.preprocessing import preprocess_messages
 from threetears.models.capabilities import ModelCapabilities
 
 capabilities = ModelCapabilities(
-    model_name="claude-sonnet-4-20250514",
+    model_name="claude-sonnet-4-6",
     model_type=ModelType.CHAT,
     model_tier=ModelTier.LARGE,
     model_status=ModelStatus.ACTIVE,

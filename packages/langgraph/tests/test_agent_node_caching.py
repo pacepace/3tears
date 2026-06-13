@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.langgraph import PromptCachingHook, agent_node
 from threetears.langgraph.hooks import _BOUND_MODEL_CACHE, _memoize_bound_model
 
@@ -67,7 +68,7 @@ class _FakeAnthropicChatModel:
     forwards ``ainvoke`` to the parent.
     """
 
-    def __init__(self, model: str = "claude-sonnet-4-5") -> None:
+    def __init__(self, model: str = DEFAULT_CHAT_MODEL) -> None:
         """capture model identifier and per-call state.
 
         :param model: anthropic model identifier

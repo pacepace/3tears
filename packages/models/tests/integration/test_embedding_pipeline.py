@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from langchain_core.embeddings import Embeddings
 
+from threetears.models import DEFAULT_EMBEDDING_MODEL
 from threetears.models.factory import create_embedding_model
 
 
@@ -16,6 +17,6 @@ class TestEmbeddingFactoryPipeline:
         assert isinstance(model, Embeddings)
 
     def test_voyageai_embedding_model_construction(self) -> None:
-        """factory builds an ``Embeddings`` for ``voyage-3-lite``."""
-        model = create_embedding_model("voyage-3-lite", api_key="pa-test")
+        """factory builds an ``Embeddings`` for ``voyage-4``."""
+        model = create_embedding_model(DEFAULT_EMBEDDING_MODEL, api_key="pa-test")
         assert isinstance(model, Embeddings)

@@ -20,6 +20,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
+from threetears.models import DEFAULT_LARGE_MODEL
 from threetears.models.enums import ModelTier
 from threetears.models.tracking import (
     LlmPurpose,
@@ -120,7 +121,7 @@ class TestUsageRecord:
     def test_required_fields(self) -> None:
         """UsageRecord requires model_name, provider_name, purpose, token counts, latency_ms."""
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -128,7 +129,7 @@ class TestUsageRecord:
             total_tokens=150,
             latency_ms=500,
         )
-        assert record.model_name == "claude-3-opus"
+        assert record.model_name == DEFAULT_LARGE_MODEL
         assert record.provider_name == "anthropic"
         assert record.purpose == LlmPurpose.CHAT
         assert record.input_tokens == 100
@@ -139,7 +140,7 @@ class TestUsageRecord:
     def test_defaults(self) -> None:
         """UsageRecord defaults tier to None, cost_usd to None, date_created is set."""
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -154,7 +155,7 @@ class TestUsageRecord:
     def test_cost_usd_is_decimal(self) -> None:
         """cost_usd preserves Decimal type."""
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -169,7 +170,7 @@ class TestUsageRecord:
     def test_date_created_is_utc_aware(self) -> None:
         """date_created has UTC timezone info."""
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -251,7 +252,7 @@ class TestUsageTracker:
         :rtype: UsageRecord
         """
         return UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -281,7 +282,7 @@ class TestUsageTracker:
         assert span.name == "llm.usage"
 
         attrs = dict(span.attributes or {})
-        assert attrs["llm.model"] == "claude-3-opus"
+        assert attrs["llm.model"] == DEFAULT_LARGE_MODEL
         assert attrs["llm.provider"] == "anthropic"
         assert attrs["llm.purpose"] == "chat"
         assert attrs["llm.input_tokens"] == 100
@@ -320,7 +321,7 @@ class TestUsageRecordTenantFields:
     def test_tenant_fields_default_none(self) -> None:
         """tenant context fields default to None for backward compat."""
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=1,
@@ -344,7 +345,7 @@ class TestUsageRecordTenantFields:
         conversation_id = uuid4()
         model_id = uuid4()
         record = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=1,
@@ -427,7 +428,7 @@ class TestUsageTrackerSinks:
         :rtype: UsageRecord
         """
         defaults: dict[str, object] = {
-            "model_name": "claude-3-opus",
+            "model_name": DEFAULT_LARGE_MODEL,
             "provider_name": "anthropic",
             "purpose": LlmPurpose.CHAT,
             "input_tokens": 100,
@@ -568,7 +569,7 @@ class TestUsageTrackerTenantSpanAttrs:
         conversation_id = uuid4()
         tracker = UsageTracker()
         usage = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=1,
@@ -598,7 +599,7 @@ class TestUsageTrackerTenantSpanAttrs:
         """tenant span attrs are absent when fields are None."""
         tracker = UsageTracker()
         usage = UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=1,
@@ -668,7 +669,7 @@ class TestUsageTrackerCustomRegistry:
         :rtype: UsageRecord
         """
         return UsageRecord(
-            model_name="claude-3-opus",
+            model_name=DEFAULT_LARGE_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=100,
@@ -700,7 +701,7 @@ class TestUsageTrackerCustomRegistry:
         assert "threetears_llm_calls_total" in scraped
         assert "threetears_llm_latency_seconds" in scraped
         # the labels survived
-        assert 'model="claude-3-opus"' in scraped
+        assert f'model="{DEFAULT_LARGE_MODEL}"' in scraped
         assert 'provider="anthropic"' in scraped
         assert 'purpose="chat"' in scraped
 

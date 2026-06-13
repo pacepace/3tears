@@ -1,0 +1,32 @@
+# model-literal exemptions for test_no_hardcoded_model_literals.py
+#
+# format: relative/path::reason  (reason is MANDATORY; a bare path is rejected)
+# blank lines and lines starting with '#' are ignored.
+#
+# use ONLY for deliberate literals that are genuinely NOT a current-model
+# reference -- a test that pins a retired/legacy id on purpose to prove it is
+# purged, a namespace-sanitizer demo where the dot is the test subject, a
+# deliberately-fake placeholder name for a ranking test. "the test needs a
+# model" is NOT a reason -- import the canonical constant from
+# threetears.models instead. globs (claude-*) and OpenAI ids (gpt-*) are not
+# flagged by the walker and need no exemption.
+
+# namespace-sanitizer demo: the literal dot in claude-sonnet-4.5 is the test
+# subject (sanitize_segment turns "." into "-"); pinning a constant would
+# destroy the dotted input the test exists to exercise.
+packages/core/tests/unit/test_namespaces.py::namespace-sanitizer demo; the literal dot in claude-sonnet-4.5 is the test subject
+
+# anthropic cache-support FAMILY prefixes ("claude-3", "claude-sonnet", etc.)
+# used as startswith() matchers across whole model families, not pinnable
+# current-model-id values; wiring to a constant would be semantically wrong.
+packages/langgraph/src/threetears/langgraph/caching.py::anthropic cache-support family prefixes used as startswith() matchers, not model-id pins
+
+# cache-detection regression test deliberately pins legacy/family anthropic ids
+# (claude-opus-4-1, claude-haiku-4-5, claude-3-5-sonnet-20241022, bare
+# claude-sonnet family slug) to prove the family detector keeps recognizing
+# them; these are NOT the current pins (current are opus-4-8 / haiku-4-5-...).
+packages/langgraph/tests/test_caching.py::legacy/family anthropic cache-detection pins, deliberately not the current model ids
+
+# synthetic anthropic-shape placeholder id ("claude-test") exercising the
+# tri-state cache fields; it is not a real model id and has no constant.
+packages/models/tests/unit/models/test_capabilities.py::synthetic claude-test cache-shape placeholder id, not a real model id
