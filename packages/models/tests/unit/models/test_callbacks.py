@@ -21,6 +21,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
+from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
     CircuitOpenError,
@@ -126,7 +127,7 @@ class TestUsageTrackerCallback:
         """``on_llm_end`` forwards a populated ``UsageRecord`` to the tracker."""
         tracker = _CapturingTracker()
         callback = tracker.make_callback(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             tier=ModelTier.LARGE,
@@ -139,7 +140,7 @@ class TestUsageTrackerCallback:
 
         assert len(tracker.captured) == 1
         record = tracker.captured[0]
-        assert record.model_name == "claude-sonnet-4-20250514"
+        assert record.model_name == DEFAULT_CHAT_MODEL
         assert record.provider_name == "anthropic"
         assert record.input_tokens == 10
         assert record.output_tokens == 20
@@ -204,7 +205,7 @@ class TestUsageTrackerOTelAttributes:
         tracker = UsageTracker()
 
         usage = UsageRecord(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=10,
@@ -246,7 +247,7 @@ class TestPrometheusEmission:
 
         tracker = UsageTracker()
         usage = UsageRecord(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             provider_name="anthropic",
             purpose=LlmPurpose.CHAT,
             input_tokens=7,

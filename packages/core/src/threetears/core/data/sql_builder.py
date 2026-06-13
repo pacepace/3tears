@@ -63,7 +63,13 @@ def build_create_table_sql(table: TableDef) -> str:
 
     for col in table.columns:
         _validate_identifier(col.name, "column name")
-        pg_type = _COLUMN_TYPE_MAP[col.column_type]
+        if col.column_type == "vector":
+            # dimension is validated as a positive int by ColumnDef, so
+            # interpolation cannot inject -- there is no static map entry
+            # because the rendered type carries the per-column dimension.
+            pg_type = f"VECTOR({col.vector_dim})"
+        else:
+            pg_type = _COLUMN_TYPE_MAP[col.column_type]
         col_parts = [f"    {col.name} {pg_type}"]
         if not col.nullable:
             col_parts.append("NOT NULL")

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-langgraph"
-version = "0.10.5"
+version = "0.11.0"
 description = "Three-tier LangGraph checkpoint saver: L1 SQLite -> L2 NATS KV -> L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -20,6 +20,8 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "3tears",
+    "3tears-observe",
     "langgraph>=0.4",
     "langgraph-checkpoint>=4.0",
     "asyncpg",
@@ -32,3 +34,6 @@ Repository = "https://github.com/pacepace/3tears"
 [tool.hatch.build.targets.wheel]
 packages = ["src/threetears"]
 
+[tool.uv.sources]
+3tears = { workspace = true }
+3tears-observe = { workspace = true }

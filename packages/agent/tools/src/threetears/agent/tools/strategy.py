@@ -98,6 +98,17 @@ class BootstrapContext:
         at the strategy-protocol boundary to keep this package free
         of an agent-acl dependency; concrete construction paths pass
         the real :class:`AclCache` instance
+    :ivar knowledge_integration: per-pod knowledge integration handle
+        (the aibots SDK's ``KnowledgeIntegration``) constructed during
+        the three-tier stack phase. strategies that own an in-process
+        :class:`ToolServer` register the context-bound
+        ``knowledge_drafts`` tool against this handle so the agent can
+        list / confirm / edit / discard its own correction-harvest
+        drafts in conversation (knowledge-task-06, KNW-54). ``None`` when
+        the agent has no knowledge layer. typed ``Any`` at the
+        strategy-protocol boundary to keep this package free of the
+        aibots SDK dependency (the concrete ``KnowledgeIntegration``
+        lives in the aibots-agents package)
     :ivar namespace_collection: three-tier
         :class:`NamespaceCollection` constructed during the
         three-tier stack phase. strategies that own a ToolServer
@@ -124,6 +135,7 @@ class BootstrapContext:
     registry_client: Any = None
     acl_cache: Any = None
     namespace_collection: Any = None
+    knowledge_integration: Any = None
 
 
 @runtime_checkable

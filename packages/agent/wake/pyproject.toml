@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-wake"
-version = "0.10.5"
+version = "0.11.0"
 description = "Long-running-agent foundation -- wake schedules, fires, webhook subscriptions"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,6 +22,8 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-agent-skills",
+    "3tears-nats",
+    "3tears-observe",
     "uuid-utils",
     # APScheduler is used as a pure utility ONLY by the ``cron`` schedule
     # branch in ``_compute_next_fire_at`` (lazy local import inside that
@@ -58,5 +60,7 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
-3tears = { workspace = true }
 "3tears-agent-skills" = { workspace = true }
+3tears = { workspace = true }
+3tears-nats = { workspace = true }
+3tears-observe = { workspace = true }

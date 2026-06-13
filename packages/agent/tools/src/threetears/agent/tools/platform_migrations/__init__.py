@@ -33,23 +33,40 @@ from threetears.core.data.migrations import (
 PACKAGE_NAME = "agent_tools_platform"
 
 
-def register(runner: MigrationRunner) -> PackageMigrations:
+def register(
+    runner: MigrationRunner,
+    *,
+    depends_on: tuple[str, ...] = (),
+) -> PackageMigrations:
     """register the agent-tools platform-scope migration package.
 
-    produces a platform-scoped :class:`PackageMigrations` with no
-    ``depends_on`` edges (the ``namespaces`` table is platform-managed
-    by the deploying app and assumed to exist by the time this
-    migration runs), attaches every migration in version order, and
-    calls ``runner.register``.
+    produces a platform-scoped :class:`PackageMigrations`, attaches every
+    migration in version order, and calls ``runner.register``.
+
+    ``depends_on`` lets the DEPLOYING app declare which platform package
+    creates the ``namespaces`` table this package ALTERs, so the runner
+    orders that package first. it is deployment-specific (different apps
+    name their namespaces-owning package differently), so it is supplied
+    by the caller rather than hard-coded here. the default ``()`` keeps
+    single-runner consumers that create ``namespaces`` in a separate pass
+    (or against an already-migrated schema) working unchanged. without
+    this edge the runner's alphabetical tie-break would order
+    ``agent_tools_platform`` BEFORE a later-sorting namespaces package on
+    a fresh schema, and the ``ALTER TABLE`` would run before the table
+    exists.
 
     :param runner: canonical migration runner to register with
     :ptype runner: MigrationRunner
+    :param depends_on: platform package names that must run first (e.g.
+        the deploying app's package that creates ``namespaces``)
+    :ptype depends_on: tuple[str, ...]
     :return: populated package registration
     :rtype: PackageMigrations
     """
     pkg = PackageMigrations(
         name=PACKAGE_NAME,
         scope=MigrationScope.PLATFORM,
+        depends_on=depends_on,
     )
     pkg.version(1)(add_tool_eligibility_columns)
     runner.register(pkg)

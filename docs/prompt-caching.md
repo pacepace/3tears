@@ -84,7 +84,7 @@ from langchain_core.messages import HumanMessage
 from langchain_anthropic import ChatAnthropic
 from threetears.langgraph import PromptCachingHook, agent_node
 
-chat = ChatAnthropic(model="claude-sonnet-4-5")
+chat = ChatAnthropic(model="claude-sonnet-4-6")
 state = {"messages": [HumanMessage(content="What is the capital of France?")]}
 config = {
     "configurable": {

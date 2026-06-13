@@ -79,6 +79,7 @@ class TestPluralPrefixMapping:
             ("conversation", "conversations"),
             ("customer", "customers"),
             ("datasource", "datasources"),
+            ("knowledge", "knowledge"),
             ("memory", "memories"),
             ("model", "models"),
             ("shared", "shared"),
@@ -92,8 +93,9 @@ class TestPluralPrefixMapping:
         assert PLURAL_PREFIX_BY_NAMESPACE_TYPE[namespace_type] == expected
 
     def test_mapping_closed_set_size(self) -> None:
-        # pins the 14-value closed set; adding a new namespace_type
-        # requires updating v018's CHECK constraint + this mapping.
+        # pins the closed set; adding a new namespace_type requires
+        # updating the hub namespaces CHECK constraint + this mapping.
         # namespace-task-01 phase 11 adds ``audit``; phase 12 adds
-        # ``customer`` + ``api_key``.
-        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 14
+        # ``customer`` + ``api_key``; knowledge-task-01 adds
+        # ``knowledge`` (mass noun, non-pluralized prefix).
+        assert len(PLURAL_PREFIX_BY_NAMESPACE_TYPE) == 15

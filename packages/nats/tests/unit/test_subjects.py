@@ -250,3 +250,16 @@ def test_subject_is_frozen_dataclass() -> None:
     sub = Subjects.tools_call()
     with pytest.raises(Exception):  # FrozenInstanceError subclasses AttributeError
         sub.path = "different"  # type: ignore[misc]
+
+
+def test_knowledge_draft_subject() -> None:
+    """correction-harvest draft subject is namespace-prefixed (knowledge-task-06)."""
+    assert Subjects.knowledge_draft().path == "aibots.knowledge.draft"
+
+
+def test_knowledge_draft_subject_honors_namespace() -> None:
+    """the knowledge-draft subject picks up the active namespace prefix."""
+    set_default_namespace("staging")
+    assert Subjects.knowledge_draft().path == "staging.knowledge.draft"
+    set_default_namespace("aibots")
+    assert Subjects.knowledge_draft().path == "aibots.knowledge.draft"

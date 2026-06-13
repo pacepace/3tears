@@ -746,19 +746,38 @@ def _memoize_bound_model(
         return chat_model, []
     sorted_tools = sorted(tools, key=lambda t: getattr(t, "name", ""))
     current_key = compute_tool_key(sorted_tools)
-    cached = _BOUND_MODEL_CACHE.get(chat_model)
-    prev_key = cached.tool_key if cached is not None else None
-    bound_model: Any
-    if should_bind_tools_fresh(prev_key, current_key):
-        bound_model = chat_model.bind_tools(sorted_tools)
-        _BOUND_MODEL_CACHE[chat_model] = _BoundModelCache(
-            tool_key=current_key,
-            bound_model=bound_model,
+    result: tuple[Any, list[Any]]
+    try:
+        cached = _BOUND_MODEL_CACHE.get(chat_model)
+    except TypeError:
+        # the cache is identity-keyed via a WeakKeyDictionary, which
+        # requires a hashable model. a non-conformant (unhashable) chat
+        # model must NOT crash the caller's turn over a missed optimization
+        # — degrade to bind-fresh + warn so the turn still completes. the
+        # right fix is to make the model identity-hashable (the langchain
+        # contract); this guard keeps a shared-library cache from ever
+        # turning a perf optimization into a turn-killing exception.
+        log.warning(
+            "chat model %s is unhashable; skipping bound-model cache "
+            "(bind-fresh). make the model identity-hashable to restore "
+            "the memoization.",
+            type(chat_model).__name__,
         )
+        result = (chat_model.bind_tools(sorted_tools), [])
     else:
-        assert cached is not None  # noqa: S101 - guarded by should_bind_tools_fresh
-        bound_model = cached.bound_model
-    return bound_model, []
+        prev_key = cached.tool_key if cached is not None else None
+        bound_model: Any
+        if should_bind_tools_fresh(prev_key, current_key):
+            bound_model = chat_model.bind_tools(sorted_tools)
+            _BOUND_MODEL_CACHE[chat_model] = _BoundModelCache(
+                tool_key=current_key,
+                bound_model=bound_model,
+            )
+        else:
+            assert cached is not None  # noqa: S101 - guarded by should_bind_tools_fresh
+            bound_model = cached.bound_model
+        result = (bound_model, [])
+    return result
 
 
 def summarize_args(args: dict[str, Any], max_length: int = 100) -> str:

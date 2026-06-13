@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from langchain_core.messages import AIMessage, SystemMessage
+from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.langgraph.caching import (
     ANTHROPIC_EPHEMERAL_TTL_SECONDS,
     ANTHROPIC_MIN_CACHEABLE_TOKENS,
@@ -35,7 +36,7 @@ class _StubChatAnthropic:
     def __init__(self, model: str) -> None:
         """capture the model identifier like the real adapter.
 
-        :param model: anthropic model name (e.g. ``"claude-sonnet-4-5"``)
+        :param model: anthropic model name (e.g. ``"claude-sonnet-4-6"``)
         :ptype model: str
         """
         self.model = model
@@ -164,11 +165,11 @@ class TestDetectCapabilities:
     """:func:`detect_capabilities` maps ``(class, model)`` to capability record."""
 
     def test_chat_anthropic_sonnet_supports_cache_control(self) -> None:
-        """Sonnet 4.5 is flagged as cache-capable with anthropic ttl.
+        """Sonnet 4.6 is flagged as cache-capable with anthropic ttl.
 
         :raises AssertionError: when the record is not the expected shape
         """
-        caps = detect_capabilities(_StubChatAnthropic("claude-sonnet-4-5"))
+        caps = detect_capabilities(_StubChatAnthropic(DEFAULT_CHAT_MODEL))
         assert caps.supports_anthropic_cache_control is True
         assert caps.supports_openai_auto_cache is False
         assert caps.min_cacheable_tokens == ANTHROPIC_MIN_CACHEABLE_TOKENS
@@ -191,7 +192,7 @@ class TestDetectCapabilities:
         assert caps.supports_anthropic_cache_control is True
 
     def test_chat_anthropic_legacy_claude_3_supports_cache_control(self) -> None:
-        """claude-3 generation models continue to be recognized.
+        """legacy claude-3 generation models continue to be recognized.
 
         :raises AssertionError: when legacy models regress
         """
@@ -393,7 +394,7 @@ class TestRegisterCapabilityProvider:
 
         # Built-in dispatch still resolves ChatAnthropic correctly when
         # the registered provider defers.
-        result = detect_capabilities(_StubChatAnthropic("claude-sonnet-4-5"))
+        result = detect_capabilities(_StubChatAnthropic(DEFAULT_CHAT_MODEL))
         assert result.supports_anthropic_cache_control is True
 
     def test_providers_run_in_registration_order(self) -> None:

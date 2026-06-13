@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.tools import BaseTool
 
+from threetears.models import DEFAULT_CHAT_MODEL
 from threetears.models.capabilities import get_capabilities
 from threetears.models.enums import ModelTier, ModelType
 from threetears.models.providers.openrouter import (
@@ -747,7 +748,7 @@ class TestVanillaChatAnthropicBaseline:
         # ChatAnthropic requires an api_key to construct; the fake
         # ``_astream`` short-circuits before any HTTP call.
         model = ChatAnthropic(
-            model="claude-sonnet-4-5-20250929",  # type: ignore[call-arg]
+            model=DEFAULT_CHAT_MODEL,  # type: ignore[call-arg]
             anthropic_api_key="sk-test",  # type: ignore[arg-type]
         )
 

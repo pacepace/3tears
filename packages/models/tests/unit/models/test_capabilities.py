@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 from pydantic import BaseModel
 
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL
 from threetears.models.capabilities import (
     CapabilityOverride,
     ModelCapabilities,
@@ -35,11 +36,11 @@ class TestModelCapabilities:
     def test_model_capabilities_required_fields(self) -> None:
         """ModelCapabilities requires model_name, model_type, and model_tier."""
         caps = ModelCapabilities(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
         )
-        assert caps.model_name == "claude-sonnet-4-20250514"
+        assert caps.model_name == DEFAULT_CHAT_MODEL
         assert caps.model_type == ModelType.CHAT
         assert caps.model_tier == ModelTier.LARGE
 
@@ -167,7 +168,7 @@ class TestModelCapabilities:
     def test_model_capabilities_cost_fields_are_decimal(self) -> None:
         """ModelCapabilities cost fields accept and store Decimal values."""
         caps = ModelCapabilities(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             cost_per_input_token=Decimal("0.000003"),
@@ -183,7 +184,7 @@ class TestModelCapabilities:
     def test_model_capabilities_all_chat_fields(self) -> None:
         """ModelCapabilities stores all chat-specific fields correctly."""
         caps = ModelCapabilities(
-            model_name="claude-sonnet-4-20250514",
+            model_name=DEFAULT_CHAT_MODEL,
             model_type=ModelType.CHAT,
             model_tier=ModelTier.LARGE,
             model_status=ModelStatus.ACTIVE,
@@ -206,7 +207,7 @@ class TestModelCapabilities:
     def test_model_capabilities_all_embedding_fields(self) -> None:
         """ModelCapabilities stores all embedding-specific fields correctly."""
         caps = ModelCapabilities(
-            model_name="voyage-3",
+            model_name=DEFAULT_EMBEDDING_MODEL,
             model_type=ModelType.EMBEDDING,
             model_tier=ModelTier.MEDIUM,
             embedding_dimensions=1024,

@@ -7,6 +7,15 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.11.0]
+
+### Added
+
+- Platform-sharing primitives: a flat datasource primary key, a
+  `visibility` field, and `origin_datasource_id` lineage so a customer
+  datasource can inherit a platform-shared datasource's schema docs and
+  governed knowledge (concepts / entries) rather than re-documenting them.
+
 ## [0.10.2]
 
 ### Added

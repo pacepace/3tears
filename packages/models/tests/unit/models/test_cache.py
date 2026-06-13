@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_FAST_MODEL
 from threetears.models.cache import ModelCache
 
 
@@ -23,8 +24,8 @@ class TestModelCache:
         """stored instance is retrievable by same key."""
         cache = ModelCache()
         sentinel = object()
-        cache.put("anthropic", "claude-sonnet-4-20250514", sentinel)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is sentinel
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, sentinel)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is sentinel
 
     def test_get_missing_returns_none(self) -> None:
         """get for non-existent key returns None."""
@@ -36,9 +37,9 @@ class TestModelCache:
         cache = ModelCache()
         first = object()
         second = object()
-        cache.put("anthropic", "claude-sonnet-4-20250514", first)
-        cache.put("anthropic", "claude-sonnet-4-20250514", second)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is second
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, first)
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, second)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is second
         assert cache.size() == 1
 
     def test_multiple_providers(self) -> None:
@@ -46,9 +47,9 @@ class TestModelCache:
         cache = ModelCache()
         anthropic_instance = object()
         openai_instance = object()
-        cache.put("anthropic", "claude-sonnet-4-20250514", anthropic_instance)
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, anthropic_instance)
         cache.put("openai", "gpt-4", openai_instance)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is anthropic_instance
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is anthropic_instance
         assert cache.get("openai", "gpt-4") is openai_instance
         assert cache.size() == 2
 
@@ -57,10 +58,10 @@ class TestModelCache:
         cache = ModelCache()
         sonnet = object()
         haiku = object()
-        cache.put("anthropic", "claude-sonnet-4-20250514", sonnet)
-        cache.put("anthropic", "claude-haiku", haiku)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is sonnet
-        assert cache.get("anthropic", "claude-haiku") is haiku
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, sonnet)
+        cache.put("anthropic", DEFAULT_FAST_MODEL, haiku)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is sonnet
+        assert cache.get("anthropic", DEFAULT_FAST_MODEL) is haiku
         assert cache.size() == 2
 
     # -- eviction --
@@ -68,9 +69,9 @@ class TestModelCache:
     def test_evict_existing_returns_true(self) -> None:
         """evict returns True and removes entry when key exists."""
         cache = ModelCache()
-        cache.put("anthropic", "claude-sonnet-4-20250514", object())
-        assert cache.evict("anthropic", "claude-sonnet-4-20250514") is True
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is None
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, object())
+        assert cache.evict("anthropic", DEFAULT_CHAT_MODEL) is True
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is None
         assert cache.size() == 0
 
     def test_evict_missing_returns_false(self) -> None:
@@ -81,13 +82,13 @@ class TestModelCache:
     def test_evict_provider_removes_all(self) -> None:
         """evict_provider removes all entries for given provider and returns count."""
         cache = ModelCache()
-        cache.put("anthropic", "claude-sonnet-4-20250514", object())
-        cache.put("anthropic", "claude-haiku", object())
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, object())
+        cache.put("anthropic", DEFAULT_FAST_MODEL, object())
         cache.put("openai", "gpt-4", object())
         count = cache.evict_provider("anthropic")
         assert count == 2
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is None
-        assert cache.get("anthropic", "claude-haiku") is None
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is None
+        assert cache.get("anthropic", DEFAULT_FAST_MODEL) is None
         assert cache.size() == 1
 
     def test_evict_provider_returns_zero_for_unknown(self) -> None:
@@ -99,7 +100,7 @@ class TestModelCache:
         """evict_provider does not affect entries from other providers."""
         cache = ModelCache()
         openai_instance = object()
-        cache.put("anthropic", "claude-sonnet-4-20250514", object())
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, object())
         cache.put("openai", "gpt-4", openai_instance)
         cache.evict_provider("anthropic")
         assert cache.get("openai", "gpt-4") is openai_instance
@@ -108,7 +109,7 @@ class TestModelCache:
     def test_clear_removes_all(self) -> None:
         """clear empties entire cache."""
         cache = ModelCache()
-        cache.put("anthropic", "claude-sonnet-4-20250514", object())
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, object())
         cache.put("openai", "gpt-4", object())
         cache.clear()
         assert cache.size() == 0

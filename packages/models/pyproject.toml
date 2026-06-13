@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.10.5"
+version = "0.11.0"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
 dependencies = [
+    "3tears-media-contracts",
     "3tears-observe",
-    "3tears-agent-tools",
     "pydantic>=2.0",
     "langchain-core>=0.3",
     "langchain-anthropic>=1.4",
@@ -31,5 +31,5 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
+3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
-3tears-agent-tools = { workspace = true }

@@ -37,6 +37,10 @@ from threetears.core.data.migrations import MigrationRunner
 
 from .conftest import AsyncpgStore
 
+# docker-backed (testcontainer ``pg_schema`` fixture); excluded from the
+# no-docker ``-m "not integration"`` CI job like every sibling here.
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 async def applied_schema(pg_schema: tuple[str, str]) -> tuple[str, str]:
