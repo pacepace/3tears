@@ -30,6 +30,7 @@ from threetears.knowledge.concept_merge import (
     ConceptEffective,
     ConceptLayered,
     ConceptSnapshot,
+    build_table_ref,
     merge_concept_views,
 )
 from threetears.knowledge.events import (
@@ -69,6 +70,7 @@ __all__ = [
     "ResolvedChain",
     "Scope",
     "assert_no_origin_cycle",
+    "build_table_ref",
     "derive_scope",
     "merge_concept_views",
     "merge_entry_views",

@@ -56,10 +56,41 @@ __all__ = [
     "ConceptEffective",
     "ConceptLayered",
     "ConceptSnapshot",
+    "build_table_ref",
     "merge_concept_views",
 ]
 
 log = get_logger(__name__)
+
+
+def build_table_ref(
+    schema_name: str | None, table_name: str | None,
+) -> str | None:
+    """compose the canonical ``schema.table`` ref for a bound concept table.
+
+    SINGLE source of truth for the bound-table reference format the agent
+    sees and queries (the SDK retrieval path and the hub knowledge tool
+    both render concepts; the composed string must be byte-identical so a
+    schema-qualified name the agent reads matches the name its datasource
+    tools accept). returns ``None`` when EITHER part is missing — a partial
+    binding is not a usable table reference and must NOT render (the
+    renderer falls back to the dangling-binding marker rather than emitting
+    a malformed ``schema.None``).
+
+    :param schema_name: bound table's schema (e.g. ``reporting_prod``), or
+        ``None`` when the binding did not resolve
+    :ptype schema_name: str | None
+    :param table_name: bound table's name (e.g.
+        ``report_geofacts_joined_data``), or ``None``
+    :ptype table_name: str | None
+    :return: ``schema.table``, or ``None`` when either part is missing
+    :rtype: str | None
+    """
+    if schema_name and table_name:
+        result: str | None = f"{schema_name}.{table_name}"
+    else:
+        result = None
+    return result
 
 
 @dataclass(frozen=True)
@@ -85,6 +116,15 @@ class ConceptSnapshot:
     :ivar definition: definition prose (consumed verbatim; never spliced)
     :ivar datasource_table_id: bound datasource table, or ``None`` (an
         unbound concept carries definition + caveats only)
+    :ivar datasource_table_ref: human / agent-usable ``schema.table`` name
+        of the bound table (e.g. ``reporting_prod.report_geofacts_joined_data``),
+        resolved at retrieval time by joining the bound
+        ``datasource_table_id`` to the datasource-tables catalog, or
+        ``None`` when the concept is unbound OR the binding is dangling
+        (the table was deleted). the renderer emits THIS, never the raw
+        ``datasource_table_id`` UUID: the agent addresses tables by
+        ``schema.table`` name and has no tool to resolve a table UUID, so
+        a raw UUID binding is un-actionable governance
     :ivar sql_fragment: curated filter / expression fragment, or ``None``
         (NOT a runnable query; never executed server-side)
     :ivar caveats: caveats prose, or ``None``
@@ -100,6 +140,7 @@ class ConceptSnapshot:
     aliases: tuple[str, ...] = ()
     definition: str = ""
     datasource_table_id: UUID | None = None
+    datasource_table_ref: str | None = None
     sql_fragment: str | None = None
     caveats: str | None = None
     tags: tuple[str, ...] = ()

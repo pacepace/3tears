@@ -23,8 +23,37 @@ from uuid import uuid7
 from threetears.knowledge import (
     ConceptSnapshot,
     Scope,
+    build_table_ref,
     merge_concept_views,
 )
+
+
+class TestBuildTableRef:
+    """schema.table ref composition is the single source of truth.
+
+    the SDK retrieval path and the hub knowledge tool both render concept
+    bindings; the composed ref the agent reads must match the ``schema.table``
+    its datasource tools accept, so the format lives in ONE helper.
+    """
+
+    def test_both_parts_compose(self) -> None:
+        """schema + table compose to the dotted ref."""
+        assert (
+            build_table_ref("reporting_prod", "report_geofacts_joined_data")
+            == "reporting_prod.report_geofacts_joined_data"
+        )
+
+    def test_missing_schema_yields_none(self) -> None:
+        """a missing schema is not a usable ref (no malformed None.table)."""
+        assert build_table_ref(None, "t") is None
+
+    def test_missing_table_yields_none(self) -> None:
+        """a missing table is not a usable ref (no malformed schema.None)."""
+        assert build_table_ref("s", None) is None
+
+    def test_both_missing_yields_none(self) -> None:
+        """an unbound concept has no ref."""
+        assert build_table_ref(None, None) is None
 
 
 def _concept(
