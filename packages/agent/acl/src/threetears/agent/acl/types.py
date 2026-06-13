@@ -128,16 +128,19 @@ class Namespace:
     lookup: an agent always has full access to namespaces it owns.
 
     :ivar id: namespace UUID; the primary key in ``platform.namespaces``
-    :ivar customer_id: customer UUID this namespace belongs to
+    :ivar customer_id: customer UUID this namespace belongs to, or
+        ``None`` for a platform-scoped namespace (``customer_id IS NULL``)
     :ivar namespace_type: type discriminator string
         (``workspace``, ``agent``, ``shared``, ``system``, ...)
-    :ivar owner_agent_id: UUID of the agent that owns the physical rows
+    :ivar owner_agent_id: UUID of the agent that owns the physical rows,
+        or ``None`` for a namespace with no owning agent (datasource /
+        customer / knowledge / ...)
     """
 
     id: UUID
-    customer_id: UUID
+    customer_id: UUID | None
     namespace_type: str
-    owner_agent_id: UUID
+    owner_agent_id: UUID | None
 
 
 @dataclass(frozen=True)

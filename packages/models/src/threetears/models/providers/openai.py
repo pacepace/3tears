@@ -297,6 +297,7 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         cache_ttl_seconds=0,
         cost_per_input_token=Decimal("0.0000025"),
         cost_per_output_token=Decimal("0.00001"),
+        cost_per_cache_read_token=Decimal("0.00000125"),
     ),
     "gpt-4o-mini": ModelCapabilities(
         model_name="gpt-4o-mini",
@@ -316,6 +317,7 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         cache_ttl_seconds=0,
         cost_per_input_token=Decimal("0.00000015"),
         cost_per_output_token=Decimal("0.0000006"),
+        cost_per_cache_read_token=Decimal("0.000000075"),
     ),
     "text-embedding-3-small": ModelCapabilities(
         model_name="text-embedding-3-small",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_FAST_MODEL
 from threetears.models.cache import ModelCache
 from threetears.models.registry import ProviderRegistry
 
@@ -48,16 +49,16 @@ class TestCacheAndRegistry:
         sentinel_b = object()
         sentinel_c = object()
 
-        cache.put("anthropic", "claude-sonnet-4-20250514", sentinel_a)
-        cache.put("anthropic", "claude-haiku", sentinel_b)
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, sentinel_a)
+        cache.put("anthropic", DEFAULT_FAST_MODEL, sentinel_b)
         cache.put("openai", "gpt-4o", sentinel_c)
 
         assert cache.size() == 3
 
         removed = cache.evict_provider("anthropic")
         assert removed == 2
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is None
-        assert cache.get("anthropic", "claude-haiku") is None
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is None
+        assert cache.get("anthropic", DEFAULT_FAST_MODEL) is None
         assert cache.get("openai", "gpt-4o") is sentinel_c
         assert cache.size() == 1
 
@@ -106,12 +107,12 @@ class TestCacheAndRegistry:
         first = object()
         second = object()
 
-        cache.put("anthropic", "claude-sonnet-4-20250514", first)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is first
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, first)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is first
 
-        cache.evict("anthropic", "claude-sonnet-4-20250514")
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is None
+        cache.evict("anthropic", DEFAULT_CHAT_MODEL)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is None
 
-        cache.put("anthropic", "claude-sonnet-4-20250514", second)
-        assert cache.get("anthropic", "claude-sonnet-4-20250514") is second
+        cache.put("anthropic", DEFAULT_CHAT_MODEL, second)
+        assert cache.get("anthropic", DEFAULT_CHAT_MODEL) is second
         assert cache.size() == 1

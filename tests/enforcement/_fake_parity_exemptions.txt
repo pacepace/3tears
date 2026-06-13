@@ -48,11 +48,11 @@ packages/core/tests/unit/test_format_handler_registry.py:91:_FakeTomlHandler
 
 # langgraph chat-model caching tests
 # rationale: subset shim for langchain_anthropic.ChatAnthropic carrying _generate plus the cache_control attribute the cache-injection test inspects; full ChatAnthropic surface is the LangChain BaseChatModel hierarchy and out of scope
-packages/langgraph/tests/test_agent_node_caching.py:60:_FakeAnthropicChatModel
+packages/langgraph/tests/test_agent_node_caching.py:61:_FakeAnthropicChatModel
 # rationale: subset shim for langchain_openai.ChatOpenAI same shape and rationale as the anthropic fake above
-packages/langgraph/tests/test_agent_node_caching.py:132:_FakeOpenAIChatModel
+packages/langgraph/tests/test_agent_node_caching.py:133:_FakeOpenAIChatModel
 # rationale: deliberately-unrecognized chat model used to test the cache-injection fallback path; no production class to declare parity with
-packages/langgraph/tests/test_agent_node_caching.py:186:_FakeUnknownChatModel
+packages/langgraph/tests/test_agent_node_caching.py:187:_FakeUnknownChatModel
 
 # nats unit tests
 # rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration

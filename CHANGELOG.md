@@ -4,6 +4,63 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.11.0 -- 2026-06-13
+
+The governed-knowledge layer: agents answer data questions with curated,
+scoped business knowledge instead of guessing. Concepts (a business term →
+its data binding) and playbook entries (procedures) merge across the
+platform / customer / user scope ladder; datasources are shareable across
+customers with origin lineage; the model registry becomes a single source
+of truth.
+
+### Added — `3tears` (core) — `threetears.knowledge`
+
+- Governed-knowledge merge: `merge_concept_views` / `merge_entry_views`
+  resolve the three-scope shadow ladder (user > customer > platform, D4),
+  flag ambiguity when same-name definitions compete with no declared shadow
+  (D5), and honour the `always_inject` invariant (KNW-25). One shared
+  `resolve_shadow_chains` walk, so the hub eval fingerprint and a live SDK
+  turn agree byte-for-byte on the effective view.
+- `ConceptSnapshot.datasource_table_ref` + `build_table_ref` — a concept's
+  bound table renders as its agent-usable `schema.table` name (one source
+  of truth for the format), never the raw `datasource_table_id` UUID the
+  agent has no tool to resolve.
+- `EntryEnforcement` constraint on playbook-entry snapshots; draft-command
+  wire models + tool `BootstrapContext` for the correction-harvest surface.
+- `repoint_user_rows` + `MemoryRepointResult` — the user-merge repoint
+  primitives (`threetears.agent.memory`, `threetears.conversations`).
+
+### Added — `3tears-agent-acl`
+
+- Shared caller-visibility SQL: `three_scope_visibility_clause` +
+  `customer_scope_visibility_clause` — one copy of the security SQL that
+  admits a row iff it passes the platform/customer/user read rule. Every
+  RBAC-scoped list composes it; no per-row Python visibility filter.
+
+### Added — `3tears-datasources`
+
+- Platform-sharing: a flat datasource PK, visibility, and origin lineage
+  (`origin_datasource_id`) so a customer datasource inherits a
+  platform-shared datasource's schema docs + governed knowledge.
+
+### Added — `3tears-models`
+
+- Single source of truth for model ids + capabilities, with a no-literal
+  guard that keeps stale model strings out of the codebase.
+
+### Added — `3tears-nats`
+
+- `hub_channel_installs` subject so the Slack adapter fetches its active
+  installs over NATS (sandboxed; no DB credentials cross the wire).
+
+### Fixed
+
+- `threetears.langgraph` — `NOSTREAM_TAG` + `replace_content` keep internal
+  model calls out of the user-facing stream; the bound-model cache degrades
+  gracefully on an unhashable model.
+- `threetears.knowledge` — `EntryEnforcement.canonical_sql` is truly
+  optional; hardened the core by-pk read + langgraph injection.
+
 ## v0.10.5 -- 2026-06-03
 
 A reusable keyset (seek) paginator in `threetears.core` for paging large,

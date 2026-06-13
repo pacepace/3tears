@@ -1854,14 +1854,61 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
         return result
 
+    def _build_select_column_list(self) -> str:
+        """render the by-pk SELECT projection from declared schema columns.
+
+        projects ONLY the schema's declared columns -- never ``SELECT *``
+        -- so a real table column the schema does not declare is never
+        read. this keeps a pool with no codec for that column's type off
+        the decode path: the hub omits the ``embedding`` (``vector``)
+        column from its knowledge ``TableSchema`` precisely so it never
+        decodes a pgvector value, and ``SELECT *`` defeated that by
+        returning the column anyway (asyncpg raises
+        ``UnsupportedClientFeatureError: unhandled standard data type
+        'vector'`` because no 3tears pool registers a vector codec --
+        only the jsonb text codec in :func:`init_connection`).
+
+        a DECLARED codec-less column (:data:`VECTOR_TYPE` /
+        :data:`TSVECTOR_TYPE` -- the two asyncpg types no 3tears pool
+        registers a binary codec for) is cast to ``::text`` so asyncpg
+        returns the string form instead of raising on the missing codec.
+        for ``VECTOR_TYPE`` :meth:`_normalize_read_value` parses the
+        bracketed string back to a ``list[float]`` (the same text
+        round-trip the write path casts with ``::vector``); for
+        ``TSVECTOR_TYPE`` (a trigger-maintained, immutable full-text
+        column never consumed as data) the text form passes through
+        untouched. without the cast a declared vector / tsvector column
+        would hit the SAME missing-codec failure on a real pool -- a
+        latent bug the recording-mock unit tests could not surface, and
+        the exact failure the hub knowledge get/update/delete hit on
+        YugabyteDB (where ``vector`` carries the fixed low OID 8078).
+
+        :return: comma-joined projection list in declared column order
+        :rtype: str
+        """
+        text_cast_types = (VECTOR_TYPE, TSVECTOR_TYPE)
+        parts: list[str] = []
+        for col in self.schema.columns:
+            if col.column_type in text_cast_types:
+                parts.append(f"{col.name}::text AS {col.name}")
+            else:
+                parts.append(col.name)
+        return ", ".join(parts)
+
     def _build_fetch_sql(self) -> str:
         """build SELECT SQL for pk-based fetch.
+
+        projects the schema's declared columns (never ``SELECT *``) via
+        :meth:`_build_select_column_list` so undeclared table columns --
+        notably a ``vector`` the consumer deliberately omitted -- are
+        never read and never decoded.
 
         :return: parameterized SELECT SQL
         :rtype: str
         """
         where, _ = self._build_where_pk(start=1)
-        return f"SELECT * FROM {self.schema.name} WHERE {where}"
+        columns = self._build_select_column_list()
+        return f"SELECT {columns} FROM {self.schema.name} WHERE {where}"
 
     def _build_delete_sql(self) -> str:
         """build DELETE SQL for pk-based delete.

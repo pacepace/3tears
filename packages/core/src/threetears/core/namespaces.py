@@ -14,7 +14,8 @@ segment boundary into the separator.
 
 the ``namespace_type`` column keeps its singular form
 (``memory`` / ``datasource`` / ``tool`` / ``channel`` / ``shared_agent``
-/ ``model`` / ``agent`` / ``shared`` / ``system`` / ``workspace``).
+/ ``model`` / ``agent`` / ``shared`` / ``system`` / ``workspace`` /
+``knowledge``).
 only the ``name`` column moves to the plural-prefix-with-dots shape;
 action strings on roles (``memory.read``, ``datasource.read``,
 ``model.invoke``, ``workspace.read_file_matching:*``) also stay
@@ -49,6 +50,7 @@ __all__ = [
     "PLURAL_PREFIX_CONVERSATION",
     "PLURAL_PREFIX_CUSTOMER",
     "PLURAL_PREFIX_DATASOURCE",
+    "PLURAL_PREFIX_KNOWLEDGE",
     "PLURAL_PREFIX_MEMORY",
     "PLURAL_PREFIX_MODEL",
     "PLURAL_PREFIX_SHARED",
@@ -80,6 +82,11 @@ PLURAL_PREFIX_CHANNEL = "channels"
 PLURAL_PREFIX_CONVERSATION = "conversations"
 PLURAL_PREFIX_CUSTOMER = "customers"
 PLURAL_PREFIX_DATASOURCE = "datasources"
+# DELIBERATE deviation from the pluralized convention (``agents`` /
+# ``datasources`` / ``memories``): "knowledge" is a mass noun with no
+# natural plural, so the prefix stays singular, mirroring the existing
+# non-pluralized ``shared`` and ``system`` precedents.
+PLURAL_PREFIX_KNOWLEDGE = "knowledge"
 PLURAL_PREFIX_MEMORY = "memories"
 PLURAL_PREFIX_MODEL = "models"
 PLURAL_PREFIX_SHARED = "shared"
@@ -91,9 +98,11 @@ PLURAL_PREFIX_WORKSPACE = "workspaces"
 
 #: mapping from singular ``namespace_type`` column value to the
 #: plural prefix that leads the canonical name. the full closed set
-#: is pinned by hub migration v018's CHECK constraint on
-#: ``platform.namespaces.namespace_type`` (expanded by v037 to admit
-#: ``model``).
+#: is pinned by the CHECK constraint on
+#: ``platform.namespaces.namespace_type``; in the aibots hub repo that
+#: constraint lives in the squashed init at
+#: ``v001_initial_schema.sql`` (widened to admit ``knowledge`` by
+#: ``v011_knowledge_substrate``).
 PLURAL_PREFIX_BY_NAMESPACE_TYPE: dict[str, str] = {
     "agent": PLURAL_PREFIX_AGENT,
     "api_key": PLURAL_PREFIX_API_KEY,
@@ -102,6 +111,7 @@ PLURAL_PREFIX_BY_NAMESPACE_TYPE: dict[str, str] = {
     "conversation": PLURAL_PREFIX_CONVERSATION,
     "customer": PLURAL_PREFIX_CUSTOMER,
     "datasource": PLURAL_PREFIX_DATASOURCE,
+    "knowledge": PLURAL_PREFIX_KNOWLEDGE,
     "memory": PLURAL_PREFIX_MEMORY,
     "model": PLURAL_PREFIX_MODEL,
     "shared": PLURAL_PREFIX_SHARED,

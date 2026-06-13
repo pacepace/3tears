@@ -69,8 +69,11 @@ class TestDataSourceCollection:
         coll = DataSourceCollection(registry=registry, config=config)
         assert coll.entity_class is DataSourceEntity
 
-    def test_primary_key_column_is_composite(self) -> None:
-        assert DataSourceCollection.primary_key_column == ("customer_id", "id")
+    def test_primary_key_column_is_flat_id(self) -> None:
+        # knowledge-task-08: the datasource PK is the flat ``id`` (v016
+        # rebuilt the composite ``(customer_id, id)`` partition PK on ``id``
+        # alone so a platform-shared datasource can carry customer_id NULL).
+        assert DataSourceCollection.primary_key_column == "id"
 
     @pytest.mark.asyncio
     async def test_iter_active_ids_filters_status_active(self) -> None:

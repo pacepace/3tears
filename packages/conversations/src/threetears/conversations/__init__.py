@@ -42,6 +42,7 @@ from threetears.conversations.buffer import ConversationWriteBuffer
 from threetears.conversations.collection import ConversationsCollection
 from threetears.conversations.entity import Conversation, ConversationStatus
 from threetears.conversations.events import ConversationSummarizedEvent
+from threetears.conversations.merge import repoint_user
 from threetears.conversations.migrations import register
 
 __all__ = [
@@ -62,4 +63,5 @@ __all__ = [
     "conversation_namespace_name",
     "ensure_conversation_owner_assignment",
     "register",
+    "repoint_user",
 ]

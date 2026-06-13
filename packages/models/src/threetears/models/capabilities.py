@@ -52,7 +52,7 @@ class ModelCapabilities(BaseModel):
     and billing decisions across chat, embedding, transcription, and
     image generation model types.
 
-    :param model_name: unique identifier for model (e.g. claude-sonnet-4-20250514)
+    :param model_name: unique identifier for model (e.g. claude-sonnet-4-6)
     :ptype model_name: str
     :param model_type: primary capability classification
     :ptype model_type: ModelType
@@ -182,6 +182,14 @@ class ModelCapabilities(BaseModel):
     # cost fields (always Decimal, never float)
     cost_per_input_token: Decimal | None = None
     cost_per_output_token: Decimal | None = None
+    # per-token prompt-cache costs (Anthropic-shape caching): the discounted
+    # rate for a cache READ (reusing a cached prefix) and the surcharged rate
+    # for a cache WRITE (establishing a cached prefix). ``None`` when the model
+    # does not expose cache pricing. carried here so the catalog is the single
+    # source of truth for every model cost a consumer (gateway billing, hub
+    # bootstrap seeding) needs -- no parallel per-model cost table.
+    cost_per_cache_read_token: Decimal | None = None
+    cost_per_cache_write_token: Decimal | None = None
     cost_per_request: Decimal | None = None
 
 

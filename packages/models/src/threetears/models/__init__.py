@@ -43,6 +43,14 @@ from threetears.models.capabilities import (
     register_capability_override,
     unregister_capability_override,
 )
+from threetears.models.defaults import (
+    CURRENT_ANTHROPIC_CHAT_MODELS,
+    CURRENT_VOYAGEAI_EMBEDDING_MODELS,
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_FAST_MODEL,
+    DEFAULT_LARGE_MODEL,
+)
 from threetears.models.chunk_merging import merge_chunks
 from threetears.models.chunk_parsing import ChunkParsed, parse_chunk
 from threetears.models.circuit_breaker import (
@@ -91,6 +99,12 @@ from threetears.models.providers import (  # noqa: E402, F401
 
 __all__ = [
     "BUILTIN_PROVIDERS",
+    "CURRENT_ANTHROPIC_CHAT_MODELS",
+    "CURRENT_VOYAGEAI_EMBEDDING_MODELS",
+    "DEFAULT_CHAT_MODEL",
+    "DEFAULT_EMBEDDING_MODEL",
+    "DEFAULT_FAST_MODEL",
+    "DEFAULT_LARGE_MODEL",
     "CapabilityOverride",
     "ChunkParsed",
     "CircuitBreaker",

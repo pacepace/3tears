@@ -104,12 +104,19 @@ class DataSourceEntity(BaseEntity):
     """data source entity representing a registered external data source.
 
     extends :class:`BaseEntity` with data-source-specific field access.
-    all field data lives in L1 cache, accessed via the parent
-    collection proxy. fields match ``platform.datasources``. composite
-    primary key ``(customer_id, id)`` post-v054.
+    all field data lives in L1 cache, accessed via the parent collection
+    proxy. fields match ``platform.datasources``.
 
-    :param data: initial field data dictionary; must carry both
-        ``customer_id`` and ``id``
+    flat primary key ``id`` post-knowledge-task-08: the v016 migration
+    rebuilt the table PK on ``id`` alone (dropping the v001 composite
+    ``(customer_id, id)`` partition PK) so a platform-shared datasource
+    can carry ``customer_id = NULL`` (KNW-76). ``customer_id`` is now a
+    plain nullable column, no longer the partition / addressing key —
+    every lookup resolves by the global ``id`` (backed by the
+    ``datasources_id_unique`` index), which a NULL customer_id never
+    blocks.
+
+    :param data: initial field data dictionary carrying ``id``
     :ptype data: dict[str, Any]
     :param is_new: whether entity is newly created
     :ptype is_new: bool
@@ -117,37 +124,7 @@ class DataSourceEntity(BaseEntity):
     :ptype collection: Any
     """
 
-    primary_key_field: str = "customer_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
-
-        :param data: row dict carrying both ``customer_id`` and ``id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (data["customer_id"], data["id"]))
-
-    @property
-    def id(self) -> Any:
-        """return the scalar datasource UUID.
-
-        :return: datasource UUID
-        :rtype: Any
-        """
-        return self._row_id
+    primary_key_field: str = "id"
 
 
 class DataSourceTableEntity(BaseEntity):

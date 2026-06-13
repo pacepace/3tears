@@ -23,7 +23,13 @@ import time
 from collections.abc import Sequence
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import MessagesState
 
@@ -147,7 +153,25 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
         else:
             system_prompt = locale_block
 
-    if system_prompt and (not messages or not isinstance(messages[0], SystemMessage)):
+    # consolidate ALL system content into ONE leading system message.
+    # upstream retrieval nodes (knowledge / memory) inject their per-turn
+    # context as separate SystemMessages appended to ``state.messages``;
+    # an injected SystemMessage that lands AFTER a human turn would reach
+    # the provider as a NON-CONSECUTIVE system message, which Anthropic
+    # (via ``langchain_anthropic._format_messages``) rejects with
+    # "Received multiple non-consecutive system messages" -- the turn then
+    # yields no generations. merge every SystemMessage's content into the
+    # system prompt in message order (base prompt + context_manager +
+    # locale first, then the injected blocks), strip them from the turn
+    # list, and hand the provider a single leading system message followed
+    # by the non-system conversation turns.
+    injected_system_messages = [message for message in messages if isinstance(message, SystemMessage)]
+    messages = [message for message in messages if not isinstance(message, SystemMessage)]
+    injected_blocks = [str(message.content) for message in injected_system_messages if message.content]
+    if injected_blocks:
+        merged_injected = "\n\n".join(injected_blocks)
+        system_prompt = f"{system_prompt}\n\n{merged_injected}" if system_prompt else merged_injected
+    if system_prompt:
         messages.insert(0, SystemMessage(content=system_prompt))
 
     hooks = _resolve_agent_hooks(config)
@@ -167,7 +191,15 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
     response = await model.ainvoke(messages)
     response = await hooks.after_invoke(response, config, state_view)
 
-    result = {"messages": [response]}
+    # the injected per-turn SystemMessages were folded into the system
+    # prompt above; remove them from persisted history so per-turn
+    # retrieval context (knowledge / memory) does NOT accumulate across
+    # turns (every turn re-injects fresh context) and the conversation
+    # history stays Human/AI turns only. a RemoveMessage in the SAME turn
+    # that appended them nets to "consumed, never persisted". system
+    # messages are per-invocation instructions, not conversation history.
+    removals = [RemoveMessage(id=message.id) for message in injected_system_messages if message.id is not None]
+    result = {"messages": [*removals, response]}
     return result
 
 

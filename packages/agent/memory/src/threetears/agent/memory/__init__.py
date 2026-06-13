@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         default_memory_created_dispatcher,
     )
     from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
+    from threetears.agent.memory.merge import MemoryRepointResult, repoint_user
     from threetears.agent.memory.prompts import ExtractionPrompts
     from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
     from threetears.agent.memory.tools import (
@@ -111,6 +112,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "MemoryRefEntity": ("threetears.agent.memory.entities", "MemoryRefEntity"),
     "MemoryRefsCollection": ("threetears.agent.memory.collections", "MemoryRefsCollection"),
     "MemoryRetrievedEvent": ("threetears.agent.memory.events", "MemoryRetrievedEvent"),
+    "MemoryRepointResult": ("threetears.agent.memory.merge", "MemoryRepointResult"),
     "MemoryRetriever": ("threetears.agent.memory.retrieval", "MemoryRetriever"),
     "MemorySearchInput": ("threetears.agent.memory.tools", "MemorySearchInput"),
     "MemoryType": ("threetears.agent.memory.types", "MemoryType"),
@@ -125,6 +127,7 @@ _LAZY: dict[str, tuple[str, str]] = {
     "load_memory_recall_tool": ("threetears.agent.memory.tools", "load_memory_recall_tool"),
     "load_memory_search_tool": ("threetears.agent.memory.tools", "load_memory_search_tool"),
     "memory_namespace_name": ("threetears.agent.memory.authorize", "memory_namespace_name"),
+    "repoint_user": ("threetears.agent.memory.merge", "repoint_user"),
 }
 
 __all__ = [
@@ -156,6 +159,7 @@ __all__ = [
     "MemoryRecallInput",
     "MemoryRefEntity",
     "MemoryRefsCollection",
+    "MemoryRepointResult",
     "MemoryRetrievedEvent",
     "MemoryRetriever",
     "MemorySearchInput",
@@ -171,6 +175,7 @@ __all__ = [
     "load_memory_recall_tool",
     "load_memory_search_tool",
     "memory_namespace_name",
+    "repoint_user",
 ]
 
 

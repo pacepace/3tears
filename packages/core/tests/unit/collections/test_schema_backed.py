@@ -793,21 +793,30 @@ class TestFetchAndDeleteSql:
 
     @pytest.mark.asyncio
     async def test_single_pk_select(self) -> None:
-        """SELECT * FROM items WHERE id = $1."""
+        """by-pk fetch projects DECLARED columns, vector cast to ::text.
+
+        never ``SELECT *``: an undeclared table column is never read, and
+        the declared ``vec`` VECTOR column is rendered ``vec::text AS vec``
+        so a real pool returns the bracketed string form the read coercion
+        parses (no pgvector binary codec is registered on any 3tears pool).
+        """
         pool = _RecordingPool()
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         await coll.fetch_from_postgres(uuid.uuid4())
         sql = pool.calls[0][1]
-        assert sql == "SELECT * FROM items WHERE id = $1"
+        assert sql == (
+            "SELECT id, owner_id, label, payload, vec::text AS vec, blob, "
+            "counter, flag, date_created, date_updated FROM items WHERE id = $1"
+        )
 
     @pytest.mark.asyncio
     async def test_composite_pk_select(self) -> None:
-        """SELECT ... WHERE left_id = $1 AND right_id = $2."""
+        """by-pk fetch projects declared columns over a composite pk."""
         pool = _RecordingPool()
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
         await coll.fetch_from_postgres((uuid.uuid4(), uuid.uuid4()))
         sql = pool.calls[0][1]
-        assert sql == "SELECT * FROM pairs WHERE left_id = $1 AND right_id = $2"
+        assert sql == ("SELECT left_id, right_id, weight, date_added FROM pairs WHERE left_id = $1 AND right_id = $2")
 
     @pytest.mark.asyncio
     async def test_single_pk_delete(self) -> None:
@@ -1676,6 +1685,27 @@ class TestTsvectorWritePathAudit:
         # NOT appear in the SET clause
         assert "search_vector = EXCLUDED.search_vector" not in sql
         assert "search_vector =" not in sql.split("DO UPDATE SET", 1)[1]
+
+    @pytest.mark.asyncio
+    async def test_tsvector_fetch_casts_search_vector_to_text(self) -> None:
+        """by-pk fetch renders the codec-less TSVECTOR column ``::text``.
+
+        ``tsvector`` (like ``vector``) has no asyncpg codec on any 3tears
+        pool, so a raw ``search_vector`` projection would raise
+        ``UnsupportedClientFeatureError`` on a real pool / through the L3
+        broker the moment a by-pk get/update/delete touched a memory row.
+        the by-pk projection casts it ``::text`` so asyncpg returns the
+        string form (a trigger-maintained full-text column, never
+        consumed as data).
+        """
+        pool = _RecordingPool()
+        coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
+        await coll.fetch_from_postgres(uuid.uuid4())
+        sql = pool.calls[0][1]
+        assert sql == (
+            "SELECT id, content, search_vector::text AS search_vector, "
+            "date_created, date_updated FROM fts_items WHERE id = $1"
+        )
 
     @pytest.mark.asyncio
     async def test_immutable_tsvector_excluded_from_cas_update_set(self) -> None:
