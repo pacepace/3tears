@@ -30,6 +30,7 @@ dependencies = [
     "nats-py",
     "aiosqlite",
     "pydantic",
+    "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
 ]
 
 [project.optional-dependencies]
