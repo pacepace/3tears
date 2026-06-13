@@ -38,10 +38,7 @@ def test_returns_fragment_and_single_user_id_bind() -> None:
     assert fragment.strip().startswith("EXISTS (")
     assert "FROM role_assignments ra" in fragment
     assert "JOIN group_members gm ON gm.group_id = ra.group_id" in fragment
-    assert (
-        "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id"
-        in fragment
-    )
+    assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in fragment
 
 
 def test_default_param_offset_is_one() -> None:

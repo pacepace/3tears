@@ -77,8 +77,7 @@ def derive_scope(*, customer_id: UUID | None, user_id: UUID | None) -> Scope:
     """
     if user_id is not None and customer_id is None:
         raise ValueError(
-            "invalid knowledge scope: user_id set without customer_id "
-            "(a user always belongs to a customer)",
+            "invalid knowledge scope: user_id set without customer_id (a user always belongs to a customer)",
         )
     if user_id is not None:
         result = Scope.USER

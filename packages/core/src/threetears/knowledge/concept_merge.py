@@ -64,7 +64,8 @@ log = get_logger(__name__)
 
 
 def build_table_ref(
-    schema_name: str | None, table_name: str | None,
+    schema_name: str | None,
+    table_name: str | None,
 ) -> str | None:
     """compose the canonical ``schema.table`` ref for a bound concept table.
 
@@ -256,9 +257,7 @@ def merge_concept_views(
     # winner, so it never doubles up here). blank names are not counted
     # as collisions.
     name_counts: Counter[str] = Counter(
-        chain.winner.name.strip().lower()
-        for chain in resolved
-        if chain.winner.name.strip()
+        chain.winner.name.strip().lower() for chain in resolved if chain.winner.name.strip()
     )
 
     effective_views: list[ConceptEffective] = []

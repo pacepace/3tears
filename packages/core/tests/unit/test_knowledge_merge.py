@@ -87,7 +87,9 @@ class TestUnion:
         customer = _entry(Scope.CUSTOMER, title="c")
         effective, _layered = merge_entry_views([user, platform, customer])
         assert [e.entry.scope for e in effective] == [
-            Scope.PLATFORM, Scope.CUSTOMER, Scope.USER,
+            Scope.PLATFORM,
+            Scope.CUSTOMER,
+            Scope.USER,
         ]
 
     def test_two_contradictory_unlinked_entries_both_pass_through(self) -> None:
@@ -107,7 +109,10 @@ class TestSingleShadow:
     def test_customer_shadows_platform(self) -> None:
         platform = _entry(Scope.PLATFORM, title="p", body="platform body")
         customer = _entry(
-            Scope.CUSTOMER, origin=platform.id, title="c", body="customer body",
+            Scope.CUSTOMER,
+            origin=platform.id,
+            title="c",
+            body="customer body",
         )
         effective, layered = merge_entry_views([platform, customer])
         assert len(effective) == 1
@@ -142,7 +147,9 @@ class TestShadowOfShadow:
     def test_nearest_scope_wins_whole_chain(self) -> None:
         platform = _entry(Scope.PLATFORM, body="platform body")
         customer = _entry(
-            Scope.CUSTOMER, origin=platform.id, body="customer body",
+            Scope.CUSTOMER,
+            origin=platform.id,
+            body="customer body",
         )
         user = _entry(Scope.USER, origin=customer.id, body="user body")
         effective, layered = merge_entry_views([platform, customer, user])
@@ -193,7 +200,9 @@ class TestAlwaysInjectRidesThroughShadow:
         # effective entry is NOT an invariant.
         platform = _entry(Scope.PLATFORM, body="inv", always_inject=True)
         user = _entry(
-            Scope.USER, origin=platform.id, body="override",
+            Scope.USER,
+            origin=platform.id,
+            body="override",
             always_inject=False,
         )
         effective, _layered = merge_entry_views([platform, user])
@@ -206,7 +215,9 @@ class TestAlwaysInjectRidesThroughShadow:
         # the winner (user) governs -> effective entry IS an invariant.
         platform = _entry(Scope.PLATFORM, body="situational", always_inject=False)
         user = _entry(
-            Scope.USER, origin=platform.id, body="hard rule",
+            Scope.USER,
+            origin=platform.id,
+            body="hard rule",
             always_inject=True,
         )
         effective, _layered = merge_entry_views([platform, user])
@@ -241,7 +252,9 @@ class TestCycleRejectionAtWrite:
         origin_of = {a: None, b: a}
         with pytest.raises(OriginCycleError):
             assert_no_origin_cycle(
-                entry_id=a, origin_entry_id=b, origin_of=origin_of,
+                entry_id=a,
+                origin_entry_id=b,
+                origin_of=origin_of,
             )
 
     def test_acyclic_chain_accepted(self) -> None:
@@ -251,12 +264,16 @@ class TestCycleRejectionAtWrite:
         origin_of = {platform: None, customer: platform}
         # new user entry shadowing customer -> acyclic, accepted.
         assert_no_origin_cycle(
-            entry_id=new_user, origin_entry_id=customer, origin_of=origin_of,
+            entry_id=new_user,
+            origin_entry_id=customer,
+            origin_of=origin_of,
         )
 
     def test_none_origin_is_trivially_acyclic(self) -> None:
         assert_no_origin_cycle(
-            entry_id=uuid7(), origin_entry_id=None, origin_of={},
+            entry_id=uuid7(),
+            origin_entry_id=None,
+            origin_of={},
         )
 
     def test_overlong_chain_rejected(self) -> None:

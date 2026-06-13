@@ -214,8 +214,6 @@ def three_scope_visibility_clause(
         customer_id_column=customer_id_column,
         param_offset=param_offset,
     )
-    user_predicate = (
-        f"({user_id_column} IS NULL OR {user_id_column} = ${param_offset})"
-    )
+    user_predicate = f"({user_id_column} IS NULL OR {user_id_column} = ${param_offset})"
     fragment = f"{customer_scope} AND {user_predicate}"
     return fragment, params

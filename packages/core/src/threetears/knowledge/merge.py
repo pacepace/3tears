@@ -267,13 +267,11 @@ def assert_no_origin_cycle(
         depth += 1
         if depth > MAX_SHADOW_CHAIN_DEPTH:
             raise OriginCycleError(
-                f"origin_entry_id chain from {entry_id} exceeds max depth "
-                f"{MAX_SHADOW_CHAIN_DEPTH} (likely a cycle)",
+                f"origin_entry_id chain from {entry_id} exceeds max depth {MAX_SHADOW_CHAIN_DEPTH} (likely a cycle)",
             )
         if cursor in visited:
             raise OriginCycleError(
-                f"origin_entry_id cycle detected writing {entry_id}: "
-                f"chain revisits {cursor}",
+                f"origin_entry_id cycle detected writing {entry_id}: chain revisits {cursor}",
             )
         visited.add(cursor)
         cursor = origin_of.get(cursor)
@@ -323,7 +321,8 @@ def merge_entry_views(
     layered_views: list[EntryLayered] = []
     for chain in resolved:
         effective = EntryEffective(
-            entry=chain.winner, shadows_scope=chain.shadows_scope,
+            entry=chain.winner,
+            shadows_scope=chain.shadows_scope,
         )
         effective_views.append(effective)
         layered_views.append(

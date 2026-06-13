@@ -211,7 +211,8 @@ class KnowledgeDraftMessage(BaseModel):
 
     @classmethod
     def for_command(
-        cls, command: KnowledgeDraftCommand,
+        cls,
+        command: KnowledgeDraftCommand,
     ) -> KnowledgeDraftMessage:
         """wrap a lifecycle command in an envelope.
 

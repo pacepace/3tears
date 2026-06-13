@@ -816,10 +816,7 @@ class TestFetchAndDeleteSql:
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
         await coll.fetch_from_postgres((uuid.uuid4(), uuid.uuid4()))
         sql = pool.calls[0][1]
-        assert sql == (
-            "SELECT left_id, right_id, weight, date_added "
-            "FROM pairs WHERE left_id = $1 AND right_id = $2"
-        )
+        assert sql == ("SELECT left_id, right_id, weight, date_added FROM pairs WHERE left_id = $1 AND right_id = $2")
 
     @pytest.mark.asyncio
     async def test_single_pk_delete(self) -> None:

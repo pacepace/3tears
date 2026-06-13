@@ -35,13 +35,15 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     agent = uuid4()
     from_id = uuid4()
     to_id = uuid4()
-    conn = _RoutingConn({
-        "DELETE FROM memories": [{"agent_id": agent, "memory_id": uuid4()}],
-        "UPDATE memories": [{"agent_id": agent, "memory_id": uuid4()}],
-        "UPDATE media ": [{"agent_id": agent, "media_id": uuid4()}],
-        "UPDATE media_content": [{"agent_id": agent, "content_id": uuid4()}],
-        "UPDATE memory_chunks": [{"agent_id": agent, "chunk_id": uuid4()}],
-    })
+    conn = _RoutingConn(
+        {
+            "DELETE FROM memories": [{"agent_id": agent, "memory_id": uuid4()}],
+            "UPDATE memories": [{"agent_id": agent, "memory_id": uuid4()}],
+            "UPDATE media ": [{"agent_id": agent, "media_id": uuid4()}],
+            "UPDATE media_content": [{"agent_id": agent, "content_id": uuid4()}],
+            "UPDATE memory_chunks": [{"agent_id": agent, "chunk_id": uuid4()}],
+        }
+    )
 
     result = await repoint_user(conn, from_user_id=from_id, to_user_id=to_id)
 
@@ -70,11 +72,12 @@ async def test_child_tables_repoint_without_touch() -> None:
             return []
 
     await repoint_user(
-        _CapturingConn(), from_user_id=uuid4(), to_user_id=uuid4(),
+        _CapturingConn(),
+        from_user_id=uuid4(),
+        to_user_id=uuid4(),
     )
 
-    by_table = {sql.split()[1] if sql.startswith("UPDATE") else "DELETE": params
-                for sql, params in captured}
+    by_table = {sql.split()[1] if sql.startswith("UPDATE") else "DELETE": params for sql, params in captured}
     # children: only $1 (where) + $2 (set) — no $3 touch parameter.
     assert len(by_table["media"]) == 2
     assert len(by_table["media_content"]) == 2

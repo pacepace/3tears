@@ -74,10 +74,6 @@ async def repoint_user_rows(
         params.append(now if now is not None else datetime.now(UTC))
         set_parts.append(f"{touch_column} = ${len(params)}")
     pk_list = ", ".join(pk_columns)
-    sql = (
-        f"UPDATE {table} SET {', '.join(set_parts)} "
-        f"WHERE {user_column} = $1 "
-        f"RETURNING {pk_list}"
-    )
+    sql = f"UPDATE {table} SET {', '.join(set_parts)} WHERE {user_column} = $1 RETURNING {pk_list}"
     rows = await conn.fetch(sql, *params)
     return [tuple(row[col] for col in pk_columns) for row in rows]

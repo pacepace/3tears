@@ -113,11 +113,7 @@ class FakePool:
         # the by-pk fetch projects the declared column list (not ``SELECT
         # *``) since the schema-backed fetch switched to an explicit
         # projection, so match on the FROM + WHERE shape, not ``select *``.
-        if (
-            "from context_items" in sql_lower
-            and "where conversation_id" in sql_lower
-            and "and context_id" in sql_lower
-        ):
+        if "from context_items" in sql_lower and "where conversation_id" in sql_lower and "and context_id" in sql_lower:
             cid = str(args[1])
             return self.rows.get(cid)
 

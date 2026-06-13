@@ -137,7 +137,9 @@ async def repoint_user(
     :rtype: MemoryRepointResult
     """
     deleted = await _delete_alias_collisions(
-        conn, from_user_id=from_user_id, to_user_id=to_user_id,
+        conn,
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
     )
     result = MemoryRepointResult(alias_collisions_deleted=deleted)
     result.memories = await repoint_user_rows(

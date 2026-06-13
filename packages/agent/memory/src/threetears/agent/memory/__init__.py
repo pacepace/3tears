@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         default_memory_created_dispatcher,
     )
     from threetears.agent.memory.extraction import ChatModelFactory, MemoryExtractor
+    from threetears.agent.memory.merge import MemoryRepointResult, repoint_user
     from threetears.agent.memory.prompts import ExtractionPrompts
     from threetears.agent.memory.retrieval import MemoryRetriever, RetrievalResult
     from threetears.agent.memory.tools import (

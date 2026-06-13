@@ -100,7 +100,9 @@ class TestUnion:
         customer = _concept(Scope.CUSTOMER, name="c")
         effective, _layered = merge_concept_views([user, platform, customer])
         assert [e.concept.scope for e in effective] == [
-            Scope.PLATFORM, Scope.CUSTOMER, Scope.USER,
+            Scope.PLATFORM,
+            Scope.CUSTOMER,
+            Scope.USER,
         ]
 
 
@@ -109,11 +111,15 @@ class TestSingleShadow:
 
     def test_customer_shadows_platform(self) -> None:
         platform = _concept(
-            Scope.PLATFORM, definition="platform def",
-            datasource_table_id=uuid7(), sql_fragment="is_test = false",
+            Scope.PLATFORM,
+            definition="platform def",
+            datasource_table_id=uuid7(),
+            sql_fragment="is_test = false",
         )
         customer = _concept(
-            Scope.CUSTOMER, origin=platform.id, definition="customer def",
+            Scope.CUSTOMER,
+            origin=platform.id,
+            definition="customer def",
         )
         effective, layered = merge_concept_views([platform, customer])
         assert len(effective) == 1
@@ -128,7 +134,9 @@ class TestSingleShadow:
     def test_user_shadows_customer(self) -> None:
         customer = _concept(Scope.CUSTOMER, definition="customer def")
         user = _concept(
-            Scope.USER, origin=customer.id, definition="user def",
+            Scope.USER,
+            origin=customer.id,
+            definition="user def",
         )
         effective, layered = merge_concept_views([customer, user])
         assert len(effective) == 1
@@ -144,10 +152,14 @@ class TestShadowOfShadow:
     def test_nearest_scope_wins_whole_chain(self) -> None:
         platform = _concept(Scope.PLATFORM, definition="platform def")
         customer = _concept(
-            Scope.CUSTOMER, origin=platform.id, definition="customer def",
+            Scope.CUSTOMER,
+            origin=platform.id,
+            definition="customer def",
         )
         user = _concept(
-            Scope.USER, origin=customer.id, definition="user def",
+            Scope.USER,
+            origin=customer.id,
+            definition="user def",
         )
         effective, layered = merge_concept_views([platform, customer, user])
         assert len(effective) == 1
@@ -161,7 +173,9 @@ class TestShadowOfShadow:
     def test_whole_entry_replace_no_definition_splicing(self) -> None:
         platform = _concept(Scope.PLATFORM, definition="PLATFORM")
         customer = _concept(
-            Scope.CUSTOMER, origin=platform.id, definition="CUSTOMER",
+            Scope.CUSTOMER,
+            origin=platform.id,
+            definition="CUSTOMER",
         )
         user = _concept(Scope.USER, origin=customer.id, definition="USER")
         effective, _layered = merge_concept_views([platform, customer, user])
@@ -175,8 +189,11 @@ class TestUnboundConcept:
 
     def test_unbound_concept_emitted(self) -> None:
         unbound = _concept(
-            Scope.CUSTOMER, name="churn", definition="left in 90 days",
-            datasource_table_id=None, sql_fragment=None,
+            Scope.CUSTOMER,
+            name="churn",
+            definition="left in 90 days",
+            datasource_table_id=None,
+            sql_fragment=None,
         )
         effective, _layered = merge_concept_views([unbound])
         assert len(effective) == 1
@@ -190,10 +207,14 @@ class TestAlwaysInjectRidesThroughShadow:
 
     def test_user_non_invariant_shadows_platform_invariant(self) -> None:
         platform = _concept(
-            Scope.PLATFORM, definition="inv", always_inject=True,
+            Scope.PLATFORM,
+            definition="inv",
+            always_inject=True,
         )
         user = _concept(
-            Scope.USER, origin=platform.id, definition="override",
+            Scope.USER,
+            origin=platform.id,
+            definition="override",
             always_inject=False,
         )
         effective, _layered = merge_concept_views([platform, user])
@@ -203,10 +224,14 @@ class TestAlwaysInjectRidesThroughShadow:
 
     def test_user_invariant_shadows_platform_non_invariant(self) -> None:
         platform = _concept(
-            Scope.PLATFORM, definition="situational", always_inject=False,
+            Scope.PLATFORM,
+            definition="situational",
+            always_inject=False,
         )
         user = _concept(
-            Scope.USER, origin=platform.id, definition="hard rule",
+            Scope.USER,
+            origin=platform.id,
+            definition="hard rule",
             always_inject=True,
         )
         effective, _layered = merge_concept_views([platform, user])
@@ -222,10 +247,14 @@ class TestAmbiguity:
         # with NO declared shadow -> both survive AND both flag ambiguous
         # so the agent/footer disclose the competing definitions (D5).
         platform = _concept(
-            Scope.PLATFORM, name="active users", definition="trailing 28d",
+            Scope.PLATFORM,
+            name="active users",
+            definition="trailing 28d",
         )
         customer = _concept(
-            Scope.CUSTOMER, name="Active Users", definition="trailing 7d",
+            Scope.CUSTOMER,
+            name="Active Users",
+            definition="trailing 7d",
         )
         effective, _layered = merge_concept_views([platform, customer])
         assert len(effective) == 2
@@ -236,10 +265,14 @@ class TestAmbiguity:
         # the SAME collision but WITH an origin link is a declared shadow:
         # collapses to one winner, never ambiguous.
         platform = _concept(
-            Scope.PLATFORM, name="active users", definition="trailing 28d",
+            Scope.PLATFORM,
+            name="active users",
+            definition="trailing 28d",
         )
         customer = _concept(
-            Scope.CUSTOMER, name="active users", origin=platform.id,
+            Scope.CUSTOMER,
+            name="active users",
+            origin=platform.id,
             definition="trailing 7d",
         )
         effective, _layered = merge_concept_views([platform, customer])
@@ -274,10 +307,15 @@ class TestAmbiguity:
         # definition the agent/footer must disclose).
         platform = _concept(Scope.PLATFORM, name="X", definition="platform X")
         user = _concept(
-            Scope.USER, name="X", origin=platform.id, definition="user X",
+            Scope.USER,
+            name="X",
+            origin=platform.id,
+            definition="user X",
         )
         independent = _concept(
-            Scope.CUSTOMER, name="x", definition="independent X",
+            Scope.CUSTOMER,
+            name="x",
+            definition="independent X",
         )
         effective, _layered = merge_concept_views(
             [platform, user, independent],

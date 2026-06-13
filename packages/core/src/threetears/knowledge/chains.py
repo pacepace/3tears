@@ -128,8 +128,7 @@ def _chain_root(
             # merge still terminates. write-time validation prevents
             # this; the guard is defence in depth.
             log.warning(
-                "origin id cycle encountered during merge at %s; "
-                "anchoring chain here",
+                "origin id cycle encountered during merge at %s; anchoring chain here",
                 current,
             )
             result = current
@@ -176,9 +175,7 @@ def resolve_shadow_chains(
         winner id
     :rtype: list[ResolvedChain[T]]
     """
-    origin_of: dict[UUID, UUID | None] = {
-        id_of(s): origin_id_of(s) for s in snapshots
-    }
+    origin_of: dict[UUID, UUID | None] = {id_of(s): origin_id_of(s) for s in snapshots}
 
     # group visible snapshots by chain root; each group is one chain.
     chains: dict[UUID, list[T]] = {}

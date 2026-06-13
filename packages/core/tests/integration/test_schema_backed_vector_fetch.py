@@ -88,7 +88,10 @@ async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     a raw ``SELECT *`` over a vector column unreadable.
     """
     pool: asyncpg.Pool = await asyncpg.create_pool(
-        db_container, min_size=1, max_size=4, init=init_connection,
+        db_container,
+        min_size=1,
+        max_size=4,
+        init=init_connection,
     )
     try:
         async with pool.acquire() as conn:
@@ -209,7 +212,10 @@ class _DeclaredFtsCollection(SchemaBackedCollection[_StubEntity]):
             Column("id", UUID_TYPE),
             Column("label", STRING_TYPE),
             Column(
-                "search_vector", TSVECTOR_TYPE, nullable=True, immutable=True,
+                "search_vector",
+                TSVECTOR_TYPE,
+                nullable=True,
+                immutable=True,
             ),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
@@ -263,7 +269,10 @@ def _config() -> DefaultCoreConfig:
 
 
 async def _insert_row(
-    pool: asyncpg.Pool, item_id: uuid.UUID, *, embedding: str | None,
+    pool: asyncpg.Pool,
+    item_id: uuid.UUID,
+    *,
+    embedding: str | None,
 ) -> None:
     """insert one row, casting the text vector literal with ``::vector``.
 
@@ -302,7 +311,9 @@ class TestDeclaredVectorFetch:
         test never exercised.
         """
         coll = _DeclaredVecCollection(
-            _registry(pg_pool), _config(), nats_client=_nats(),
+            _registry(pg_pool),
+            _config(),
+            nats_client=_nats(),
         )
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding="[0.1, 0.2, 0.3, 0.4]")
@@ -316,7 +327,9 @@ class TestDeclaredVectorFetch:
     async def test_get_handles_null_vector(self, pg_pool: asyncpg.Pool) -> None:
         """a NULL declared vector round-trips to ``None`` without throwing."""
         coll = _DeclaredVecCollection(
-            _registry(pg_pool), _config(), nats_client=_nats(),
+            _registry(pg_pool),
+            _config(),
+            nats_client=_nats(),
         )
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding=None)
@@ -337,11 +350,14 @@ class TestOmittedVectorFetch:
     """
 
     async def test_get_does_not_read_undeclared_vector(
-        self, pg_pool: asyncpg.Pool,
+        self,
+        pg_pool: asyncpg.Pool,
     ) -> None:
         """fetch projects declared columns only; the vector is never read."""
         coll = _OmittedVecCollection(
-            _registry(pg_pool), _config(), nats_client=_nats(),
+            _registry(pg_pool),
+            _config(),
+            nats_client=_nats(),
         )
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding="[0.5, 0.6, 0.7, 0.8]")
@@ -364,7 +380,8 @@ class TestDeclaredTsvectorFetch:
     """
 
     async def test_get_returns_tsvector_as_text(
-        self, pg_pool: asyncpg.Pool,
+        self,
+        pg_pool: asyncpg.Pool,
     ) -> None:
         """a declared trigger-maintained tsvector round-trips as text.
 
@@ -374,7 +391,9 @@ class TestDeclaredTsvectorFetch:
         full-text string form (never consumed as data).
         """
         coll = _DeclaredFtsCollection(
-            _registry(pg_pool), _config(), nats_client=_nats(),
+            _registry(pg_pool),
+            _config(),
+            nats_client=_nats(),
         )
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding=None)

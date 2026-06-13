@@ -193,7 +193,10 @@ def test_envelope_kind_discriminates_without_json_loads() -> None:
     )
     command_env = KnowledgeDraftMessage.for_command(
         KnowledgeDraftCommand(
-            draft_id=uuid4(), target="entry", op="confirm", user_id=uuid4(),
+            draft_id=uuid4(),
+            target="entry",
+            op="confirm",
+            user_id=uuid4(),
         ),
     )
     assert event_env.kind == "event"

@@ -62,9 +62,7 @@ _ALWAYS_ALLOWED_FRAGMENTS = (
     "_generated_models.py",
 )
 
-_EXEMPTIONS_PATH = (
-    _PROJECT_ROOT / "tests" / "enforcement" / "_model_literal_exemptions.txt"
-)
+_EXEMPTIONS_PATH = _PROJECT_ROOT / "tests" / "enforcement" / "_model_literal_exemptions.txt"
 
 
 def _is_model_literal(value: str) -> bool:
@@ -102,14 +100,12 @@ def _load_exemptions() -> set[str]:
                 continue
             if "::" not in line:
                 raise ValueError(
-                    f"exemption line missing '::reason': {line!r} "
-                    f"in {_EXEMPTIONS_PATH.name}",
+                    f"exemption line missing '::reason': {line!r} in {_EXEMPTIONS_PATH.name}",
                 )
             path_part, reason_part = line.split("::", 1)
             if not reason_part.strip():
                 raise ValueError(
-                    f"exemption line has empty reason: {line!r} "
-                    f"in {_EXEMPTIONS_PATH.name}",
+                    f"exemption line has empty reason: {line!r} in {_EXEMPTIONS_PATH.name}",
                 )
             exemptions.add(path_part.strip())
     return exemptions
@@ -141,11 +137,7 @@ def _collect_files() -> list[Path]:
             for subdir in _PACKAGE_SUBDIRS:
                 tree_root = package_dir / subdir
                 if tree_root.exists():
-                    files.extend(
-                        p
-                        for p in tree_root.rglob("*.py")
-                        if "__pycache__" not in str(p)
-                    )
+                    files.extend(p for p in tree_root.rglob("*.py") if "__pycache__" not in str(p))
     return sorted(files)
 
 
@@ -191,7 +183,5 @@ def test_no_hardcoded_model_literals() -> None:
         "/ DEFAULT_LARGE_MODEL / DEFAULT_EMBEDDING_MODEL) instead, or add a "
         "justified line to tests/enforcement/_model_literal_exemptions.txt "
         "(relative/path::reason):\n"
-        + "\n".join(
-            f"{path}:\n" + "\n".join(lines) for path, lines in sorted(offenders.items())
-        )
+        + "\n".join(f"{path}:\n" + "\n".join(lines) for path, lines in sorted(offenders.items()))
     )

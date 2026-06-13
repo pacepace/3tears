@@ -55,10 +55,12 @@ async def test_builds_scoped_update_with_touch() -> None:
 @pytest.mark.asyncio
 async def test_composite_pk_returns_tuples() -> None:
     """composite-pk tables return the full key tuple per row."""
-    conn = _RecordingConn([
-        {"agent_id": "a1", "id": "c1"},
-        {"agent_id": "a2", "id": "c2"},
-    ])
+    conn = _RecordingConn(
+        [
+            {"agent_id": "a1", "id": "c1"},
+            {"agent_id": "a2", "id": "c2"},
+        ]
+    )
 
     result = await repoint_user_rows(
         conn,

@@ -472,19 +472,14 @@ class TestSystemMessageConsolidation:
         await agent_node(state, config)  # type: ignore[arg-type]
 
         messages_sent = mock_model.ainvoke.call_args[0][0]
-        system_messages = [
-            m for m in messages_sent if isinstance(m, SystemMessage)
-        ]
+        system_messages = [m for m in messages_sent if isinstance(m, SystemMessage)]
         # exactly one system message, at index 0, carrying base + injected
         assert len(system_messages) == 1
         assert isinstance(messages_sent[0], SystemMessage)
         assert "BASE" in messages_sent[0].content
         assert "INJECTED-KNOWLEDGE" in messages_sent[0].content
         # the human turn survives, after the consolidated system message
-        assert any(
-            isinstance(m, HumanMessage) and m.content == "hi"
-            for m in messages_sent
-        )
+        assert any(isinstance(m, HumanMessage) and m.content == "hi" for m in messages_sent)
 
     @pytest.mark.asyncio
     async def test_injected_system_message_removed_from_history(self) -> None:
@@ -504,7 +499,5 @@ class TestSystemMessageConsolidation:
 
         result = await agent_node(state, config)  # type: ignore[arg-type]
 
-        removals = [
-            m for m in result["messages"] if isinstance(m, RemoveMessage)
-        ]
+        removals = [m for m in result["messages"] if isinstance(m, RemoveMessage)]
         assert any(m.id == "sys-1" for m in removals)
