@@ -82,6 +82,29 @@ packages (bumped in lock-step).
   `agent_wake` tick metrics or the `conv_busy` reason.**
 - **Consumers: see `docs/migrating-agent-wake-to-scheduled-jobs.md`.**
 
+### Added — `3tears-nats`
+
+- **Owner-routed request forward** (`threetears.nats.forward` / `serve_owner`) — a
+  generic, payload-agnostic primitive for "send a request to whichever pod currently
+  *serves* a key, and get its reply." It is the messaging half of a single-writer
+  pattern; it does NOT elect a leader (a separate `nats_distributed_lock` / `KVLease`
+  decides who serves — the consumer ties them together). `serve_owner(nats, key,
+  handler)` is an async context manager a consumer runs *while it holds the key*: it
+  subscribes the key's forward subject in a **queue group keyed by that subject**, so a
+  brief two-owner overlap during lease handoff still dispatches each request to exactly
+  one owner. `forward(nats, key, payload, *, timeout) -> bytes` requests that subject and
+  returns the owner's reply bytes. Payload + reply are opaque `bytes`.
+- **Typed forward errors.** No current owner (no subscriber / timeout in the handoff
+  window) raises `NoOwnerError`; an owner whose handler *raised* surfaces to the caller as
+  `ForwardedHandlerError` carrying the original exception's **type name + message** (so a
+  consumer can map a forwarded failure back onto its own typed exception). Both subclass
+  `ForwardError` (← `NatsClientError`). Wire framing is a 1-byte tag (`0x00` ok + verbatim
+  reply bytes; `0x01` err + UTF-8 JSON `{type, message}`), keeping an empty/arbitrary
+  handler reply unambiguous from an error frame.
+- **`Subjects.forward(key)`** — derives `{ns}.forward.{sha256hex(key)}`; the key is hashed
+  (not `_sanitize`-mapped) so arbitrary app keys carrying `.`/spaces/`*`/`>` map to a
+  subject-safe, collision-resistant, deterministic token, mirroring `Subjects.room`.
+
 ## v0.10.5 -- 2026-06-03
 
 A reusable keyset (seek) paginator in `threetears.core` for paging large,

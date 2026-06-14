@@ -15,6 +15,15 @@ from threetears.nats.client import (
     Subscription,
 )
 from threetears.nats.distributed_lock import LockHeld, nats_distributed_lock
+from threetears.nats.forward import (
+    DEFAULT_FORWARD_TIMEOUT,
+    ForwardError,
+    ForwardedHandlerError,
+    ForwardHandler,
+    NoOwnerError,
+    forward,
+    serve_owner,
+)
 from threetears.nats.errors import (
     KvError,
     NatsClientError,
@@ -64,6 +73,14 @@ __all__ = [
     # distributed lock
     "LockHeld",
     "nats_distributed_lock",
+    # owner-routed forward
+    "DEFAULT_FORWARD_TIMEOUT",
+    "ForwardError",
+    "ForwardedHandlerError",
+    "ForwardHandler",
+    "NoOwnerError",
+    "forward",
+    "serve_owner",
     # transport Protocols + message envelope
     "IncomingMessage",
     "MessageCallback",

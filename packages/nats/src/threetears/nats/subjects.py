@@ -610,6 +610,43 @@ class Subjects:
         return Subject(path=f"{_ns()}.channels.room.{token}", kind="point")
 
     # ------------------------------------------------------------------
+    # owner-routed forward (request -> whichever pod serves a key)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def forward(cls, key: str) -> Subject:
+        """request/reply subject for owner-routed forwarding of one key.
+
+        the owner-routed forward primitive
+        (:func:`threetears.nats.forward` / :func:`serve_owner`) sends a
+        request to whichever pod currently *serves* ``key`` and returns
+        its reply. this is the single subject that request/reply rides.
+
+        the ``key`` is arbitrary, app-supplied, and may carry ``.``,
+        spaces, ``*`` or ``>`` — all illegal or ambiguous in a NATS
+        subject token. as with :meth:`room`, the key is therefore NOT
+        :func:`_sanitize`-mapped (which only handles ``.``); instead the
+        token is the **SHA-256 hex digest** of the key: subject-safe
+        (``[0-9a-f]`` only), collision-resistant, and deterministic, so
+        every pod derives the same subject for the same key. the digest
+        is one-way and needs no reversibility — both ends start from the
+        same ``key``. consumed by
+        :func:`threetears.nats.serve_owner` (subscribe, queue-grouped on
+        this subject's path) and :func:`threetears.nats.forward`
+        (request).
+
+        :param key: ownership key (arbitrary app-supplied string)
+        :ptype key: str
+        :return: subject ``{ns}.forward.{sha256hex(key)}``
+        :rtype: Subject
+        :raises ValueError: if key is empty
+        """
+        if not key:
+            raise ValueError("key must be non-empty")
+        token = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return Subject(path=f"{_ns()}.forward.{token}", kind="point")
+
+    # ------------------------------------------------------------------
     # l3 broker
     # ------------------------------------------------------------------
 
