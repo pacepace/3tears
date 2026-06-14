@@ -289,8 +289,8 @@ source = { editable = "packages/agent/wake" }
 dependencies = [
     { name = "3tears" },
     { name = "3tears-agent-skills" },
-    { name = "3tears-nats" },
     { name = "3tears-observe" },
+    { name = "3tears-scheduled-jobs" },
     { name = "apscheduler" },
     { name = "jinja2" },
     { name = "langchain-core" },
@@ -307,8 +307,8 @@ prometheus = [
 requires-dist = [
     { name = "3tears", editable = "packages/core" },
     { name = "3tears-agent-skills", editable = "packages/agent/skills" },
-    { name = "3tears-nats", editable = "packages/nats" },
     { name = "3tears-observe", editable = "packages/observe" },
+    { name = "3tears-scheduled-jobs", editable = "packages/scheduled-jobs" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "jinja2", specifier = ">=3" },
     { name = "langchain-core" },

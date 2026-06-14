@@ -51,6 +51,37 @@ packages (bumped in lock-step).
   forbidden-label cardinality guard preserved). `prometheus_client`
   stays an optional extra; the emitter no-ops gracefully when absent.
 
+### Changed — `3tears-agent-wake` — BREAKING
+
+- **Tick engine delegates to `3tears-scheduled-jobs` (S-2).** The cross-pod tick
+  pump (lock acquire/degrade-open, due-scan, optimistic-CAS claim, per-fire
+  isolation, drift) and the reschedule math now live ONCE in the generic
+  scheduled-jobs core; `threetears.agent.wake.tick` is a thin adapter over it.
+  The wake-facing contract is UNCHANGED: `wake_tick_job(pool, nats_client,
+  dispatch_callback)`, the wake-shaped `DispatchCallback`, `WakeTrigger`,
+  `WakeDispatchResult`, the schedule/fire schema, the richer `FireStatus`, and
+  the webhook / `[SILENT]` handling all stay put. The cross-pod lock key stays
+  `"agent_wake_tick"`.
+- **Removed `threetears.agent.wake.reschedule`** (and its private
+  `_compute_next_fire_at`). The identical math is now public at
+  `threetears.scheduled_jobs.compute_next_fire_at` — same positional signature.
+- **Dropped the direct `3tears-nats` dependency** (added `3tears-scheduled-jobs`).
+  The cross-pod lock now belongs to the scheduled-jobs core; wake reaches NATS
+  only transitively. No code change for consumers that pass a `nats_client`
+  through `wake_tick_job` (still typed `Any`).
+- **Tick Prometheus metrics moved to the `threetears_scheduled_jobs_*` family.**
+  The per-fire / drift / tick-duration counters the tick used to emit on the
+  `threetears_agent_wake_*` instruments now come from the scheduled-jobs emitter;
+  the CAS-miss failure reason changed `conv_busy` → `claim_lost`, and the
+  per-fire `execution_mode` label is no longer on the tick fire counter. The
+  genuinely wake-specific `threetears_agent_wake_yield_duration_seconds` is
+  preserved (re-emitted by the adapter). Webhook / rate-limit / schedule-cap
+  metrics are unchanged. The `EVENT_FIRE_SKIPPED_BUSY` log's `extra_data` keys
+  changed (`conversation_id`/`fire_source`/`execution_mode` → `job_id`/
+  `partition_key`). **Operators: update dashboards/alerts that key on the old
+  `agent_wake` tick metrics or the `conv_busy` reason.**
+- **Consumers: see `docs/migrating-agent-wake-to-scheduled-jobs.md`.**
+
 ## v0.10.5 -- 2026-06-03
 
 A reusable keyset (seek) paginator in `threetears.core` for paging large,

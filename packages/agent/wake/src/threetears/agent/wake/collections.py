@@ -644,8 +644,9 @@ class WakeScheduleCollection(BaseCollection[WakeScheduleEntity]):
         """Flip ``status`` to ``'active'`` and set ``next_fire_at``.
 
         Caller supplies the recomputed ``next_fire_at`` (the platform
-        does not own scheduling math; shard 02's ``_compute_next_fire_at``
-        provides it). Idempotent: replay on an already-active schedule
+        does not own scheduling math;
+        ``threetears.scheduled_jobs.compute_next_fire_at`` provides it).
+        Idempotent: replay on an already-active schedule
         overwrites the timestamp.
 
         ``conn`` lets the cap-serialized resume path
