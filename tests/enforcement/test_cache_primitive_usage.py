@@ -67,6 +67,12 @@ _CONFIG = CacheEnforcementConfig(
         # threetears-mcp's v001 migration; the matching Collection
         # is :class:`threetears.mcp.rbac.McpToolGrantCollection`.
         "mcp_tool_grants": "McpToolGrantCollection",
+        # scheduled_jobs / job_fires are the 3tears-scheduled-jobs default
+        # store's two tables (v001 migration); the matching Collections
+        # are :class:`threetears.scheduled_jobs.collections.ScheduledJobCollection`
+        # and :class:`...JobFireCollection`.
+        "scheduled_jobs": "ScheduledJobCollection",
+        "job_fires": "JobFireCollection",
     },
     migration_table_allowlist=frozenset(
         {

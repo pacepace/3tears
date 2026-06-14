@@ -28,6 +28,7 @@ members = [
     "3tears-nats",
     "3tears-observe",
     "3tears-registry",
+    "3tears-scheduled-jobs",
 ]
 
 [manifest.dependency-groups]
@@ -654,6 +655,34 @@ requires-dist = [
     { name = "3tears-observe", editable = "packages/observe" },
     { name = "nats-py", specifier = ">=2.0" },
 ]
+
+[[package]]
+name = "3tears-scheduled-jobs"
+version = "0.10.5"
+source = { editable = "packages/scheduled-jobs" }
+dependencies = [
+    { name = "3tears" },
+    { name = "3tears-nats" },
+    { name = "3tears-observe" },
+    { name = "apscheduler" },
+    { name = "uuid-utils" },
+]
+
+[package.optional-dependencies]
+prometheus = [
+    { name = "prometheus-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "3tears", editable = "packages/core" },
+    { name = "3tears-nats", editable = "packages/nats" },
+    { name = "3tears-observe", editable = "packages/observe" },
+    { name = "apscheduler", specifier = ">=3.10" },
+    { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
+    { name = "uuid-utils" },
+]
+provides-extras = ["prometheus"]
 
 [[package]]
 name = "aiohappyeyeballs"

@@ -25,6 +25,32 @@ packages (bumped in lock-step).
   tier is a `DurableStore` — the base a git-backed collection subclasses); and
   `parse_rowcount`, the one framework-owned asyncpg status-tag parser.
 
+### Added — `3tears-scheduled-jobs` (new package)
+
+- The generic, multipod-safe scheduled-jobs core, generalized from
+  agent-wake's tick machinery onto a payload-agnostic, consumer-neutral
+  surface. `threetears.scheduled_jobs.tick` — the pure-async tick engine
+  body a consumer's scheduler (e.g. APScheduler) invokes per interval;
+  it enumerates due jobs via `ScheduleStore.list_due_for_tick` (a
+  deliberate `__SPANS_PARTITIONS__` cross-partition scan) and claims each
+  via an optimistic-CAS on `next_fire_at = expected_next_fire`, so two
+  ticks across pods can never double-fire one job.
+- `threetears.scheduled_jobs.reschedule` — the next-fire computation
+  (interval / one-shot / terminal), with `coalesce` / `catch_up`
+  missed-fire policies.
+- Store protocols (`ScheduleStore` / `FireStore` / `DueSchedule`) the
+  tick engine talks to, plus a default three-tier store keyed on an
+  opaque `kind` (TEXT) + `payload` (JSONB): the `scheduled_jobs` +
+  `job_fires` tables (partition column `partition_key`, composite PKs,
+  `ON DELETE CASCADE` fire history), `ScheduledJobCollection` /
+  `JobFireCollection`, and the v001 migration. The platform never
+  inspects `kind` / `payload`.
+- `config` (tick limits / policy defaults), `events` (lifecycle event
+  names), and `metrics` (the `threetears_scheduled_jobs_` Prometheus
+  instruments — fires / failures / tick-duration / drift — with the
+  forbidden-label cardinality guard preserved). `prometheus_client`
+  stays an optional extra; the emitter no-ops gracefully when absent.
+
 ## v0.10.5 -- 2026-06-03
 
 A reusable keyset (seek) paginator in `threetears.core` for paging large,
