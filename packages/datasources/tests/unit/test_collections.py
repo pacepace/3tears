@@ -26,6 +26,7 @@ from threetears.datasources.collections import (
     DataSourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
+    DataSourceSchemaDigestCollection,
     DataSourceTableCollection,
     TableTemplateCollection,
 )
@@ -33,6 +34,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceTableEntity,
     TableTemplateEntity,
 )
@@ -191,6 +193,77 @@ class TestDataSourceTableCollection:
         serialized = coll.serialize(data)
         deserialized = coll.deserialize(serialized)
         assert deserialized.get("column_hash") is None
+
+
+# -- DataSourceSchemaDigestCollection --
+
+
+class TestDataSourceSchemaDigestCollection:
+    """digest collection round-trips the structured projection by-pk."""
+
+    def test_table_name(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.table_name == "datasource_schema_digests"
+
+    def test_entity_class(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.entity_class is DataSourceSchemaDigestEntity
+
+    def test_primary_key_is_datasource_id(self) -> None:
+        # the digest is addressed BY datasource_id so the agent-side read
+        # is a by-pk hot-L1 lookup (schema-priming-task-01b).
+        assert DataSourceSchemaDigestEntity.primary_key_field == "datasource_id"
+
+    def test_serialize_deserialize_roundtrip(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        now = datetime.now(UTC)
+        datasource_id = uuid4()
+        data: dict[str, Any] = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": [
+                {
+                    "schema": "reporting_prod",
+                    "table": "report_geofacts_joined_data",
+                    "description": "joined geo facts",
+                    "columns": [
+                        {
+                            "name": "metric_name",
+                            "type": "character varying",
+                            "description": "the EAV metric label",
+                        },
+                    ],
+                },
+            ],
+            "source_fingerprint": "deadbeef",
+            "date_created": now,
+            "date_updated": now,
+        }
+        serialized = coll.serialize(data)
+        assert isinstance(serialized, bytes)
+        deserialized = coll.deserialize(serialized)
+        assert deserialized["datasource_id"] == datasource_id
+        assert deserialized["source_fingerprint"] == "deadbeef"
+        # the structured projection must survive the L2 round-trip intact
+        assert deserialized["tables"][0]["table"] == "report_geofacts_joined_data"
+        assert deserialized["tables"][0]["columns"][0]["name"] == "metric_name"
+
+    def test_entity_id_is_datasource_id(self) -> None:
+        # BaseEntity keys _id off primary_key_field, so the entity the
+        # agent reads is addressed by its datasource_id.
+        datasource_id = uuid4()
+        entity = DataSourceSchemaDigestEntity(
+            {
+                "datasource_id": datasource_id,
+                "customer_id": uuid4(),
+                "tables": [],
+                "source_fingerprint": "x",
+            },
+        )
+        assert entity.id == datasource_id
 
 
 # -- DataSourceColumnCollection --

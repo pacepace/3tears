@@ -50,6 +50,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceStatus,
     DataSourceTableEntity,
     TableTemplateEntity,
@@ -62,6 +63,7 @@ __all__ = [
     "DataSourceCollection",
     "DataSourceColumnCollection",
     "DataSourceRelationCollection",
+    "DataSourceSchemaDigestCollection",
     "DataSourceTableCollection",
     "TableTemplateCollection",
 ]
@@ -92,6 +94,17 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     "column_hash": str,
     "date_introspected": datetime,
     "date_described": datetime,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_SCHEMA_DIGEST_FIELD_TYPES: dict[str, Any] = {
+    "datasource_id": UUID,
+    "customer_id": UUID,
+    # structured documented projection:
+    # [{schema, table, description, columns: [{name, type, description}]}]
+    "tables": list,
+    "source_fingerprint": str,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -726,6 +739,147 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                     data["tags"] = json.loads(data["tags"])
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+
+class DataSourceSchemaDigestCollection(
+    BaseCollection[DataSourceSchemaDigestEntity],
+):
+    """three-tier collection for the materialized documented-schema digest.
+
+    one row per datasource, addressed BY PRIMARY KEY ``datasource_id`` so
+    the agent-side read (schema-priming-task-01b) is a by-pk hot-L1
+    lookup, with L2/L3 fallback for a cold pod and cross-pod invalidation
+    when the hub re-materializes. the hub is the only writer (the
+    materializer reuses the existing documented-schema computation); agent
+    pods bind this SAME class over the ``system.platform.rbac`` proxy pool
+    and read only.
+
+    the ``tables`` projection is stored as JSONB. digest rows are
+    hard-deleted (no soft-delete) — a datasource removal drops its digest.
+    """
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_schema_digests"
+
+    @property
+    def entity_class(self) -> type[DataSourceSchemaDigestEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceSchemaDigestEntity class
+        :rtype: type[DataSourceSchemaDigestEntity]
+        """
+        return DataSourceSchemaDigestEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _SCHEMA_DIGEST_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch the digest row from L3 by primary key (``datasource_id``).
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: digest data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            data = dict(row)
+            # asyncpg returns jsonb as a str when no codec is registered;
+            # decode the projection back to a list (mirrors the column
+            # collection's tags handling).
+            if isinstance(data.get("tables"), str):
+                data["tables"] = json.loads(data["tables"])
+            result = data
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert the digest row to L3 keyed on ``datasource_id``.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        tables = data.get("tables")
+        tables_json = json.dumps(tables) if tables is not None else "[]"
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_schema_digests (
+                datasource_id, customer_id, tables, source_fingerprint,
+                date_created, date_updated
+            ) VALUES (
+                $1, $2, $3::jsonb, $4, $5, $6
+            )
+            ON CONFLICT (datasource_id) DO UPDATE SET
+                customer_id = EXCLUDED.customer_id,
+                tables = EXCLUDED.tables,
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("datasource_id"),
+            data.get("customer_id"),
+            tables_json,
+            data.get("source_fingerprint"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete the digest row from L3.
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
 
 
 class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
