@@ -216,6 +216,39 @@ class TestDataSourceSchemaDigestCollection:
         # is a by-pk hot-L1 lookup (schema-priming-task-01b).
         assert DataSourceSchemaDigestEntity.primary_key_field == "datasource_id"
 
+    def test_collection_l1_key_column_is_datasource_id(self) -> None:
+        # the COLLECTION's primary_key_column (the L1/L2 key, SEPARATE from
+        # the entity's primary_key_field) must also be datasource_id. the
+        # BaseCollection default is "id"; this table has no id column, so an
+        # inherited default would emit WHERE id=? against the L1 mirror and
+        # break every by-pk read/write. regression guard for the inherited-
+        # default bug.
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.primary_key_columns == ("datasource_id",)
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_postgres_decodes_jsonb_tables_string(self) -> None:
+        # asyncpg returns jsonb as a str when no codec is registered; the
+        # digest read path must decode `tables` back to a list, or the agent
+        # node would iterate a string char-by-char. mirrors the column
+        # collection's tags-as-string test.
+        datasource_id = uuid4()
+        now = datetime.now(UTC)
+        row = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": '[{"schema": "rp", "table": "geo", '
+            '"description": "d", "columns": []}]',
+            "source_fingerprint": "fp",
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
+        result = await coll.fetch_from_postgres(datasource_id)
+        assert isinstance(result["tables"], list)
+        assert result["tables"][0]["table"] == "geo"
+
     def test_serialize_deserialize_roundtrip(self) -> None:
         registry, config = _make_registry_and_config()
         coll = DataSourceSchemaDigestCollection(registry=registry, config=config)

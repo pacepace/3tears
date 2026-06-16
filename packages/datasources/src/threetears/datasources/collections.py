@@ -758,6 +758,15 @@ class DataSourceSchemaDigestCollection(
     hard-deleted (no soft-delete) — a datasource removal drops its digest.
     """
 
+    # the L1/L2 key is the SEPARATE ``primary_key_column`` attribute, NOT
+    # the entity's ``primary_key_field``; it defaults to ``"id"`` on
+    # BaseCollection. this table has NO ``id`` column (PK is
+    # ``datasource_id``), so the default would emit ``WHERE id = ?`` /
+    # ``ON CONFLICT (id)`` against the agent SQLite mirror + the hub L1
+    # upsert and break every by-pk read + invalidation. it MUST name
+    # ``datasource_id`` to match the entity PK + the v029 DDL.
+    primary_key_column: str = "datasource_id"
+
     @property
     def table_name(self) -> str:
         """return database table name.
