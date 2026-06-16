@@ -149,11 +149,7 @@ def markdown_to_slack_blocks(content: str) -> list[dict[str, Any]]:
                 blocks.append(_mrkdwn_section(f"```\n{chunk}\n```"))
             continue
 
-        if (
-            _is_table_row(line)
-            and i + 1 < total
-            and _is_table_separator(lines[i + 1])
-        ):
+        if _is_table_row(line) and i + 1 < total and _is_table_separator(lines[i + 1]):
             flush_para()
             table_lines = [line, lines[i + 1]]
             i += 2
@@ -166,14 +162,16 @@ def markdown_to_slack_blocks(content: str) -> list[dict[str, Any]]:
         header = re.match(r"^(#{1,6})\s+(.*\S)\s*$", stripped)
         if header:
             flush_para()
-            blocks.append({
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": _strip_inline(header.group(2))[:_SLACK_HEADER_TEXT_LIMIT],
-                    "emoji": True,
-                },
-            })
+            blocks.append(
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": _strip_inline(header.group(2))[:_SLACK_HEADER_TEXT_LIMIT],
+                        "emoji": True,
+                    },
+                }
+            )
             i += 1
             continue
 
@@ -230,9 +228,7 @@ def _is_table_separator(line: str) -> bool:
     if not s.startswith("|"):
         return False
     cells = [c.strip() for c in s.strip("|").split("|")]
-    return bool(cells) and all(
-        re.fullmatch(r":?-{1,}:?", c) is not None for c in cells if c
-    )
+    return bool(cells) and all(re.fullmatch(r":?-{1,}:?", c) is not None for c in cells if c)
 
 
 def _split_table_row(line: str) -> list[str]:
@@ -256,9 +252,7 @@ def _looks_numeric(text: str) -> bool:
     """
     cleaned = text.strip()
     return (
-        bool(cleaned)
-        and re.fullmatch(r"[\s\d,.\-+%$()]+", cleaned) is not None
-        and any(ch.isdigit() for ch in cleaned)
+        bool(cleaned) and re.fullmatch(r"[\s\d,.\-+%$()]+", cleaned) is not None and any(ch.isdigit() for ch in cleaned)
     )
 
 

@@ -897,9 +897,7 @@ class TestSlackAdapterRichFormatting:
         assert len(call_kwargs["blocks"]) > 0
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_plain_content_rendered_to_blocks_with_text_fallback(
-        self, mock_app_cls: MagicMock
-    ) -> None:
+    async def test_plain_content_rendered_to_blocks_with_text_fallback(self, mock_app_cls: MagicMock) -> None:
         """every answer renders to blocks; plain text becomes one mrkdwn section.
 
         the agent's answers are markdown regardless of any format_hints, so the
@@ -999,15 +997,11 @@ class TestSlackPostMessage:
             router=_MockRouter(response=ChannelResponse(content="")),
         )
 
-        content = (
-            "**Top result:** here it is\n"
-            "\n"
-            "| County | Votes |\n"
-            "| --- | --- |\n"
-            "| Acme | 1200 |\n"
-        )
+        content = "**Top result:** here it is\n\n| County | Votes |\n| --- | --- |\n| Acme | 1200 |\n"
         await adapter.post_message(
-            channel="C123", text=content, thread_ts="1700000000.000100",
+            channel="C123",
+            text=content,
+            thread_ts="1700000000.000100",
         )
 
         mock_app.client.chat_postMessage.assert_awaited_once()

@@ -241,12 +241,7 @@ class TestMarkdownToSlackBlocks:
         assert blocks[0]["text"]["text"] == "> a quoted line"
 
     def test_table_becomes_native_table_block(self) -> None:
-        content = (
-            "| Name | Revenue |\n"
-            "| --- | --- |\n"
-            "| Acme | 1200 |\n"
-            "| Globex | 980 |"
-        )
+        content = "| Name | Revenue |\n| --- | --- |\n| Acme | 1200 |\n| Globex | 980 |"
         blocks = markdown_to_slack_blocks(content)
         assert len(blocks) == 1
         table = blocks[0]
@@ -263,23 +258,14 @@ class TestMarkdownToSlackBlocks:
         ]
 
     def test_table_numeric_column_is_right_aligned(self) -> None:
-        content = (
-            "| Name | Revenue |\n"
-            "| --- | --- |\n"
-            "| Acme | 1200 |\n"
-            "| Globex | 980 |"
-        )
+        content = "| Name | Revenue |\n| --- | --- |\n| Acme | 1200 |\n| Globex | 980 |"
         table = markdown_to_slack_blocks(content)[0]
         settings = table["column_settings"]
         assert settings[0] == {"align": "left"}  # names
         assert settings[1] == {"align": "right"}  # revenue
 
     def test_table_cell_inline_markdown_is_stripped(self) -> None:
-        content = (
-            "| Name | Note |\n"
-            "| --- | --- |\n"
-            "| **Acme** | [link](http://x) |"
-        )
+        content = "| Name | Note |\n| --- | --- |\n| **Acme** | [link](http://x) |"
         table = markdown_to_slack_blocks(content)[0]
         assert table["rows"][1][0] == {"type": "raw_text", "text": "Acme"}
         assert table["rows"][1][1] == {"type": "raw_text", "text": "link"}

@@ -560,7 +560,9 @@ async def test_ensure_jetstream_stream_memory_storage() -> None:
 
     client, js = _client_with_js()
     await client.ensure_jetstream_stream(
-        name="ephemeral", subjects=["aibots.x.*"], storage="memory",
+        name="ephemeral",
+        subjects=["aibots.x.*"],
+        storage="memory",
     )
     config = js.add_stream.await_args.args[0]
     assert config.storage == StorageType.MEMORY
@@ -596,7 +598,9 @@ async def test_ensure_jetstream_stream_propagates_when_both_fail() -> None:
 
     with pytest.raises(ValueError, match="malformed config"):
         await client.ensure_jetstream_stream(
-            name="bad", subjects=["aibots.x.*"], storage="file",
+            name="bad",
+            subjects=["aibots.x.*"],
+            storage="file",
         )
 
 
