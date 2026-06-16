@@ -56,11 +56,11 @@ packages/langgraph/tests/test_agent_node_caching.py:187:_FakeUnknownChatModel
 
 # nats unit tests
 # rationale: subset shim for nats-py Subscription used by the wrapper unit tests; the production class is internal to nats-py and tests intentionally cover only unsubscribe + messages iteration
-packages/nats/tests/unit/test_client.py:38:_FakeSubscription
+packages/nats/tests/unit/test_client.py:39:_FakeSubscription
 # rationale: minimal Msg dataclass for the NATS wrapper handler shim; nats-py Msg carries reply/sid/headers metadata the unit tests do not exercise
-packages/nats/tests/unit/test_client.py:60:_FakeMsg
+packages/nats/tests/unit/test_client.py:61:_FakeMsg
 # rationale: subset shim for nats.aio.Client implementing publish/subscribe/request/drain/close/flush only; full nats-py Client surface is huge and tests exercise the wrapper above it
-packages/nats/tests/unit/test_client.py:69:_FakeNatsPyClient
+packages/nats/tests/unit/test_client.py:70:_FakeNatsPyClient
 # rationale: minimal Entry dataclass for the NATS-KV wrapper unit tests carrying only value+revision
 packages/nats/tests/unit/test_kv.py:20:_FakeEntry
 # rationale: subset shim for nats.js.KeyValue exposing the get/put/create/update/delete surface tested at the wrapper level; full KeyValue carries history/watch/purge methods unrelated to wrapper behaviour

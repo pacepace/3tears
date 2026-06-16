@@ -1132,6 +1132,114 @@ class NatsClient:
             self._buckets[full_name] = bucket
         return bucket
 
+    async def ensure_jetstream_stream(
+        self,
+        *,
+        name: str,
+        subjects: list[str],
+        storage: str = "file",
+    ) -> str:
+        """create (or update) a durable JetStream stream over given subjects.
+
+        idempotent: binds to an existing stream of the same name and reconciles
+        its subject set, else creates it. the stream name is namespace-prefixed
+        (``{namespace}-{name}``) to match the KV-bucket convention. ``file``
+        storage rides the ``nats-jetstream`` named volume and survives restarts;
+        this is what makes a finished answer durable when no consumer is
+        attached at publish time.
+
+        :param name: stream name suffix (namespace-prefixed)
+        :ptype name: str
+        :param subjects: subject patterns the stream captures
+        :ptype subjects: list[str]
+        :param storage: ``"file"`` (durable, default) or ``"memory"``
+        :ptype storage: str
+        :return: full namespace-prefixed stream name
+        :rtype: str
+        :raises RuntimeError: if stream creation and update both fail
+        """
+        from nats.js.api import StorageType, StreamConfig  # noqa: PLC0415
+
+        full_name = f"{self._namespace}-{name}"
+        storage_type = StorageType.FILE if storage == "file" else StorageType.MEMORY
+        config = StreamConfig(name=full_name, subjects=subjects, storage=storage_type)
+        js = self.jetstream_context()
+        try:
+            await js.add_stream(config)
+        except Exception:  # noqa: BLE001 -- stream may already exist; reconcile below
+            # rationale: nats-py raises a generic error when the stream name is
+            # already in use; the recovery (update to reconcile subjects) is the
+            # create-or-bind path, mirroring NatsKvBucket.open.
+            await js.update_stream(config)
+        log.info(
+            "jetstream stream ensured: stream=%s subjects=%s storage=%s",
+            full_name,
+            ",".join(subjects),
+            storage,
+        )
+        return full_name
+
+    async def jetstream_publish(self, *, subject: Subject, payload: bytes) -> None:
+        """publish raw bytes to a JetStream subject with persistence ack.
+
+        unlike :meth:`publish_raw` (core NATS, fire-and-forget), this persists
+        the message to the backing stream and awaits the broker ``PubAck``, so a
+        message published while no consumer is attached is retained and
+        redelivered to a durable consumer when it connects.
+
+        :param subject: target JetStream subject
+        :ptype subject: Subject
+        :param payload: serialized message bytes
+        :ptype payload: bytes
+        :return: nothing
+        :rtype: None
+        """
+        js = self.jetstream_context()
+        await js.publish(subject.path, payload)
+
+    async def jetstream_subscribe_durable(
+        self,
+        *,
+        subject: Subject,
+        durable: str,
+        cb: Callable[[Any], Awaitable[None]],
+        stream: str | None = None,
+    ) -> Any:
+        """create a durable push consumer with MANUAL ack on a JetStream subject.
+
+        the callback receives the raw nats-py JetStream message and MUST
+        ``await msg.ack()`` only after the message is fully handled (e.g. posted
+        to the destination channel). until then the message is redelivered, so a
+        consumer that crashes or restarts mid-handle never loses the answer.
+        ``durable`` makes the consumer's position survive disconnects.
+
+        :param subject: subject to consume (one channel-delivery family)
+        :ptype subject: Subject
+        :param durable: durable consumer name (stable across restarts)
+        :ptype durable: str
+        :param cb: async callback receiving the raw JetStream message; acks it
+        :ptype cb: Callable[[Any], Awaitable[None]]
+        :param stream: backing stream name to bind the consumer to
+        :ptype stream: str | None
+        :return: nats-py JetStream push subscription handle
+        :rtype: Any
+        """
+        js = self.jetstream_context()
+        sub = await js.subscribe(
+            subject.path,
+            durable=durable,
+            cb=cb,
+            manual_ack=True,
+            stream=stream,
+        )
+        log.info(
+            "jetstream durable consumer subscribed: subject=%s durable=%s stream=%s",
+            subject.path,
+            durable,
+            stream,
+        )
+        return sub
+
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------

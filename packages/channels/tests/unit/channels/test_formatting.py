@@ -8,6 +8,7 @@ from threetears.channels.formatting import (
     build_discord_payload,
     build_slack_blocks,
     build_slack_payload,
+    markdown_to_slack_blocks,
     plain_text_fallback,
     should_use_rich_formatting,
 )
@@ -167,3 +168,132 @@ class TestPlainTextFallback:
     def test_strips_code_block_markers(self) -> None:
         result = plain_text_fallback("```python\ncode\n```")
         assert "```" not in result
+
+
+class TestMarkdownToSlackBlocks:
+    """tests for markdown_to_slack_blocks (GitHub markdown -> native Slack)."""
+
+    def test_plain_prose_becomes_one_mrkdwn_section(self) -> None:
+        blocks = markdown_to_slack_blocks("hello world")
+        assert blocks == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "hello world"}},
+        ]
+
+    def test_bold_converts_double_star_to_single_star(self) -> None:
+        blocks = markdown_to_slack_blocks("this is **important** text")
+        assert blocks[0]["text"]["text"] == "this is *important* text"
+
+    def test_bold_underscores_convert_to_single_star(self) -> None:
+        blocks = markdown_to_slack_blocks("this is __important__ text")
+        assert blocks[0]["text"]["text"] == "this is *important* text"
+
+    def test_italic_single_star_converts_to_underscore(self) -> None:
+        blocks = markdown_to_slack_blocks("this is *subtle* text")
+        assert blocks[0]["text"]["text"] == "this is _subtle_ text"
+
+    def test_link_converts_to_slack_angle_form(self) -> None:
+        blocks = markdown_to_slack_blocks("see [the docs](https://example.com/x)")
+        assert blocks[0]["text"]["text"] == "see <https://example.com/x|the docs>"
+
+    def test_strikethrough_converts_to_single_tilde(self) -> None:
+        blocks = markdown_to_slack_blocks("this is ~~gone~~ now")
+        assert blocks[0]["text"]["text"] == "this is ~gone~ now"
+
+    def test_dash_bullets_become_slack_bullets(self) -> None:
+        blocks = markdown_to_slack_blocks("- one\n- two\n- three")
+        text = blocks[0]["text"]["text"]
+        assert text == "• one\n• two\n• three"
+
+    def test_star_bullets_become_slack_bullets(self) -> None:
+        blocks = markdown_to_slack_blocks("* alpha\n* beta")
+        assert blocks[0]["text"]["text"] == "• alpha\n• beta"
+
+    def test_ordered_list_is_preserved(self) -> None:
+        blocks = markdown_to_slack_blocks("1. first\n2. second")
+        assert blocks[0]["text"]["text"] == "1. first\n2. second"
+
+    def test_header_becomes_header_block_plain_text(self) -> None:
+        blocks = markdown_to_slack_blocks("## Results")
+        assert blocks[0]["type"] == "header"
+        assert blocks[0]["text"]["type"] == "plain_text"
+        assert blocks[0]["text"]["text"] == "Results"
+
+    def test_header_strips_inline_markdown(self) -> None:
+        blocks = markdown_to_slack_blocks("# The **big** result")
+        assert blocks[0]["type"] == "header"
+        assert blocks[0]["text"]["text"] == "The big result"
+
+    def test_horizontal_rule_becomes_divider(self) -> None:
+        blocks = markdown_to_slack_blocks("above\n\n---\n\nbelow")
+        types = [b["type"] for b in blocks]
+        assert "divider" in types
+
+    def test_fenced_code_block_becomes_mrkdwn_section(self) -> None:
+        content = "```python\nprint('hi')\n```"
+        blocks = markdown_to_slack_blocks(content)
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "section"
+        assert blocks[0]["text"]["type"] == "mrkdwn"
+        assert blocks[0]["text"]["text"] == "```\nprint('hi')\n```"
+
+    def test_blockquote_is_preserved(self) -> None:
+        blocks = markdown_to_slack_blocks("> a quoted line")
+        assert blocks[0]["text"]["text"] == "> a quoted line"
+
+    def test_table_becomes_native_table_block(self) -> None:
+        content = "| Name | Revenue |\n| --- | --- |\n| Acme | 1200 |\n| Globex | 980 |"
+        blocks = markdown_to_slack_blocks(content)
+        assert len(blocks) == 1
+        table = blocks[0]
+        assert table["type"] == "table"
+        # header + 2 data rows.
+        assert len(table["rows"]) == 3
+        assert table["rows"][0] == [
+            {"type": "raw_text", "text": "Name"},
+            {"type": "raw_text", "text": "Revenue"},
+        ]
+        assert table["rows"][1] == [
+            {"type": "raw_text", "text": "Acme"},
+            {"type": "raw_text", "text": "1200"},
+        ]
+
+    def test_table_numeric_column_is_right_aligned(self) -> None:
+        content = "| Name | Revenue |\n| --- | --- |\n| Acme | 1200 |\n| Globex | 980 |"
+        table = markdown_to_slack_blocks(content)[0]
+        settings = table["column_settings"]
+        assert settings[0] == {"align": "left"}  # names
+        assert settings[1] == {"align": "right"}  # revenue
+
+    def test_table_cell_inline_markdown_is_stripped(self) -> None:
+        content = "| Name | Note |\n| --- | --- |\n| **Acme** | [link](http://x) |"
+        table = markdown_to_slack_blocks(content)[0]
+        assert table["rows"][1][0] == {"type": "raw_text", "text": "Acme"}
+        assert table["rows"][1][1] == {"type": "raw_text", "text": "link"}
+
+    def test_mixed_document_preserves_order(self) -> None:
+        content = (
+            "# Summary\n"
+            "\n"
+            "Here are the **top** accounts:\n"
+            "\n"
+            "| Account | Spend |\n"
+            "| --- | --- |\n"
+            "| Acme | 1200 |\n"
+            "\n"
+            "- follow up with Acme\n"
+        )
+        blocks = markdown_to_slack_blocks(content)
+        types = [b["type"] for b in blocks]
+        assert types == ["header", "section", "table", "section"]
+        assert blocks[1]["text"]["text"] == "Here are the *top* accounts:"
+        assert blocks[3]["text"]["text"] == "• follow up with Acme"
+
+    def test_blocks_are_capped_at_slack_limit(self) -> None:
+        # 200 header lines -> 200 candidate header blocks, capped to 50.
+        content = "\n\n".join(f"# H{i}" for i in range(200))
+        blocks = markdown_to_slack_blocks(content)
+        assert len(blocks) == 50
+
+    def test_empty_content_yields_no_blocks(self) -> None:
+        assert markdown_to_slack_blocks("") == []
+        assert markdown_to_slack_blocks("   \n  \n") == []
