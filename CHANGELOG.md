@@ -4,6 +4,26 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.12.1 -- 2026-06-16
+
+Patch: stop the OpenRouter wrapper from logging streaming tool-call
+continuations as junk tool names. Every DeepSeek tool turn produced a
+per-chunk WARNING storm (`dropped invalid_tool_calls entry with junk name:
+None`) that buried real signal; the dropped entries were harmless to tool
+arguments (the chunk merge re-derives from `tool_call_chunks`), but the
+noise was severe. No behavior change to tool dispatch.
+
+### Fixed — `3tears-models` — `threetears.models`
+
+- `filter_invalid_tool_calls` now treats a nameless `invalid_tool_calls`
+  entry (`name` None / absent / empty) as a normal streaming-continuation
+  fragment — kept, never logged. Only a concrete, undispatchable name claim
+  is rejected: a non-empty string failing the canonical tool-name regex
+  (the genuine junk case, e.g. a quote-garbage name leaked from XML-shaped
+  tool-call text) or a non-string / non-dict value. Genuine-junk rejection
+  is unchanged. Verified by a local A/B on a real DeepSeek-over-OpenRouter
+  tool turn: 12 `junk name: None` warnings before, 0 after.
+
 ## v0.12.0 -- 2026-06-15
 
 Durable channel-answer delivery and native Slack rendering. A finished

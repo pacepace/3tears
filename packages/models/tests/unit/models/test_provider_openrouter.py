@@ -325,6 +325,66 @@ class TestNameTranslatingChatOpenRouter:
         assert all(call["name"] != junk_name for call in kept)
 
     @pytest.mark.asyncio
+    async def test_astream_keeps_nameless_streaming_continuation(self) -> None:
+        """``astream`` keeps ``name=None`` invalid_tool_calls — they are not junk.
+
+        Regression for metallm conv ``019ecdfd-0b17-7b40-b27b-6c4508f4ec3b``
+        (2026-06-16): every DeepSeek tool turn logged dozens of
+        ``dropped invalid_tool_calls entry with junk name: None`` WARNINGs.
+        Those entries are normal streaming continuation fragments (only the
+        first delta carries the name; the rest accumulate by index in
+        ``tool_call_chunks`` and merge into a valid tool call). The wrapper
+        must keep them — dropping was a false positive (and harmless to args,
+        since the merge re-derives from ``tool_call_chunks``), but the
+        per-chunk log storm was the real cost.
+        """
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            # A streaming continuation fragment: no name, partial args.
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "name": None,
+                            "args": ' "2+2"}',
+                            "id": None,
+                            "error": "JSONDecodeError",
+                        },
+                    ],
+                ),
+            )
+
+        model = create_openrouter_chat(
+            "deepseek/deepseek-chat-v3-0324",
+            "sk-test",
+        )
+
+        original_astream = ChatOpenRouter._astream
+        try:
+            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
+            chunks: list[AIMessageChunk] = []
+            async for chunk in model.astream("hi"):
+                chunks.append(chunk)
+        finally:
+            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+
+        carrier_chunks = [c for c in chunks if c.invalid_tool_calls]
+        assert len(carrier_chunks) == 1
+        kept = carrier_chunks[0].invalid_tool_calls
+        assert len(kept) == 1
+        assert kept[0]["name"] is None
+
+    @pytest.mark.asyncio
     async def test_agenerate_drops_invalid_tool_calls_with_junk_names(self) -> None:
         """``_agenerate`` mirrors the streaming-path filter for non-streaming calls.
 
