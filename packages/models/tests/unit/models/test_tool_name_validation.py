@@ -178,12 +178,12 @@ class TestFilterInvalidToolCalls:
         assert kept == calls
         assert rejected == []
 
-    def test_all_invalid_moved_to_rejected(self) -> None:
-        """all-invalid input collects every entry into ``rejected``."""
+    def test_all_junk_names_moved_to_rejected(self) -> None:
+        """non-empty malformed names all collect into ``rejected``."""
         calls = [
             {"name": 'memory_recall" name="memory_recall', "args": "{}", "id": "1"},
             {"name": "<tool>", "args": "{}", "id": "2"},
-            {"name": "", "args": "{}", "id": "3"},
+            {"name": "tool with spaces", "args": "{}", "id": "3"},
         ]
         kept, rejected = filter_invalid_tool_calls(calls)
         assert kept == []
@@ -201,16 +201,63 @@ class TestFilterInvalidToolCalls:
         assert kept == [good]
         assert rejected == [bad]
 
-    def test_missing_name_field_is_rejected(self) -> None:
-        """a call dict without a ``name`` field counts as invalid."""
+    def test_missing_name_field_is_kept_not_junk(self) -> None:
+        """a call dict without a ``name`` field is a streaming continuation.
+
+        Only the first delta of a tool call carries the name; the rest
+        accumulate by index in ``tool_call_chunks`` and merge into a
+        valid tool call. A nameless entry is therefore NOT junk -- it
+        must not be logged or dropped. (Before this fix it was rejected,
+        producing a WARNING per streamed chunk: metallm conv 019ecdfd,
+        2026-06-16.)
+        """
         call = {"args": "{}", "id": "1", "error": "JSONDecodeError"}
+        kept, rejected = filter_invalid_tool_calls([call])
+        assert kept == [call]
+        assert rejected == []
+
+    def test_none_name_is_kept_as_streaming_continuation(self) -> None:
+        """``name=None`` is the normal continuation-fragment signature, not junk."""
+        call = {"name": None, "args": "{}", "id": "1"}
+        kept, rejected = filter_invalid_tool_calls([call])
+        assert kept == [call]
+        assert rejected == []
+
+    def test_empty_string_name_is_kept_not_junk(self) -> None:
+        """an empty-string name is a degenerate continuation, kept not rejected."""
+        call = {"name": "", "args": "{}", "id": "1"}
+        kept, rejected = filter_invalid_tool_calls([call])
+        assert kept == [call]
+        assert rejected == []
+
+    def test_whitespace_only_name_is_rejected(self) -> None:
+        """a whitespace-only name is a concrete name that can't dispatch -> junk.
+
+        Distinct from the empty-string/None continuation case: spaces are a
+        non-empty string that fails the canonical regex, so it is real junk,
+        not a streaming fragment.
+        """
+        call = {"name": "   ", "args": "{}", "id": "1"}
         kept, rejected = filter_invalid_tool_calls([call])
         assert kept == []
         assert rejected == [call]
 
     def test_non_string_name_is_rejected(self) -> None:
-        """a call with a non-string ``name`` value counts as invalid."""
-        call = {"name": None, "args": "{}", "id": "1"}
-        kept, rejected = filter_invalid_tool_calls([call])
+        """a non-string, non-None name (e.g. an int) is still rejected.
+
+        Only None / absent / empty (a *missing* name) counts as a streaming
+        continuation. A non-string value is a malformed concrete claim, not
+        a continuation, so the streaming-continuation fix must NOT widen to
+        keep it.
+        """
+        call = {"name": 5, "args": "{}", "id": "1"}
+        kept, rejected = filter_invalid_tool_calls([call])  # type: ignore[list-item]
+        assert kept == []
+        assert rejected == [call]
+
+    def test_non_dict_entry_is_rejected(self) -> None:
+        """a non-dict entry has no name to dispatch and is not a fragment."""
+        call = "not-a-dict"
+        kept, rejected = filter_invalid_tool_calls([call])  # type: ignore[list-item]
         assert kept == []
         assert rejected == [call]
