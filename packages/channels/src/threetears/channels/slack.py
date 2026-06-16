@@ -15,9 +15,8 @@ from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from threetears.channels.formatting import (
-    build_slack_blocks,
+    markdown_to_slack_blocks,
     plain_text_fallback,
-    should_use_rich_formatting,
 )
 from threetears.channels.protocol import (
     Attachment,
@@ -153,6 +152,49 @@ class SlackAdapter:
         if self._handler is not None:
             await self._handler.close_async()
 
+    async def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str | None = None,
+    ) -> None:
+        """post a message to a channel/thread out-of-band (no inbound event).
+
+        used by durable channel-answer delivery: a finished agent answer can
+        arrive long after the originating Slack event has closed, so it is
+        posted directly through the web client (``chat_postMessage``) on the
+        adapter's bot token rather than the event-bound ``say`` closure. the
+        markdown body is rendered into native Slack blocks, as in
+        :func:`_send_response`.
+
+        :param channel: slack channel id to post into
+        :ptype channel: str
+        :param text: message text in markdown
+        :ptype text: str
+        :param thread_ts: thread to reply in; ``None`` posts top-level
+        :ptype thread_ts: str | None
+        :return: nothing
+        :rtype: None
+        """
+        # always render the agent's markdown into native Slack blocks (tables,
+        # headers, mrkdwn) -- Slack does not render GitHub markdown, so posting
+        # raw text shows ``**bold**`` / ``| tables |`` literally. ``text`` is the
+        # notification/fallback (markdown stripped); ``blocks`` is the rendered
+        # body.
+        blocks = markdown_to_slack_blocks(text)
+        if blocks:
+            kwargs: dict[str, Any] = {
+                "channel": channel,
+                "text": plain_text_fallback(text),
+                "blocks": blocks,
+            }
+        else:
+            kwargs = {"channel": channel, "text": text}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        await self._app.client.chat_postMessage(**kwargs)
+
     async def handle_message_event(
         self,
         event: dict[str, Any],
@@ -282,20 +324,19 @@ async def _send_response(
     :param is_dm: whether message is direct message
     :ptype is_dm: bool
     """
-    use_rich = should_use_rich_formatting(response.format_hints)
+    # render the agent's markdown into native Slack blocks (tables, headers,
+    # mrkdwn); ``text`` is the markdown-stripped notification fallback.
+    blocks = markdown_to_slack_blocks(response.content)
+    fallback_text = plain_text_fallback(response.content)
 
     if is_dm and not thread_ts:
-        if use_rich:
-            blocks = build_slack_blocks(response.content, response.format_hints)
-            fallback_text = plain_text_fallback(response.content)
+        if blocks:
             await say(text=fallback_text, blocks=blocks)
         else:
             await say(text=response.content)
     else:
         reply_thread_ts = thread_ts if thread_ts else event.get("ts", "")
-        if use_rich:
-            blocks = build_slack_blocks(response.content, response.format_hints)
-            fallback_text = plain_text_fallback(response.content)
+        if blocks:
             await say(text=fallback_text, blocks=blocks, thread_ts=reply_thread_ts)
         else:
             await say(text=response.content, thread_ts=reply_thread_ts)

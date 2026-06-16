@@ -12,6 +12,7 @@ import asyncio
 import json
 from datetime import timedelta
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -508,3 +509,130 @@ async def test_ping_returns_false_when_flush_raises() -> None:
     fake.flush_error = TimeoutError("server slow")
     result = await client.ping(timeout=0.1)
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# JetStream durable-delivery helpers
+# ---------------------------------------------------------------------------
+
+
+def _client_with_js() -> tuple[NatsClient, Any]:
+    """build a client whose JetStream context is a mock JS recorder.
+
+    ``jetstream_context()`` returns ``self._raw.jetstream()``, so the seam is
+    stubbed on the fake raw client (the wrapper method is read-only).
+    """
+    client, fake = _make_client()
+    js = MagicMock()
+    js.add_stream = AsyncMock()
+    js.update_stream = AsyncMock()
+    js.publish = AsyncMock()
+    js.subscribe = AsyncMock(return_value="sub-handle")
+    fake.jetstream = MagicMock(return_value=js)  # type: ignore[attr-defined]
+    return client, js
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_creates_and_returns_full_name() -> None:
+    """ensure_jetstream_stream adds the stream and returns the prefixed name."""
+    from nats.js.api import StorageType
+
+    client, js = _client_with_js()
+    full = await client.ensure_jetstream_stream(
+        name="channels-deliver",
+        subjects=["aibots.channels.deliver.*"],
+        storage="file",
+    )
+
+    assert full == "aibots-channels-deliver"
+    js.add_stream.assert_awaited_once()
+    js.update_stream.assert_not_awaited()
+    config = js.add_stream.await_args.args[0]
+    assert config.name == "aibots-channels-deliver"
+    assert config.subjects == ["aibots.channels.deliver.*"]
+    assert config.storage == StorageType.FILE
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_memory_storage() -> None:
+    """storage='memory' selects the MEMORY storage type."""
+    from nats.js.api import StorageType
+
+    client, js = _client_with_js()
+    await client.ensure_jetstream_stream(
+        name="ephemeral",
+        subjects=["aibots.x.*"],
+        storage="memory",
+    )
+    config = js.add_stream.await_args.args[0]
+    assert config.storage == StorageType.MEMORY
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_reconciles_existing() -> None:
+    """when the stream already exists, fall back to update_stream (reconcile)."""
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("stream name already in use")
+
+    full = await client.ensure_jetstream_stream(
+        name="channels-deliver",
+        subjects=["aibots.channels.deliver.*", "aibots.channels.deliver.slack"],
+        storage="file",
+    )
+
+    assert full == "aibots-channels-deliver"
+    js.update_stream.assert_awaited_once()
+    config = js.update_stream.await_args.args[0]
+    assert config.subjects == [
+        "aibots.channels.deliver.*",
+        "aibots.channels.deliver.slack",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_propagates_when_both_fail() -> None:
+    """a malformed config that fails create AND update surfaces, not silently."""
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("create failed")
+    js.update_stream.side_effect = ValueError("malformed config")
+
+    with pytest.raises(ValueError, match="malformed config"):
+        await client.ensure_jetstream_stream(
+            name="bad",
+            subjects=["aibots.x.*"],
+            storage="file",
+        )
+
+
+@pytest.mark.asyncio
+async def test_jetstream_publish_awaits_puback() -> None:
+    """jetstream_publish persists the payload via the JS context."""
+    client, js = _client_with_js()
+    subject = Subjects.channels_deliver("slack")
+    await client.jetstream_publish(subject=subject, payload=b"answer-bytes")
+
+    js.publish.assert_awaited_once_with(subject.path, b"answer-bytes")
+
+
+@pytest.mark.asyncio
+async def test_jetstream_subscribe_durable_uses_manual_ack() -> None:
+    """jetstream_subscribe_durable binds a manual-ack durable consumer."""
+    client, js = _client_with_js()
+    subject = Subjects.channels_deliver("slack")
+    cb = AsyncMock()
+
+    handle = await client.jetstream_subscribe_durable(
+        subject=subject,
+        durable="slack-delivery",
+        cb=cb,
+        stream="aibots-channels-deliver",
+    )
+
+    assert handle == "sub-handle"
+    js.subscribe.assert_awaited_once_with(
+        subject.path,
+        durable="slack-delivery",
+        cb=cb,
+        manual_ack=True,
+        stream="aibots-channels-deliver",
+    )

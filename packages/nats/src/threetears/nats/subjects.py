@@ -468,6 +468,39 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.channel.installs", kind="point")
 
     @classmethod
+    def channels_deliver(cls, channel_type: str) -> Subject:
+        """durable JetStream subject for an agent answer awaiting channel delivery.
+
+        the agent publishes a finished answer here (with the channel routing
+        lifted off the inbound message) on completion; the channel adapter is a
+        durable consumer that posts it to the destination thread. durable so an
+        answer that completes while the adapter is restarting is redelivered,
+        never lost. backed by the ``{ns}_channels_deliver`` JetStream stream
+        over ``{ns}.channels.deliver.*``.
+
+        :param channel_type: channel family (e.g. ``slack``, ``discord``)
+        :ptype channel_type: str
+        :return: subject ``{ns}.channels.deliver.{channel_type}``
+        :rtype: Subject
+        """
+        return Subject(
+            path=f"{_ns()}.channels.deliver.{_sanitize(channel_type)}",
+            kind="point",
+        )
+
+    @classmethod
+    def channels_deliver_wildcard(cls) -> Subject:
+        """wildcard subject covering every channel-delivery family.
+
+        the JetStream ``{ns}_channels_deliver`` stream is declared over this
+        pattern; durable consumers filter to one ``channel_type``.
+
+        :return: subject ``{ns}.channels.deliver.*``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.channels.deliver.*", kind="pattern")
+
+    @classmethod
     def hub_usage_track(cls) -> Subject:
         """publish subject for usage-tracking events posted to hub.
 
