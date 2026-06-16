@@ -4,6 +4,33 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.12.0 -- 2026-06-15
+
+Durable channel-answer delivery and native Slack rendering. A finished
+agent answer is published to a durable JetStream subject and delivered
+out-of-band, so an answer that takes minutes — or completes while the
+channel adapter is restarting — is delivered, never lost. Agent markdown
+now renders into native Slack Block Kit instead of arriving as raw text.
+
+### Added — `3tears-channels` — `threetears.channels`
+
+- `markdown_to_slack_blocks` — converts GitHub-flavored markdown into native
+  Slack Block Kit: mrkdwn emphasis/links, `header` blocks, native `table`
+  blocks (numeric columns right-aligned), code fences, and dividers, bounded
+  to Slack's per-message limits. `SlackAdapter` now always renders answers as
+  blocks with a plain-text fallback, and `post_message` delivers a finished
+  answer out-of-band on the bot token.
+- `ChannelDeliveryMessage` — the durable channel-delivery envelope, with a
+  NATS-KV-valid `dedup_key` making at-least-once delivery post at-most-once.
+
+### Added — `3tears-nats` — `threetears.nats`
+
+- JetStream durable-delivery helpers on `NatsClient`: `ensure_jetstream_stream`
+  (create-or-reconcile), `jetstream_publish` (PubAck-awaited), and
+  `jetstream_subscribe_durable` (manual-ack consumer).
+- `Subjects.channels_deliver` / `channels_deliver_wildcard` — the
+  `{ns}.channels.deliver.{channel_type}` delivery subject family.
+
 ## v0.11.0 -- 2026-06-13
 
 The governed-knowledge layer: agents answer data questions with curated,
