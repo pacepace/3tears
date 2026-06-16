@@ -631,7 +631,10 @@ class TestSlackAdapterThreading:
         }
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
-        say.assert_awaited_once_with(text="threaded reply", thread_ts="1234567890.000001")
+        say.assert_awaited_once()
+        kwargs = say.await_args.kwargs
+        assert kwargs["text"] == "threaded reply"
+        assert kwargs["thread_ts"] == "1234567890.000001"
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_channel_message_starts_new_thread(self, mock_app_cls: MagicMock) -> None:
@@ -659,7 +662,10 @@ class TestSlackAdapterThreading:
         }
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
-        say.assert_awaited_once_with(text="new thread reply", thread_ts="1234567890.123456")
+        say.assert_awaited_once()
+        kwargs = say.await_args.kwargs
+        assert kwargs["text"] == "new thread reply"
+        assert kwargs["thread_ts"] == "1234567890.123456"
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_dm_message_replies_without_thread(self, mock_app_cls: MagicMock) -> None:
@@ -687,7 +693,10 @@ class TestSlackAdapterThreading:
         }
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
-        say.assert_awaited_once_with(text="dm reply")
+        say.assert_awaited_once()
+        kwargs = say.await_args.kwargs
+        assert kwargs["text"] == "dm reply"
+        assert "thread_ts" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -888,8 +897,16 @@ class TestSlackAdapterRichFormatting:
         assert len(call_kwargs["blocks"]) > 0
 
     @patch("threetears.channels.slack.AsyncApp")
-    async def test_plain_formatting_sends_text_only(self, mock_app_cls: MagicMock) -> None:
-        """when no format_hints, say() receives only text kwarg (no blocks)."""
+    async def test_plain_content_rendered_to_blocks_with_text_fallback(
+        self, mock_app_cls: MagicMock
+    ) -> None:
+        """every answer renders to blocks; plain text becomes one mrkdwn section.
+
+        the agent's answers are markdown regardless of any format_hints, so the
+        adapter always renders them into native Slack blocks (Slack does not
+        render GitHub markdown in the ``text`` field). the ``text`` field carries
+        the plain fallback for notifications / screen readers.
+        """
         from threetears.channels.slack import SlackAdapter
 
         response = ChannelResponse(content="plain reply")
@@ -917,7 +934,9 @@ class TestSlackAdapterRichFormatting:
         say.assert_awaited_once()
         call_kwargs = say.await_args.kwargs
         assert call_kwargs.get("text") == "plain reply"
-        assert "blocks" not in call_kwargs
+        assert call_kwargs["blocks"] == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "plain reply"}},
+        ]
 
     @patch("threetears.channels.slack.AsyncApp")
     async def test_rich_formatting_includes_text_fallback(self, mock_app_cls: MagicMock) -> None:

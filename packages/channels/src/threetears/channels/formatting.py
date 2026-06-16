@@ -17,6 +17,7 @@ __all__ = [
     "build_discord_payload",
     "build_slack_blocks",
     "build_slack_payload",
+    "markdown_to_slack_blocks",
     "plain_text_fallback",
     "should_use_rich_formatting",
 ]
@@ -26,6 +27,14 @@ log = get_logger(__name__)
 _SLACK_BLOCK_TEXT_LIMIT = 3000
 _DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 _RICH_FORMAT_KEYS = {"format", "title", "color"}
+
+# Slack Block Kit hard limits (chat.postMessage).
+_SLACK_MAX_BLOCKS = 50
+_SLACK_MAX_TABLE_ROWS = 100
+_SLACK_MAX_TABLE_COLS = 20
+_SLACK_HEADER_TEXT_LIMIT = 150
+# sentinel used to protect bold markers across the italic conversion pass.
+_BOLD_SENTINEL = "\x00"
 
 
 def should_use_rich_formatting(format_hints: dict[str, Any]) -> bool:
@@ -85,6 +94,262 @@ def build_slack_blocks(content: str, format_hints: dict[str, Any]) -> list[dict[
 
     result = blocks
     return result
+
+
+def markdown_to_slack_blocks(content: str) -> list[dict[str, Any]]:
+    """convert GitHub-flavored markdown to native Slack Block Kit blocks.
+
+    Slack does not render GitHub markdown -- it uses ``mrkdwn`` (``*bold*``,
+    ``_italic_``, ``<url|text>``, ``• `` bullets) and Block Kit blocks, with no
+    ``**``/``##``/``| table |`` syntax. this renders the agent's answer into the
+    nicest NATIVE representation Slack supports:
+
+    - markdown tables -> native ``table`` blocks (real columns; numeric columns
+      right-aligned)
+    - ``#`` headers -> ``header`` blocks
+    - fenced code blocks + ``>`` quotes -> ``mrkdwn`` sections (Slack renders both)
+    - ``**bold**`` -> ``*bold*``, ``[t](u)`` -> ``<u|t>``, ``- ``/``* `` -> ``• ``
+    - ``---`` -> dividers; everything else -> ``mrkdwn`` sections
+
+    bounded to Slack's limits (50 blocks / message, 3000 chars / section,
+    100 rows x 20 cols / table).
+
+    :param content: agent response in markdown
+    :ptype content: str
+    :return: Slack Block Kit blocks
+    :rtype: list[dict[str, Any]]
+    """
+    blocks: list[dict[str, Any]] = []
+    para: list[str] = []
+    lines = content.split("\n")
+    total = len(lines)
+
+    def flush_para() -> None:
+        if para:
+            joined = "\n".join(para).strip()
+            if joined:
+                for chunk in _split_long_text(joined, _SLACK_BLOCK_TEXT_LIMIT):
+                    blocks.append(_mrkdwn_section(chunk))
+            para.clear()
+
+    i = 0
+    while i < total:
+        line = lines[i]
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush_para()
+            code: list[str] = []
+            i += 1
+            while i < total and not lines[i].strip().startswith("```"):
+                code.append(lines[i])
+                i += 1
+            i += 1  # consume the closing fence (if present)
+            for chunk in _split_long_text("\n".join(code), _SLACK_BLOCK_TEXT_LIMIT - 8):
+                blocks.append(_mrkdwn_section(f"```\n{chunk}\n```"))
+            continue
+
+        if (
+            _is_table_row(line)
+            and i + 1 < total
+            and _is_table_separator(lines[i + 1])
+        ):
+            flush_para()
+            table_lines = [line, lines[i + 1]]
+            i += 2
+            while i < total and _is_table_row(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+            blocks.append(_markdown_table_to_block(table_lines))
+            continue
+
+        header = re.match(r"^(#{1,6})\s+(.*\S)\s*$", stripped)
+        if header:
+            flush_para()
+            blocks.append({
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": _strip_inline(header.group(2))[:_SLACK_HEADER_TEXT_LIMIT],
+                    "emoji": True,
+                },
+            })
+            i += 1
+            continue
+
+        if re.fullmatch(r"\*{3,}|-{3,}|_{3,}", stripped):
+            flush_para()
+            blocks.append({"type": "divider"})
+            i += 1
+            continue
+
+        if not stripped:
+            flush_para()
+            i += 1
+            continue
+
+        para.append(_convert_line(line))
+        i += 1
+
+    flush_para()
+    return blocks[:_SLACK_MAX_BLOCKS]
+
+
+def _mrkdwn_section(text: str) -> dict[str, Any]:
+    """wrap mrkdwn text in a Slack section block.
+
+    :param text: mrkdwn-formatted text
+    :ptype text: str
+    :return: section block
+    :rtype: dict[str, Any]
+    """
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+def _is_table_row(line: str) -> bool:
+    """return whether a line is a pipe-delimited markdown table row.
+
+    :param line: source line
+    :ptype line: str
+    :return: True if it looks like ``| a | b |``
+    :rtype: bool
+    """
+    s = line.strip()
+    return s.startswith("|") and s.count("|") >= 2
+
+
+def _is_table_separator(line: str) -> bool:
+    """return whether a line is a markdown table header separator.
+
+    :param line: source line
+    :ptype line: str
+    :return: True if it looks like ``| --- | :--: |``
+    :rtype: bool
+    """
+    s = line.strip()
+    if not s.startswith("|"):
+        return False
+    cells = [c.strip() for c in s.strip("|").split("|")]
+    return bool(cells) and all(
+        re.fullmatch(r":?-{1,}:?", c) is not None for c in cells if c
+    )
+
+
+def _split_table_row(line: str) -> list[str]:
+    """split a pipe-delimited row into trimmed cell strings.
+
+    :param line: table row line
+    :ptype line: str
+    :return: cell values
+    :rtype: list[str]
+    """
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def _looks_numeric(text: str) -> bool:
+    """return whether a cell value is a number (for right-alignment).
+
+    :param text: cell text
+    :ptype text: str
+    :return: True if numeric-looking
+    :rtype: bool
+    """
+    cleaned = text.strip()
+    return (
+        bool(cleaned)
+        and re.fullmatch(r"[\s\d,.\-+%$()]+", cleaned) is not None
+        and any(ch.isdigit() for ch in cleaned)
+    )
+
+
+def _markdown_table_to_block(table_lines: list[str]) -> dict[str, Any]:
+    """convert markdown table lines into a native Slack ``table`` block.
+
+    cells are ``raw_text`` (Slack table cells are plain -- inline markdown is
+    stripped); columns whose data cells are all numeric are right-aligned.
+
+    :param table_lines: header row, separator row, then data rows
+    :ptype table_lines: list[str]
+    :return: Slack ``table`` block
+    :rtype: dict[str, Any]
+    """
+    header = _split_table_row(table_lines[0])
+    ncols = min(len(header), _SLACK_MAX_TABLE_COLS)
+    data = [_split_table_row(r) for r in table_lines[2:]]
+
+    rows: list[list[dict[str, Any]]] = [
+        [{"type": "raw_text", "text": _strip_inline(c)} for c in header[:ncols]],
+    ]
+    for dr in data[: _SLACK_MAX_TABLE_ROWS - 1]:
+        padded = (dr + [""] * ncols)[:ncols]
+        rows.append(
+            [{"type": "raw_text", "text": _strip_inline(c)} for c in padded],
+        )
+
+    col_settings: list[dict[str, Any]] = []
+    for ci in range(ncols):
+        vals = [dr[ci] for dr in data if ci < len(dr) and dr[ci].strip()]
+        align = "right" if vals and all(_looks_numeric(v) for v in vals) else "left"
+        col_settings.append({"align": align})
+
+    return {"type": "table", "rows": rows, "column_settings": col_settings}
+
+
+def _convert_line(line: str) -> str:
+    """convert one non-block markdown line to mrkdwn (lists, quotes, inline).
+
+    :param line: source line
+    :ptype line: str
+    :return: mrkdwn line
+    :rtype: str
+    """
+    bullet = re.match(r"^(\s*)[-*+]\s+(.*)$", line)
+    if bullet:
+        return f"{bullet.group(1)}• {_convert_inline(bullet.group(2))}"
+    ordered = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line)
+    if ordered:
+        return f"{ordered.group(1)}{ordered.group(2)}. {_convert_inline(ordered.group(3))}"
+    if line.lstrip().startswith(">"):
+        return line  # blockquote: Slack renders ``>`` natively
+    return _convert_inline(line)
+
+
+def _convert_inline(text: str) -> str:
+    """convert inline markdown emphasis / links to Slack mrkdwn.
+
+    ``[t](u)`` -> ``<u|t>``; ``**b**`` / ``__b__`` -> ``*b*``; ``*i*`` -> ``_i_``;
+    ``~~s~~`` -> ``~s~``. (inline code spans are left as-is; rare emphasis inside
+    them is accepted.)
+
+    :param text: source text
+    :ptype text: str
+    :return: mrkdwn text
+    :rtype: str
+    """
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r"<\2|\1>", text)
+    text = re.sub(r"\*\*(.+?)\*\*", rf"{_BOLD_SENTINEL}\1{_BOLD_SENTINEL}", text)
+    text = re.sub(r"__(.+?)__", rf"{_BOLD_SENTINEL}\1{_BOLD_SENTINEL}", text)
+    text = re.sub(r"\*(\S.*?\S|\S)\*", r"_\1_", text)
+    text = re.sub(r"~~(.+?)~~", r"~\1~", text)
+    return text.replace(_BOLD_SENTINEL, "*")
+
+
+def _strip_inline(text: str) -> str:
+    """strip markdown to plain text (for header blocks + table cells).
+
+    :param text: source text
+    :ptype text: str
+    :return: plain text
+    :rtype: str
+    """
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = text.replace("`", "")
+    text = re.sub(r"^#{1,6}\s+", "", text)
+    text = re.sub(r"[*_]", "", text)
+    return text.strip()
 
 
 def build_discord_embed(content: str, format_hints: dict[str, Any]) -> dict[str, Any]:

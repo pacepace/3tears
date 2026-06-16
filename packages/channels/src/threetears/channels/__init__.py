@@ -24,6 +24,9 @@ from threetears.channels.formatting import (
     build_slack_payload,
     should_use_rich_formatting,
 )
+from threetears.channels.delivery import (
+    ChannelDeliveryMessage,
+)
 from threetears.channels.protocol import (
     Attachment,
     ChannelMessage,
@@ -39,6 +42,7 @@ from threetears.channels.websocket import (
 
 __all__ = [
     "Attachment",
+    "ChannelDeliveryMessage",
     "ChannelMessage",
     "ChannelResponse",
     "ChannelRouter",
