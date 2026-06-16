@@ -974,3 +974,70 @@ class TestSlackAdapterRichFormatting:
         assert "blocks" in call_kwargs
         # fallback text should be plain (markdown stripped)
         assert "**" not in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# out-of-band durable delivery (post_message)
+# ---------------------------------------------------------------------------
+
+
+class TestSlackPostMessage:
+    """tests for SlackAdapter.post_message (durable answer delivery path)."""
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_renders_markdown_to_blocks_with_thread(self, mock_app_cls: MagicMock) -> None:
+        """post_message renders markdown into blocks and threads the reply."""
+        from threetears.channels.slack import SlackAdapter
+
+        mock_app = MagicMock()
+        mock_app.client.chat_postMessage = AsyncMock()
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=_MockRouter(response=ChannelResponse(content="")),
+        )
+
+        content = (
+            "**Top result:** here it is\n"
+            "\n"
+            "| County | Votes |\n"
+            "| --- | --- |\n"
+            "| Acme | 1200 |\n"
+        )
+        await adapter.post_message(
+            channel="C123", text=content, thread_ts="1700000000.000100",
+        )
+
+        mock_app.client.chat_postMessage.assert_awaited_once()
+        kwargs = mock_app.client.chat_postMessage.await_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["thread_ts"] == "1700000000.000100"
+        # rendered blocks present; the markdown table became a native table block.
+        block_types = [b["type"] for b in kwargs["blocks"]]
+        assert "table" in block_types
+        # the notification text is the plain fallback (markdown stripped).
+        assert "**" not in kwargs["text"]
+
+    @patch("threetears.channels.slack.AsyncApp")
+    async def test_top_level_post_has_no_thread_ts(self, mock_app_cls: MagicMock) -> None:
+        """post_message without thread_ts posts at top level (no thread key)."""
+        from threetears.channels.slack import SlackAdapter
+
+        mock_app = MagicMock()
+        mock_app.client.chat_postMessage = AsyncMock()
+        mock_app_cls.return_value = mock_app
+
+        adapter = SlackAdapter(
+            bot_token="xoxb-test-token",
+            app_token="xapp-test-token",
+            router=_MockRouter(response=ChannelResponse(content="")),
+        )
+
+        await adapter.post_message(channel="C123", text="plain answer")
+
+        kwargs = mock_app.client.chat_postMessage.await_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert "thread_ts" not in kwargs
+        assert kwargs["text"] == "plain answer"
