@@ -15,6 +15,7 @@ mirrors the Hub-side coverage that existed pre-relocation:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -238,8 +239,7 @@ class TestDataSourceSchemaDigestCollection:
         row = {
             "datasource_id": datasource_id,
             "customer_id": uuid4(),
-            "tables": '[{"schema": "rp", "table": "geo", '
-            '"description": "d", "columns": []}]',
+            "tables": '[{"schema": "rp", "table": "geo", "description": "d", "columns": []}]',
             "source_fingerprint": "fp",
             "date_created": now,
             "date_updated": now,
@@ -248,6 +248,102 @@ class TestDataSourceSchemaDigestCollection:
         result = await coll.fetch_from_postgres(datasource_id)
         assert isinstance(result["tables"], list)
         assert result["tables"][0]["table"] == "geo"
+
+    @pytest.mark.asyncio
+    async def test_fetch_decodes_double_encoded_tables_to_list(self) -> None:
+        # read safety net: even a row stored DOUBLE-encoded (an older write)
+        # must come back as a list, not a str, so the agent does not iterate
+        # it char-by-char.
+        datasource_id = uuid4()
+        now = datetime.now(UTC)
+        inner = json.dumps([{"schema": "rp", "table": "geo", "columns": []}])
+        row = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": json.dumps(inner),  # '"[...]"' -- double-encoded
+            "source_fingerprint": "fp",
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
+        result = await coll.fetch_from_postgres(datasource_id)
+        assert isinstance(result["tables"], list)
+        assert result["tables"][0]["table"] == "geo"
+
+    @pytest.mark.asyncio
+    async def test_save_does_not_double_encode_string_tables(self) -> None:
+        # PRODUCTION condition: the hub's L1_METADATA does not register this
+        # table, so the entity round-trips `tables` to an ALREADY-JSON-encoded
+        # string before save_to_postgres. re-dumping it double-encodes the
+        # jsonb cell to a JSON STRING "[...]" instead of the array, and a
+        # single decode on read then yields a str (the agent iterates it
+        # char-by-char). this was a real production bug a live run surfaced.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        tables_str = '[{"schema": "s", "table": "t", "description": "d", "columns": []}]'
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": tables_str,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        # $3 (the tables param, 4th positional after the SQL) must be the
+        # ARRAY json, passed through -- NOT a JSON-string-of-the-array.
+        tables_param = pool.execute.await_args.args[3]
+        assert json.loads(tables_param) == json.loads(tables_str)
+        assert isinstance(json.loads(tables_param), list)
+
+    @pytest.mark.asyncio
+    async def test_save_normalizes_double_encoded_string_tables(self) -> None:
+        # the live-observed worst case: a DOUBLE-encoded string reaches save
+        # (an L2/get-then-mutate round-trip serialized it twice). it must be
+        # decoded all the way down to a list and stored as a proper array, not
+        # a jsonb string-of-a-string.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        inner = [{"schema": "s", "table": "t", "columns": []}]
+        double_encoded = json.dumps(json.dumps(inner))  # '"[...]"'
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": double_encoded,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        tables_param = pool.execute.await_args.args[3]
+        parsed = json.loads(tables_param)
+        assert isinstance(parsed, list)
+        assert parsed[0]["table"] == "t"
+
+    @pytest.mark.asyncio
+    async def test_save_encodes_list_tables(self) -> None:
+        # the normal path: a python list is json-encoded to an array exactly
+        # once.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": [{"schema": "s", "table": "t", "columns": []}],
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        tables_param = pool.execute.await_args.args[3]
+        assert isinstance(json.loads(tables_param), list)
+        assert json.loads(tables_param)[0]["table"] == "t"
 
     def test_serialize_deserialize_roundtrip(self) -> None:
         registry, config = _make_registry_and_config()

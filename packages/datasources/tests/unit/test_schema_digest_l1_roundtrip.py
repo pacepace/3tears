@@ -124,7 +124,8 @@ class TestDigestL1RoundTrip:
         # read it BY PRIMARY KEY (datasource_id). with the inherited-"id"
         # default this get() raised "no such column: id".
         collection = DataSourceSchemaDigestCollection(
-            registry=registry, config=config,
+            registry=registry,
+            config=config,
         )
         datasource_id = uuid.uuid4()
         customer_id = uuid.uuid4()
@@ -148,6 +149,7 @@ class TestDigestL1RoundTrip:
         config: DefaultCoreConfig,
     ) -> None:
         collection = DataSourceSchemaDigestCollection(
-            registry=registry, config=config,
+            registry=registry,
+            config=config,
         )
         assert await collection.get(uuid.uuid4()) is None

@@ -822,11 +822,22 @@ class DataSourceSchemaDigestCollection(
         result: dict[str, Any] | None = None
         if row is not None:
             data = dict(row)
-            # asyncpg returns jsonb as a str when no codec is registered;
-            # decode the projection back to a list (mirrors the column
-            # collection's tags handling).
-            if isinstance(data.get("tables"), str):
-                data["tables"] = json.loads(data["tables"])
+            # asyncpg/proxy returns jsonb as a str when no codec is
+            # registered; decode the projection all the way back to a list.
+            # decode-until-list (not a single decode) so the agent reads a
+            # LIST even if a row was stored double-encoded by an older write
+            # -- the consumer (the priming node) iterates ``tables`` and would
+            # choke on a str. the write path is fixed too; this is the read
+            # safety net.
+            tables = data.get("tables")
+            while isinstance(tables, bytes | str):
+                raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
+                try:
+                    tables = json.loads(raw)
+                except ValueError, TypeError:
+                    tables = []
+                    break
+            data["tables"] = tables if isinstance(tables, list) else []
             result = data
         return result
 
@@ -849,8 +860,27 @@ class DataSourceSchemaDigestCollection(
         if self.l3_pool is None:
             return 0
 
+        # NORMALIZE ``tables`` to a python list, then encode EXACTLY ONCE for
+        # ``::jsonb``. depending on which serialization tiers the entity
+        # round-tripped (the hub registers this table in NO L1 metadata, and
+        # the L2 path + the get-then-mutate re-materialize can re-serialize),
+        # ``tables`` may arrive as a list, a JSON-encoded string, or even a
+        # DOUBLE-encoded string. blindly ``json.dumps``-ing a string
+        # double-encodes it, so the jsonb cell holds a JSON STRING ``"[...]"``
+        # instead of the array and a single decode on read yields a str -- the
+        # agent would then iterate it char-by-char. decoding down to the list
+        # first makes the stored value a proper array in every case. (a live
+        # integration run surfaced this; the unit-mock + asyncpg-direct tests
+        # missed it because they fed a clean list.)
         tables = data.get("tables")
-        tables_json = json.dumps(tables) if tables is not None else "[]"
+        while isinstance(tables, bytes | str):
+            raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
+            try:
+                tables = json.loads(raw)
+            except ValueError, TypeError:
+                tables = None
+                break
+        tables_json = json.dumps(tables) if isinstance(tables, list) else "[]"
 
         result = await self.l3_pool.execute(
             """
@@ -864,6 +894,11 @@ class DataSourceSchemaDigestCollection(
                 customer_id = EXCLUDED.customer_id,
                 tables = EXCLUDED.tables,
                 source_fingerprint = EXCLUDED.source_fingerprint,
+                -- include date_created so L3 agrees with the L1/L2 value
+                -- the collection stamps on every (is_new) re-materialize;
+                -- omitting it diverges the tiers (the digest re-materializes
+                -- via a fresh create(), so date_created tracks last-write).
+                date_created = EXCLUDED.date_created,
                 date_updated = EXCLUDED.date_updated
             """,
             data.get("datasource_id"),
