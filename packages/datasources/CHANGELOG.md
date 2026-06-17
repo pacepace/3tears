@@ -7,6 +7,22 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.12.2]
+
+### Added
+
+- `DataSourceSchemaDigest` entity + `DataSourceSchemaDigestCollection` — a
+  three-tier collection for the materialized documented-schema digest, one row
+  per datasource, addressed by primary key `datasource_id` for a by-pk hot-L1
+  read with L2/L3 fallback and cross-pod invalidation. The `tables` projection
+  is stored as JSONB.
+
+### Fixed
+
+- JSONB write double-encode in the digest tables: a pre-`json.dumps`'d string
+  bound as `::jsonb` was re-encoded to a scalar by the text-format jsonb codec;
+  writes now text-cast (`::text::jsonb`). Covered by a real-L1 round-trip test.
+
 ## [0.11.0]
 
 ### Added

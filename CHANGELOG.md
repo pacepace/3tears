@@ -4,6 +4,30 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.12.2 -- 2026-06-17
+
+Additive: add the documented-schema digest entity + collection to
+`3tears-datasources` — the materialized, by-pk schema/concept summary the hub
+publishes per datasource and agent pods read at conversation start (the
+foundation for schema priming). No behavior change to existing datasource
+collections.
+
+### Added — `3tears-datasources` — `threetears.datasources`
+
+- `DataSourceSchemaDigest` entity + `DataSourceSchemaDigestCollection`, a
+  three-tier collection keyed by `datasource_id` for a by-pk hot-L1 read with
+  L2/L3 fallback and cross-pod invalidation. The table has no `id` column, so
+  `primary_key_column = "datasource_id"` (the `BaseCollection` default would
+  emit `WHERE id = ?` / `ON CONFLICT (id)` and break every by-pk read +
+  invalidation). One row per datasource; the `tables` projection is JSONB.
+
+### Fixed — `3tears-datasources` — `threetears.datasources`
+
+- JSONB write double-encode: a pre-`json.dumps`'d string bound as `::jsonb` was
+  re-encoded by the text-format jsonb codec into a scalar. Digest writes now
+  text-cast (`::text::jsonb`) so the value lands as a real JSONB array. Covered
+  by a real-L1 round-trip test (no-codec test pools gave a false green).
+
 ## v0.12.1 -- 2026-06-16
 
 Patch: stop the OpenRouter wrapper from logging streaming tool-call

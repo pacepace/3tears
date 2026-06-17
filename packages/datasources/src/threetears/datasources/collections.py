@@ -50,6 +50,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceStatus,
     DataSourceTableEntity,
     TableTemplateEntity,
@@ -62,6 +63,7 @@ __all__ = [
     "DataSourceCollection",
     "DataSourceColumnCollection",
     "DataSourceRelationCollection",
+    "DataSourceSchemaDigestCollection",
     "DataSourceTableCollection",
     "TableTemplateCollection",
 ]
@@ -92,6 +94,17 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     "column_hash": str,
     "date_introspected": datetime,
     "date_described": datetime,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_SCHEMA_DIGEST_FIELD_TYPES: dict[str, Any] = {
+    "datasource_id": UUID,
+    "customer_id": UUID,
+    # structured documented projection:
+    # [{schema, table, description, columns: [{name, type, description}]}]
+    "tables": list,
+    "source_fingerprint": str,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -627,7 +640,10 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 date_created, date_updated
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12::jsonb, $13, $14, $15, $16, $17
+                -- $12::text::jsonb defeats the text-format jsonb codec's
+                -- json.dumps encoder (see the digest write below); $12::jsonb
+                -- would double-encode the already-serialized tags string.
+                $12::text::jsonb, $13, $14, $15, $16, $17
             )
             ON CONFLICT (datasource_id, schema_name, table_name, column_name) DO UPDATE SET
                 data_type = EXCLUDED.data_type,
@@ -726,6 +742,201 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                     data["tags"] = json.loads(data["tags"])
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+
+class DataSourceSchemaDigestCollection(
+    BaseCollection[DataSourceSchemaDigestEntity],
+):
+    """three-tier collection for the materialized documented-schema digest.
+
+    one row per datasource, addressed BY PRIMARY KEY ``datasource_id`` so
+    the agent-side read (schema-priming-task-01b) is a by-pk hot-L1
+    lookup, with L2/L3 fallback for a cold pod and cross-pod invalidation
+    when the hub re-materializes. the hub is the only writer (the
+    materializer reuses the existing documented-schema computation); agent
+    pods bind this SAME class over the ``system.platform.rbac`` proxy pool
+    and read only.
+
+    the ``tables`` projection is stored as JSONB. digest rows are
+    hard-deleted (no soft-delete) — a datasource removal drops its digest.
+    """
+
+    # the L1/L2 key is the SEPARATE ``primary_key_column`` attribute, NOT
+    # the entity's ``primary_key_field``; it defaults to ``"id"`` on
+    # BaseCollection. this table has NO ``id`` column (PK is
+    # ``datasource_id``), so the default would emit ``WHERE id = ?`` /
+    # ``ON CONFLICT (id)`` against the agent SQLite mirror + the hub L1
+    # upsert and break every by-pk read + invalidation. it MUST name
+    # ``datasource_id`` to match the entity PK + the v029 DDL.
+    primary_key_column: str = "datasource_id"
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_schema_digests"
+
+    @property
+    def entity_class(self) -> type[DataSourceSchemaDigestEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceSchemaDigestEntity class
+        :rtype: type[DataSourceSchemaDigestEntity]
+        """
+        return DataSourceSchemaDigestEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _SCHEMA_DIGEST_FIELD_TYPES)
+
+    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch the digest row from L3 by primary key (``datasource_id``).
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: digest data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            data = dict(row)
+            # asyncpg/proxy returns jsonb as a str when no codec is
+            # registered; decode the projection all the way back to a list.
+            # decode-until-list (not a single decode) so the agent reads a
+            # LIST even if a row was stored double-encoded by an older write
+            # -- the consumer (the priming node) iterates ``tables`` and would
+            # choke on a str. the write path is fixed too; this is the read
+            # safety net.
+            tables = data.get("tables")
+            while isinstance(tables, bytes | str):
+                raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
+                try:
+                    tables = json.loads(raw)
+                except ValueError, TypeError:
+                    tables = []
+                    break
+            data["tables"] = tables if isinstance(tables, list) else []
+            result = data
+        return result
+
+    async def save_to_postgres(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert the digest row to L3 keyed on ``datasource_id``.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        # NORMALIZE ``tables`` to a python list, then encode EXACTLY ONCE for
+        # ``::jsonb``. depending on which serialization tiers the entity
+        # round-tripped (the hub registers this table in NO L1 metadata, and
+        # the L2 path + the get-then-mutate re-materialize can re-serialize),
+        # ``tables`` may arrive as a list, a JSON-encoded string, or even a
+        # DOUBLE-encoded string. blindly ``json.dumps``-ing a string
+        # double-encodes it, so the jsonb cell holds a JSON STRING ``"[...]"``
+        # instead of the array and a single decode on read yields a str -- the
+        # agent would then iterate it char-by-char. decoding down to the list
+        # first makes the stored value a proper array in every case. (a live
+        # integration run surfaced this; the unit-mock + asyncpg-direct tests
+        # missed it because they fed a clean list.)
+        tables = data.get("tables")
+        while isinstance(tables, bytes | str):
+            raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
+            try:
+                tables = json.loads(raw)
+            except ValueError, TypeError:
+                tables = None
+                break
+        tables_json = json.dumps(tables) if isinstance(tables, list) else "[]"
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_schema_digests (
+                datasource_id, customer_id, tables, source_fingerprint,
+                date_created, date_updated
+            ) VALUES (
+                -- $3::text::jsonb, NOT $3::jsonb: the platform registers a
+                -- text-format jsonb codec (threetears.core.collections.
+                -- init_connection) on every Postgres pool whose encoder is
+                -- json.dumps. binding the already-json.dumps'd string to a
+                -- jsonb param makes the codec encode it a SECOND time, so the
+                -- cell holds a JSON STRING "[...]" (a scalar) not the array --
+                -- the restart-time corruption the no-codec test pools never
+                -- reproduced. typing the param as text first pins it past the
+                -- codec; postgres then casts text->jsonb once. mirrors the
+                -- $1::text::public.vector pattern for the same reason.
+                $1, $2, $3::text::jsonb, $4, $5, $6
+            )
+            ON CONFLICT (datasource_id) DO UPDATE SET
+                customer_id = EXCLUDED.customer_id,
+                tables = EXCLUDED.tables,
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                -- include date_created so L3 agrees with the L1/L2 value
+                -- the collection stamps on every (is_new) re-materialize;
+                -- omitting it diverges the tiers (the digest re-materializes
+                -- via a fresh create(), so date_created tracks last-write).
+                date_created = EXCLUDED.date_created,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("datasource_id"),
+            data.get("customer_id"),
+            tables_json,
+            data.get("source_fingerprint"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_postgres(self, entity_id: Any) -> None:
+        """hard-delete the digest row from L3.
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
 
 
 class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
@@ -828,7 +1039,10 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
                 id, name, description, datasource_ids, join_paths,
                 aggregation_notes, caveats, date_created, date_updated
             ) VALUES (
-                $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9
+                -- $N::text::jsonb defeats the text-format jsonb codec's
+                -- json.dumps encoder (see the digest write); ::jsonb would
+                -- double-encode the already-serialized list strings.
+                $1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9
             )
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
