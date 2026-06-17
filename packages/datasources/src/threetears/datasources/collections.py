@@ -640,7 +640,10 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 date_created, date_updated
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12::jsonb, $13, $14, $15, $16, $17
+                -- $12::text::jsonb defeats the text-format jsonb codec's
+                -- json.dumps encoder (see the digest write below); $12::jsonb
+                -- would double-encode the already-serialized tags string.
+                $12::text::jsonb, $13, $14, $15, $16, $17
             )
             ON CONFLICT (datasource_id, schema_name, table_name, column_name) DO UPDATE SET
                 data_type = EXCLUDED.data_type,
@@ -888,7 +891,17 @@ class DataSourceSchemaDigestCollection(
                 datasource_id, customer_id, tables, source_fingerprint,
                 date_created, date_updated
             ) VALUES (
-                $1, $2, $3::jsonb, $4, $5, $6
+                -- $3::text::jsonb, NOT $3::jsonb: the platform registers a
+                -- text-format jsonb codec (threetears.core.collections.
+                -- init_connection) on every Postgres pool whose encoder is
+                -- json.dumps. binding the already-json.dumps'd string to a
+                -- jsonb param makes the codec encode it a SECOND time, so the
+                -- cell holds a JSON STRING "[...]" (a scalar) not the array --
+                -- the restart-time corruption the no-codec test pools never
+                -- reproduced. typing the param as text first pins it past the
+                -- codec; postgres then casts text->jsonb once. mirrors the
+                -- $1::text::public.vector pattern for the same reason.
+                $1, $2, $3::text::jsonb, $4, $5, $6
             )
             ON CONFLICT (datasource_id) DO UPDATE SET
                 customer_id = EXCLUDED.customer_id,
@@ -1026,7 +1039,10 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
                 id, name, description, datasource_ids, join_paths,
                 aggregation_notes, caveats, date_created, date_updated
             ) VALUES (
-                $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9
+                -- $N::text::jsonb defeats the text-format jsonb codec's
+                -- json.dumps encoder (see the digest write); ::jsonb would
+                -- double-encode the already-serialized list strings.
+                $1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9
             )
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
