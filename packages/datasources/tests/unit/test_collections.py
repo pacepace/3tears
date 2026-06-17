@@ -15,6 +15,7 @@ mirrors the Hub-side coverage that existed pre-relocation:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -26,6 +27,7 @@ from threetears.datasources.collections import (
     DataSourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
+    DataSourceSchemaDigestCollection,
     DataSourceTableCollection,
     TableTemplateCollection,
 )
@@ -33,6 +35,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceTableEntity,
     TableTemplateEntity,
 )
@@ -191,6 +194,205 @@ class TestDataSourceTableCollection:
         serialized = coll.serialize(data)
         deserialized = coll.deserialize(serialized)
         assert deserialized.get("column_hash") is None
+
+
+# -- DataSourceSchemaDigestCollection --
+
+
+class TestDataSourceSchemaDigestCollection:
+    """digest collection round-trips the structured projection by-pk."""
+
+    def test_table_name(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.table_name == "datasource_schema_digests"
+
+    def test_entity_class(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.entity_class is DataSourceSchemaDigestEntity
+
+    def test_primary_key_is_datasource_id(self) -> None:
+        # the digest is addressed BY datasource_id so the agent-side read
+        # is a by-pk hot-L1 lookup (schema-priming-task-01b).
+        assert DataSourceSchemaDigestEntity.primary_key_field == "datasource_id"
+
+    def test_collection_l1_key_column_is_datasource_id(self) -> None:
+        # the COLLECTION's primary_key_column (the L1/L2 key, SEPARATE from
+        # the entity's primary_key_field) must also be datasource_id. the
+        # BaseCollection default is "id"; this table has no id column, so an
+        # inherited default would emit WHERE id=? against the L1 mirror and
+        # break every by-pk read/write. regression guard for the inherited-
+        # default bug.
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.primary_key_columns == ("datasource_id",)
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_postgres_decodes_jsonb_tables_string(self) -> None:
+        # asyncpg returns jsonb as a str when no codec is registered; the
+        # digest read path must decode `tables` back to a list, or the agent
+        # node would iterate a string char-by-char. mirrors the column
+        # collection's tags-as-string test.
+        datasource_id = uuid4()
+        now = datetime.now(UTC)
+        row = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": '[{"schema": "rp", "table": "geo", "description": "d", "columns": []}]',
+            "source_fingerprint": "fp",
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
+        result = await coll.fetch_from_postgres(datasource_id)
+        assert isinstance(result["tables"], list)
+        assert result["tables"][0]["table"] == "geo"
+
+    @pytest.mark.asyncio
+    async def test_fetch_decodes_double_encoded_tables_to_list(self) -> None:
+        # read safety net: even a row stored DOUBLE-encoded (an older write)
+        # must come back as a list, not a str, so the agent does not iterate
+        # it char-by-char.
+        datasource_id = uuid4()
+        now = datetime.now(UTC)
+        inner = json.dumps([{"schema": "rp", "table": "geo", "columns": []}])
+        row = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": json.dumps(inner),  # '"[...]"' -- double-encoded
+            "source_fingerprint": "fp",
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
+        result = await coll.fetch_from_postgres(datasource_id)
+        assert isinstance(result["tables"], list)
+        assert result["tables"][0]["table"] == "geo"
+
+    @pytest.mark.asyncio
+    async def test_save_does_not_double_encode_string_tables(self) -> None:
+        # PRODUCTION condition: the hub's L1_METADATA does not register this
+        # table, so the entity round-trips `tables` to an ALREADY-JSON-encoded
+        # string before save_to_postgres. re-dumping it double-encodes the
+        # jsonb cell to a JSON STRING "[...]" instead of the array, and a
+        # single decode on read then yields a str (the agent iterates it
+        # char-by-char). this was a real production bug a live run surfaced.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        tables_str = '[{"schema": "s", "table": "t", "description": "d", "columns": []}]'
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": tables_str,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        # $3 (the tables param, 4th positional after the SQL) must be the
+        # ARRAY json, passed through -- NOT a JSON-string-of-the-array.
+        tables_param = pool.execute.await_args.args[3]
+        assert json.loads(tables_param) == json.loads(tables_str)
+        assert isinstance(json.loads(tables_param), list)
+
+    @pytest.mark.asyncio
+    async def test_save_normalizes_double_encoded_string_tables(self) -> None:
+        # the live-observed worst case: a DOUBLE-encoded string reaches save
+        # (an L2/get-then-mutate round-trip serialized it twice). it must be
+        # decoded all the way down to a list and stored as a proper array, not
+        # a jsonb string-of-a-string.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        inner = [{"schema": "s", "table": "t", "columns": []}]
+        double_encoded = json.dumps(json.dumps(inner))  # '"[...]"'
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": double_encoded,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        tables_param = pool.execute.await_args.args[3]
+        parsed = json.loads(tables_param)
+        assert isinstance(parsed, list)
+        assert parsed[0]["table"] == "t"
+
+    @pytest.mark.asyncio
+    async def test_save_encodes_list_tables(self) -> None:
+        # the normal path: a python list is json-encoded to an array exactly
+        # once.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        now = datetime.now(UTC)
+        await coll.save_to_postgres(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": [{"schema": "s", "table": "t", "columns": []}],
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        tables_param = pool.execute.await_args.args[3]
+        assert isinstance(json.loads(tables_param), list)
+        assert json.loads(tables_param)[0]["table"] == "t"
+
+    def test_serialize_deserialize_roundtrip(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        now = datetime.now(UTC)
+        datasource_id = uuid4()
+        data: dict[str, Any] = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": [
+                {
+                    "schema": "reporting_prod",
+                    "table": "report_geofacts_joined_data",
+                    "description": "joined geo facts",
+                    "columns": [
+                        {
+                            "name": "metric_name",
+                            "type": "character varying",
+                            "description": "the EAV metric label",
+                        },
+                    ],
+                },
+            ],
+            "source_fingerprint": "deadbeef",
+            "date_created": now,
+            "date_updated": now,
+        }
+        serialized = coll.serialize(data)
+        assert isinstance(serialized, bytes)
+        deserialized = coll.deserialize(serialized)
+        assert deserialized["datasource_id"] == datasource_id
+        assert deserialized["source_fingerprint"] == "deadbeef"
+        # the structured projection must survive the L2 round-trip intact
+        assert deserialized["tables"][0]["table"] == "report_geofacts_joined_data"
+        assert deserialized["tables"][0]["columns"][0]["name"] == "metric_name"
+
+    def test_entity_id_is_datasource_id(self) -> None:
+        # BaseEntity keys _id off primary_key_field, so the entity the
+        # agent reads is addressed by its datasource_id.
+        datasource_id = uuid4()
+        entity = DataSourceSchemaDigestEntity(
+            {
+                "datasource_id": datasource_id,
+                "customer_id": uuid4(),
+                "tables": [],
+                "source_fingerprint": "x",
+            },
+        )
+        assert entity.id == datasource_id
 
 
 # -- DataSourceColumnCollection --

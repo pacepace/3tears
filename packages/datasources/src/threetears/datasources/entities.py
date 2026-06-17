@@ -37,6 +37,7 @@ __all__ = [
     "DataSourceColumnEntity",
     "DataSourceEntity",
     "DataSourceRelationEntity",
+    "DataSourceSchemaDigestEntity",
     "DataSourceStatus",
     "DataSourceTableEntity",
     "DataSourceType",
@@ -161,6 +162,42 @@ class DataSourceColumnEntity(BaseEntity):
     """
 
     primary_key_field: str = "id"
+
+
+class DataSourceSchemaDigestEntity(BaseEntity):
+    """materialized documented-schema digest for one datasource (schema-priming).
+
+    extends :class:`BaseEntity`. one row per datasource in
+    ``platform.datasource_schema_digests``, holding the pre-derived
+    structured projection of the datasource's DOCUMENTED tables and
+    columns (the hub materializes it from
+    ``platform.datasource_tables`` + ``platform.datasource_columns``,
+    keeping only rows whose ``description`` is non-null). agent pods read
+    it BY PRIMARY KEY so the lookup is served from the hot L1 cache — the
+    whole reason the digest is materialized rather than re-derived per
+    turn (a list-by-datasource read cache-bypasses to L3).
+
+    the primary key IS ``datasource_id`` (one row per datasource), so the
+    agent addresses the digest by the datasource it already holds. fields
+    match ``platform.datasource_schema_digests``: ``datasource_id`` /
+    ``customer_id`` / ``tables`` (JSONB structured projection) /
+    ``source_fingerprint`` (a content hash of the documented rows the
+    digest was built from, for idempotent reconcile + observability) /
+    ``date_created`` / ``date_updated``.
+
+    the stored projection is STRUCTURED, not rendered markdown — token
+    budgeting + block rendering are the consumer's (agent's) presentation
+    concern (schema-priming-task-01b), kept out of the platform artifact.
+
+    :param data: initial field data dictionary carrying ``datasource_id``
+    :ptype data: dict[str, Any]
+    :param is_new: whether entity is newly created
+    :ptype is_new: bool
+    :param collection: parent collection reference
+    :ptype collection: Any
+    """
+
+    primary_key_field: str = "datasource_id"
 
 
 class DataSourceRelationEntity(BaseEntity):
