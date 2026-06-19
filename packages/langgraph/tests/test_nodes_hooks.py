@@ -434,3 +434,27 @@ class TestToolNodeUnknownToolName:
         tool_message_content = result["messages"][0].content
         assert "not found" in tool_message_content
         assert "did you mean" not in tool_message_content
+
+
+class TestToolNodeInterruptPropagation:
+    """A ``GraphInterrupt`` (``GraphBubbleUp`` family) raised inside a tool MUST propagate out
+    of :func:`tool_node`, not be swallowed into a "Tool error" ``ToolMessage``. ``interrupt()``-
+    based human-in-the-loop depends on it: the broad ``except Exception`` in tool_node would
+    otherwise turn the pause signal into a tool error and run the graph to completion, silently
+    defeating every interrupt-based tool. Regression guard for the GraphBubbleUp re-raise."""
+
+    @pytest.mark.asyncio
+    async def test_graph_interrupt_propagates_out_of_tool_node(self) -> None:
+        from langgraph.errors import GraphBubbleUp, GraphInterrupt
+
+        mock_tool = AsyncMock()
+        mock_tool.name = "edit_object"
+        mock_tool.ainvoke = AsyncMock(side_effect=GraphInterrupt(()))
+        ai_msg = AIMessage(content="")
+        ai_msg.tool_calls = [{"id": "tc1", "name": "edit_object", "args": {}}]
+        state: dict[str, Any] = {"messages": [ai_msg]}
+        config: RunnableConfig = {"configurable": {"tools": [mock_tool], "_hook_heartbeat_seconds": 0.0}}
+
+        # It must BUBBLE OUT (so Pregel/checkpointer can pause), not be caught into a ToolMessage.
+        with pytest.raises(GraphBubbleUp):
+            await tool_node(state, config)  # type: ignore[arg-type]

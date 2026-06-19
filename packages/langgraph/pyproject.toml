@@ -37,3 +37,10 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 3tears = { workspace = true }
 3tears-observe = { workspace = true }
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.langgraph"]
+explicit_package_bases = true
+ignore_missing_imports = true
