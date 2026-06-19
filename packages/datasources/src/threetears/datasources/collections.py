@@ -42,6 +42,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    encode_jsonb,
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
@@ -599,10 +600,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
         )
         result: dict[str, Any] | None = None
         if row is not None:
-            data = dict(row)
-            if isinstance(data.get("tags"), str):
-                data["tags"] = json.loads(data["tags"])
-            result = data
+            # ``tags`` comes back as a python list via the jsonb codec / proxy
+            # NATS-JSON decode -- no per-collection json.loads (collections-task-04).
+            result = dict(row)
         return result
 
     async def save_to_postgres(
@@ -627,9 +627,6 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
         if self.l3_pool is None:
             return 0
 
-        tags = data.get("tags")
-        tags_json = json.dumps(tags) if tags is not None else "[]"
-
         result = await self.l3_pool.execute(
             """
             INSERT INTO datasource_columns (
@@ -640,10 +637,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 date_created, date_updated
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                -- $12::text::jsonb defeats the text-format jsonb codec's
-                -- json.dumps encoder (see the digest write below); $12::jsonb
-                -- would double-encode the already-serialized tags string.
-                $12::text::jsonb, $13, $14, $15, $16, $17
+                -- $12 is bound NATIVELY (a python list via encode_jsonb); the
+                -- jsonb codec applies the single json.dumps (collections-task-04).
+                $12, $13, $14, $15, $16, $17
             )
             ON CONFLICT (datasource_id, schema_name, table_name, column_name) DO UPDATE SET
                 data_type = EXCLUDED.data_type,
@@ -669,7 +665,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             data.get("description"),
             data.get("valid_range"),
             data.get("caveats"),
-            tags_json,
+            encode_jsonb(data.get("tags")),
             # template-task-01: NOT NULL column with FALSE default;
             # explicit fallback ensures legacy callers that omit the
             # field get the additive-concat semantics.
@@ -737,10 +733,8 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 column_name,
             )
             if row is not None:
-                data = dict(row)
-                if isinstance(data.get("tags"), str):
-                    data["tags"] = json.loads(data["tags"])
-                result = self.entity_class(data, is_new=False, collection=self)
+                # ``tags`` is a python list via the jsonb codec / proxy decode.
+                result = self.entity_class(dict(row), is_new=False, collection=self)
         return result
 
 
@@ -824,24 +818,12 @@ class DataSourceSchemaDigestCollection(
         )
         result: dict[str, Any] | None = None
         if row is not None:
-            data = dict(row)
-            # asyncpg/proxy returns jsonb as a str when no codec is
-            # registered; decode the projection all the way back to a list.
-            # decode-until-list (not a single decode) so the agent reads a
-            # LIST even if a row was stored double-encoded by an older write
-            # -- the consumer (the priming node) iterates ``tables`` and would
-            # choke on a str. the write path is fixed too; this is the read
-            # safety net.
-            tables = data.get("tables")
-            while isinstance(tables, bytes | str):
-                raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
-                try:
-                    tables = json.loads(raw)
-                except ValueError, TypeError:
-                    tables = []
-                    break
-            data["tables"] = tables if isinstance(tables, list) else []
-            result = data
+            # ``tables`` comes back already decoded to a python list: the hub
+            # l3 pool's jsonb codec decodes the direct read, and the agent's
+            # NatsProxyL3Backend read decodes the NATS-JSON array. NO manual
+            # json.loads -- collections-task-04 removed the per-collection
+            # decode that mirrored the (now deleted) write-side json.dumps.
+            result = dict(row)
         return result
 
     async def save_to_postgres(
@@ -863,45 +845,21 @@ class DataSourceSchemaDigestCollection(
         if self.l3_pool is None:
             return 0
 
-        # NORMALIZE ``tables`` to a python list, then encode EXACTLY ONCE for
-        # ``::jsonb``. depending on which serialization tiers the entity
-        # round-tripped (the hub registers this table in NO L1 metadata, and
-        # the L2 path + the get-then-mutate re-materialize can re-serialize),
-        # ``tables`` may arrive as a list, a JSON-encoded string, or even a
-        # DOUBLE-encoded string. blindly ``json.dumps``-ing a string
-        # double-encodes it, so the jsonb cell holds a JSON STRING ``"[...]"``
-        # instead of the array and a single decode on read yields a str -- the
-        # agent would then iterate it char-by-char. decoding down to the list
-        # first makes the stored value a proper array in every case. (a live
-        # integration run surfaced this; the unit-mock + asyncpg-direct tests
-        # missed it because they fed a clean list.)
-        tables = data.get("tables")
-        while isinstance(tables, bytes | str):
-            raw = tables.decode("utf-8") if isinstance(tables, bytes) else tables
-            try:
-                tables = json.loads(raw)
-            except ValueError, TypeError:
-                tables = None
-                break
-        tables_json = json.dumps(tables) if isinstance(tables, list) else "[]"
-
         result = await self.l3_pool.execute(
             """
             INSERT INTO datasource_schema_digests (
                 datasource_id, customer_id, tables, source_fingerprint,
                 date_created, date_updated
             ) VALUES (
-                -- $3::text::jsonb, NOT $3::jsonb: the platform registers a
-                -- text-format jsonb codec (threetears.core.collections.
-                -- init_connection) on every Postgres pool whose encoder is
-                -- json.dumps. binding the already-json.dumps'd string to a
-                -- jsonb param makes the codec encode it a SECOND time, so the
-                -- cell holds a JSON STRING "[...]" (a scalar) not the array --
-                -- the restart-time corruption the no-codec test pools never
-                -- reproduced. typing the param as text first pins it past the
-                -- codec; postgres then casts text->jsonb once. mirrors the
-                -- $1::text::public.vector pattern for the same reason.
-                $1, $2, $3::text::jsonb, $4, $5, $6
+                -- $3 is bound NATIVELY (a python list via encode_jsonb), NOT a
+                -- pre-json.dumps'd string with a ::text::jsonb cast. the platform
+                -- registers a text-format jsonb codec (threetears.core.collections.
+                -- init_connection) on the hub l3 pool (the only pool that touches
+                -- this table, shared by the broker), whose encoder is json.dumps.
+                -- binding the native list lets the codec apply the SINGLE encode --
+                -- collections-task-04 removed the per-collection json.dumps + cast
+                -- that double-encoded the cell into a JSON STRING scalar.
+                $1, $2, $3, $4, $5, $6
             )
             ON CONFLICT (datasource_id) DO UPDATE SET
                 customer_id = EXCLUDED.customer_id,
@@ -916,7 +874,7 @@ class DataSourceSchemaDigestCollection(
             """,
             data.get("datasource_id"),
             data.get("customer_id"),
-            tables_json,
+            encode_jsonb(data.get("tables")),
             data.get("source_fingerprint"),
             data.get("date_created"),
             data.get("date_updated"),
@@ -1001,12 +959,10 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         )
         result: dict[str, Any] | None = None
         if row is not None:
-            data = dict(row)
-            if isinstance(data.get("datasource_ids"), str):
-                data["datasource_ids"] = json.loads(data["datasource_ids"])
-            if isinstance(data.get("join_paths"), str):
-                data["join_paths"] = json.loads(data["join_paths"])
-            result = data
+            # ``datasource_ids`` / ``join_paths`` come back as python lists via
+            # the jsonb codec / proxy decode -- no per-collection json.loads
+            # (collections-task-04).
+            result = dict(row)
         return result
 
     async def save_to_postgres(
@@ -1028,21 +984,15 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         if self.l3_pool is None:
             return 0
 
-        datasource_ids = data.get("datasource_ids")
-        datasource_ids_json = json.dumps(datasource_ids) if datasource_ids is not None else "[]"
-        join_paths = data.get("join_paths")
-        join_paths_json = json.dumps(join_paths) if join_paths is not None else "[]"
-
         result = await self.l3_pool.execute(
             """
             INSERT INTO datasource_relations (
                 id, name, description, datasource_ids, join_paths,
                 aggregation_notes, caveats, date_created, date_updated
             ) VALUES (
-                -- $N::text::jsonb defeats the text-format jsonb codec's
-                -- json.dumps encoder (see the digest write); ::jsonb would
-                -- double-encode the already-serialized list strings.
-                $1, $2, $3, $4::text::jsonb, $5::text::jsonb, $6, $7, $8, $9
+                -- $4 / $5 are bound NATIVELY (python lists via encode_jsonb); the
+                -- jsonb codec applies the single json.dumps (collections-task-04).
+                $1, $2, $3, $4, $5, $6, $7, $8, $9
             )
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -1056,8 +1006,8 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
             data.get("id"),
             data.get("name"),
             data.get("description"),
-            datasource_ids_json,
-            join_paths_json,
+            encode_jsonb(data.get("datasource_ids")),
+            encode_jsonb(data.get("join_paths")),
             data.get("aggregation_notes"),
             data.get("caveats"),
             data.get("date_created"),
