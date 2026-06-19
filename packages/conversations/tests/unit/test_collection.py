@@ -524,3 +524,44 @@ class TestSearch:
         sql, *_ = pg.fetch.call_args.args
         assert "date_created >=" not in sql
         assert "date_created <=" not in sql
+
+
+class TestFindByRef:
+    """tests for :meth:`ConversationsCollection.find_by_ref` SQL contract.
+
+    Mocks the L3 ``fetch`` to assert the ref-grouped query filters on
+    ``(agent_id, channel_type, conversation_ref)`` and orders newest-first.
+    The end-to-end exercise (real rows -> coerced entities) lives in a
+    consumer's integration suite against a live postgres.
+    """
+
+    async def test_empty_result_returns_empty_list(self) -> None:
+        """No rows for the ref -> empty list (no entity construction)."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        result = await collection.find_by_ref(uuid7(), "scriob-object-chat", "midnight:character:chr-eli")
+
+        assert result == []
+
+    async def test_query_filters_by_agent_channel_and_ref_newest_first(self) -> None:
+        """The SQL pins agent_id ($1), channel_type ($2), conversation_ref ($3) and orders newest-first."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        await collection.find_by_ref(agent_id, "scriob-object-chat", "midnight:character:chr-eli")
+
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "agent_id = $1" in sql
+        assert "channel_type = $2" in sql
+        assert "conversation_ref = $3" in sql
+        assert "ORDER BY date_created DESC" in sql
+        assert params[0] == agent_id
+        assert params[1] == "scriob-object-chat"
+        assert params[2] == "midnight:character:chr-eli"

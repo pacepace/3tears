@@ -480,3 +480,46 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
+
+    async def find_by_ref(
+        self,
+        agent_id: UUID,
+        channel_type: str,
+        conversation_ref: str,
+    ) -> list[Conversation]:
+        """fetch every conversation for one ``conversation_ref`` under an agent + channel.
+
+        the caller-assigned ``conversation_ref`` groups conversations that share a domain
+        binding -- e.g. a scriob object chat keys ``conversation_ref`` to its story object so
+        every session on that object lists together. the partition column ``agent_id`` keeps the
+        lookup inside one agent's slice; ``channel_type`` scopes it to one surface. results come
+        from L3 (the source of truth), are promoted into L2 like :meth:`find_by_user`, and are
+        ordered newest-first. this is the ref-grouped peer of :meth:`find_by_user` (owner-scoped)
+        and :meth:`search` (FTS) so callers never reach into row coercion themselves.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param channel_type: the channel/surface the conversations belong to
+        :ptype channel_type: str
+        :param conversation_ref: the caller-assigned grouping ref to match
+        :ptype conversation_ref: str
+        :return: conversations matching the ref under the agent + channel, newest-first
+        :rtype: list[Conversation]
+        """
+        rows = await self.l3_pool.fetch(
+            "SELECT * FROM conversations "
+            "WHERE agent_id = $1 AND channel_type = $2 AND conversation_ref = $3 "
+            "ORDER BY date_created DESC",
+            agent_id,
+            channel_type,
+            conversation_ref,
+        )
+        entities: list[Conversation] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            pk = (data["agent_id"], data["conversation_id"])
+            await self._save_to_l2(pk, data)
+            entities.append(entity)
+        return entities
