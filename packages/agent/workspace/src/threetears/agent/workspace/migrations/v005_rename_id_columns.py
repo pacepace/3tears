@@ -54,11 +54,13 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspaces'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspaces'
           AND column_name = 'id'
     ) AND NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspaces'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspaces'
           AND column_name = 'workspace_id'
     ) THEN
         ALTER TABLE workspaces RENAME COLUMN id TO workspace_id;
@@ -75,11 +77,13 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspace_files'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspace_files'
           AND column_name = 'id'
     ) AND NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspace_files'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspace_files'
           AND column_name = 'file_id'
     ) THEN
         ALTER TABLE workspace_files RENAME COLUMN id TO file_id;
@@ -96,11 +100,13 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspace_file_versions'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspace_file_versions'
           AND column_name = 'id'
     ) AND NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'workspace_file_versions'
+        WHERE table_schema = current_schema()
+          AND table_name = 'workspace_file_versions'
           AND column_name = 'version_id'
     ) THEN
         ALTER TABLE workspace_file_versions RENAME COLUMN id TO version_id;

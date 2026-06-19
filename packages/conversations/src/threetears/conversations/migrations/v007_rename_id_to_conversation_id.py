@@ -68,16 +68,28 @@ log = get_logger(__name__)
 # ``conversation_id`` column already exists (we no-op). Belt-and-
 # suspenders: a ``RAISE NOTICE`` records which branch ran so a replay
 # audit can confirm the no-op path.
+#
+# CRITICAL: the lookup MUST be scoped to ``current_schema()`` (the
+# search_path schema the runner targets). ``information_schema.columns``
+# is NOT search-path-relative -- it lists columns across EVERY schema --
+# so an unscoped ``table_name = 'conversations'`` predicate sees a
+# SIBLING schema's already-renamed table and wrongly takes the ELSE
+# no-op branch, leaving THIS schema's table with the bare ``id`` PK.
+# That mis-fire is invisible in a single-schema deployment (prod uses
+# one schema) but breaks any multi-schema host (e.g. a test suite that
+# isolates each case in its own schema on a shared database).
 _RENAME_COLUMN_SQL = """
 DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'conversations'
+        WHERE table_schema = current_schema()
+          AND table_name = 'conversations'
           AND column_name = 'id'
     ) AND NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'conversations'
+        WHERE table_schema = current_schema()
+          AND table_name = 'conversations'
           AND column_name = 'conversation_id'
     ) THEN
         ALTER TABLE conversations RENAME COLUMN id TO conversation_id;

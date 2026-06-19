@@ -95,7 +95,8 @@ async def rename_memory_refs_date_columns(store: DataStore) -> None:
         IF EXISTS (
             SELECT 1
             FROM information_schema.columns
-            WHERE table_name = 'conversation_memory_refs'
+            WHERE table_schema = current_schema()
+              AND table_name = 'conversation_memory_refs'
               AND column_name = 'date_added'
         ) THEN
             ALTER TABLE conversation_memory_refs
@@ -115,7 +116,8 @@ async def rename_memory_refs_date_columns(store: DataStore) -> None:
         IF EXISTS (
             SELECT 1
             FROM information_schema.columns
-            WHERE table_name = 'conversation_memory_refs'
+            WHERE table_schema = current_schema()
+              AND table_name = 'conversation_memory_refs'
               AND column_name = 'date_updated'
               AND is_nullable = 'YES'
         ) THEN
