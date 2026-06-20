@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from langgraph.types import Command
 from uuid_utils import uuid7
 
 from threetears.langgraph.streaming import (
@@ -615,6 +616,34 @@ class TestStreamingResponseRunGraph:
         end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
         assert end_evt.content == "Hi there"
         assert result["summary"] == "ok"
+
+    async def test_run_graph_accepts_a_command_resume_without_crashing(self) -> None:
+        """``run_graph`` drives a resume with a ``Command`` (not a dict) — the streaming twin of
+        ``ainvoke(Command(resume=...))`` for a checkpointed graph paused at an ``interrupt``.
+
+        Regression for the HITL-resume crash: ``dict(Command)`` raises
+        ``TypeError: 'Command' object is not iterable``, so the old ``final_state = dict(state)``
+        crashed on EVERY confirm-mode resume. The guard seeds ``{}`` for a non-mapping state; the
+        authoritative result still comes from the merged ``on_chain_end`` output.
+        """
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("done")}},
+                {"event": "on_chain_end", "data": {"output": {"applied": True}}},
+            ]
+        )
+
+        result = await stream.run_graph(graph, Command(resume="approve"), {})
+
+        assert result["applied"] is True, "the resume's on_chain_end output is the authoritative result"
+        kinds = [type(e).__name__ for e in transport.events]
+        assert kinds == ["StreamStartEvent", "StreamTokenEvent", "StreamEndEvent"]
 
     async def test_emits_stream_error_on_graph_exception(self) -> None:
         """graph exception fires :class:`StreamErrorEvent`, not empty end.
