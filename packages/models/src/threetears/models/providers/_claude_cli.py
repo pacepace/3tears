@@ -36,7 +36,16 @@ OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 #: (``timeout`` / ``max_retries`` / ``max_tokens`` / ``base_url`` …) are HTTP-API concepts the CLI
 #: backend does not accept — dropped rather than passed through to a constructor error.
 _FORWARDED_KWARGS = frozenset(
-    {"system_prompt", "max_turns", "permission_mode", "allowed_tools", "disallowed_tools", "cwd", "fallback_model", "max_budget_usd"}
+    {
+        "system_prompt",
+        "max_turns",
+        "permission_mode",
+        "allowed_tools",
+        "disallowed_tools",
+        "cwd",
+        "fallback_model",
+        "max_budget_usd",
+    }
 )
 
 
