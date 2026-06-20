@@ -11,6 +11,11 @@ Runtime: needs Node + the Claude Code CLI on PATH (the SDK shells out to it). ``
 is an optional extra (``3tears-models[claude-cli]``), imported lazily here so the base install stays
 free of it.
 
+The token is passed per **instance** (``oauth_token=…``), which the package threads into the SDK's
+per-subprocess ``ClaudeAgentOptions.env`` — NOT a global ``os.environ`` write. That matters for
+multi-user concurrency: two users' subscription models build with distinct tokens and each drives
+its own subprocess with its own credential, with no shared-process-env race.
+
 Upstream bug worked around: the package's bound-tool wrapper invokes a LangChain tool via the private
 ``tool._run(**args)`` path, which current langchain-core rejects ("missing ``config``"). We subclass
 and override that one method to call the public ``tool.ainvoke(args)`` instead, so a caller's OWN
@@ -19,7 +24,6 @@ tools work (each tool call is one Agent-SDK turn). Filed upstream; the override 
 
 from __future__ import annotations
 
-import os
 from typing import Any, Callable
 
 from langchain_core.language_models import BaseChatModel
@@ -73,11 +77,11 @@ def _subscription_model_cls() -> type:
 def create_subscription_chat(model_name: str, token: str, **extra_kwargs: Any) -> BaseChatModel:
     """Build a Claude **subscription**-backed chat model for ``model_name``.
 
-    ``token`` is the OAuth token (``sk-ant-oat…``); the Agent SDK / CLI reads the credential from the
-    ``CLAUDE_CODE_OAUTH_TOKEN`` env var, so it is exported here. HTTP-API kwargs that the CLI backend
-    cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
+    ``token`` is the OAuth token (``sk-ant-oat…``), passed per **instance** via ``oauth_token`` — the
+    package threads it into the SDK's per-subprocess ``ClaudeAgentOptions.env``, so concurrent models
+    with different tokens never share process env (no global ``os.environ`` write, no cross-user race).
+    HTTP-API kwargs the CLI backend cannot take are dropped (see :data:`_FORWARDED_KWARGS`).
     """
-    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
     opts = {k: v for k, v in extra_kwargs.items() if k in _FORWARDED_KWARGS}
-    model: BaseChatModel = _subscription_model_cls()(model=model_name, **opts)
+    model: BaseChatModel = _subscription_model_cls()(model=model_name, oauth_token=token, **opts)
     return model

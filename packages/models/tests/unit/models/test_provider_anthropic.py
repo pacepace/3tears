@@ -34,15 +34,20 @@ class TestSubscriptionRouting:
         model = create_anthropic_chat("claude-sonnet-4-20250514", "sk-ant-api03-xyz")
         assert isinstance(model, ChatAnthropic)
 
-    def test_oauth_token_routes_to_the_subscription_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_oauth_token_routes_to_the_subscription_backend(self) -> None:
         # Needs the optional extra (langchain-claude-code → claude-agent-sdk); skip if absent.
         pytest.importorskip("langchain_claude_code")
         pytest.importorskip("claude_agent_sdk")
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")  # restore the factory's transient export after the test
-        model = create_anthropic_chat("claude-sonnet-4-20250514", "sk-ant-oat01-faketokenfortest")
+        token = "sk-ant-oat01-faketokenfortest"
+        model = create_anthropic_chat("claude-sonnet-4-20250514", token)
         # The subscription backend is NOT a ChatAnthropic — it's the CLI/Agent-SDK-backed model.
         assert not isinstance(model, ChatAnthropic)
         assert isinstance(model, BaseChatModel)
+        # The token is carried per-instance (→ per-subprocess env), never the process-global env.
+        assert model.oauth_token == token  # type: ignore[attr-defined]
+        import os
+
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") != token  # no global mutation
 
 
 class TestCreateAnthropicChat:
