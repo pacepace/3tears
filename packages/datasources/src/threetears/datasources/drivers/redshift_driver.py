@@ -647,30 +647,47 @@ class RedshiftDriver(Driver):
         # through the search_path instead of requiring
         # ``reporting_prod.report_geofacts_joined_data`` everywhere).
         # this must run AFTER statement_timeout so the timeout caps
-        # the search_path SET itself; the build helper returns None
-        # when ``allowed_schemas`` is empty, which is the explicit
-        # "leave the backend default in place" signal.
-        search_path_sql = build_set_search_path_sql(cfg.allowed_schemas)
-        if search_path_sql is not None:
-            try:
-                cursor = conn.cursor()
-                try:
-                    cursor.execute(search_path_sql)
-                finally:
-                    cursor.close()
-            except Exception:
-                # same failure shape as statement_timeout: wrap so the
-                # original redshift_connector error (which can carry the
-                # password in nested context) does not leak via the
-                # exception cause chain. allowed_schemas is the
-                # adversarial surface here -- a malformed identifier
-                # would land in the server-side syntax error path; we
-                # still don't want to surface it to the agent because
-                # the wrapper's message is the only thing callers see.
-                with self._suppress_close():
-                    conn.close()
-                raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
+        # the search_path SET itself. it is ALSO re-applied on every
+        # cache-hit acquisition (see :meth:`_acquire_connection`) so a
+        # reused session that lost the setting still resolves unqualified
+        # names -- the alternative is intermittent "relation does not
+        # exist" the moment a connection is recycled.
+        try:
+            self._apply_search_path_sync(conn)
+        except Exception:
+            # same failure shape as statement_timeout: wrap so the
+            # original redshift_connector error (which can carry the
+            # password in nested context) does not leak via the
+            # exception cause chain. allowed_schemas is the
+            # adversarial surface here -- a malformed identifier
+            # would land in the server-side syntax error path; we
+            # still don't want to surface it to the agent because
+            # the wrapper's message is the only thing callers see.
+            with self._suppress_close():
+                conn.close()
+            raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
         return conn
+
+    def _apply_search_path_sync(self, conn: RedshiftConnection) -> None:
+        """issue ``SET search_path`` on ``conn`` from the configured schemas (sync).
+
+        no-op when ``allowed_schemas`` is empty (the build helper returns ``None``),
+        so datasources that do not configure a search_path pay nothing. raises on a
+        failed SET; callers decide whether to close + evict (cache-hit) or close +
+        wrap (fresh open).
+
+        :param conn: a live redshift connection
+        :ptype conn: RedshiftConnection
+        :return: nothing
+        :rtype: None
+        """
+        search_path_sql = build_set_search_path_sql(self._config.allowed_schemas)
+        if search_path_sql is not None:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(search_path_sql)
+            finally:
+                cursor.close()
 
     @staticmethod
     def _suppress_close() -> Any:
@@ -709,6 +726,22 @@ class RedshiftDriver(Driver):
         async with self._cache_lock:
             if self._cache:
                 conn = self._cache.popleft()
+        if conn is not None:
+            # re-apply search_path on the reused session: a recycled / reset
+            # redshift connection can lose the SET issued at open, which surfaces
+            # as intermittent "relation does not exist" on unqualified names. the
+            # SET is cheap and a no-op when no search_path is configured. if it
+            # fails the connection is unhealthy -- drop it and fall through to a
+            # fresh open rather than hand back a broken connection.
+            try:
+                await self._bridge.to_thread_with_cancel(
+                    lambda: self._apply_search_path_sync(conn),
+                    cancel_cb=lambda: None,
+                )
+            except Exception:
+                with self._suppress_close():
+                    conn.close()
+                conn = None
         if conn is not None:
             hit_counter = _get_cache_hit_counter()
             if hit_counter is not None:
