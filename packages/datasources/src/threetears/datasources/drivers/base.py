@@ -66,6 +66,7 @@ import asyncio
 from threetears.observe import get_logger
 
 __all__ = [
+    "ColumnCoverage",
     "ColumnRow",
     "Driver",
     "TableRow",
@@ -127,6 +128,64 @@ class ColumnRow(TypedDict):
     data_type: str
     is_nullable: str
     ordinal_position: int
+
+
+class ColumnCoverage(TypedDict):
+    """per-column value-coverage counts from :meth:`Driver.column_value_coverage`.
+
+    the raw facts a warehouse scan can decide about one numeric column: how many
+    rows the table holds, and in how many of them the column is a non-null,
+    non-zero value. ``total_rows > 0 and nonzero_count == 0`` is the unloaded /
+    dead-column signal -- a ``0`` that means "not loaded for this table", not a
+    measured zero. the driver returns counts only; the loaded-vs-unloaded VERDICT
+    is the caller's, never the driver's.
+
+    :key total_rows: row count of the scanned table
+    :key nonzero_count: number of rows where the column is NOT NULL and ``<> 0``
+    """
+
+    total_rows: int
+    nonzero_count: int
+
+
+def _quote_ident(name: str) -> str:
+    """double-quote a SQL identifier, escaping embedded quotes by doubling.
+
+    identifiers (schema / table / column names) cannot be passed as bind
+    parameters, so the coverage probe interpolates them -- quoting defends the
+    interpolation even though the names come from the warehouse catalog.
+
+    :param name: raw identifier
+    :ptype name: str
+    :return: a safely double-quoted identifier
+    :rtype: str
+    """
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
+    """build the single-scan coverage aggregate for ``columns`` in ``schema.table``.
+
+    one pass over the table: ``COUNT(*)`` plus, per column, a
+    ``COUNT(NULLIF(col, 0))`` (which counts only non-null, non-zero rows --
+    ``NULLIF`` maps both ``0`` and ``NULL`` to ``NULL`` and ``COUNT`` skips
+    ``NULL``). columns alias to ``nz_<index>`` so the caller maps results back by
+    position without re-quoting. portable standard SQL (Redshift / Postgres /
+    Yugabyte / Snowflake); BigQuery's backtick identifiers would need an override.
+
+    :param schema: schema name
+    :ptype schema: str
+    :param table: table name
+    :ptype table: str
+    :param columns: numeric columns to probe (non-empty)
+    :ptype columns: list[str]
+    :return: the coverage SELECT statement
+    :rtype: str
+    """
+    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+    selects = ["COUNT(*) AS total_rows"]
+    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    return f"SELECT {', '.join(selects)} FROM {qualified}"
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +529,54 @@ class Driver(ABC):
         :return: nothing
         :rtype: None
         """
+
+    # -------------------------------------------------------------------
+    # Concrete: value-coverage probe (datasource honesty)
+    # -------------------------------------------------------------------
+
+    async def column_value_coverage(
+        self,
+        schema: str,
+        table: str,
+        columns: list[str],
+    ) -> dict[str, ColumnCoverage]:
+        """scan ``schema.table`` once and report value-coverage per numeric column.
+
+        the decidable half of the unloaded-zero problem: a numeric column that
+        is non-null and non-zero in ZERO of the table's rows is unloaded (the
+        Alaska ``agg_dummy_eip`` incident), and a ``0`` read from it is missing
+        data, not a measured zero. this method returns the raw counts
+        (:class:`ColumnCoverage`); the caller decides the verdict. CONCRETE on the
+        ABC (portable SQL routed through :meth:`fetch`) so every backend inherits
+        it; it does NOT carry its own ``@_observed`` because the inner
+        :meth:`fetch` it delegates to is already instrumented.
+
+        :param schema: schema name of the table to scan
+        :ptype schema: str
+        :param table: table name to scan
+        :ptype table: str
+        :param columns: numeric column names to probe; an empty list short-circuits
+            with no query
+        :ptype columns: list[str]
+        :return: mapping of column name -> :class:`ColumnCoverage` counts; empty
+            when ``columns`` is empty
+        :rtype: dict[str, ColumnCoverage]
+        :raises asyncio.CancelledError: propagated from :meth:`fetch`
+        :raises RuntimeError: if the driver was previously closed
+        """
+        result: dict[str, ColumnCoverage] = {}
+        if columns:
+            sql = _build_coverage_sql(schema, table, columns)
+            rows = await self.fetch(sql)
+            row = rows[0] if rows else {}
+            total_rows = int(row.get("total_rows") or 0)
+            for index, column in enumerate(columns):
+                nonzero = row.get(f"nz_{index}")
+                result[column] = ColumnCoverage(
+                    total_rows=total_rows,
+                    nonzero_count=int(nonzero or 0),
+                )
+        return result
 
     # -------------------------------------------------------------------
     # Shared helpers (DS-09-05)
