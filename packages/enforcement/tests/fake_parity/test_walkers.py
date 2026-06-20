@@ -128,6 +128,46 @@ class TestNoDeclaration:
         assert violations[0].symbol == "_FakeBucket"
 
 
+class TestExemptMarker:
+    """``# parity-exempt: <rationale>`` exempts a fake in place."""
+
+    def test_exempt_marker_with_rationale_passes(self, tmp_path: Path) -> None:
+        _write(
+            tmp_path / "test_thing.py",
+            "# parity-exempt: subset stub, only the ctor the route touches\nclass _FakeBucket:\n    pass\n",
+        )
+        assert fake_parity_violations((tmp_path,), tmp_path) == []
+
+    def test_exempt_rationale_is_recorded(self, tmp_path: Path) -> None:
+        path = _write(
+            tmp_path / "test_thing.py",
+            "# parity-exempt: subset stub\nclass _FakeBucket:\n    pass\n",
+        )
+        fakes = find_fakes_in_tree(path.parent)
+        assert len(fakes) == 1
+        assert fakes[0].exempt_rationale == "subset stub"
+        assert fakes[0].marker_target is None
+
+    def test_blank_exempt_marker_does_not_exempt(self, tmp_path: Path) -> None:
+        # a bare marker with no rationale must NOT exempt -- it falls through
+        # to no_declaration so the author is forced to state a reason.
+        _write(
+            tmp_path / "test_thing.py",
+            "# parity-exempt:\nclass _FakeBucket:\n    pass\n",
+        )
+        violations = fake_parity_violations((tmp_path,), tmp_path)
+        assert len(violations) == 1
+        assert violations[0].category == "fake_parity.no_declaration"
+
+    def test_exempt_marker_read_across_decorator(self, tmp_path: Path) -> None:
+        path = _write(
+            tmp_path / "test_thing.py",
+            "import dataclasses\n# parity-exempt: subset stub\n@dataclasses.dataclass\nclass _FakeBucket:\n    pass\n",
+        )
+        fakes = find_fakes_in_tree(path.parent)
+        assert fakes[0].exempt_rationale == "subset stub"
+
+
 # ------------------------------------------------------------------
 # marker comment parity check
 # ------------------------------------------------------------------
