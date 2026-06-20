@@ -523,3 +523,46 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             await self._save_to_l2(pk, data)
             entities.append(entity)
         return entities
+
+    async def find_by_ref_prefix(
+        self,
+        agent_id: UUID,
+        channel_type: str,
+        ref_prefix: str,
+    ) -> list[Conversation]:
+        """fetch every conversation whose ``conversation_ref`` STARTS WITH ``ref_prefix``.
+
+        the broader peer of :meth:`find_by_ref`: where that matches one exact ref (the sessions on a
+        single object), this matches a whole family of refs sharing a prefix -- e.g. a scriob story
+        keys every object's ref as ``"{story}:{type}:{object}"``, so ``ref_prefix="{story}:"`` lists
+        EVERY chat in the story across all objects (a chat-manager / inbox query), including refs
+        whose object no longer exists. ``left(...) = $3`` is an exact, escaping-free prefix match (no
+        LIKE wildcards to sanitise). partition (``agent_id``) + ``channel_type`` scope it as in
+        :meth:`find_by_ref`; results come from L3, are promoted into L2, newest-first.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param channel_type: the channel/surface the conversations belong to
+        :ptype channel_type: str
+        :param ref_prefix: the literal ``conversation_ref`` prefix to match (e.g. ``"story-1:"``)
+        :ptype ref_prefix: str
+        :return: conversations whose ref starts with ``ref_prefix``, newest-first
+        :rtype: list[Conversation]
+        """
+        rows = await self.l3_pool.fetch(
+            "SELECT * FROM conversations "
+            "WHERE agent_id = $1 AND channel_type = $2 AND left(conversation_ref, char_length($3)) = $3 "
+            "ORDER BY date_created DESC",
+            agent_id,
+            channel_type,
+            ref_prefix,
+        )
+        entities: list[Conversation] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            pk = (data["agent_id"], data["conversation_id"])
+            await self._save_to_l2(pk, data)
+            entities.append(entity)
+        return entities

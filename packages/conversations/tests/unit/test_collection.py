@@ -565,3 +565,41 @@ class TestFindByRef:
         assert params[0] == agent_id
         assert params[1] == "scriob-object-chat"
         assert params[2] == "midnight:character:chr-eli"
+
+
+class TestFindByRefPrefix:
+    """tests for :meth:`ConversationsCollection.find_by_ref_prefix` SQL contract.
+
+    The broader peer of find_by_ref: matches every ref STARTING WITH a prefix (a whole story's
+    chats across objects), via an exact, escaping-free ``left(...)`` prefix — not a LIKE pattern.
+    """
+
+    async def test_empty_result_returns_empty_list(self) -> None:
+        """No rows under the prefix -> empty list (no entity construction)."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        result = await collection.find_by_ref_prefix(uuid7(), "scriob-object-chat", "midnight:")
+
+        assert result == []
+
+    async def test_query_is_an_exact_prefix_match_newest_first(self) -> None:
+        """The SQL pins agent_id ($1) + channel_type ($2) and matches conversation_ref by an exact
+        ``left(...) = $3`` prefix (no LIKE wildcards to escape), newest-first."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        await collection.find_by_ref_prefix(agent_id, "scriob-object-chat", "midnight:")
+
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "agent_id = $1" in sql
+        assert "channel_type = $2" in sql
+        assert "left(conversation_ref, char_length($3)) = $3" in sql  # exact prefix, no LIKE wildcards
+        assert "ORDER BY date_created DESC" in sql
+        assert params == [agent_id, "scriob-object-chat", "midnight:"]
