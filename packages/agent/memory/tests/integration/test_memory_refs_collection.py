@@ -51,7 +51,7 @@ def _l1_metadata() -> MetaData:
     :class:`BaseCollection.save_entity` auto-stamps ``date_created`` +
     ``date_updated`` on every row so the L1 mirror carries those
     columns even though they are not in the v002 L3 DDL (the L3
-    ``save_to_postgres`` side ignores them).
+    ``save_to_store`` side ignores them).
 
     :return: SQLAlchemy metadata with the composite-pk table
     :rtype: MetaData

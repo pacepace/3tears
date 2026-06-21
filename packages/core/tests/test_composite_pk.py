@@ -257,7 +257,7 @@ class FakeRefEntity(BaseEntity):
 class FakeRefCollection(BaseCollection[FakeRefEntity]):
     """composite-pk collection — pk = ``(conversation_id, item_id)``.
 
-    in-memory pg_store is keyed by tuple pk so the ``_fetch``/
+    in-memory l3_rows is keyed by tuple pk so the ``_fetch``/
     ``_save``/``_delete`` implementations exercise the composite
     contract end-to-end.
     """
@@ -269,9 +269,9 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
         registry: CollectionRegistry,
         config: DefaultCoreConfig,
         nats_client: Any = None,
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] | None = None,
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] | None = None,
     ) -> None:
-        self._pg_store: dict[tuple[Any, ...], dict[str, Any]] = pg_store if pg_store is not None else {}
+        self._l3_rows: dict[tuple[Any, ...], dict[str, Any]] = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer=None)
 
     @property
@@ -282,18 +282,18 @@ class FakeRefCollection(BaseCollection[FakeRefEntity]):
     def entity_class(self) -> type[FakeRefEntity]:
         return FakeRefEntity
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         key = self.normalize_pk(entity_id)
-        return self._pg_store.get(key)
+        return self._l3_rows.get(key)
 
-    async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
         key = (data["conversation_id"], data["item_id"])
-        self._pg_store[key] = dict(data)
+        self._l3_rows[key] = dict(data)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         key = self.normalize_pk(entity_id)
-        self._pg_store.pop(key, None)
+        self._l3_rows.pop(key, None)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
@@ -375,13 +375,13 @@ class TestNormalizePk:
             def entity_class(self) -> type[BaseEntity]:
                 return BaseEntity
 
-            async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+            async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+            async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
                 return 1
 
-            async def delete_from_postgres(self, entity_id: Any) -> None:
+            async def delete_from_store(self, entity_id: Any) -> None:
                 return None
 
             def serialize(self, data: dict[str, Any]) -> bytes:
@@ -428,13 +428,13 @@ class TestL2Key:
             def entity_class(self) -> type[BaseEntity]:
                 return BaseEntity
 
-            async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+            async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
                 return None
 
-            async def save_to_postgres(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+            async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
                 return 1
 
-            async def delete_from_postgres(self, entity_id: Any) -> None:
+            async def delete_from_store(self, entity_id: Any) -> None:
                 return None
 
             def serialize(self, data: dict[str, Any]) -> bytes:
@@ -499,14 +499,14 @@ class TestCollectionOps:
     ) -> None:
         """save_entity persists to L3, populates L1, roundtrips via get."""
         nats = _nats_mock()
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
-        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "hello"})
         await coll.save_entity(entity)
 
         # L3 keyed by composite tuple
-        assert ("conv-A", "item-1") in pg_store
+        assert ("conv-A", "item-1") in l3_rows
         # L1 has the row
         l1_row = coll.get_row_sync(("conv-A", "item-1"))
         assert l1_row is not None
@@ -529,7 +529,7 @@ class TestCollectionOps:
     ) -> None:
         """cold L1 -> L3 hit via get() with tuple id promotes to L1+L2."""
         nats = _nats_mock()
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] = {
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {
             ("conv-B", "item-9"): {
                 "conversation_id": "conv-B",
                 "item_id": "item-9",
@@ -537,7 +537,7 @@ class TestCollectionOps:
                 "note": "from_l3",
             }
         }
-        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
 
         loaded = await coll.get(("conv-B", "item-9"))
         assert loaded is not None
@@ -551,8 +551,8 @@ class TestCollectionOps:
         self, composite_registry: CollectionRegistry, always_cfg: DefaultCoreConfig
     ) -> None:
         nats = _nats_mock()
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
-        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"conversation_id": "conv-A", "item_id": "item-1", "score": 10, "note": "x"})
         await coll.save_entity(entity)
@@ -560,7 +560,7 @@ class TestCollectionOps:
         ok = await coll.delete(("conv-A", "item-1"))
         assert ok is True
         # L3 gone
-        assert ("conv-A", "item-1") not in pg_store
+        assert ("conv-A", "item-1") not in l3_rows
         # L1 gone
         row = coll.get_row_sync(("conv-A", "item-1"))
         assert row is None
@@ -618,8 +618,8 @@ class TestInvalidationWireFormat:
     ) -> None:
         """subscriber receives a typed envelope, decodes tuple, evicts L1."""
         nats = _nats_mock()
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
-        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
 
         subscribers: list[Any] = []
 
@@ -652,8 +652,8 @@ class TestInvalidationWireFormat:
     ) -> None:
         """``ids`` array whose length disagrees with pk arity is ignored."""
         nats = _nats_mock()
-        pg_store: dict[tuple[Any, ...], dict[str, Any]] = {}
-        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, pg_store=pg_store)
+        l3_rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        coll = FakeRefCollection(composite_registry, always_cfg, nats_client=nats, l3_rows=l3_rows)
 
         subscribers: list[Any] = []
 

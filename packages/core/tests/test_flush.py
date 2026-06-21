@@ -173,13 +173,13 @@ class TestFlushPending:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "users"
-        mock_coll.persist_to_postgres = AsyncMock(return_value=1)
+        mock_coll.persist_to_store = AsyncMock(return_value=1)
         registry.register(mock_coll)
 
         flushed = await flush_pending(buf, registry)
 
         assert flushed == 1
-        mock_coll.persist_to_postgres.assert_awaited_once_with({"id": "u1", "name": "Alice"})
+        mock_coll.persist_to_store.assert_awaited_once_with({"id": "u1", "name": "Alice"})
 
     @pytest.mark.asyncio
     async def test_retries_on_failure(self) -> None:
@@ -189,7 +189,7 @@ class TestFlushPending:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "users"
-        mock_coll.persist_to_postgres = AsyncMock(side_effect=RuntimeError("db down"))
+        mock_coll.persist_to_store = AsyncMock(side_effect=RuntimeError("db down"))
         registry.register(mock_coll)
 
         flushed = await flush_pending(buf, registry)
@@ -209,7 +209,7 @@ class TestFlushPending:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "users"
-        mock_coll.persist_to_postgres = AsyncMock(side_effect=RuntimeError("db down"))
+        mock_coll.persist_to_store = AsyncMock(side_effect=RuntimeError("db down"))
         registry.register(mock_coll)
 
         flushed = await flush_pending(buf, registry)
@@ -247,12 +247,12 @@ class TestFlushPending:
         registry = CollectionRegistry()
         user_coll = MagicMock()
         user_coll.table_name = "users"
-        user_coll.persist_to_postgres = AsyncMock(return_value=1)
+        user_coll.persist_to_store = AsyncMock(return_value=1)
         registry.register(user_coll)
 
         settings_coll = MagicMock()
         settings_coll.table_name = "settings"
-        settings_coll.persist_to_postgres = AsyncMock(return_value=1)
+        settings_coll.persist_to_store = AsyncMock(return_value=1)
         registry.register(settings_coll)
 
         flushed = await flush_pending(buf, registry)
@@ -330,7 +330,7 @@ class TestFkAwareRetryPolicy:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "messages"
-        mock_coll.persist_to_postgres = AsyncMock(
+        mock_coll.persist_to_store = AsyncMock(
             side_effect=asyncpg.exceptions.ForeignKeyViolationError(
                 "violates foreign key constraint",
             ),
@@ -364,7 +364,7 @@ class TestFkAwareRetryPolicy:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "messages"
-        mock_coll.persist_to_postgres = AsyncMock(
+        mock_coll.persist_to_store = AsyncMock(
             side_effect=asyncpg.exceptions.ForeignKeyViolationError(
                 "violates foreign key constraint",
             ),
@@ -395,7 +395,7 @@ class TestFkAwareRetryPolicy:
         registry = CollectionRegistry()
         mock_coll = MagicMock()
         mock_coll.table_name = "users"
-        mock_coll.persist_to_postgres = AsyncMock(
+        mock_coll.persist_to_store = AsyncMock(
             side_effect=RuntimeError("connection refused"),
         )
         registry.register(mock_coll)

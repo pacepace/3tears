@@ -1,8 +1,8 @@
 """
 unit tests for :class:`ConversationsCollection`.
 
-exercises the L3 SQL paths (``fetch_from_postgres``,
-``save_to_postgres``, ``delete_from_postgres``) via an asyncpg mock,
+exercises the L3 SQL paths (``fetch_from_store``,
+``save_to_store``, ``delete_from_store``) via an asyncpg mock,
 plus the serialize / deserialize round-trip used by L2.
 """
 
@@ -156,24 +156,24 @@ class TestFetchFromPostgres:
     """tests for L3 read path."""
 
     async def test_fetch_returns_row_dict(self) -> None:
-        """fetch_from_postgres returns the row as a dict when present."""
+        """fetch_from_store returns the row as a dict when present."""
         data = _sample_data()
         store: dict[str, dict[str, Any]] = {str(data["conversation_id"]): data}
         pg = _make_pg_mock(store)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        result = await collection.fetch_from_postgres((data["agent_id"], data["conversation_id"]))
+        result = await collection.fetch_from_store((data["agent_id"], data["conversation_id"]))
 
         assert result == data
 
     async def test_fetch_returns_none_when_missing(self) -> None:
-        """fetch_from_postgres returns None on a miss."""
+        """fetch_from_store returns None on a miss."""
         pg = _make_pg_mock({})
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        result = await collection.fetch_from_postgres((uuid7(), uuid7()))
+        result = await collection.fetch_from_store((uuid7(), uuid7()))
 
         assert result is None
 
@@ -182,14 +182,14 @@ class TestSaveToPostgres:
     """tests for L3 write path."""
 
     async def test_insert_new_row(self) -> None:
-        """save_to_postgres insert path stores a row and reports 1 affected."""
+        """save_to_store insert path stores a row and reports 1 affected."""
         data = _sample_data()
         l3: dict[str, dict[str, Any]] = {}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        affected = await collection.save_to_postgres(data)
+        affected = await collection.save_to_store(data)
 
         assert affected == 1
         assert str(data["conversation_id"]) in l3
@@ -204,7 +204,7 @@ class TestSaveToPostgres:
 
         updated = dict(data)
         updated["status"] = "closed"
-        affected = await collection.save_to_postgres(updated, original_timestamp=data["date_updated"])
+        affected = await collection.save_to_store(updated, original_timestamp=data["date_updated"])
 
         assert affected == 1
         assert l3[str(data["conversation_id"])]["status"] == "closed"
@@ -214,14 +214,14 @@ class TestDeleteFromPostgres:
     """tests for L3 delete path."""
 
     async def test_delete_removes_row(self) -> None:
-        """delete_from_postgres removes the row from the backing store."""
+        """delete_from_store removes the row from the backing store."""
         data = _sample_data()
         l3: dict[str, dict[str, Any]] = {str(data["conversation_id"]): data}
         pg = _make_pg_mock(l3)
         collection = ConversationsCollection.__new__(ConversationsCollection)
         collection.l3_pool = pg
 
-        await collection.delete_from_postgres((data["agent_id"], data["conversation_id"]))
+        await collection.delete_from_store((data["agent_id"], data["conversation_id"]))
 
         assert str(data["conversation_id"]) not in l3
 
@@ -524,3 +524,82 @@ class TestSearch:
         sql, *_ = pg.fetch.call_args.args
         assert "date_created >=" not in sql
         assert "date_created <=" not in sql
+
+
+class TestFindByRef:
+    """tests for :meth:`ConversationsCollection.find_by_ref` SQL contract.
+
+    Mocks the L3 ``fetch`` to assert the ref-grouped query filters on
+    ``(agent_id, channel_type, conversation_ref)`` and orders newest-first.
+    The end-to-end exercise (real rows -> coerced entities) lives in a
+    consumer's integration suite against a live postgres.
+    """
+
+    async def test_empty_result_returns_empty_list(self) -> None:
+        """No rows for the ref -> empty list (no entity construction)."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        result = await collection.find_by_ref(uuid7(), "scriob-object-chat", "midnight:character:chr-eli")
+
+        assert result == []
+
+    async def test_query_filters_by_agent_channel_and_ref_newest_first(self) -> None:
+        """The SQL pins agent_id ($1), channel_type ($2), conversation_ref ($3) and orders newest-first."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        await collection.find_by_ref(agent_id, "scriob-object-chat", "midnight:character:chr-eli")
+
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "agent_id = $1" in sql
+        assert "channel_type = $2" in sql
+        assert "conversation_ref = $3" in sql
+        assert "ORDER BY date_created DESC" in sql
+        assert params[0] == agent_id
+        assert params[1] == "scriob-object-chat"
+        assert params[2] == "midnight:character:chr-eli"
+
+
+class TestFindByRefPrefix:
+    """tests for :meth:`ConversationsCollection.find_by_ref_prefix` SQL contract.
+
+    The broader peer of find_by_ref: matches every ref STARTING WITH a prefix (a whole story's
+    chats across objects), via an exact, escaping-free ``left(...)`` prefix — not a LIKE pattern.
+    """
+
+    async def test_empty_result_returns_empty_list(self) -> None:
+        """No rows under the prefix -> empty list (no entity construction)."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        result = await collection.find_by_ref_prefix(uuid7(), "scriob-object-chat", "midnight:")
+
+        assert result == []
+
+    async def test_query_is_an_exact_prefix_match_newest_first(self) -> None:
+        """The SQL pins agent_id ($1) + channel_type ($2) and matches conversation_ref by an exact
+        ``left(...) = $3`` prefix (no LIKE wildcards to escape), newest-first."""
+        pg = _make_pg_mock()
+        pg.fetch = AsyncMock(return_value=[])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        await collection.find_by_ref_prefix(agent_id, "scriob-object-chat", "midnight:")
+
+        pg.fetch.assert_called_once()
+        sql, *params = pg.fetch.call_args.args
+        assert "agent_id = $1" in sql
+        assert "channel_type = $2" in sql
+        assert "left(conversation_ref, char_length($3)) = $3" in sql  # exact prefix, no LIKE wildcards
+        assert "ORDER BY date_created DESC" in sql
+        assert params == [agent_id, "scriob-object-chat", "midnight:"]

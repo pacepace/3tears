@@ -38,6 +38,7 @@ rule.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -603,6 +604,109 @@ class Subjects:
         return Subject(path=f"{_ns()}.workspaces.create", kind="point")
 
     # ------------------------------------------------------------------
+    # op-log (durable write-path WAL)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def oplog(cls, repo: str, branch: str) -> Subject:
+        """publish/replay subject for one ``(repo, branch)`` op-log.
+
+        the durable write path keeps one JetStream stream per
+        ``(repo, branch)``; this is the single subject that stream is
+        bound to. ``repo`` and ``branch`` are sanitized (``.`` -> ``-``)
+        so a dotted ref name never overloads the subject separator.
+        consumed by :class:`threetears.nats.OpLog`.
+
+        :param repo: repository identifier
+        :ptype repo: str
+        :param branch: branch / ref name
+        :ptype branch: str
+        :return: subject ``{ns}.oplog.{repo}.{branch}``
+        :rtype: Subject
+        :raises ValueError: if repo or branch is empty
+        """
+        if not repo:
+            raise ValueError("repo must be non-empty")
+        if not branch:
+            raise ValueError("branch must be non-empty")
+        return Subject(
+            path=f"{_ns()}.oplog.{_sanitize(repo)}.{_sanitize(branch)}",
+            kind="point",
+        )
+
+    # ------------------------------------------------------------------
+    # channels (cross-pod room fanout)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def room(cls, room_id: str) -> Subject:
+        """publish/subscribe subject for one room's cross-pod message fanout.
+
+        the live room fanout (channels cross-pod design D1 / shard B)
+        publishes one frame to this subject; every pod holding a local
+        member of the room subscribes and delivers to its own sockets.
+
+        the room id is ``{customer}:{story}:{branch}:{file}`` — arbitrary
+        app-supplied segments may carry ``.``, spaces, ``*``, ``>`` (all
+        illegal or ambiguous in a NATS subject token), so the room id is
+        NOT :func:`_sanitize`-mapped (a colon/space room id would still
+        leave illegal characters or collide across distinct ids). instead
+        the token is the **SHA-256 hex digest** of the room id: a
+        subject-safe (``[0-9a-f]`` only), collision-resistant,
+        deterministic token. the raw room id rides in the wire envelope
+        (:class:`threetears.channels.presence.wire.RoomFrame`), so the
+        one-way digest needs no reversibility — the same robustness move
+        the presence KV key uses. consumed by
+        :class:`threetears.channels.presence.fanout.RoomFanout`.
+
+        :param room_id: ``{customer}:{story}:{branch}:{file}`` room key
+        :ptype room_id: str
+        :return: subject ``{ns}.channels.room.{sha256hex(room_id)}``
+        :rtype: Subject
+        :raises ValueError: if room_id is empty
+        """
+        if not room_id:
+            raise ValueError("room_id must be non-empty")
+        token = hashlib.sha256(room_id.encode("utf-8")).hexdigest()
+        return Subject(path=f"{_ns()}.channels.room.{token}", kind="point")
+
+    # ------------------------------------------------------------------
+    # owner-routed forward (request -> whichever pod serves a key)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def forward(cls, key: str) -> Subject:
+        """request/reply subject for owner-routed forwarding of one key.
+
+        the owner-routed forward primitive
+        (:func:`threetears.nats.forward` / :func:`serve_owner`) sends a
+        request to whichever pod currently *serves* ``key`` and returns
+        its reply. this is the single subject that request/reply rides.
+
+        the ``key`` is arbitrary, app-supplied, and may carry ``.``,
+        spaces, ``*`` or ``>`` — all illegal or ambiguous in a NATS
+        subject token. as with :meth:`room`, the key is therefore NOT
+        :func:`_sanitize`-mapped (which only handles ``.``); instead the
+        token is the **SHA-256 hex digest** of the key: subject-safe
+        (``[0-9a-f]`` only), collision-resistant, and deterministic, so
+        every pod derives the same subject for the same key. the digest
+        is one-way and needs no reversibility — both ends start from the
+        same ``key``. consumed by
+        :func:`threetears.nats.serve_owner` (subscribe, queue-grouped on
+        this subject's path) and :func:`threetears.nats.forward`
+        (request).
+
+        :param key: ownership key (arbitrary app-supplied string)
+        :ptype key: str
+        :return: subject ``{ns}.forward.{sha256hex(key)}``
+        :rtype: Subject
+        :raises ValueError: if key is empty
+        """
+        if not key:
+            raise ValueError("key must be non-empty")
+        token = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return Subject(path=f"{_ns()}.forward.{token}", kind="point")
+
     # knowledge (correction-harvest drafts)
     # ------------------------------------------------------------------
 

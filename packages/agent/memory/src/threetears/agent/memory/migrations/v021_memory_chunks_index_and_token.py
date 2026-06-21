@@ -145,7 +145,8 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'media'
+        WHERE table_schema = current_schema()
+          AND table_name = 'media'
           AND column_name = 'date_updated'
           AND is_nullable = 'YES'
     ) THEN
@@ -215,7 +216,8 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'media'
+        WHERE table_schema = current_schema()
+          AND table_name = 'media'
           AND column_name = 'metadata_json'
           AND is_nullable = 'YES'
     ) THEN

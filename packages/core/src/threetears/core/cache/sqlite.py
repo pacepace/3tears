@@ -267,7 +267,7 @@ class SQLiteBackend:
         # timestamp column. Writing an unknown column to SQLite raises
         # ``OperationalError: table X has no column named date_created``.
         # The L3 path already projects to declared columns
-        # (``save_to_postgres``); mirror that here so the L1 write never
+        # (``save_to_store``); mirror that here so the L1 write never
         # diverges from the table shape. When the schema is unknown
         # (table not registered via ``_generate_create_table``), fall
         # back to writing every key so existing behaviour is preserved.

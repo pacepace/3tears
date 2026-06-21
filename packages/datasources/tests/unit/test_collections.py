@@ -229,7 +229,7 @@ class TestDataSourceSchemaDigestCollection:
         assert coll.primary_key_columns == ("datasource_id",)
 
     @pytest.mark.asyncio
-    async def test_fetch_from_postgres_returns_codec_decoded_list(self) -> None:
+    async def test_fetch_from_store_returns_codec_decoded_list(self) -> None:
         # collections-task-04 (Option B): the read trusts the jsonb codec (hub
         # l3 pool) / the proxy's NATS-JSON decode to hand back ``tables`` as a
         # python list -- no per-collection json.loads. the mock pool stands in
@@ -246,7 +246,7 @@ class TestDataSourceSchemaDigestCollection:
             "date_updated": now,
         }
         coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
-        result = await coll.fetch_from_postgres(datasource_id)
+        result = await coll.fetch_from_store(datasource_id)
         assert isinstance(result["tables"], list)
         assert result["tables"][0]["table"] == "geo"
 
@@ -261,7 +261,7 @@ class TestDataSourceSchemaDigestCollection:
         pool.execute = AsyncMock(return_value="INSERT 0 1")
         tables_str = '[{"schema": "s", "table": "t", "description": "d", "columns": []}]'
         now = datetime.now(UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "datasource_id": uuid4(),
                 "customer_id": uuid4(),
@@ -285,7 +285,7 @@ class TestDataSourceSchemaDigestCollection:
         pool.execute = AsyncMock(return_value="INSERT 0 1")
         tables = [{"schema": "s", "table": "t", "columns": []}]
         now = datetime.now(UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "datasource_id": uuid4(),
                 "customer_id": uuid4(),
@@ -606,6 +606,8 @@ class TestDataSourceColumnGetByNaturalKey:
         coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=row)
         entity = await coll.get_by_natural_key(ds_id, "s", "t", "c")
         assert entity is not None
+        # the method MUST json-decode the tags array so callers see a list
+        # (matches the existing fetch_from_store behaviour)
         assert entity.tags == ["pii", "email"]
 
     @pytest.mark.asyncio

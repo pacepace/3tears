@@ -147,8 +147,10 @@ async def dispatch_wake(
        skills resolve to ``None`` with a warning log; the handler
        sees ``attached_skill=None`` and decides how to proceed.
     4. Invokes the consumer's :class:`HandlerCallback`. Exceptions
-       propagate to the caller (the tick records them via the
-       ``try / except`` in :func:`threetears.agent.wake.tick._dispatch_one`).
+       propagate to the caller (the generic tick engine's per-fire
+       ``try / except`` in
+       :func:`threetears.scheduled_jobs.scheduled_tick_job` records them
+       as a failed fire).
     5. Determines silent treatment from the handler's outcome:
        ``is_silent`` is true when EITHER the ``[SILENT]`` marker
        (PLACEMENT §1.4) is detected OR the handler explicitly

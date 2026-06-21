@@ -343,13 +343,13 @@ class TestWorkspaceCollectionSave:
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """save_to_postgres uses INSERT ... ON CONFLICT (workspace_id) DO UPDATE."""
+        """save_to_store uses INSERT ... ON CONFLICT (workspace_id) DO UPDATE."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
-        rows_affected = await coll.save_to_postgres(row)
+        rows_affected = await coll.save_to_store(row)
         assert rows_affected == 1
         issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspaces" in issued_sql
@@ -361,13 +361,13 @@ class TestWorkspaceCollectionSave:
         workspaces_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """delete_from_postgres issues DELETE WHERE workspace_id = $1."""
+        """delete_from_store issues DELETE WHERE workspace_id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspaces_l1)
         pool = _make_pool_mock()
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll.delete_from_postgres(target_id)
+        await coll.delete_from_store(target_id)
         issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspaces" in issued_sql
         # v0.8.0 shard 04.6: PK column renamed to ``workspace_id``.
@@ -382,13 +382,13 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """save_to_postgres uses INSERT ... ON CONFLICT (file_id) DO UPDATE for head state."""
+        """save_to_store uses INSERT ... ON CONFLICT (file_id) DO UPDATE for head state."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_row()
-        rows_affected = await coll.save_to_postgres(row)
+        rows_affected = await coll.save_to_store(row)
         assert rows_affected == 1
         issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_files" in issued_sql
@@ -400,13 +400,13 @@ class TestWorkspaceFileCollectionSave:
         workspace_files_l1: SQLiteBackend,
         config_always: DefaultCoreConfig,
     ) -> None:
-        """delete_from_postgres issues DELETE WHERE file_id = $1."""
+        """delete_from_store issues DELETE WHERE file_id = $1."""
         registry = CollectionRegistry()
         registry.configure(l1_backend=workspace_files_l1)
         pool = _make_pool_mock()
         coll = WorkspaceFileCollection(registry, config_always, postgres_pool=pool)
         target_id = uuid4()
-        await coll.delete_from_postgres(target_id)
+        await coll.delete_from_store(target_id)
         issued_sql = pool.executed[0][0]
         assert "DELETE FROM workspace_files" in issued_sql
 
@@ -446,7 +446,7 @@ class TestWorkspaceFileVersionCollectionSave:
         pool = _make_pool_mock()
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
-        rows_affected = await coll.save_to_postgres(row)
+        rows_affected = await coll.save_to_store(row)
         assert rows_affected == 1
         issued_sql = pool.executed[0][0]
         assert "INSERT INTO workspace_file_versions" in issued_sql
@@ -476,7 +476,7 @@ class TestWorkspaceFileVersionCollectionSave:
         coll = WorkspaceFileVersionCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_file_version_row()
         with pytest.raises(_UniqueViolation):
-            await coll.save_to_postgres(row)
+            await coll.save_to_store(row)
 
 
 class TestCrossPodInvalidation:
@@ -811,7 +811,7 @@ class TestWorkspaceCollectionSaveIncludesDateDeleted:
         coll = WorkspaceCollection(registry, config_always, postgres_pool=pool)
         row = _make_workspace_row()
         row["date_deleted"] = datetime(2026, 4, 16, 12, 0, 0, tzinfo=UTC)
-        await coll.save_to_postgres(row)
+        await coll.save_to_store(row)
         issued_sql = pool.executed[0][0]
         assert "date_deleted" in issued_sql
         # ON CONFLICT clause also wires the column

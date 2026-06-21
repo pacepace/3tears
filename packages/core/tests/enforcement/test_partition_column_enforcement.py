@@ -72,6 +72,9 @@ _PARTITIONED_TABLES: dict[str, str] = {
     "agent_wake_schedules": "conversation_id",
     "wake_fires": "conversation_id",
     "webhook_subscriptions": "conversation_id",
+    # scheduled-jobs (generic store)
+    "scheduled_jobs": "partition_key",
+    "job_fires": "partition_key",
     # agent-workspace
     "workspaces": "agent_id",
     "workspace_files": "workspace_id",
@@ -96,6 +99,7 @@ _PACKAGE_SRC_ROOTS: list[Path] = [
     _REPO_ROOT / "packages" / "agent-workspace" / "src",
     _REPO_ROOT / "packages" / "agent-memory" / "src",
     _REPO_ROOT / "packages" / "conversations" / "src",
+    _REPO_ROOT / "packages" / "scheduled-jobs" / "src",
     # Post agent-namespace move, agent-* packages live under packages/agent/<name>/src.
     # The dash-named paths above are kept for any historical layout that survives;
     # paths that do not exist are skipped silently by ``_walk_python_files``.

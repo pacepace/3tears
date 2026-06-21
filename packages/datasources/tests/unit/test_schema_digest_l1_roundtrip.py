@@ -69,7 +69,7 @@ def l1_backend() -> Iterator[SQLiteBackend]:
 def registry(l1_backend: SQLiteBackend) -> CollectionRegistry:
     # a real SQLite L1 + a thin L3 stub. the L3 stub only lets
     # ``save_entity`` past its INSERT-rowcount guard (the digest's
-    # ``save_to_postgres`` returns 0 with no pool, which reads as an INSERT
+    # ``save_to_store`` returns 0 with no pool, which reads as an INSERT
     # failure); the by-pk WRITE + READ this test exercises run against the
     # REAL SQLite L1 -- that is the surface where the inherited-"id" PK bug
     # lived (ON CONFLICT (id) on write, WHERE id=? on read).

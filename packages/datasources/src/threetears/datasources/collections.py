@@ -33,6 +33,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends import parse_rowcount
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.schema_backed import (
     DATETIMETZ_TYPE,
@@ -392,7 +393,7 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
         """
         return deserialize_from_json(data, _TABLE_FIELD_TYPES)
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch data source table record from L3 by primary key.
 
         :param entity_id: data source table UUID
@@ -412,7 +413,7 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
             result = data
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -478,9 +479,9 @@ class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source table from L3.
 
         :param entity_id: data source table UUID
@@ -584,7 +585,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
         """
         return deserialize_from_json(data, _COLUMN_FIELD_TYPES)
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch data source column record from L3 by primary key.
 
         :param entity_id: data source column UUID
@@ -605,7 +606,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             result = dict(row)
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -675,9 +676,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source column from L3.
 
         :param entity_id: data source column UUID
@@ -802,7 +803,7 @@ class DataSourceSchemaDigestCollection(
         """
         return deserialize_from_json(data, _SCHEMA_DIGEST_FIELD_TYPES)
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch the digest row from L3 by primary key (``datasource_id``).
 
         :param entity_id: datasource UUID (the digest primary key)
@@ -826,7 +827,7 @@ class DataSourceSchemaDigestCollection(
             result = dict(row)
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -879,9 +880,9 @@ class DataSourceSchemaDigestCollection(
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete the digest row from L3.
 
         :param entity_id: datasource UUID (the digest primary key)
@@ -943,7 +944,7 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         """
         return deserialize_from_json(data, _RELATION_FIELD_TYPES)
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch data source relation record from L3 by primary key.
 
         :param entity_id: data source relation UUID
@@ -965,7 +966,7 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
             result = dict(row)
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -1013,9 +1014,9 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete data source relation from L3.
 
         :param entity_id: data source relation UUID
@@ -1086,7 +1087,7 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
         """
         return deserialize_from_json(data, _TEMPLATE_FIELD_TYPES)
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """fetch table-template row from L3 by composite primary key.
 
         :param entity_id: ``(customer_id, id)`` tuple
@@ -1107,7 +1108,7 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
             result = dict(row)
         return result
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -1155,9 +1156,9 @@ class TableTemplateCollection(BaseCollection[TableTemplateEntity]):
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete template row from L3.
 
         :param entity_id: ``(customer_id, id)`` tuple

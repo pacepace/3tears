@@ -4,11 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-channels"
-version = "0.12.3"
+version = "0.13.0"
 description = "Unified message protocol for channel adapters in the 3tears platform"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
 dependencies = [
+    "3tears",
+    "3tears-agent-acl",
+    "3tears-nats",
     "3tears-observe",
 ]
 
@@ -33,5 +36,8 @@ Repository = "https://github.com/pacepace/3tears"
 packages = ["src/threetears"]
 
 [tool.uv.sources]
+3tears = { workspace = true }
+3tears-agent-acl = { workspace = true }
+3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
 3tears-agent-wake = { workspace = true }

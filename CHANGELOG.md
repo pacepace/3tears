@@ -4,6 +4,106 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.0 -- 2026-06-21
+
+### Changed — `3tears` (core) — BREAKING
+
+- **Neutral L3 store seam (`collections-task-06`).** The collection framework's L3
+  (durable) tier extension points were renamed to be storage-agnostic so a non-SQL
+  backend (e.g. a git working tree) can be an L3: `fetch_from_postgres` →
+  `fetch_from_store`, `save_to_postgres` → `save_to_store`, `delete_from_postgres` →
+  `delete_from_store`, `persist_to_postgres` → `persist_to_store`. Behavior unchanged;
+  `SchemaBackedCollection` generates the new names. `l3_pool`/`get_l3_pool` and
+  `serialize`/`deserialize` are unchanged. **Consumers: see
+  `docs/migrating-to-l3-store-seam.md`.**
+
+### Added — `3tears` (core)
+
+- `threetears.core.backends.L3Backend` (raw-SQL transport) and `DurableStore` (SQL-free
+  structured ops: `fetch_one`/`upsert`/`delete`/`scan`) protocols; `SqlL3Backend`
+  implementing both over an asyncpg pool; `DurableStoreCollection` (a collection whose L3
+  tier is a `DurableStore` — the base a git-backed collection subclasses); and
+  `parse_rowcount`, the one framework-owned asyncpg status-tag parser.
+
+### Added — `3tears-scheduled-jobs` (new package)
+
+- The generic, multipod-safe scheduled-jobs core, generalized from
+  agent-wake's tick machinery onto a payload-agnostic, consumer-neutral
+  surface. `threetears.scheduled_jobs.tick` — the pure-async tick engine
+  body a consumer's scheduler (e.g. APScheduler) invokes per interval;
+  it enumerates due jobs via `ScheduleStore.list_due_for_tick` (a
+  deliberate `__SPANS_PARTITIONS__` cross-partition scan) and claims each
+  via an optimistic-CAS on `next_fire_at = expected_next_fire`, so two
+  ticks across pods can never double-fire one job.
+- `threetears.scheduled_jobs.reschedule` — the next-fire computation
+  (interval / one-shot / terminal), with `coalesce` / `catch_up`
+  missed-fire policies.
+- Store protocols (`ScheduleStore` / `FireStore` / `DueSchedule`) the
+  tick engine talks to, plus a default three-tier store keyed on an
+  opaque `kind` (TEXT) + `payload` (JSONB): the `scheduled_jobs` +
+  `job_fires` tables (partition column `partition_key`, composite PKs,
+  `ON DELETE CASCADE` fire history), `ScheduledJobCollection` /
+  `JobFireCollection`, and the v001 migration. The platform never
+  inspects `kind` / `payload`.
+- `config` (tick limits / policy defaults), `events` (lifecycle event
+  names), and `metrics` (the `threetears_scheduled_jobs_` Prometheus
+  instruments — fires / failures / tick-duration / drift — with the
+  forbidden-label cardinality guard preserved). `prometheus_client`
+  stays an optional extra; the emitter no-ops gracefully when absent.
+
+### Changed — `3tears-agent-wake` — BREAKING
+
+- **Tick engine delegates to `3tears-scheduled-jobs` (S-2).** The cross-pod tick
+  pump (lock acquire/degrade-open, due-scan, optimistic-CAS claim, per-fire
+  isolation, drift) and the reschedule math now live ONCE in the generic
+  scheduled-jobs core; `threetears.agent.wake.tick` is a thin adapter over it.
+  The wake-facing contract is UNCHANGED: `wake_tick_job(pool, nats_client,
+  dispatch_callback)`, the wake-shaped `DispatchCallback`, `WakeTrigger`,
+  `WakeDispatchResult`, the schedule/fire schema, the richer `FireStatus`, and
+  the webhook / `[SILENT]` handling all stay put. The cross-pod lock key stays
+  `"agent_wake_tick"`.
+- **Removed `threetears.agent.wake.reschedule`** (and its private
+  `_compute_next_fire_at`). The identical math is now public at
+  `threetears.scheduled_jobs.compute_next_fire_at` — same positional signature.
+- **Dropped the direct `3tears-nats` dependency** (added `3tears-scheduled-jobs`).
+  The cross-pod lock now belongs to the scheduled-jobs core; wake reaches NATS
+  only transitively. No code change for consumers that pass a `nats_client`
+  through `wake_tick_job` (still typed `Any`).
+- **Tick Prometheus metrics moved to the `threetears_scheduled_jobs_*` family.**
+  The per-fire / drift / tick-duration counters the tick used to emit on the
+  `threetears_agent_wake_*` instruments now come from the scheduled-jobs emitter;
+  the CAS-miss failure reason changed `conv_busy` → `claim_lost`, and the
+  per-fire `execution_mode` label is no longer on the tick fire counter. The
+  genuinely wake-specific `threetears_agent_wake_yield_duration_seconds` is
+  preserved (re-emitted by the adapter). Webhook / rate-limit / schedule-cap
+  metrics are unchanged. The `EVENT_FIRE_SKIPPED_BUSY` log's `extra_data` keys
+  changed (`conversation_id`/`fire_source`/`execution_mode` → `job_id`/
+  `partition_key`). **Operators: update dashboards/alerts that key on the old
+  `agent_wake` tick metrics or the `conv_busy` reason.**
+- **Consumers: see `docs/migrating-agent-wake-to-scheduled-jobs.md`.**
+
+### Added — `3tears-nats`
+
+- **Owner-routed request forward** (`threetears.nats.forward` / `serve_owner`) — a
+  generic, payload-agnostic primitive for "send a request to whichever pod currently
+  *serves* a key, and get its reply." It is the messaging half of a single-writer
+  pattern; it does NOT elect a leader (a separate `nats_distributed_lock` / `KVLease`
+  decides who serves — the consumer ties them together). `serve_owner(nats, key,
+  handler)` is an async context manager a consumer runs *while it holds the key*: it
+  subscribes the key's forward subject in a **queue group keyed by that subject**, so a
+  brief two-owner overlap during lease handoff still dispatches each request to exactly
+  one owner. `forward(nats, key, payload, *, timeout) -> bytes` requests that subject and
+  returns the owner's reply bytes. Payload + reply are opaque `bytes`.
+- **Typed forward errors.** No current owner (no subscriber / timeout in the handoff
+  window) raises `NoOwnerError`; an owner whose handler *raised* surfaces to the caller as
+  `ForwardedHandlerError` carrying the original exception's **type name + message** (so a
+  consumer can map a forwarded failure back onto its own typed exception). Both subclass
+  `ForwardError` (← `NatsClientError`). Wire framing is a 1-byte tag (`0x00` ok + verbatim
+  reply bytes; `0x01` err + UTF-8 JSON `{type, message}`), keeping an empty/arbitrary
+  handler reply unambiguous from an error frame.
+- **`Subjects.forward(key)`** — derives `{ns}.forward.{sha256hex(key)}`; the key is hashed
+  (not `_sanitize`-mapped) so arbitrary app keys carrying `.`/spaces/`*`/`>` map to a
+  subject-safe, collision-resistant, deterministic token, mirroring `Subjects.room`.
 ## v0.12.3 -- 2026-06-20
 
 Broker isolation, NATS durability, prompt-cache cost accounting, and Redshift

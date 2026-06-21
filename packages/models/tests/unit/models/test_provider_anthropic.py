@@ -22,6 +22,37 @@ from threetears.models.providers.anthropic import (
     create_anthropic_chat,
     strip_v1_suffix,
 )
+from threetears.models.providers._claude_cli import is_subscription_token
+
+
+class TestSubscriptionRouting:
+    """The anthropic provider routes an OAuth subscription token to the CLI backend; an API key
+    keeps the HTTP-API ``ChatAnthropic`` path — same model ids, no separate provider. The token is
+    just another provider credential (stored like any API key); routing is by its value, not config."""
+
+    def test_is_subscription_token_distinguishes_oauth_from_api_key(self) -> None:
+        assert is_subscription_token("sk-ant-oat01-abc123")  # claude setup-token
+        assert not is_subscription_token("sk-ant-api03-abc123")  # an API key
+        assert not is_subscription_token("sk-test")
+
+    def test_api_key_builds_chatanthropic(self) -> None:
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-ant-api03-xyz")
+        assert isinstance(model, ChatAnthropic)
+
+    def test_oauth_token_routes_to_the_subscription_backend(self) -> None:
+        # Needs the optional extra (langchain-claude-code → claude-agent-sdk); skip if absent.
+        pytest.importorskip("langchain_claude_code")
+        pytest.importorskip("claude_agent_sdk")
+        token = "sk-ant-oat01-faketokenfortest"
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, token)
+        # The subscription backend is NOT a ChatAnthropic — it's the CLI/Agent-SDK-backed model.
+        assert not isinstance(model, ChatAnthropic)
+        assert isinstance(model, BaseChatModel)
+        # The token is carried per-instance (→ per-subprocess env), never the process-global env.
+        assert model.oauth_token == token  # type: ignore[attr-defined]
+        import os
+
+        assert os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") != token  # no global mutation
 
 
 class TestCreateAnthropicChat:

@@ -53,6 +53,14 @@ ENFORCEMENT_MODE = os.environ.get("NATS_ENFORCEMENT_MODE", "strict")
 _WRAPPER_MODULES: set[str] = {
     "threetears.nats.client",
     "threetears.nats.kv",
+    "threetears.nats.oplog",
+    # forward.py is a peer wrapper module: it maps nats-py's
+    # NoRespondersError / TimeoutError onto the typed NoOwnerError so a
+    # forward caller can tell "no live owner right now" from a generic
+    # transport fault. inspecting those nats-py types by class (never by
+    # string-matching RequestError's message) is the legitimate reason
+    # it consumes nats-py, exactly as client.py does.
+    "threetears.nats.forward",
 }
 
 

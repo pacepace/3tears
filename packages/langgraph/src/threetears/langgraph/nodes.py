@@ -31,6 +31,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import MessagesState
 
 from threetears.langgraph.hooks import (
@@ -277,6 +278,18 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             if tool is not None:
                 try:
                     tool_result = await tool.ainvoke(tool_call["args"], config=config)
+                except GraphBubbleUp:
+                    # GraphInterrupt (and the GraphBubbleUp family generally) is the
+                    # control-flow signal LangGraph uses to pause the graph at an
+                    # ``interrupt()`` call and to bubble subgraph control up — it is NOT
+                    # a tool failure. It MUST propagate so the checkpointer persists the
+                    # paused state and the run surfaces ``__interrupt__`` for the caller
+                    # to resume with ``Command(resume=...)``. Swallowing it here (it is an
+                    # ``Exception`` subclass, so the broad catch below would otherwise turn
+                    # it into a ``ToolMessage`` and run the graph to completion) silently
+                    # defeats every human-in-the-loop / interrupt-based tool. LangGraph's
+                    # own ``ToolNode`` re-raises ``GraphBubbleUp`` for exactly this reason.
+                    raise
                 except Exception as exc:
                     tool_result = f"Tool error: {tool_call['name']}: {exc}"
                     success = False

@@ -623,7 +623,7 @@ class TestSpansPartitionsDecorator:
 
 
 class TestInsertSqlShape:
-    """SQL-shape checks on the INSERT path, exercised via save_to_postgres."""
+    """SQL-shape checks on the INSERT path, exercised via save_to_store."""
 
     @pytest.mark.asyncio
     async def test_upsert_has_on_conflict_and_do_update_set(self) -> None:
@@ -631,7 +631,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item())
+        await coll.save_to_store(_sample_item())
         sql = pool.calls[0][1]
         assert "INSERT INTO items" in sql
         assert "ON CONFLICT (id) DO UPDATE SET" in sql
@@ -647,7 +647,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item())
+        await coll.save_to_store(_sample_item())
         sql = pool.calls[0][1]
         assert "::jsonb" in sql
 
@@ -657,7 +657,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item())
+        await coll.save_to_store(_sample_item())
         sql = pool.calls[0][1]
         assert "::vector" in sql
 
@@ -667,7 +667,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _JournalCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "event": "hello",
@@ -708,7 +708,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _DedupCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "event": "hello",
@@ -725,7 +725,7 @@ class TestInsertSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "left_id": uuid.uuid4(),
                 "right_id": uuid.uuid4(),
@@ -738,7 +738,7 @@ class TestInsertSqlShape:
 
 
 class TestCasUpdateSqlShape:
-    """SQL-shape checks on the CAS UPDATE path, via save_to_postgres."""
+    """SQL-shape checks on the CAS UPDATE path, via save_to_store."""
 
     @pytest.mark.asyncio
     async def test_fences_on_cas_column(self) -> None:
@@ -746,7 +746,7 @@ class TestCasUpdateSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "UPDATE 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item(), original_timestamp=datetime.now(UTC))
+        await coll.save_to_store(_sample_item(), original_timestamp=datetime.now(UTC))
         sql = pool.calls[0][1]
         assert "UPDATE items SET" in sql
         assert "WHERE id = $1" in sql
@@ -758,7 +758,7 @@ class TestCasUpdateSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "left_id": uuid.uuid4(),
                 "right_id": uuid.uuid4(),
@@ -777,7 +777,7 @@ class TestCasUpdateSqlShape:
         pool = _RecordingPool()
         pool.execute_status = "UPDATE 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item(), original_timestamp=datetime.now(UTC))
+        await coll.save_to_store(_sample_item(), original_timestamp=datetime.now(UTC))
         sql = pool.calls[0][1]
         # mutable columns for _ItemCollection in declared order:
         # label, payload, vec, blob, counter, flag, date_updated
@@ -802,7 +802,7 @@ class TestFetchAndDeleteSql:
         """
         pool = _RecordingPool()
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.fetch_from_postgres(uuid.uuid4())
+        await coll.fetch_from_store(uuid.uuid4())
         sql = pool.calls[0][1]
         assert sql == (
             "SELECT id, owner_id, label, payload, vec::text AS vec, blob, "
@@ -814,7 +814,7 @@ class TestFetchAndDeleteSql:
         """by-pk fetch projects declared columns over a composite pk."""
         pool = _RecordingPool()
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.fetch_from_postgres((uuid.uuid4(), uuid.uuid4()))
+        await coll.fetch_from_store((uuid.uuid4(), uuid.uuid4()))
         sql = pool.calls[0][1]
         assert sql == ("SELECT left_id, right_id, weight, date_added FROM pairs WHERE left_id = $1 AND right_id = $2")
 
@@ -823,7 +823,7 @@ class TestFetchAndDeleteSql:
         """DELETE FROM items WHERE id = $1."""
         pool = _RecordingPool()
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.delete_from_postgres(uuid.uuid4())
+        await coll.delete_from_store(uuid.uuid4())
         sql = pool.calls[0][1]
         assert sql == "DELETE FROM items WHERE id = $1"
 
@@ -845,7 +845,7 @@ class TestWriteCoercion:
         item_id = uuid.uuid4()
         data = _sample_item(item_id=item_id)
         data["id"] = str(item_id)
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         assert pool.calls[0][0] == "execute"
         args = pool.calls[0][2]
         # id is the first positional arg per column order
@@ -869,7 +869,7 @@ class TestWriteCoercion:
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         payload = {"k": "v"}
         data = _sample_item(payload=payload)
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         args = pool.calls[0][2]
         # payload is at column index 3 (id, owner_id, label, payload)
         assert args[3] == payload
@@ -887,7 +887,7 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         data = _sample_item(payload=json.dumps({"k": "v"}))
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         args = pool.calls[0][2]
         assert args[3] == {"k": "v"}
         assert isinstance(args[3], dict)
@@ -899,7 +899,7 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         data = _sample_item(vec=[1.0, 2.0, 3.0])
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         args = pool.calls[0][2]
         # vec is at column index 4
         assert args[4] == "[1.0, 2.0, 3.0]"
@@ -921,7 +921,7 @@ class TestWriteCoercion:
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         aware = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         data = _sample_item(date_created=aware, date_updated=aware)
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         args = pool.calls[0][2]
         # date_created is at column index 8
         assert args[8].tzinfo is UTC
@@ -942,7 +942,7 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
         aware = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "name": "x",
@@ -962,7 +962,7 @@ class TestWriteCoercion:
         """naive datetime bound to a DATETIMETZ_TYPE column is interpreted as UTC.
 
         :class:`BaseCollection.save_entity` strips ``tzinfo`` from
-        every datetime before invoking ``save_to_postgres`` so the
+        every datetime before invoking ``save_to_store`` so the
         TIMESTAMP-column path round-trips cleanly. for TIMESTAMPTZ
         columns the per-column write coercion has to UN-strip:
         re-wrap a naive value with ``UTC`` so asyncpg's TIMESTAMPTZ
@@ -974,7 +974,7 @@ class TestWriteCoercion:
         pool.execute_status = "INSERT 0 1"
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
         naive = datetime(2026, 1, 2, 3, 4, 5)  # naive but logically UTC
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "name": "x",
@@ -997,13 +997,13 @@ class TestWriteCoercion:
         non-UTC hosts. this test pins the fix: the fence value is
         aware-UTC even when the entity passes naive (the realistic
         path because save_entity strips tzinfo before invoking
-        save_to_postgres).
+        save_to_store).
         """
         pool = _RecordingPool()
         pool.execute_status = "UPDATE 1"
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
         original = datetime(2026, 1, 1, tzinfo=UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "name": "x",
@@ -1027,7 +1027,7 @@ class TestWriteCoercion:
         data = _sample_item()
         del data["label"]
         with pytest.raises(KeyError, match="label"):
-            await coll.save_to_postgres(data)
+            await coll.save_to_store(data)
 
     @pytest.mark.asyncio
     async def test_missing_nullable_defaults_to_none(self) -> None:
@@ -1037,7 +1037,7 @@ class TestWriteCoercion:
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         data = _sample_item()
         del data["payload"]  # nullable
-        await coll.save_to_postgres(data)
+        await coll.save_to_store(data)
         args = pool.calls[0][2]
         # payload is at column index 3
         assert args[3] is None
@@ -1049,7 +1049,7 @@ class TestWriteCoercion:
 
 
 class TestCasBranching:
-    """routing between UPDATE and INSERT paths on save_to_postgres."""
+    """routing between UPDATE and INSERT paths on save_to_store."""
 
     @pytest.mark.asyncio
     async def test_none_timestamp_goes_through_upsert(self) -> None:
@@ -1057,7 +1057,7 @@ class TestCasBranching:
         pool = _RecordingPool()
         pool.execute_status = "INSERT 0 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.save_to_postgres(_sample_item())
+        await coll.save_to_store(_sample_item())
         sql = pool.calls[0][1]
         assert "INSERT INTO items" in sql
         assert "ON CONFLICT (id) DO UPDATE" in sql
@@ -1069,7 +1069,7 @@ class TestCasBranching:
         pool.execute_status = "UPDATE 1"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         old_ts = datetime(2026, 1, 1, tzinfo=UTC)
-        await coll.save_to_postgres(_sample_item(), original_timestamp=old_ts)
+        await coll.save_to_store(_sample_item(), original_timestamp=old_ts)
         sql = pool.calls[0][1]
         assert "UPDATE items SET" in sql
         assert "WHERE id = $1" in sql
@@ -1084,11 +1084,11 @@ class TestCasBranching:
 
     @pytest.mark.asyncio
     async def test_cas_zero_rowcount_on_stale(self) -> None:
-        """mock pool returns ``UPDATE 0``; save_to_postgres returns 0."""
+        """mock pool returns ``UPDATE 0``; save_to_store returns 0."""
         pool = _RecordingPool()
         pool.execute_status = "UPDATE 0"
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        result = await coll.save_to_postgres(_sample_item(), original_timestamp=datetime.now(UTC))
+        result = await coll.save_to_store(_sample_item(), original_timestamp=datetime.now(UTC))
         assert result == 0
 
     @pytest.mark.asyncio
@@ -1103,7 +1103,7 @@ class TestCasBranching:
             "weight": 7,
             "date_added": datetime.now(UTC),
         }
-        await coll.save_to_postgres(data, original_timestamp=datetime.now(UTC))
+        await coll.save_to_store(data, original_timestamp=datetime.now(UTC))
         sql = pool.calls[0][1]
         assert "INSERT INTO pairs" in sql
         assert "ON CONFLICT" in sql
@@ -1123,7 +1123,7 @@ class TestReadCoercion:
         pool = _RecordingPool()
         pool.fetchrow_row = None
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        result = await coll.fetch_from_postgres(uuid.uuid4())
+        result = await coll.fetch_from_store(uuid.uuid4())
         assert result is None
 
     @pytest.mark.asyncio
@@ -1145,7 +1145,7 @@ class TestReadCoercion:
             "date_updated": datetime(2026, 1, 2),
         }
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
         assert row is not None
         assert row["payload"] == {"k": "v"}
         assert row["id"] == item_id
@@ -1170,7 +1170,7 @@ class TestReadCoercion:
             "date_updated": datetime(2026, 1, 2),
         }
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
         assert row is not None
         assert row["vec"] == [1.5, 2.5, 3.5]
 
@@ -1195,7 +1195,7 @@ class TestReadCoercion:
             "date_updated": aware,
         }
         coll = _TzCollection(_registry(pool), _config(), nats_client=_nats())
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
         assert row is not None
         assert row["date_created"].tzinfo is UTC
         assert row["date_updated"].tzinfo is UTC
@@ -1207,7 +1207,7 @@ class TestReadCoercion:
             "date_created": datetime(2026, 1, 1),
             "date_updated": datetime(2026, 1, 1),
         }
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
         assert row is not None
         assert row["date_created"].tzinfo is UTC
         assert row["date_updated"].tzinfo is UTC
@@ -1255,7 +1255,7 @@ class TestL2Roundtrip:
 
 
 # ---------------------------------------------------------------------------
-# delete_from_postgres
+# delete_from_store
 # ---------------------------------------------------------------------------
 
 
@@ -1268,7 +1268,7 @@ class TestDelete:
         pool = _RecordingPool()
         coll = _ItemCollection(_registry(pool), _config(), nats_client=_nats())
         target = uuid.uuid4()
-        await coll.delete_from_postgres(target)
+        await coll.delete_from_store(target)
         method, sql, args = pool.calls[0]
         assert method == "execute"
         assert "DELETE FROM items" in sql
@@ -1281,7 +1281,7 @@ class TestDelete:
         coll = _CompositeCollection(_registry(pool), _config(), nats_client=_nats())
         left = uuid.uuid4()
         right = uuid.uuid4()
-        await coll.delete_from_postgres((left, right))
+        await coll.delete_from_store((left, right))
         method, sql, args = pool.calls[0]
         assert method == "execute"
         assert "DELETE FROM pairs" in sql
@@ -1666,7 +1666,7 @@ class TestTsvectorWritePathAudit:
         pool.execute_status = "INSERT 0 1"
         coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
         now = datetime.now(UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "content": "hello world",
@@ -1700,7 +1700,7 @@ class TestTsvectorWritePathAudit:
         """
         pool = _RecordingPool()
         coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
-        await coll.fetch_from_postgres(uuid.uuid4())
+        await coll.fetch_from_store(uuid.uuid4())
         sql = pool.calls[0][1]
         assert sql == (
             "SELECT id, content, search_vector::text AS search_vector, "
@@ -1720,7 +1720,7 @@ class TestTsvectorWritePathAudit:
         pool.execute_status = "UPDATE 1"
         coll = _TsvectorCollection(_registry(pool), _config(), nats_client=_nats())
         now = datetime.now(UTC)
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": uuid.uuid4(),
                 "content": "updated content",
@@ -1777,7 +1777,7 @@ class TestTsvectorWritePathAudit:
         item_id = uuid.uuid4()
         # caller deliberately does NOT pass search_vector -- it's
         # nullable so the generator should default to None
-        await coll.save_to_postgres(
+        await coll.save_to_store(
             {
                 "id": item_id,
                 "content": "hello world",
@@ -1950,7 +1950,7 @@ class TestInsertServerDefaultGate:
         item_id = uuid.uuid4()
         # caller deliberately omits ``kind`` — server default should
         # apply
-        await coll.save_to_postgres({"id": item_id, "name": "x"})
+        await coll.save_to_store({"id": item_id, "name": "x"})
         sql = pool.calls[0][1]
         args = pool.calls[0][2]
         # column list MUST NOT include ``kind``
@@ -1974,7 +1974,7 @@ class TestInsertServerDefaultGate:
         pool.execute_status = "INSERT 0 1"
         coll = _ServerDefaultCollection(_registry(pool), _config(), nats_client=_nats())
         item_id = uuid.uuid4()
-        await coll.save_to_postgres({"id": item_id, "name": "x", "kind": "document"})
+        await coll.save_to_store({"id": item_id, "name": "x", "kind": "document"})
         sql = pool.calls[0][1]
         args = pool.calls[0][2]
         insert_cols_section = sql.split("(", 1)[1].split(")", 1)[0]
@@ -1995,7 +1995,7 @@ class TestInsertServerDefaultGate:
         with pytest.raises(KeyError, match="kind"):
             # ``kind`` is non-nullable with no server_default — must
             # raise, not silently bind NULL
-            await coll.save_to_postgres({"id": uuid.uuid4(), "name": "x"})
+            await coll.save_to_store({"id": uuid.uuid4(), "name": "x"})
 
 
 # ---------------------------------------------------------------------------

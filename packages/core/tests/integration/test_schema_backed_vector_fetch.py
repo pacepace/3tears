@@ -13,7 +13,7 @@ on every get / update / delete of a row in a vector-bearing table -- the
 hub knowledge get/update/delete 500 surfaced by the live smoke.
 
 this suite exercises the EXACT production path (declarative
-:class:`TableSchema` + the generic ``fetch_from_postgres`` ->
+:class:`TableSchema` + the generic ``fetch_from_store`` ->
 ``_build_fetch_sql``) against a real pgvector container, in the two
 shapes that occur in production:
 
@@ -201,7 +201,7 @@ class _DeclaredFtsCollection(SchemaBackedCollection[_StubEntity]):
     cast it ``::text`` raises the same ``UnsupportedClientFeatureError``.
     ``MemoriesCollection`` / ``MediaContentCollection`` /
     ``MemoryChunkCollection`` declare exactly this shape and inherit the
-    generic ``fetch_from_postgres``.
+    generic ``fetch_from_store``.
     """
 
     primary_key_column: str = "id"
@@ -318,7 +318,7 @@ class TestDeclaredVectorFetch:
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding="[0.1, 0.2, 0.3, 0.4]")
 
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
 
         assert row is not None
         assert row["embedding"] == [0.1, 0.2, 0.3, 0.4]
@@ -334,7 +334,7 @@ class TestDeclaredVectorFetch:
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding=None)
 
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
 
         assert row is not None
         assert row["embedding"] is None
@@ -362,7 +362,7 @@ class TestOmittedVectorFetch:
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding="[0.5, 0.6, 0.7, 0.8]")
 
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
 
         assert row is not None
         assert row["label"] == "hello"
@@ -398,7 +398,7 @@ class TestDeclaredTsvectorFetch:
         item_id = uuid.uuid4()
         await _insert_row(pg_pool, item_id, embedding=None)
 
-        row = await coll.fetch_from_postgres(item_id)
+        row = await coll.fetch_from_store(item_id)
 
         assert row is not None
         assert row["label"] == "hello"

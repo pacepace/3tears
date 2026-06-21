@@ -266,7 +266,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
 
     # --- BaseCollection contract ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch a row by composite pk.
 
         :param entity_id: tuple ``(agent_id, skill_id)``
@@ -286,7 +286,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
             return None
         return dict(row)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: Any = None,
@@ -316,7 +316,7 @@ class AgentSkillCollection(BaseCollection[AgentSkillEntity]):
         await target.execute(_AGENT_SKILLS_UPSERT_SQL, *params)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a row by composite pk.
 
         Cascade FK on ``agent_skill_invocations.(agent_id, skill_id)``
@@ -648,7 +648,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
 
     # --- BaseCollection contract ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
         """Fetch a row by composite pk."""
         if self.l3_pool is None:
             return None
@@ -662,7 +662,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
             return None
         return dict(row)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: Any = None,
@@ -688,7 +688,7 @@ class AgentSkillInvocationCollection(BaseCollection[AgentSkillInvocationEntity])
         await target.execute(_AGENT_SKILL_INVOCATIONS_UPSERT_SQL, *params)
         return 1
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """Delete a row by composite pk."""
         if self.l3_pool is None:
             return None

@@ -7,6 +7,17 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.0]
+
+### Changed
+
+- Collection store-tier override methods renamed to the storage-agnostic
+  L3-store-seam names (`fetch_from_postgres` -> `fetch_from_store`,
+  `save_to_postgres` -> `save_to_store`, `delete_from_postgres` ->
+  `delete_from_store`), tracking the core `collections-task-06` rename. The
+  schema-digest and column collections implement the new names; behavior is
+  unchanged.
+
 ## [0.12.3]
 
 ### Added

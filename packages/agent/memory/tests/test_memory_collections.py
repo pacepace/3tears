@@ -334,8 +334,8 @@ class TestMemoriesCollectionSave:
         config_always: DefaultCoreConfig,
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
-        pg_store: dict[str, dict] = {}
-        pg = _make_pg_mock(pg_store)
+        l3_rows: dict[str, dict] = {}
+        pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         nats = _make_nats_mock()
         coll = MemoriesCollection(
@@ -349,7 +349,7 @@ class TestMemoriesCollectionSave:
         entity = coll.create(data)
         await coll.save_entity(entity)
 
-        assert str(data["memory_id"]) in pg_store
+        assert str(data["memory_id"]) in l3_rows
         assert entity.is_dirty is False
         assert entity.is_new is False
 
@@ -360,8 +360,8 @@ class TestMemoriesCollectionSave:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         data = _sample_data()
-        pg_store = {str(data["memory_id"]): dict(data)}
-        pg = _make_pg_mock(pg_store)
+        l3_rows = {str(data["memory_id"]): dict(data)}
+        pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
@@ -386,8 +386,8 @@ class TestMemoriesCollectionDelete:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         data = _sample_data()
-        pg_store = {str(data["memory_id"]): dict(data)}
-        pg = _make_pg_mock(pg_store)
+        l3_rows = {str(data["memory_id"]): dict(data)}
+        pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         nats = _make_nats_mock()
         coll = MemoriesCollection(
@@ -402,7 +402,7 @@ class TestMemoriesCollectionDelete:
         result = await coll.delete(pk)
 
         assert result is True
-        assert str(data["memory_id"]) not in pg_store
+        assert str(data["memory_id"]) not in l3_rows
 
 
 class TestMemoriesCollectionFindByUser:
@@ -423,11 +423,11 @@ class TestMemoriesCollectionFindByUser:
         data2["user_id"] = user_id
         data2["agent_id"] = agent_id
         data2["customer_id"] = customer_id
-        pg_store = {
+        l3_rows = {
             str(data1["memory_id"]): data1,
             str(data2["memory_id"]): data2,
         }
-        pg = _make_pg_mock(pg_store)
+        pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,
@@ -547,8 +547,8 @@ class TestMemoriesCollectionCountByUser:
         permissive_memory_authorizer: MemoryAuthorizerDependencies,
     ) -> None:
         data = _sample_data()
-        pg_store = {str(data["memory_id"]): data}
-        pg = _make_pg_mock(pg_store)
+        l3_rows = {str(data["memory_id"]): data}
+        pg = _make_pg_mock(l3_rows)
         _rebind_pool(registry, pg)
         coll = MemoriesCollection(
             registry,

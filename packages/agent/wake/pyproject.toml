@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-wake"
-version = "0.12.3"
+version = "0.13.0"
 description = "Long-running-agent foundation -- wake schedules, fires, webhook subscriptions"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -22,17 +22,20 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-agent-skills",
-    "3tears-nats",
     "3tears-observe",
+    # The cross-pod tick pump (lock + due-scan + CAS-claim + reschedule math)
+    # lives in the generic scheduled-jobs core since S-2; wake's tick is a thin
+    # adapter over it. The transitive ``3tears-nats`` dep (cross-pod lock) now
+    # belongs to that core, not to wake.
+    "3tears-scheduled-jobs",
     "uuid-utils",
-    # APScheduler is used as a pure utility ONLY by the ``cron`` schedule
-    # branch in ``_compute_next_fire_at`` (lazy local import inside that
-    # one branch -- non-cron consumers pay zero import cost). Hard dep
-    # rather than an extra so the public ``ScheduleType`` Literal
-    # (which includes ``'cron'``) Just Works without extras-install
-    # ceremony. Consumers are still free to drive the tick body with
-    # any scheduler they choose; the platform does not own APScheduler
-    # integration.
+    # APScheduler is used as a pure utility by the cron-expression validator
+    # (``tools/validators.py`` -- ``CronTrigger.from_crontab``; lazy local
+    # import so non-cron call paths pay zero import cost). The reschedule
+    # math's ``cron`` branch moved to ``3tears-scheduled-jobs`` in S-2, but the
+    # tools layer still validates cron exprs here. Hard dep rather than an extra
+    # so the public ``ScheduleType`` Literal (which includes ``'cron'``) Just
+    # Works without extras-install ceremony.
     "apscheduler>=3.10",
     # LangChain BaseTool is the surface every factory returns (mirrors
     # ``3tears-agent-skills``'s tools layer). Pydantic is the input
@@ -62,5 +65,5 @@ packages = ["src/threetears"]
 [tool.uv.sources]
 "3tears-agent-skills" = { workspace = true }
 3tears = { workspace = true }
-3tears-nats = { workspace = true }
 3tears-observe = { workspace = true }
+"3tears-scheduled-jobs" = { workspace = true }

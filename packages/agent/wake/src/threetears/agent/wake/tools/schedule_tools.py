@@ -46,7 +46,7 @@ from threetears.agent.wake.rate_limit import (
     create_schedule_serialized,
     resume_schedule_serialized,
 )
-from threetears.agent.wake.reschedule import _compute_next_fire_at
+from threetears.scheduled_jobs import compute_next_fire_at
 from threetears.agent.wake.tools.resolve import parse_schedule_id
 from threetears.agent.wake.tools.validators import (
     _ChainNode,
@@ -548,7 +548,7 @@ def load_wake_schedule_create_tool(
         # Compute next_fire_at via the pure helper from shard 02.
         now = datetime.now(UTC)
         try:
-            next_fire_at = _compute_next_fire_at(
+            next_fire_at = compute_next_fire_at(
                 schedule_type,
                 schedule_config,
                 missed_fire_policy,
@@ -898,7 +898,7 @@ def load_wake_schedule_update_tool(
         # next_fire_at by design).
         if recompute_next_fire and entity.status == "active":
             try:
-                entity.next_fire_at = _compute_next_fire_at(
+                entity.next_fire_at = compute_next_fire_at(
                     entity.schedule_type,
                     entity.schedule_config,
                     entity.missed_fire_policy,
@@ -1113,7 +1113,7 @@ def load_wake_schedule_resume_tool(
             )
 
         try:
-            next_fire_at = _compute_next_fire_at(
+            next_fire_at = compute_next_fire_at(
                 entity.schedule_type,
                 entity.schedule_config,
                 entity.missed_fire_policy,
