@@ -42,6 +42,13 @@ version history:
   media_id, context_id, etc.). Postgres updates the PK + every index
   + every dependent FK automatically; the rename is guarded by an
   ``information_schema`` DO block so replays are idempotent.
+- v008 -- create the app-agnostic ``folders`` table (the Folder
+  primitive lifted from metallm: a mutable, per-owner named container
+  grouping conversations) plus the UNIQUE(agent_id, user_id, name)
+  constraint and its lookup index, and add the mutable
+  ``conversations.folder_id`` FK column. every statement is natively
+  idempotent (``IF NOT EXISTS`` / ``ADD COLUMN IF NOT EXISTS``) and
+  search-path-relative.
 """
 
 from __future__ import annotations
@@ -66,6 +73,9 @@ from threetears.conversations.migrations.v006_conversation_language_column impor
 )
 from threetears.conversations.migrations.v007_rename_id_to_conversation_id import (
     rename_id_to_conversation_id,
+)
+from threetears.conversations.migrations.v008_create_folders_and_conversation_folder_id import (
+    create_folders_and_conversation_folder_id,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -100,6 +110,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(5)(add_conversation_search_vector)
     pkg.version(6)(add_conversation_language_column)
     pkg.version(7)(rename_id_to_conversation_id)
+    pkg.version(8)(create_folders_and_conversation_folder_id)
     runner.register(pkg)
     return pkg
 
@@ -111,6 +122,7 @@ __all__ = [
     "add_message_count",
     "add_name_column",
     "create_conversations_table",
+    "create_folders_and_conversation_folder_id",
     "datetime_to_datetimetz",
     "register",
     "rename_id_to_conversation_id",

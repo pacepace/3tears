@@ -116,6 +116,11 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             Column("channel_type", STRING_TYPE, immutable=True),
             Column("conversation_ref", STRING_TYPE, nullable=True, immutable=True),
             Column("name", STRING_TYPE, nullable=True),
+            # v008: mutable FK into the app-agnostic ``folders`` table
+            # (Folder primitive lifted from metallm). conversations are
+            # filed / moved / unfiled over their lifetime, so unlike
+            # ``conversation_ref`` this column is NOT immutable.
+            Column("folder_id", UUID_TYPE, nullable=True),
             Column("status", STRING_TYPE),
             Column("summary", STRING_TYPE, nullable=True),
             Column(
@@ -471,6 +476,47 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 user_id,
                 "closed",
             )
+        entities: list[Conversation] = []
+        for row in rows:
+            data = self._coerce_row(dict(row))
+            entity = self.entity_class(data, is_new=False, collection=self)
+            entity.original_date_updated = data.get("date_updated")
+            pk = (data["agent_id"], data["conversation_id"])
+            await self._save_to_l2(pk, data)
+            entities.append(entity)
+        return entities
+
+    async def find_by_folder(
+        self,
+        agent_id: UUID,
+        folder_id: UUID,
+    ) -> list[Conversation]:
+        """fetch every conversation filed under the given folder.
+
+        the folder grouping is the app-agnostic peer of the owner
+        grouping (:meth:`find_by_user`) and the ref grouping
+        (:meth:`find_by_ref`): callers list the conversations a user
+        has organised into one :class:`~threetears.conversations.
+        folder_entity.Folder`. ``agent_id`` is the partition column on
+        the ``conversations`` table; the caller supplies it explicitly
+        so the lookup stays inside one agent's slice and the partition
+        predicate is enforced at the SQL boundary. results come from L3
+        (the source of truth), are promoted into L2 like
+        :meth:`find_by_user`, and are ordered newest-first.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param folder_id: the folder whose conversations to fetch
+        :ptype folder_id: UUID
+        :return: conversations filed under ``folder_id`` under
+            ``agent_id``, newest-first
+        :rtype: list[Conversation]
+        """
+        rows = await self.l3_pool.fetch(
+            "SELECT * FROM conversations WHERE agent_id = $1 AND folder_id = $2 ORDER BY date_created DESC",
+            agent_id,
+            folder_id,
+        )
         entities: list[Conversation] = []
         for row in rows:
             data = self._coerce_row(dict(row))

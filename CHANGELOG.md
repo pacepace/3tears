@@ -4,6 +4,26 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.2 -- 2026-06-21
+
+Conversation folders (a reusable grouping primitive lifted from metallm) and a Redshift
+connection-concurrency cap. Additive across `3tears-conversations` and `3tears-datasources`.
+
+### Added -- `3tears-conversations` -- `threetears.conversations`
+
+- **Folder system** — `Folder` entity + `FolderCollection`: an app-agnostic, mutable, per-owner
+  named container that groups conversations, lifted from metallm's product-side feature so any
+  3tears consumer reuses one canonical entity. Scoped per `(agent_id, folder_id)` with a `name` and
+  a free-form `metadata` JSONB (app presentation: color/icon/sort_order). Adds the `folders` table
+  and a nullable `conversations.folder_id` (migration v008).
+
+### Changed -- `3tears-datasources` -- `threetears.datasources`
+
+- **Cap simultaneously-open Redshift connections.** A burst of N concurrent `fetch()` could open N
+  connections past the warehouse user's `CONNECTION LIMIT` even after the 0.13.1 bounded-cache fix.
+  An `asyncio.Semaphore` sized to `connection_cache_size`, acquired before opening, now bounds
+  concurrently-open connections to the cache size (the executor still bounds concurrent work).
+
 ## v0.13.1 -- 2026-06-21
 
 Patch: size the Redshift warm-connection cache as a bounded pool so concurrent

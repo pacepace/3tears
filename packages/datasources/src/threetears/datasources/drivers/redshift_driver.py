@@ -21,6 +21,17 @@ architecture (DS-11-01..15):
   the handshake across queries. mutations guarded by
   :class:`asyncio.Lock` (single-event-loop assumption documented per
   DS-11-15).
+- **open-connection semaphore** (:class:`asyncio.Semaphore`) sized to
+  ``connection_cache_size``. every connection-holding call acquires it
+  BEFORE opening, so simultaneously-open connections never exceed the
+  cache size: the (cache_size + 1)th concurrent caller waits instead of
+  opening a connection past the warehouse user's CONNECTION LIMIT. the
+  executor (``executor_max_workers``) bounds concurrent WORK; this
+  bounds concurrent open CONNECTIONS -- a burst of N concurrent
+  ``fetch()`` can no longer open N connections. NB across the fleet the
+  hard cap is per-driver-instance: total open for a warehouse user is
+  ``hub_replicas x connection_cache_size``, so the user's CONNECTION
+  LIMIT must be sized to the replica count.
 - **DB-API ``$1`` -> ``%s`` placeholder translation** via the shared
   :func:`threetears.datasources.drivers._util._translate_placeholders`
   helper with ``target_style="pyformat"``.
@@ -568,6 +579,14 @@ class RedshiftDriver(Driver):
         # cache mutations are guarded inside this lock so concurrent
         # acquire/release on the same event loop don't race.
         self._cache_lock = asyncio.Lock()
+        # bound simultaneously-open connections to connection_cache_size: every
+        # connection-holding call (_acquire_and_run, fetch_iter) acquires this
+        # BEFORE opening, so the (cache_size + 1)th concurrent caller waits here
+        # rather than opening a connection past the warehouse user's CONNECTION
+        # LIMIT. sized to the cache so total open never exceeds what the cache
+        # retains -- the executor (executor_max_workers) bounds concurrent WORK,
+        # this bounds concurrent open CONNECTIONS.
+        self._connection_semaphore = asyncio.Semaphore(config.connection_cache_size)
         self._closed = False
         # read by :func:`_observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
@@ -826,6 +845,33 @@ class RedshiftDriver(Driver):
         self,
         op: Callable[["RedshiftConnection"], Awaitable[Any]],
     ) -> Any:
+        """acquire the open-connection semaphore, then run ``op`` holding one connection.
+
+        the semaphore is sized to ``connection_cache_size``, so at most that many
+        connections are open at once across concurrent callers: the
+        (cache_size + 1)th concurrent caller WAITS here instead of opening a
+        connection past the warehouse user's CONNECTION LIMIT. the cache amortizes
+        the TLS+auth handshake; the semaphore bounds the count. the held span is
+        exactly "this call holds a connection" -- acquired before the open in
+        :meth:`_run_with_connection`, released after that method returns the
+        connection to the cache.
+
+        :param op: callable taking the acquired connection, returning the awaitable
+        :ptype op: Callable[["RedshiftConnection"], Awaitable[Any]]
+        :return: whatever ``op(conn)`` resolved to
+        :rtype: Any
+        :raises RuntimeError: if the driver was previously closed
+        """
+        if self._closed:
+            raise RuntimeError("RedshiftDriver is closed")
+        async with self._connection_semaphore:
+            result = await self._run_with_connection(op)
+        return result
+
+    async def _run_with_connection(
+        self,
+        op: Callable[["RedshiftConnection"], Awaitable[Any]],
+    ) -> Any:
         """acquire a connection + route through :meth:`_with_cancellation`.
 
         canonical wrapper every query-emitting method uses. wires the
@@ -1074,7 +1120,16 @@ class RedshiftDriver(Driver):
         if self._closed:
             raise RuntimeError("RedshiftDriver is closed")
         translated = _translate_placeholders(sql, "pyformat")
-        conn = await self._acquire_connection()
+        # hold the open-connection semaphore for the whole streaming span -- the
+        # connection is checked out until the generator is exhausted or closed;
+        # released in the finally after the connection is released/evicted. guard
+        # the acquire so a failed open does not leak a permit.
+        await self._connection_semaphore.acquire()
+        try:
+            conn = await self._acquire_connection()
+        except BaseException:
+            self._connection_semaphore.release()
+            raise
         poisoned = False
         cursor: "RedshiftCursor | None" = None
 
@@ -1139,6 +1194,10 @@ class RedshiftDriver(Driver):
             else:
                 # clean run -- release back to the cache.
                 await self._release_connection(conn)
+            # release the open-connection permit AFTER the connection is back in
+            # the cache (clean) or closed (poisoned), so a waiting caller that
+            # wakes finds the cached connection to reuse rather than opening anew.
+            self._connection_semaphore.release()
 
     # -------------------------------------------------------------------
     # Driver ABC: introspection surface
