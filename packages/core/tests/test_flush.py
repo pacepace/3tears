@@ -556,6 +556,60 @@ class TestFlushAtomicBatch:
         coll.persist_to_store.assert_awaited_once_with({"id": "u1"})
 
     @pytest.mark.asyncio
+    async def test_already_failed_write_excluded_from_atomic_batch(self) -> None:
+        """A write with ``retries > 0`` is partitioned OUT of the atomic batch.
+
+        Regression for the orphan-poisons-the-batch fingerprint: an FK orphan
+        (parent row deleted, never returning) keeps re-enqueuing under the
+        generous ``_FK_RETRY_LIMIT``. If it stayed in the atomic transaction it
+        would abort the batch every cycle for ~100 cycles, dragging every
+        co-buffered fresh write into per-entity fallback. The fix routes any
+        already-failed write straight to the per-entity loop, so the fresh write
+        commits in its own clean atomic batch and only the orphan re-enqueues.
+        """
+        backend = _FakeTxBackend()
+        buf = WriteBuffer()
+        # one fresh write (never failed) + one already-failed FK orphan
+        await buf.add("users", "u1", {"id": "u1"})
+        await buf.add("messages", "m_orphan", {"id": "m_orphan"}, retries=1)
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=backend)
+
+        # fresh collection records onto the transaction connection (atomic path)
+        fresh_coll = _batch_collection("users", backend)
+        registry.register(fresh_coll)
+
+        # orphan collection always FK-violates (parent never lands)
+        orphan_coll = MagicMock()
+        orphan_coll.table_name = "messages"
+
+        async def _orphan_persist(data: dict[str, object], *, conn: object = None) -> int:
+            # the orphan must NEVER be handed the batch connection -- it is
+            # isolated in the per-entity loop, which persists without a conn
+            assert conn is None
+            raise asyncpg.exceptions.ForeignKeyViolationError("violates foreign key constraint")
+
+        orphan_coll.persist_to_store = AsyncMock(side_effect=_orphan_persist)
+        registry.register(orphan_coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        # only the fresh write committed
+        assert flushed == 1
+        assert backend.entered == 1  # exactly ONE atomic transaction (fresh only)
+        assert backend.committed is True
+        assert backend.rolled_back is False  # orphan never touched the batch
+        assert backend.conn.persisted == [{"id": "u1"}]
+
+        # the orphan re-enqueued under the FK budget; the fresh write is gone
+        assert buf.pending_count() == 1
+        items = await buf.drain()
+        assert len(items) == 1
+        assert items[0].entity_id == "m_orphan"
+        assert items[0].retries == 2
+
+    @pytest.mark.asyncio
     async def test_backend_without_transaction_uses_per_entity_loop(self) -> None:
         """a backend lacking ``transaction()`` (e.g. a git DurableStore) skips the batch path."""
         buf = WriteBuffer()

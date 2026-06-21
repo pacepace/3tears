@@ -527,6 +527,68 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
             entities.append(entity)
         return entities
 
+    async def clear_folder(
+        self,
+        agent_id: UUID,
+        folder_id: UUID,
+    ) -> int:
+        """unfile every conversation in a folder, CACHE-COHERENTLY.
+
+        the coherent counterpart to the migration's FK ``ON DELETE SET
+        NULL`` backstop: when a consumer holds L1/L2 caches, a raw
+        ``UPDATE conversations SET folder_id = NULL`` against L3 alone
+        would leave every cached row still pointing at the (now deleted)
+        folder until its TTL expired. this method instead fetches the
+        filed conversations through :meth:`find_by_folder`, clears each
+        entity's ``folder_id``, and persists each through
+        :meth:`save_entity` so the write threads all three tiers (L3 +
+        L1 + L2) and publishes the cross-pod invalidation. callers
+        delete the folder *after* calling this so the DB-level FK finds
+        nothing left to null (and serves purely as the backstop for any
+        row that raced in between). ``agent_id`` is the partition column;
+        the lookup and every write stay inside one agent's slice.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param folder_id: the folder whose conversations to unfile
+        :ptype folder_id: UUID
+        :return: number of conversations unfiled
+        :rtype: int
+        """
+        filed = await self.find_by_folder(agent_id, folder_id)
+        for conversation in filed:
+            conversation.folder_id = None
+            await self.save_entity(conversation)
+        return len(filed)
+
+    async def count_by_folder(
+        self,
+        agent_id: UUID,
+        folder_id: UUID,
+    ) -> int:
+        """count the conversations filed under one folder.
+
+        the cheap counter peer of :meth:`find_by_folder`: consumers
+        rendering a folder list want the per-folder conversation count
+        without hydrating every row into an entity. issues a single
+        ``SELECT COUNT(*)`` against L3 pinned to the partition column
+        (``agent_id = $1``) and the folder (``folder_id = $2``) so the
+        scan stays inside one agent's slice at the SQL boundary.
+
+        :param agent_id: agent partition the conversations belong to
+        :ptype agent_id: UUID
+        :param folder_id: the folder whose conversations to count
+        :ptype folder_id: UUID
+        :return: number of conversations filed under ``folder_id``
+        :rtype: int
+        """
+        count = await self.l3_pool.fetchval(
+            "SELECT COUNT(*) FROM conversations WHERE agent_id = $1 AND folder_id = $2",
+            agent_id,
+            folder_id,
+        )
+        return int(count) if count is not None else 0
+
     async def find_by_ref(
         self,
         agent_id: UUID,
