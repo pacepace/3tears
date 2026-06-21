@@ -381,14 +381,28 @@ async def flush_pending(
 ) -> int:
     """Drain the write buffer and persist all pending writes to the durable tier.
 
-    When every pending collection shares ONE backend that exposes a usable
-    ``transaction()``, the toposorted batch is persisted inside a SINGLE
-    ``async with backend.transaction() as conn`` (one DB tx for a SQL backend; one
-    commit for a git backend) — each write threading ``conn`` through
-    ``persist_to_store``. **Graceful degrade**: on ANY exception in the batch path the
-    flush falls back to the per-entity loop, which keeps the ``_is_fk_violation``
-    classification + re-enqueue intact. A backend without ``transaction()`` (e.g. a
-    git-backed ``DurableStore``) degrades to the per-entity loop directly.
+    **Retry partition (orphan isolation).** After the toposort, pending writes are
+    split by their ``retries`` count. Writes with ``retries == 0`` (never failed)
+    form the *fresh* set and take the atomic-batch fast path; writes with
+    ``retries > 0`` (already failed at least once — e.g. an FK orphan whose parent
+    row was deleted and is never coming back) route STRAIGHT to the per-entity loop.
+    This keeps a previously-failing write out of the atomic transaction entirely: a
+    single un-satisfiable FK among the already-failed writes can never abort the
+    batch, so a co-buffered fresh write still commits instead of being dragged into
+    per-entity fallback every cycle for the whole ``_FK_RETRY_LIMIT`` budget. The
+    already-failed writes keep the per-entity loop's ``_is_fk_violation``
+    classification + FK-aware re-enqueue, so a genuinely-transient FK still drains
+    once its parent lands.
+
+    **Fresh-set atomic batch.** When every collection in the fresh set shares ONE
+    backend that exposes a usable ``transaction()``, the toposorted fresh writes are
+    persisted inside a SINGLE ``async with backend.transaction() as conn`` (one DB tx
+    for a SQL backend; one commit for a git backend) — each write threading ``conn``
+    through ``persist_to_store``. **Graceful degrade**: on ANY exception in the batch
+    path the fresh set falls back to the per-entity loop, which keeps the
+    ``_is_fk_violation`` classification + re-enqueue intact. A backend without
+    ``transaction()`` (e.g. a git-backed ``DurableStore``) degrades to the per-entity
+    loop directly. The total returned is the sum of both paths' flushed counts.
 
     :param write_buffer: the coalescing write buffer to drain.
     :ptype write_buffer: WriteBuffer
@@ -396,7 +410,7 @@ async def flush_pending(
     :ptype registry: CollectionRegistry
     :param parent_key_map: optional table → parent-FK-column map for toposort.
     :ptype parent_key_map: dict[str, str] | None
-    :return: number of entities successfully persisted.
+    :return: number of entities successfully persisted (both paths summed).
     :rtype: int
     """
     pending = await write_buffer.drain()
@@ -405,23 +419,42 @@ async def flush_pending(
 
     sorted_pending = _toposort_pending(pending, parent_key_map)
 
-    backend = _resolve_batch_backend(sorted_pending, registry)
-    if backend is not None:
-        try:
-            flushed = await _flush_batch_atomic(sorted_pending, registry, backend)
-            log.debug(
-                "Flush complete (atomic batch)",
-                extra={"extra_data": {"flushed": flushed, "total": len(sorted_pending)}},
-            )
-            return flushed
-        except Exception as exc:
-            # Graceful degrade: the whole transaction rolled back, so NOTHING was
-            # committed -- replay through the per-entity loop, which preserves the
-            # FK-aware re-enqueue policy per write. The fallback is the safety net,
-            # never weakened.
-            log.warning(
-                "Atomic batch flush failed, falling back to per-entity flush",
-                extra={"extra_data": {"total": len(sorted_pending), "error": str(exc)}},
-            )
+    # Partition by retry count: fresh (retries == 0) writes are eligible for the
+    # atomic batch; already-failed (retries > 0) writes route straight to the
+    # per-entity loop so a poisoned orphan can never abort the fresh batch.
+    fresh: list[PendingWrite] = [pw for pw in sorted_pending if pw.retries == 0]
+    already_failed: list[PendingWrite] = [pw for pw in sorted_pending if pw.retries > 0]
 
-    return await _flush_per_entity(sorted_pending, write_buffer, registry)
+    flushed = 0
+
+    if fresh:
+        backend = _resolve_batch_backend(fresh, registry)
+        if backend is not None:
+            try:
+                batch_flushed = await _flush_batch_atomic(fresh, registry, backend)
+                log.debug(
+                    "Flush complete (atomic batch)",
+                    extra={"extra_data": {"flushed": batch_flushed, "total": len(fresh)}},
+                )
+                flushed += batch_flushed
+            except Exception as exc:
+                # Graceful degrade: the whole transaction rolled back, so NOTHING
+                # in the fresh set was committed -- replay it through the per-entity
+                # loop, which preserves the FK-aware re-enqueue policy per write.
+                # The fallback is the safety net, never weakened.
+                log.warning(
+                    "Atomic batch flush failed, falling back to per-entity flush",
+                    extra={"extra_data": {"total": len(fresh), "error": str(exc)}},
+                )
+                flushed += await _flush_per_entity(fresh, write_buffer, registry)
+        else:
+            # No single shared transaction-capable backend (e.g. git-backed
+            # DurableStore): degrade the fresh set to the per-entity loop directly.
+            flushed += await _flush_per_entity(fresh, write_buffer, registry)
+
+    if already_failed:
+        # Previously-failed writes are isolated in the per-entity loop so one
+        # un-satisfiable FK orphan cannot abort the fresh batch above.
+        flushed += await _flush_per_entity(already_failed, write_buffer, registry)
+
+    return flushed

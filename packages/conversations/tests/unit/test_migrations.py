@@ -17,6 +17,7 @@ from threetears.conversations.migrations import (
     PACKAGE_NAME,
     add_conversation_language_column,
     add_conversation_search_vector,
+    add_folder_referential_integrity,
     add_name_column,
     create_conversations_table,
     create_folders_and_conversation_folder_id,
@@ -135,25 +136,26 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_eight(self) -> None:
+    async def test_register_populates_versions_one_through_nine(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
         (name), v004 (datetimetz), v005 (search_vector + trigger),
         v006 (language column + trigger update), v007 (rename id
         -> conversation_id), v008 (folders table + conversation
-        folder_id)."""
+        folder_id), v009 (folder referential integrity: folder_id
+        unique + conversation->folder FK ON DELETE SET NULL)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8, 9}
 
-    async def test_apply_runs_eight_versions_then_idempotent(self) -> None:
-        """apply records v1..v8 and re-running is a no-op."""
+    async def test_apply_runs_nine_versions_then_idempotent(self) -> None:
+        """apply records v1..v9 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 8
+        assert first_count == 9
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -523,6 +525,69 @@ class TestCreateFoldersAndConversationFolderIdMigration:
         """direct invocation does not touch ``_schema_migrations``."""
         store = _FakeDataStore()
         await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestAddFolderReferentialIntegrityMigration:
+    """tests for v009: complete the folder<->conversation referential
+    integrity v008 left as a bare nullable column -- a single-column
+    UNIQUE on ``folders.folder_id`` (a valid FK target) plus the
+    ``conversations.folder_id -> folders.folder_id ON DELETE SET NULL``
+    FK so deleting a folder auto-unfiles its conversations.
+    """
+
+    async def test_direct_call_issues_two_statements(self) -> None:
+        """one CREATE UNIQUE INDEX + one guarded ADD CONSTRAINT DO block."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 2
+
+    async def test_direct_call_creates_single_column_folder_id_unique(self) -> None:
+        """a standalone single-column UNIQUE on folder_id so a
+        single-column FK can target it (the composite PK cannot be)."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_folder_id ON folders \(folder_id\)",
+            joined,
+        )
+
+    async def test_direct_call_adds_on_delete_set_null_fk(self) -> None:
+        """the FK references folders(folder_id) with ON DELETE SET NULL
+        so deleting a folder nulls referencing conversations' folder_id
+        rather than orphaning them."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "ADD CONSTRAINT conversations_folder_id_fkey" in joined
+        assert "FOREIGN KEY (folder_id)" in joined
+        assert "REFERENCES folders (folder_id)" in joined
+        assert "ON DELETE SET NULL" in joined
+
+    async def test_direct_call_guards_fk_with_pg_constraint_probe(self) -> None:
+        """ADD CONSTRAINT has no IF NOT EXISTS form; the FK is guarded by
+        a pg_constraint existence probe scoped to current_schema() so
+        replays no-op and a multi-schema test host stays isolated."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "pg_constraint" in joined
+        assert "conname = 'conversations_folder_id_fkey'" in joined
+        assert "current_schema()::regnamespace" in joined
+
+    async def test_direct_call_does_not_qualify_with_schema_name(self) -> None:
+        """DDL stays unqualified so search_path governs the target schema."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert not re.search(r"agent_[0-9a-f]{32}\.", joined)
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await add_folder_referential_integrity(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 

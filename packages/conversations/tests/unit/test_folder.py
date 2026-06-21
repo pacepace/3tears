@@ -26,6 +26,7 @@ from threetears.conversations.collection import ConversationsCollection
 from threetears.conversations.entity import Conversation
 from threetears.conversations.folder_collection import FolderCollection
 from threetears.conversations.folder_entity import Folder
+from threetears.core.collections.flush import FlushStrategy
 
 
 class _BackendlessFolderCollection(FolderCollection):
@@ -96,6 +97,102 @@ def _sample_folder_data() -> dict[str, Any]:
         "date_created": now,
         "date_updated": now,
     }
+
+
+class _CoherentConversationsCollection(ConversationsCollection):
+    """ConversationsCollection that records L2 writes + stubs cache plumbing.
+
+    mirrors :class:`_BackendlessFolderCollection`: it wires only the L3
+    pool that ``save_entity`` / ``find_by_folder`` need and replaces the
+    L1 / L2 / invalidation seams with observable no-ops so a
+    ``clear_folder`` test can prove the cache-coherent write path ran
+    (every cleared row pushed through ``_save_to_l2``) without standing
+    up real NATS / SQLite backends. the flush knobs select the
+    immediate-write branch of ``save_entity`` (no deferral to a write
+    buffer) so the L3 + L2 writes happen synchronously.
+    """
+
+    def __init__(self, postgres_pool: Any, l2_writes: list[dict[str, Any]]) -> None:
+        """wire the L3 pool + an L2-capture list.
+
+        :param postgres_pool: mock asyncpg pool servicing fetch / execute
+        :ptype postgres_pool: Any
+        :param l2_writes: list every ``_save_to_l2`` payload is appended to
+        :ptype l2_writes: list[dict[str, Any]]
+        :return: nothing
+        :rtype: None
+        """
+        self.l3_pool = postgres_pool
+        self._l1 = None
+        self._write_buffer = None
+        self._flush_strategy = FlushStrategy.ALWAYS
+        self._flush_tables = frozenset()
+        self._l2_writes = l2_writes
+
+    async def _save_to_l2(self, entity_id: Any, data: dict[str, Any]) -> bool:
+        """record the L2 promotion payload so the test can assert coherence.
+
+        :param entity_id: composite pk (ignored)
+        :ptype entity_id: Any
+        :param data: row dict promoted to L2
+        :ptype data: dict[str, Any]
+        :return: always ``True``
+        :rtype: bool
+        """
+        self._l2_writes.append(data)
+        return True
+
+    async def _publish_invalidation(self, entity_id: Any) -> None:
+        """no-op cross-pod invalidation publish (no NATS in the harness).
+
+        :param entity_id: composite pk (ignored)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        return None
+
+
+def _make_conversation_pg_mock(store: dict[str, dict[str, Any]]) -> AsyncMock:
+    """
+    build a mock asyncpg pool for the ``conversations`` table.
+
+    emulates the CAS-UPDATE path for the conversations column order
+    (agent_id, conversation_id, then mutables name, folder_id, status,
+    summary, date_updated, date_last_message, metadata, message_count,
+    language) so ``save_entity`` -> ``save_to_store`` round-trips the
+    cleared ``folder_id`` back into the in-memory L3 store.
+
+    :param store: in-memory L3 row dict keyed by str(conversation_id)
+    :ptype store: dict[str, dict[str, Any]]
+    :return: async-mock pool
+    :rtype: AsyncMock
+    """
+    pg = AsyncMock()
+
+    async def _execute(query: str, *args: object) -> str:
+        if "UPDATE" in query:
+            entity_id = str(args[1])
+            existing = store.get(entity_id)
+            if existing is None:
+                return "UPDATE 0"
+            # mutables follow the pk pair in declared order: name $3,
+            # folder_id $4, status $5, summary $6, date_updated $7, ...
+            existing["name"] = args[2]
+            existing["folder_id"] = args[3]
+            existing["status"] = args[4]
+            existing["summary"] = args[5]
+            existing["date_updated"] = args[6]
+            existing["date_last_message"] = args[7]
+            existing["metadata"] = args[8]
+            existing["message_count"] = args[9]
+            existing["language"] = args[10]
+            return "UPDATE 1"
+        return "OK"
+
+    pg.execute = AsyncMock(side_effect=_execute)
+    pg.fetch = AsyncMock(return_value=[])
+    return pg
 
 
 def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
@@ -442,6 +539,99 @@ class TestConversationFolderId:
         entity = Conversation(data)
         assert entity.folder_id == folder_uuid
         assert isinstance(entity.folder_id, UUID)
+
+    async def test_clear_folder_unfiles_every_conversation_cache_coherently(self) -> None:
+        """clear_folder fetches the filed conversations, clears each
+        ``folder_id``, and persists THROUGH the collection (save_entity)
+        so L2 sees the cleared row -- not a raw L3-only UPDATE that would
+        leave stale caches. Asserts: the L3 rows end with folder_id None,
+        the unfile count is returned, AND the cleared row is written to
+        L2 (the cache-coherent path)."""
+        now = datetime.now(UTC)
+        agent_id = uuid7()
+        folder_id = uuid7()
+        # two conversations filed under the folder
+        rows = []
+        l3: dict[str, dict[str, Any]] = {}
+        for _ in range(2):
+            row = {
+                "agent_id": agent_id,
+                "conversation_id": uuid7(),
+                "customer_id": uuid7(),
+                "user_id": uuid7(),
+                "channel_type": "slack",
+                "conversation_ref": None,
+                "name": None,
+                "folder_id": folder_id,
+                "status": "active",
+                "summary": None,
+                "date_created": now,
+                "date_updated": now,
+                "date_last_message": None,
+                "metadata": None,
+                "message_count": 0,
+                "language": "english",
+            }
+            rows.append(row)
+            l3[str(row["conversation_id"])] = dict(row)
+
+        pg = _make_conversation_pg_mock(l3)
+        pg.fetch = AsyncMock(return_value=rows)
+
+        # record the rows pushed to L2 so the test can prove the
+        # cache-coherent write path ran (not just a raw L3 UPDATE).
+        l2_writes: list[dict[str, Any]] = []
+        collection = _CoherentConversationsCollection(pg, l2_writes)
+
+        unfiled = await collection.clear_folder(agent_id, folder_id)
+
+        # every filed conversation was unfiled
+        assert unfiled == 2
+        # L3 rows are now unfiled (folder_id NULL) via the CAS UPDATE
+        for row in l3.values():
+            assert row["folder_id"] is None
+        # the cache-coherent path wrote the cleared rows to L2 -- proving
+        # this is NOT a raw L3-only UPDATE that would strand stale caches.
+        # (find_by_folder promotes the still-filed rows into L2 on read;
+        # save_entity then re-writes them unfiled -- so the AUTHORITATIVE
+        # latest L2 state for every conversation is folder_id None.)
+        latest_l2: dict[Any, dict[str, Any]] = {}
+        for data in l2_writes:
+            latest_l2[data["conversation_id"]] = data
+        assert len(latest_l2) == 2
+        for data in latest_l2.values():
+            assert data["folder_id"] is None
+
+    async def test_count_by_folder_pins_partition_and_folder(self) -> None:
+        """count_by_folder issues a COUNT(*) pinned to the partition
+        column (agent_id $1) + folder_id ($2) and returns the count."""
+        pg = AsyncMock()
+        pg.fetchval = AsyncMock(return_value=3)
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        agent_id = uuid7()
+        folder_id = uuid7()
+        count = await collection.count_by_folder(agent_id, folder_id)
+
+        assert count == 3
+        pg.fetchval.assert_called_once()
+        sql, *params = pg.fetchval.call_args.args
+        assert "SELECT COUNT(*) FROM conversations" in sql
+        assert "agent_id = $1" in sql
+        assert "folder_id = $2" in sql
+        assert params[0] == agent_id
+        assert params[1] == folder_id
+
+    async def test_count_by_folder_returns_zero_when_none(self) -> None:
+        """a NULL/None COUNT result coerces to 0 (defensive)."""
+        pg = AsyncMock()
+        pg.fetchval = AsyncMock(return_value=None)
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+
+        count = await collection.count_by_folder(uuid7(), uuid7())
+        assert count == 0
 
     async def test_find_by_folder_filters_by_agent_and_folder_newest_first(self) -> None:
         """ConversationsCollection.find_by_folder pins the partition
