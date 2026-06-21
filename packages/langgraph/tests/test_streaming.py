@@ -403,6 +403,37 @@ class TestStreamingResponseLifecycle:
         token_events = [e for e in transport.events if isinstance(e, StreamTokenEvent)]
         assert token_events == []
 
+    async def test_emit_keepalive_publishes_turn_level_progress(self) -> None:
+        """turn-level keepalive emits progress with EMPTY tool_name + monotonic seq (LRT-02)."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.emit_keepalive(elapsed_ms=10000)
+        await stream.emit_keepalive(elapsed_ms=20000)
+        keepalives = [e for e in transport.events if isinstance(e, ToolCallProgressEvent)]
+        # empty tool_name marks the turn-level keepalive (vs a per-tool progress).
+        assert [e.tool_name for e in keepalives] == ["", ""]
+        assert [e.sequence for e in keepalives] == [1, 2]
+        assert [e.elapsed_ms for e in keepalives] == [10000, 20000]
+
+    async def test_emit_keepalive_after_terminal_is_noop(self) -> None:
+        """a keepalive after the stream closes is silently dropped (no late wire write)."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.end()
+        await stream.emit_keepalive(elapsed_ms=5000)
+        keepalives = [e for e in transport.events if isinstance(e, ToolCallProgressEvent)]
+        assert keepalives == []
+
     async def test_end_publishes_stream_end_with_accumulated_content(self) -> None:
         """:meth:`end` carries the running accumulated content."""
         transport = _RecordingTransport()

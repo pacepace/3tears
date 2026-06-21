@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Final, TypeVar
 
 import nats
 from nats.aio.client import Client as _NatsPyClient
+from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsConsumerConfig
 from nats.errors import (
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
@@ -1203,40 +1204,115 @@ class NatsClient:
         subject: Subject,
         durable: str,
         cb: Callable[[Any], Awaitable[None]],
+        max_deliver: int,
+        dead_letter_subject: Subject | None = None,
+        ack_wait_seconds: float = 60.0,
         stream: str | None = None,
     ) -> Any:
-        """create a durable push consumer with MANUAL ack on a JetStream subject.
+        """create a durable push consumer with MANUAL ack + BOUNDED redelivery.
 
-        the callback receives the raw nats-py JetStream message and MUST
-        ``await msg.ack()`` only after the message is fully handled (e.g. posted
-        to the destination channel). until then the message is redelivered, so a
-        consumer that crashes or restarts mid-handle never loses the answer.
-        ``durable`` makes the consumer's position survive disconnects.
+        the callback does the work and MUST ``await msg.ack()`` on success (or on
+        a terminal drop redelivery cannot fix). on a RETRYABLE failure the
+        callback RAISES; this wrapper owns the redelivery policy:
 
-        :param subject: subject to consume (one channel-delivery family)
+        - attempts 1..``max_deliver``-1: ``msg.nak(delay=...)`` with a capped
+          linear backoff, so a transient failure (Slack rate limit, network)
+          recovers on a later attempt without a hot loop;
+        - attempt ``max_deliver``: DEAD-LETTER -- republish the payload to
+          ``dead_letter_subject`` (when given), ack the original so it leaves the
+          live consumer, and log ONE error.
+
+        ``max_deliver`` is REQUIRED and bounds total attempts at the consumer
+        config too (belt + suspenders). a durable consumer with unbounded
+        redelivery is the poison-pill incident this method makes impossible to
+        construct -- a message that can never succeed stops retrying and lands
+        somewhere inspectable instead of alerting forever.
+
+        :param subject: subject to consume
         :ptype subject: Subject
         :param durable: durable consumer name (stable across restarts)
         :ptype durable: str
-        :param cb: async callback receiving the raw JetStream message; acks it
+        :param cb: async callback; acks on success/terminal-drop, RAISES to retry
         :ptype cb: Callable[[Any], Awaitable[None]]
+        :param max_deliver: maximum delivery attempts before dead-lettering (>= 1)
+        :ptype max_deliver: int
+        :param dead_letter_subject: subject the poisoned payload is parked on, or
+            ``None`` to drop-with-alert once the budget is exhausted
+        :ptype dead_letter_subject: Subject | None
+        :param ack_wait_seconds: server-side ack timeout; a crash mid-handle
+            redelivers after this (the backoff is driven by nak for the
+            raise path)
+        :ptype ack_wait_seconds: float
         :param stream: backing stream name to bind the consumer to
         :ptype stream: str | None
         :return: nats-py JetStream push subscription handle
         :rtype: Any
+        :raises ValueError: when ``max_deliver`` < 1
         """
+        if max_deliver < 1:
+            raise ValueError(
+                f"max_deliver must be >= 1: a durable consumer cannot redeliver forever (got {max_deliver})",
+            )
+
+        async def _bounded_cb(msg: Any) -> None:
+            """run the handler; nak-with-backoff on retryable raise, dead-letter at the budget.
+
+            :param msg: raw nats-py JetStream message
+            :ptype msg: Any
+            :return: nothing
+            :rtype: None
+            """
+            try:
+                await cb(msg)
+            except Exception as exc:  # noqa: BLE001 - bounded redelivery is the whole point; we re-route, never swallow
+                metadata = getattr(msg, "metadata", None)
+                num_delivered = int(getattr(metadata, "num_delivered", 1) or 1)
+                if num_delivered >= max_deliver:
+                    if dead_letter_subject is not None:
+                        await self.jetstream_publish(subject=dead_letter_subject, payload=msg.data)
+                    await msg.ack()
+                    log.error(
+                        "durable consumer dead-lettered message after %d attempts: durable=%s subject=%s dlq=%s error=%s",
+                        num_delivered,
+                        durable,
+                        subject.path,
+                        dead_letter_subject.path if dead_letter_subject is not None else None,
+                        exc,
+                    )
+                else:
+                    backoff = float(min(num_delivered * 5, 30))
+                    await msg.nak(delay=backoff)
+                    log.warning(
+                        "durable consumer redelivering message (attempt %d/%d, backoff=%.0fs): durable=%s error=%s",
+                        num_delivered,
+                        max_deliver,
+                        backoff,
+                        durable,
+                        exc,
+                    )
+
         js = self.jetstream_context()
+        config = _NatsConsumerConfig(
+            durable_name=durable,
+            ack_policy=_NatsAckPolicy.EXPLICIT,
+            max_deliver=max_deliver,
+            ack_wait=ack_wait_seconds,
+        )
         sub = await js.subscribe(
             subject.path,
             durable=durable,
-            cb=cb,
+            cb=_bounded_cb,
             manual_ack=True,
             stream=stream,
+            config=config,
         )
         log.info(
-            "jetstream durable consumer subscribed: subject=%s durable=%s stream=%s",
+            "jetstream durable consumer subscribed: subject=%s durable=%s stream=%s max_deliver=%d dlq=%s",
             subject.path,
             durable,
             stream,
+            max_deliver,
+            dead_letter_subject.path if dead_letter_subject is not None else None,
         )
         return sub
 

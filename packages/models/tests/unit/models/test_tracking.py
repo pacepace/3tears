@@ -292,6 +292,33 @@ class TestUsageTracker:
         assert attrs["llm.tier"] == "large"
         assert attrs["llm.cost_usd"] == "0.005"
 
+    def test_record_omits_cache_attrs_when_zero(self) -> None:
+        """no prompt-cache tokens -> no llm.cache_* attributes (clean span)."""
+        tracker = UsageTracker()
+        tracker.record(self._make_usage())
+        attrs = dict(self._exporter.get_finished_spans()[0].attributes or {})
+        assert "llm.cache_read_tokens" not in attrs
+        assert "llm.cache_creation_tokens" not in attrs
+
+    def test_record_emits_cache_attrs_when_set(self) -> None:
+        """prompt-cache tokens flow to the span as llm.cache_* attributes."""
+        tracker = UsageTracker()
+        usage = UsageRecord(
+            model_name=DEFAULT_LARGE_MODEL,
+            provider_name="anthropic",
+            purpose=LlmPurpose.CHAT,
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            latency_ms=500,
+            cache_read_tokens=80,
+            cache_creation_tokens=20,
+        )
+        tracker.record(usage)
+        attrs = dict(self._exporter.get_finished_spans()[0].attributes or {})
+        assert attrs["llm.cache_read_tokens"] == 80
+        assert attrs["llm.cache_creation_tokens"] == 20
+
     def test_record_with_none_tier_omits_attribute(self) -> None:
         """record omits llm.tier attribute when tier is None."""
         tracker = UsageTracker()

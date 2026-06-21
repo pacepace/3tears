@@ -229,17 +229,18 @@ class TestDataSourceSchemaDigestCollection:
         assert coll.primary_key_columns == ("datasource_id",)
 
     @pytest.mark.asyncio
-    async def test_fetch_from_postgres_decodes_jsonb_tables_string(self) -> None:
-        # asyncpg returns jsonb as a str when no codec is registered; the
-        # digest read path must decode `tables` back to a list, or the agent
-        # node would iterate a string char-by-char. mirrors the column
-        # collection's tags-as-string test.
+    async def test_fetch_from_postgres_returns_codec_decoded_list(self) -> None:
+        # collections-task-04 (Option B): the read trusts the jsonb codec (hub
+        # l3 pool) / the proxy's NATS-JSON decode to hand back ``tables`` as a
+        # python list -- no per-collection json.loads. the mock pool stands in
+        # for the codec by returning a list, and fetch passes it through. the
+        # real codec decode is proven in tests/integration/test_collections_jsonb_live.
         datasource_id = uuid4()
         now = datetime.now(UTC)
         row = {
             "datasource_id": datasource_id,
             "customer_id": uuid4(),
-            "tables": '[{"schema": "rp", "table": "geo", "description": "d", "columns": []}]',
+            "tables": [{"schema": "rp", "table": "geo", "description": "d", "columns": []}],
             "source_fingerprint": "fp",
             "date_created": now,
             "date_updated": now,
@@ -250,34 +251,12 @@ class TestDataSourceSchemaDigestCollection:
         assert result["tables"][0]["table"] == "geo"
 
     @pytest.mark.asyncio
-    async def test_fetch_decodes_double_encoded_tables_to_list(self) -> None:
-        # read safety net: even a row stored DOUBLE-encoded (an older write)
-        # must come back as a list, not a str, so the agent does not iterate
-        # it char-by-char.
-        datasource_id = uuid4()
-        now = datetime.now(UTC)
-        inner = json.dumps([{"schema": "rp", "table": "geo", "columns": []}])
-        row = {
-            "datasource_id": datasource_id,
-            "customer_id": uuid4(),
-            "tables": json.dumps(inner),  # '"[...]"' -- double-encoded
-            "source_fingerprint": "fp",
-            "date_created": now,
-            "date_updated": now,
-        }
-        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
-        result = await coll.fetch_from_postgres(datasource_id)
-        assert isinstance(result["tables"], list)
-        assert result["tables"][0]["table"] == "geo"
-
-    @pytest.mark.asyncio
-    async def test_save_does_not_double_encode_string_tables(self) -> None:
-        # PRODUCTION condition: the hub's L1_METADATA does not register this
-        # table, so the entity round-trips `tables` to an ALREADY-JSON-encoded
-        # string before save_to_postgres. re-dumping it double-encodes the
-        # jsonb cell to a JSON STRING "[...]" instead of the array, and a
-        # single decode on read then yields a str (the agent iterates it
-        # char-by-char). this was a real production bug a live run surfaced.
+    async def test_save_binds_string_tables_decoded_to_native_list(self) -> None:
+        # a stray pre-encoded JSON string reaching save is normalized to a
+        # native list by encode_jsonb (one decode) and bound NATIVELY ($3, no
+        # ::text::jsonb cast). the registered codec then applies the single
+        # json.dumps -- no per-collection json.dumps, the duplication that let
+        # the double-encode bug ship.
         coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
         pool.execute = AsyncMock(return_value="INSERT 0 1")
         tables_str = '[{"schema": "s", "table": "t", "description": "d", "columns": []}]'
@@ -292,58 +271,33 @@ class TestDataSourceSchemaDigestCollection:
                 "date_updated": now,
             },
         )
-        # $3 (the tables param, 4th positional after the SQL) must be the
-        # ARRAY json, passed through -- NOT a JSON-string-of-the-array.
+        # $3 (the tables param, 4th positional after the SQL) is the NATIVE
+        # python list -- NOT a json string. the codec encodes it once.
         tables_param = pool.execute.await_args.args[3]
-        assert json.loads(tables_param) == json.loads(tables_str)
-        assert isinstance(json.loads(tables_param), list)
+        assert tables_param == json.loads(tables_str)
+        assert isinstance(tables_param, list)
 
     @pytest.mark.asyncio
-    async def test_save_normalizes_double_encoded_string_tables(self) -> None:
-        # the live-observed worst case: a DOUBLE-encoded string reaches save
-        # (an L2/get-then-mutate round-trip serialized it twice). it must be
-        # decoded all the way down to a list and stored as a proper array, not
-        # a jsonb string-of-a-string.
+    async def test_save_binds_list_tables_natively(self) -> None:
+        # the normal path: a python list is bound natively, unchanged, for the
+        # codec to encode exactly once.
         coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
         pool.execute = AsyncMock(return_value="INSERT 0 1")
-        inner = [{"schema": "s", "table": "t", "columns": []}]
-        double_encoded = json.dumps(json.dumps(inner))  # '"[...]"'
+        tables = [{"schema": "s", "table": "t", "columns": []}]
         now = datetime.now(UTC)
         await coll.save_to_postgres(
             {
                 "datasource_id": uuid4(),
                 "customer_id": uuid4(),
-                "tables": double_encoded,
+                "tables": tables,
                 "source_fingerprint": "fp",
                 "date_created": now,
                 "date_updated": now,
             },
         )
         tables_param = pool.execute.await_args.args[3]
-        parsed = json.loads(tables_param)
-        assert isinstance(parsed, list)
-        assert parsed[0]["table"] == "t"
-
-    @pytest.mark.asyncio
-    async def test_save_encodes_list_tables(self) -> None:
-        # the normal path: a python list is json-encoded to an array exactly
-        # once.
-        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        now = datetime.now(UTC)
-        await coll.save_to_postgres(
-            {
-                "datasource_id": uuid4(),
-                "customer_id": uuid4(),
-                "tables": [{"schema": "s", "table": "t", "columns": []}],
-                "source_fingerprint": "fp",
-                "date_created": now,
-                "date_updated": now,
-            },
-        )
-        tables_param = pool.execute.await_args.args[3]
-        assert isinstance(json.loads(tables_param), list)
-        assert json.loads(tables_param)[0]["table"] == "t"
+        assert tables_param == tables
+        assert isinstance(tables_param, list)
 
     def test_serialize_deserialize_roundtrip(self) -> None:
         registry, config = _make_registry_and_config()
@@ -628,8 +582,8 @@ class TestDataSourceColumnGetByNaturalKey:
         assert entity is None
 
     @pytest.mark.asyncio
-    async def test_parses_jsonb_tags_when_stored_as_string(self) -> None:
-        """JSONB ``tags`` arrive as ``str`` from raw L3; method round-trips them."""
+    async def test_returns_codec_decoded_jsonb_tags(self) -> None:
+        """JSONB ``tags`` arrive already decoded to a list (codec / proxy)."""
         now = datetime.now(UTC)
         ds_id = uuid4()
         row = {
@@ -641,7 +595,10 @@ class TestDataSourceColumnGetByNaturalKey:
             "data_type": "varchar",
             "is_nullable": False,
             "ordinal_position": 1,
-            "tags": '["pii", "email"]',  # JSONB-as-str from asyncpg
+            # collections-task-04 (Option B): the jsonb codec / proxy NATS-JSON
+            # decode hands ``tags`` back as a python list; the mock stands in for
+            # the codec by returning a list, and the method passes it through.
+            "tags": ["pii", "email"],
             "date_introspected": now,
             "date_created": now,
             "date_updated": now,
@@ -649,8 +606,6 @@ class TestDataSourceColumnGetByNaturalKey:
         coll, _pool = _make_coll_with_pool(DataSourceColumnCollection, row=row)
         entity = await coll.get_by_natural_key(ds_id, "s", "t", "c")
         assert entity is not None
-        # the method MUST json-decode the tags array so callers see a list
-        # (matches the existing fetch_from_postgres behaviour)
         assert entity.tags == ["pii", "email"]
 
     @pytest.mark.asyncio

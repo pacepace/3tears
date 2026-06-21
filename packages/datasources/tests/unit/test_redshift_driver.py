@@ -351,6 +351,39 @@ class TestSetSearchPathOnOpen:
             assert sql == 'SET search_path TO "reporting_prod", "audit"'
 
     @pytest.mark.asyncio
+    async def test_search_path_reapplied_on_cache_hit(self) -> None:
+        """a reused (cache-hit) connection re-applies search_path.
+
+        a recycled redshift session can lose the SET issued at open, surfacing as
+        intermittent "relation does not exist" on unqualified names. the driver
+        re-applies search_path on every acquisition, so two fetches over one cached
+        connection issue the SET twice (open + cache-hit), not once.
+        """
+        config = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="rs.example.com",
+            port=5439,
+            database="analytics",
+            username="rs_user",
+            password_ref=None,
+            allowed_schemas=["reporting_prod"],
+        )
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
+            driver = RedshiftDriver(config)
+            await driver.fetch("SELECT 1")  # miss -> open (SET on open)
+            await driver.fetch("SELECT 2")  # hit -> re-apply (SET on cache-hit)
+            connect_mock.assert_called_once()  # second fetch reused the connection
+            calls = conn._cursor.execute.call_args_list  # noqa: SLF001
+            search_path_calls = [c for c in calls if c.args and c.args[0].startswith("SET search_path")]
+            assert len(search_path_calls) == 2, (
+                f"expected SET search_path on open AND cache-hit, got {len(search_path_calls)}"
+            )
+
+    @pytest.mark.asyncio
     async def test_no_search_path_when_allowed_schemas_empty(
         self,
         redshift_config: RedshiftConnectionConfig,

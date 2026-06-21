@@ -5,11 +5,11 @@ every consumer that owns an asyncpg pool MUST call
 the text-format ``jsonb`` / ``json`` codec is non-optional: it is the
 single Python <-> Postgres encoder the rest of 3tears relies on.
 
-* :class:`SchemaBackedCollection._encode_jsonb` is a typed pass-through.
+* :func:`threetears.core.collections.encode_jsonb` is a typed pass-through.
   it hands ``dict`` / ``list`` / ``None`` straight to asyncpg expecting
   the codec registered here to be the ONLY ``json.dumps`` step. running
   a second ``json.dumps`` upstream silently double-encodes JSONB columns
-  (see commit history for ``_encode_jsonb`` and the bootstrap-admin
+  (see commit history for ``encode_jsonb`` and the bootstrap-admin
   login regression that surfaced the bug).
 * YugabyteDB requires ``format="text"``: its YSQL layer does not
   reliably support asyncpg's default ``binary`` JSONB wire format and

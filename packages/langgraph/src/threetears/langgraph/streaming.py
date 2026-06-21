@@ -231,14 +231,21 @@ class ToolCallEndEvent(BaseModel):
 
 
 class ToolCallProgressEvent(BaseModel):
-    """keepalive event published periodically during a long tool call.
+    """keepalive event so consumers running gap timers do not trip.
 
-    emitted between a :class:`ToolCallStartEvent` and the matching
-    :class:`ToolCallEndEvent` so consumers running gap timers do not
-    trip a stream-timeout error during a slow tool. carries only a
-    monotonic sequence counter and elapsed time so no tool-internal
-    payload leaks; the hook owns sequence semantics
-    (per design DQ-F4 -- emit_tool_call_progress is a passthrough).
+    serves two roles, both pure liveness:
+
+    - per-tool progress: emitted between a :class:`ToolCallStartEvent` and
+      the matching :class:`ToolCallEndEvent` while a slow tool runs, carrying
+      that tool's ``tool_name`` (``emit_tool_call_progress``);
+    - turn-level keepalive (LRT-02): emitted on a fixed interval for the whole
+      turn with an EMPTY ``tool_name``, covering the agent-node
+      time-to-first-token wait and between-node gaps that the per-tool
+      heartbeat cannot (``emit_keepalive``).
+
+    carries only a monotonic sequence counter and elapsed time so no
+    tool-internal payload leaks. an empty ``tool_name`` denotes the
+    turn-level keepalive; a non-empty one denotes per-tool progress.
 
     :param type: discriminator literal
     :ptype type: Literal["tool_call_progress"]
@@ -413,6 +420,11 @@ class StreamingResponse:
         self._started: bool = False
         self._closed: bool = False
         self._terminal_kind: str | None = None  # "end" or "error" once closed
+        # turn-level keepalive sequence (LRT-02), distinct from the per-tool
+        # heartbeat sequence the ToolCallProgressHook owns. emit_keepalive
+        # advances this so a long time-to-first-token / between-node gap never
+        # trips the consumer's stream-gap timer.
+        self._keepalive_sequence: int = 0
 
     @property
     def closed(self) -> bool:
@@ -589,6 +601,36 @@ class StreamingResponse:
             tool_name=tool_name,
             elapsed_ms=elapsed_ms,
             sequence=sequence,
+        )
+        await self._publish(event)
+
+    async def emit_keepalive(self, *, elapsed_ms: int) -> None:
+        """publish a TURN-LEVEL keepalive (LRT-02).
+
+        the per-tool :meth:`emit_tool_call_progress` only keeps the stream
+        alive WHILE a tool runs; it cannot cover the time-to-first-token wait
+        in the agent node (slow under gateway contention) or the gaps between
+        nodes. this method publishes a :class:`ToolCallProgressEvent` with an
+        empty ``tool_name`` -- a pure liveness signal -- so a consumer's
+        stream-gap timer never trips while the turn is genuinely working. the
+        caller drives it on a fixed interval for the whole turn; a dead handler
+        stops emitting, so the gap timer still catches a truly-dead stream (no
+        masking). the keepalive sequence is owned here, independent of any
+        per-tool heartbeat sequence.
+
+        :param elapsed_ms: wall-clock milliseconds since the turn began
+        :ptype elapsed_ms: int
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        self._keepalive_sequence += 1
+        event = ToolCallProgressEvent(
+            correlation_id=self._correlation_id,
+            tool_name="",
+            elapsed_ms=elapsed_ms,
+            sequence=self._keepalive_sequence,
         )
         await self._publish(event)
 

@@ -22,6 +22,7 @@ from threetears.core.collections.schema_backed import (
     PartitionEnforcementError,
     SchemaBackedCollection,
     TableSchema,
+    encode_jsonb,
     spans_partitions,
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -45,6 +46,7 @@ __all__ = [
     "VECTOR_TYPE",
     "WriteBuffer",
     "deserialize_from_json",
+    "encode_jsonb",
     "flush_pending",
     "init_connection",
     "register_jsonb_text_codec",
