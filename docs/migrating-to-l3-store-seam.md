@@ -67,10 +67,20 @@ grep -rEn 'fetch_from_postgres|save_to_postgres|delete_from_postgres|persist_to_
 ./scripts/check-all.sh   # lint + mypy --strict + tests, exit 0
 ```
 
-## Still open in 3tears (tracked, not consumer-facing)
+## Internal completion (no consumer action)
 
-The capability (a non-SQL `DurableStore` driving a collection) is shipped + tested. These
-`collections-task-06` purity items remain in 3tears and do **not** change the consumer
-contract above: retyping `l3_pool` `Any → L3Backend | None` (L3B-02), the `flush_pending`
-atomic-transaction hook (L3B-04), and migrating the existing `SchemaBackedCollection` SQL CRUD
-onto `DurableStore` (L3B-03 commit 2). They land in 3tears before this version is cut.
+`collections-task-06` is complete — the items below are internal and do **not** change the
+consumer contract above:
+
+- **L3B-02** — `l3_pool` is typed `L3Backend | None`; the registry wraps a raw transport
+  (asyncpg pool / `NatsProxyL3Backend`) in `SqlL3Backend` so the resolved handle always
+  exposes the `DurableStore` ops (a backend already satisfying `DurableStore`, e.g. a
+  `GitL3Backend`, passes through unwrapped).
+- **L3B-03** — `SchemaBackedCollection`'s CRUD now routes through the structured `DurableStore`
+  seam; the schema-aware SQL generation + value codec live in `SqlL3Backend` (driven by a
+  registered `TableSchema`), so the SQL-backed and non-SQL (git) collections share one seam.
+  Behavior is byte-identical (same projection casts, jsonb/vector/tsvector handling, composite
+  PK, server-default dropping, CAS fencing, conflict modes).
+- **L3B-04** — `flush_pending` persists a toposorted batch in one transaction when the backend
+  exposes a usable `transaction()`, degrading to the per-entity loop (with the unchanged
+  FK-deferral classification) otherwise.
