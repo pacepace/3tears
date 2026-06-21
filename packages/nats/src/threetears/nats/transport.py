@@ -78,7 +78,7 @@ MessageCallback = Callable[["BaseModel"], Awaitable[None]]
 
 receives the validated Pydantic message; raising propagates to the
 deadletter dispatcher when the subscription has
-``deadletter_on_error=True``.
+``deadletter_on_failure=True``.
 """
 
 

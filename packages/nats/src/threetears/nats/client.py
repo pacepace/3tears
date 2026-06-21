@@ -22,7 +22,7 @@ design notes
   raw bytes go through :meth:`publish_raw` (explicit escape hatch).
 - **typed subscribe**: :meth:`subscribe_typed` auto-decodes incoming
   bytes into a declared Pydantic message type and routes
-  validation-failure to deadletter when ``deadletter_on_error=True``
+  validation-failure to deadletter when ``deadletter_on_failure=True``
   (the default).
 - **timedelta timeouts**: :meth:`request` / :meth:`request_raw` /
   :meth:`shutdown` all take ``timedelta`` (not raw seconds floats) so
@@ -38,7 +38,7 @@ design notes
 - **deadletter dispatch**: by default uncaught exceptions in subscribe
   callbacks publish the original message + a structured envelope to
   ``{ns}.deadletter.{original_path}``. opt out per-subscribe with
-  ``deadletter_on_error=False`` (only for sites that already funnel
+  ``deadletter_on_failure=False`` (only for sites that already funnel
   errors through their own pipeline).
 """
 
@@ -707,7 +707,7 @@ class NatsClient:
         cb: "RawMessageCallback | None" = None,
         queue: str | None = None,
         max_in_flight: int | None = None,
-        deadletter_on_error: bool = True,
+        deadletter_on_failure: bool = True,
     ) -> Subscription:
         """subscribe to subject with raw-bytes + reply-subject callback.
 
@@ -726,8 +726,8 @@ class NatsClient:
         :ptype queue: str | None
         :param max_in_flight: optional concurrency cap for in-flight callbacks (per-subscription)
         :ptype max_in_flight: int | None
-        :param deadletter_on_error: when True (default) callback exceptions republish to ``{ns}.deadletter.{subject}``
-        :ptype deadletter_on_error: bool
+        :param deadletter_on_failure: when True (default) callback exceptions republish to ``{ns}.deadletter.{subject}``
+        :ptype deadletter_on_failure: bool
         :return: opaque subscription handle for later :meth:`unsubscribe`
         :rtype: Subscription
         :raises SubscribeError: if subscription registration fails
@@ -743,7 +743,7 @@ class NatsClient:
             message_type=None,
             queue=queue,
             max_in_flight=max_in_flight,
-            deadletter_on_error=deadletter_on_error,
+            deadletter_on_failure=deadletter_on_failure,
         )
 
     async def subscribe_typed(
@@ -754,7 +754,7 @@ class NatsClient:
         message_type: type[_T],
         queue: str | None = None,
         max_in_flight: int | None = None,
-        deadletter_on_error: bool = True,
+        deadletter_on_failure: bool = True,
     ) -> Subscription:
         """subscribe with auto-decoded Pydantic message callback.
 
@@ -773,8 +773,8 @@ class NatsClient:
         :ptype queue: str | None
         :param max_in_flight: optional concurrency cap
         :ptype max_in_flight: int | None
-        :param deadletter_on_error: when True (default) validation + callback exceptions deadletter
-        :ptype deadletter_on_error: bool
+        :param deadletter_on_failure: when True (default) validation + callback exceptions deadletter
+        :ptype deadletter_on_failure: bool
         :return: subscription handle
         :rtype: Subscription
         :raises SubscribeError: if subscription registration fails
@@ -786,7 +786,7 @@ class NatsClient:
             message_type=message_type,
             queue=queue,
             max_in_flight=max_in_flight,
-            deadletter_on_error=deadletter_on_error,
+            deadletter_on_failure=deadletter_on_failure,
         )
 
     async def _subscribe_internal(
@@ -798,7 +798,7 @@ class NatsClient:
         message_type: type[BaseModel] | None,
         queue: str | None,
         max_in_flight: int | None,
-        deadletter_on_error: bool,
+        deadletter_on_failure: bool,
     ) -> Subscription:
         """common subscribe path used by :meth:`subscribe` / :meth:`subscribe_typed`.
 
@@ -814,8 +814,8 @@ class NatsClient:
         :ptype queue: str | None
         :param max_in_flight: optional concurrency cap
         :ptype max_in_flight: int | None
-        :param deadletter_on_error: deadletter on callback exception
-        :ptype deadletter_on_error: bool
+        :param deadletter_on_failure: deadletter on callback exception
+        :ptype deadletter_on_failure: bool
         :return: subscription handle
         :rtype: Subscription
         :raises SubscribeError: if registration fails
@@ -865,7 +865,7 @@ class NatsClient:
                         }
                     },
                 )
-                if deadletter_on_error:
+                if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
             except Exception as exc:  # noqa: BLE001 — boundary: we MUST catch everything to keep the dispatch loop alive
                 log.error(
@@ -878,7 +878,7 @@ class NatsClient:
                         }
                     },
                 )
-                if deadletter_on_error:
+                if deadletter_on_failure:
                     await self._deadletter(subject=subject, payload=msg.data, error=exc)
 
         async def _dispatch() -> None:
@@ -925,7 +925,7 @@ class NatsClient:
                     "kind": subject.kind,
                     "queue": queue,
                     "typed": typed_cb is not None,
-                    "deadletter_on_error": deadletter_on_error,
+                    "deadletter_on_failure": deadletter_on_failure,
                 }
             },
         )

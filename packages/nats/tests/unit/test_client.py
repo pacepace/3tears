@@ -226,7 +226,7 @@ async def test_subscribe_typed_decodes_pydantic() -> None:
 
 @pytest.mark.asyncio
 async def test_subscribe_typed_validation_failure_deadletters() -> None:
-    """validation failure publishes to deadletter when deadletter_on_error=True (default)."""
+    """validation failure publishes to deadletter when deadletter_on_failure=True (default)."""
     client, fake = _make_client()
 
     async def on_msg(_msg: _Hello) -> None:
@@ -253,7 +253,7 @@ async def test_subscribe_typed_validation_failure_deadletters() -> None:
 
 @pytest.mark.asyncio
 async def test_subscribe_callback_exception_deadletters() -> None:
-    """callback exceptions deadletter when deadletter_on_error=True."""
+    """callback exceptions deadletter when deadletter_on_failure=True."""
     client, fake = _make_client()
 
     async def on_msg(_msg: _Hello) -> None:
@@ -278,7 +278,7 @@ async def test_subscribe_callback_exception_deadletters() -> None:
 
 @pytest.mark.asyncio
 async def test_subscribe_callback_exception_no_deadletter_when_disabled() -> None:
-    """deadletter_on_error=False — callback exceptions log only, no republish."""
+    """deadletter_on_failure=False — callback exceptions log only, no republish."""
     client, fake = _make_client()
 
     async def on_msg(_msg: _Hello) -> None:
@@ -288,7 +288,7 @@ async def test_subscribe_callback_exception_no_deadletter_when_disabled() -> Non
         subject=Subjects.tools_call(),
         cb=on_msg,
         message_type=_Hello,
-        deadletter_on_error=False,
+        deadletter_on_failure=False,
     )
     fake_sub = fake.subscribed[0][2]
     payload = _Hello(greeting="x", count=1).model_dump_json().encode("utf-8")

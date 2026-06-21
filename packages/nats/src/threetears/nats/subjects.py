@@ -936,7 +936,7 @@ class Subjects:
         """publish subject for deadlettering a failed callback's message.
 
         produced by :class:`NatsClient` when a subscribe callback raises
-        and the subscription has ``deadletter_on_error=True`` (default).
+        and the subscription has ``deadletter_on_failure=True`` (default).
 
         :param original_path: dotted path of subject the failed message arrived on
         :ptype original_path: str
