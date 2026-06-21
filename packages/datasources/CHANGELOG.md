@@ -7,6 +7,15 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.2]
+
+### Changed
+
+- Cap simultaneously-open Redshift connections with an `asyncio.Semaphore` sized to
+  `connection_cache_size`, acquired before opening — so a burst of concurrent `fetch()` can no
+  longer open connections past the warehouse user's `CONNECTION LIMIT` (the 0.13.1 cache bound
+  alone didn't gate concurrent opens). The executor still bounds concurrent work.
+
 ## [0.13.1]
 
 ### Fixed
