@@ -226,6 +226,20 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.register", kind="point")
 
     @classmethod
+    def agent_deregister(cls) -> Subject:
+        """fire-and-forget subject an agent pod publishes on graceful shutdown.
+
+        lets a cleanly-stopping pod remove its endpoint from the router catalog
+        IMMEDIATELY rather than waiting out the heartbeat timeout (the slow
+        backstop that only catches ungraceful kills). every router replica
+        subscribes WITHOUT a queue group so each replica's catalog drops the pod.
+
+        :return: subject ``{ns}.agents.deregister``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.agents.deregister", kind="point")
+
+    @classmethod
     def agent_heartbeat(cls, pod_id: str | UUID) -> Subject:
         """publish subject for one agent pod's heartbeat.
 

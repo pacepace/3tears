@@ -51,6 +51,7 @@ __all__ = [
     "Column",
     "DATETIMETZ_TYPE",
     "ENUM_TYPE",
+    "encode_jsonb",
     "ForeignKey",
     "ForeignKeyDef",
     "INT_TYPE",
@@ -1197,8 +1198,16 @@ def _decode_vector(value: Any) -> list[float] | None:
     return result
 
 
-def _encode_jsonb(value: Any) -> Any:
+def encode_jsonb(value: Any) -> Any:
     """validate / pass through a JSONB column value for asyncpg.
+
+    public canonical encoder: every collection that writes a JSONB column --
+    including hand-rolled custom-SQL upserts in sibling packages -- binds the
+    value through this function as a NATIVE python object (``$N``, no
+    ``::text::jsonb`` cast) and lets the registered codec apply the single
+    ``json.dumps``. this is the one jsonb-encode step in the platform; a
+    second ``json.dumps`` (or a ``::text::jsonb`` cast over a pre-encoded
+    string) is the double-encode bug this centralization removes.
 
     asyncpg is the canonical Python -> Postgres encoder via its
     registered ``jsonb`` text codec (see consumer-side connection
@@ -1938,7 +1947,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         elif column.column_type == DATETIMETZ_TYPE:
             result = _coerce_datetime_for_write_tz(value)
         elif column.column_type == JSONB_TYPE:
-            result = _encode_jsonb(value)
+            result = encode_jsonb(value)
         elif column.column_type == VECTOR_TYPE:
             result = _encode_vector(value)
         else:

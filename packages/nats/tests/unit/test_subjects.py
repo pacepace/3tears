@@ -69,6 +69,8 @@ def test_agent_subjects_namespace_prefix() -> None:
     pod_id = "pod-abc"
 
     assert Subjects.agent_register().path == "aibots.agents.register"
+    assert Subjects.agent_deregister().path == "aibots.agents.deregister"
+    assert Subjects.agent_deregister().kind == "point"
     assert Subjects.agent_heartbeat(pod_id).path == "aibots.agents.heartbeat.pod-abc"
     assert Subjects.agent_heartbeat_wildcard().path == "aibots.agents.heartbeat.>"
     assert Subjects.agent_heartbeat_wildcard().kind == "pattern"

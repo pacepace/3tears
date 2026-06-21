@@ -497,6 +497,39 @@ class TestPayloadFormat:
         assert payload["timeout_ms"] == 5000
 
     @pytest.mark.asyncio
+    async def test_customer_scope_emits_conv_customer_id(self) -> None:
+        """fetch(customer_scope=...) ships the scope as conv_customer_id (broker-isolation-task-01)."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 1})
+        )
+        proxy = _make_proxy(mock_nc)
+        scope = UUID("06a31810-05b1-70df-8000-626a5fd9cacb")
+
+        await proxy.fetch(
+            "SELECT * FROM playbook_entries",
+            namespace="system.platform.rbac",
+            customer_scope=scope,
+        )
+
+        payload = json.loads(mock_nc.request.call_args[0][1])
+        assert payload["conv_customer_id"] == str(scope)
+
+    @pytest.mark.asyncio
+    async def test_no_customer_scope_omits_conv_customer_id(self) -> None:
+        """default-off: with no customer_scope the wire payload carries no conv_customer_id."""
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply({"success": True, "rows": [], "row_count": None, "duration_ms": 1})
+        )
+        proxy = _make_proxy(mock_nc)
+
+        await proxy.fetch("SELECT * FROM foo WHERE id = $1", "abc")
+
+        payload = json.loads(mock_nc.request.call_args[0][1])
+        assert "conv_customer_id" not in payload
+
+    @pytest.mark.asyncio
     async def test_params_are_serialized(self) -> None:
         mock_nc = MagicMock()
         mock_nc.request = AsyncMock(

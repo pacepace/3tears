@@ -230,6 +230,7 @@ class NatsProxyL3Backend:
         query: str,
         *params: Any,
         namespace: str | None = None,
+        customer_scope: UUID | None = None,
     ) -> list[dict[str, Any]]:
         """execute SELECT query and return all rows.
 
@@ -239,11 +240,17 @@ class NatsProxyL3Backend:
         :ptype params: Any
         :param namespace: target namespace (default: agent's private namespace)
         :ptype namespace: str | None
+        :param customer_scope: conversation's hub-authenticated customer for
+            the broker to clamp customer-scoped (Class-B) reads on the
+            ``system.platform.rbac`` carve-out to (broker-isolation-task-01).
+            ``None`` (the default) ships no scope, leaving the broker's
+            behaviour for every non-rbac caller byte-for-byte unchanged.
+        :ptype customer_scope: UUID | None
         :return: list of row dictionaries
         :rtype: list[dict[str, Any]]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        response = await self._send_query(query, list(params), "select", namespace)
+        response = await self._send_query(query, list(params), "select", namespace, customer_scope=customer_scope)
         rows: list[dict[str, Any]] = response.get("rows", [])
         result = [_deserialize_row(row) for row in rows]
         return result
@@ -253,6 +260,7 @@ class NatsProxyL3Backend:
         query: str,
         *params: Any,
         namespace: str | None = None,
+        customer_scope: UUID | None = None,
     ) -> dict[str, Any] | None:
         """execute SELECT query and return first row.
 
@@ -262,11 +270,15 @@ class NatsProxyL3Backend:
         :ptype params: Any
         :param namespace: target namespace
         :ptype namespace: str | None
+        :param customer_scope: conversation customer for the broker to clamp
+            Class-B reads to (broker-isolation-task-01); ``None`` ships no
+            scope. see :meth:`fetch`.
+        :ptype customer_scope: UUID | None
         :return: first row dictionary or None
         :rtype: dict[str, Any] | None
         :raises DataLayerUnavailableError: if broker returns error
         """
-        rows = await self.fetch(query, *params, namespace=namespace)
+        rows = await self.fetch(query, *params, namespace=namespace, customer_scope=customer_scope)
         result: dict[str, Any] | None = rows[0] if rows else None
         return result
 
@@ -356,6 +368,8 @@ class NatsProxyL3Backend:
         params: list[Any],
         operation: str,
         namespace: str | None,
+        *,
+        customer_scope: UUID | None = None,
     ) -> dict[str, Any]:
         """build and send single query request to broker.
 
@@ -367,6 +381,11 @@ class NatsProxyL3Backend:
         :ptype operation: str
         :param namespace: target namespace
         :ptype namespace: str | None
+        :param customer_scope: conversation customer for Class-B read
+            clamping (broker-isolation-task-01); emitted as the
+            ``conv_customer_id`` payload field only when set, so a ``None``
+            scope leaves the wire payload identical to the pre-task shape.
+        :ptype customer_scope: UUID | None
         :return: parsed response dict
         :rtype: dict[str, Any]
         :raises DataLayerUnavailableError: if broker returns error
@@ -381,6 +400,9 @@ class NatsProxyL3Backend:
             "params": [_serialize_param(p) for p in params],
             "timeout_ms": self.timeout_ms,
         }
+        if customer_scope is not None:
+            # convert at border: NATS l3.query request payload field.
+            payload["conv_customer_id"] = str(customer_scope)
         subject = f"{self.ns}.l3.query"
         response = await self.nats_request(subject, payload)
 

@@ -20,10 +20,19 @@ declare what production protocol it stands in for, via one of:
    that is a *superset* of production's required parameters (extras
    on the fake are fine; missing or renamed params are not).
 
-fakes that have NEITHER a subclass nor a marker raise
-``fake_parity.no_declaration`` so the discovery convention itself is
-load-bearing -- nobody can declare a fake by name and then forget to
-say what it claims to mock.
+3. **exempt marker comment** -- ``# parity-exempt: <rationale>`` on the
+   line immediately preceding the class definition. a fake that
+   genuinely cannot declare one production protocol (a hand-rolled
+   subset stub) carries the rationale ON THE CLASS instead of in a
+   central exemptions file. the marker travels with the class, so a
+   reformat that shifts line numbers can never orphan it (the failure
+   mode line-keyed file exemptions have). the rationale must be
+   non-blank; a bare ``# parity-exempt:`` does not exempt.
+
+fakes that have NEITHER a subclass, a ``# parity-with:`` marker, nor a
+``# parity-exempt:`` marker raise ``fake_parity.no_declaration`` so the
+discovery convention itself is load-bearing -- nobody can declare a fake
+by name and then forget to say what it claims to mock.
 
 return-type and parameter-type annotations are NOT compared. the
 walker enforces *callability* (the fake must accept every required
@@ -49,6 +58,7 @@ __all__ = [
 
 _FAKE_NAME_PREFIXES: tuple[str, ...] = ("Fake", "_Fake")
 _PARITY_MARKER_PREFIX: str = "# parity-with:"
+_PARITY_EXEMPT_PREFIX: str = "# parity-exempt:"
 
 
 @dataclass(frozen=True)
@@ -65,6 +75,9 @@ class _FakeDecl:
     :ivar marker_target: fully-qualified class name from the
         ``# parity-with:`` marker comment, or ``None`` when no marker
         is present
+    :ivar exempt_rationale: non-blank rationale from the
+        ``# parity-exempt:`` marker comment, or ``None`` when absent /
+        blank; a present rationale exempts the fake from the check
     :ivar methods: mapping of method name to its AST function node;
         only top-level methods are recorded (no nested classes)
     """
@@ -74,6 +87,7 @@ class _FakeDecl:
     line: int
     bases: list[str]
     marker_target: str | None
+    exempt_rationale: str | None
     methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
 
 
@@ -108,9 +122,9 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                 continue
             if not any(node.name.startswith(p) for p in _FAKE_NAME_PREFIXES):
                 continue
-            bases = [_format_base(b) for b in node.bases]
-            bases = [b for b in bases if b is not None and b != "object"]
-            marker_target = _read_marker(source_lines, node.lineno)
+            rendered_bases = [_format_base(b) for b in node.bases]
+            bases = [b for b in rendered_bases if b is not None and b != "object"]
+            marker_target, exempt_rationale = _read_markers(source_lines, node.lineno)
             methods: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
             for child in node.body:
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -122,6 +136,7 @@ def find_fakes_in_tree(scan_root: Path) -> list[_FakeDecl]:
                     line=node.lineno,
                     bases=bases,
                     marker_target=marker_target,
+                    exempt_rationale=exempt_rationale,
                     methods=methods,
                 ),
             )
@@ -158,22 +173,26 @@ def _format_base(node: ast.expr) -> str | None:
     return None
 
 
-def _read_marker(source_lines: list[str], class_lineno: int) -> str | None:
+def _read_markers(source_lines: list[str], class_lineno: int) -> tuple[str | None, str | None]:
     """search the lines preceding ``class_lineno`` for a parity marker.
 
-    the marker is ``# parity-with: <fqname>`` on a line by itself
-    (leading whitespace allowed). the walker scans upward from the
-    line immediately above the class, skipping decorator lines (lines
-    that start with ``@``) and blank lines. the first non-blank,
-    non-decorator line determines the result -- if it is a marker
-    comment, return its target; otherwise return ``None``.
+    two markers are recognised on a line by itself (leading whitespace
+    allowed): ``# parity-with: <fqname>`` and ``# parity-exempt:
+    <rationale>``. the walker scans upward from the line immediately
+    above the class, skipping decorator lines (lines that start with
+    ``@``) and blank lines. the FIRST non-blank, non-decorator line
+    determines the result -- if it is one of the two markers, its
+    payload is returned; otherwise both results are ``None``. the two
+    markers are mutually exclusive (a fake declares parity OR is exempt,
+    never both via the closest comment).
 
     :param source_lines: source split on newline
     :ptype source_lines: list[str]
     :param class_lineno: 1-based line number of the ``class`` statement
     :ptype class_lineno: int
-    :return: fully-qualified name from the marker, or ``None``
-    :rtype: str | None
+    :return: ``(parity_with_target, exempt_rationale)`` -- at most one is
+        non-``None``; a blank payload collapses to ``None``
+    :rtype: tuple[str | None, str | None]
     """
     for line_index in range(class_lineno - 2, -1, -1):
         line = source_lines[line_index].strip()
@@ -182,9 +201,11 @@ def _read_marker(source_lines: list[str], class_lineno: int) -> str | None:
         if line.startswith("@"):
             continue
         if line.startswith(_PARITY_MARKER_PREFIX):
-            return line[len(_PARITY_MARKER_PREFIX) :].strip() or None
-        return None
-    return None
+            return (line[len(_PARITY_MARKER_PREFIX) :].strip() or None, None)
+        if line.startswith(_PARITY_EXEMPT_PREFIX):
+            return (None, line[len(_PARITY_EXEMPT_PREFIX) :].strip() or None)
+        return (None, None)
+    return (None, None)
 
 
 def fake_parity_violations(
@@ -234,10 +255,12 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
 
     1. fake has at least one non-object base -> SKIP. mypy enforces
        structural parity on imported bases.
-    2. fake has a marker -> import the target, compare method
-       surfaces. emit method-missing / param-missing / import-failed
-       violations as appropriate.
-    3. fake has neither -> emit ``no_declaration``.
+    2. fake has a ``# parity-exempt:`` rationale -> SKIP. the rationale
+       on the class is the exemption (it travels with the code).
+    3. fake has a ``# parity-with:`` marker -> import the target, compare
+       method surfaces. emit method-missing / param-missing /
+       import-failed violations as appropriate.
+    4. fake has none -> emit ``no_declaration``.
 
     :param fake: declaration to check
     :ptype fake: _FakeDecl
@@ -245,6 +268,8 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
     :rtype: list[Violation]
     """
     if fake.bases:
+        return []
+    if fake.exempt_rationale is not None:
         return []
     if fake.marker_target is None:
         return [
@@ -257,7 +282,8 @@ def _check_fake(fake: _FakeDecl) -> list[Violation]:
                     "fake has no parity declaration. add a subclass "
                     "(`class _Fake(Production):`) or a `# parity-with: "
                     "module.Production` marker on the line above the "
-                    "class. exempt with rationale only as a last resort"
+                    "class. as a last resort, exempt it in place with a "
+                    "`# parity-exempt: <rationale>` marker on the line above"
                 ),
             ),
         ]

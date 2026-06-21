@@ -1,0 +1,15 @@
+# jsonb-native-binding exemption file (collections-task-04).
+#
+# a save_to_postgres that binds a jsonb column with ::text::jsonb or calls
+# json.dumps is a reintroduced hand-rolled encode that double-encodes under
+# the platform codec. list here ONLY a write that genuinely cannot bind the
+# jsonb column natively via encode_jsonb, with a specific rationale.
+#
+# every entry (path::method) must be preceded by a "# rationale: <reason>"
+# line. blanket rationales ("legacy", "needed") are rejected.
+#
+# format:
+#   # rationale: why this write cannot bind the jsonb column natively
+#   packages/<pkg>/src/threetears/<pkg>/collections.py::save_to_postgres
+#
+# (no exemptions today.)

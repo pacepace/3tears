@@ -202,6 +202,8 @@ def register_model_capabilities_bulk(
             cost_per_output_token=_per_token(
                 row.get("cost_per_1m_output_tokens") or row.get("cost_per_1m_completion_tokens"),
             ),
+            cost_per_cache_read_token=_per_token(row.get("cost_per_1m_cache_read_tokens")),
+            cost_per_cache_write_token=_per_token(row.get("cost_per_1m_cache_write_tokens")),
         )
         register_capabilities(model_name, caps)
         count += 1

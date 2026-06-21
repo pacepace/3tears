@@ -614,9 +614,20 @@ async def test_jetstream_publish_awaits_puback() -> None:
     js.publish.assert_awaited_once_with(subject.path, b"answer-bytes")
 
 
+def _fake_js_msg(*, data: bytes = b"answer", num_delivered: int = 1) -> Any:
+    """build a fake nats-py JetStream message for the bounded-cb tests."""
+    msg = MagicMock()
+    msg.data = data
+    msg.metadata = MagicMock()
+    msg.metadata.num_delivered = num_delivered
+    msg.ack = AsyncMock()
+    msg.nak = AsyncMock()
+    return msg
+
+
 @pytest.mark.asyncio
-async def test_jetstream_subscribe_durable_uses_manual_ack() -> None:
-    """jetstream_subscribe_durable binds a manual-ack durable consumer."""
+async def test_jetstream_subscribe_durable_binds_manual_ack_and_max_deliver() -> None:
+    """the durable consumer binds manual-ack with a bounded max_deliver config."""
     client, js = _client_with_js()
     subject = Subjects.channels_deliver("slack")
     cb = AsyncMock()
@@ -625,14 +636,94 @@ async def test_jetstream_subscribe_durable_uses_manual_ack() -> None:
         subject=subject,
         durable="slack-delivery",
         cb=cb,
+        max_deliver=5,
+        dead_letter_subject=Subjects.channels_deliver("deadletter"),
         stream="aibots-channels-deliver",
     )
 
     assert handle == "sub-handle"
-    js.subscribe.assert_awaited_once_with(
-        subject.path,
-        durable="slack-delivery",
+    kwargs = js.subscribe.await_args.kwargs
+    assert js.subscribe.await_args.args[0] == subject.path
+    assert kwargs["durable"] == "slack-delivery"
+    assert kwargs["manual_ack"] is True
+    assert kwargs["stream"] == "aibots-channels-deliver"
+    # the consumer config carries the bounded redelivery policy.
+    assert kwargs["config"].max_deliver == 5
+    assert kwargs["config"].durable_name == "slack-delivery"
+    # the cb is WRAPPED (not the raw cb) so the factory owns redelivery.
+    assert kwargs["cb"] is not cb
+
+
+@pytest.mark.asyncio
+async def test_durable_requires_positive_max_deliver() -> None:
+    """max_deliver < 1 is rejected: a durable consumer cannot redeliver forever."""
+    client, _js = _client_with_js()
+    with pytest.raises(ValueError, match="max_deliver"):
+        await client.jetstream_subscribe_durable(
+            subject=Subjects.channels_deliver("slack"),
+            durable="d",
+            cb=AsyncMock(),
+            max_deliver=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_durable_cb_success_defers_ack_to_handler() -> None:
+    """on success the wrapper just runs the handler (which owns the ack)."""
+    client, js = _client_with_js()
+    cb = AsyncMock()
+    await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
         cb=cb,
-        manual_ack=True,
-        stream="aibots-channels-deliver",
+        max_deliver=5,
     )
+    wrapped = js.subscribe.await_args.kwargs["cb"]
+    msg = _fake_js_msg()
+    await wrapped(msg)
+    cb.assert_awaited_once_with(msg)
+    msg.nak.assert_not_awaited()
+    msg.ack.assert_not_awaited()  # the handler acks, not the wrapper
+
+
+@pytest.mark.asyncio
+async def test_durable_cb_naks_with_backoff_before_budget() -> None:
+    """a retryable raise on an early attempt naks with a backoff delay."""
+    client, js = _client_with_js()
+    cb = AsyncMock(side_effect=RuntimeError("slack 429"))
+    await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=cb,
+        max_deliver=5,
+        dead_letter_subject=Subjects.channels_deliver("deadletter"),
+    )
+    wrapped = js.subscribe.await_args.kwargs["cb"]
+    msg = _fake_js_msg(num_delivered=1)
+    await wrapped(msg)
+    msg.nak.assert_awaited_once()
+    assert msg.nak.await_args.kwargs.get("delay", 0) > 0
+    msg.ack.assert_not_awaited()
+    js.publish.assert_not_awaited()  # not yet at the budget -> no dead-letter
+
+
+@pytest.mark.asyncio
+async def test_durable_cb_dead_letters_at_budget() -> None:
+    """a retryable raise on the LAST attempt parks the payload + acks (one alert)."""
+    client, js = _client_with_js()
+    cb = AsyncMock(side_effect=RuntimeError("channel deleted"))
+    dlq = Subjects.channels_deliver("deadletter")
+    await client.jetstream_subscribe_durable(
+        subject=Subjects.channels_deliver("slack"),
+        durable="d",
+        cb=cb,
+        max_deliver=5,
+        dead_letter_subject=dlq,
+    )
+    wrapped = js.subscribe.await_args.kwargs["cb"]
+    msg = _fake_js_msg(data=b"poison", num_delivered=5)
+    await wrapped(msg)
+    # parked on the dead-letter subject, then acked so it leaves the live consumer.
+    js.publish.assert_awaited_once_with(dlq.path, b"poison")
+    msg.ack.assert_awaited_once()
+    msg.nak.assert_not_awaited()
