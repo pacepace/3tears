@@ -21,6 +21,36 @@ __all__ = [
 log = get_logger(__name__)
 
 
+def _as_l3_backend(l3_pool: Any) -> Any:
+    """normalize a raw L3 transport to a :class:`DurableStore`-capable backend.
+
+    The collection CRUD lifecycle routes through the structured
+    :class:`~threetears.core.backends.protocol.DurableStore` ops, so the resolved
+    ``l3_pool`` must expose them. A backend that already satisfies ``DurableStore``
+    (the named :class:`~threetears.core.backends.sql.SqlL3Backend`, or a non-SQL
+    backend such as scriob's ``GitL3Backend``) is returned **unchanged**. A raw
+    transport that only speaks raw SQL (a bare asyncpg ``Pool`` or the
+    ``NatsProxyL3Backend``) is wrapped in a ``SqlL3Backend`` so it gains the
+    structured ops (which generate SQL). ``None`` passes through.
+
+    Imported lazily to keep this module free of an import-time dependency on the
+    backends package.
+
+    :param l3_pool: a raw transport, a ``DurableStore`` backend, or ``None``.
+    :ptype l3_pool: Any
+    :return: a ``DurableStore``-capable backend, or ``None``.
+    :rtype: Any
+    """
+    if l3_pool is None:
+        return None
+    from threetears.core.backends.protocol import DurableStore
+    from threetears.core.backends.sql import SqlL3Backend
+
+    if isinstance(l3_pool, DurableStore):
+        return l3_pool
+    return SqlL3Backend(l3_pool)
+
+
 class CacheInvalidationMessage(BaseModel):
     """typed wire envelope for cross-pod cache invalidation broadcasts.
 
@@ -87,7 +117,7 @@ class CollectionRegistry:
         if l2_client is not None:
             self._l2_client = l2_client
         if l3_pool is not None:
-            self._l3_pool = l3_pool
+            self._l3_pool = _as_l3_backend(l3_pool)
 
     def register(
         self,
@@ -107,7 +137,7 @@ class CollectionRegistry:
             if l2_client:
                 self._overrides[table]["l2_client"] = l2_client
             if l3_pool:
-                self._overrides[table]["l3_pool"] = l3_pool
+                self._overrides[table]["l3_pool"] = _as_l3_backend(l3_pool)
 
     def bind_table(
         self,
@@ -157,7 +187,7 @@ class CollectionRegistry:
         if l2_client is not None:
             existing["l2_client"] = l2_client
         if l3_pool is not None:
-            existing["l3_pool"] = l3_pool
+            existing["l3_pool"] = _as_l3_backend(l3_pool)
 
     def get_collection(self, table_name: str) -> Any | None:
         """Look up a registered collection by table name."""

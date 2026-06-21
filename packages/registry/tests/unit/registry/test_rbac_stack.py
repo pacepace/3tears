@@ -42,6 +42,7 @@ from threetears.agent.acl import (
     RoleCollection,
 )
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.registry.auth import (
     AllowAllAuthorizer,
@@ -58,6 +59,25 @@ from threetears.registry.rbac_stack import (
     build_registry_rbac_stack,
 )
 from threetears.registry.server import RegistryServer
+
+
+def _unwrap_l3(resolved: Any) -> Any:
+    """unwrap a resolved L3 backend to the raw transport it wraps.
+
+    L3B-03: the registry normalizes a raw L3 transport (here the rbac
+    :class:`NatsProxyL3Backend`) into a :class:`SqlL3Backend` so the collection
+    CRUD lifecycle gets the structured ``DurableStore`` ops. The pinning contract
+    (namespace + service-sentinel agent_id) lives on the wrapped NatsProxy, so peel
+    the wrapper before asserting on it.
+
+    :param resolved: the value returned by ``get_l3_pool``.
+    :ptype resolved: Any
+    :return: the wrapped transport, or ``resolved`` unchanged.
+    :rtype: Any
+    """
+    if isinstance(resolved, SqlL3Backend):
+        return resolved._pool  # noqa: SLF001 -- peel the wrapper to the wrapped NatsProxy transport
+    return resolved
 
 
 def _make_nats_client() -> MagicMock:
@@ -167,8 +187,11 @@ class TestBuildRegistryRbacStack:
         )
         # the rbac pool is wired onto the registry as the default L3.
         # introspect the registry's default pool through the public
-        # accessor.
-        pool = stack.registry.get_l3_pool("namespaces")
+        # accessor. L3B-03: the registry wraps the raw NatsProxy transport
+        # in a ``SqlL3Backend`` so the collection CRUD lifecycle gets the
+        # structured ``DurableStore`` ops; the rbac NatsProxy is the pool
+        # the wrapper wraps, so unwrap before asserting its pinning.
+        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
         assert isinstance(pool, NatsProxyL3Backend)
         assert pool.default_namespace == PLATFORM_RBAC_READ_NAMESPACE
 
@@ -186,7 +209,7 @@ class TestBuildRegistryRbacStack:
             subject_namespace="aibots",
             l1_backend=l1,
         )
-        pool = stack.registry.get_l3_pool("namespaces")
+        pool = _unwrap_l3(stack.registry.get_l3_pool("namespaces"))
         assert pool.agent_id == str(REGISTRY_SERVICE_SENTINEL_AGENT_ID)
 
 

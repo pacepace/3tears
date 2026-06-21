@@ -7,9 +7,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.schema_backed import _decode_vector, _encode_vector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json

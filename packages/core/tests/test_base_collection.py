@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
 
+from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.flush import WriteBuffer
@@ -857,19 +858,32 @@ class TestL3PoolAccessor:
     registry handed the collection at construction time.
 
     the hub's ad-hoc-SQL extension seam depends on this identity
-    relation: if it drifts (say, by copying or wrapping), hub code that
-    relies on ``self.l3_pool.fetch(...)`` sees a different pool than
-    the one the collection uses internally, which silently breaks
-    transactions and connection-lifetime assumptions.
+    relation: if it drifts, hub code that relies on
+    ``self.l3_pool.fetch(...)`` sees a different pool than the one the
+    collection uses internally, which silently breaks transactions and
+    connection-lifetime assumptions.
+
+    L3B-03 introduced a deliberate normalization: the registry wraps a raw
+    asyncpg-shaped pool in a :class:`SqlL3Backend` (so the collection CRUD
+    lifecycle can route through the structured ``DurableStore`` ops). The
+    wrapper is **identity-stable** (the registry resolves the SAME wrapper
+    object every time) and **delegates** ``fetch``/``fetchrow``/``execute``/
+    ``acquire``/``transaction`` straight to the wrapped pool — so the hub's
+    raw-SQL seam and connection-lifetime contract are preserved. A pool that
+    already satisfies ``DurableStore`` passes through un-wrapped.
     """
 
     def test_l3_pool_returns_registry_pool_by_default(self, config_always: DefaultCoreConfig) -> None:
-        """collection.l3_pool is the same object the registry holds."""
+        """collection.l3_pool is the SAME backend the registry resolves, wrapping the configured pool."""
         sentinel_pool = object()
         reg = CollectionRegistry()
         reg.configure(l3_pool=sentinel_pool)
         coll = StubCollection(reg, config_always)
-        assert coll.l3_pool is sentinel_pool
+        # identity-stable: the collection sees the exact backend the registry resolves
+        assert coll.l3_pool is reg.get_l3_pool("test_entities")
+        # the raw pool the collection hands the hub's ad-hoc-SQL seam is the configured one
+        assert isinstance(coll.l3_pool, SqlL3Backend)
+        assert coll.l3_pool._pool is sentinel_pool  # noqa: SLF001 -- introspect the wrapper's raw pool
 
     def test_l3_pool_respects_per_collection_override(self, config_always: DefaultCoreConfig) -> None:
         """per-collection pool override wins over the registry default."""
@@ -882,7 +896,8 @@ class TestL3PoolAccessor:
         # the override on the registry by hand.
         reg.bind_table("test_entities", l3_pool=override_pool)
         coll = StubCollection(reg, config_always)
-        assert coll.l3_pool is override_pool
+        assert isinstance(coll.l3_pool, SqlL3Backend)
+        assert coll.l3_pool._pool is override_pool  # noqa: SLF001 -- introspect the wrapper's raw pool
 
     def test_l3_pool_none_when_registry_has_no_pool(self, config_always: DefaultCoreConfig) -> None:
         """collection.l3_pool is None when the registry has no pool.

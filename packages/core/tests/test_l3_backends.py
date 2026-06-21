@@ -174,3 +174,134 @@ def test_parse_rowcount() -> None:
     assert parse_rowcount(None) == 0
     assert parse_rowcount("") == 0
     assert parse_rowcount(42) == 0  # non-string → 0 (mock-pool safety)
+
+
+# ---------------------------------------------------------------------------
+# schema-aware SqlL3Backend: byte-identical SQL + conn= transactional override
+# ---------------------------------------------------------------------------
+
+
+def _items_schema() -> object:
+    """a representative single-pk schema with JSONB + vector + CAS (mirrors SchemaBackedCollection)."""
+    from threetears.core.collections.schema_backed import (
+        DATETIMETZ_TYPE,
+        JSONB_TYPE,
+        STRING_TYPE,
+        UUID_TYPE,
+        VECTOR_TYPE,
+        Column,
+        TableSchema,
+    )
+
+    return TableSchema(
+        name="items",
+        primary_key="id",
+        columns=[
+            Column("id", UUID_TYPE),
+            Column("label", STRING_TYPE),
+            Column("payload", JSONB_TYPE, nullable=True),
+            Column("vec", VECTOR_TYPE, nullable=True, vector_dim=3),
+            Column("date_created", DATETIMETZ_TYPE, immutable=True),
+            Column("date_updated", DATETIMETZ_TYPE),
+        ],
+        cas_column="date_updated",
+    )
+
+
+@pytest.mark.asyncio
+async def test_schema_aware_durable_store_emits_byte_identical_sql() -> None:
+    """when a schema is registered the structured ops emit the schema-aware SQL.
+
+    Pins the byte-identical contract the collection CRUD path relies on: declared-
+    columns-only SELECT with the ``vec::text`` projection cast (not ``SELECT *``),
+    ``::jsonb`` / ``::vector`` write casts, ``ON CONFLICT (id) DO UPDATE SET`` over
+    mutable columns, and the composite-style by-pk WHERE.
+    """
+    import uuid
+
+    schema = _items_schema()
+    iid = uuid.uuid4()
+
+    # fetch_one → declared-column SELECT with vec::text cast
+    pool = _RecordingPool(fetchrow_result={"id": iid, "label": "x"})
+    backend = SqlL3Backend(pool)
+    backend.register_schema("items", schema)  # type: ignore[arg-type]
+    await backend.fetch_one("items", {"id": iid})
+    sql, params = pool.calls[-1]
+    assert sql == ("SELECT id, label, payload, vec::text AS vec, date_created, date_updated FROM items WHERE id = $1")
+    assert params == (iid,)
+
+    # upsert (no CAS) → INSERT ... ON CONFLICT (id) DO UPDATE SET with ::jsonb / ::vector casts
+    pool = _RecordingPool()
+    backend = SqlL3Backend(pool)
+    backend.register_schema("items", schema)  # type: ignore[arg-type]
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    n = await backend.upsert(
+        "items",
+        {
+            "id": iid,
+            "label": "x",
+            "payload": {"k": "v"},
+            "vec": [1.0, 2.0, 3.0],
+            "date_created": now,
+            "date_updated": now,
+        },
+        pk=["id"],
+        on_conflict="update",
+    )
+    assert n == 1
+    sql, _params = pool.calls[-1]
+    assert "INSERT INTO items" in sql
+    assert "::jsonb" in sql and "::vector" in sql
+    assert "ON CONFLICT (id) DO UPDATE SET" in sql
+    assert "label = EXCLUDED.label" in sql
+    assert "date_created = EXCLUDED.date_created" not in sql  # immutable
+
+    # delete → schema-aware by-pk DELETE
+    pool = _RecordingPool()
+    backend = SqlL3Backend(pool)
+    backend.register_schema("items", schema)  # type: ignore[arg-type]
+    await backend.delete("items", {"id": iid})
+    sql, params = pool.calls[-1]
+    assert sql == "DELETE FROM items WHERE id = $1"
+    assert params == (iid,)
+
+
+class _TxRecordingConn:
+    """A caller-supplied transaction connection that records its own (sql, params)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, query: str, *params: Any) -> str:
+        self.calls.append((query, params))
+        return "INSERT 0 1"
+
+    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any] | None:
+        self.calls.append((query, params))
+        return None
+
+
+@pytest.mark.asyncio
+async def test_schema_aware_upsert_binds_to_caller_conn() -> None:
+    """upsert(conn=...) binds the write to the caller's transaction, not the pool."""
+    import uuid
+
+    schema = _items_schema()
+    pool = _RecordingPool()
+    backend = SqlL3Backend(pool)
+    backend.register_schema("items", schema)  # type: ignore[arg-type]
+    conn = _TxRecordingConn()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    await backend.upsert(
+        "items",
+        {"id": uuid.uuid4(), "label": "x", "payload": None, "vec": None, "date_created": now, "date_updated": now},
+        pk=["id"],
+        conn=conn,
+    )
+
+    # the write went to the caller's connection; the pool saw nothing
+    assert len(conn.calls) == 1
+    assert "INSERT INTO items" in conn.calls[0][0]
+    assert pool.calls == []
