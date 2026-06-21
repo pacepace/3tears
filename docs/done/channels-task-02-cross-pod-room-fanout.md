@@ -1,6 +1,6 @@
 # channels-task-02: Cross-pod room fanout (NATS-backed live delivery)
 
-**Status:** READY. Builds on `channels-task-01` (the presence state layer: `PresenceCollection`
+**Status:** SHIPPED. Builds on `channels-task-01` (the presence state layer: `PresenceCollection`
 + `RoomState`). `channels-task-03` (authorization + typed frames + reconnect-resume) builds on the
 `Subjects.room(...)` family and the fanout seam this lands.
 **Scope:** a new `room` subject family in `3tears-nats` (`subjects.py`) + a new thin fanout

@@ -1,6 +1,6 @@
 # channels-task-03: Authorization + typed frames + reconnect-resume (the integration)
 
-**Status:** READY. Final channels shard (design-doc **Shard C**). Builds on task-01 (presence
+**Status:** SHIPPED. Final channels shard (design-doc **Shard C**). Builds on task-01 (presence
 state) + task-02 (room fanout). After this, scriob consumes the whole channels stack.
 **Scope:** `packages/channels/src/threetears/channels/websocket.py` (+ a small `frames.py` for the
 typed-frame model + injected-seam protocols). Modifies `WebSocketHandler`. Additive to existing

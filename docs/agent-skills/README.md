@@ -1,7 +1,7 @@
 # agent-skills — Procedural memory for 3tears agents
 
 **Status:** draft (planning set, no implementation yet).
-**Scope:** primarily `3tears/packages/agent/skills/` (new package); touches `3tears/packages/agent/tools/` via the prerequisite eligibility-flags shard (`../agent-tools-eligibility/`).
+**Scope:** primarily `3tears/packages/agent/skills/` (new package); touches `3tears/packages/agent/tools/` via the prerequisite eligibility-flags shard (`../done/agent-tools-eligibility/`).
 **Consumer:** metallm (see `metallm/docs/skills/PLACEMENT.md` for the canonical design + placement memo).
 
 **Read `metallm/docs/skills/PLACEMENT.md` first** for the full design decisions log. This README is the platform-side scope summary.
@@ -29,7 +29,7 @@ Different storage shape (FTS-only text + metadata, no vector embeddings), differ
 
 ## Prerequisite: `agent-tools-eligibility`
 
-This package depends on `3tears-agent-tools` shipping the `tool_eligible` + `skill_eligible` flags first. See [`../agent-tools-eligibility/shard-01-tool-eligibility-flags.md`](../agent-tools-eligibility/shard-01-tool-eligibility-flags.md) for the foundation shard. Both ship in the same 3tears release as this package.
+This package depends on `3tears-agent-tools` shipping the `tool_eligible` + `skill_eligible` flags first. See [`../done/agent-tools-eligibility/shard-01-tool-eligibility-flags.md`](../done/agent-tools-eligibility/shard-01-tool-eligibility-flags.md) for the foundation shard. Both ship in the same 3tears release as this package.
 
 The catalog query `list_skill_eligible_tools(actor_user_id, actor_agent_id)` from the prereq is what powers `skill_list`'s UNION over prose-skill rows + tool-skill registry entries.
 
@@ -54,7 +54,7 @@ The catalog query `list_skill_eligible_tools(actor_user_id, actor_agent_id)` fro
 | 02 | [Agent tools](shard-02-agent-tools.md) | **Seven `TearsTool` factories** (six CRUD+invoke + one introspect): `skill_create`, `skill_list`, `skill_get`, `skill_update`, `skill_delete`, `skill_invoke`, `skill_introspect`. The introspect tool returns the minimal-token shape from PLACEMENT §1.8 |
 | 03 | [Active-skill renderer + per-turn composition](shard-03-skills-block-renderer.md) | `compose_turn_context(active_skill, base_system_prompt, base_tool_names, *, acl_permits)` — the canonical per-turn composition from PLACEMENT §1.10. Pure function |
 
-**Plus prerequisite:** [`../agent-tools-eligibility/shard-01-tool-eligibility-flags.md`](../agent-tools-eligibility/shard-01-tool-eligibility-flags.md) — modifies `3tears-agent-tools` to add `tool_eligible` + `skill_eligible` flags. Foundation for everything else.
+**Plus prerequisite:** [`../done/agent-tools-eligibility/shard-01-tool-eligibility-flags.md`](../done/agent-tools-eligibility/shard-01-tool-eligibility-flags.md) — modifies `3tears-agent-tools` to add `tool_eligible` + `skill_eligible` flags. Foundation for everything else.
 
 **Dropped from prior redesign:** `shard-02-retrieval-and-classifier-framework.md` deleted entirely (auto-load is gone). `skill_create_from_range` removed from agent tools. `skill_history` deferred to v1.1 (will be a separate `skill_stats` tool).
 

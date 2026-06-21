@@ -1,6 +1,6 @@
 # channels-task-01: Presence/membership state layer (PK-keyed `PresenceCollection` + synced socket map)
 
-**Status:** READY. **Foundational** — `channels-task-02` (room fanout) and `channels-task-03`
+**Status:** SHIPPED. **Foundational** — `channels-task-02` (room fanout) and `channels-task-03`
 (authz + frames + resume) build on the membership + socket map this lands.
 **Scope:** `3tears-channels` — a new presence/state module + a reshaped connection registry — using
 `threetears.core.collections` (L1 SQLite + L2 NATS) and `threetears.nats`. Net-new framework code.
