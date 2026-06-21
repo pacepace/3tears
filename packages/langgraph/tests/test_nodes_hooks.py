@@ -24,7 +24,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from threetears.langgraph.nodes import agent_node, tool_node
 
@@ -458,3 +463,65 @@ class TestToolNodeInterruptPropagation:
         # It must BUBBLE OUT (so Pregel/checkpointer can pause), not be caught into a ToolMessage.
         with pytest.raises(GraphBubbleUp):
             await tool_node(state, config)  # type: ignore[arg-type]
+
+
+class TestSystemMessageConsolidation:
+    """regression: upstream retrieval nodes (knowledge / memory) append
+    their per-turn context as a separate SystemMessage to state.messages.
+    an injected SystemMessage landing AFTER a human turn reached Anthropic
+    as a NON-CONSECUTIVE system message ("Received multiple non-consecutive
+    system messages" -> no generations). the agent_node consolidates ALL
+    SystemMessages into the single leading system prompt and removes them
+    from persisted history so per-turn context never accumulates.
+    """
+
+    @pytest.mark.asyncio
+    async def test_injected_system_message_folded_into_single_leading_prompt(
+        self,
+    ) -> None:
+        """a System message after a Human turn is merged into one leading
+        system message; the model never sees non-consecutive systems."""
+        mock_model = AsyncMock()
+        mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="ok"))
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                SystemMessage(content="INJECTED-KNOWLEDGE", id="sys-1"),
+            ],
+        }
+        config: RunnableConfig = {
+            "configurable": {"chat_model": mock_model, "system_prompt": "BASE"},
+        }
+
+        await agent_node(state, config)  # type: ignore[arg-type]
+
+        messages_sent = mock_model.ainvoke.call_args[0][0]
+        system_messages = [m for m in messages_sent if isinstance(m, SystemMessage)]
+        # exactly one system message, at index 0, carrying base + injected
+        assert len(system_messages) == 1
+        assert isinstance(messages_sent[0], SystemMessage)
+        assert "BASE" in messages_sent[0].content
+        assert "INJECTED-KNOWLEDGE" in messages_sent[0].content
+        # the human turn survives, after the consolidated system message
+        assert any(isinstance(m, HumanMessage) and m.content == "hi" for m in messages_sent)
+
+    @pytest.mark.asyncio
+    async def test_injected_system_message_removed_from_history(self) -> None:
+        """the consumed SystemMessage is RemoveMessage'd so per-turn context
+        does not persist / accumulate across turns."""
+        mock_model = AsyncMock()
+        mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="ok"))
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                SystemMessage(content="INJECTED", id="sys-1"),
+            ],
+        }
+        config: RunnableConfig = {
+            "configurable": {"chat_model": mock_model, "system_prompt": "BASE"},
+        }
+
+        result = await agent_node(state, config)  # type: ignore[arg-type]
+
+        removals = [m for m in result["messages"] if isinstance(m, RemoveMessage)]
+        assert any(m.id == "sys-1" for m in removals)

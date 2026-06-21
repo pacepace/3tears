@@ -338,14 +338,14 @@ def create_anthropic_chat(
 # canonical Anthropic chat models. extend with additional ids by calling
 # register_capabilities() externally at host-app boot time.
 _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
-    "claude-opus-4-5-20251101": ModelCapabilities(
-        model_name="claude-opus-4-5-20251101",
+    "claude-opus-4-8": ModelCapabilities(
+        model_name="claude-opus-4-8",
         provider_name=ANTHROPIC_PROVIDER_NAME,
         model_type=ModelType.CHAT,
         model_tier=ModelTier.LARGE,
         model_status=ModelStatus.ACTIVE,
         context_window=200_000,
-        max_output_tokens=8_192,
+        max_output_tokens=64_000,
         supports_streaming=True,
         supports_tools=True,
         supports_vision=True,
@@ -356,15 +356,17 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         cache_ttl_seconds=300,
         cost_per_input_token=Decimal("0.000015"),
         cost_per_output_token=Decimal("0.000075"),
+        cost_per_cache_read_token=Decimal("0.0000015"),
+        cost_per_cache_write_token=Decimal("0.00001875"),
     ),
-    "claude-sonnet-4-20250514": ModelCapabilities(
-        model_name="claude-sonnet-4-20250514",
+    "claude-sonnet-4-6": ModelCapabilities(
+        model_name="claude-sonnet-4-6",
         provider_name=ANTHROPIC_PROVIDER_NAME,
         model_type=ModelType.CHAT,
         model_tier=ModelTier.LARGE,
         model_status=ModelStatus.ACTIVE,
         context_window=200_000,
-        max_output_tokens=8_192,
+        max_output_tokens=64_000,
         supports_streaming=True,
         supports_tools=True,
         supports_vision=True,
@@ -375,9 +377,11 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         cache_ttl_seconds=300,
         cost_per_input_token=Decimal("0.000003"),
         cost_per_output_token=Decimal("0.000015"),
+        cost_per_cache_read_token=Decimal("0.0000003"),
+        cost_per_cache_write_token=Decimal("0.00000375"),
     ),
-    "claude-3-5-haiku-20241022": ModelCapabilities(
-        model_name="claude-3-5-haiku-20241022",
+    "claude-haiku-4-5-20251001": ModelCapabilities(
+        model_name="claude-haiku-4-5-20251001",
         provider_name=ANTHROPIC_PROVIDER_NAME,
         model_type=ModelType.CHAT,
         model_tier=ModelTier.SMALL,
@@ -394,6 +398,8 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         cache_ttl_seconds=300,
         cost_per_input_token=Decimal("0.0000008"),
         cost_per_output_token=Decimal("0.000004"),
+        cost_per_cache_read_token=Decimal("0.00000008"),
+        cost_per_cache_write_token=Decimal("0.000001"),
     ),
 }
 

@@ -27,7 +27,7 @@ class ModelCache:
 
         :param provider_name: provider identifier (e.g. "anthropic")
         :ptype provider_name: str
-        :param model_name: model identifier (e.g. "claude-sonnet-4-20250514")
+        :param model_name: model identifier (e.g. "claude-sonnet-4-6")
         :ptype model_name: str
         :return: cached instance or None if not found
         :rtype: Any | None

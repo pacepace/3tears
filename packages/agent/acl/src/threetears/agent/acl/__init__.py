@@ -126,6 +126,11 @@ from threetears.agent.acl.loaders import (
     CollectionGrantLoader,
     CollectionMembershipLoader,
 )
+from threetears.agent.acl.query_visibility import (
+    caller_visible_customer_clause,
+    customer_scope_visibility_clause,
+    three_scope_visibility_clause,
+)
 from threetears.agent.acl.types import (
     ActorType,
     EvaluationContext,
@@ -197,8 +202,11 @@ __all__ = [
     "authorize",
     "authorize_on_entity",
     "authorize_with_trail",
+    "caller_visible_customer_clause",
+    "customer_scope_visibility_clause",
     "ensure_platform_builtin_tool_user_role",
     "evaluate_decision",
     "evaluate_file_access",
     "evaluate_with_trail",
+    "three_scope_visibility_clause",
 ]

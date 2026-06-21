@@ -69,6 +69,8 @@ def test_agent_subjects_namespace_prefix() -> None:
     pod_id = "pod-abc"
 
     assert Subjects.agent_register().path == "aibots.agents.register"
+    assert Subjects.agent_deregister().path == "aibots.agents.deregister"
+    assert Subjects.agent_deregister().kind == "point"
     assert Subjects.agent_heartbeat(pod_id).path == "aibots.agents.heartbeat.pod-abc"
     assert Subjects.agent_heartbeat_wildcard().path == "aibots.agents.heartbeat.>"
     assert Subjects.agent_heartbeat_wildcard().kind == "pattern"
@@ -302,3 +304,16 @@ def test_room_subject_rejects_empty_room_id() -> None:
     """an empty room id is a programming error."""
     with pytest.raises(ValueError):
         Subjects.room("")
+
+
+def test_knowledge_draft_subject() -> None:
+    """correction-harvest draft subject is namespace-prefixed (knowledge-task-06)."""
+    assert Subjects.knowledge_draft().path == "aibots.knowledge.draft"
+
+
+def test_knowledge_draft_subject_honors_namespace() -> None:
+    """the knowledge-draft subject picks up the active namespace prefix."""
+    set_default_namespace("staging")
+    assert Subjects.knowledge_draft().path == "staging.knowledge.draft"
+    set_default_namespace("aibots")
+    assert Subjects.knowledge_draft().path == "aibots.knowledge.draft"

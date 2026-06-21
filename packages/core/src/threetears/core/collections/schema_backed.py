@@ -52,6 +52,7 @@ __all__ = [
     "Column",
     "DATETIMETZ_TYPE",
     "ENUM_TYPE",
+    "encode_jsonb",
     "ForeignKey",
     "ForeignKeyDef",
     "INT_TYPE",
@@ -1198,8 +1199,16 @@ def _decode_vector(value: Any) -> list[float] | None:
     return result
 
 
-def _encode_jsonb(value: Any) -> Any:
+def encode_jsonb(value: Any) -> Any:
     """validate / pass through a JSONB column value for asyncpg.
+
+    public canonical encoder: every collection that writes a JSONB column --
+    including hand-rolled custom-SQL upserts in sibling packages -- binds the
+    value through this function as a NATIVE python object (``$N``, no
+    ``::text::jsonb`` cast) and lets the registered codec apply the single
+    ``json.dumps``. this is the one jsonb-encode step in the platform; a
+    second ``json.dumps`` (or a ``::text::jsonb`` cast over a pre-encoded
+    string) is the double-encode bug this centralization removes.
 
     asyncpg is the canonical Python -> Postgres encoder via its
     registered ``jsonb`` text codec (see consumer-side connection
@@ -1855,14 +1864,61 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
         return result
 
+    def _build_select_column_list(self) -> str:
+        """render the by-pk SELECT projection from declared schema columns.
+
+        projects ONLY the schema's declared columns -- never ``SELECT *``
+        -- so a real table column the schema does not declare is never
+        read. this keeps a pool with no codec for that column's type off
+        the decode path: the hub omits the ``embedding`` (``vector``)
+        column from its knowledge ``TableSchema`` precisely so it never
+        decodes a pgvector value, and ``SELECT *`` defeated that by
+        returning the column anyway (asyncpg raises
+        ``UnsupportedClientFeatureError: unhandled standard data type
+        'vector'`` because no 3tears pool registers a vector codec --
+        only the jsonb text codec in :func:`init_connection`).
+
+        a DECLARED codec-less column (:data:`VECTOR_TYPE` /
+        :data:`TSVECTOR_TYPE` -- the two asyncpg types no 3tears pool
+        registers a binary codec for) is cast to ``::text`` so asyncpg
+        returns the string form instead of raising on the missing codec.
+        for ``VECTOR_TYPE`` :meth:`_normalize_read_value` parses the
+        bracketed string back to a ``list[float]`` (the same text
+        round-trip the write path casts with ``::vector``); for
+        ``TSVECTOR_TYPE`` (a trigger-maintained, immutable full-text
+        column never consumed as data) the text form passes through
+        untouched. without the cast a declared vector / tsvector column
+        would hit the SAME missing-codec failure on a real pool -- a
+        latent bug the recording-mock unit tests could not surface, and
+        the exact failure the hub knowledge get/update/delete hit on
+        YugabyteDB (where ``vector`` carries the fixed low OID 8078).
+
+        :return: comma-joined projection list in declared column order
+        :rtype: str
+        """
+        text_cast_types = (VECTOR_TYPE, TSVECTOR_TYPE)
+        parts: list[str] = []
+        for col in self.schema.columns:
+            if col.column_type in text_cast_types:
+                parts.append(f"{col.name}::text AS {col.name}")
+            else:
+                parts.append(col.name)
+        return ", ".join(parts)
+
     def _build_fetch_sql(self) -> str:
         """build SELECT SQL for pk-based fetch.
+
+        projects the schema's declared columns (never ``SELECT *``) via
+        :meth:`_build_select_column_list` so undeclared table columns --
+        notably a ``vector`` the consumer deliberately omitted -- are
+        never read and never decoded.
 
         :return: parameterized SELECT SQL
         :rtype: str
         """
         where, _ = self._build_where_pk(start=1)
-        return f"SELECT * FROM {self.schema.name} WHERE {where}"
+        columns = self._build_select_column_list()
+        return f"SELECT {columns} FROM {self.schema.name} WHERE {where}"
 
     def _build_delete_sql(self) -> str:
         """build DELETE SQL for pk-based delete.
@@ -1892,7 +1948,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         elif column.column_type == DATETIMETZ_TYPE:
             result = _coerce_datetime_for_write_tz(value)
         elif column.column_type == JSONB_TYPE:
-            result = _encode_jsonb(value)
+            result = encode_jsonb(value)
         elif column.column_type == VECTOR_TYPE:
             result = _encode_vector(value)
         else:

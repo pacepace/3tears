@@ -37,6 +37,7 @@ __all__ = [
     "DataSourceColumnEntity",
     "DataSourceEntity",
     "DataSourceRelationEntity",
+    "DataSourceSchemaDigestEntity",
     "DataSourceStatus",
     "DataSourceTableEntity",
     "DataSourceType",
@@ -104,12 +105,19 @@ class DataSourceEntity(BaseEntity):
     """data source entity representing a registered external data source.
 
     extends :class:`BaseEntity` with data-source-specific field access.
-    all field data lives in L1 cache, accessed via the parent
-    collection proxy. fields match ``platform.datasources``. composite
-    primary key ``(customer_id, id)`` post-v054.
+    all field data lives in L1 cache, accessed via the parent collection
+    proxy. fields match ``platform.datasources``.
 
-    :param data: initial field data dictionary; must carry both
-        ``customer_id`` and ``id``
+    flat primary key ``id`` post-knowledge-task-08: the v016 migration
+    rebuilt the table PK on ``id`` alone (dropping the v001 composite
+    ``(customer_id, id)`` partition PK) so a platform-shared datasource
+    can carry ``customer_id = NULL`` (KNW-76). ``customer_id`` is now a
+    plain nullable column, no longer the partition / addressing key —
+    every lookup resolves by the global ``id`` (backed by the
+    ``datasources_id_unique`` index), which a NULL customer_id never
+    blocks.
+
+    :param data: initial field data dictionary carrying ``id``
     :ptype data: dict[str, Any]
     :param is_new: whether entity is newly created
     :ptype is_new: bool
@@ -117,37 +125,7 @@ class DataSourceEntity(BaseEntity):
     :ptype collection: Any
     """
 
-    primary_key_field: str = "customer_id"
-
-    def __init__(
-        self,
-        data: dict[str, Any],
-        is_new: bool = True,
-        collection: Any = None,
-    ) -> None:
-        """initialize entity with composite-pk ``_id`` tuple.
-
-        :param data: row dict carrying both ``customer_id`` and ``id``
-        :ptype data: dict[str, Any]
-        :param is_new: whether entity is unsaved
-        :ptype is_new: bool
-        :param collection: owning collection reference
-        :ptype collection: Any
-        :return: nothing
-        :rtype: None
-        """
-        super().__init__(data, is_new=is_new, collection=collection)
-        object.__setattr__(self, "_row_id", data["id"])
-        object.__setattr__(self, "_id", (data["customer_id"], data["id"]))
-
-    @property
-    def id(self) -> Any:
-        """return the scalar datasource UUID.
-
-        :return: datasource UUID
-        :rtype: Any
-        """
-        return self._row_id
+    primary_key_field: str = "id"
 
 
 class DataSourceTableEntity(BaseEntity):
@@ -184,6 +162,42 @@ class DataSourceColumnEntity(BaseEntity):
     """
 
     primary_key_field: str = "id"
+
+
+class DataSourceSchemaDigestEntity(BaseEntity):
+    """materialized documented-schema digest for one datasource (schema-priming).
+
+    extends :class:`BaseEntity`. one row per datasource in
+    ``platform.datasource_schema_digests``, holding the pre-derived
+    structured projection of the datasource's DOCUMENTED tables and
+    columns (the hub materializes it from
+    ``platform.datasource_tables`` + ``platform.datasource_columns``,
+    keeping only rows whose ``description`` is non-null). agent pods read
+    it BY PRIMARY KEY so the lookup is served from the hot L1 cache — the
+    whole reason the digest is materialized rather than re-derived per
+    turn (a list-by-datasource read cache-bypasses to L3).
+
+    the primary key IS ``datasource_id`` (one row per datasource), so the
+    agent addresses the digest by the datasource it already holds. fields
+    match ``platform.datasource_schema_digests``: ``datasource_id`` /
+    ``customer_id`` / ``tables`` (JSONB structured projection) /
+    ``source_fingerprint`` (a content hash of the documented rows the
+    digest was built from, for idempotent reconcile + observability) /
+    ``date_created`` / ``date_updated``.
+
+    the stored projection is STRUCTURED, not rendered markdown — token
+    budgeting + block rendering are the consumer's (agent's) presentation
+    concern (schema-priming-task-01b), kept out of the platform artifact.
+
+    :param data: initial field data dictionary carrying ``datasource_id``
+    :ptype data: dict[str, Any]
+    :param is_new: whether entity is newly created
+    :ptype is_new: bool
+    :param collection: parent collection reference
+    :ptype collection: Any
+    """
+
+    primary_key_field: str = "datasource_id"
 
 
 class DataSourceRelationEntity(BaseEntity):

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from langchain_core.embeddings import Embeddings
 
+from threetears.models import (
+    CURRENT_VOYAGEAI_EMBEDDING_MODELS,
+    DEFAULT_EMBEDDING_MODEL,
+)
 from threetears.models.capabilities import get_capabilities
 from threetears.models.enums import ModelTier, ModelType
 from threetears.models.providers.voyageai import (
@@ -17,26 +21,26 @@ class TestCreateVoyageAIEmbedding:
 
     def test_returns_embeddings(self) -> None:
         """factory returns an ``Embeddings`` subclass instance."""
-        model = create_voyageai_embedding("pa-test-key", model_name="voyage-3-lite")
+        model = create_voyageai_embedding("pa-test-key", model_name=DEFAULT_EMBEDDING_MODEL)
         assert isinstance(model, Embeddings)
 
 
 class TestVoyageAICapabilityRegistration:
     """tests that voyageai canonical models register at import time."""
 
-    def test_voyage_3_registered(self) -> None:
-        """``voyage-3`` resolves to voyageai LARGE embedding capabilities."""
-        caps = get_capabilities("voyage-3")
+    def test_voyage_4_registered(self) -> None:
+        """``voyage-4`` resolves to voyageai LARGE embedding capabilities."""
+        caps = get_capabilities(DEFAULT_EMBEDDING_MODEL)
         assert caps is not None
         assert caps.provider_name == VOYAGEAI_PROVIDER_NAME
         assert caps.model_type == ModelType.EMBEDDING
         assert caps.model_tier == ModelTier.LARGE
         assert caps.embedding_dimensions == 1024
 
-    def test_voyage_3_lite_registered(self) -> None:
-        """``voyage-3-lite`` resolves to voyageai SMALL embedding capabilities."""
-        caps = get_capabilities("voyage-3-lite")
+    def test_voyage_4_large_registered(self) -> None:
+        """``voyage-4-large`` resolves to voyageai LARGE embedding capabilities."""
+        caps = get_capabilities(CURRENT_VOYAGEAI_EMBEDDING_MODELS[1])
         assert caps is not None
         assert caps.provider_name == VOYAGEAI_PROVIDER_NAME
         assert caps.model_type == ModelType.EMBEDDING
-        assert caps.model_tier == ModelTier.SMALL
+        assert caps.model_tier == ModelTier.LARGE

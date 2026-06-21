@@ -7,6 +7,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 
+from threetears.models import DEFAULT_CHAT_MODEL, DEFAULT_LARGE_MODEL
 from threetears.models.factory import create_chat_model, create_embedding_model
 
 
@@ -14,9 +15,9 @@ class TestCreateChatModel:
     """tests for :func:`create_chat_model`."""
 
     def test_returns_runnable_chat_model_for_anthropic(self) -> None:
-        """``claude-sonnet-4-20250514`` resolves through the registry."""
+        """``DEFAULT_CHAT_MODEL`` resolves through the registry."""
         model = create_chat_model(
-            "claude-sonnet-4-20250514",
+            DEFAULT_CHAT_MODEL,
             api_key="sk-test",
         )
         # `with_config(callbacks=...)` returns a RunnableBinding wrapping the chat model.
@@ -41,7 +42,7 @@ class TestCreateChatModel:
     def test_unregistered_model_with_explicit_provider_works(self) -> None:
         """explicit ``provider=`` lets the factory dispatch even without registration."""
         model = create_chat_model(
-            "claude-3-opus-20240229",
+            DEFAULT_LARGE_MODEL,
             api_key="sk-test",
             provider="anthropic",
         )
@@ -76,6 +77,6 @@ class TestCreateEmbeddingModel:
         """passing a chat model id to embedding factory raises ``ValueError``."""
         with pytest.raises(ValueError, match="registered as chat"):
             create_embedding_model(
-                "claude-sonnet-4-20250514",
+                DEFAULT_CHAT_MODEL,
                 api_key="sk-test",
             )

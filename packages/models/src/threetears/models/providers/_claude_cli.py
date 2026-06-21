@@ -29,6 +29,8 @@ from typing import Any, Callable
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
+__all__ = ["OAUTH_TOKEN_PREFIX", "is_subscription_token", "create_subscription_chat"]
+
 #: A Claude subscription OAuth token (``claude setup-token``) starts with this; an API key does not.
 OAUTH_TOKEN_PREFIX = "sk-ant-oat"
 

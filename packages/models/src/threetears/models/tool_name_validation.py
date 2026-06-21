@@ -130,34 +130,57 @@ def filter_invalid_tool_calls(
 
     Streaming chat-model responses surface malformed tool calls in
     ``invalid_tool_calls``: each entry carries the partial name +
-    args + an error string. Some of those entries have names that
-    might still be recoverable (e.g. a JSON-parse error on otherwise
-    valid args); others carry junk names that cannot be dispatched
-    under any circumstances and must be dropped before they reach
-    downstream code. This function performs that split.
+    args + an error string. Only a **non-empty string name that fails
+    the canonical regex** is treated as junk (the genuine bad case --
+    e.g. a quote-garbage name leaked from XML-shaped tool-call text).
+    An entry with no name (``name=None`` / absent / empty string) is
+    NOT junk: it is the normal signature of a streaming continuation
+    fragment (only the first delta of a tool call carries the name; the
+    rest accumulate by index in ``tool_call_chunks``). Such fragments
+    merge into a valid tool call downstream and are kept, never logged.
 
     The ``rejected`` list is suitable for log emission by the
     caller; the caller is expected to truncate ``name`` before
     logging to bound output size and prevent log injection. The
     ``kept`` list replaces the consumer's view of
-    ``invalid_tool_calls`` so the recovery path sees only entries
-    that could plausibly be repaired.
+    ``invalid_tool_calls`` so the recovery path sees the recoverable
+    entries (valid names) plus the harmless nameless continuation
+    fragments.
 
     :param invalid_tool_calls: candidate ``invalid_tool_calls`` list
         (typically ``message.invalid_tool_calls`` from a streaming
         chat-model response)
     :ptype invalid_tool_calls: list[dict[str, Any]]
-    :return: tuple of ``(kept, rejected)`` where ``kept`` is the
-        sub-list whose names match the canonical regex and
-        ``rejected`` is the sub-list whose names do not
+    :return: tuple of ``(kept, rejected)``. ``kept`` holds dict entries
+        with a valid name and the nameless streaming-continuation
+        fragments (dict with ``name`` None / absent / empty). ``rejected``
+        holds concrete-but-undispatchable name claims: a non-empty string
+        failing the canonical regex, or a non-string / non-dict value
     :rtype: tuple[list[dict[str, Any]], list[dict[str, Any]]]
     """
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for call in invalid_tool_calls:
         name = call.get("name") if isinstance(call, dict) else None
-        if isinstance(name, str) and is_valid_tool_name(name):
+        if isinstance(call, dict) and (name is None or name == ""):
+            # Streaming continuation fragment: only the FIRST delta of a
+            # tool call carries the name; later deltas accumulate args by
+            # index in ``tool_call_chunks`` with no name. A nameless dict
+            # entry is therefore NOT junk -- it merges into a valid tool
+            # call downstream (the merge re-derives from
+            # ``tool_call_chunks``, so keeping it is harmless to args).
+            # Treating it as junk was a false positive that logged +
+            # dropped a WARNING per streamed chunk (metallm conv 019ecdfd,
+            # 2026-06-16). Keep it, never log it.
+            kept.append(call)
+        elif isinstance(name, str) and is_valid_tool_name(name):
+            # A concrete, dispatchable name -- recoverable; kept.
             kept.append(call)
         else:
+            # A concrete name claim that can't dispatch: a non-empty
+            # malformed string (the genuine junk case, e.g. a quote-garbage
+            # name leaked from XML-shaped tool-call text) OR a non-string /
+            # non-dict value. Reject + log -- unchanged from before the
+            # streaming-continuation fix above.
             rejected.append(call)
     return kept, rejected

@@ -5,6 +5,7 @@ from threetears.core.collections.asyncpg_init import (
 from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.durable_store import DurableStoreCollection
 from threetears.core.collections.flush import FlushStrategy, WriteBuffer, flush_pending
+from threetears.core.collections.merge import repoint_user_rows
 from threetears.core.collections.registry import (
     CacheInvalidationMessage,
     CollectionRegistry,
@@ -22,6 +23,7 @@ from threetears.core.collections.schema_backed import (
     PartitionEnforcementError,
     SchemaBackedCollection,
     TableSchema,
+    encode_jsonb,
     spans_partitions,
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -46,9 +48,11 @@ __all__ = [
     "VECTOR_TYPE",
     "WriteBuffer",
     "deserialize_from_json",
+    "encode_jsonb",
     "flush_pending",
     "init_connection",
     "register_jsonb_text_codec",
+    "repoint_user_rows",
     "serialize_to_json",
     "spans_partitions",
 ]

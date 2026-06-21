@@ -56,19 +56,34 @@ class TestDataSourceStatusEnum:
 
 
 class TestDataSourceEntity:
-    """composite-PK shape: scalar ``id`` exposed publicly; partition column
-    surfaced via ``primary_key_field``."""
+    """flat-PK shape post-knowledge-task-08: ``primary_key_field == 'id'``.
 
-    def test_id_and_partition(self) -> None:
+    the v016 migration rebuilt the table PK on ``id`` alone (dropping the
+    v001 composite ``(customer_id, id)`` partition PK) so a platform-shared
+    datasource can carry ``customer_id = NULL`` (KNW-76); ``customer_id`` is
+    now a plain nullable column, not the partition / addressing key.
+    """
+
+    def test_id_is_flat_primary_key(self) -> None:
         row_id = uuid4()
         entity = DataSourceEntity(
             data={"customer_id": uuid4(), "id": row_id, "name": "ds"},
             is_new=True,
         )
-        # scalar id property returns the row UUID, not the tuple
+        # scalar id property returns the row UUID
         assert entity.id == row_id
-        # primary_key_field signals the partition column to the framework
-        assert entity.primary_key_field == "customer_id"
+        # the addressing key is the flat ``id`` now, not the partition column
+        assert entity.primary_key_field == "id"
+
+    def test_platform_shared_datasource_id_with_null_customer(self) -> None:
+        """a platform-shared datasource (customer_id NULL) addresses by id."""
+        row_id = uuid4()
+        entity = DataSourceEntity(
+            data={"customer_id": None, "id": row_id, "name": "shared"},
+            is_new=True,
+        )
+        assert entity.id == row_id
+        assert entity.customer_id is None
 
 
 class TestDataSourceTableEntity:

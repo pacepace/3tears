@@ -28,6 +28,8 @@ from langchain_core.messages import (
 
 from threetears.observe import get_logger
 
+__all__ = ["DEFAULT_SUMMARIZATION_PROMPT", "summarize_older_messages"]
+
 _logger = get_logger(__name__)
 
 DEFAULT_SUMMARIZATION_PROMPT = (

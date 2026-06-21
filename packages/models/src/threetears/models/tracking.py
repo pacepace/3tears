@@ -153,6 +153,15 @@ class UsageRecord:
     invocation_ref: str | None = None
     category: str | None = None
     model_id: UUID | None = None
+    # prompt-cache token detail (anthropic / openai). cache_read_tokens are
+    # input tokens served FROM cache (billed at the provider's discounted cache
+    # rate); cache_creation_tokens are input tokens written TO cache this call
+    # (billed at a write premium on anthropic). both are SUBSETS of
+    # input_tokens, recorded separately so consumers can attribute cache savings
+    # and compute the discounted cost. default 0 keeps non-caching callers
+    # unchanged. flow to OTel + sinks; never to Prometheus labels.
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 @runtime_checkable
@@ -610,6 +619,13 @@ class UsageTracker:
             span.set_attribute("llm.output_tokens", usage.output_tokens)
             span.set_attribute("llm.total_tokens", usage.total_tokens)
             span.set_attribute("llm.latency_ms", usage.latency_ms)
+            # prompt-cache detail (subsets of input_tokens). emitted only when
+            # non-zero so a clean span carries no cache noise; the dashboards
+            # read these to chart cache-read share + write premium.
+            if usage.cache_read_tokens:
+                span.set_attribute("llm.cache_read_tokens", usage.cache_read_tokens)
+            if usage.cache_creation_tokens:
+                span.set_attribute("llm.cache_creation_tokens", usage.cache_creation_tokens)
 
             if usage.tier is not None:
                 span.set_attribute("llm.tier", str(usage.tier))

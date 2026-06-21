@@ -128,7 +128,7 @@ def conversation_memory_refs_table(metadata: MetaData) -> Table:
 # tables. The value matches every Vector column in this file -- bump
 # here to bump everywhere if an embedding provider with a different
 # native dim is ever adopted. The 1024 value matches Voyage AI's
-# voyage-3-large default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
+# voyage-4 default + the pre-v0.7.5 hardcoded ``Vector(1024)`` in
 # the metallm declarations.
 _MEMORY_VECTOR_DIM = 1024
 

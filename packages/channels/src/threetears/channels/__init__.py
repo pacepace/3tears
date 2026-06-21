@@ -34,6 +34,9 @@ from threetears.channels.frames import (
     OpResult,
     ReplaySource,
 )
+from threetears.channels.delivery import (
+    ChannelDeliveryMessage,
+)
 from threetears.channels.protocol import (
     Attachment,
     ChannelMessage,
@@ -66,6 +69,7 @@ __all__ = [
     "PRESENCE_L1_METADATA",
     "PRESENCE_L1_TABLE_NAMES",
     "Attachment",
+    "ChannelDeliveryMessage",
     "ChannelMessage",
     "ChannelResponse",
     "ChannelRouter",

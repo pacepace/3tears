@@ -10,6 +10,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
 
+from threetears.models import (
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_FAST_MODEL,
+    DEFAULT_LARGE_MODEL,
+)
 from threetears.models.capabilities import get_capabilities
 from threetears.models.enums import ModelTier, ModelType
 from threetears.models.providers.anthropic import (
@@ -31,7 +36,7 @@ class TestSubscriptionRouting:
         assert not is_subscription_token("sk-test")
 
     def test_api_key_builds_chatanthropic(self) -> None:
-        model = create_anthropic_chat("claude-sonnet-4-20250514", "sk-ant-api03-xyz")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-ant-api03-xyz")
         assert isinstance(model, ChatAnthropic)
 
     def test_oauth_token_routes_to_the_subscription_backend(self) -> None:
@@ -39,7 +44,7 @@ class TestSubscriptionRouting:
         pytest.importorskip("langchain_claude_code")
         pytest.importorskip("claude_agent_sdk")
         token = "sk-ant-oat01-faketokenfortest"
-        model = create_anthropic_chat("claude-sonnet-4-20250514", token)
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, token)
         # The subscription backend is NOT a ChatAnthropic — it's the CLI/Agent-SDK-backed model.
         assert not isinstance(model, ChatAnthropic)
         assert isinstance(model, BaseChatModel)
@@ -55,19 +60,19 @@ class TestCreateAnthropicChat:
 
     def test_returns_base_chat_model(self) -> None:
         """factory returns a ``BaseChatModel`` subclass instance."""
-        model = create_anthropic_chat("claude-sonnet-4-20250514", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
         assert isinstance(model, BaseChatModel)
         assert isinstance(model, ChatAnthropic)
 
     def test_model_name_propagated(self) -> None:
         """factory forwards model_name to ``ChatAnthropic``."""
-        model = create_anthropic_chat("claude-3-5-haiku-20241022", "sk-test")
-        assert model.model == "claude-3-5-haiku-20241022"
+        model = create_anthropic_chat(DEFAULT_FAST_MODEL, "sk-test")
+        assert model.model == DEFAULT_FAST_MODEL
 
     def test_strips_v1_suffix_from_base_url(self) -> None:
         """trailing ``/v1`` is stripped from base_url before instantiation."""
         model = create_anthropic_chat(
-            "claude-sonnet-4-20250514",
+            DEFAULT_CHAT_MODEL,
             "sk-test",
             base_url="https://api.anthropic.com/v1",
         )
@@ -76,7 +81,7 @@ class TestCreateAnthropicChat:
     def test_strips_v1_slash_suffix(self) -> None:
         """trailing ``/v1/`` is also stripped."""
         model = create_anthropic_chat(
-            "claude-sonnet-4-20250514",
+            DEFAULT_CHAT_MODEL,
             "sk-test",
             base_url="https://api.anthropic.com/v1/",
         )
@@ -84,7 +89,7 @@ class TestCreateAnthropicChat:
 
     def test_no_base_url_means_default(self) -> None:
         """omitting base_url leaves ``ChatAnthropic`` to apply its default."""
-        model = create_anthropic_chat("claude-sonnet-4-20250514", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
         # ChatAnthropic defaults the URL itself; just verify it is not None.
         assert model.anthropic_api_url is not None
 
@@ -113,8 +118,8 @@ class TestAnthropicCapabilityRegistration:
     """tests that anthropic-canonical models register at import time."""
 
     def test_sonnet_registered(self) -> None:
-        """``claude-sonnet-4-20250514`` resolves to anthropic chat capabilities."""
-        caps = get_capabilities("claude-sonnet-4-20250514")
+        """``claude-sonnet-4-6`` resolves to anthropic chat capabilities."""
+        caps = get_capabilities(DEFAULT_CHAT_MODEL)
         assert caps is not None
         assert caps.provider_name == ANTHROPIC_PROVIDER_NAME
         assert caps.model_type == ModelType.CHAT
@@ -122,14 +127,14 @@ class TestAnthropicCapabilityRegistration:
         assert caps.supports_tools is True
 
     def test_haiku_registered(self) -> None:
-        """``claude-3-5-haiku-20241022`` resolves to anthropic small-tier chat."""
-        caps = get_capabilities("claude-3-5-haiku-20241022")
+        """``claude-haiku-4-5-20251001`` resolves to anthropic small-tier chat."""
+        caps = get_capabilities(DEFAULT_FAST_MODEL)
         assert caps is not None
         assert caps.provider_name == ANTHROPIC_PROVIDER_NAME
         assert caps.model_tier == ModelTier.SMALL
 
     def test_sonnet_cache_fields(self) -> None:
-        """``claude-sonnet-4-20250514`` carries anthropic-shape cache fields.
+        """``claude-sonnet-4-6`` carries anthropic-shape cache fields.
 
         Every Anthropic chat-model registration declares the anthropic
         cache shape (cache_control supported, 1024-token minimum,
@@ -137,7 +142,7 @@ class TestAnthropicCapabilityRegistration:
         ``get_capabilities`` get the right caching record without
         having to maintain a parallel per-provider table.
         """
-        caps = get_capabilities("claude-sonnet-4-20250514")
+        caps = get_capabilities(DEFAULT_CHAT_MODEL)
         assert caps is not None
         assert caps.supports_anthropic_cache_control is True
         assert caps.supports_openai_auto_cache is False
@@ -145,8 +150,8 @@ class TestAnthropicCapabilityRegistration:
         assert caps.cache_ttl_seconds == 300
 
     def test_opus_cache_fields(self) -> None:
-        """``claude-opus-4-5-20251101`` carries anthropic-shape cache fields."""
-        caps = get_capabilities("claude-opus-4-5-20251101")
+        """``claude-opus-4-8`` carries anthropic-shape cache fields."""
+        caps = get_capabilities(DEFAULT_LARGE_MODEL)
         assert caps is not None
         assert caps.supports_anthropic_cache_control is True
         assert caps.supports_openai_auto_cache is False
@@ -154,8 +159,8 @@ class TestAnthropicCapabilityRegistration:
         assert caps.cache_ttl_seconds == 300
 
     def test_haiku_cache_fields(self) -> None:
-        """``claude-3-5-haiku-20241022`` carries anthropic-shape cache fields."""
-        caps = get_capabilities("claude-3-5-haiku-20241022")
+        """``claude-haiku-4-5-20251001`` carries anthropic-shape cache fields."""
+        caps = get_capabilities(DEFAULT_FAST_MODEL)
         assert caps is not None
         assert caps.supports_anthropic_cache_control is True
         assert caps.supports_openai_auto_cache is False
@@ -201,7 +206,7 @@ class TestAnthropicWrapperStreaming:
                     await run_manager.on_llm_new_token(token=text, chunk=chunk)
                 yield chunk
 
-        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
 
         original_astream = ChatAnthropic._astream
         try:
@@ -281,7 +286,7 @@ class TestAnthropicWrapperStreaming:
                 self.token_seen += 1
 
         bound_cb = _RecordingCallback()
-        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
         bound_model = model.with_config(callbacks=[bound_cb])
 
         original_astream = ChatAnthropic._astream
@@ -359,7 +364,7 @@ class TestAnthropicWrapperToolNameValidation:
                 ),
             )
 
-        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
 
         original_astream = ChatAnthropic._astream
         try:
@@ -421,7 +426,7 @@ class TestAnthropicWrapperToolNameValidation:
                 ],
             )
 
-        model = create_anthropic_chat("claude-sonnet-4-5-20250929", "sk-test")
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
 
         original_agenerate = ChatAnthropic._agenerate
         try:

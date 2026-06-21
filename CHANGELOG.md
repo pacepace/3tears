@@ -4,7 +4,7 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
-## Unreleased
+## v0.13.0 -- 2026-06-21
 
 ### Changed — `3tears` (core) — BREAKING
 
@@ -104,6 +104,185 @@ packages (bumped in lock-step).
 - **`Subjects.forward(key)`** — derives `{ns}.forward.{sha256hex(key)}`; the key is hashed
   (not `_sanitize`-mapped) so arbitrary app keys carrying `.`/spaces/`*`/`>` map to a
   subject-safe, collision-resistant, deterministic token, mirroring `Subjects.room`.
+## v0.12.3 -- 2026-06-20
+
+Broker isolation, NATS durability, prompt-cache cost accounting, and Redshift
+hardening. Additive across `3tears`, `3tears-models`, `3tears-nats`, and
+`3tears-langgraph`; one fixed-path change to the Redshift connection lifecycle.
+
+### Added -- `3tears-models` -- `threetears.models`
+
+- `UsageRecord` carries `cache_read_tokens` and `cache_creation_tokens`, surfaced
+  as `llm.cache_read_tokens` / `llm.cache_creation_tokens` OTel span attributes,
+  so prompt-cache hits and writes are tracked per call.
+- `registry_loader` populates `cost_per_cache_read_token` and
+  `cost_per_cache_write_token` from the capabilities registry, so cache-aware
+  cost can be computed downstream instead of billing cached input at the full
+  input rate.
+
+### Added -- `3tears-nats` -- `threetears.nats`
+
+- Bounded redelivery + dead-letter in the durable consumer factory
+  (`resilience-task-01` RES-01-01/03): a message that fails past its redelivery
+  budget is routed to a dead-letter subject instead of redelivering forever.
+- Agent-deregister subject on `Subjects`, so a pod can announce its teardown.
+
+### Added -- `3tears` -- `threetears.core`
+
+- Per-call `customer_scope` channel on `NatsProxyL3Backend` reads -- the proxy
+  carries the caller's customer scope per read rather than per connection, the
+  substrate for conversation-scoped RBAC pool reads (broker isolation).
+- Centralize JSONB through native binding under the codec (`collections-task-04`,
+  Option B): a single binding path for JSONB columns, plus an enforcement drift
+  guard (`test_jsonb_native_binding`) so a new column cannot silently bypass it.
+
+### Added -- `3tears-langgraph` -- `threetears.langgraph`
+
+- Turn-level keepalive on `StreamingResponse` (`long-response-task-01` LRT-02):
+  a long single response emits periodic keepalives so the stream does not idle
+  out mid-generation.
+
+### Added / Fixed -- `3tears-datasources` -- `threetears.datasources`
+
+- Per-column value-coverage probe: classifies a column as unloaded when every
+  value is zero across the table -- the `UNLOADED_COLUMN` source the hub mirrors
+  into datasource read results -- with driver-coverage tests.
+- Redshift: re-apply `search_path` on every connection acquisition, so a pooled
+  connection no longer serves a stale path left by a prior caller.
+
+### Changed -- `3tears` -- `threetears.enforcement`
+
+- The fake-parity walker accepts an inline `# parity-exempt: <rationale>` marker
+  (matching the cache/underscore exemption style), removing the line-shift
+  fragility of the prior line-numbered exemption file.
+
+## v0.12.2 -- 2026-06-17
+
+Additive: add the documented-schema digest entity + collection to
+`3tears-datasources` — the materialized, by-pk schema/concept summary the hub
+publishes per datasource and agent pods read at conversation start (the
+foundation for schema priming). No behavior change to existing datasource
+collections.
+
+### Added — `3tears-datasources` — `threetears.datasources`
+
+- `DataSourceSchemaDigest` entity + `DataSourceSchemaDigestCollection`, a
+  three-tier collection keyed by `datasource_id` for a by-pk hot-L1 read with
+  L2/L3 fallback and cross-pod invalidation. The table has no `id` column, so
+  `primary_key_column = "datasource_id"` (the `BaseCollection` default would
+  emit `WHERE id = ?` / `ON CONFLICT (id)` and break every by-pk read +
+  invalidation). One row per datasource; the `tables` projection is JSONB.
+
+### Fixed — `3tears-datasources` — `threetears.datasources`
+
+- JSONB write double-encode: a pre-`json.dumps`'d string bound as `::jsonb` was
+  re-encoded by the text-format jsonb codec into a scalar. Digest writes now
+  text-cast (`::text::jsonb`) so the value lands as a real JSONB array. Covered
+  by a real-L1 round-trip test (no-codec test pools gave a false green).
+
+## v0.12.1 -- 2026-06-16
+
+Patch: stop the OpenRouter wrapper from logging streaming tool-call
+continuations as junk tool names. Every DeepSeek tool turn produced a
+per-chunk WARNING storm (`dropped invalid_tool_calls entry with junk name:
+None`) that buried real signal; the dropped entries were harmless to tool
+arguments (the chunk merge re-derives from `tool_call_chunks`), but the
+noise was severe. No behavior change to tool dispatch.
+
+### Fixed — `3tears-models` — `threetears.models`
+
+- `filter_invalid_tool_calls` now treats a nameless `invalid_tool_calls`
+  entry (`name` None / absent / empty) as a normal streaming-continuation
+  fragment — kept, never logged. Only a concrete, undispatchable name claim
+  is rejected: a non-empty string failing the canonical tool-name regex
+  (the genuine junk case, e.g. a quote-garbage name leaked from XML-shaped
+  tool-call text) or a non-string / non-dict value. Genuine-junk rejection
+  is unchanged. Verified by a local A/B on a real DeepSeek-over-OpenRouter
+  tool turn: 12 `junk name: None` warnings before, 0 after.
+
+## v0.12.0 -- 2026-06-15
+
+Durable channel-answer delivery and native Slack rendering. A finished
+agent answer is published to a durable JetStream subject and delivered
+out-of-band, so an answer that takes minutes — or completes while the
+channel adapter is restarting — is delivered, never lost. Agent markdown
+now renders into native Slack Block Kit instead of arriving as raw text.
+
+### Added — `3tears-channels` — `threetears.channels`
+
+- `markdown_to_slack_blocks` — converts GitHub-flavored markdown into native
+  Slack Block Kit: mrkdwn emphasis/links, `header` blocks, native `table`
+  blocks (numeric columns right-aligned), code fences, and dividers, bounded
+  to Slack's per-message limits. `SlackAdapter` now always renders answers as
+  blocks with a plain-text fallback, and `post_message` delivers a finished
+  answer out-of-band on the bot token.
+- `ChannelDeliveryMessage` — the durable channel-delivery envelope, with a
+  NATS-KV-valid `dedup_key` making at-least-once delivery post at-most-once.
+
+### Added — `3tears-nats` — `threetears.nats`
+
+- JetStream durable-delivery helpers on `NatsClient`: `ensure_jetstream_stream`
+  (create-or-reconcile), `jetstream_publish` (PubAck-awaited), and
+  `jetstream_subscribe_durable` (manual-ack consumer).
+- `Subjects.channels_deliver` / `channels_deliver_wildcard` — the
+  `{ns}.channels.deliver.{channel_type}` delivery subject family.
+
+## v0.11.0 -- 2026-06-13
+
+The governed-knowledge layer: agents answer data questions with curated,
+scoped business knowledge instead of guessing. Concepts (a business term →
+its data binding) and playbook entries (procedures) merge across the
+platform / customer / user scope ladder; datasources are shareable across
+customers with origin lineage; the model registry becomes a single source
+of truth.
+
+### Added — `3tears` (core) — `threetears.knowledge`
+
+- Governed-knowledge merge: `merge_concept_views` / `merge_entry_views`
+  resolve the three-scope shadow ladder (user > customer > platform, D4),
+  flag ambiguity when same-name definitions compete with no declared shadow
+  (D5), and honour the `always_inject` invariant (KNW-25). One shared
+  `resolve_shadow_chains` walk, so the hub eval fingerprint and a live SDK
+  turn agree byte-for-byte on the effective view.
+- `ConceptSnapshot.datasource_table_ref` + `build_table_ref` — a concept's
+  bound table renders as its agent-usable `schema.table` name (one source
+  of truth for the format), never the raw `datasource_table_id` UUID the
+  agent has no tool to resolve.
+- `EntryEnforcement` constraint on playbook-entry snapshots; draft-command
+  wire models + tool `BootstrapContext` for the correction-harvest surface.
+- `repoint_user_rows` + `MemoryRepointResult` — the user-merge repoint
+  primitives (`threetears.agent.memory`, `threetears.conversations`).
+
+### Added — `3tears-agent-acl`
+
+- Shared caller-visibility SQL: `three_scope_visibility_clause` +
+  `customer_scope_visibility_clause` — one copy of the security SQL that
+  admits a row iff it passes the platform/customer/user read rule. Every
+  RBAC-scoped list composes it; no per-row Python visibility filter.
+
+### Added — `3tears-datasources`
+
+- Platform-sharing: a flat datasource PK, visibility, and origin lineage
+  (`origin_datasource_id`) so a customer datasource inherits a
+  platform-shared datasource's schema docs + governed knowledge.
+
+### Added — `3tears-models`
+
+- Single source of truth for model ids + capabilities, with a no-literal
+  guard that keeps stale model strings out of the codebase.
+
+### Added — `3tears-nats`
+
+- `hub_channel_installs` subject so the Slack adapter fetches its active
+  installs over NATS (sandboxed; no DB credentials cross the wire).
+
+### Fixed
+
+- `threetears.langgraph` — `NOSTREAM_TAG` + `replace_content` keep internal
+  model calls out of the user-facing stream; the bound-model cache degrades
+  gracefully on an unhashable model.
+- `threetears.knowledge` — `EntryEnforcement.canonical_sql` is truly
+  optional; hardened the core by-pk read + langgraph injection.
 
 ## v0.10.5 -- 2026-06-03
 

@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 from threetears.observe import get_logger, traced
 
 __all__ = [
+    "NOSTREAM_TAG",
     "StreamStartEvent",
     "StreamTokenEvent",
     "StreamEndEvent",
@@ -55,6 +56,18 @@ __all__ = [
 ]
 
 log = get_logger(__name__)
+
+#: tag a node's INTERNAL model call carries (via
+#: ``model.ainvoke(..., {"tags": [NOSTREAM_TAG]})``) when its tokens must
+#: NOT reach the user's stream. :meth:`StreamingResponse.run_graph`
+#: consumes ``astream_events`` indiscriminately -- every
+#: ``on_chat_model_stream`` event accumulates into the user-facing answer
+#: REGARDLESS of which node emitted it. an auxiliary model call (an
+#: adversarial reviewer refuting a draft, a summarizer compacting history)
+#: is not the agent's answer; without this opt-out its deliberation tokens
+#: leak verbatim into what the user sees. the run loop drops any
+#: ``on_chat_model_stream`` whose event ``tags`` include this marker.
+NOSTREAM_TAG = "threetears:nostream"
 
 
 # ---------------------------------------------------------------------------
@@ -219,14 +232,21 @@ class ToolCallEndEvent(BaseModel):
 
 
 class ToolCallProgressEvent(BaseModel):
-    """keepalive event published periodically during a long tool call.
+    """keepalive event so consumers running gap timers do not trip.
 
-    emitted between a :class:`ToolCallStartEvent` and the matching
-    :class:`ToolCallEndEvent` so consumers running gap timers do not
-    trip a stream-timeout error during a slow tool. carries only a
-    monotonic sequence counter and elapsed time so no tool-internal
-    payload leaks; the hook owns sequence semantics
-    (per design DQ-F4 -- emit_tool_call_progress is a passthrough).
+    serves two roles, both pure liveness:
+
+    - per-tool progress: emitted between a :class:`ToolCallStartEvent` and
+      the matching :class:`ToolCallEndEvent` while a slow tool runs, carrying
+      that tool's ``tool_name`` (``emit_tool_call_progress``);
+    - turn-level keepalive (LRT-02): emitted on a fixed interval for the whole
+      turn with an EMPTY ``tool_name``, covering the agent-node
+      time-to-first-token wait and between-node gaps that the per-tool
+      heartbeat cannot (``emit_keepalive``).
+
+    carries only a monotonic sequence counter and elapsed time so no
+    tool-internal payload leaks. an empty ``tool_name`` denotes the
+    turn-level keepalive; a non-empty one denotes per-tool progress.
 
     :param type: discriminator literal
     :ptype type: Literal["tool_call_progress"]
@@ -401,6 +421,11 @@ class StreamingResponse:
         self._started: bool = False
         self._closed: bool = False
         self._terminal_kind: str | None = None  # "end" or "error" once closed
+        # turn-level keepalive sequence (LRT-02), distinct from the per-tool
+        # heartbeat sequence the ToolCallProgressHook owns. emit_keepalive
+        # advances this so a long time-to-first-token / between-node gap never
+        # trips the consumer's stream-gap timer.
+        self._keepalive_sequence: int = 0
 
     @property
     def closed(self) -> bool:
@@ -425,6 +450,30 @@ class StreamingResponse:
         :rtype: str
         """
         return self._accumulated_content
+
+    def replace_content(self, content: str) -> None:
+        """replace the accumulated buffer so the terminal carries ``content``.
+
+        a post-hoc node may supersede the answer that already streamed:
+        an adversarial reviewer revises a challenged draft, or a blocked
+        query routes back to the agent to re-run. the superseding text is
+        the authoritative answer, but the draft's tokens already landed in
+        :attr:`accumulated_content`. resetting the buffer makes the terminal
+        :class:`StreamEndEvent.content` (and any consumer reading it, e.g.
+        the non-incremental chat surface) carry the corrected answer rather
+        than the stale draft. already-published per-token envelopes cannot
+        be unsent -- incremental UIs saw the draft live -- but the final
+        content is made correct. pass ``""`` to clear ahead of a re-run.
+        a no-op once the stream has closed (the terminal already fired).
+
+        :param content: text to set as the accumulated buffer
+        :ptype content: str
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        self._accumulated_content = content
 
     @traced
     async def start(self) -> None:
@@ -556,6 +605,36 @@ class StreamingResponse:
         )
         await self._publish(event)
 
+    async def emit_keepalive(self, *, elapsed_ms: int) -> None:
+        """publish a TURN-LEVEL keepalive (LRT-02).
+
+        the per-tool :meth:`emit_tool_call_progress` only keeps the stream
+        alive WHILE a tool runs; it cannot cover the time-to-first-token wait
+        in the agent node (slow under gateway contention) or the gaps between
+        nodes. this method publishes a :class:`ToolCallProgressEvent` with an
+        empty ``tool_name`` -- a pure liveness signal -- so a consumer's
+        stream-gap timer never trips while the turn is genuinely working. the
+        caller drives it on a fixed interval for the whole turn; a dead handler
+        stops emitting, so the gap timer still catches a truly-dead stream (no
+        masking). the keepalive sequence is owned here, independent of any
+        per-tool heartbeat sequence.
+
+        :param elapsed_ms: wall-clock milliseconds since the turn began
+        :ptype elapsed_ms: int
+        :return: nothing
+        :rtype: None
+        """
+        if self._closed:
+            return
+        self._keepalive_sequence += 1
+        event = ToolCallProgressEvent(
+            correlation_id=self._correlation_id,
+            tool_name="",
+            elapsed_ms=elapsed_ms,
+            sequence=self._keepalive_sequence,
+        )
+        await self._publish(event)
+
     @traced
     async def end(self) -> None:
         """publish the success terminal :class:`StreamEndEvent` once.
@@ -672,6 +751,13 @@ class StreamingResponse:
             ):
                 event_kind = event.get("event")
                 if event_kind == "on_chat_model_stream":
+                    # drop tokens from a node's internal model call (an
+                    # adversarial reviewer / summarizer) so its deliberation
+                    # never leaks into the user-facing answer; the call opts
+                    # out by tagging itself NOSTREAM_TAG. untagged model
+                    # calls (the agent's answer) stream as before.
+                    if NOSTREAM_TAG in (event.get("tags") or []):
+                        continue
                     token = _extract_token(event)
                     if token:
                         await self.emit_token(token)

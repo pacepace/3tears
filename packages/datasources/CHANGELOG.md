@@ -7,6 +7,61 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.0]
+
+### Changed
+
+- Collection store-tier override methods renamed to the storage-agnostic
+  L3-store-seam names (`fetch_from_postgres` -> `fetch_from_store`,
+  `save_to_postgres` -> `save_to_store`, `delete_from_postgres` ->
+  `delete_from_store`), tracking the core `collections-task-06` rename. The
+  schema-digest and column collections implement the new names; behavior is
+  unchanged.
+
+## [0.12.3]
+
+### Added
+
+- Per-column value-coverage probe: classifies a column as unloaded when every
+  value is zero across the table (the `UNLOADED_COLUMN` source the hub mirrors
+  into datasource read results), with driver-coverage tests.
+
+### Fixed
+
+- Redshift: re-apply `search_path` on every connection acquisition, so a pooled
+  connection never serves a stale path left by a prior caller.
+
+### Changed
+
+- Centralize JSONB handling through native binding under the codec
+  (`collections-task-04`, Option B), simplifying the collection write path; an
+  enforcement drift guard prevents a new column bypassing it.
+
+## [0.12.2]
+
+### Added
+
+- `DataSourceSchemaDigest` entity + `DataSourceSchemaDigestCollection` — a
+  three-tier collection for the materialized documented-schema digest, one row
+  per datasource, addressed by primary key `datasource_id` for a by-pk hot-L1
+  read with L2/L3 fallback and cross-pod invalidation. The `tables` projection
+  is stored as JSONB.
+
+### Fixed
+
+- JSONB write double-encode in the digest tables: a pre-`json.dumps`'d string
+  bound as `::jsonb` was re-encoded to a scalar by the text-format jsonb codec;
+  writes now text-cast (`::text::jsonb`). Covered by a real-L1 round-trip test.
+
+## [0.11.0]
+
+### Added
+
+- Platform-sharing primitives: a flat datasource primary key, a
+  `visibility` field, and `origin_datasource_id` lineage so a customer
+  datasource can inherit a platform-shared datasource's schema docs and
+  governed knowledge (concepts / entries) rather than re-documenting them.
+
 ## [0.10.2]
 
 ### Added

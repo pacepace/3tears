@@ -76,9 +76,14 @@ def create_voyageai_embedding(
 
 # -- capability registration -------------------------------------------------
 
+# voyage-4 family is the current embedding lineup (verified live against the
+# VoyageAI API 2026-06-13: both ids embed at 1024 dims). the voyage-3 family
+# was retired -- the platform default moved to voyage-4. cost_per_input_token
+# is the per-token price; confirm against VoyageAI's published pricing on the
+# next rev (embedding cost is tracking-only, not correctness-bearing).
 _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
-    "voyage-3": ModelCapabilities(
-        model_name="voyage-3",
+    "voyage-4": ModelCapabilities(
+        model_name="voyage-4",
         provider_name=VOYAGEAI_PROVIDER_NAME,
         model_type=ModelType.EMBEDDING,
         model_tier=ModelTier.LARGE,
@@ -86,18 +91,18 @@ _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=1024,
         max_embedding_tokens=32_000,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000006"),
+        cost_per_input_token=Decimal("0.00000018"),
     ),
-    "voyage-3-lite": ModelCapabilities(
-        model_name="voyage-3-lite",
+    "voyage-4-large": ModelCapabilities(
+        model_name="voyage-4-large",
         provider_name=VOYAGEAI_PROVIDER_NAME,
         model_type=ModelType.EMBEDDING,
-        model_tier=ModelTier.SMALL,
+        model_tier=ModelTier.LARGE,
         model_status=ModelStatus.ACTIVE,
-        embedding_dimensions=512,
+        embedding_dimensions=1024,
         max_embedding_tokens=32_000,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000002"),
+        cost_per_input_token=Decimal("0.00000020"),
     ),
 }
 

@@ -64,7 +64,7 @@ Replace hand-rolled provider pool with `ModelCache` and provider adapters.
 from aibots.gateway.provider_pool import ProviderPool
 
 pool = ProviderPool()
-model = pool.get_or_create("anthropic", "claude-sonnet-4-20250514", api_key)
+model = pool.get_or_create("anthropic", "claude-sonnet-4-6", api_key)
 response = await model.ainvoke(messages)
 ```
 
@@ -74,10 +74,10 @@ from threetears.models import ModelCache
 from threetears.models.providers.anthropic import AnthropicChatProvider
 
 cache = ModelCache()
-provider = cache.get("anthropic", "claude-sonnet-4-20250514")
+provider = cache.get("anthropic", "claude-sonnet-4-6")
 if provider is None:
-    provider = AnthropicChatProvider("claude-sonnet-4-20250514", api_key)
-    cache.put("anthropic", "claude-sonnet-4-20250514", provider)
+    provider = AnthropicChatProvider("claude-sonnet-4-6", api_key)
+    cache.put("anthropic", "claude-sonnet-4-6", provider)
 
 messages = [ChatMessage(role=MessageRole.USER, content="Hello")]
 result = await provider.complete(messages)

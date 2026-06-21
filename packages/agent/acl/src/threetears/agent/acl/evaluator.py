@@ -381,7 +381,11 @@ class _AllActionsSet(frozenset[str]):
         """
         return isinstance(item, str)
 
-    def __and__(self, other: Iterable[str]) -> frozenset[str]:
+    # the ALL sentinel intentionally narrows frozenset.__and__ (other:
+    # Iterable[str] vs the builtin's AbstractSet[object]) so ALL ∩ X == X
+    # keeps the str element type that AbstractSet[object] would erase; the
+    # LSP override warning is expected for this deliberate sentinel.
+    def __and__(self, other: Iterable[str]) -> frozenset[str]:  # type: ignore[override]
         """intersection with any iterable returns that iterable as a frozenset.
 
         because sentinel "contains" every action, intersection

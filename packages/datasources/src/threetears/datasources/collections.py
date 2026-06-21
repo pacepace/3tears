@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     SchemaBackedCollection,
     TableSchema,
+    encode_jsonb,
 )
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
 from threetears.observe import get_logger
@@ -51,6 +52,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceStatus,
     DataSourceTableEntity,
     TableTemplateEntity,
@@ -63,6 +65,7 @@ __all__ = [
     "DataSourceCollection",
     "DataSourceColumnCollection",
     "DataSourceRelationCollection",
+    "DataSourceSchemaDigestCollection",
     "DataSourceTableCollection",
     "TableTemplateCollection",
 ]
@@ -93,6 +96,17 @@ _TABLE_FIELD_TYPES: dict[str, Any] = {
     "column_hash": str,
     "date_introspected": datetime,
     "date_described": datetime,
+    "date_created": datetime,
+    "date_updated": datetime,
+}
+
+_SCHEMA_DIGEST_FIELD_TYPES: dict[str, Any] = {
+    "datasource_id": UUID,
+    "customer_id": UUID,
+    # structured documented projection:
+    # [{schema, table, description, columns: [{name, type, description}]}]
+    "tables": list,
+    "source_fingerprint": str,
     "date_created": datetime,
     "date_updated": datetime,
 }
@@ -158,22 +172,21 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
     rationales).
     """
 
-    primary_key_column: tuple[str, ...] = ("customer_id", "id")
-    # rationale: find_by_id resolves a datasource by its public id from
-    # the admin URL and the agent-side tool flow; the v054 UNIQUE (id)
-    # constraint preserves uniqueness without forcing every caller to
-    # know the customer_id partition up front. iter_active_ids is the
-    # canonical cross-partition sweep primitive (consumed by the
-    # Hub-owned datasource-task-04 introspect scheduler); cross-customer
-    # is the intended behaviour, not a leak.
-    _partition_exempt_methods = frozenset({"find_by_id", "iter_active_ids"})
+    primary_key_column: str = "id"
     schema = TableSchema(
         name="datasources",
-        primary_key=("customer_id", "id"),
+        primary_key="id",
         columns=[
             Column("id", UUID_TYPE),
             Column("name", STRING_TYPE),
-            Column("customer_id", UUID_TYPE, partition=True),
+            # customer_id is nullable + a plain column post-knowledge-
+            # task-08 (KNW-76): a platform-shared datasource (visibility
+            # != 'private') carries customer_id NULL. v016 rebuilt the
+            # table PK on ``id`` alone (dropping the v001 composite
+            # partition PK) so the addressing key is the global ``id``,
+            # backed by datasources_id_unique; a NULL customer_id never
+            # blocks resolution.
+            Column("customer_id", UUID_TYPE, nullable=True),
             Column("datasource_type", STRING_TYPE, immutable=True),
             # connection_config is nullable post-v056: agent_internal
             # rows carry no external connection config because the
@@ -192,6 +205,14 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
             # routing target is part of the row's identity once
             # materialized.
             Column("schema_name", STRING_TYPE, immutable=True, nullable=True),
+            # knowledge-task-08 (KNW-76/77): cross-customer sharing. a
+            # platform-shared datasource carries visibility 'public' /
+            # 'restricted' + customer_id NULL; a customer datasource links
+            # to its canonical platform-shared form via
+            # origin_datasource_id (the table-LEVEL origin link the merge
+            # retrieval gathers across: datasource_id IN (D, P)).
+            Column("visibility", STRING_TYPE),
+            Column("origin_datasource_id", UUID_TYPE, nullable=True),
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
@@ -291,6 +312,40 @@ class DataSourceCollection(SchemaBackedCollection[DataSourceEntity]):
                 self.write_to_cache_sync(data)
                 result = self.entity_class(data, is_new=False, collection=self)
         return result
+
+    async def resolve_origin_datasource_id(
+        self,
+        datasource_id: UUID,
+    ) -> UUID | None:
+        """return a datasource's ``origin_datasource_id`` (its shared link).
+
+        knowledge-task-08 (KNW-77): a customer datasource D links to its
+        canonical platform-shared datasource P via ``origin_datasource_id``;
+        turn-time retrieval gathers knowledge across ``datasource_id IN
+        (D, P)``. this is the single read both the hub effective-view
+        serving query and the SDK retrieval call use to resolve P from D
+        without threading module-level state — a fresh per-call lookup
+        over the (rbac-read / hub) pool.
+
+        :param datasource_id: the customer datasource D to resolve P for
+        :ptype datasource_id: UUID
+        :return: the linked platform-shared datasource id P, or ``None``
+            when D carries no origin link
+        :rtype: UUID | None
+        """
+        origin: UUID | None = None
+        if self.l3_pool is not None:
+            # cache-bypass: one-column projection by id; the by-pk
+            # Collection get would decode the full row + write the L1
+            # cache, but this is a hot per-turn lookup that only needs
+            # the single origin column.
+            row = await self.l3_pool.fetchrow(
+                "SELECT origin_datasource_id FROM datasources WHERE id = $1",
+                datasource_id,
+            )
+            if row is not None:
+                origin = row["origin_datasource_id"]
+        return origin
 
 
 class DataSourceTableCollection(BaseCollection[DataSourceTableEntity]):
@@ -546,10 +601,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
         )
         result: dict[str, Any] | None = None
         if row is not None:
-            data = dict(row)
-            if isinstance(data.get("tags"), str):
-                data["tags"] = json.loads(data["tags"])
-            result = data
+            # ``tags`` comes back as a python list via the jsonb codec / proxy
+            # NATS-JSON decode -- no per-collection json.loads (collections-task-04).
+            result = dict(row)
         return result
 
     async def save_to_store(
@@ -574,9 +628,6 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
         if self.l3_pool is None:
             return 0
 
-        tags = data.get("tags")
-        tags_json = json.dumps(tags) if tags is not None else "[]"
-
         result = await self.l3_pool.execute(
             """
             INSERT INTO datasource_columns (
@@ -587,7 +638,9 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 date_created, date_updated
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                $12::jsonb, $13, $14, $15, $16, $17
+                -- $12 is bound NATIVELY (a python list via encode_jsonb); the
+                -- jsonb codec applies the single json.dumps (collections-task-04).
+                $12, $13, $14, $15, $16, $17
             )
             ON CONFLICT (datasource_id, schema_name, table_name, column_name) DO UPDATE SET
                 data_type = EXCLUDED.data_type,
@@ -613,7 +666,7 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
             data.get("description"),
             data.get("valid_range"),
             data.get("caveats"),
-            tags_json,
+            encode_jsonb(data.get("tags")),
             # template-task-01: NOT NULL column with FALSE default;
             # explicit fallback ensures legacy callers that omit the
             # field get the additive-concat semantics.
@@ -681,11 +734,168 @@ class DataSourceColumnCollection(BaseCollection[DataSourceColumnEntity]):
                 column_name,
             )
             if row is not None:
-                data = dict(row)
-                if isinstance(data.get("tags"), str):
-                    data["tags"] = json.loads(data["tags"])
-                result = self.entity_class(data, is_new=False, collection=self)
+                # ``tags`` is a python list via the jsonb codec / proxy decode.
+                result = self.entity_class(dict(row), is_new=False, collection=self)
         return result
+
+
+class DataSourceSchemaDigestCollection(
+    BaseCollection[DataSourceSchemaDigestEntity],
+):
+    """three-tier collection for the materialized documented-schema digest.
+
+    one row per datasource, addressed BY PRIMARY KEY ``datasource_id`` so
+    the agent-side read (schema-priming-task-01b) is a by-pk hot-L1
+    lookup, with L2/L3 fallback for a cold pod and cross-pod invalidation
+    when the hub re-materializes. the hub is the only writer (the
+    materializer reuses the existing documented-schema computation); agent
+    pods bind this SAME class over the ``system.platform.rbac`` proxy pool
+    and read only.
+
+    the ``tables`` projection is stored as JSONB. digest rows are
+    hard-deleted (no soft-delete) — a datasource removal drops its digest.
+    """
+
+    # the L1/L2 key is the SEPARATE ``primary_key_column`` attribute, NOT
+    # the entity's ``primary_key_field``; it defaults to ``"id"`` on
+    # BaseCollection. this table has NO ``id`` column (PK is
+    # ``datasource_id``), so the default would emit ``WHERE id = ?`` /
+    # ``ON CONFLICT (id)`` against the agent SQLite mirror + the hub L1
+    # upsert and break every by-pk read + invalidation. it MUST name
+    # ``datasource_id`` to match the entity PK + the v029 DDL.
+    primary_key_column: str = "datasource_id"
+
+    @property
+    def table_name(self) -> str:
+        """return database table name.
+
+        :return: table name string
+        :rtype: str
+        """
+        return "datasource_schema_digests"
+
+    @property
+    def entity_class(self) -> type[DataSourceSchemaDigestEntity]:
+        """return entity class for this collection.
+
+        :return: DataSourceSchemaDigestEntity class
+        :rtype: type[DataSourceSchemaDigestEntity]
+        """
+        return DataSourceSchemaDigestEntity
+
+    def serialize(self, data: dict[str, Any]) -> bytes:
+        """serialize entity data to JSON bytes for L2 cache.
+
+        :param data: entity field data
+        :ptype data: dict[str, Any]
+        :return: JSON-encoded bytes
+        :rtype: bytes
+        """
+        return serialize_to_json(data)
+
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        """deserialize JSON bytes from L2 cache to entity data.
+
+        :param data: JSON-encoded bytes
+        :ptype data: bytes
+        :return: entity field data dictionary
+        :rtype: dict[str, Any]
+        """
+        return deserialize_from_json(data, _SCHEMA_DIGEST_FIELD_TYPES)
+
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch the digest row from L3 by primary key (``datasource_id``).
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: digest data dictionary or None if not found
+        :rtype: dict[str, Any] | None
+        """
+        if self.l3_pool is None:
+            return None
+        row = await self.l3_pool.fetchrow(
+            "SELECT * FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
+        result: dict[str, Any] | None = None
+        if row is not None:
+            # ``tables`` comes back already decoded to a python list: the hub
+            # l3 pool's jsonb codec decodes the direct read, and the agent's
+            # NatsProxyL3Backend read decodes the NATS-JSON array. NO manual
+            # json.loads -- collections-task-04 removed the per-collection
+            # decode that mirrored the (now deleted) write-side json.dumps.
+            result = dict(row)
+        return result
+
+    async def save_to_store(
+        self,
+        data: dict[str, Any],
+        original_timestamp: datetime | None = None,
+        *,
+        conn: Any = None,
+    ) -> int:
+        """upsert the digest row to L3 keyed on ``datasource_id``.
+
+        :param data: entity field data to persist
+        :ptype data: dict[str, Any]
+        :param original_timestamp: original date_updated for concurrency check
+        :ptype original_timestamp: datetime | None
+        :return: number of rows affected
+        :rtype: int
+        """
+        if self.l3_pool is None:
+            return 0
+
+        result = await self.l3_pool.execute(
+            """
+            INSERT INTO datasource_schema_digests (
+                datasource_id, customer_id, tables, source_fingerprint,
+                date_created, date_updated
+            ) VALUES (
+                -- $3 is bound NATIVELY (a python list via encode_jsonb), NOT a
+                -- pre-json.dumps'd string with a ::text::jsonb cast. the platform
+                -- registers a text-format jsonb codec (threetears.core.collections.
+                -- init_connection) on the hub l3 pool (the only pool that touches
+                -- this table, shared by the broker), whose encoder is json.dumps.
+                -- binding the native list lets the codec apply the SINGLE encode --
+                -- collections-task-04 removed the per-collection json.dumps + cast
+                -- that double-encoded the cell into a JSON STRING scalar.
+                $1, $2, $3, $4, $5, $6
+            )
+            ON CONFLICT (datasource_id) DO UPDATE SET
+                customer_id = EXCLUDED.customer_id,
+                tables = EXCLUDED.tables,
+                source_fingerprint = EXCLUDED.source_fingerprint,
+                -- include date_created so L3 agrees with the L1/L2 value
+                -- the collection stamps on every (is_new) re-materialize;
+                -- omitting it diverges the tiers (the digest re-materializes
+                -- via a fresh create(), so date_created tracks last-write).
+                date_created = EXCLUDED.date_created,
+                date_updated = EXCLUDED.date_updated
+            """,
+            data.get("datasource_id"),
+            data.get("customer_id"),
+            encode_jsonb(data.get("tables")),
+            data.get("source_fingerprint"),
+            data.get("date_created"),
+            data.get("date_updated"),
+        )
+        return int(result.split()[-1])
+
+    async def delete_from_store(self, entity_id: Any) -> None:
+        """hard-delete the digest row from L3.
+
+        :param entity_id: datasource UUID (the digest primary key)
+        :ptype entity_id: Any
+        :return: nothing
+        :rtype: None
+        """
+        if self.l3_pool is None:
+            return
+        await self.l3_pool.execute(
+            "DELETE FROM datasource_schema_digests WHERE datasource_id = $1",
+            entity_id,
+        )
 
 
 class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
@@ -750,12 +960,10 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         )
         result: dict[str, Any] | None = None
         if row is not None:
-            data = dict(row)
-            if isinstance(data.get("datasource_ids"), str):
-                data["datasource_ids"] = json.loads(data["datasource_ids"])
-            if isinstance(data.get("join_paths"), str):
-                data["join_paths"] = json.loads(data["join_paths"])
-            result = data
+            # ``datasource_ids`` / ``join_paths`` come back as python lists via
+            # the jsonb codec / proxy decode -- no per-collection json.loads
+            # (collections-task-04).
+            result = dict(row)
         return result
 
     async def save_to_store(
@@ -777,18 +985,15 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
         if self.l3_pool is None:
             return 0
 
-        datasource_ids = data.get("datasource_ids")
-        datasource_ids_json = json.dumps(datasource_ids) if datasource_ids is not None else "[]"
-        join_paths = data.get("join_paths")
-        join_paths_json = json.dumps(join_paths) if join_paths is not None else "[]"
-
         result = await self.l3_pool.execute(
             """
             INSERT INTO datasource_relations (
                 id, name, description, datasource_ids, join_paths,
                 aggregation_notes, caveats, date_created, date_updated
             ) VALUES (
-                $1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9
+                -- $4 / $5 are bound NATIVELY (python lists via encode_jsonb); the
+                -- jsonb codec applies the single json.dumps (collections-task-04).
+                $1, $2, $3, $4, $5, $6, $7, $8, $9
             )
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -802,8 +1007,8 @@ class DataSourceRelationCollection(BaseCollection[DataSourceRelationEntity]):
             data.get("id"),
             data.get("name"),
             data.get("description"),
-            datasource_ids_json,
-            join_paths_json,
+            encode_jsonb(data.get("datasource_ids")),
+            encode_jsonb(data.get("join_paths")),
             data.get("aggregation_notes"),
             data.get("caveats"),
             data.get("date_created"),

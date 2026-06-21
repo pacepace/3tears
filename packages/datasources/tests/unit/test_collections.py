@@ -15,6 +15,7 @@ mirrors the Hub-side coverage that existed pre-relocation:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -26,6 +27,7 @@ from threetears.datasources.collections import (
     DataSourceCollection,
     DataSourceColumnCollection,
     DataSourceRelationCollection,
+    DataSourceSchemaDigestCollection,
     DataSourceTableCollection,
     TableTemplateCollection,
 )
@@ -33,6 +35,7 @@ from threetears.datasources.entities import (
     DataSourceColumnEntity,
     DataSourceEntity,
     DataSourceRelationEntity,
+    DataSourceSchemaDigestEntity,
     DataSourceTableEntity,
     TableTemplateEntity,
 )
@@ -69,8 +72,11 @@ class TestDataSourceCollection:
         coll = DataSourceCollection(registry=registry, config=config)
         assert coll.entity_class is DataSourceEntity
 
-    def test_primary_key_column_is_composite(self) -> None:
-        assert DataSourceCollection.primary_key_column == ("customer_id", "id")
+    def test_primary_key_column_is_flat_id(self) -> None:
+        # knowledge-task-08: the datasource PK is the flat ``id`` (v016
+        # rebuilt the composite ``(customer_id, id)`` partition PK on ``id``
+        # alone so a platform-shared datasource can carry customer_id NULL).
+        assert DataSourceCollection.primary_key_column == "id"
 
     @pytest.mark.asyncio
     async def test_iter_active_ids_filters_status_active(self) -> None:
@@ -188,6 +194,159 @@ class TestDataSourceTableCollection:
         serialized = coll.serialize(data)
         deserialized = coll.deserialize(serialized)
         assert deserialized.get("column_hash") is None
+
+
+# -- DataSourceSchemaDigestCollection --
+
+
+class TestDataSourceSchemaDigestCollection:
+    """digest collection round-trips the structured projection by-pk."""
+
+    def test_table_name(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.table_name == "datasource_schema_digests"
+
+    def test_entity_class(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.entity_class is DataSourceSchemaDigestEntity
+
+    def test_primary_key_is_datasource_id(self) -> None:
+        # the digest is addressed BY datasource_id so the agent-side read
+        # is a by-pk hot-L1 lookup (schema-priming-task-01b).
+        assert DataSourceSchemaDigestEntity.primary_key_field == "datasource_id"
+
+    def test_collection_l1_key_column_is_datasource_id(self) -> None:
+        # the COLLECTION's primary_key_column (the L1/L2 key, SEPARATE from
+        # the entity's primary_key_field) must also be datasource_id. the
+        # BaseCollection default is "id"; this table has no id column, so an
+        # inherited default would emit WHERE id=? against the L1 mirror and
+        # break every by-pk read/write. regression guard for the inherited-
+        # default bug.
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        assert coll.primary_key_columns == ("datasource_id",)
+
+    @pytest.mark.asyncio
+    async def test_fetch_from_store_returns_codec_decoded_list(self) -> None:
+        # collections-task-04 (Option B): the read trusts the jsonb codec (hub
+        # l3 pool) / the proxy's NATS-JSON decode to hand back ``tables`` as a
+        # python list -- no per-collection json.loads. the mock pool stands in
+        # for the codec by returning a list, and fetch passes it through. the
+        # real codec decode is proven in tests/integration/test_collections_jsonb_live.
+        datasource_id = uuid4()
+        now = datetime.now(UTC)
+        row = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": [{"schema": "rp", "table": "geo", "description": "d", "columns": []}],
+            "source_fingerprint": "fp",
+            "date_created": now,
+            "date_updated": now,
+        }
+        coll, _pool = _make_coll_with_pool(DataSourceSchemaDigestCollection, row)
+        result = await coll.fetch_from_store(datasource_id)
+        assert isinstance(result["tables"], list)
+        assert result["tables"][0]["table"] == "geo"
+
+    @pytest.mark.asyncio
+    async def test_save_binds_string_tables_decoded_to_native_list(self) -> None:
+        # a stray pre-encoded JSON string reaching save is normalized to a
+        # native list by encode_jsonb (one decode) and bound NATIVELY ($3, no
+        # ::text::jsonb cast). the registered codec then applies the single
+        # json.dumps -- no per-collection json.dumps, the duplication that let
+        # the double-encode bug ship.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        tables_str = '[{"schema": "s", "table": "t", "description": "d", "columns": []}]'
+        now = datetime.now(UTC)
+        await coll.save_to_store(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": tables_str,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        # $3 (the tables param, 4th positional after the SQL) is the NATIVE
+        # python list -- NOT a json string. the codec encodes it once.
+        tables_param = pool.execute.await_args.args[3]
+        assert tables_param == json.loads(tables_str)
+        assert isinstance(tables_param, list)
+
+    @pytest.mark.asyncio
+    async def test_save_binds_list_tables_natively(self) -> None:
+        # the normal path: a python list is bound natively, unchanged, for the
+        # codec to encode exactly once.
+        coll, pool = _make_coll_with_pool(DataSourceSchemaDigestCollection)
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        tables = [{"schema": "s", "table": "t", "columns": []}]
+        now = datetime.now(UTC)
+        await coll.save_to_store(
+            {
+                "datasource_id": uuid4(),
+                "customer_id": uuid4(),
+                "tables": tables,
+                "source_fingerprint": "fp",
+                "date_created": now,
+                "date_updated": now,
+            },
+        )
+        tables_param = pool.execute.await_args.args[3]
+        assert tables_param == tables
+        assert isinstance(tables_param, list)
+
+    def test_serialize_deserialize_roundtrip(self) -> None:
+        registry, config = _make_registry_and_config()
+        coll = DataSourceSchemaDigestCollection(registry=registry, config=config)
+        now = datetime.now(UTC)
+        datasource_id = uuid4()
+        data: dict[str, Any] = {
+            "datasource_id": datasource_id,
+            "customer_id": uuid4(),
+            "tables": [
+                {
+                    "schema": "reporting_prod",
+                    "table": "report_geofacts_joined_data",
+                    "description": "joined geo facts",
+                    "columns": [
+                        {
+                            "name": "metric_name",
+                            "type": "character varying",
+                            "description": "the EAV metric label",
+                        },
+                    ],
+                },
+            ],
+            "source_fingerprint": "deadbeef",
+            "date_created": now,
+            "date_updated": now,
+        }
+        serialized = coll.serialize(data)
+        assert isinstance(serialized, bytes)
+        deserialized = coll.deserialize(serialized)
+        assert deserialized["datasource_id"] == datasource_id
+        assert deserialized["source_fingerprint"] == "deadbeef"
+        # the structured projection must survive the L2 round-trip intact
+        assert deserialized["tables"][0]["table"] == "report_geofacts_joined_data"
+        assert deserialized["tables"][0]["columns"][0]["name"] == "metric_name"
+
+    def test_entity_id_is_datasource_id(self) -> None:
+        # BaseEntity keys _id off primary_key_field, so the entity the
+        # agent reads is addressed by its datasource_id.
+        datasource_id = uuid4()
+        entity = DataSourceSchemaDigestEntity(
+            {
+                "datasource_id": datasource_id,
+                "customer_id": uuid4(),
+                "tables": [],
+                "source_fingerprint": "x",
+            },
+        )
+        assert entity.id == datasource_id
 
 
 # -- DataSourceColumnCollection --
@@ -423,8 +582,8 @@ class TestDataSourceColumnGetByNaturalKey:
         assert entity is None
 
     @pytest.mark.asyncio
-    async def test_parses_jsonb_tags_when_stored_as_string(self) -> None:
-        """JSONB ``tags`` arrive as ``str`` from raw L3; method round-trips them."""
+    async def test_returns_codec_decoded_jsonb_tags(self) -> None:
+        """JSONB ``tags`` arrive already decoded to a list (codec / proxy)."""
         now = datetime.now(UTC)
         ds_id = uuid4()
         row = {
@@ -436,7 +595,10 @@ class TestDataSourceColumnGetByNaturalKey:
             "data_type": "varchar",
             "is_nullable": False,
             "ordinal_position": 1,
-            "tags": '["pii", "email"]',  # JSONB-as-str from asyncpg
+            # collections-task-04 (Option B): the jsonb codec / proxy NATS-JSON
+            # decode hands ``tags`` back as a python list; the mock stands in for
+            # the codec by returning a list, and the method passes it through.
+            "tags": ["pii", "email"],
             "date_introspected": now,
             "date_created": now,
             "date_updated": now,

@@ -23,6 +23,7 @@ from langgraph.types import Command
 from uuid_utils import uuid7
 
 from threetears.langgraph.streaming import (
+    NOSTREAM_TAG,
     StreamEndEvent,
     StreamErrorEvent,
     StreamingResponse,
@@ -403,6 +404,37 @@ class TestStreamingResponseLifecycle:
         token_events = [e for e in transport.events if isinstance(e, StreamTokenEvent)]
         assert token_events == []
 
+    async def test_emit_keepalive_publishes_turn_level_progress(self) -> None:
+        """turn-level keepalive emits progress with EMPTY tool_name + monotonic seq (LRT-02)."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.emit_keepalive(elapsed_ms=10000)
+        await stream.emit_keepalive(elapsed_ms=20000)
+        keepalives = [e for e in transport.events if isinstance(e, ToolCallProgressEvent)]
+        # empty tool_name marks the turn-level keepalive (vs a per-tool progress).
+        assert [e.tool_name for e in keepalives] == ["", ""]
+        assert [e.sequence for e in keepalives] == [1, 2]
+        assert [e.elapsed_ms for e in keepalives] == [10000, 20000]
+
+    async def test_emit_keepalive_after_terminal_is_noop(self) -> None:
+        """a keepalive after the stream closes is silently dropped (no late wire write)."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.end()
+        await stream.emit_keepalive(elapsed_ms=5000)
+        keepalives = [e for e in transport.events if isinstance(e, ToolCallProgressEvent)]
+        assert keepalives == []
+
     async def test_end_publishes_stream_end_with_accumulated_content(self) -> None:
         """:meth:`end` carries the running accumulated content."""
         transport = _RecordingTransport()
@@ -419,6 +451,55 @@ class TestStreamingResponseLifecycle:
         assert len(end_events) == 1
         assert end_events[0].content == "part1 part2"
         assert stream.closed is True
+
+    async def test_replace_content_sets_accumulated_buffer(self) -> None:
+        """:meth:`replace_content` makes the terminal carry the new text.
+
+        a draft that already streamed can be superseded by a revision or a
+        blocked-query re-run; resetting the buffer makes
+        :class:`StreamEndEvent.content` authoritative rather than stale.
+        """
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.emit_token("stale draft")
+        stream.replace_content("revised answer")
+        await stream.emit_token(" + footer")
+        await stream.end()
+        end_events = [e for e in transport.events if isinstance(e, StreamEndEvent)]
+        assert end_events[0].content == "revised answer + footer"
+
+    async def test_replace_content_clears_for_rerun(self) -> None:
+        """:meth:`replace_content` with ``""`` clears ahead of a re-run."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.emit_token("blocked draft")
+        stream.replace_content("")
+        await stream.emit_token("corrected answer")
+        assert stream.accumulated_content == "corrected answer"
+
+    async def test_replace_content_noop_when_closed(self) -> None:
+        """:meth:`replace_content` no-ops after a terminal has fired."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.emit_token("final")
+        await stream.end()
+        stream.replace_content("too late")
+        assert stream.accumulated_content == "final"
 
     async def test_end_is_idempotent(self) -> None:
         """second :meth:`end` call no-ops without a wire emit."""
@@ -644,6 +725,39 @@ class TestStreamingResponseRunGraph:
         assert result["applied"] is True, "the resume's on_chain_end output is the authoritative result"
         kinds = [type(e).__name__ for e in transport.events]
         assert kinds == ["StreamStartEvent", "StreamTokenEvent", "StreamEndEvent"]
+
+    async def test_drops_tokens_tagged_nostream(self) -> None:
+        """``on_chat_model_stream`` events tagged NOSTREAM_TAG are dropped.
+
+        regression guard: an internal model call inside a node (an
+        adversarial reviewer refuting a draft) emits chat-model tokens that
+        the run loop would otherwise accumulate verbatim into the
+        user-facing answer. tagging the call NOSTREAM_TAG must keep its
+        tokens out of the stream while the untagged answer tokens pass.
+        """
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        graph = _StubGraph(
+            [
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk("answer")}},
+                {
+                    "event": "on_chat_model_stream",
+                    "tags": [NOSTREAM_TAG],
+                    "data": {"chunk": _MockChunk("REVIEWER LEAK")},
+                },
+                {"event": "on_chat_model_stream", "data": {"chunk": _MockChunk(" tail")}},
+            ]
+        )
+        await stream.run_graph(graph, {"messages": []}, {})
+
+        end_evt = [e for e in transport.events if isinstance(e, StreamEndEvent)][0]
+        assert end_evt.content == "answer tail"
+        token_texts = [e.token for e in transport.events if isinstance(e, StreamTokenEvent)]
+        assert "REVIEWER LEAK" not in token_texts
 
     async def test_emits_stream_error_on_graph_exception(self) -> None:
         """graph exception fires :class:`StreamErrorEvent`, not empty end.
