@@ -45,6 +45,9 @@ _CONFIG = CacheEnforcementConfig(
         # migration under ``packages/*/migrations/`` and has a
         # Collection somewhere under ``packages/*/src/``).
         "conversations": "ConversationsCollection",
+        # folders (conversations v008) — the per-owner conversation grouping container;
+        # the Collection is :class:`threetears.conversations.FolderCollection`.
+        "folders": "FolderCollection",
         "context_items": "ContextItemCollection",
         "memories": "MemoriesCollection",
         "media": "MediaCollection",
