@@ -7,6 +7,16 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.3]
+
+### Added
+
+- `Driver.column_value_coverage_by_dimension(schema, table, dimension_column, columns)` — the
+  grouped sibling of `column_value_coverage`: a single `GROUP BY` pass reporting non-null/non-zero
+  value coverage per numeric column per dimension value, surfacing the partial-coverage case (a
+  column loaded for some dimension values, all-zero for others) the whole-table probe can't see.
+  Concrete on the `Driver` ABC (portable SQL routed through `fetch`).
+
 ## [0.13.2]
 
 ### Changed

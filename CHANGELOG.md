@@ -6,8 +6,9 @@ packages (bumped in lock-step).
 
 ## v0.13.3 -- 2026-06-21
 
-Completes the conversation-folder relationship (referential integrity + helpers) and
-hardens the write-buffer flush against orphaned writes.
+Completes the conversation-folder relationship (referential integrity + helpers),
+hardens the write-buffer flush against orphaned writes, and adds a per-dimension
+column-coverage probe to datasources.
 
 ### Added — `3tears-conversations` — `threetears.conversations`
 
@@ -28,6 +29,15 @@ hardens the write-buffer flush against orphaned writes.
   un-satisfiable write aborted the whole transaction every cycle until it exhausted its
   ~100-retry budget, forcing per-entity fallback for ALL co-buffered writes. The per-entity
   safety net + FK-aware re-enqueue is unchanged.
+
+### Added — `3tears-datasources` — `threetears.datasources`
+
+- **Per-dimension column-value coverage.** `Driver.column_value_coverage_by_dimension(schema,
+  table, dimension_column, columns)` — the grouped sibling of `column_value_coverage`: one
+  `GROUP BY` pass reporting non-null/non-zero coverage per numeric column per dimension value,
+  so a caller can see a column loaded for some dimension values but all-zero for others (the
+  partial-coverage case the whole-table probe can't see). Concrete on the `Driver` ABC
+  (portable SQL routed through `fetch`), so every backend inherits it.
 
 ## v0.13.2 -- 2026-06-21
 

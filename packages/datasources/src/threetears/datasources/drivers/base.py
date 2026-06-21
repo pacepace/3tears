@@ -188,6 +188,39 @@ def _build_coverage_sql(schema: str, table: str, columns: list[str]) -> str:
     return f"SELECT {', '.join(selects)} FROM {qualified}"
 
 
+def _build_coverage_by_dimension_sql(
+    schema: str,
+    table: str,
+    dimension_column: str,
+    columns: list[str],
+) -> str:
+    """build the single grouped-scan coverage aggregate for ``columns`` per dimension.
+
+    one pass over the table grouped by ``dimension_column``: the dimension value,
+    ``COUNT(*)``, and per column a ``COUNT(NULLIF(col, 0))`` (non-null, non-zero
+    rows). the dimension aliases to ``dim_value`` and columns to ``nz_<index>`` so
+    the caller maps results back by position without re-quoting. portable standard
+    SQL (Redshift / Postgres / Yugabyte / Snowflake); BigQuery's backtick
+    identifiers would need an override, same as :func:`_build_coverage_sql`.
+
+    :param schema: schema name
+    :ptype schema: str
+    :param table: table name
+    :ptype table: str
+    :param dimension_column: column to group coverage by (non-empty)
+    :ptype dimension_column: str
+    :param columns: numeric columns to probe (non-empty)
+    :ptype columns: list[str]
+    :return: the grouped coverage SELECT statement
+    :rtype: str
+    """
+    qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+    dimension = _quote_ident(dimension_column)
+    selects = [f"{dimension} AS dim_value", "COUNT(*) AS total_rows"]
+    selects.extend(f"COUNT(NULLIF({_quote_ident(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
+    return f"SELECT {', '.join(selects)} FROM {qualified} GROUP BY {dimension}"
+
+
 # ---------------------------------------------------------------------------
 # @_observed decorator (DS-09-11)
 # ---------------------------------------------------------------------------
@@ -576,6 +609,61 @@ class Driver(ABC):
                     total_rows=total_rows,
                     nonzero_count=int(nonzero or 0),
                 )
+        return result
+
+    async def column_value_coverage_by_dimension(
+        self,
+        schema: str,
+        table: str,
+        dimension_column: str,
+        columns: list[str],
+    ) -> dict[str, dict[str, ColumnCoverage]]:
+        """scan ``schema.table`` once grouped by ``dimension_column`` and report
+        value-coverage per numeric column per dimension value.
+
+        the grouped sibling of :meth:`column_value_coverage`: the same decidable
+        question, but a single ``GROUP BY`` pass so the caller can decide a column
+        is unloaded for SOME dimension values while loaded for others -- the
+        partial-coverage case the whole-table probe cannot see (a column loaded for
+        49 states but all-zero for every row of one). returns the raw counts per
+        ``(column, dimension_value)``; the loaded-vs-unloaded VERDICT is the
+        caller's. CONCRETE on the ABC (portable SQL routed through :meth:`fetch`).
+
+        every requested column maps to a (possibly empty) per-dimension dict so
+        callers can index ``result[column]`` safely. a NULL dimension value (rows
+        with no value for the dimension) keys on the empty string. an empty
+        ``columns`` OR empty ``dimension_column`` short-circuits with no query.
+
+        :param schema: schema name of the table to scan
+        :ptype schema: str
+        :param table: table name to scan
+        :ptype table: str
+        :param dimension_column: column to group coverage by (e.g. ``state_code``);
+            empty short-circuits with no query
+        :ptype dimension_column: str
+        :param columns: numeric column names to probe; empty short-circuits
+        :ptype columns: list[str]
+        :return: mapping of column name -> {dimension_value -> :class:`ColumnCoverage`};
+            empty when ``columns`` or ``dimension_column`` is empty
+        :rtype: dict[str, dict[str, ColumnCoverage]]
+        :raises asyncio.CancelledError: propagated from :meth:`fetch`
+        :raises RuntimeError: if the driver was previously closed
+        """
+        result: dict[str, dict[str, ColumnCoverage]] = {}
+        if columns and dimension_column:
+            result = {column: {} for column in columns}
+            sql = _build_coverage_by_dimension_sql(schema, table, dimension_column, columns)
+            rows = await self.fetch(sql)
+            for row in rows:
+                raw_dimension = row.get("dim_value")
+                dimension_value = "" if raw_dimension is None else str(raw_dimension)
+                total_rows = int(row.get("total_rows") or 0)
+                for index, column in enumerate(columns):
+                    nonzero = row.get(f"nz_{index}")
+                    result[column][dimension_value] = ColumnCoverage(
+                        total_rows=total_rows,
+                        nonzero_count=int(nonzero or 0),
+                    )
         return result
 
     # -------------------------------------------------------------------
