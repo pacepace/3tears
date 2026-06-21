@@ -186,9 +186,37 @@ class TestRedshiftConnectionConfig:
             password_ref="env://OTS_REDSHIFT_PASSWORD",
         )
         assert cfg.port == 5439
-        assert cfg.executor_max_workers == 10
-        assert cfg.connection_cache_size == 3
+        # conservative pool default sized to a typical tight per-user
+        # CONNECTION LIMIT; cache defaults to workers so they stay equal.
+        assert cfg.executor_max_workers == 5
+        assert cfg.connection_cache_size == 5
         assert cfg.query_timeout_seconds == 300
+
+    def test_cache_defaults_to_workers_when_unset(self) -> None:
+        # raising workers without setting cache keeps the pool sized as one:
+        # cache follows workers so concurrency never opens past the cache.
+        cfg = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="cluster.region.redshift.amazonaws.com",
+            database="analytics",
+            username="ots_user",
+            password_ref="env://OTS_REDSHIFT_PASSWORD",
+            executor_max_workers=15,
+        )
+        assert cfg.connection_cache_size == 15
+
+    def test_cache_explicit_overrides_workers_default(self) -> None:
+        # an explicit cache value is honored (diverging from workers).
+        cfg = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="cluster.region.redshift.amazonaws.com",
+            database="analytics",
+            username="ots_user",
+            password_ref="env://OTS_REDSHIFT_PASSWORD",
+            executor_max_workers=15,
+            connection_cache_size=4,
+        )
+        assert cfg.connection_cache_size == 4
 
     def test_no_pool_knobs(self) -> None:
         # negative assertion: redshift does NOT take pool_min_size /

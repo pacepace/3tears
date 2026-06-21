@@ -63,7 +63,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from threetears.datasources.entities import DataSourceType
 from threetears.datasources.secrets import resolve_secret, validate_ref
@@ -258,9 +265,13 @@ class RedshiftConnectionConfig(BaseModel):
     behind a bounded ``ThreadPoolExecutor`` + small connection cache
     (Redshift TLS+auth takes 1-3s/connection).
 
-    no pool here: the driver holds a deque of warm connections sized
-    by :attr:`connection_cache_size` and dispatches blocking calls
-    through an ``AsyncSyncBridge`` sized by :attr:`executor_max_workers`.
+    the warm-connection deque acts as a bounded connection pool: sized to
+    the Redshift user's ``CONNECTION LIMIT`` via :attr:`connection_cache_size`
+    (which defaults to :attr:`executor_max_workers` so they stay equal), it
+    reuses warm connections for concurrent queries and queues any query past
+    the bound on the ``AsyncSyncBridge`` executor, rather than opening a fresh
+    connection that would exceed the limit. set both to the user's connection
+    limit per-datasource.
 
     :param datasource_type: discriminator; must be ``DataSourceType.REDSHIFT``
     :param host: Redshift cluster endpoint
@@ -299,12 +310,20 @@ class RedshiftConnectionConfig(BaseModel):
         "at use time",
     )
     executor_max_workers: int = Field(
-        default=10,
-        description="bounded ThreadPoolExecutor size for the async-sync bridge",
+        default=5,
+        description="bounded ThreadPoolExecutor size for the async-sync bridge; the "
+        "effective max concurrent connections. MUST be <= the Redshift user's "
+        "CONNECTION LIMIT, else concurrent queries past the limit fail with "
+        "'too many connections'. conservative default sized to a typical tight "
+        "per-user limit; raise per-datasource when the user allows more",
     )
     connection_cache_size: int = Field(
-        default=3,
-        description="warm redshift_connector connections kept per driver",
+        default=5,
+        description="warm redshift_connector connections kept per driver. defaults to "
+        "executor_max_workers when not set (see validator) so every concurrent query "
+        "reuses a warm connection instead of opening a fresh one past the cache -- the "
+        "deque then behaves as a proper bounded pool. a smaller cache than workers "
+        "forces fresh opens under load and overshoots the connection limit",
     )
     query_timeout_seconds: int = Field(
         default=300,
@@ -325,6 +344,26 @@ class RedshiftConnectionConfig(BaseModel):
     @classmethod
     def password_ref_must_be_valid(cls, value: str | None) -> str | None:
         return value if value is None else validate_ref(value)
+
+    @model_validator(mode="after")
+    def _cache_defaults_to_workers(self) -> "RedshiftConnectionConfig":
+        """default ``connection_cache_size`` to ``executor_max_workers`` when unset.
+
+        a cache smaller than the worker count forces a fresh connection open on
+        every concurrent query past the cache -- which overshoots a tight per-user
+        Redshift ``CONNECTION LIMIT`` and fails with "too many connections". keeping
+        cache == workers (both sized to the user's limit) makes the warm-connection
+        deque behave as a proper bounded pool: concurrent queries reuse warm
+        connections, and a query past the bound queues on the executor instead of
+        opening a doomed connection. set ``connection_cache_size`` explicitly to
+        diverge from ``executor_max_workers``.
+
+        :return: self, with ``connection_cache_size`` aligned to workers when unset
+        :rtype: RedshiftConnectionConfig
+        """
+        if "connection_cache_size" not in self.model_fields_set:
+            self.connection_cache_size = self.executor_max_workers
+        return self
 
     def resolve_password(self) -> SecretStr:
         """resolve ``password_ref`` to a :class:`SecretStr` at use time.
