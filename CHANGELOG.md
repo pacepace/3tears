@@ -4,6 +4,24 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.1 -- 2026-06-21
+
+Patch: size the Redshift warm-connection cache as a bounded pool so concurrent
+queries reuse warm connections instead of overshooting a tight per-user Redshift
+CONNECTION LIMIT.
+
+### Fixed -- `3tears-datasources` -- `threetears.datasources`
+
+- Redshift warm-connection cache is now a bounded pool. `executor_max_workers`
+  previously defaulted to 10 while `connection_cache_size` defaulted to 3, so
+  concurrent queries past the cache opened a fresh connection every time — which
+  overshoots a tight per-user Redshift CONNECTION LIMIT and fails with "too many
+  connections" (the cache never acted as a pool). Now `executor_max_workers`
+  defaults to 5 and `connection_cache_size` defaults to `executor_max_workers`
+  (cache == workers) via a model validator, so queries past the bound queue on the
+  executor and reuse warm connections rather than opening doomed ones. Set both
+  per datasource to the user's connection limit.
+
 ## v0.13.0 -- 2026-06-21
 
 ### Changed — `3tears` (core) — BREAKING
