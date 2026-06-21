@@ -275,13 +275,13 @@ async def serve_owner(
     # queue group = the forward subject itself: every owner of the SAME
     # key shares one queue group, so an overlap dispatches to exactly
     # one; distinct keys ride distinct subjects + groups and never mix.
-    # deadletter_on_error is off: handler failures are framed back to
+    # deadletter_on_failure is off: handler failures are framed back to
     # the caller (above), they are not transport faults to deadletter.
     sub: Subscription = await nats.subscribe(
         subject=subject,
         cb=_on_request,
         queue=subject.path,
-        deadletter_on_error=False,
+        deadletter_on_failure=False,
     )
     # flush so the subscription is registered server-side before we hand
     # control back to the consumer (and before any forward can race in).

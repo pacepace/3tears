@@ -11,6 +11,15 @@ Implements **both** L3-tier protocols:
   reference SQL implementation of the same structured contract a ``GitL3Backend``
   satisfies with file read/write/delete + commit.
 
+**Schema awareness.** A :class:`~threetears.core.collections.schema_backed.SchemaBackedCollection`
+registers its :class:`TableSchema` via :meth:`SqlL3Backend.register_schema`. Once a schema
+is registered for a table, the structured ops generate **schema-aware** SQL (declared-
+columns-only SELECT with ``VECTOR``/``TSVECTOR`` ``::text`` projection casts, ``::jsonb`` /
+``::vector`` write casts, composite-PK WHERE, server-default column dropping, CAS fencing,
+``on_conflict`` modes) + read/write codec — byte-identical to the hand-rolled collection
+path it replaces. When **no** schema is registered for a table, the generic ``SELECT *`` /
+INSERT path is used (the contract a non-collection caller of :class:`DurableStore` relies on).
+
 The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` or the
 ``NatsProxyL3Backend``); ``SqlL3Backend`` is the named, protocol-conformant wrapper the
 ``L3Backend``-retyped registry/base resolve to.
@@ -20,9 +29,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.protocol import parse_rowcount
+
+if TYPE_CHECKING:
+    from threetears.core.collections.schema_backed import TableSchema
 
 __all__ = ["SqlL3Backend"]
 
@@ -54,6 +67,45 @@ class SqlL3Backend:
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
+        # table name -> TableSchema. when a schema is registered for a table the
+        # structured DurableStore ops generate schema-aware SQL + run the per-column
+        # read/write codec; otherwise the generic SELECT */INSERT path is used.
+        self._schemas: dict[str, TableSchema] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate any unlisted attribute to the wrapped pool (the raw-SQL escape hatch).
+
+        ``L3Backend`` formalizes the common transport surface (``fetch`` / ``fetchrow`` /
+        ``execute`` / ``execute_batch`` / ``acquire`` / ``transaction``), but the
+        ``l3_pool`` ivar is also the documented ad-hoc-SQL escape hatch — product code
+        reaches for the full asyncpg pool surface through it (e.g. ``fetchval``,
+        ``copy_records_to_table``). Forwarding the long tail keeps the wrapper a
+        transparent superset of the pool it wraps, so wrapping never removes a method a
+        caller already relied on. Invoked only for attributes not found normally
+        (``_pool`` / ``_schemas`` and every defined method resolve before this).
+
+        :param name: the missing attribute name.
+        :ptype name: str
+        :return: the corresponding attribute on the wrapped pool.
+        :rtype: Any
+        :raises AttributeError: if the wrapped pool has no such attribute.
+        """
+        return getattr(self._pool, name)
+
+    def register_schema(self, table: str, schema: TableSchema) -> None:
+        """Register a :class:`TableSchema` so the structured ops emit schema-aware SQL for ``table``.
+
+        Idempotent — re-registering the same table overwrites the prior schema (a
+        Collection registers its schema on construction; reconstruction is harmless).
+
+        :param table: target table name (matches ``schema.name``).
+        :ptype table: str
+        :param schema: the table schema driving SQL generation + value coercion.
+        :ptype schema: TableSchema
+        :return: nothing
+        :rtype: None
+        """
+        self._schemas[table] = schema
 
     # ── L3Backend: raw-SQL transport (delegate to the pool) ─────────────────────────
     async def fetch(self, query: str, *params: Any, namespace: str | None = None) -> list[dict[str, Any]]:
@@ -65,6 +117,10 @@ class SqlL3Backend:
         """Run a SELECT and return the first row dict, or ``None`` (delegates to the pool)."""
         row = await self._pool.fetchrow(query, *params)
         return dict(row) if row is not None else None
+
+    async def fetchval(self, query: str, *params: Any, namespace: str | None = None) -> Any:
+        """Run a SELECT and return the first column of the first row (scalar) (delegates to the pool)."""
+        return await self._pool.fetchval(query, *params)
 
     async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
         """Run an INSERT/UPDATE/DELETE; return the asyncpg command-tag string (``"UPDATE 1"``)."""
@@ -98,26 +154,57 @@ class SqlL3Backend:
         return _PoolTransactionCM(self._pool)
 
     # ── DurableStore: structured ops (generate SQL) ─────────────────────────────────
-    async def fetch_one(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Fetch the row whose primary key equals ``pk`` via a generated SELECT, or ``None``."""
-        where, params = self._where(pk, start=1)
-        sql = f"SELECT * FROM {_quote_ident(table)} WHERE {where}"
-        return await self.fetchrow(sql, *params)
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        """Fetch the row whose primary key equals ``pk`` via a generated SELECT, or ``None``.
+
+        When a schema is registered for ``table`` the SELECT projects the schema's
+        declared columns (``VECTOR``/``TSVECTOR`` cast ``::text``), the pk values are
+        write-coerced, and the row is read-coerced — byte-identical to the collection's
+        old ``fetch_from_store``. Otherwise a generic ``SELECT *`` is issued.
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            where, params = self._where(pk, start=1)
+            sql = f"SELECT * FROM {_quote_ident(table)} WHERE {where}"
+            return await self._fetchrow(sql, *params, conn=conn)
+        coerced: list[Any] = [
+            schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns
+        ]
+        row = await self._fetchrow(schema_sql.build_fetch_sql(schema), *coerced, conn=conn)
+        if row is None:
+            return None
+        return schema_sql.coerce_row(schema, dict(row))
 
     async def upsert(
         self,
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
+        conn: Any = None,
     ) -> int:
         """Insert-or-update ``row`` via a generated INSERT…ON CONFLICT; return rows affected.
 
-        ``on_conflict`` selects the conflict clause (``"update"``/``"ignore"``/``"raise"``);
-        ``cas`` fences the update on the prior ``date_updated`` (a mismatch → 0 rows).
+        When a schema is registered for ``table`` the INSERT / CAS-UPDATE SQL + params are
+        generated from the schema (``on_conflict`` modes, server-default dropping, CAS
+        fencing, ``::jsonb`` / ``::vector`` casts) — byte-identical to the collection's old
+        ``save_to_store``; ``pk`` / ``on_conflict`` arguments are taken from the schema.
+        Otherwise the generic INSERT path runs, honoring the ``pk`` / ``on_conflict`` / ``cas``
+        arguments directly.
+
+        :param conn: optional caller-supplied connection (a transaction handle) the write
+            binds to instead of the pool, so it commits atomically with the caller's
+            other operations. ``None`` uses the wrapped pool.
+        :ptype conn: Any
         """
+        schema = self._schemas.get(table)
+        if schema is not None:
+            return await self._upsert_schema(schema, dict(row), cas=cas, conn=conn)
+
+        if pk is None:
+            raise ValueError("upsert without a registered schema requires the pk argument")
         if on_conflict not in _ON_CONFLICT_VALUES:
             raise ValueError(f"on_conflict must be one of {sorted(_ON_CONFLICT_VALUES)!r}, got {on_conflict!r}")
         cols = list(row.keys())
@@ -128,9 +215,11 @@ class SqlL3Backend:
         params: list[Any] = [row[c] for c in cols]
 
         if on_conflict == "raise":
-            return parse_rowcount(await self.execute(insert, *params))
+            return parse_rowcount(await self._execute(insert, *params, conn=conn))
         if on_conflict == "ignore":
-            return parse_rowcount(await self.execute(f"{insert} ON CONFLICT ({pk_sql}) DO NOTHING", *params))
+            return parse_rowcount(
+                await self._execute(f"{insert} ON CONFLICT ({pk_sql}) DO NOTHING", *params, conn=conn)
+            )
 
         # "update": upsert the mutable (non-pk) columns. Optionally fence on the CAS value.
         mutable = [c for c in cols if c not in set(pk)]
@@ -141,12 +230,43 @@ class SqlL3Backend:
         if cas is not None and "date_updated" in row:
             params.append(cas)
             sql += f" WHERE {_quote_ident(table)}.{_quote_ident('date_updated')} = ${len(params)}"
-        return parse_rowcount(await self.execute(sql, *params))
+        return parse_rowcount(await self._execute(sql, *params, conn=conn))
 
-    async def delete(self, table: str, pk: Mapping[str, Any]) -> None:
-        """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error)."""
-        where, params = self._where(pk, start=1)
-        await self.execute(f"DELETE FROM {_quote_ident(table)} WHERE {where}", *params)
+    async def _upsert_schema(
+        self,
+        schema: TableSchema,
+        data: dict[str, Any],
+        *,
+        cas: datetime | None,
+        conn: Any,
+    ) -> int:
+        """Schema-aware upsert: byte-identical to the collection's old ``save_to_store``."""
+        cas_eligible = schema.cas_column is not None and cas is not None and schema.on_conflict == "update"
+        if cas_eligible:
+            assert cas is not None  # narrowed by cas_eligible
+            sql = schema_sql.build_cas_update_sql(schema, data)
+            params = schema_sql.build_cas_params(schema, data, cas)
+        else:
+            sql = schema_sql.build_insert_sql(schema, data)
+            params = schema_sql.build_insert_params(schema, data)
+        return parse_rowcount(await self._execute(sql, *params, conn=conn))
+
+    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
+        """Delete the row whose primary key equals ``pk`` via a generated DELETE (missing is not an error).
+
+        When a schema is registered for ``table`` the pk values are write-coerced and the
+        DELETE projects the declared composite pk — byte-identical to the collection's old
+        ``delete_from_store``. Otherwise a generic DELETE keyed on the ``pk`` mapping runs.
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            where, params = self._where(pk, start=1)
+            await self._execute(f"DELETE FROM {_quote_ident(table)} WHERE {where}", *params, conn=conn)
+            return
+        coerced: list[Any] = [
+            schema_sql.normalize_write_value(schema.column(name), pk[name]) for name in schema.pk_columns
+        ]
+        await self._execute(schema_sql.build_delete_sql(schema), *coerced, conn=conn)
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         """Return rows matching the equality ``filters`` via a generated SELECT (all rows when empty)."""
@@ -154,6 +274,21 @@ class SqlL3Backend:
             return await self.fetch(f"SELECT * FROM {_quote_ident(table)}")
         where, params = self._where(filters, start=1)
         return await self.fetch(f"SELECT * FROM {_quote_ident(table)} WHERE {where}", *params)
+
+    # ── connection-aware execution helpers ──────────────────────────────────────────
+    async def _execute(self, query: str, *params: Any, conn: Any = None) -> str:
+        """Run a write on ``conn`` when supplied (transactional override), else the pool."""
+        if conn is not None:
+            result = await conn.execute(query, *params)
+            return result if isinstance(result, str) else ""
+        return await self.execute(query, *params)
+
+    async def _fetchrow(self, query: str, *params: Any, conn: Any = None) -> dict[str, Any] | None:
+        """Fetch one row on ``conn`` when supplied (transactional override), else the pool."""
+        if conn is not None:
+            row = await conn.fetchrow(query, *params)
+            return dict(row) if row is not None else None
+        return await self.fetchrow(query, *params)
 
     @staticmethod
     def _where(cols: Mapping[str, Any], *, start: int) -> tuple[str, list[Any]]:

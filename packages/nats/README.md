@@ -20,7 +20,7 @@ The wrapper is consumed by both the aibots platform (hub, gateway, registry, cha
 - Subscribe is keyword-only after `self`. The 2026-04-25 production bug (`nc.subscribe(subject, callback)` silently treating the callback as a queue group in `nats-py` 2.10+) is impossible to reproduce against this wrapper.
 - Publish accepts `BaseModel` instances. Raw bytes go through the explicit escape hatch `publish_raw`.
 - Subjects are typed `Subject` objects, not strings. The factory owns subject formatting; callers cannot accidentally interpolate the wrong shape.
-- Default `deadletter_on_error=True` — uncaught subscribe-callback exceptions auto-republish to `{ns}.deadletter.{path}`.
+- Default `deadletter_on_failure=True` — uncaught subscribe-callback exceptions auto-republish to `{ns}.deadletter.{path}`.
 
 ## Usage
 

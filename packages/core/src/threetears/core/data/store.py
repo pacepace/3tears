@@ -80,6 +80,8 @@ class DataStore:
         :rtype: BaseCollection
         """
         l3_pool = self._registry.get_l3_pool(table_def.name)
+        if l3_pool is None:
+            raise RuntimeError("DataStore requires a configured L3 backend (CollectionRegistry.configure(l3_pool=...))")
 
         create_sql = build_create_table_sql(table_def)
         await l3_pool.execute(create_sql)
@@ -109,6 +111,8 @@ class DataStore:
         :rtype: list[dict[str, Any]]
         """
         l3_pool = self._registry.get_l3_pool("_raw")
+        if l3_pool is None:
+            raise RuntimeError("DataStore requires a configured L3 backend (CollectionRegistry.configure(l3_pool=...))")
         rows = await l3_pool.fetch(sql, *params)
         # convert at border: asyncpg Records iterate values, not keys --
         # honor the declared dict row shape regardless of pool driver.
@@ -127,6 +131,8 @@ class DataStore:
         :rtype: str
         """
         l3_pool = self._registry.get_l3_pool("_raw")
+        if l3_pool is None:
+            raise RuntimeError("DataStore requires a configured L3 backend (CollectionRegistry.configure(l3_pool=...))")
         result: str = await l3_pool.execute(sql, *params)
         return result
 

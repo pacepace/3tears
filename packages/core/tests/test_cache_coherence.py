@@ -181,7 +181,7 @@ class InMemoryNatsBus:
         message_type: Any,
         queue: Any = None,  # noqa: ARG002
         max_in_flight: Any = None,  # noqa: ARG002
-        deadletter_on_error: bool = True,  # noqa: ARG002
+        deadletter_on_failure: bool = True,  # noqa: ARG002
     ) -> None:
         """typed subscribe matching wrapper kw-only api."""
         subject_str = str(subject)

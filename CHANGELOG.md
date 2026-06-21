@@ -17,6 +17,40 @@ packages (bumped in lock-step).
   `serialize`/`deserialize` are unchanged. **Consumers: see
   `docs/migrating-to-l3-store-seam.md`.**
 
+- **Atomic write-buffer flush (`collections-task-06` L3B-04) — BREAKING for hand-rolled
+  overrides.** `flush_pending` now persists a toposorted batch inside ONE backend
+  transaction (degrading to the per-entity loop when the backend has no usable
+  `transaction()`). To carry the transaction handle, `BaseCollection.persist_to_store`
+  calls `save_to_store(data, *, conn=...)`. The base + `SchemaBackedCollection` signatures
+  already accept `conn`, so the schema-backed collections are unaffected — but any
+  **hand-rolled `save_to_store` override** with the old signature now raises
+  `TypeError: ... unexpected keyword argument 'conn'` on every flush. Fix by migrating the
+  collection to `SchemaBackedCollection` (preferred) or threading `conn` through the
+  override. **Consumers: see `docs/migrating-to-l3-store-seam.md`.**
+
+### Fixed — `3tears` (core)
+
+- **L2 serde now round-trips `NUMERIC` columns as `Decimal`.** The schema-backed
+  L2 (JSON) codec handled `UUID`/`datetime`/`bytes` but not `Decimal`, so
+  serializing any row with a `NUMERIC_TYPE` value (a money/metric column) raised
+  `TypeError: Object of type Decimal is not JSON serializable` — and the decode
+  side had no `NUMERIC` branch either, so a value would have come back as a bare
+  string/number rather than `Decimal`. `json_default` now emits `Decimal` as its
+  exact decimal string and `decode_l2_value` rehydrates a `NUMERIC` column back to
+  `Decimal` (via `Decimal(str(value))`, tolerating a float/int producer too — app
+  code that computes a cost as a `float` round-trips losslessly without the
+  binary-float expansion `Decimal(float)` would introduce). Surfaced by metallm
+  migrating its cost-bearing collections onto `SchemaBackedCollection`.
+
+### Changed — `3tears-nats` — BREAKING
+
+- **`deadletter_on_error` → `deadletter_on_failure`.** The `NatsClient.subscribe` /
+  `subscribe_typed` parameter (and the subscribe log field of the same name) was renamed so
+  benign config field names no longer read as errors in log/alert greps. Behavior is
+  identical — it still controls whether a callback/validation failure republishes to
+  `{ns}.deadletter.{subject}`. Update any call site that passes the keyword explicitly
+  (`grep -rn deadletter_on_error`); callers relying on the `True` default need no change.
+
 ### Added — `3tears` (core)
 
 - `threetears.core.backends.L3Backend` (raw-SQL transport) and `DurableStore` (SQL-free

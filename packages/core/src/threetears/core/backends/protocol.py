@@ -53,6 +53,10 @@ class L3Backend(Protocol):
         """Run a SELECT and return the first row dict, or ``None``."""
         ...
 
+    async def fetchval(self, query: str, *params: Any, namespace: str | None = None) -> Any:
+        """Run a SELECT and return the first column of the first row (scalar), or ``None``."""
+        ...
+
     async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
         """Run an INSERT/UPDATE/DELETE; return the asyncpg-shape status tag (``"UPDATE 1"``).
 
@@ -88,8 +92,14 @@ class DurableStore(Protocol):
     :func:`isinstance` against this ``runtime_checkable`` protocol.
     """
 
-    async def fetch_one(self, table: str, pk: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Fetch the row whose primary key equals ``pk`` (column→value), or ``None`` on miss."""
+    async def fetch_one(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> dict[str, Any] | None:
+        """Fetch the row whose primary key equals ``pk`` (column→value), or ``None`` on miss.
+
+        :param conn: optional backend-specific transaction handle the read binds to
+            instead of the backend's own store; ``None`` uses the backend's default
+            handle. A non-transactional backend ignores it.
+        :ptype conn: Any
+        """
         ...
 
     async def upsert(
@@ -97,12 +107,16 @@ class DurableStore(Protocol):
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
+        conn: Any = None,
     ) -> int:
         """Insert-or-update ``row`` keyed by the ``pk`` columns; return rows affected.
 
+        :param pk: the pk column names. Optional for a backend that already knows the pk
+            for ``table`` (e.g. a schema-aware SQL backend); required otherwise.
+        :ptype pk: Sequence[str] | None
         :param on_conflict: ``"update"`` (upsert), ``"ignore"`` (no-op on conflict), or
             ``"raise"`` (insert only — conflict is an error).
         :ptype on_conflict: str
@@ -110,13 +124,23 @@ class DurableStore(Protocol):
             update must still match; a mismatch yields **0 rows affected** (the caller
             raises ``ConcurrentModificationError``). ``None`` for inserts.
         :ptype cas: datetime | None
+        :param conn: optional backend-specific transaction handle the write binds to so
+            it commits atomically with the caller's other operations; ``None`` uses the
+            backend's default handle. A non-transactional backend ignores it.
+        :ptype conn: Any
         :return: rows affected — ``1`` on success, ``0`` on a CAS/optimistic-lock miss.
         :rtype: int
         """
         ...
 
-    async def delete(self, table: str, pk: Mapping[str, Any]) -> None:
-        """Delete the row whose primary key equals ``pk``; a missing row is not an error."""
+    async def delete(self, table: str, pk: Mapping[str, Any], *, conn: Any = None) -> None:
+        """Delete the row whose primary key equals ``pk``; a missing row is not an error.
+
+        :param conn: optional backend-specific transaction handle the delete binds to;
+            ``None`` uses the backend's default handle. A non-transactional backend
+            ignores it.
+        :ptype conn: Any
+        """
         ...
 
     async def scan(self, table: str, filters: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:

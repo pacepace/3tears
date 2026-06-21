@@ -226,18 +226,92 @@ def _toposort_pending(
     return no_deps + ordered
 
 
-async def flush_pending(
+def _resolve_batch_backend(
+    sorted_pending: list[PendingWrite],
+    registry: CollectionRegistry,
+) -> Any:
+    """Resolve the single shared backend for an atomic-batch flush, or ``None``.
+
+    The atomic-batch path is only taken when **every** pending collection resolves to
+    the **same** backend object AND that backend exposes a usable ``transaction()``.
+    Any of: an unregistered table, a missing backend, divergent backends, or a backend
+    without ``transaction()`` (e.g. a git-backed ``DurableStore``) → ``None``, so the
+    caller degrades to the per-entity loop.
+
+    :param sorted_pending: toposorted pending writes.
+    :ptype sorted_pending: list[PendingWrite]
+    :param registry: the collection registry.
+    :ptype registry: CollectionRegistry
+    :return: the shared backend exposing ``transaction()``, or ``None``.
+    :rtype: Any
+    """
+    backend: Any = None
+    for pw in sorted_pending:
+        collection = registry.get_collection(pw.table_name)
+        if collection is None:
+            return None
+        b = registry.get_l3_pool(pw.table_name)
+        if b is None or not callable(getattr(b, "transaction", None)):
+            return None
+        if backend is None:
+            backend = b
+        elif b is not backend:
+            return None
+    return backend
+
+
+async def _flush_batch_atomic(
+    sorted_pending: list[PendingWrite],
+    registry: CollectionRegistry,
+    backend: Any,
+) -> int:
+    """Persist the whole toposorted batch inside ONE backend transaction.
+
+    Raises on any failure so the caller can fall back to the per-entity loop (which
+    keeps the ``_is_fk_violation`` classification + re-enqueue). The transaction is
+    rolled back by the backend's ``transaction()`` context manager on exception.
+
+    :param sorted_pending: toposorted pending writes.
+    :ptype sorted_pending: list[PendingWrite]
+    :param registry: the collection registry.
+    :ptype registry: CollectionRegistry
+    :param backend: the shared backend exposing ``transaction()``.
+    :ptype backend: Any
+    :return: number of entities persisted (the full batch on success).
+    :rtype: int
+    """
+    flushed = 0
+    async with backend.transaction() as conn:
+        for pw in sorted_pending:
+            collection = registry.get_collection(pw.table_name)
+            # _resolve_batch_backend already proved every table resolves to a
+            # collection (and to this same backend); assert for the type-checker.
+            assert collection is not None
+            await collection.persist_to_store(pw.data, conn=conn)
+            flushed += 1
+    return flushed
+
+
+async def _flush_per_entity(
+    sorted_pending: list[PendingWrite],
     write_buffer: WriteBuffer,
     registry: CollectionRegistry,
-    parent_key_map: dict[str, str] | None = None,
 ) -> int:
-    """Drain the write buffer and persist all pending writes to Postgres."""
-    pending = await write_buffer.drain()
-    if not pending:
-        return 0
+    """Persist each pending write independently, re-enqueuing on failure.
 
-    sorted_pending = _toposort_pending(pending, parent_key_map)
+    The original per-entity flush loop: an unregistered table is skipped, and a failed
+    write is re-enqueued under the FK-aware retry policy (FK violations get the generous
+    ``_FK_RETRY_LIMIT`` budget; all other failures use ``_MAX_FLUSH_RETRIES``).
 
+    :param sorted_pending: toposorted pending writes.
+    :ptype sorted_pending: list[PendingWrite]
+    :param write_buffer: the write buffer (for re-enqueue).
+    :ptype write_buffer: WriteBuffer
+    :param registry: the collection registry.
+    :ptype registry: CollectionRegistry
+    :return: number of entities successfully persisted.
+    :rtype: int
+    """
     flushed = 0
     for pw in sorted_pending:
         collection = registry.get_collection(pw.table_name)
@@ -296,5 +370,58 @@ async def flush_pending(
                     },
                 )
                 await write_buffer.add(pw.table_name, pw.entity_id, pw.data, retries=next_retry)
-    log.debug("Flush complete", extra={"extra_data": {"flushed": flushed, "total": len(pending)}})
+    log.debug("Flush complete", extra={"extra_data": {"flushed": flushed, "total": len(sorted_pending)}})
     return flushed
+
+
+async def flush_pending(
+    write_buffer: WriteBuffer,
+    registry: CollectionRegistry,
+    parent_key_map: dict[str, str] | None = None,
+) -> int:
+    """Drain the write buffer and persist all pending writes to the durable tier.
+
+    When every pending collection shares ONE backend that exposes a usable
+    ``transaction()``, the toposorted batch is persisted inside a SINGLE
+    ``async with backend.transaction() as conn`` (one DB tx for a SQL backend; one
+    commit for a git backend) — each write threading ``conn`` through
+    ``persist_to_store``. **Graceful degrade**: on ANY exception in the batch path the
+    flush falls back to the per-entity loop, which keeps the ``_is_fk_violation``
+    classification + re-enqueue intact. A backend without ``transaction()`` (e.g. a
+    git-backed ``DurableStore``) degrades to the per-entity loop directly.
+
+    :param write_buffer: the coalescing write buffer to drain.
+    :ptype write_buffer: WriteBuffer
+    :param registry: the collection registry resolving table → collection + backend.
+    :ptype registry: CollectionRegistry
+    :param parent_key_map: optional table → parent-FK-column map for toposort.
+    :ptype parent_key_map: dict[str, str] | None
+    :return: number of entities successfully persisted.
+    :rtype: int
+    """
+    pending = await write_buffer.drain()
+    if not pending:
+        return 0
+
+    sorted_pending = _toposort_pending(pending, parent_key_map)
+
+    backend = _resolve_batch_backend(sorted_pending, registry)
+    if backend is not None:
+        try:
+            flushed = await _flush_batch_atomic(sorted_pending, registry, backend)
+            log.debug(
+                "Flush complete (atomic batch)",
+                extra={"extra_data": {"flushed": flushed, "total": len(sorted_pending)}},
+            )
+            return flushed
+        except Exception as exc:
+            # Graceful degrade: the whole transaction rolled back, so NOTHING was
+            # committed -- replay through the per-entity loop, which preserves the
+            # FK-aware re-enqueue policy per write. The fallback is the safety net,
+            # never weakened.
+            log.warning(
+                "Atomic batch flush failed, falling back to per-entity flush",
+                extra={"extra_data": {"total": len(sorted_pending), "error": str(exc)}},
+            )
+
+    return await _flush_per_entity(sorted_pending, write_buffer, registry)

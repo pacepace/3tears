@@ -404,3 +404,175 @@ class TestFkAwareRetryPolicy:
 
         assert flushed == 0
         assert buf.pending_count() == 0  # dropped at _MAX_FLUSH_RETRIES
+
+
+# parity-exempt: a bare transaction-connection stub (records persisted rows); it mirrors no production protocol
+class _FakeConn:
+    """A fake transactional connection that records the entities written through it."""
+
+    def __init__(self) -> None:
+        self.persisted: list[dict[str, object]] = []
+
+
+# parity-with: threetears.core.backends.protocol.DurableStore
+class _FakeTxBackend:
+    """A DurableStore-conformant backend exposing a real async ``transaction()``.
+
+    Stands in for a ``SqlL3Backend`` / git backend in the flush atomic-batch tests:
+    the ``transaction()`` CM yields a connection and records commit/rollback, so the
+    tests can prove the whole batch threaded ONE connection (happy path) and that an
+    in-batch failure rolls back + degrades to the per-entity loop.
+    """
+
+    def __init__(self, *, fail_on_enter: bool = False) -> None:
+        self._fail_on_enter = fail_on_enter
+        self.conn = _FakeConn()
+        self.entered = 0
+        self.committed = False
+        self.rolled_back = False
+
+    # DurableStore surface (unused by these tests but needed for isinstance passthrough)
+    async def fetch_one(self, table: str, pk: object, *, conn: object = None) -> dict[str, object] | None:
+        return None
+
+    async def upsert(self, table: str, row: object, **kwargs: object) -> int:
+        return 1
+
+    async def delete(self, table: str, pk: object, *, conn: object = None) -> None:
+        return None
+
+    async def scan(self, table: str, filters: object = None) -> list[dict[str, object]]:
+        return []
+
+    def transaction(self, namespace: str | None = None) -> _FakeTxBackend:
+        return self
+
+    async def __aenter__(self) -> _FakeConn:
+        self.entered += 1
+        if self._fail_on_enter:
+            raise RuntimeError("transaction unavailable")
+        return self.conn
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        if exc_type is None:
+            self.committed = True
+        else:
+            self.rolled_back = True
+        return False  # never swallow — propagate so flush_pending can fall back
+
+
+def _batch_collection(table: str, backend: _FakeTxBackend) -> MagicMock:
+    """A mock collection whose ``persist_to_store`` records on the conn it is handed."""
+    coll = MagicMock()
+    coll.table_name = table
+
+    async def _persist(data: dict[str, object], *, conn: object = None) -> int:
+        assert conn is backend.conn  # the batch path threads the transaction connection
+        backend.conn.persisted.append(data)
+        return 1
+
+    coll.persist_to_store = AsyncMock(side_effect=_persist)
+    return coll
+
+
+class TestFlushAtomicBatch:
+    """flush_pending persists a single-backend batch in ONE transaction (L3B-04)."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_persists_whole_batch_in_one_transaction(self) -> None:
+        """all pending writes share one backend → one ``transaction()`` threads every persist."""
+        backend = _FakeTxBackend()
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+        await buf.add("users", "u2", {"id": "u2"})
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=backend)  # DurableStore → passes through un-wrapped
+        registry.register(_batch_collection("users", backend))
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 2
+        assert backend.entered == 1  # exactly ONE transaction for the whole batch
+        assert backend.committed is True
+        assert len(backend.conn.persisted) == 2
+        assert buf.pending_count() == 0  # nothing re-enqueued
+
+    @pytest.mark.asyncio
+    async def test_batch_failure_rolls_back_and_falls_back_to_per_entity_loop(self) -> None:
+        """a failure INSIDE the batch transaction rolls back, then degrades to per-entity.
+
+        The per-entity loop's FK-aware re-enqueue must remain intact: the write is
+        re-added (retries incremented) rather than dropped, exactly as the existing
+        per-entity path does.
+        """
+        backend = _FakeTxBackend()
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=backend)
+
+        coll = MagicMock()
+        coll.table_name = "users"
+
+        async def _persist(data: dict[str, object], *, conn: object = None) -> int:
+            # fail whether called inside the batch (conn set) or the fallback (conn None)
+            raise RuntimeError("db down")
+
+        coll.persist_to_store = AsyncMock(side_effect=_persist)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 0
+        assert backend.entered == 1  # the batch path was attempted
+        assert backend.rolled_back is True  # the in-batch failure rolled the transaction back
+        # fallback per-entity loop re-enqueued under the general retry budget
+        assert buf.pending_count() == 1
+        items = await buf.drain()
+        assert items[0].retries == 1
+
+    @pytest.mark.asyncio
+    async def test_transaction_unavailable_falls_back_to_per_entity_loop(self) -> None:
+        """failure ENTERING the batch transaction also degrades to the per-entity loop."""
+        backend = _FakeTxBackend(fail_on_enter=True)
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=backend)
+
+        coll = MagicMock()
+        coll.table_name = "users"
+        coll.persist_to_store = AsyncMock(return_value=1)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 1
+        assert backend.entered == 1  # the batch path was attempted (enter raised)
+        # fallback persisted per-entity WITHOUT a conn
+        coll.persist_to_store.assert_awaited_once_with({"id": "u1"})
+
+    @pytest.mark.asyncio
+    async def test_backend_without_transaction_uses_per_entity_loop(self) -> None:
+        """a backend lacking ``transaction()`` (e.g. a git DurableStore) skips the batch path."""
+        buf = WriteBuffer()
+        await buf.add("users", "u1", {"id": "u1"})
+
+        registry = CollectionRegistry()
+        # a DurableStore with NO transaction() attribute
+        no_tx_backend = MagicMock(spec=["fetch_one", "upsert", "delete", "scan"])
+        registry.configure(l3_pool=no_tx_backend)
+
+        coll = MagicMock()
+        coll.table_name = "users"
+        coll.persist_to_store = AsyncMock(return_value=1)
+        registry.register(coll)
+
+        flushed = await flush_pending(buf, registry)
+
+        assert flushed == 1
+        # per-entity loop persists WITHOUT a conn (no transaction to thread)
+        coll.persist_to_store.assert_awaited_once_with({"id": "u1"})

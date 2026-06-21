@@ -936,9 +936,20 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         await self._publish_invalidation(entity_id)
 
-    async def persist_to_store(self, data: dict[str, Any]) -> int:
-        """Used by flush_pending."""
-        return await self.save_to_store(data)
+    async def persist_to_store(self, data: dict[str, Any], *, conn: Any = None) -> int:
+        """Persist a write-buffer entry to L3. Used by ``flush_pending``.
+
+        :param data: row payload keyed by column name
+        :ptype data: dict[str, Any]
+        :param conn: optional **backend-specific transaction handle** that overrides
+            :attr:`l3_pool` for this write, so the flush can persist a toposorted batch
+            inside ONE backend transaction (``flush_pending`` atomic-batch path).
+            ``None`` uses the collection's own L3 store (the per-entity fallback).
+        :ptype conn: Any
+        :return: rows affected reported by the backend
+        :rtype: int
+        """
+        return await self.save_to_store(data, conn=conn)
 
     @traced()
     async def reload_entity(self, entity: BaseEntity) -> None:
