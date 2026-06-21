@@ -60,9 +60,7 @@ log = get_logger(__name__)
 # does not weaken the per-owner ``uq_folders_agent_user_name`` uniqueness
 # v008 already enforces -- it simply makes ``folder_id`` itself a valid
 # single-column FK target (the composite PK is not).
-_CREATE_FOLDER_ID_UNIQUE_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_folder_id ON folders (folder_id)"
-)
+_CREATE_FOLDER_ID_UNIQUE_SQL = "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_folder_id ON folders (folder_id)"
 
 # The FK from a conversation to its folder, with ``ON DELETE SET NULL``
 # so deleting a folder auto-unfiles its conversations at the DB level.
