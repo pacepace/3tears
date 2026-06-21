@@ -1253,6 +1253,49 @@ class TestL2Roundtrip:
         restored = coll.deserialize(payload)
         assert restored["ad_hoc"] == "extra"
 
+    def test_numeric_decimal_roundtrip(self) -> None:
+        """NUMERIC columns round-trip through L2 as an exact Decimal.
+
+        ``json_default`` emits the decimal string (no float rounding) and
+        ``decode_l2_value`` rehydrates it to ``Decimal`` for a NUMERIC column.
+        """
+        from decimal import Decimal
+
+        from threetears.core.backends.schema_sql import (
+            decode_l2_value,
+            json_default,
+        )
+
+        value = Decimal("12345.67890123")
+        encoded = json.loads(json.dumps({"cost": value}, default=json_default))
+        assert encoded["cost"] == "12345.67890123"  # exact string, not a float
+
+        col = Column("cost", NUMERIC_TYPE, nullable=True, precision=18, scale=8)
+        decoded = decode_l2_value(col, encoded["cost"])
+        assert decoded == value
+        assert isinstance(decoded, Decimal)
+
+    def test_numeric_float_decodes_to_decimal(self) -> None:
+        """A NUMERIC value that arrives as a float (app code computes cost as a
+        float, not every producer uses Decimal) serializes as a JSON number and
+        decodes back to an exact Decimal -- ``Decimal(str(...))`` avoids the
+        binary-float expansion ``Decimal(float)`` would introduce.
+        """
+        from decimal import Decimal
+
+        from threetears.core.backends.schema_sql import (
+            decode_l2_value,
+            json_default,
+        )
+
+        encoded = json.loads(json.dumps({"cost": 0.048417}, default=json_default))
+        assert encoded["cost"] == 0.048417  # float stays a JSON number, no error
+
+        col = Column("cost", NUMERIC_TYPE, nullable=True, precision=18, scale=8)
+        decoded = decode_l2_value(col, encoded["cost"])
+        assert decoded == Decimal("0.048417")
+        assert isinstance(decoded, Decimal)
+
 
 # ---------------------------------------------------------------------------
 # delete_from_store

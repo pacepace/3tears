@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -62,6 +63,7 @@ _JSONB_TYPE = "jsonb"
 _BYTES_TYPE = "bytes"
 _INT_TYPE = "int"
 _BOOL_TYPE = "bool"
+_NUMERIC_TYPE = "numeric"
 _VECTOR_TYPE = "vector"
 _TSVECTOR_TYPE = "tsvector"
 
@@ -270,6 +272,11 @@ def json_default(obj: object) -> Any:
         result = obj.isoformat()
     elif isinstance(obj, bytes):
         result = base64.b64encode(obj).decode("ascii")
+    elif isinstance(obj, Decimal):
+        # NUMERIC columns carry Decimal; emit the exact decimal string so
+        # ``decode_l2_value`` rehydrates it losslessly (str avoids the
+        # float-rounding a JSON number would introduce).
+        result = str(obj)
     else:
         raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
     return result
@@ -301,6 +308,10 @@ def decode_l2_value(column: Column, value: Any) -> Any:
         result = bool(value)
     elif column.column_type == _INT_TYPE and isinstance(value, (int, float)):
         result = int(value)
+    elif column.column_type == _NUMERIC_TYPE and isinstance(value, (str, int, float)):
+        # NUMERIC round-trips as the exact decimal string json_default emits;
+        # tolerate int/float too (legacy L2 payloads, hand-built rows).
+        result = Decimal(str(value))
     elif column.column_type == _VECTOR_TYPE:
         result = decode_vector(value)
     elif column.column_type == _JSONB_TYPE:

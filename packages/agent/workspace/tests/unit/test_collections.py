@@ -189,7 +189,7 @@ class _FakeNatsBus:
         message_type: type[BaseModel],
         queue: str | None = None,
         max_in_flight: int | None = None,
-        deadletter_on_error: bool = True,
+        deadletter_on_failure: bool = True,
     ) -> None:
         """
         register typed handler for subject.
@@ -204,10 +204,10 @@ class _FakeNatsBus:
         :ptype queue: str | None
         :param max_in_flight: ignored, present for api parity
         :ptype max_in_flight: int | None
-        :param deadletter_on_error: ignored, present for api parity
-        :ptype deadletter_on_error: bool
+        :param deadletter_on_failure: ignored, present for api parity
+        :ptype deadletter_on_failure: bool
         """
-        del queue, max_in_flight, deadletter_on_error
+        del queue, max_in_flight, deadletter_on_failure
         self._typed_subscribers.setdefault(subject.path, []).append((message_type, cb))
 
     async def get(self, bucket: str, key: str) -> bytes | None:
