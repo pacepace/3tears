@@ -89,22 +89,17 @@ CREATE TABLE IF NOT EXISTS folders (
 # (``IF NOT EXISTS``) expression of the UNIQUE constraint -- postgres'
 # table-level ``UNIQUE (...)`` clause has no ``IF NOT EXISTS`` form.
 _CREATE_FOLDERS_UNIQUE_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_agent_user_name "
-    "ON folders (agent_id, user_id, name)"
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_agent_user_name ON folders (agent_id, user_id, name)"
 )
 
 # lookup index backing FolderCollection.find_by_user (scoped by the
 # partition column + owner).
-_CREATE_FOLDERS_USER_IDX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_folders_user ON folders (agent_id, user_id)"
-)
+_CREATE_FOLDERS_USER_IDX_SQL = "CREATE INDEX IF NOT EXISTS idx_folders_user ON folders (agent_id, user_id)"
 
 # the mutable FK from a conversation to its folder. nullable
 # (conversations start unfiled) and NOT immutable (they move between
 # folders over their lifetime).
-_ADD_CONVERSATION_FOLDER_ID_SQL = (
-    "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folder_id UUID"
-)
+_ADD_CONVERSATION_FOLDER_ID_SQL = "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folder_id UUID"
 
 
 async def create_folders_and_conversation_folder_id(store: DataStore) -> None:

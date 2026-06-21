@@ -513,9 +513,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :rtype: list[Conversation]
         """
         rows = await self.l3_pool.fetch(
-            "SELECT * FROM conversations "
-            "WHERE agent_id = $1 AND folder_id = $2 "
-            "ORDER BY date_created DESC",
+            "SELECT * FROM conversations WHERE agent_id = $1 AND folder_id = $2 ORDER BY date_created DESC",
             agent_id,
             folder_id,
         )
