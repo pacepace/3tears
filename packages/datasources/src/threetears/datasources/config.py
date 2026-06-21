@@ -265,13 +265,17 @@ class RedshiftConnectionConfig(BaseModel):
     behind a bounded ``ThreadPoolExecutor`` + small connection cache
     (Redshift TLS+auth takes 1-3s/connection).
 
-    the warm-connection deque acts as a bounded connection pool: sized to
-    the Redshift user's ``CONNECTION LIMIT`` via :attr:`connection_cache_size`
-    (which defaults to :attr:`executor_max_workers` so they stay equal), it
-    reuses warm connections for concurrent queries and queues any query past
-    the bound on the ``AsyncSyncBridge`` executor, rather than opening a fresh
-    connection that would exceed the limit. set both to the user's connection
-    limit per-datasource.
+    the driver caps simultaneously-open connections via an
+    :class:`asyncio.Semaphore` sized to :attr:`connection_cache_size`: a
+    concurrent caller past that bound WAITS for a connection to free rather than
+    opening a fresh one that would exceed the Redshift user's ``CONNECTION
+    LIMIT``. the warm-connection deque (same size) then reuses those bounded
+    connections across queries so the handshake is paid rarely. NB the semaphore
+    caps ONE driver instance; the fleet-wide total open for a user is
+    ``hub_replicas x connection_cache_size``, so set the user's ``CONNECTION
+    LIMIT`` >= replica count x this value. :attr:`executor_max_workers` (which
+    :attr:`connection_cache_size` defaults to, keeping them equal) is a separate
+    bound on concurrent bridge WORK, not on open connections.
 
     :param datasource_type: discriminator; must be ``DataSourceType.REDSHIFT``
     :param host: Redshift cluster endpoint
@@ -311,19 +315,20 @@ class RedshiftConnectionConfig(BaseModel):
     )
     executor_max_workers: int = Field(
         default=5,
-        description="bounded ThreadPoolExecutor size for the async-sync bridge; the "
-        "effective max concurrent connections. MUST be <= the Redshift user's "
-        "CONNECTION LIMIT, else concurrent queries past the limit fail with "
-        "'too many connections'. conservative default sized to a typical tight "
-        "per-user limit; raise per-datasource when the user allows more",
+        description="bounded ThreadPoolExecutor size for the async-sync bridge; caps "
+        "concurrent bridge WORK (in-thread query execution), NOT the count of open "
+        "connections -- that cap is connection_cache_size (via the driver's "
+        "acquisition semaphore). keep >= connection_cache_size so checked-out "
+        "connections are not starved of worker threads",
     )
     connection_cache_size: int = Field(
         default=5,
-        description="warm redshift_connector connections kept per driver. defaults to "
-        "executor_max_workers when not set (see validator) so every concurrent query "
-        "reuses a warm connection instead of opening a fresh one past the cache -- the "
-        "deque then behaves as a proper bounded pool. a smaller cache than workers "
-        "forces fresh opens under load and overshoots the connection limit",
+        description="the per-driver cap on simultaneously-OPEN redshift connections, "
+        "enforced by an asyncio.Semaphore, AND the warm-connection deque size. "
+        "defaults to executor_max_workers when not set (see validator). MUST be <= the "
+        "Redshift user's CONNECTION LIMIT divided by the hub replica count (each "
+        "replica holds its own driver), else concurrent callers across replicas exceed "
+        "the limit and fail with 'too many connections'",
     )
     query_timeout_seconds: int = Field(
         default=300,

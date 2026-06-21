@@ -36,6 +36,10 @@ def _sample_data() -> dict[str, Any]:
         "channel_type": "slack",
         "conversation_ref": "C1234567890",
         "name": None,
+        # v008: mutable folder_id FK (None == unfiled). Present in the
+        # sample row so the INSERT / CAS-UPDATE column lists the mock
+        # emulates include it in declared order.
+        "folder_id": None,
         "status": "active",
         "summary": "initial summary",
         "date_created": now,
@@ -83,9 +87,9 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
 
         composite-pk schema column order (matches SchemaBackedCollection
         generator): agent_id, conversation_id, customer_id, user_id,
-        channel_type, conversation_ref, name, status, summary,
+        channel_type, conversation_ref, name, folder_id, status, summary,
         date_created, date_updated, date_last_message, metadata,
-        message_count.
+        message_count, language.
 
         :param query: SQL text
         :ptype query: str
@@ -104,6 +108,8 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 "channel_type",
                 "conversation_ref",
                 "name",
+                # v008: mutable folder_id FK, declared after name.
+                "folder_id",
                 "status",
                 "summary",
                 "date_created",
@@ -126,15 +132,18 @@ def _make_pg_mock(store: dict[str, dict[str, Any]] | None = None) -> AsyncMock:
                 result = "UPDATE 0"
                 return result
             existing["name"] = args[2]
-            existing["status"] = args[3]
-            existing["summary"] = args[4]
-            existing["date_updated"] = args[5]
-            existing["date_last_message"] = args[6]
-            existing["metadata"] = args[7]
-            existing["message_count"] = args[8]
+            # v008: folder_id is the mutable FK declared right after name,
+            # so it shifts every subsequent mutable bind by one.
+            existing["folder_id"] = args[3]
+            existing["status"] = args[4]
+            existing["summary"] = args[5]
+            existing["date_updated"] = args[6]
+            existing["date_last_message"] = args[7]
+            existing["metadata"] = args[8]
+            existing["message_count"] = args[9]
             # v006: language is a mutable column (changing it
             # re-tokenizes the search_vector via the trigger).
-            existing["language"] = args[9]
+            existing["language"] = args[10]
             result = "UPDATE 1"
             return result
         if "DELETE" in query:

@@ -364,6 +364,38 @@ class Conversation(BaseEntity):
         BaseEntity.__setattr__(self, "date_last_message", value)
 
     @property
+    def folder_id(self) -> UUID | None:
+        """
+        return the owning folder identifier, or ``None`` when unfiled.
+
+        a MUTABLE foreign key into the ``folders`` table (the
+        app-agnostic per-owner named container lifted into this
+        package). conversations are created unfiled (``None``) and get
+        moved into / between / out of folders over their lifetime, so
+        unlike ``conversation_ref`` this column is NOT immutable. the
+        target folder is scoped to the same agent partition; consumers
+        list a folder's conversations via
+        :meth:`ConversationsCollection.find_by_folder`.
+
+        :return: folder UUID this conversation is filed under, or
+            ``None`` when unfiled
+        :rtype: UUID | None
+        """
+        value = self._get_raw("folder_id")
+        return _as_uuid(value) if value is not None else None
+
+    @folder_id.setter
+    def folder_id(self, value: UUID | None) -> None:
+        """
+        set (or clear) the owning folder identifier.
+
+        :param value: folder UUID to file the conversation under, or
+            ``None`` to unfile it
+        :ptype value: UUID | None
+        """
+        BaseEntity.__setattr__(self, "folder_id", value)
+
+    @property
     def metadata(self) -> dict[str, Any] | None:
         """
         return the free-form metadata JSONB blob.

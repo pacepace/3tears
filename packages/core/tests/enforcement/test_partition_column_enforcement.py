@@ -59,6 +59,7 @@ _PARTITIONED_TABLES: dict[str, str] = {
     "context_items": "conversation_id",
     # conversations
     "conversations": "agent_id",
+    "folders": "agent_id",
     # agent-memory
     "memories": "agent_id",
     "media": "agent_id",

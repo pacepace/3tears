@@ -19,6 +19,7 @@ from threetears.conversations.migrations import (
     add_conversation_search_vector,
     add_name_column,
     create_conversations_table,
+    create_folders_and_conversation_folder_id,
     datetime_to_datetimetz,
     register,
 )
@@ -29,6 +30,7 @@ from threetears.core.data.migrations import (
 )
 
 
+# parity-exempt: narrow migration-capture stub — emulates only the execute/fetch subset the MigrationRunner calls, not a DataStore substitute.
 class _FakeDataStore:
     """
     in-memory DataStore stub capturing every executed statement.
@@ -133,24 +135,25 @@ class TestRegisterConversationsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ()
 
-    async def test_register_populates_versions_one_through_seven(self) -> None:
+    async def test_register_populates_versions_one_through_eight(self) -> None:
         """register wires v001 (create), v002 (message_count), v003
         (name), v004 (datetimetz), v005 (search_vector + trigger),
         v006 (language column + trigger update), v007 (rename id
-        -> conversation_id)."""
+        -> conversation_id), v008 (folders table + conversation
+        folder_id)."""
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 6, 7, 8}
 
-    async def test_apply_runs_seven_versions_then_idempotent(self) -> None:
-        """apply records v1..v7 and re-running is a no-op."""
+    async def test_apply_runs_eight_versions_then_idempotent(self) -> None:
+        """apply records v1..v8 and re-running is a no-op."""
         runner = MigrationRunner()
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_for_agent_schema(store)
-        assert first_count == 7
+        assert first_count == 8
         assert store.migrations_table_created is True
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7]
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 6, 7, 8]
         second_count = await runner.apply_for_agent_schema(store)
         assert second_count == 0
 
@@ -429,6 +432,97 @@ class TestAddConversationLanguageColumnMigration:
     async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
         store = _FakeDataStore()
         await add_conversation_language_column(store)  # type: ignore[arg-type]
+        assert store.migrations_table_created is False
+        assert store.migrations_rows == []
+
+
+class TestCreateFoldersAndConversationFolderIdMigration:
+    """tests for v008: create the app-agnostic ``folders`` table plus
+    the mutable ``conversations.folder_id`` FK column.
+
+    a folder is a per-owner named container grouping conversations,
+    lifted from metallm so multiple apps reuse one canonical entity.
+    app-specific presentation lives in ``metadata`` so the canonical
+    shape stays column-stable.
+    """
+
+    async def test_direct_call_issues_four_statements(self) -> None:
+        """CREATE TABLE + CREATE UNIQUE INDEX + CREATE INDEX + ALTER."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        assert len(store.executed) == 4
+
+    async def test_direct_call_creates_folders_table(self) -> None:
+        """CREATE TABLE IF NOT EXISTS folders with composite PK + scope columns."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(r"CREATE TABLE IF NOT EXISTS folders", joined)
+        assert re.search(r"agent_id UUID NOT NULL", joined)
+        assert re.search(r"folder_id UUID NOT NULL", joined)
+        assert re.search(r"customer_id UUID NOT NULL", joined)
+        assert re.search(r"user_id UUID NOT NULL", joined)
+        assert "name TEXT NOT NULL" in joined
+        assert "metadata JSONB" in joined
+        assert "PRIMARY KEY (agent_id, folder_id)" in joined
+
+    async def test_direct_call_declares_timestamptz_columns(self) -> None:
+        """fresh table declares date columns as TIMESTAMPTZ so the
+        column-type-alignment enforcement matches the DATETIMETZ_TYPE
+        Column declarations on FolderCollection."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert "date_created TIMESTAMPTZ NOT NULL" in joined
+        assert "date_updated TIMESTAMPTZ NOT NULL" in joined
+
+    async def test_direct_call_enforces_unique_agent_user_name(self) -> None:
+        """UNIQUE(agent_id, user_id, name) -- folders are scoped per user,
+        so a folder name is unique within one owner. Expressed as a
+        unique index for ``IF NOT EXISTS`` idempotency."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"CREATE UNIQUE INDEX IF NOT EXISTS uq_folders_agent_user_name "
+            r"ON folders \(agent_id, user_id, name\)",
+            joined,
+        )
+
+    async def test_direct_call_creates_user_lookup_index(self) -> None:
+        """btree index on (agent_id, user_id) backing find_by_user."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"CREATE INDEX IF NOT EXISTS idx_folders_user ON folders \(agent_id, user_id\)",
+            joined,
+        )
+
+    async def test_direct_call_adds_conversation_folder_id_column(self) -> None:
+        """ALTER conversations ADD COLUMN IF NOT EXISTS folder_id UUID
+        (mutable, nullable -- conversations start unfiled and move
+        between folders)."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert re.search(
+            r"ALTER TABLE conversations\s+ADD COLUMN IF NOT EXISTS folder_id UUID",
+            joined,
+            re.IGNORECASE,
+        )
+
+    async def test_direct_call_does_not_qualify_with_schema_name(self) -> None:
+        """DDL stays unqualified so search_path governs the target schema."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
+        joined = _joined_executed_sql(store)
+        assert not re.search(r"agent_[0-9a-f]{32}\.", joined)
+
+    async def test_direct_call_leaves_migrations_table_untouched(self) -> None:
+        """direct invocation does not touch ``_schema_migrations``."""
+        store = _FakeDataStore()
+        await create_folders_and_conversation_folder_id(store)  # type: ignore[arg-type]
         assert store.migrations_table_created is False
         assert store.migrations_rows == []
 
