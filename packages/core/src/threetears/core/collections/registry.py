@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ValidationError
 from threetears.nats import NatsClient, Subjects
 from threetears.nats.errors import PublishError, SubscribeError
 from threetears.observe import get_logger
 from uuid_utils import uuid7
+
+if TYPE_CHECKING:
+    from threetears.core.backends import L3Backend
 
 __all__ = [
     "CacheInvalidationMessage",
@@ -63,7 +66,7 @@ class CollectionRegistry:
     def __init__(self) -> None:
         self._l1_backend: Any = None
         self._l2_client: Any = None
-        self._l3_pool: Any = None
+        self._l3_pool: L3Backend | None = None
         self._collections: dict[str, Any] = {}  # table_name -> collection instance
         self._overrides: dict[str, dict[str, Any]] = {}  # table_name -> {l1_backend, l2_client, l3_pool}
         # Per-registry (effectively per-pod) identity stamped on every
@@ -76,7 +79,7 @@ class CollectionRegistry:
         self,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: Any = None,
+        l3_pool: L3Backend | None = None,
     ) -> None:
         """Set default dependencies for all collections."""
         if l1_backend is not None:
@@ -92,7 +95,7 @@ class CollectionRegistry:
         *,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: Any = None,
+        l3_pool: L3Backend | None = None,
     ) -> None:
         """Register a collection instance with optional per-collection overrides."""
         table = collection.table_name
@@ -112,7 +115,7 @@ class CollectionRegistry:
         *,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: Any = None,
+        l3_pool: L3Backend | None = None,
     ) -> None:
         """pin per-table backend overrides BEFORE the Collection is constructed.
 
@@ -170,10 +173,10 @@ class CollectionRegistry:
         overrides = self._overrides.get(table_name, {})
         return overrides.get("l2_client", self._l2_client)
 
-    def get_l3_pool(self, table_name: str) -> Any:
+    def get_l3_pool(self, table_name: str) -> L3Backend | None:
         """Get L3 pool for a collection (override or default)."""
         overrides = self._overrides.get(table_name, {})
-        return overrides.get("l3_pool", self._l3_pool)
+        return cast("L3Backend | None", overrides.get("l3_pool", self._l3_pool))
 
     # ------------------------------------------------------------------
     # Cache coherence -- cross-pod L1 invalidation via typed NATS pub/sub
