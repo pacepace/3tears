@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-audit"
-version = "0.13.2"
+version = "0.13.3"
 description = "unified audit envelope + fire-and-forget publish helper for the 3tears platform"
 readme = "README.md"
 requires-python = ">=3.14"
