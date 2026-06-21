@@ -880,7 +880,7 @@ class DataSourceSchemaDigestCollection(
             data.get("date_created"),
             data.get("date_updated"),
         )
-        return int(result.split()[-1])
+        return parse_rowcount(result)
 
     async def delete_from_store(self, entity_id: Any) -> None:
         """hard-delete the digest row from L3.
