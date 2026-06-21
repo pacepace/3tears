@@ -655,7 +655,7 @@ here so anyone holding the old draft knows the workarounds are no longer needed:
   one shared L1 backend. The "first table only" caveat is gone.
 - **`vector` column type** — `ColumnDef(column_type="vector", vector_dim=...)` is now
   first-class (§9); raw DDL is no longer the only path.
-- **Raw asyncpg `Record` re-promotion (#85)** — `fetch_from_postgres` now converts
+- **Raw asyncpg `Record` re-promotion (#85)** — `fetch_from_store` now converts
   rows to dicts at the L3 border, so L3→L1 re-promotion works with a raw asyncpg pool.
   Closed.
 - **asyncpg `pgproto.UUID` PK binding (#86)** — PK values are now serialized at the L1

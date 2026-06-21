@@ -2,8 +2,8 @@
 
 collapses the CRUD boilerplate that every
 :class:`~threetears.core.collections.base.BaseCollection` subclass used
-to hand-roll (``fetch_from_postgres`` / ``save_to_postgres`` /
-``delete_from_postgres`` / ``serialize`` / ``deserialize``) into one
+to hand-roll (``fetch_from_store`` / ``save_to_store`` /
+``delete_from_store`` / ``serialize`` / ``deserialize``) into one
 schema-driven implementation. subclasses declare a
 :class:`TableSchema` as a class attribute and stop writing SQL by hand
 for the standard row lifecycle. domain-specific query methods
@@ -32,16 +32,22 @@ CAS.
 
 from __future__ import annotations
 
-import base64
 import inspect
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import wraps
 from typing import Any, ClassVar, Generic, Literal, TypeVar, overload
 from uuid import UUID
 
+from threetears.core.backends.protocol import DurableStore
+from threetears.core.backends.schema_sql import (
+    coerce_row as _coerce_row_fn,
+    decode_l2_value as _decode_l2_value,
+    encode_jsonb as encode_jsonb,
+    json_default as _json_default,
+)
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.observe import get_logger
 
@@ -481,8 +487,8 @@ class Column:
     :cvar name: column name (matches the L3 DDL and the row-dict key)
     :cvar column_type: one of the module-level type tags
         (``UUID_TYPE``, ``STRING_TYPE``, etc.); used by
-        :meth:`SchemaBackedCollection._normalize_write_value` /
-        :meth:`SchemaBackedCollection._normalize_read_value` to pick
+        :func:`threetears.core.backends.schema_sql.normalize_write_value` /
+        :func:`threetears.core.backends.schema_sql.normalize_read_value` to pick
         the right coercion rule and by the SQL generator to decide
         whether a parameter needs a ``::jsonb`` / ``::vector`` cast
     :cvar immutable: when ``True``, column is emitted on INSERT but
@@ -653,12 +659,12 @@ class TableSchema:
     :cvar cas_column: column used as the optimistic-concurrency fence
         on the UPDATE path. when set (typical value: ``"date_updated"``)
         and the caller passes a non-``None`` ``original_timestamp`` to
-        :meth:`SchemaBackedCollection.save_to_postgres`, the generator
+        :meth:`SchemaBackedCollection.save_to_store`, the generator
         emits a separate UPDATE fenced on ``cas_column = $N``. when
         ``None``, the ``original_timestamp`` argument is silently
         ignored
     :cvar on_conflict: behaviour of
-        :meth:`SchemaBackedCollection.save_to_postgres` on primary-key
+        :meth:`SchemaBackedCollection.save_to_store` on primary-key
         conflict. ``"update"`` (default) emits ``ON CONFLICT (pk) DO
         UPDATE SET <mutable>`` -- the standard upsert path. ``"raise"``
         emits plain INSERT with no ``ON CONFLICT`` clause; duplicate
@@ -1060,276 +1066,6 @@ def _require_pgvector() -> Any:
     return Vector
 
 
-def _coerce_uuid(value: Any) -> UUID | None:
-    """coerce a value to a stdlib :class:`UUID`.
-
-    asyncpg returns ``asyncpg.pgproto.pgproto.UUID`` for UUID columns,
-    which is a subclass of stdlib UUID. SQLite's parameter binder
-    rejects the subclass (it special-cases stdlib UUID only), so every
-    read coerces to stdlib UUID unconditionally.
-
-    :param value: UUID-shaped input (stdlib UUID, pgproto UUID, or str)
-    :ptype value: Any
-    :return: stdlib UUID or ``None`` pass-through
-    :rtype: UUID | None
-    """
-    if value is None:
-        result: UUID | None = None
-    elif type(value) is UUID:  # noqa: E721 -- exact type match, see docstring
-        result = value
-    elif isinstance(value, UUID):  # pgproto subclass
-        result = UUID(str(value))
-    else:
-        result = UUID(str(value))
-    return result
-
-
-def _coerce_datetime_for_write_tz(value: Any) -> datetime | None:
-    """coerce a datetime to aware-UTC form for TIMESTAMPTZ column writes.
-
-    asyncpg's TIMESTAMPTZ codec runs ``obj.astimezone(utc)`` on every
-    bound parameter. for a naive input the call interprets the wall-
-    clock value as the **client's local timezone**, so a naive value
-    that semantically represents UTC (which is what
-    :meth:`BaseCollection.save_entity` passes after stripping ``tzinfo``
-    for the legacy TIMESTAMP path) gets shifted by the host's local
-    offset before it ever reaches the database. on non-UTC hosts that
-    leak silently corrupts every TIMESTAMPTZ write and breaks every
-    subsequent CAS predicate (the predicate value goes through the
-    same shift on the way out).
-
-    this coercion eliminates the ambiguity by ensuring the value is
-    aware-UTC before binding: a naive input is interpreted as UTC
-    (``replace(tzinfo=UTC)``) -- the contract for
-    :class:`SchemaBackedCollection` is "core code holds aware UTC
-    everywhere; if a value reached this point as naive it was a
-    UTC-projected naive (per CLAUDE.md datetime rule)". an aware
-    input is normalized via ``astimezone(UTC)`` so non-UTC tzinfo
-    values (rare but legal) flatten to UTC before the codec runs its
-    own no-op ``astimezone(utc)``. ``None`` pass-through.
-
-    :param value: datetime input (aware / naive) or ``None``
-    :ptype value: Any
-    :return: aware-UTC datetime or ``None``
-    :rtype: datetime | None
-    """
-    if value is None:
-        result: datetime | None = None
-    elif not isinstance(value, datetime):
-        result = value
-    elif value.tzinfo is None:
-        result = value.replace(tzinfo=UTC)
-    else:
-        result = value.astimezone(UTC)
-    return result
-
-
-def _coerce_datetime_for_read_tz(value: Any) -> datetime | None:
-    """coerce a TIMESTAMPTZ read value to aware-UTC form.
-
-    asyncpg's TIMESTAMPTZ decoder already returns aware-UTC datetimes,
-    so the typical path is a passthrough. this coercion exists for the
-    edge cases where a TIMESTAMPTZ value re-enters the read normalizer
-    from a non-asyncpg source (L2 JSON deserialization, hand-rolled
-    proxy pools that round-trip through string isoformat) and arrives
-    naive. naive values are wrapped with ``UTC`` (the column type
-    asserts "this is a UTC instant"), aware values are normalized to
-    UTC tzinfo so equality comparisons against asyncpg-decoded values
-    are byte-stable. ``None`` pass-through.
-
-    :param value: datetime input (aware / naive) or ``None``
-    :ptype value: Any
-    :return: aware-UTC datetime or ``None``
-    :rtype: datetime | None
-    """
-    if value is None:
-        result: datetime | None = None
-    elif not isinstance(value, datetime):
-        result = value
-    elif value.tzinfo is None:
-        result = value.replace(tzinfo=UTC)
-    else:
-        result = value.astimezone(UTC)
-    return result
-
-
-def _encode_vector(value: Any) -> str | None:
-    """encode a vector for pgvector's ``::vector`` cast.
-
-    asyncpg has no native pgvector codec; values must be passed as the
-    literal bracketed textual representation (``"[1.0, 2.0, ...]"``).
-    list inputs get JSON-encoded at the WRITE boundary. already-encoded
-    strings pass through. ``None`` pass-through.
-
-    :param value: list of floats, pre-encoded string, or ``None``
-    :ptype value: Any
-    :return: textual vector, passthrough string, or ``None``
-    :rtype: str | None
-    """
-    if value is None:
-        result: str | None = None
-    elif isinstance(value, str):
-        result = value
-    elif isinstance(value, list):
-        result = json.dumps(value)
-    else:
-        result = str(value)
-    return result
-
-
-def _decode_vector(value: Any) -> list[float] | None:
-    """decode a pgvector textual vector back to ``list[float]``.
-
-    :param value: textual vector (e.g. ``"[1.0,2.0]"``), list passthrough,
-        or ``None``
-    :ptype value: Any
-    :return: list of floats or ``None``
-    :rtype: list[float] | None
-    """
-    if value is None:
-        result: list[float] | None = None
-    elif isinstance(value, list):
-        result = [float(v) for v in value]
-    elif isinstance(value, str):
-        parsed = json.loads(value)
-        result = [float(v) for v in parsed] if isinstance(parsed, list) else None
-    else:
-        result = None
-    return result
-
-
-def encode_jsonb(value: Any) -> Any:
-    """validate / pass through a JSONB column value for asyncpg.
-
-    public canonical encoder: every collection that writes a JSONB column --
-    including hand-rolled custom-SQL upserts in sibling packages -- binds the
-    value through this function as a NATIVE python object (``$N``, no
-    ``::text::jsonb`` cast) and lets the registered codec apply the single
-    ``json.dumps``. this is the one jsonb-encode step in the platform; a
-    second ``json.dumps`` (or a ``::text::jsonb`` cast over a pre-encoded
-    string) is the double-encode bug this centralization removes.
-
-    asyncpg is the canonical Python -> Postgres encoder via its
-    registered ``jsonb`` text codec (see consumer-side connection
-    initializer, e.g. ``aibots.hub.app._init_db_connection``). that
-    codec calls ``json.dumps`` exactly once on the parameter; running
-    a second ``json.dumps`` here produces a JSON-encoded string of a
-    JSON-encoded string, which casts to a jsonb *string* (not the
-    intended jsonb *object*) and silently breaks every JSONB read
-    path (e.g. ``auth_identity->>'username'`` returns ``NULL``).
-
-    so this function is now a typed pass-through: dict/list/None
-    flow through to the codec; pre-encoded strings are decoded back
-    into structures so the codec receives a single Python value to
-    encode. anything else fails fast.
-
-    :param value: dict, list, pre-encoded JSON string, or ``None``
-    :ptype value: Any
-    :return: dict / list / ``None`` ready for asyncpg's jsonb codec
-    :rtype: Any
-    :raises TypeError: when ``value`` is not dict / list / str / None
-    """
-    if value is None:
-        result: Any = None
-    elif isinstance(value, (dict, list)):
-        result = value
-    elif isinstance(value, str):
-        # legacy callers (e.g. test fixtures) handing a pre-encoded
-        # JSON string; decode back to a structure so the codec applies
-        # exactly one encoding step. malformed input surfaces as a
-        # clean ValueError from json.loads rather than as silent
-        # double-encoding deep in the write path.
-        result = json.loads(value)
-    else:
-        raise TypeError(
-            f"JSONB column requires dict / list / str / None; got {type(value).__name__}",
-        )
-    return result
-
-
-def _decode_jsonb(value: Any) -> Any:
-    """decode a JSONB column value into a Python dict / list.
-
-    asyncpg returns JSONB as a string unless a codec is registered;
-    callers downstream expect the decoded structure. malformed payload
-    surfaces as the raw string so the corruption is visible rather than
-    silently swallowed.
-
-    :param value: JSON string, decoded object, or ``None``
-    :ptype value: Any
-    :return: decoded structure (typically ``dict``), passthrough, or
-        ``None``
-    :rtype: Any
-    """
-    if value is None:
-        result: Any = None
-    elif isinstance(value, str) and value:
-        try:
-            result = json.loads(value)
-        except ValueError, TypeError:
-            result = value
-    else:
-        result = value
-    return result
-
-
-def _json_default(obj: object) -> Any:
-    """default handler for :func:`json.dumps` covering platform types.
-
-    :param obj: value that :func:`json.dumps` cannot encode natively
-    :ptype obj: object
-    :return: JSON-compatible representation
-    :rtype: Any
-    :raises TypeError: when ``obj`` type is not covered
-    """
-    if isinstance(obj, UUID):
-        result: Any = str(obj)
-    elif isinstance(obj, datetime):
-        result = obj.isoformat()
-    elif isinstance(obj, bytes):
-        result = base64.b64encode(obj).decode("ascii")
-    else:
-        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-    return result
-
-
-def _decode_l2_value(column: Column, value: Any) -> Any:
-    """decode a single field from the L2 JSON payload back to native type.
-
-    :param column: column descriptor controlling the coercion rule
-    :ptype column: Column
-    :param value: JSON-decoded raw value
-    :ptype value: Any
-    :return: value coerced to the column's native Python type
-    :rtype: Any
-    """
-    if value is None:
-        result: Any = None
-    elif column.column_type == UUID_TYPE and isinstance(value, str):
-        result = UUID(value)
-    elif column.column_type == DATETIMETZ_TYPE and isinstance(value, str):
-        # isoformat strings carrying ``+00:00`` round-trip to aware UTC
-        # naturally; strings without an offset (legacy L2 payloads from
-        # before this column type existed) are interpreted as UTC.
-        parsed = datetime.fromisoformat(value)
-        result = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-    elif column.column_type == BYTES_TYPE and isinstance(value, str):
-        result = base64.b64decode(value.encode("ascii"))
-    elif column.column_type == BOOL_TYPE and isinstance(value, (bool, int)):
-        result = bool(value)
-    elif column.column_type == INT_TYPE and isinstance(value, (int, float)):
-        result = int(value)
-    elif column.column_type == VECTOR_TYPE:
-        result = _decode_vector(value)
-    elif column.column_type == JSONB_TYPE:
-        # JSONB round-trips through JSON natively; value is already the
-        # decoded structure
-        result = value
-    else:
-        result = value
-    return result
-
-
 class PartitionEnforcementError(TypeError):
     """raised at class-definition time when a partitioned collection
     declares a public method that neither accepts the partition column
@@ -1530,8 +1266,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             primary_key_column = "id"
 
     and inherit the full CRUD implementation:
-    :meth:`fetch_from_postgres`, :meth:`save_to_postgres`,
-    :meth:`delete_from_postgres`, :meth:`serialize`, :meth:`deserialize`.
+    :meth:`fetch_from_store`, :meth:`save_to_store`,
+    :meth:`delete_from_store`, :meth:`serialize`, :meth:`deserialize`.
     domain-specific query methods (e.g. ``find_by_agent``) stay on the
     subclass because query shape is per-collection.
 
@@ -1566,6 +1302,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
     schema: ClassVar[TableSchema]
     _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset()
+    # lazily-built (underlying_pool, SqlL3Backend) cache for the case where a raw
+    # transport is assigned directly to ``l3_pool`` (registry not in play); keeps the
+    # on-demand wrapper stable across CRUD calls. ``None`` until first wrap.
+    _durable_store_cache: tuple[Any, DurableStore] | None = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """validate the partition-column contract at class-definition time.
@@ -1626,453 +1366,88 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         return None
 
-    # --- SQL generation ---
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """construct the collection and register its schema with the L3 backend.
 
-    def _build_where_pk(self, start: int = 1) -> tuple[str, tuple[str, ...]]:
-        """build ``WHERE pk...`` fragment for fetch / delete / CAS.
+        :class:`BaseCollection.__init__` resolves :attr:`l3_pool` from the
+        registry. When that backend is a
+        :class:`~threetears.core.backends.sql.SqlL3Backend` (the default — the
+        registry wraps a raw asyncpg pool / ``NatsProxyL3Backend`` in one), the
+        schema is registered so the backend's structured
+        :class:`~threetears.core.backends.protocol.DurableStore` ops emit
+        schema-aware SQL byte-identical to the hand-rolled path. A backend that is
+        not a ``SqlL3Backend`` (e.g. a git-backed ``DurableStore``, or no backend
+        at all) needs no registration.
 
-        :param start: first positional-parameter index
-        :ptype start: int
-        :return: (where clause fragment, tuple of pk column names in
-            declared order)
-        :rtype: tuple[str, tuple[str, ...]]
+        :param args: positional args forwarded to :class:`BaseCollection`
+        :ptype args: Any
+        :param kwargs: keyword args forwarded to :class:`BaseCollection`
+        :ptype kwargs: Any
+        :return: nothing
+        :rtype: None
         """
-        pk_cols = self.schema.pk_columns
-        parts = [f"{col} = ${start + i}" for i, col in enumerate(pk_cols)]
-        return " AND ".join(parts), pk_cols
+        super().__init__(*args, **kwargs)
+        self._register_schema()
 
-    def _render_param(self, column: Column, idx: int) -> str:
-        """render ``$N`` with optional ``::jsonb`` / ``::vector`` cast.
+    def _register_schema(self) -> None:
+        """register :attr:`schema` with the resolved ``SqlL3Backend``, if any.
 
-        :param column: column descriptor
-        :ptype column: Column
-        :param idx: positional-parameter index (1-based)
-        :ptype idx: int
-        :return: placeholder string ready for SQL interpolation
-        :rtype: str
+        imported lazily inside the method to avoid a module-import cycle
+        (``schema_backed`` is imported by ``collections.__init__`` very early;
+        ``backends.sql`` pulls in ``schema_sql`` which type-checks against this
+        module). a non-``SqlL3Backend`` backend (or ``None``) is left untouched.
+
+        :return: nothing
+        :rtype: None
         """
-        if column.column_type == JSONB_TYPE:
-            result = f"${idx}::jsonb"
-        elif column.column_type == VECTOR_TYPE:
-            result = f"${idx}::vector"
-        else:
-            result = f"${idx}"
-        return result
+        from threetears.core.backends.sql import SqlL3Backend
 
-    def _insert_columns_for_data(self, data: dict[str, Any]) -> list[Column]:
-        """select the column list to emit in INSERT SQL + params.
+        backend = self.l3_pool
+        if isinstance(backend, SqlL3Backend):
+            backend.register_schema(self.schema.name, self.schema)
 
-        v0.8.0: columns with a declared ``server_default`` are OMITTED
-        from the INSERT when the caller did not supply a value, so the
-        server-side default applies. Without this gate the caller MUST
-        write every column whose Python value matches the default —
-        a footgun every downstream consumer hits.
+    def _durable_store(self) -> DurableStore | None:
+        """return the L3 backend as a :class:`DurableStore`, or ``None`` when absent.
 
-        Selection rule per column:
+        The structured CRUD lifecycle routes through this seam. The resolved
+        :attr:`l3_pool` is normally a :class:`~threetears.core.backends.sql.SqlL3Backend`
+        (the registry wraps a raw pool) or another ``DurableStore`` (e.g. scriob's
+        ``GitL3Backend``) — returned as-is. A raw transport assigned directly to
+        ``l3_pool`` (bypassing the registry — e.g. a test harness) is wrapped in a
+        schema-registered ``SqlL3Backend`` on demand, cached so the wrapper is stable
+        and re-used until the underlying pool changes.
 
-        * ``column.name in data`` -> always include (caller-supplied
-          value wins over server default).
-        * ``column.server_default is None`` -> always include; the
-          ``_pull_value`` path produces NULL or raises KeyError
-          depending on ``nullable``.
-        * ``column.server_default is not None`` AND ``column.name not
-          in data`` -> SKIP the column from both the SQL and the
-          parameter list so Postgres applies the server-side default.
-
-        The SQL and params builders both call this method with the
-        same ``data`` dict so the positional binding stays in sync.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: ordered list of columns to emit; subset of
-            ``self.schema.columns`` preserving declared order
-        :rtype: list[Column]
+        :return: the backend typed as :class:`DurableStore`, or ``None``
+        :rtype: DurableStore | None
         """
-        included: list[Column] = []
-        for col in self.schema.columns:
-            if col.server_default is not None and col.name not in data:
-                # let Postgres apply the server-side default
-                continue
-            included.append(col)
-        return included
+        backend = self.l3_pool
+        if backend is None:
+            return None
+        if isinstance(backend, DurableStore):
+            return backend
+        # raw transport assigned directly (registry not in play): wrap + register
+        # the schema once, cache by the underlying pool's identity so the wrapper
+        # is stable across calls and rebuilds only if the pool is reassigned.
+        cached = self._durable_store_cache
+        if cached is not None and cached[0] is backend:
+            return cached[1]
+        from threetears.core.backends.sql import SqlL3Backend
 
-    def _build_insert_sql(self, data: dict[str, Any] | None = None) -> str:
-        """build INSERT SQL with the conflict clause selected by schema.
-
-        column order matches :attr:`TableSchema.columns` exactly,
-        FILTERED to the subset selected by
-        :meth:`_insert_columns_for_data` (v0.8.0): columns with a
-        declared ``server_default`` that the caller omitted are
-        dropped from the column list AND the parameter list so the
-        server-side default applies.
-
-        Tests that assert on positional asyncpg parameters MUST call
-        ``_build_insert_sql`` and ``_build_insert_params`` with the
-        same ``data`` dict so the parameter positions match.
-
-        branches on :attr:`TableSchema.on_conflict`:
-
-        * ``"raise"``: plain INSERT with no ON CONFLICT clause
-        * ``"ignore"``: ``INSERT ... ON CONFLICT (pk) DO NOTHING``
-        * ``"update"`` (default): ``INSERT ... ON CONFLICT (pk) DO
-          UPDATE SET <mutable>``; falls back to ``DO NOTHING`` when
-          every non-pk column is immutable so existing rows are not
-          clobbered. The ``EXCLUDED.<name>`` references in the SET
-          clause stay limited to mutable columns regardless of
-          omitted server-default columns -- the ON CONFLICT path
-          updates whatever columns ARE in the INSERT, but only the
-          ones in mutable_columns() are eligible.
-
-        :param data: row dict to drive column selection. ``None`` is
-            accepted for backward compatibility with call-sites that
-            pre-date the v0.8.0 server_default gate; treated as an
-            empty dict which means EVERY server-default column is
-            omitted -- callers always pair the SQL with params built
-            from the SAME ``data`` so the param positions match.
-        :ptype data: dict[str, Any] | None
-        :return: parameterized INSERT SQL
-        :rtype: str
-        """
-        schema = self.schema
-        cols = self._insert_columns_for_data(data or {})
-        col_names = ", ".join(c.name for c in cols)
-        placeholders = ", ".join(self._render_param(c, i + 1) for i, c in enumerate(cols))
-        sql = f"INSERT INTO {schema.name} ({col_names}) VALUES ({placeholders})"
-        pk_cols = ", ".join(schema.pk_columns)
-        if schema.on_conflict == "raise":
-            result = sql
-        elif schema.on_conflict == "ignore":
-            result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
-        else:
-            # DO UPDATE SET references EXCLUDED.<col> for each mutable
-            # column. Intersect with the columns ACTUALLY emitted in
-            # the INSERT -- an EXCLUDED reference to a column that
-            # was not in the column list would be a SQL error.
-            emitted = {c.name for c in cols}
-            mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
-            if mutable_emitted:
-                set_clause = ", ".join(f"{c.name} = EXCLUDED.{c.name}" for c in mutable_emitted)
-                result = f"{sql} ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause}"
-            else:
-                # pk-only table or every non-pk column is immutable or
-                # omitted-via-server-default: emit DO NOTHING so
-                # existing rows are not clobbered.
-                result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
-        return result
-
-    def _cas_mutable_columns_for_data(self, data: dict[str, Any]) -> list[Column]:
-        """select the mutable column list to emit in CAS UPDATE SQL + params.
-
-        symmetric counterpart to :meth:`_insert_columns_for_data` for
-        the CAS UPDATE path. Without this filter, a mutable column
-        declared with ``server_default`` would force every CAS update
-        to carry that column in its data dict; the canonical contract
-        is that columns with a server default are optional in the
-        caller's payload. Surface for the symptom: a soft-fail
-        ``required column 'language' missing from data`` warning on
-        every ConversationWriteBuffer flush, because the lazy-create
-        path for ``conversations`` does not seed ``language`` (the
-        server default ``'english'`` handles it).
-
-        Selection rule per mutable column:
-
-        * ``column.name in data`` AND ``data[column.name] is not None``
-          -> include (caller-supplied value wins over server default).
-        * ``column.server_default is None`` -> always include; the
-          ``_pull_value`` path produces NULL or raises KeyError
-          depending on ``nullable``.
-        * ``column.server_default is not None`` AND
-          ``column.name not in data`` -> SKIP from both the SET clause
-          and the parameter list so the existing row's value is
-          preserved and Postgres does not raise on a missing required
-          column.
-        * ``column.server_default is not None`` AND
-          ``column.nullable is False`` AND ``data[column.name] is None``
-          -> SKIP. This protects against the L1 round-trip noise where
-          the entity is loaded from L1 cache (which mirrors columns as
-          nullable for shape-flexibility), the cache reads back ``None``
-          for any column never explicitly written, and the resulting
-          dict surfaces ``None`` on a NOT NULL server-default column
-          that the caller never set. Treat ``None`` on a NOT NULL
-          server-default column as "use existing DB value" rather than
-          "write NULL" because writing NULL is not a legitimate
-          operation on such a column (Postgres rejects it). The
-          nullable check ensures legitimate ``None`` writes on a
-          nullable column with a server-default still apply.
-
-        The SQL and params builders both call this method with the
-        same ``data`` dict so the positional binding stays in sync.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: ordered list of mutable columns to emit
-        :rtype: list[Column]
-        """
-        included: list[Column] = []
-        for col in self.schema.mutable_columns():
-            if col.server_default is not None and col.name not in data:
-                continue
-            if col.server_default is not None and not col.nullable and col.name in data and data[col.name] is None:
-                # L1 round-trip surfaced a None on a NOT NULL
-                # server-default column. Preserve existing DB value
-                # (see docstring for the full rationale).
-                continue
-            included.append(col)
-        return included
-
-    def _build_cas_update_sql(self, data: dict[str, Any] | None = None) -> str:
-        """build UPDATE SQL for the CAS (optimistic-concurrency) path.
-
-        parameter ordering: pk values ($1..$Npk), then mutable columns
-        (filtered by :meth:`_cas_mutable_columns_for_data` so
-        server-default columns the caller omitted are dropped from
-        both the SET clause and the params) in declared order, then
-        the CAS fence value as the last parameter. callers match this
-        layout in :meth:`save_to_postgres`.
-
-        :param data: row dict to drive column selection. ``None`` is
-            accepted for backward compatibility with call-sites that
-            pre-date the v0.8.4 server_default gate on the CAS path;
-            treated as an empty dict which means EVERY server-default
-            mutable column is omitted -- callers always pair the SQL
-            with params built from the SAME ``data`` so the param
-            positions match.
-        :ptype data: dict[str, Any] | None
-        :return: parameterized UPDATE SQL
-        :rtype: str
-        :raises RuntimeError: when the schema has no :attr:`cas_column`
-            (caller misuse -- CAS path is unreachable without a fence)
-        """
-        schema = self.schema
-        if schema.cas_column is None:
-            raise RuntimeError(
-                f"TableSchema(name={schema.name!r}): CAS UPDATE requires cas_column to be set",
-            )
-        pk_cols = schema.pk_columns
-        mutable = self._cas_mutable_columns_for_data(data or {})
-        # $1..$Npk are pk values; $Npk+1..$Npk+Nmut are mutable values
-        pk_where = " AND ".join(f"{col} = ${i + 1}" for i, col in enumerate(pk_cols))
-        set_parts: list[str] = []
-        next_idx = len(pk_cols) + 1
-        for col in mutable:
-            set_parts.append(f"{col.name} = {self._render_param(col, next_idx)}")
-            next_idx += 1
-        # final $ is the CAS fence value
-        cas_idx = next_idx
-        set_clause = ", ".join(set_parts)
-        result = f"UPDATE {schema.name} SET {set_clause} WHERE {pk_where} AND {schema.cas_column} = ${cas_idx}"
-        return result
-
-    def _build_select_column_list(self) -> str:
-        """render the by-pk SELECT projection from declared schema columns.
-
-        projects ONLY the schema's declared columns -- never ``SELECT *``
-        -- so a real table column the schema does not declare is never
-        read. this keeps a pool with no codec for that column's type off
-        the decode path: the hub omits the ``embedding`` (``vector``)
-        column from its knowledge ``TableSchema`` precisely so it never
-        decodes a pgvector value, and ``SELECT *`` defeated that by
-        returning the column anyway (asyncpg raises
-        ``UnsupportedClientFeatureError: unhandled standard data type
-        'vector'`` because no 3tears pool registers a vector codec --
-        only the jsonb text codec in :func:`init_connection`).
-
-        a DECLARED codec-less column (:data:`VECTOR_TYPE` /
-        :data:`TSVECTOR_TYPE` -- the two asyncpg types no 3tears pool
-        registers a binary codec for) is cast to ``::text`` so asyncpg
-        returns the string form instead of raising on the missing codec.
-        for ``VECTOR_TYPE`` :meth:`_normalize_read_value` parses the
-        bracketed string back to a ``list[float]`` (the same text
-        round-trip the write path casts with ``::vector``); for
-        ``TSVECTOR_TYPE`` (a trigger-maintained, immutable full-text
-        column never consumed as data) the text form passes through
-        untouched. without the cast a declared vector / tsvector column
-        would hit the SAME missing-codec failure on a real pool -- a
-        latent bug the recording-mock unit tests could not surface, and
-        the exact failure the hub knowledge get/update/delete hit on
-        YugabyteDB (where ``vector`` carries the fixed low OID 8078).
-
-        :return: comma-joined projection list in declared column order
-        :rtype: str
-        """
-        text_cast_types = (VECTOR_TYPE, TSVECTOR_TYPE)
-        parts: list[str] = []
-        for col in self.schema.columns:
-            if col.column_type in text_cast_types:
-                parts.append(f"{col.name}::text AS {col.name}")
-            else:
-                parts.append(col.name)
-        return ", ".join(parts)
-
-    def _build_fetch_sql(self) -> str:
-        """build SELECT SQL for pk-based fetch.
-
-        projects the schema's declared columns (never ``SELECT *``) via
-        :meth:`_build_select_column_list` so undeclared table columns --
-        notably a ``vector`` the consumer deliberately omitted -- are
-        never read and never decoded.
-
-        :return: parameterized SELECT SQL
-        :rtype: str
-        """
-        where, _ = self._build_where_pk(start=1)
-        columns = self._build_select_column_list()
-        return f"SELECT {columns} FROM {self.schema.name} WHERE {where}"
-
-    def _build_delete_sql(self) -> str:
-        """build DELETE SQL for pk-based delete.
-
-        :return: parameterized DELETE SQL
-        :rtype: str
-        """
-        where, _ = self._build_where_pk(start=1)
-        return f"DELETE FROM {self.schema.name} WHERE {where}"
-
-    # --- value normalization ---
-
-    def _normalize_write_value(self, column: Column, value: Any) -> Any:
-        """apply the column's write-boundary coercion.
-
-        :param column: column descriptor
-        :ptype column: Column
-        :param value: raw value from the caller's data dict
-        :ptype value: Any
-        :return: coerced value ready to pass to asyncpg
-        :rtype: Any
-        """
-        if value is None:
-            result: Any = None
-        elif column.column_type == UUID_TYPE:
-            result = _coerce_uuid(value)
-        elif column.column_type == DATETIMETZ_TYPE:
-            result = _coerce_datetime_for_write_tz(value)
-        elif column.column_type == JSONB_TYPE:
-            result = encode_jsonb(value)
-        elif column.column_type == VECTOR_TYPE:
-            result = _encode_vector(value)
-        else:
-            result = value
-        return result
-
-    def _normalize_read_value(self, column: Column, value: Any) -> Any:
-        """apply the column's read-boundary coercion.
-
-        :param column: column descriptor
-        :ptype column: Column
-        :param value: raw value from asyncpg
-        :ptype value: Any
-        :return: coerced value ready to hand back to callers
-        :rtype: Any
-        """
-        if value is None:
-            result: Any = None
-        elif column.column_type == UUID_TYPE:
-            # always coerce to stdlib UUID -- pgproto UUID is a subclass
-            # that SQLite's binder rejects
-            result = _coerce_uuid(value)
-        elif column.column_type == DATETIMETZ_TYPE:
-            # asyncpg's TIMESTAMPTZ decoder returns aware-UTC datetimes
-            # already; the coercion is a defensive normalization that
-            # also handles the edge case where a value flows in from a
-            # non-asyncpg source (L2 JSON, hand-rolled proxy pool) and
-            # arrives naive. result is always aware-UTC -- callers can
-            # rely on a stable shape downstream.
-            result = _coerce_datetime_for_read_tz(value)
-        elif column.column_type == JSONB_TYPE:
-            result = _decode_jsonb(value)
-        elif column.column_type == VECTOR_TYPE:
-            result = _decode_vector(value)
-        else:
-            result = value
-        return result
-
-    def _pull_value(self, data: dict[str, Any], column: Column) -> Any:
-        """read a column's value from the caller's data dict.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :param column: column descriptor
-        :ptype column: Column
-        :return: raw value from the dict
-        :rtype: Any
-        :raises KeyError: when the column is required (``nullable=False``)
-            and the key is missing from ``data``
-        """
-        if column.name in data:
-            result: Any = data[column.name]
-        elif column.nullable:
-            result = None
-        else:
-            raise KeyError(
-                f"{self.schema.name}.save_to_postgres: required column {column.name!r} missing from data",
-            )
-        return result
-
-    def _build_insert_params(self, data: dict[str, Any]) -> list[Any]:
-        """build the parameter list for the INSERT path in declared order.
-
-        v0.8.0: columns with ``server_default`` that the caller did
-        not include in ``data`` are OMITTED from both the SQL and the
-        parameter list (see :meth:`_insert_columns_for_data`). The
-        SQL builder and this builder MUST be called with the same
-        ``data`` dict so the positional bindings stay aligned.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :return: parameter list matching the SQL column order
-            (subset of :attr:`TableSchema.columns`)
-        :rtype: list[Any]
-        """
-        return [self._normalize_write_value(c, self._pull_value(data, c)) for c in self._insert_columns_for_data(data)]
-
-    def _build_cas_params(
-        self,
-        data: dict[str, Any],
-        original_timestamp: datetime,
-    ) -> list[Any]:
-        """build the parameter list for the CAS UPDATE path.
-
-        layout: pk values in declared order, then mutable columns in
-        declared order, then the CAS fence value last. matches the
-        placeholder layout produced by :meth:`_build_cas_update_sql`.
-
-        :param data: row dict keyed by column name
-        :ptype data: dict[str, Any]
-        :param original_timestamp: pre-mutation CAS fence value
-        :ptype original_timestamp: datetime
-        :return: parameter list matching the CAS UPDATE placeholder
-            layout
-        :rtype: list[Any]
-        """
-        schema = self.schema
-        params: list[Any] = []
-        for pk_name in schema.pk_columns:
-            pk_col = schema.column(pk_name)
-            params.append(self._normalize_write_value(pk_col, self._pull_value(data, pk_col)))
-        # filter mutable columns to those the caller supplied (or that
-        # have no server_default) so the params list aligns positionally
-        # with the SET clause produced by _build_cas_update_sql(data).
-        for col in self._cas_mutable_columns_for_data(data):
-            params.append(self._normalize_write_value(col, self._pull_value(data, col)))
-        # CAS fence value: CAS column is typically date_updated; caller
-        # supplies the pre-mutation value directly
-        if schema.cas_column is None:
-            # unreachable -- _build_cas_update_sql enforces the guard
-            raise RuntimeError(
-                f"TableSchema(name={schema.name!r}): CAS path reached without cas_column",
-            )
-        cas_col = schema.column(schema.cas_column)
-        params.append(self._normalize_write_value(cas_col, original_timestamp))
-        return params
+        wrapper = SqlL3Backend(backend)
+        wrapper.register_schema(self.schema.name, self.schema)
+        self._durable_store_cache = (backend, wrapper)
+        return wrapper
 
     # --- BaseCollection contract implementations ---
 
-    async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
-        """fetch one row from L3 by primary key.
+    async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
+        """fetch one row from L3 by primary key via the :class:`DurableStore` seam.
 
         accepts scalar ``entity_id`` for single-pk tables or a tuple of
         pk values for composite-pk tables; shape is validated by
-        :meth:`BaseCollection.normalize_pk`.
+        :meth:`BaseCollection.normalize_pk`. the schema-aware backend emits the
+        declared-columns-only SELECT (``VECTOR``/``TSVECTOR`` cast ``::text``) and
+        read-coerces the row.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk)
@@ -2080,44 +1455,26 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: row dict on hit, ``None`` on miss
         :rtype: dict[str, Any] | None
         """
-        result: dict[str, Any] | None
-        if self.l3_pool is None:
-            result = None
-        else:
-            pk_values = self.normalize_pk(entity_id)
-            # coerce pk values uniformly (str -> UUID when column is
-            # declared UUID, etc.)
-            coerced: list[Any] = []
-            for pk_name, raw in zip(self.schema.pk_columns, pk_values, strict=True):
-                coerced.append(self._normalize_write_value(self.schema.column(pk_name), raw))
-            row = await self.l3_pool.fetchrow(self._build_fetch_sql(), *coerced)
-            if row is None:
-                result = None
-            else:
-                result = self._coerce_row(dict(row))
-        return result
+        store = self._durable_store()
+        if store is None:
+            return None
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        return await store.fetch_one(self.schema.name, pk)
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
         *,
         conn: Any = None,
     ) -> int:
-        """persist one row to L3.
+        """persist one row to L3 via the :class:`DurableStore` seam.
 
-        behaviour branches on schema configuration:
-
-        * ``on_conflict="raise"``: INSERT only, no ``ON CONFLICT``;
-          duplicate-key conflicts raise from asyncpg naturally
-        * ``on_conflict="ignore"``: ``INSERT ... ON CONFLICT DO NOTHING``;
-          duplicate-key conflicts silently dropped
-        * ``cas_column`` set AND ``original_timestamp is not None`` AND
-          ``on_conflict="update"``: emit UPDATE fenced on ``cas_column``;
-          returns 0 on fence mismatch
-          (:class:`~threetears.core.exceptions.ConcurrentModificationError`
-          surfaces from the caller)
-        * otherwise: upsert via ``INSERT ... ON CONFLICT (pk) DO UPDATE``
+        the schema-aware backend selects INSERT / CAS-UPDATE from the schema's
+        ``on_conflict`` + ``cas_column`` and the ``cas`` (``original_timestamp``)
+        argument, drops omitted server-default columns, and casts JSONB / vector
+        params — byte-identical to the prior hand-rolled SQL.
 
         :param data: row payload keyed by column name
         :ptype data: dict[str, Any]
@@ -2125,45 +1482,29 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             when :attr:`TableSchema.cas_column` is ``None`` or when
             :attr:`TableSchema.on_conflict` is not ``"update"``
         :ptype original_timestamp: datetime | None
-        :param conn: optional asyncpg-compatible connection that
-            overrides :attr:`l3_pool` for this single write. when
-            supplied, the INSERT/UPDATE binds to the caller's
-            transaction so the write commits atomically with the
-            caller's other operations on the same connection.
-            ``None`` defers to the collection's own pool (legacy
-            behaviour)
+        :param conn: optional asyncpg-compatible connection that overrides
+            :attr:`l3_pool` for this single write so it commits atomically with
+            the caller's transaction. ``None`` defers to the collection's pool.
         :ptype conn: Any
-        :return: rows affected reported by asyncpg (0 on CAS failure or
+        :return: rows affected reported by the backend (0 on CAS failure or
             ON CONFLICT DO NOTHING miss, 1 on success)
         :rtype: int
         """
-        result: int
-        executor: Any = conn if conn is not None else self.l3_pool
-        if executor is None:
-            result = 0
-        else:
-            schema = self.schema
-            cas_eligible = (
-                schema.cas_column is not None and original_timestamp is not None and schema.on_conflict == "update"
-            )
-            if cas_eligible:
-                # pass ``data`` so server_default columns the caller
-                # omitted are dropped from both the SET clause and the
-                # parameter list (v0.8.4; symmetric with the INSERT path).
-                sql = self._build_cas_update_sql(data)
-                params = self._build_cas_params(data, original_timestamp)  # type: ignore[arg-type]
-            else:
-                # Pass ``data`` so server_default columns the caller
-                # omitted are dropped from both the SQL column list
-                # and the parameter list (v0.8.0).
-                sql = self._build_insert_sql(data)
-                params = self._build_insert_params(data)
-            status = await executor.execute(sql, *params)
-            result = self._parse_rowcount(status)
-        return result
+        store = self._durable_store()
+        if store is None:
+            return 0
+        pk = list(self.schema.pk_columns)
+        return await store.upsert(
+            self.schema.name,
+            data,
+            pk=pk,
+            on_conflict=self.schema.on_conflict,
+            cas=original_timestamp,
+            conn=conn,
+        )
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
-        """delete one row from L3 by primary key.
+    async def delete_from_store(self, entity_id: Any) -> None:
+        """delete one row from L3 by primary key via the :class:`DurableStore` seam.
 
         :param entity_id: pk value (single-pk) or tuple of pk values
             (composite-pk)
@@ -2171,12 +1512,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
-        if self.l3_pool is not None:
-            pk_values = self.normalize_pk(entity_id)
-            coerced: list[Any] = []
-            for pk_name, raw in zip(self.schema.pk_columns, pk_values, strict=True):
-                coerced.append(self._normalize_write_value(self.schema.column(pk_name), raw))
-            await self.l3_pool.execute(self._build_delete_sql(), *coerced)
+        store = self._durable_store()
+        if store is None:
+            return
+        pk_values = self.normalize_pk(entity_id)
+        pk = dict(zip(self.schema.pk_columns, pk_values, strict=True))
+        await store.delete(self.schema.name, pk)
 
     def serialize(self, data: dict[str, Any]) -> bytes:
         """serialize row dict to JSON bytes for L2 storage.
@@ -2206,53 +1547,20 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 result[key] = _decode_l2_value(col, value)
         return result
 
-    # --- row / rowcount helpers ---
+    # --- row helpers ---
 
     def _coerce_row(self, row: dict[str, Any]) -> dict[str, Any]:
         """apply read-boundary coercion to every known column in a row.
 
-        columns not declared in the schema pass through untouched so
-        ad-hoc joined projections still round-trip cleanly.
+        retained as an instance method because domain query methods on subclasses
+        (custom ``find_by_*`` / search SQL) call ``self._coerce_row(dict(row))`` on
+        their own asyncpg rows. delegates to the relocated pure
+        :func:`threetears.core.backends.schema_sql.coerce_row` so the coercion logic
+        lives in exactly one place.
 
         :param row: row dict as returned by asyncpg
         :ptype row: dict[str, Any]
         :return: same-shape dict with coerced values
         :rtype: dict[str, Any]
         """
-        result: dict[str, Any] = {}
-        for key, value in row.items():
-            col = self.schema.get_column(key)
-            if col is None:
-                result[key] = value
-            else:
-                result[key] = self._normalize_read_value(col, value)
-        return result
-
-    @staticmethod
-    def _parse_rowcount(status: Any) -> int:
-        """parse asyncpg's command-tag string into a row count.
-
-        asyncpg returns a string like ``"INSERT 0 1"`` /
-        ``"UPDATE 1"`` / ``"DELETE 1"``. empty / falsy values
-        (mock pools sometimes return ``None`` or ``""``) resolve to 0.
-
-        :param status: asyncpg status tag
-        :ptype status: Any
-        :return: rows-affected count
-        :rtype: int
-        """
-        result: int
-        if not status:
-            result = 0
-        elif isinstance(status, str):
-            parts = status.split()
-            if parts:
-                try:
-                    result = int(parts[-1])
-                except ValueError:
-                    result = 0
-            else:
-                result = 0
-        else:
-            result = 0
-        return result
+        return _coerce_row_fn(self.schema, row)

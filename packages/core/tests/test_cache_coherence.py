@@ -66,9 +66,9 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
-        pg_store: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict] | None = None,
     ) -> None:
-        self._pg_store = pg_store if pg_store is not None else {}
+        self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -79,20 +79,20 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
-        return self._pg_store.get(str(entity_id))
+    async def fetch_from_store(self, entity_id: object) -> dict | None:
+        return self._l3_rows.get(str(entity_id))
 
-    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
-            existing = self._pg_store.get(str(pk))
+            existing = self._l3_rows.get(str(pk))
             if existing and existing.get("date_updated") != original_timestamp:
                 return 0
-        self._pg_store[str(pk)] = dict(data)
+        self._l3_rows[str(pk)] = dict(data)
         return 1
 
-    async def delete_from_postgres(self, entity_id: object) -> None:
-        self._pg_store.pop(str(entity_id), None)
+    async def delete_from_store(self, entity_id: object) -> None:
+        self._l3_rows.pop(str(entity_id), None)
 
     def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
@@ -181,7 +181,7 @@ class InMemoryNatsBus:
         message_type: Any,
         queue: Any = None,  # noqa: ARG002
         max_in_flight: Any = None,  # noqa: ARG002
-        deadletter_on_error: bool = True,  # noqa: ARG002
+        deadletter_on_failure: bool = True,  # noqa: ARG002
     ) -> None:
         """typed subscribe matching wrapper kw-only api."""
         subject_str = str(subject)
@@ -190,7 +190,7 @@ class InMemoryNatsBus:
 
 def _make_pod(
     nats: InMemoryNatsBus,
-    pg_store: dict[str, dict],
+    l3_rows: dict[str, dict],
     config: DefaultCoreConfig,
     write_buffer: WriteBuffer | None = None,
 ) -> tuple[StubCollection, CollectionRegistry]:
@@ -199,7 +199,7 @@ def _make_pod(
     l1.initialize(_make_metadata())
     reg = CollectionRegistry()
     reg.configure(l1_backend=l1, l2_client=nats)
-    coll = StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, pg_store=pg_store)
+    coll = StubCollection(reg, config, nats_client=nats, write_buffer=write_buffer, l3_rows=l3_rows)
     return coll, reg
 
 
@@ -663,8 +663,8 @@ class TestSignalFailureResilience:
     async def test_signal_publish_failure_does_not_break_save(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, save_entity still succeeds."""
         nats = InMemoryNatsBus()
-        pg_store: dict[str, dict] = {}
-        pod_a, reg_a = _make_pod(nats, pg_store, config_always)
+        l3_rows: dict[str, dict] = {}
+        pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
         # Sabotage publish at the typed-wrapper boundary; the registry
         # narrow-catches PublishError and continues, the write stays
@@ -678,15 +678,15 @@ class TestSignalFailureResilience:
         await pod_a.save_entity(entity)
 
         # Save succeeded despite publish failure
-        assert "e1" in pg_store
-        assert pg_store["e1"]["name"] == "Alice"
+        assert "e1" in l3_rows
+        assert l3_rows["e1"]["name"] == "Alice"
 
     @pytest.mark.asyncio
     async def test_signal_publish_failure_does_not_break_setter(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, setter still writes to L1."""
         nats = InMemoryNatsBus()
-        pg_store: dict[str, dict] = {}
-        pod_a, reg_a = _make_pod(nats, pg_store, config_always)
+        l3_rows: dict[str, dict] = {}
+        pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
         pod_a.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
@@ -705,8 +705,8 @@ class TestSignalFailureResilience:
     async def test_signal_publish_failure_does_not_break_delete(self, config_always: DefaultCoreConfig) -> None:
         """If NATS publish fails, delete still succeeds."""
         nats = InMemoryNatsBus()
-        pg_store = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
-        pod_a, reg_a = _make_pod(nats, pg_store, config_always)
+        l3_rows = {"e1": {"id": "e1", "name": "Alice", "score": 42}}
+        pod_a, reg_a = _make_pod(nats, l3_rows, config_always)
 
         async def broken_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
             raise PublishError("NATS down")
@@ -715,7 +715,7 @@ class TestSignalFailureResilience:
 
         result = await pod_a.delete("e1")
         assert result is True
-        assert "e1" not in pg_store
+        assert "e1" not in l3_rows
 
     @pytest.mark.asyncio
     async def test_no_nats_client_no_signal_no_crash(self, config_always: DefaultCoreConfig) -> None:
@@ -724,13 +724,13 @@ class TestSignalFailureResilience:
         l1.initialize(_make_metadata())
         reg = CollectionRegistry()
         reg.configure(l1_backend=l1)
-        pg_store: dict[str, dict] = {}
-        coll = StubCollection(reg, config_always, nats_client=None, pg_store=pg_store)
+        l3_rows: dict[str, dict] = {}
+        coll = StubCollection(reg, config_always, nats_client=None, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 0})
         await coll.save_entity(entity)
 
-        assert "e1" in pg_store
+        assert "e1" in l3_rows
         assert coll["e1", "name"] == "Alice"
 
 
@@ -893,9 +893,9 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
         config: DefaultCoreConfig,
         nats_client: Any = None,
         write_buffer: WriteBuffer | None = None,
-        pg_store: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict] | None = None,
     ) -> None:
-        self._pg_store = pg_store if pg_store is not None else {}
+        self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
 
     @property
@@ -911,15 +911,15 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
         conv, ent = entity_id
         return f"{conv}:{ent}"
 
-    async def fetch_from_postgres(self, entity_id: object) -> dict | None:
-        return self._pg_store.get(self._key(entity_id))
+    async def fetch_from_store(self, entity_id: object) -> dict | None:
+        return self._l3_rows.get(self._key(entity_id))
 
-    async def save_to_postgres(self, data: dict, original_timestamp: datetime | None = None) -> int:
-        self._pg_store[self._key((data["conversation_id"], data["entity_id"]))] = dict(data)
+    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+        self._l3_rows[self._key((data["conversation_id"], data["entity_id"]))] = dict(data)
         return 1
 
-    async def delete_from_postgres(self, entity_id: object) -> None:
-        self._pg_store.pop(self._key(entity_id), None)
+    async def delete_from_store(self, entity_id: object) -> None:
+        self._l3_rows.pop(self._key(entity_id), None)
 
     def serialize(self, data: dict) -> bytes:
         return json.dumps(data, default=str).encode()
@@ -934,14 +934,14 @@ class CompUuidCollection(BaseCollection[CompUuidEntity]):
 
 def _make_uuid_pod(
     nats: InMemoryNatsBus,
-    pg_store: dict[str, dict],
+    l3_rows: dict[str, dict],
     config: DefaultCoreConfig,
 ) -> tuple[CompUuidCollection, CollectionRegistry]:
     l1 = SQLiteBackend(db_name=f"test_uuidpod_{uuid.uuid4().hex[:8]}")
     l1.initialize(_make_uuid_metadata())
     reg = CollectionRegistry()
     reg.configure(l1_backend=l1, l2_client=nats)
-    coll = CompUuidCollection(reg, config, nats_client=nats, pg_store=pg_store)
+    coll = CompUuidCollection(reg, config, nats_client=nats, l3_rows=l3_rows)
     return coll, reg
 
 

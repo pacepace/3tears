@@ -112,7 +112,8 @@ DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'context_items'
+        WHERE table_schema = current_schema()
+          AND table_name = 'context_items'
           AND column_name = 'long_desc'
           AND is_nullable = 'YES'
     ) THEN

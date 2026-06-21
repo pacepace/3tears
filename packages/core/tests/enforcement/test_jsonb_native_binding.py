@@ -8,7 +8,7 @@ test pools never reproduced it). collections-task-04 removed that hand-rolled
 duplication: jsonb columns are bound through ``encode_jsonb`` as native python
 objects and the codec applies the single encode.
 
-This gate keeps it from coming back: inside any ``save_to_postgres`` method
+This gate keeps it from coming back: inside any ``save_to_store`` method
 across the platform's collection modules, a ``::text::jsonb`` cast in a SQL
 literal OR a ``json.dumps(`` call is a reintroduced hand-rolled jsonb encode and
 FAILS THE BUILD. The canonical mechanism (``encode_jsonb`` + native ``$N`` bind)
@@ -33,7 +33,7 @@ _PACKAGES_ROOT = _REPO_ROOT / "packages"
 _EXEMPTIONS_FILE = Path(__file__).resolve().parent / "_jsonb_native_binding_exemptions.txt"
 
 #: the write method whose body must not hand-roll jsonb encoding.
-_WRITE_METHODS = frozenset({"save_to_postgres"})
+_WRITE_METHODS = frozenset({"save_to_store"})
 #: the cast workaround Option B removed (native bind needs no cast).
 _BANNED_CAST = "::text::jsonb"
 
@@ -174,7 +174,7 @@ class TestJsonbNativeBinding:
 
     @pytest.mark.parametrize("module", _MODULES, ids=_MODULE_IDS)
     def test_no_hand_rolled_jsonb_write(self, module: Path) -> None:
-        """a save_to_postgres must bind jsonb natively (encode_jsonb), no cast/dumps."""
+        """a save_to_store must bind jsonb natively (encode_jsonb), no cast/dumps."""
         rel = str(module.relative_to(_REPO_ROOT))
         exempt = parse_jsonb_exemptions(_EXEMPTIONS_FILE.read_text())
         tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
@@ -211,9 +211,9 @@ class TestJsonbExemptionIntegrity:
     def test_entry_without_rationale_is_rejected(self) -> None:
         """an entry with no preceding rationale is rejected."""
         with pytest.raises(AssertionError):
-            parse_jsonb_exemptions("packages/x/src/x/collections.py::save_to_postgres\n")
+            parse_jsonb_exemptions("packages/x/src/x/collections.py::save_to_store\n")
 
     def test_blanket_rationale_is_rejected(self) -> None:
         """a blanket rationale ('legacy') is rejected."""
         with pytest.raises(AssertionError):
-            parse_jsonb_exemptions("# rationale: legacy\npackages/x/src/x/collections.py::save_to_postgres\n")
+            parse_jsonb_exemptions("# rationale: legacy\npackages/x/src/x/collections.py::save_to_store\n")

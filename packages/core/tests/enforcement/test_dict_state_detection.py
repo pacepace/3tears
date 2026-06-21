@@ -118,6 +118,15 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_analyzers",
         "constructor-injected config mapping, not cached state",
     ),
+    # -- core: SqlL3Backend table→TableSchema registration map --
+    (
+        "core/backends/sql.py",
+        "SqlL3Backend",
+        "_schemas",
+        "static config, table→TableSchema registered once at collection "
+        "construction (startup); non-serializable (stores TableSchema dataclass "
+        "refs, not data), read-only on the CRUD hot path",
+    ),
     # -- registry: tool catalog (synced from NATS KV) --
     (
         "registry/catalog.py",

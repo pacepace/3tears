@@ -4,7 +4,7 @@ regression suite for the integration-guide review findings (PR #84):
 the repo's prior integration coverage used a dict-returning stub pool,
 which masked two real-driver failures in the L3 -> L1 re-promotion path:
 
-1. issue #85 -- ``fetch_from_postgres`` returned raw ``asyncpg.Record``
+1. issue #85 -- ``fetch_from_store`` returned raw ``asyncpg.Record``
    rows; iterating a Record yields values (not keys), so
    ``SQLiteBackend.upsert`` built ``INSERT INTO t () VALUES ()``.
 2. issue #86 -- asyncpg deserializes ``uuid`` columns to

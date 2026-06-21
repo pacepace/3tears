@@ -16,8 +16,8 @@ bespoke :class:`SQLiteBackend` wrapper in favour of a proper
   from L2 into L1.
 - L3 is intentionally unwired. the ``l3_pool`` attribute is
   deliberately left ``None``; the three-tier base class's
-  :meth:`fetch_from_postgres` / :meth:`save_to_postgres` /
-  :meth:`delete_from_postgres` are overridden to raise loudly so
+  :meth:`fetch_from_store` / :meth:`save_to_store` /
+  :meth:`delete_from_store` are overridden to raise loudly so
   accidental mis-wiring surfaces on the first call. heartbeats are
   transient by construction -- a restarted pod re-emits its
   heartbeat within seconds -- so durable L3 storage of every
@@ -105,7 +105,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         # override whatever L3 pool the registry snapped on us: this
         # Collection is L1+L2 only by design. assigning ``None`` here
         # makes the base-class L3 guards (``if self.l3_pool is None:
-        # return``) fire on every fetch / save / delete_from_postgres
+        # return``) fire on every fetch / save / delete_from_store
         # path that might leak through before the method-level
         # overrides can raise.
         self.l3_pool = None
@@ -133,7 +133,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
 
         overrides the three-tier read path. the base-class
         :meth:`BaseCollection.get` falls through to
-        :meth:`fetch_from_postgres` on L1+L2 miss; for this
+        :meth:`fetch_from_store` on L1+L2 miss; for this
         Collection that is a raise trigger by design. instead, an
         L1+L2 miss resolves to ``None`` so the :class:`HeartbeatSubscriber`
         can distinguish "this pod's row is gone, peer registry evicted
@@ -168,7 +168,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
 
         overrides the three-tier write path. the base-class
         :meth:`BaseCollection.save_entity` starts with
-        ``save_to_postgres``; that raises for this Collection by
+        ``save_to_store``; that raises for this Collection by
         design. the write here lays down L1 first, then L2, then
         publishes the cross-pod invalidation so peer registries
         refresh on next read.
@@ -209,7 +209,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
 
         overrides the three-tier delete path. the base-class
         :meth:`BaseCollection.delete` calls
-        ``delete_from_postgres`` unconditionally; for the L1+L2
+        ``delete_from_store`` unconditionally; for the L1+L2
         Collection that is a raise trigger. publishes an invalidation
         envelope so peer registries evict their own L1 copy.
 
@@ -228,7 +228,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         await self._publish_invalidation(entity_id)
         return True
 
-    async def fetch_from_postgres(
+    async def fetch_from_store(
         self,
         entity_id: Any,
     ) -> dict[str, Any] | None:
@@ -241,11 +241,11 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :raises RuntimeError: always; L3 is not wired for heartbeats
         """
         raise RuntimeError(
-            "HeartbeatCollection is L1+L2 only; fetch_from_postgres must "
+            "HeartbeatCollection is L1+L2 only; fetch_from_store must "
             "never be reached (no L3 pool bound for 'pod_heartbeats')",
         )
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -254,7 +254,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
     ) -> int:
         """unreachable on the L1+L2 Collection.
 
-        signature mirrors :meth:`BaseCollection.save_to_postgres`
+        signature mirrors :meth:`BaseCollection.save_to_store`
         verbatim (including the keyword-only ``conn`` parameter) so an
         accidental framework invocation surfaces the documented
         ``RuntimeError`` rather than a confusing ``TypeError``.
@@ -270,11 +270,11 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :raises RuntimeError: always; L3 is not wired for heartbeats
         """
         raise RuntimeError(
-            "HeartbeatCollection is L1+L2 only; save_to_postgres must "
+            "HeartbeatCollection is L1+L2 only; save_to_store must "
             "never be reached (save_entity is overridden to skip L3)",
         )
 
-    async def delete_from_postgres(self, entity_id: Any) -> None:
+    async def delete_from_store(self, entity_id: Any) -> None:
         """unreachable on the L1+L2 Collection.
 
         :param entity_id: ignored; kept for signature symmetry
@@ -284,8 +284,7 @@ class HeartbeatCollection(BaseCollection[HeartbeatEntity]):
         :raises RuntimeError: always; L3 is not wired for heartbeats
         """
         raise RuntimeError(
-            "HeartbeatCollection is L1+L2 only; delete_from_postgres must "
-            "never be reached (delete is overridden to skip L3)",
+            "HeartbeatCollection is L1+L2 only; delete_from_store must never be reached (delete is overridden to skip L3)",
         )
 
     def serialize(self, data: dict[str, Any]) -> bytes:

@@ -3039,12 +3039,12 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
 
     CRUD is generated from :attr:`schema` with composite pk
     ``(conversation_id, item_id)`` and no CAS column. ``short_desc``
-    is domain-truncated to 150 chars in :meth:`save_to_postgres` to
+    is domain-truncated to 150 chars in :meth:`save_to_store` to
     match the migration-v002 VARCHAR(150) bound.
     """
 
     primary_key_column: str | tuple[str, ...] = ("conversation_id", "item_id")
-    # rationale: ``save_to_postgres`` is a framework override that
+    # rationale: ``save_to_store`` is a framework override that
     # truncates ``short_desc`` to the migration-v002 VARCHAR(150) bound;
     # the underlying ``data`` dict already carries ``conversation_id``
     # (the partition column) by construction since
@@ -3052,7 +3052,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
     # before this override runs. exempting the framework override
     # keeps the partition contract on the read surface
     # (``find_by_conversation``) without weakening the static guard.
-    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"save_to_postgres"})
+    _partition_exempt_methods: ClassVar[frozenset[str]] = frozenset({"save_to_store"})
     # v0.8.0 enrichment: ``date_created`` carries ``server_default="now()"``
     # to match prod (prod ``information_schema`` confirms the default).
     # ``date_created`` is also immutable per the standard 3tears
@@ -3116,7 +3116,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         """
         return MemoryRefEntity
 
-    async def save_to_postgres(
+    async def save_to_store(
         self,
         data: dict[str, Any],
         original_timestamp: datetime | None = None,
@@ -3148,7 +3148,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
         if isinstance(desc_value, str) and len(desc_value) > _MEMORY_REF_SHORT_DESC_MAX:
             data = dict(data)
             data["short_desc"] = desc_value[:_MEMORY_REF_SHORT_DESC_MAX]
-        return await super().save_to_postgres(data, original_timestamp, conn=conn)
+        return await super().save_to_store(data, original_timestamp, conn=conn)
 
     async def find_by_conversation(
         self,

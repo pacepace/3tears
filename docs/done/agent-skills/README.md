@@ -1,6 +1,6 @@
 # agent-skills — Procedural memory for 3tears agents
 
-**Status:** draft (planning set, no implementation yet).
+**Status:** SHIPPED (v0.13.0). `3tears-agent-skills` package built; consumed by metallm (wake-attached + `skill_invoke`).
 **Scope:** primarily `3tears/packages/agent/skills/` (new package); touches `3tears/packages/agent/tools/` via the prerequisite eligibility-flags shard (`../agent-tools-eligibility/`).
 **Consumer:** metallm (see `metallm/docs/skills/PLACEMENT.md` for the canonical design + placement memo).
 

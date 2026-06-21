@@ -14,7 +14,9 @@ six-table draft into three):
 
 Subsequent shards add:
 
-- shard 02 -- tick engine + ``_compute_next_fire_at``.
+- shard 02 -- tick engine (since S-2 a thin adapter delegating to
+  ``threetears.scheduled_jobs.scheduled_tick_job`` +
+  ``compute_next_fire_at``).
 - shard 03 -- ``WakeTrigger`` + ``dispatch_wake`` convergence point.
 - shard 04 -- agent tools (CRUD) + webhook adapter glue.
 - shard 05 -- observability + rate-limit + Pydantic API models.

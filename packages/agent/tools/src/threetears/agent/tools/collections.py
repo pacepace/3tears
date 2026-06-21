@@ -179,6 +179,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         :rtype: list[ContextItemEntity]
         """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
+        assert self.l3_pool is not None
         rows = await self.l3_pool.fetch(
             """
             SELECT * FROM context_items
@@ -238,6 +239,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         if isinstance(metadata_val, dict):
             metadata_val = json.dumps(metadata_val)
 
+        assert self.l3_pool is not None
         row = await self.l3_pool.fetchrow(
             f"""
             INSERT INTO context_items (
@@ -267,6 +269,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             data["date_created"],
             data["date_updated"],
         )
+        assert row is not None  # INSERT ... RETURNING / ON CONFLICT ... RETURNING always yields a row
         returned_id: UUID = row["context_id"]
 
         # Update L1 cache. composite pk on (conversation_id, context_id)
@@ -361,6 +364,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         # the UPDATE inside one partition and satisfies the SQL-level
         # partition-column enforcement.
         try:
+            assert self.l3_pool is not None
             await self.l3_pool.execute(
                 "UPDATE context_items SET date_accessed = $3 WHERE conversation_id = $1 AND context_id = $2",
                 conversation_id,
@@ -388,6 +392,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         :rtype: int
         """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
+        assert self.l3_pool is not None
         row = await self.l3_pool.fetchrow(
             """
             SELECT COUNT(*) AS cnt FROM context_items
@@ -417,6 +422,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             return 0
 
         to_evict = count - result_limit
+        assert self.l3_pool is not None
         evict_rows = await self.l3_pool.fetch(
             """
             SELECT context_id FROM context_items
@@ -432,7 +438,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         for row in evict_rows:
             eid = row["context_id"]
             pk = (cid, eid)
-            await self.delete_from_postgres(pk)
+            await self.delete_from_store(pk)
             if self._l1 is not None:
                 self._l1.delete_by_id(self.table_name, pk, self.primary_key_columns)
             await self._delete_from_l2(pk)

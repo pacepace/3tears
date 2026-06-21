@@ -211,6 +211,7 @@ mypy_path = [
     "packages/observe/src",
     "packages/langgraph/src",
     "packages/registry/src",
+    "packages/scheduled-jobs/src",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
 # from the per-package tests/ trees (each has an enforcement/ package).
@@ -233,6 +234,7 @@ files = [
     "packages/observe/src",
     "packages/langgraph/src",
     "packages/registry/src",
+    "packages/scheduled-jobs/src",
 ]
 exclude = [
     "^packages/[^/]+/tests/",

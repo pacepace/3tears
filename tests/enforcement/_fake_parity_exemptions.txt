@@ -169,3 +169,39 @@ packages/agent/wake/tests/unit/test_tools_factories.py:235:_FakeRegistry
 packages/agent/wake/tests/unit/test_tools_factories.py:269:_FakeEncryption
 # rationale: the L3 seam is duck-typed (async fetch/fetchrow/execute per BaseCollection.l3_pool docs); the fake implements exactly that consumed subset, and asyncpg.Pool's connection-management surface (acquire/release/copy_*/sizing) is outside the collection contract
 packages/core/tests/unit/data/test_collection_factory.py:67:FakeAsyncpgPool
+
+# --- L3 store-seam refactor pass: pre-existing channels/nats test fakes that were
+# --- never declared. external-library fakes and intentional-subset stand-ins.
+
+# rationale: fakes the external nats.js.api.PubAck ack object (seq + duplicate fields only); not a threetears protocol
+packages/nats/tests/unit/test_oplog.py:42:_FakePubAck
+# rationale: fakes the external nats JetStreamContext (add_stream/publish subset with scripted acks); external lib, no threetears parity
+packages/nats/tests/unit/test_oplog.py:48:_FakeJetStream
+# rationale: fakes the external nats Client wrapper handing back the fake jetstream; external lib, no threetears parity
+packages/nats/tests/unit/test_oplog.py:73:_FakeClient
+# rationale: fakes the external nats.js.api.StreamState (last_seq field only); not a threetears protocol
+packages/nats/tests/unit/test_oplog.py:218:_FakeStreamState
+# rationale: fakes the external nats.js.api.StreamInfo (last_seq field only); not a threetears protocol
+packages/nats/tests/unit/test_oplog.py:223:_FakeStreamInfo
+# rationale: fakes the external nats pull subscription raising a scripted fetch error; external lib, no threetears parity
+packages/nats/tests/unit/test_oplog.py:228:_FakePullSub
+# rationale: live-socket transport stand-in capturing send_text frames; the production socket handle is a dunder/transport surface with no public parity to assert in a fanout unit test
+packages/channels/tests/unit/channels/presence/test_fanout.py:33:_FakeSocket
+# rationale: records unsubscribe teardown only; intentional subset of the subscription surface the fanout path exercises
+packages/channels/tests/unit/channels/presence/test_fanout.py:50:_FakeSubscription
+# rationale: NatsClient stand-in recording publishes + handing back fake subscriptions; intentional subset of the NatsClient surface the fanout path uses
+packages/channels/tests/unit/channels/presence/test_fanout.py:61:_FakeNats
+# rationale: RoomState stand-in recording join/leave + serving canned local sockets; intentional subset of the RoomState surface
+packages/channels/tests/unit/channels/presence/test_fanout.py:100:_FakeRoomState
+# rationale: live-socket transport stand-in for the cross-pod concurrency proof; transport handle, no public parity to assert
+packages/channels/tests/integration/channels/presence/test_presence_cross_pod.py:37:_FakeSocket
+# rationale: inlined in-memory MembershipLoader+GrantLoader (the acl test pattern); a two-protocol composite with no single production parity target
+packages/channels/tests/integration/channels/test_websocket_cross_pod.py:68:_FakeStore
+# rationale: live-socket transport stand-in; transport handle, no public parity to assert
+packages/channels/tests/unit/channels/presence/test_room_state.py:22:_FakeSocket
+# rationale: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
+packages/channels/tests/unit/channels/test_websocket_task03.py:45:_FakeRoomState
+# rationale: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
+packages/channels/tests/unit/channels/test_websocket_task03.py:59:_FakeFanout
+# rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
+packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandler

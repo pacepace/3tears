@@ -7,9 +7,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
 from threetears.core.collections.base import NATS_CLIENT_FROM_REGISTRY, BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.collections.schema_backed import _decode_vector, _encode_vector
 from threetears.core.config import CoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -197,9 +197,9 @@ def create_dynamic_collection(
     """create a BaseCollection subclass dynamically from a TableDef.
 
     generates the required abstract method implementations:
-    - fetch_from_postgres: SELECT * WHERE pk = $1
-    - save_to_postgres: INSERT ... ON CONFLICT DO UPDATE
-    - delete_from_postgres: DELETE WHERE pk = $1
+    - fetch_from_store: SELECT * WHERE pk = $1
+    - save_to_store: INSERT ... ON CONFLICT DO UPDATE
+    - delete_from_store: DELETE WHERE pk = $1
     - serialize: serialize_to_json
     - deserialize: deserialize_from_json with field_types from TableDef
 
@@ -256,7 +256,7 @@ def create_dynamic_collection(
             """return entity class for this collection."""
             return DynamicEntity
 
-        async def fetch_from_postgres(self, entity_id: Any) -> dict[str, Any] | None:
+        async def fetch_from_store(self, entity_id: Any) -> dict[str, Any] | None:
             """fetch single entity from L3 by primary key.
 
             converts the driver row to a plain ``dict`` at the L3
@@ -283,7 +283,7 @@ def create_dynamic_collection(
                     result[vec_col] = _decode_vector(result[vec_col])
             return result
 
-        async def save_to_postgres(
+        async def save_to_store(
             self,
             data: dict[str, Any],
             original_timestamp: datetime | None = None,
@@ -317,7 +317,7 @@ def create_dynamic_collection(
             result = 1 if result_str else 0
             return result
 
-        async def delete_from_postgres(self, entity_id: Any) -> None:
+        async def delete_from_store(self, entity_id: Any) -> None:
             """delete entity from L3 by primary key.
 
             :param entity_id: primary key value

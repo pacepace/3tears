@@ -1,37 +1,38 @@
-"""Pure helper: compute the next ``next_fire_at`` for a wake schedule.
+"""Pure helper: compute the next ``next_fire_at`` for a scheduled job.
 
-Split out from :mod:`threetears.agent.wake.tick` so the (DST-heavy,
-branch-dense) reschedule logic can be unit-tested without spinning up
-the tick body / dispatch callback / DB.
+Generalized from :mod:`threetears.agent.wake.reschedule`; the math is
+domain-neutral already (it operates only on a ``schedule_type``, a
+config dict, a missed-fire policy, and timestamps), so the
+generalization is a rename (``_compute_next_fire_at`` ->
+:func:`compute_next_fire_at`, now public) plus dropping the
+agent-specific module references. The branch bodies are unchanged.
 
 design notes
 ------------
 
-- **Pure function.** No DB, no I/O, no APScheduler scheduler state.
-  Given ``(schedule_type, schedule_config, missed_fire_policy,
-  last_fired_at, now)`` it deterministically returns the next fire
-  instant or ``None`` (terminal one-shot).
+- **Pure function.** No DB, no I/O, no scheduler state. Given
+  ``(schedule_type, schedule_config, missed_fire_policy, last_fired_at,
+  now)`` it deterministically returns the next fire instant or ``None``
+  (terminal one-shot).
 - **TZ-aware via stdlib ``zoneinfo``.** ``daily_at`` and
   ``random_within_window`` resolve in the schedule's configured
   timezone; DST transitions handled by ``zoneinfo`` naturally
-  (spring-forward day advances by 23h not 24h, fall-back day
-  advances by 25h not 24h).
-- **Missed-fire policy honored** per PLACEMENT §1.7. ``'coalesce'``
-  (default) fires once for a backlog and recomputes the next
-  ``next_fire_at`` forward into the future. ``'catch_up'`` advances
-  ``next_fire_at`` by exactly one increment so subsequent ticks fire
-  once per missed interval until caught up.
-- **APScheduler is a cron-only utility.** The ``'cron'`` branch is
-  the only place APScheduler enters; its ``CronTrigger`` is imported
-  lazily inside the branch so non-cron consumers pay no import cost
-  for a single schedule_type. APScheduler is declared as a hard
-  dependency on the wake package (small dep, ``cron`` is part of the
-  public ``ScheduleType`` surface, and an extras-install ceremony for
-  one Literal value is more friction than it is worth) but the lazy
-  import keeps the cost of merely importing this module at zero. The
-  function still raises ``RuntimeError`` with install guidance if the
-  import fails, so consumers running a stripped wheel see a clear
-  message instead of a bare ``ImportError``.
+  (spring-forward day advances by 23h not 24h, fall-back day advances
+  by 25h not 24h).
+- **Missed-fire policy honored.** ``'coalesce'`` (default) fires once
+  for a backlog and recomputes the next ``next_fire_at`` forward into
+  the future. ``'catch_up'`` advances ``next_fire_at`` by exactly one
+  increment so subsequent ticks fire once per missed interval until
+  caught up.
+- **APScheduler is a cron-only utility.** The ``'cron'`` branch is the
+  only place APScheduler enters; its ``CronTrigger`` is imported lazily
+  inside the branch so non-cron consumers pay no import cost. APScheduler
+  is declared as a hard dependency (small dep, ``cron`` is part of the
+  public ``ScheduleType`` surface) but the lazy import keeps the cost of
+  merely importing this module at zero. The function raises
+  ``RuntimeError`` with install guidance if the import fails, so
+  consumers running a stripped wheel see a clear message instead of a
+  bare ``ImportError``.
 """
 
 from __future__ import annotations
@@ -41,47 +42,48 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
-__all__ = ["_compute_next_fire_at"]
+__all__ = ["compute_next_fire_at"]
 
 
 # Default timezone for schedule types that take a ``tz`` field when
-# config omits it. UTC is unambiguous + DST-stable; consumers that
-# want a local timezone supply it explicitly in the schedule_config.
+# config omits it. UTC is unambiguous + DST-stable; consumers that want
+# a local timezone supply it explicitly in the schedule_config.
 _DEFAULT_TZ: Final[str] = "UTC"
 
 
-def _compute_next_fire_at(
+def compute_next_fire_at(
     schedule_type: str,
     schedule_config: dict[str, Any],
     missed_fire_policy: str,
     last_fired_at: datetime | None,
     now: datetime,
 ) -> datetime | None:
-    """Compute the next ``next_fire_at`` for a wake schedule.
+    """Compute the next ``next_fire_at`` for a scheduled job.
 
     Returns the next fire instant as a TZ-aware UTC ``datetime``, or
     ``None`` for terminal one-shot schedules (``one_shot_at`` and
     ``relative_delay`` after their single fire).
 
     :param schedule_type: one of the values pinned by
-        :data:`threetears.agent.wake.types.ScheduleType`
+        :data:`threetears.scheduled_jobs.types.ScheduleType`
     :ptype schedule_type: str
-    :param schedule_config: per-schedule-type JSONB payload; shape
-        documented in :mod:`threetears.agent.wake.collections`
+    :param schedule_config: per-schedule-type config payload
     :ptype schedule_config: dict[str, Any]
     :param missed_fire_policy: one of the values pinned by
-        :data:`threetears.agent.wake.types.MissedFirePolicy`
+        :data:`threetears.scheduled_jobs.types.MissedFirePolicy`
         (``'coalesce'`` | ``'catch_up'``)
     :ptype missed_fire_policy: str
-    :param last_fired_at: timestamp of the most recent fire, or
-        ``None`` for unfired
+    :param last_fired_at: timestamp of the most recent fire, or ``None``
+        for unfired
     :ptype last_fired_at: datetime | None
     :param now: tick instant (TZ-aware)
     :ptype now: datetime
     :return: next fire instant or ``None`` for terminal one-shot
     :rtype: datetime | None
-    :raises ValueError: when ``schedule_type`` is unknown or the
-        config is malformed
+    :raises ValueError: when ``schedule_type`` is unknown or the config
+        is malformed
+    :raises RuntimeError: when ``schedule_type == 'cron'`` and
+        apscheduler is not installed
     """
     if schedule_type == "daily_at":
         return _next_daily_at(schedule_config, missed_fire_policy, last_fired_at, now)
@@ -129,8 +131,8 @@ def _next_daily_at(
     """``daily_at``: fire once per day at the configured wall-clock time.
 
     Config: ``{"hour": int, "minute": int, "tz": str}``.
-    DST is handled by ``zoneinfo``: spring-forward day advances by
-    23h not 24h; fall-back day advances by 25h not 24h.
+    DST is handled by ``zoneinfo``: spring-forward day advances by 23h
+    not 24h; fall-back day advances by 25h not 24h.
     """
     hour = int(config["hour"])
     minute = int(config.get("minute", 0))
@@ -148,7 +150,6 @@ def _next_daily_at(
         # advance from the last fire by exactly one day; lets backlogged
         # ticks catch up one fire per tick.
         last_local = last_fired_at.astimezone(tz)
-        # the day after the last fire's date, at HH:MM
         next_local = datetime.combine(
             last_local.date() + timedelta(days=1),
             time(hour=hour, minute=minute),
@@ -193,12 +194,11 @@ def _next_random_within_window(
     config: dict[str, Any],
     now: datetime,
 ) -> datetime:
-    """``random_within_window``: pick a uniform-random time-of-day
-    inside the configured window for the next fire day.
+    """``random_within_window``: pick a uniform-random time-of-day inside
+    the configured window for the next fire day.
 
-    Config: ``{"start_hour": int, "end_hour": int, "tz": str,
-    "fires_per_day": int}``. Overnight windows (``start_hour >
-    end_hour``) wrap across midnight.
+    Config: ``{"start_hour": int, "end_hour": int, "tz": str}``.
+    Overnight windows (``start_hour > end_hour``) wrap across midnight.
     """
     start_hour = int(config["start_hour"])
     end_hour = int(config["end_hour"])
@@ -208,8 +208,8 @@ def _next_random_within_window(
     tz = _tz(config)
     now_local = now.astimezone(tz)
 
-    # base candidate day: today (so we can still fire later today if
-    # the window has room left) or tomorrow if today's window passed.
+    # base candidate day: today (so we can still fire later today if the
+    # window has room left) or tomorrow if today's window passed.
     if start_hour < end_hour:
         # non-wrapping: window is [start, end) on a single date
         latest_today = datetime.combine(
@@ -278,8 +278,8 @@ def _next_one_shot_at(
     """``one_shot_at``: fire once at the configured ISO instant.
 
     Config: ``{"fire_at_iso": str}``. After the fire (when
-    ``last_fired_at`` is set), return ``None`` so the caller can flip
-    the schedule to ``status='expired'``.
+    ``last_fired_at`` is set), return ``None`` so the caller can flip the
+    schedule to ``status='expired'``.
     """
     if last_fired_at is not None:
         return None
@@ -303,11 +303,11 @@ def _next_cron(
     """``cron``: standard 5-field cron expression.
 
     Config: ``{"expr": str}``. Uses APScheduler's ``CronTrigger`` as a
-    pure pure-utility import (NOT as scheduler infrastructure -- the
-    tick body is APScheduler-agnostic). APScheduler is a hard dep on
-    the wake package; the import is lazy here so non-cron consumers
-    pay no import cost. Raises ``RuntimeError`` with install guidance
-    if APScheduler is missing (e.g. stripped wheel).
+    pure utility import (NOT as scheduler infrastructure -- the tick body
+    is APScheduler-agnostic). APScheduler is a hard dep; the import is
+    lazy here so non-cron consumers pay no import cost. Raises
+    ``RuntimeError`` with install guidance if APScheduler is missing
+    (e.g. stripped wheel).
     """
     try:
         from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
@@ -315,7 +315,7 @@ def _next_cron(
         msg = (
             "cron schedule_type requires apscheduler; install it via "
             "`uv add apscheduler` (it ships as a hard dep of "
-            "3tears-agent-wake, so this should only happen on a "
+            "3tears-scheduled-jobs, so this should only happen on a "
             "stripped wheel)"
         )
         raise RuntimeError(msg) from exc
@@ -324,10 +324,9 @@ def _next_cron(
     # Pin the cron to the configured timezone (UTC by default), matching
     # every other schedule type's use of ``_tz(config)``. Without an
     # explicit timezone, ``from_crontab`` adopts the SYSTEM local tz, so a
-    # non-UTC server fires cron schedules at the wrong wall-clock instant
-    # (e.g. ``0 */3`` resolves to local hours ≡0 mod 3, which convert to
-    # UTC hours ≡offset mod 3). The fire times are stored/compared in UTC,
-    # so the cron must be evaluated in a fixed zone, not the host's.
+    # non-UTC server fires cron schedules at the wrong wall-clock instant.
+    # The fire times are stored/compared in UTC, so the cron must be
+    # evaluated in a fixed zone, not the host's.
     trigger = CronTrigger.from_crontab(expr, timezone=_tz(config))
 
     if missed_fire_policy == "catch_up" and last_fired_at is not None:
@@ -337,9 +336,7 @@ def _next_cron(
 
     fire_time = trigger.get_next_fire_time(previous_fire_time=anchor, now=anchor)
     if fire_time is None:
-        # cron with no future fire (unlikely for standard exprs) --
-        # fall back to a far-future placeholder; caller can detect via
-        # subsequent ticks finding no work to do.
+        # cron with no future fire (unlikely for standard exprs)
         msg = f"cron expression {expr!r} has no next fire time"
         raise ValueError(msg)
     return _ensure_utc(fire_time)
@@ -353,8 +350,8 @@ def _next_relative_delay(
     """``relative_delay``: fire once after a one-shot delay from creation.
 
     Config: ``{"delay": str}`` where ``delay`` is ``"30m"``, ``"2h"``,
-    ``"1d"``, etc. After the fire, return ``None`` so the caller can
-    flip the schedule to ``status='expired'``.
+    ``"1d"``, etc. After the fire, return ``None`` so the caller can flip
+    the schedule to ``status='expired'``.
     """
     if last_fired_at is not None:
         return None

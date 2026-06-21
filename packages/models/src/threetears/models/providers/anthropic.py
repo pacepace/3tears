@@ -39,6 +39,7 @@ from threetears.observe import get_logger
 if TYPE_CHECKING:
     from langchain_anthropic import ChatAnthropic
     from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+    from langchain_core.language_models import BaseChatModel
     from langchain_core.language_models.chat_models import LanguageModelInput
     from langchain_core.messages import AIMessageChunk, BaseMessage
     from langchain_core.outputs import ChatResult
@@ -279,7 +280,7 @@ def create_anthropic_chat(
     timeout: int = 120,
     max_retries: int = 2,
     **extra_kwargs: object,
-) -> ChatAnthropic:
+) -> BaseChatModel:
     """creates a configured ``ChatAnthropic`` for Anthropic models.
 
     Returns the :class:`_NameTranslatingChatAnthropic` subclass, not
@@ -301,9 +302,19 @@ def create_anthropic_chat(
     :ptype max_retries: int
     :param extra_kwargs: additional keyword arguments forwarded to ``ChatAnthropic``
     :ptype extra_kwargs: object
-    :return: configured ``ChatAnthropic`` (the name-translating subclass)
-    :rtype: ChatAnthropic
+    :return: configured ``ChatAnthropic`` (the name-translating subclass), or a Claude
+        **subscription**-backed model when ``api_key`` is an OAuth token (``sk-ant-oat…``).
+    :rtype: BaseChatModel
     """
+    # A Claude subscription OAuth token (``claude setup-token``) routes to the CLI/Agent-SDK backend
+    # instead of the HTTP API — the SAME Anthropic model ids, no separate provider. An API key
+    # (``sk-ant-api…``) takes the ChatAnthropic path below. Imported lazily so the optional
+    # ``langchain-claude-code`` dep is only pulled when a subscription token is actually used.
+    from threetears.models.providers._claude_cli import create_subscription_chat, is_subscription_token
+
+    if is_subscription_token(api_key):
+        return create_subscription_chat(model_name, api_key, **extra_kwargs)
+
     chat_cls = _build_translating_chat_class()
 
     cleaned_base_url = strip_v1_suffix(base_url) if base_url else None

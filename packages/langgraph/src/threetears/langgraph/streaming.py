@@ -35,6 +35,7 @@ import time
 from typing import Annotated, Any, Literal, Protocol, Union, runtime_checkable
 from uuid import UUID
 
+from langgraph.types import Command
 from pydantic import BaseModel, Field, TypeAdapter
 from threetears.observe import get_logger, traced
 
@@ -700,7 +701,7 @@ class StreamingResponse:
     async def run_graph(
         self,
         compiled_graph: Any,
-        state: dict[str, Any],
+        state: dict[str, Any] | Command[Any],
         config: dict[str, Any],
     ) -> dict[str, Any]:
         """execute a LangGraph with managed start/end ordering.
@@ -715,11 +716,20 @@ class StreamingResponse:
         and re-raises so the caller can surface the failure on
         non-stream paths (logging, metrics).
 
+        ``state`` is any LangGraph entry payload: a state ``dict`` for a
+        fresh run, OR a resume directive (e.g. ``langgraph.types.Command``)
+        for a checkpointed graph paused at an ``interrupt`` -- the streaming
+        twin of ``compiled.ainvoke(Command(resume=...))``. The returned
+        ``final_state`` seeds from ``state`` only when it is a mapping (a
+        resume directive carries no channel values to seed from); either way
+        the merged ``on_chain_end`` output is the authoritative result.
+
         :param compiled_graph: compiled LangGraph object exposing
             ``astream_events(state, config=..., version="v2")``
         :ptype compiled_graph: Any
-        :param state: initial state dict passed to the graph
-        :ptype state: dict[str, Any]
+        :param state: initial state dict for a fresh run, or a resume
+            directive (``Command``) for a paused (interrupted) graph
+        :ptype state: dict[str, Any] | Command
         :param config: LangGraph runtime config dict
         :ptype config: dict[str, Any]
         :return: final state dict merged from initial state + chain
@@ -729,7 +739,10 @@ class StreamingResponse:
             caller still sees the failure on the synchronous path
         """
         await self.start()
-        final_state: dict[str, Any] = dict(state)
+        # seed only from a mapping state: a resume directive (Command) is not a
+        # state dict (``dict(Command)`` raises) and carries no channel values to
+        # seed -- the merged on_chain_end output below is the authoritative result.
+        final_state: dict[str, Any] = dict(state) if isinstance(state, dict) else {}
         try:
             async for event in compiled_graph.astream_events(
                 state,
