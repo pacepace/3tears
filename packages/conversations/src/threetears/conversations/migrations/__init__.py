@@ -49,6 +49,15 @@ version history:
   ``conversations.folder_id`` FK column. every statement is natively
   idempotent (``IF NOT EXISTS`` / ``ADD COLUMN IF NOT EXISTS``) and
   search-path-relative.
+- v009 -- complete the folder<->conversation referential integrity v008
+  left as a bare nullable column: add a standalone single-column UNIQUE
+  on ``folders.folder_id`` (so a single-column FK can target it) and the
+  ``conversations.folder_id -> folders.folder_id ON DELETE SET NULL`` FK
+  (``conversations_folder_id_fkey``) so deleting a folder auto-unfiles
+  its conversations at the DB level. the unique index is natively
+  idempotent; the FK is guarded by a ``pg_constraint`` /
+  ``current_schema()`` probe (``ADD CONSTRAINT`` has no ``IF NOT EXISTS``
+  form), matching v007's discipline.
 """
 
 from __future__ import annotations
@@ -76,6 +85,9 @@ from threetears.conversations.migrations.v007_rename_id_to_conversation_id impor
 )
 from threetears.conversations.migrations.v008_create_folders_and_conversation_folder_id import (
     create_folders_and_conversation_folder_id,
+)
+from threetears.conversations.migrations.v009_folder_referential_integrity import (
+    add_folder_referential_integrity,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -111,6 +123,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
     pkg.version(6)(add_conversation_language_column)
     pkg.version(7)(rename_id_to_conversation_id)
     pkg.version(8)(create_folders_and_conversation_folder_id)
+    pkg.version(9)(add_folder_referential_integrity)
     runner.register(pkg)
     return pkg
 
@@ -118,6 +131,7 @@ def register(runner: MigrationRunner) -> PackageMigrations:
 __all__ = [
     "PACKAGE_NAME",
     "add_conversation_language_column",
+    "add_folder_referential_integrity",
     "add_conversation_search_vector",
     "add_message_count",
     "add_name_column",

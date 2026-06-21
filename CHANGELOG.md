@@ -4,6 +4,41 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.3 -- 2026-06-21
+
+Completes the conversation-folder relationship (referential integrity + helpers),
+hardens the write-buffer flush against orphaned writes, and adds a per-dimension
+column-coverage probe to datasources.
+
+### Added — `3tears-conversations` — `threetears.conversations`
+
+- **Folder referential integrity (migration v009).** A `UNIQUE(folder_id)` on `folders`
+  plus an FK `conversations.folder_id → folders.folder_id` **ON DELETE SET NULL`, so
+  deleting a folder auto-unfiles its conversations at the DB level (no consumer can
+  forget the unfile). `ConversationsCollection.clear_folder(agent_id, folder_id)` — the
+  cache-coherent unfile-all (routes each conversation through `save_entity` so L1/L2 are
+  invalidated, vs a raw L3 UPDATE) — and `count_by_folder(agent_id, folder_id)`, the cheap
+  per-folder count peer of `find_by_folder`.
+
+### Fixed — `3tears` (core) — `threetears.core.collections.flush`
+
+- **Orphaned writes no longer poison the atomic batch.** `flush_pending` now partitions the
+  drained buffer by retry count: only never-failed writes (`retries == 0`) enter the atomic
+  batch; any write that has already failed (`retries > 0`) — e.g. an orphan whose FK parent
+  was deleted and will never return — routes straight to the per-entity loop. Previously one
+  un-satisfiable write aborted the whole transaction every cycle until it exhausted its
+  ~100-retry budget, forcing per-entity fallback for ALL co-buffered writes. The per-entity
+  safety net + FK-aware re-enqueue is unchanged.
+
+### Added — `3tears-datasources` — `threetears.datasources`
+
+- **Per-dimension column-value coverage.** `Driver.column_value_coverage_by_dimension(schema,
+  table, dimension_column, columns)` — the grouped sibling of `column_value_coverage`: one
+  `GROUP BY` pass reporting non-null/non-zero coverage per numeric column per dimension value,
+  so a caller can see a column loaded for some dimension values but all-zero for others (the
+  partial-coverage case the whole-table probe can't see). Concrete on the `Driver` ABC
+  (portable SQL routed through `fetch`), so every backend inherits it.
+
 ## v0.13.2 -- 2026-06-21
 
 Conversation folders (a reusable grouping primitive lifted from metallm) and a Redshift
