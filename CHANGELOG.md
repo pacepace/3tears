@@ -4,6 +4,58 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.12.3 -- 2026-06-20
+
+Broker isolation, NATS durability, prompt-cache cost accounting, and Redshift
+hardening. Additive across `3tears`, `3tears-models`, `3tears-nats`, and
+`3tears-langgraph`; one fixed-path change to the Redshift connection lifecycle.
+
+### Added -- `3tears-models` -- `threetears.models`
+
+- `UsageRecord` carries `cache_read_tokens` and `cache_creation_tokens`, surfaced
+  as `llm.cache_read_tokens` / `llm.cache_creation_tokens` OTel span attributes,
+  so prompt-cache hits and writes are tracked per call.
+- `registry_loader` populates `cost_per_cache_read_token` and
+  `cost_per_cache_write_token` from the capabilities registry, so cache-aware
+  cost can be computed downstream instead of billing cached input at the full
+  input rate.
+
+### Added -- `3tears-nats` -- `threetears.nats`
+
+- Bounded redelivery + dead-letter in the durable consumer factory
+  (`resilience-task-01` RES-01-01/03): a message that fails past its redelivery
+  budget is routed to a dead-letter subject instead of redelivering forever.
+- Agent-deregister subject on `Subjects`, so a pod can announce its teardown.
+
+### Added -- `3tears` -- `threetears.core`
+
+- Per-call `customer_scope` channel on `NatsProxyL3Backend` reads -- the proxy
+  carries the caller's customer scope per read rather than per connection, the
+  substrate for conversation-scoped RBAC pool reads (broker isolation).
+- Centralize JSONB through native binding under the codec (`collections-task-04`,
+  Option B): a single binding path for JSONB columns, plus an enforcement drift
+  guard (`test_jsonb_native_binding`) so a new column cannot silently bypass it.
+
+### Added -- `3tears-langgraph` -- `threetears.langgraph`
+
+- Turn-level keepalive on `StreamingResponse` (`long-response-task-01` LRT-02):
+  a long single response emits periodic keepalives so the stream does not idle
+  out mid-generation.
+
+### Added / Fixed -- `3tears-datasources` -- `threetears.datasources`
+
+- Per-column value-coverage probe: classifies a column as unloaded when every
+  value is zero across the table -- the `UNLOADED_COLUMN` source the hub mirrors
+  into datasource read results -- with driver-coverage tests.
+- Redshift: re-apply `search_path` on every connection acquisition, so a pooled
+  connection no longer serves a stale path left by a prior caller.
+
+### Changed -- `3tears` -- `threetears.enforcement`
+
+- The fake-parity walker accepts an inline `# parity-exempt: <rationale>` marker
+  (matching the cache/underscore exemption style), removing the line-shift
+  fragility of the prior line-numbered exemption file.
+
 ## v0.12.2 -- 2026-06-17
 
 Additive: add the documented-schema digest entity + collection to

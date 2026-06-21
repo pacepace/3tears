@@ -7,6 +7,25 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.12.3]
+
+### Added
+
+- Per-column value-coverage probe: classifies a column as unloaded when every
+  value is zero across the table (the `UNLOADED_COLUMN` source the hub mirrors
+  into datasource read results), with driver-coverage tests.
+
+### Fixed
+
+- Redshift: re-apply `search_path` on every connection acquisition, so a pooled
+  connection never serves a stale path left by a prior caller.
+
+### Changed
+
+- Centralize JSONB handling through native binding under the codec
+  (`collections-task-04`, Option B), simplifying the collection write path; an
+  enforcement drift guard prevents a new column bypassing it.
+
 ## [0.12.2]
 
 ### Added
