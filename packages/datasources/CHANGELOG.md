@@ -7,6 +7,18 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.1]
+
+### Fixed
+
+- Redshift warm-connection cache sized as a bounded pool. `executor_max_workers`
+  default lowered 10 -> 5, and `connection_cache_size` defaults to
+  `executor_max_workers` (cache == workers) via a model validator, so concurrent
+  queries reuse warm connections instead of opening past the cache every time —
+  which overshot a tight per-user Redshift CONNECTION LIMIT ("too many
+  connections"). A query past the bound queues on the executor. Set both per
+  datasource to the user's connection limit.
+
 ## [0.13.0]
 
 ### Changed
