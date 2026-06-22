@@ -316,6 +316,39 @@ class TestNameTranslatingChatOpenRouter:
         assert result.tool_calls[0]["name"] == "threetears.calculator"
 
     @pytest.mark.asyncio
+    async def test_agenerate_untranslates_tool_names(self) -> None:
+        """``agenerate`` (the batch chokepoint behind ``ainvoke``/``abatch``)
+        un-translates tool-call names on every generated message — covering a
+        direct ``agenerate`` caller that would otherwise see the wire form.
+        """
+        from langchain_core.outputs import ChatGeneration, LLMResult
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _fake_super_agenerate(self: Any, messages: Any, *args: Any, **kwargs: Any) -> LLMResult:
+            del self, messages, args, kwargs
+            msg = AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "threetears_calculator", "args": {}, "id": "c1"},
+                ],
+            )
+            # agenerate returns LLMResult with NESTED generations (list[list]).
+            return LLMResult(generations=[[ChatGeneration(message=msg)]])
+
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model.bind_tools([_DottedTool()])
+
+        original = ChatOpenRouter.agenerate
+        try:
+            ChatOpenRouter.agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            result = await model.agenerate([[AIMessage(content="hi")]])
+        finally:
+            ChatOpenRouter.agenerate = original  # type: ignore[method-assign]
+
+        name = result.generations[0][0].message.tool_calls[0]["name"]
+        assert name == "threetears.calculator"
+
+    @pytest.mark.asyncio
     async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
         """``astream`` drops ``invalid_tool_calls`` entries whose names
         fail the canonical regex.

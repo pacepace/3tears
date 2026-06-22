@@ -525,3 +525,55 @@ class TestSystemMessageConsolidation:
 
         removals = [m for m in result["messages"] if isinstance(m, RemoveMessage)]
         assert any(m.id == "sys-1" for m in removals)
+
+    @pytest.mark.asyncio
+    async def test_preassembled_messages_pass_through_verbatim(self) -> None:
+        """``preassembled_messages`` skips consolidation entirely.
+
+        A caller that owns its prompt (metallm's converged tool loop) passes
+        the seed messages through unchanged: structured ``cache_control``
+        system content survives un-``str()``'d, a trailing system-role message
+        keeps its position, the ``configurable["system_prompt"]`` is NOT
+        prepended, and nothing is ``RemoveMessage``'d. Without the opt-out the
+        consolidation would flatten the structured block to a Python repr and
+        hoist the trailing system message to the front.
+        """
+        mock_model = AsyncMock()
+        mock_model.ainvoke = AsyncMock(return_value=AIMessage(content="ok"))
+        structured_system = SystemMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": "BASE",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            id="sys-structured",
+        )
+        trailing_system = SystemMessage(content="JAILBREAK", id="sys-trailing")
+        state: dict[str, Any] = {
+            "messages": [
+                structured_system,
+                HumanMessage(content="hi"),
+                trailing_system,
+            ],
+        }
+        config: RunnableConfig = {
+            "configurable": {
+                "chat_model": mock_model,
+                "system_prompt": "IGNORED",
+                "preassembled_messages": True,
+            },
+        }
+
+        result = await agent_node(state, config)  # type: ignore[arg-type]
+
+        messages_sent = mock_model.ainvoke.call_args[0][0]
+        # Verbatim: same messages, same order — no consolidation.
+        assert messages_sent == state["messages"]
+        # Structured content survives as a list (NOT a flattened repr string).
+        assert isinstance(messages_sent[0].content, list)
+        # The configurable system_prompt is NOT prepended.
+        assert all(not (isinstance(m, SystemMessage) and m.content == "IGNORED") for m in messages_sent)
+        # Nothing consumed/hoisted -> no RemoveMessage.
+        assert not [m for m in result["messages"] if isinstance(m, RemoveMessage)]

@@ -229,6 +229,57 @@ class TestAnthropicWrapperStreaming:
         assert collected_text == "anthropic wrapper ok"
 
     @pytest.mark.asyncio
+    async def test_ainvoke_preserves_streaming_callbacks(self) -> None:
+        """The ``ainvoke`` override must NOT break token streaming.
+
+        The converged tool loop runs ``model.ainvoke`` under an outer
+        ``astream_events`` tap, so ``ainvoke`` aggregates from the protected
+        ``_astream`` and fires ``on_llm_new_token``. This pins that the public
+        ``ainvoke`` override (+ its ``merge_configs`` callback-preservation)
+        still delivers streamed tokens to a callback handler — i.e. the
+        un-translation post-processing did not swallow the streaming path.
+        """
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.callbacks import AsyncCallbackHandler
+
+        tokens: list[str] = []
+
+        class _Recorder(AsyncCallbackHandler):
+            async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+                tokens.append(token)
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, kwargs
+            for text in ("a", "b", "c"):
+                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
+                yield chunk
+
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            # stream=True forces the _astream aggregation path; the callback
+            # handler rides config["callbacks"], which the override's
+            # merge_configs must preserve.
+            result = await model.ainvoke("hi", stream=True, config={"callbacks": [_Recorder()]})
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        # Tokens streamed to the handler (a trailing framework empty chunk is
+        # normal); the override did not swallow the streaming path.
+        assert "".join(tokens) == "abc"
+        assert result.content == "abc"
+
+    @pytest.mark.asyncio
     async def test_astream_events_survives_with_config_callbacks(self) -> None:
         """``with_config(callbacks=[...])`` must not strip the event_streamer.
 

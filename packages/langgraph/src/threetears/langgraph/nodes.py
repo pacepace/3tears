@@ -166,14 +166,29 @@ async def agent_node(state: MessagesState, config: RunnableConfig) -> dict[str, 
     # locale first, then the injected blocks), strip them from the turn
     # list, and hand the provider a single leading system message followed
     # by the non-system conversation turns.
-    injected_system_messages = [message for message in messages if isinstance(message, SystemMessage)]
-    messages = [message for message in messages if not isinstance(message, SystemMessage)]
-    injected_blocks = [str(message.content) for message in injected_system_messages if message.content]
-    if injected_blocks:
-        merged_injected = "\n\n".join(injected_blocks)
-        system_prompt = f"{system_prompt}\n\n{merged_injected}" if system_prompt else merged_injected
-    if system_prompt:
-        messages.insert(0, SystemMessage(content=system_prompt))
+    # A caller that fully pre-assembled its prompt sets
+    # ``preassembled_messages`` to pass the seed list through VERBATIM --
+    # exactly as a direct ``model.astream(messages)`` call would. metallm's
+    # converged tool loop does this: its messages already carry structured
+    # ``cache_control`` system content, a role-selected trailing jailbreak,
+    # and alternating-role enforcement. The default normalization below
+    # (hoist every SystemMessage, ``str()`` its content, merge into ONE
+    # leading message) would flatten that structured content to a Python
+    # repr and move a trailing system-role message off its recency position.
+    # ``preassembled_messages`` callers own the entire prompt; they must NOT
+    # rely on the ``context_manager`` / locale / ``system_prompt`` injection
+    # above (those feed only the normalization branch).
+    if configurable.get("preassembled_messages", False):
+        injected_system_messages = []
+    else:
+        injected_system_messages = [message for message in messages if isinstance(message, SystemMessage)]
+        messages = [message for message in messages if not isinstance(message, SystemMessage)]
+        injected_blocks = [str(message.content) for message in injected_system_messages if message.content]
+        if injected_blocks:
+            merged_injected = "\n\n".join(injected_blocks)
+            system_prompt = f"{system_prompt}\n\n{merged_injected}" if system_prompt else merged_injected
+        if system_prompt:
+            messages.insert(0, SystemMessage(content=system_prompt))
 
     hooks = _resolve_agent_hooks(config)
     state_view: dict[str, Any] = dict(state)
