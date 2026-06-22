@@ -295,3 +295,39 @@ def test_op_record_carries_seq_payload_op_id() -> None:
     assert (rec.seq, rec.payload, rec.op_id) == (2, b"op", "op-2")
     with pytest.raises((AttributeError, Exception)):
         rec.payload = b"changed"  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------
+# last_seq — the stream head (for fence / committed-through reconciliation)
+# ----------------------------------------------------------------------
+
+
+class _StreamInfoJetStream:
+    """fake JS exposing only ``stream_info`` — the surface ``last_seq()`` reads."""
+
+    def __init__(self, *, last_seq: int | None = None, error: BaseException | None = None) -> None:
+        self._last_seq = last_seq
+        self._error = error
+
+    async def stream_info(self, name: str) -> _FakeStreamInfo:
+        if self._error is not None:
+            raise self._error
+        assert self._last_seq is not None
+        return _FakeStreamInfo(self._last_seq)
+
+
+async def test_last_seq_returns_the_stream_head() -> None:
+    oplog = _make_oplog(_StreamInfoJetStream(last_seq=8))  # type: ignore[arg-type]
+    assert await oplog.last_seq() == 8
+
+
+async def test_last_seq_is_zero_for_an_empty_stream() -> None:
+    """A fresh/empty stream reports head 0 — the value a reset op-log carries (the desync case)."""
+    oplog = _make_oplog(_StreamInfoJetStream(last_seq=0))  # type: ignore[arg-type]
+    assert await oplog.last_seq() == 0
+
+
+async def test_last_seq_wraps_stream_info_failure_as_oplogerror() -> None:
+    oplog = _make_oplog(_StreamInfoJetStream(error=ConnectionResetError("broker down")))  # type: ignore[arg-type]
+    with pytest.raises(OpLogError):
+        await oplog.last_seq()
