@@ -79,7 +79,12 @@ class SqlL3Backend:
         # -- NatsProxyL3Backend omits ``fetchval`` so it fails the L3Backend protocol
         # check, which would silently leave forwarding off. a bare asyncpg pool lacks
         # the marker, so its behaviour is unchanged (kwargs dropped).
-        self._scope_aware: bool = bool(getattr(pool, "accepts_scoped_reads", False))
+        #
+        # identity (``is True``), not truthiness: the marker is the literal ``True`` on the
+        # transport class. ``bool(getattr(...))`` would be fooled by a ``MagicMock`` pool,
+        # whose auto-created attribute is a truthy mock object, flipping forwarding on and
+        # pushing ``namespace=`` into a mock signature that rejects it.
+        self._scope_aware: bool = getattr(pool, "accepts_scoped_reads", False) is True
 
     def __getattr__(self, name: str) -> Any:
         """Delegate any unlisted attribute to the wrapped pool (the raw-SQL escape hatch).

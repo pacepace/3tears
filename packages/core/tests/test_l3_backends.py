@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -157,6 +158,24 @@ async def test_bare_pool_drops_namespace_and_customer_scope_without_error() -> N
         ("SELECT 3", ()),
         ("UPDATE t SET x=1", ()),
     ]
+
+
+@pytest.mark.asyncio
+async def test_magicmock_pool_is_not_treated_as_scope_aware() -> None:
+    # a MagicMock auto-creates ``accepts_scoped_reads`` as a truthy mock object, so a
+    # ``bool(getattr(...))`` capability sniff would wrongly flip scope-forwarding on and
+    # push ``namespace=`` into a mock whose recorded signature rejects it. the identity
+    # check (``is True``) treats only the literal marker as scope-aware, so a MagicMock
+    # pool stays on the drop path. guards the whole mock-backed collection test surface.
+    pool = MagicMock()
+    pool.execute = AsyncMock(side_effect=lambda query, *params: "UPDATE 1")
+    backend = SqlL3Backend(pool)
+
+    result = await backend.execute("UPDATE t SET x=1", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+
+    # the mock saw only (query, params): no namespace / customer_scope leaked through.
+    assert result == "UPDATE 1"
+    pool.execute.assert_awaited_once_with("UPDATE t SET x=1")
 
 
 @pytest.mark.asyncio
