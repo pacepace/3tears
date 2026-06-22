@@ -4,6 +4,30 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.5 -- 2026-06-22
+
+Fixes wire-side tool-name translation leaking through the non-streaming chat
+path, which silently broke tool dispatch for consumers that invoke models via
+`ainvoke` / `invoke` while a streaming callback is attached.
+
+### Fixed — `3tears-models` — `threetears.models.providers`
+
+- **`_NameTranslatingChat{OpenRouter,Anthropic}` now un-mangle tool-call names on
+  `ainvoke` / `invoke`, not just `astream` / `_agenerate`.** The wrappers
+  reverse-translate names from the underscored wire form (forced by strict
+  provider validators) back to the canonical dotted form. That happened in the
+  public `astream` override and in `_agenerate`, but `BaseChatModel.ainvoke`
+  aggregates from the PROTECTED `_astream` (not `_agenerate`) whenever
+  `_should_stream()` is true — i.e. a streaming callback is attached, as when
+  running under an `astream_events` tap — so both overrides were bypassed and
+  underscored names reached consumers whose tool-dispatch maps key on the dotted
+  canonical name, causing silent tool-call misses. Both providers now override
+  the public `ainvoke` / `invoke` to un-mangle the returned message (mirrors the
+  `astream` strategy; overriding `_astream` directly would drop
+  `on_chat_model_stream` callbacks). The pass is idempotent with `_agenerate`'s
+  translation. Regression tests on both providers force the `_astream`
+  aggregation path (`stream=True`) and assert the dotted name.
+
 ## v0.13.4 -- 2026-06-22
 
 Adds the op-log stream-head read a consumer needs to reconcile its
