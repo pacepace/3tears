@@ -380,6 +380,26 @@ class OpLog:
                 return record.seq
         return None
 
+    async def last_seq(self) -> int:
+        """The stream's current last sequence (``0`` when empty) — the op-log's authoritative head.
+
+        One ``stream_info`` read (O(1), independent of the log length): the sequence the next
+        :meth:`append` will follow, i.e. the value ``expected_last_seq`` must equal. A consumer that
+        derives a head from an external record (e.g. a git ``Op-Seq`` trailer) can clamp to this to
+        stay in sync when the two diverge — a reset/fresh stream sitting *behind* an ahead-of-it
+        external record — instead of wedging on a CAS that can never match the shorter stream.
+
+        :return: the stream's last assigned sequence; ``0`` for an empty/fresh stream
+        :rtype: int
+        :raises OpLogError: on transport / stream_info failure
+        """
+        js = self._client.jetstream_context()
+        try:
+            info = await js.stream_info(self._stream)
+        except Exception as exc:  # noqa: BLE001 -- transport boundary; re-raised as the typed OpLogError
+            raise OpLogError(f"op-log last_seq failed (stream_info): stream={self._stream}: {exc!r}") from exc
+        return int(info.state.last_seq)
+
     # ------------------------------------------------------------------
     # replay (ordered, terminating)
     # ------------------------------------------------------------------
