@@ -9,8 +9,32 @@ packages (bumped in lock-step).
 Closes the remaining gaps that surfaced while converging a host app's bespoke
 tool loop onto `build_tool_agent`: wire-side tool-name translation leaking
 through every non-`astream` chat surface, the agent node force-hoisting a
-system message a caller had already assembled, and a hook emitter able to abort
-a turn.
+system message a caller had already assembled, a hook emitter able to abort a
+turn, and `SqlL3Backend` dropping namespace + `customer_scope` when it wraps a
+scope-aware transport.
+
+### Fixed — `3tears-core` — `threetears.core.backends`
+
+- **`SqlL3Backend` now forwards `namespace` + transport kwargs (e.g.
+  `NatsProxyL3Backend`'s `customer_scope`) to a scope-aware wrapped pool instead
+  of dropping them.** The collection registry wraps any non-`DurableStore` L3
+  transport in `SqlL3Backend` to add the structured CRUD layer — including
+  `NatsProxyL3Backend`, which is a raw-SQL-over-NATS transport with no
+  `fetch_one`/`upsert`. But `SqlL3Backend`'s raw-SQL methods
+  (`fetch`/`fetchrow`/`fetchval`/`execute`) were written to wrap a bare asyncpg
+  pool: they silently dropped `namespace` and had no `customer_scope` parameter.
+  So an agent-SDK scoped/RBAC read through a wrapped `NatsProxyL3Backend` either
+  raised `TypeError: unexpected keyword argument 'customer_scope'` or lost
+  namespace scoping; ordinary collection ops survived only via a default-namespace
+  fallback. The wrapper now detects a scope-aware pool via an `accepts_scoped_reads`
+  capability marker (an identity check, **not** `isinstance` — `NatsProxyL3Backend`
+  omits `fetchval` and so does not satisfy the `L3Backend` protocol structurally,
+  which would make an `isinstance` gate silently fail) and forwards `namespace` plus
+  any extra kwargs generically via `**kwargs`, staying ignorant of NATS-specific
+  concepts. A bare asyncpg pool lacks the marker, so its behaviour is unchanged.
+  Pre-existing since the per-call `customer_scope` channel landed; it affected the
+  agent SDK (knowledge retrieval + RBAC visibility through the proxy), not the hub
+  (which passes a raw asyncpg pool that `SqlL3Backend` is built to wrap).
 
 ### Fixed — `3tears-models` — `threetears.models.providers`
 
