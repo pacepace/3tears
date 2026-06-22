@@ -72,11 +72,15 @@ class _ScopeAwarePool:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def fetch(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> list[dict[str, Any]]:
+    async def fetch(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         self.calls.append((query, {"namespace": namespace, **kwargs}))
         return []
 
-    async def fetchrow(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> dict[str, Any] | None:
+    async def fetchrow(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> dict[str, Any] | None:
         self.calls.append((query, {"namespace": namespace, **kwargs}))
         return None
 
