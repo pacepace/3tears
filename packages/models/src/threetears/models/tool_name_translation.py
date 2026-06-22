@@ -38,8 +38,19 @@ Per-provider integration is a thin subclass that:
 1. Overrides ``bind_tools`` to call :func:`build_name_translation` and
    store the resulting reverse map on ``_name_reverse_map`` (a
    :class:`PrivateAttr` on the subclass).
-2. Overrides ``_astream`` and ``_agenerate`` to call
-   :func:`reverse_translate_message` on every message yielded.
+2. Overrides the response surface to call
+   :func:`reverse_translate_message` on every message it returns. This
+   must cover BOTH the streaming and non-streaming public entry points,
+   because LangChain's ``ainvoke`` / ``invoke`` route internally through
+   the PROTECTED ``_astream`` / ``_stream`` (not ``_agenerate`` /
+   ``_generate``) whenever ``_should_stream()`` is true — e.g. when a
+   streaming callback is attached (LangGraph's ``astream_events`` tap).
+   The concrete subclasses therefore override the public ``astream`` +
+   ``ainvoke`` + ``invoke`` (post-processing the result) AND
+   ``_agenerate`` (for the pure non-streaming path). Overriding the
+   protected ``_astream`` directly is deliberately avoided — wrapping it
+   in another async generator drops ``on_chat_model_stream`` callbacks
+   (see the ``astream`` docstrings in the provider modules).
 
 See :mod:`threetears.models.providers.openrouter` and
 :mod:`threetears.models.providers.anthropic` for the two concrete

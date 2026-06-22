@@ -280,6 +280,97 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
                 _drop_junk_invalid_tool_calls(generation.message)
             return result
 
+        async def ainvoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """invoke (non-streaming public API) with names un-translated.
+
+            Overriding ``_agenerate`` (above) is NOT sufficient. When
+            streaming callbacks are present -- exactly the converged
+            ``agent_node`` path, where ``model.ainvoke`` runs under the
+            outer ``astream_events`` tap -- ``BaseChatModel.ainvoke`` routes
+            through ``_agenerate_with_cache``, which aggregates from the
+            PROTECTED ``self._astream`` (``chat_models.py``: ``elif
+            self._should_stream(...): async for chunk in self._astream(...)``)
+            instead of calling ``_agenerate``. That bypasses BOTH the public
+            ``astream`` override AND ``_agenerate``, so tool-call names would
+            reach the caller in their wire (underscored) form and miss the
+            dotted dispatch map (observed: metallm converged loop emitting
+            ``threetears_web_search`` that the tool node could not resolve,
+            2026-06-22).
+
+            We override the PUBLIC ``ainvoke`` -- the same strategy the
+            ``astream`` override uses, and for the same reason: wrapping the
+            protected ``_astream`` would drop ``on_chat_model_stream``
+            callbacks. Post-processing the single returned message catches
+            the result no matter which internal path (``_astream`` aggregate
+            or ``_agenerate``) produced it. Double-translation is impossible:
+            ``reverse_translate_message`` keys on the underscored wire name,
+            so a second pass over already-dotted names is a no-op.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().ainvoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            result = await super().ainvoke(
+                input,
+                config=config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
+        def invoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """sync mirror of :meth:`ainvoke` (same bypass, same fix).
+
+            The sync ``invoke`` path has the identical exposure: when
+            streaming callbacks are present ``_generate_with_cache``
+            aggregates from the protected ``_stream`` rather than calling
+            ``_generate``. Post-process the returned message so sync callers
+            also see canonical dotted tool-call names.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().invoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            result = super().invoke(
+                input,
+                config=config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
     return _NameTranslatingChatOpenRouter
 
 

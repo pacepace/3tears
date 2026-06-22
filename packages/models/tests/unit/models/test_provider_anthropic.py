@@ -439,3 +439,71 @@ class TestAnthropicWrapperToolNameValidation:
         assert len(kept) == 1
         assert kept[0]["name"] == "threetears_calculator"
         assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
+        """``ainvoke`` un-translates tool-call names even when it aggregates
+        internally from the protected ``_astream``.
+
+        Regression for the metallm converged-loop tool-dispatch failure
+        (2026-06-22): with a streaming callback active (the converged
+        ``agent_node`` runs ``model.ainvoke`` under an ``astream_events``
+        tap), ``BaseChatModel.ainvoke`` routes through
+        ``_agenerate_with_cache`` -> ``self._astream`` instead of calling
+        ``_agenerate``, bypassing BOTH the public ``astream`` override AND
+        ``_agenerate``. The underscored wire name ``threetears_calculator``
+        leaked to the caller and missed the dotted dispatch map. The public
+        ``ainvoke`` override post-processes the aggregated result.
+
+        ``stream=True`` makes ``_should_stream`` true, forcing the
+        ``_astream`` aggregation path. Without the override the returned name
+        stays ``threetears_calculator`` and this fails.
+        """
+        from langchain_core.tools import BaseTool
+
+        class _DottedTool(BaseTool):
+            name: str = "threetears.calculator"
+            description: str = "test calculator"
+
+            def _run(self, **kwargs: Any) -> str:
+                return "ok"
+
+            async def _arun(self, **kwargs: Any) -> str:
+                return "ok"
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            # The wire form: the tool was called by its mangled (underscored)
+            # name; un-translation has not happened yet.
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{}",
+                            "id": "call_1",
+                            "index": 0,
+                        },
+                    ],
+                ),
+            )
+
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        model.bind_tools([_DottedTool()])
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            result = await model.ainvoke("hi", stream=True)
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        assert result.tool_calls, "expected an aggregated tool call"
+        assert result.tool_calls[0]["name"] == "threetears.calculator"

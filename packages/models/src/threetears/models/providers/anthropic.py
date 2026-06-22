@@ -269,6 +269,86 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
                 _drop_junk_invalid_tool_calls(generation.message)
             return result
 
+        async def ainvoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """invoke (non-streaming public API) with names un-translated.
+
+            Overriding ``_agenerate`` (above) is NOT sufficient. When
+            streaming callbacks are present -- e.g. ``model.ainvoke`` under
+            an outer ``astream_events`` tap (the converged ``agent_node``
+            path) -- ``BaseChatModel.ainvoke`` aggregates from the PROTECTED
+            ``self._astream`` via ``_agenerate_with_cache`` instead of
+            calling ``_agenerate``, bypassing BOTH the public ``astream``
+            override AND ``_agenerate``. Tool-call names would then reach the
+            caller in their wire (underscored) form and miss the dotted
+            dispatch map. We override the PUBLIC ``ainvoke`` (same strategy as
+            the ``astream`` override -- wrapping the protected ``_astream``
+            would drop ``on_chat_model_stream`` callbacks) and post-process
+            the single returned message; ``reverse_translate_message`` keys on
+            the underscored wire name, so a second pass is a no-op.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().ainvoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            result = await super().ainvoke(
+                input,
+                config=config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
+        def invoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """sync mirror of :meth:`ainvoke` (same bypass, same fix).
+
+            The sync path aggregates from the protected ``_stream`` via
+            ``_generate_with_cache`` when streaming callbacks are present, so
+            post-process the returned message for sync callers too.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().invoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            result = super().invoke(
+                input,
+                config=config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
     return _NameTranslatingChatAnthropic
 
 
