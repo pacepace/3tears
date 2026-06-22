@@ -37,6 +37,7 @@ from weakref import WeakKeyDictionary
 
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.errors import GraphBubbleUp
 
 from threetears.langgraph.caching import (
     ChatModelCapabilities,
@@ -235,12 +236,14 @@ class ToolNodeHook(Protocol):
     ) -> None:
         """fired periodically while a long tool call is running.
 
-        default implementation is a no-op. emitters publish
-        ``tool_call_progress`` envelopes so that upstream stream
-        consumers see a liveness signal and do not trip on gap
-        timeouts. tool_node installs a heartbeat loop only when at
-        least one hook implements a non-default ``on_heartbeat``;
-        implementations that do not care pay no cost.
+        emitters publish ``tool_call_progress`` envelopes so that
+        upstream stream consumers see a liveness signal and do not
+        trip on gap timeouts. tool_node installs the heartbeat loop
+        whenever ``configurable["_hook_heartbeat_seconds"] > 0``
+        (default 10s) — it does NOT inspect whether a hook overrides
+        this method, so a hook whose ``on_heartbeat`` is a no-op
+        should set ``_hook_heartbeat_seconds <= 0`` to avoid the
+        per-call task create/cancel cost.
 
         :param tool_call: single tool_call dict with ``id``, ``name``,
             ``args`` keys
@@ -394,7 +397,18 @@ class _ComposedToolNodeHook:
         :rtype: None
         """
         for hook in self._hooks:
-            await hook.on_tool_start(tool_call, config, state)
+            try:
+                await hook.on_tool_start(tool_call, config, state)
+            except GraphBubbleUp:
+                # control-flow signal (interrupt / subgraph bubble) — must
+                # propagate so the checkpointer can pause; never swallow it.
+                raise
+            except Exception:  # noqa: BLE001 - an emitter must not crash the graph
+                log.warning(
+                    "tool_node on_tool_start emitter failed (swallowed): %s",
+                    type(hook).__name__,
+                    exc_info=True,
+                )
 
     async def on_tool_end(
         self,
@@ -423,14 +437,23 @@ class _ComposedToolNodeHook:
         :rtype: None
         """
         for hook in self._hooks:
-            await hook.on_tool_end(
-                tool_call,
-                result,
-                success,
-                elapsed_ms,
-                config,
-                state,
-            )
+            try:
+                await hook.on_tool_end(
+                    tool_call,
+                    result,
+                    success,
+                    elapsed_ms,
+                    config,
+                    state,
+                )
+            except GraphBubbleUp:
+                raise
+            except Exception:  # noqa: BLE001 - an emitter must not crash the graph
+                log.warning(
+                    "tool_node on_tool_end emitter failed (swallowed): %s",
+                    type(hook).__name__,
+                    exc_info=True,
+                )
 
     async def on_heartbeat(
         self,
@@ -453,7 +476,16 @@ class _ComposedToolNodeHook:
         :rtype: None
         """
         for hook in self._hooks:
-            await hook.on_heartbeat(tool_call, elapsed_seconds, config, state)
+            try:
+                await hook.on_heartbeat(tool_call, elapsed_seconds, config, state)
+            except GraphBubbleUp:
+                raise
+            except Exception:  # noqa: BLE001 - an emitter must not crash the graph
+                log.warning(
+                    "tool_node on_heartbeat emitter failed (swallowed): %s",
+                    type(hook).__name__,
+                    exc_info=True,
+                )
 
 
 def compose_agent_node_hooks(

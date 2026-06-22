@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from langchain_core.outputs import ChatGeneration
 from langchain_core.tools import BaseTool
 from pydantic import PrivateAttr
 
@@ -278,6 +279,172 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
                 # before the non-streaming response reaches the
                 # caller (mirrors the streaming path above).
                 _drop_junk_invalid_tool_calls(generation.message)
+            return result
+
+        async def ainvoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """invoke (non-streaming public API) with names un-translated.
+
+            Overriding ``_agenerate`` (above) is NOT sufficient. When
+            streaming callbacks are present -- exactly the converged
+            ``agent_node`` path, where ``model.ainvoke`` runs under the
+            outer ``astream_events`` tap -- ``BaseChatModel.ainvoke`` routes
+            through ``_agenerate_with_cache``, which aggregates from the
+            PROTECTED ``self._astream`` (``chat_models.py``: ``elif
+            self._should_stream(...): async for chunk in self._astream(...)``)
+            instead of calling ``_agenerate``. That bypasses BOTH the public
+            ``astream`` override AND ``_agenerate``, so tool-call names would
+            reach the caller in their wire (underscored) form and miss the
+            dotted dispatch map (observed: metallm converged loop emitting
+            ``threetears_web_search`` that the tool node could not resolve,
+            2026-06-22).
+
+            We override the PUBLIC ``ainvoke`` -- the same strategy the
+            ``astream`` override uses, and for the same reason: wrapping the
+            protected ``_astream`` would drop ``on_chat_model_stream``
+            callbacks. Post-processing the single returned message catches
+            the result no matter which internal path (``_astream`` aggregate
+            or ``_agenerate``) produced it. Double-translation is impossible:
+            ``reverse_translate_message`` keys on the underscored wire name,
+            so a second pass over already-dotted names is a no-op.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().ainvoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            from langchain_core.runnables.config import ensure_config, merge_configs
+
+            # Pre-merge like the ``astream`` override: a plain-list ``callbacks``
+            # in ``config`` would otherwise overwrite the contextvar's callback
+            # manager (carrying the ``astream_events`` event_streamer) inside
+            # ``BaseChatModel.ainvoke``'s ``ensure_config``. ``merge_configs``
+            # folds the list into the manager instead, preserving the tap.
+            merged_config = merge_configs(ensure_config(None), config)
+            result = await super().ainvoke(
+                input,
+                config=merged_config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
+        def invoke(
+            self,
+            input: LanguageModelInput,
+            config: RunnableConfig | None = None,
+            *,
+            stop: list[str] | None = None,
+            **kwargs: Any,
+        ) -> BaseMessage:
+            """sync mirror of :meth:`ainvoke` (same bypass, same fix).
+
+            The sync ``invoke`` path has the identical exposure: when
+            streaming callbacks are present ``_generate_with_cache``
+            aggregates from the protected ``_stream`` rather than calling
+            ``_generate``. Post-process the returned message so sync callers
+            also see canonical dotted tool-call names.
+
+            :param input: chat input (messages or string)
+            :ptype input: LanguageModelInput
+            :param config: optional runnable config
+            :ptype config: RunnableConfig | None
+            :param stop: optional stop sequences
+            :ptype stop: list[str] | None
+            :param kwargs: passthrough to ``super().invoke``
+            :ptype kwargs: Any
+            :return: response message with canonical (dotted) tool-call names
+            :rtype: BaseMessage
+            """
+            from langchain_core.runnables.config import ensure_config, merge_configs
+
+            # Pre-merge to preserve a callback-manager ``callbacks`` (see the
+            # ``ainvoke`` override above for the rationale).
+            merged_config = merge_configs(ensure_config(None), config)
+            result = super().invoke(
+                input,
+                config=merged_config,
+                stop=stop,
+                **kwargs,
+            )
+            reverse_translate_message(result, self._name_reverse_map)
+            _drop_junk_invalid_tool_calls(result)
+            return result
+
+        async def agenerate(
+            self,
+            messages: list[list[BaseMessage]],
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            """un-translate tool names on the batch generate surface.
+
+            ``agenerate`` is the chokepoint that ``ainvoke`` / ``abatch`` route
+            through, and it too aggregates from the protected ``_astream`` when
+            streaming callbacks are present (bypassing ``_agenerate``). A direct
+            ``agenerate`` caller would otherwise see wire (underscored) names.
+            Post-process every generated message; idempotent with the
+            ``ainvoke`` / ``_agenerate`` overrides (``reverse_translate_message``
+            keys on the underscored wire name, so a second pass is a no-op).
+
+            :param messages: batch of message lists
+            :ptype messages: list[list[BaseMessage]]
+            :param args: positional passthrough to ``super().agenerate``
+            :ptype args: Any
+            :param kwargs: keyword passthrough to ``super().agenerate``
+            :ptype kwargs: Any
+            :return: LLMResult with canonical (dotted) tool-call names
+            :rtype: Any
+            """
+            result = await super().agenerate(messages, *args, **kwargs)
+            for generations in result.generations:
+                for generation in generations:
+                    # chat models always yield ChatGeneration(Chunk); the
+                    # isinstance narrow proves ``.message`` exists (the base
+                    # Generation union member has no such attribute).
+                    if isinstance(generation, ChatGeneration):
+                        reverse_translate_message(generation.message, self._name_reverse_map)
+                        _drop_junk_invalid_tool_calls(generation.message)
+            return result
+
+        def generate(
+            self,
+            messages: list[list[BaseMessage]],
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            """sync mirror of :meth:`agenerate` (same bypass, same fix).
+
+            :param messages: batch of message lists
+            :ptype messages: list[list[BaseMessage]]
+            :param args: positional passthrough to ``super().generate``
+            :ptype args: Any
+            :param kwargs: keyword passthrough to ``super().generate``
+            :ptype kwargs: Any
+            :return: LLMResult with canonical (dotted) tool-call names
+            :rtype: Any
+            """
+            result = super().generate(messages, *args, **kwargs)
+            for generations in result.generations:
+                for generation in generations:
+                    # see ``agenerate`` for why the isinstance narrow is needed.
+                    if isinstance(generation, ChatGeneration):
+                        reverse_translate_message(generation.message, self._name_reverse_map)
+                        _drop_junk_invalid_tool_calls(generation.message)
             return result
 
     return _NameTranslatingChatOpenRouter

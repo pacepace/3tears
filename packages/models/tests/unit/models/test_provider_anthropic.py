@@ -229,6 +229,57 @@ class TestAnthropicWrapperStreaming:
         assert collected_text == "anthropic wrapper ok"
 
     @pytest.mark.asyncio
+    async def test_ainvoke_preserves_streaming_callbacks(self) -> None:
+        """The ``ainvoke`` override must NOT break token streaming.
+
+        The converged tool loop runs ``model.ainvoke`` under an outer
+        ``astream_events`` tap, so ``ainvoke`` aggregates from the protected
+        ``_astream`` and fires ``on_llm_new_token``. This pins that the public
+        ``ainvoke`` override (+ its ``merge_configs`` callback-preservation)
+        still delivers streamed tokens to a callback handler — i.e. the
+        un-translation post-processing did not swallow the streaming path.
+        """
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.callbacks import AsyncCallbackHandler
+
+        tokens: list[str] = []
+
+        class _Recorder(AsyncCallbackHandler):
+            async def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+                tokens.append(token)
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, kwargs
+            for text in ("a", "b", "c"):
+                chunk = ChatGenerationChunk(message=AIMessageChunk(content=text))
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(token=text, chunk=chunk)
+                yield chunk
+
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            # stream=True forces the _astream aggregation path; the callback
+            # handler rides config["callbacks"], which the override's
+            # merge_configs must preserve.
+            result = await model.ainvoke("hi", stream=True, config={"callbacks": [_Recorder()]})
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        # Tokens streamed to the handler (a trailing framework empty chunk is
+        # normal); the override did not swallow the streaming path.
+        assert "".join(tokens) == "abc"
+        assert result.content == "abc"
+
+    @pytest.mark.asyncio
     async def test_astream_events_survives_with_config_callbacks(self) -> None:
         """``with_config(callbacks=[...])`` must not strip the event_streamer.
 
@@ -439,3 +490,71 @@ class TestAnthropicWrapperToolNameValidation:
         assert len(kept) == 1
         assert kept[0]["name"] == "threetears_calculator"
         assert all(call["name"] != junk_name for call in kept)
+
+    @pytest.mark.asyncio
+    async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
+        """``ainvoke`` un-translates tool-call names even when it aggregates
+        internally from the protected ``_astream``.
+
+        Regression for the metallm converged-loop tool-dispatch failure
+        (2026-06-22): with a streaming callback active (the converged
+        ``agent_node`` runs ``model.ainvoke`` under an ``astream_events``
+        tap), ``BaseChatModel.ainvoke`` routes through
+        ``_agenerate_with_cache`` -> ``self._astream`` instead of calling
+        ``_agenerate``, bypassing BOTH the public ``astream`` override AND
+        ``_agenerate``. The underscored wire name ``threetears_calculator``
+        leaked to the caller and missed the dotted dispatch map. The public
+        ``ainvoke`` override post-processes the aggregated result.
+
+        ``stream=True`` makes ``_should_stream`` true, forcing the
+        ``_astream`` aggregation path. Without the override the returned name
+        stays ``threetears_calculator`` and this fails.
+        """
+        from langchain_core.tools import BaseTool
+
+        class _DottedTool(BaseTool):
+            name: str = "threetears.calculator"
+            description: str = "test calculator"
+
+            def _run(self, **kwargs: Any) -> str:
+                return "ok"
+
+            async def _arun(self, **kwargs: Any) -> str:
+                return "ok"
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            # The wire form: the tool was called by its mangled (underscored)
+            # name; un-translation has not happened yet.
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{}",
+                            "id": "call_1",
+                            "index": 0,
+                        },
+                    ],
+                ),
+            )
+
+        model = create_anthropic_chat(DEFAULT_CHAT_MODEL, "sk-test")
+        model.bind_tools([_DottedTool()])
+
+        original_astream = ChatAnthropic._astream
+        try:
+            ChatAnthropic._astream = _fake_super_astream  # type: ignore[method-assign]
+            result = await model.ainvoke("hi", stream=True)
+        finally:
+            ChatAnthropic._astream = original_astream  # type: ignore[method-assign]
+
+        assert result.tool_calls, "expected an aggregated tool call"
+        assert result.tool_calls[0]["name"] == "threetears.calculator"
