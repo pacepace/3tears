@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -56,6 +57,125 @@ def test_nats_proxy_conforms_to_l3backend() -> None:
         hasattr(NatsProxyL3Backend, m)
         for m in ("fetch", "fetchrow", "execute", "execute_batch", "acquire", "transaction")
     )
+
+
+#: sentinel standing in for a NatsProxy ``customer_scope`` (an RBAC extension the generic
+#: SqlL3Backend stays ignorant of -- it forwards it as an opaque kwarg).
+_CUSTOMER_SCOPE = object()
+
+
+class _ScopeAwarePool:
+    """A NatsProxy-shaped transport: declares ``accepts_scoped_reads`` and records the
+    ``namespace`` + extra kwargs (``customer_scope``) each raw-SQL method receives."""
+
+    accepts_scoped_reads = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fetch(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        self.calls.append((query, {"namespace": namespace, **kwargs}))
+        return []
+
+    async def fetchrow(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        self.calls.append((query, {"namespace": namespace, **kwargs}))
+        return None
+
+    async def fetchval(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> Any:
+        self.calls.append((query, {"namespace": namespace, **kwargs}))
+        return None
+
+    async def execute(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> str:
+        self.calls.append((query, {"namespace": namespace, **kwargs}))
+        return "UPDATE 1"
+
+
+class _BareScopelessPool:
+    """A bare asyncpg-shaped pool: NO capability marker, methods take only (query, *params).
+    Forwarding ``namespace`` / ``customer_scope`` to it would raise ``TypeError``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.calls.append((query, params))
+        return []
+
+    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any] | None:
+        self.calls.append((query, params))
+        return None
+
+    async def fetchval(self, query: str, *params: Any) -> Any:
+        self.calls.append((query, params))
+        return None
+
+    async def execute(self, query: str, *params: Any) -> str:
+        self.calls.append((query, params))
+        return "UPDATE 1"
+
+
+@pytest.mark.asyncio
+async def test_scope_aware_pool_receives_namespace_and_customer_scope() -> None:
+    # a transport that declares ``accepts_scoped_reads`` gets ``namespace`` +
+    # ``customer_scope`` forwarded through the wrapper on EVERY raw-SQL method.
+    pool = _ScopeAwarePool()
+    backend = SqlL3Backend(pool)
+
+    await backend.fetch("SELECT 1", "p", namespace="ns1", customer_scope=_CUSTOMER_SCOPE)
+    await backend.fetchrow("SELECT 2", namespace="ns2", customer_scope=_CUSTOMER_SCOPE)
+    await backend.fetchval("SELECT 3", namespace="ns3", customer_scope=_CUSTOMER_SCOPE)
+    await backend.execute("UPDATE t SET x=1", namespace="ns4", customer_scope=_CUSTOMER_SCOPE)
+
+    assert [kw for _q, kw in pool.calls] == [
+        {"namespace": "ns1", "customer_scope": _CUSTOMER_SCOPE},
+        {"namespace": "ns2", "customer_scope": _CUSTOMER_SCOPE},
+        {"namespace": "ns3", "customer_scope": _CUSTOMER_SCOPE},
+        {"namespace": "ns4", "customer_scope": _CUSTOMER_SCOPE},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bare_pool_drops_namespace_and_customer_scope_without_error() -> None:
+    # a bare pool (no marker) never sees ``namespace`` / ``customer_scope``: the wrapper
+    # drops them rather than passing kwargs the pool would reject. NO TypeError on any of
+    # the four methods even though the bare pool takes only (query, *params).
+    pool = _BareScopelessPool()
+    backend = SqlL3Backend(pool)
+
+    await backend.fetch("SELECT 1", "p", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+    await backend.fetchrow("SELECT 2", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+    await backend.fetchval("SELECT 3", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+    await backend.execute("UPDATE t SET x=1", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+
+    # only (query, params) reached the pool -- no namespace / customer_scope leaked.
+    assert pool.calls == [
+        ("SELECT 1", ("p",)),
+        ("SELECT 2", ()),
+        ("SELECT 3", ()),
+        ("UPDATE t SET x=1", ()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_magicmock_pool_is_not_treated_as_scope_aware() -> None:
+    # a MagicMock auto-creates ``accepts_scoped_reads`` as a truthy mock object, so a
+    # ``bool(getattr(...))`` capability sniff would wrongly flip scope-forwarding on and
+    # push ``namespace=`` into a mock whose recorded signature rejects it. the identity
+    # check (``is True``) treats only the literal marker as scope-aware, so a MagicMock
+    # pool stays on the drop path. guards the whole mock-backed collection test surface.
+    pool = MagicMock()
+    pool.execute = AsyncMock(side_effect=lambda query, *params: "UPDATE 1")
+    backend = SqlL3Backend(pool)
+
+    result = await backend.execute("UPDATE t SET x=1", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+
+    # the mock saw only (query, params): no namespace / customer_scope leaked through.
+    assert result == "UPDATE 1"
+    pool.execute.assert_awaited_once_with("UPDATE t SET x=1")
 
 
 @pytest.mark.asyncio
