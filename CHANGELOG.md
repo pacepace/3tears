@@ -1,8 +1,59 @@
 # Changelog
 
 All notable changes to the 3tears platform packages are recorded here.
-This project follows semantic versioning across all 17 workspace
+This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
+
+## v0.13.5 -- 2026-06-22
+
+Closes the remaining gaps that surfaced while converging a host app's bespoke
+tool loop onto `build_tool_agent`: wire-side tool-name translation leaking
+through every non-`astream` chat surface, the agent node force-hoisting a
+system message a caller had already assembled, and a hook emitter able to abort
+a turn.
+
+### Fixed — `3tears-models` — `threetears.models.providers`
+
+- **`_NameTranslatingChat{OpenRouter,Anthropic}` now un-mangle tool-call names on
+  every public surface — `ainvoke` / `invoke` and `agenerate` / `generate` — not
+  just `astream` / `_agenerate`.** The wrappers reverse-translate names from the
+  underscored wire form (forced by strict provider validators) back to the
+  canonical dotted form. That happened in the public `astream` override and in
+  `_agenerate`, but `BaseChatModel.ainvoke` aggregates from the PROTECTED
+  `_astream` (not `_agenerate`) whenever `_should_stream()` is true — i.e. a
+  streaming callback is attached, as when running under an `astream_events` tap —
+  so both overrides were bypassed and underscored names reached consumers whose
+  tool-dispatch maps key on the dotted canonical name, causing silent tool-call
+  misses. Both providers now override the public `ainvoke` / `invoke` to
+  un-mangle the returned message (mirrors the `astream` strategy; overriding
+  `_astream` directly would drop `on_chat_model_stream` callbacks), and override
+  the batch `agenerate` / `generate` chokepoint (which `abatch` and direct
+  callers route through, and which also aggregates from `_astream` under
+  streaming) to reverse-translate every generation. All passes are idempotent
+  with `_agenerate`'s translation (`reverse_translate_message` keys on the
+  underscored wire name, so a second pass is a no-op). Regression tests on both
+  providers force the `_astream` aggregation path (`stream=True`) and assert the
+  dotted name on each surface.
+
+### Added — `3tears-langgraph` — `threetears.langgraph.nodes`
+
+- **`agent_node` honours a `preassembled_messages` flag.** A host app that has
+  already assembled the full message list — system prompt, history, and a
+  trailing post-history injection in a deliberate position — was having its
+  ordering rewritten by the node's default system-message hoist/merge. With the
+  flag set, the node passes the messages through untouched (no hoist, no
+  `str()` coercion, no merge), letting the caller own prompt assembly while still
+  using the converged loop. Default behaviour is unchanged.
+
+### Fixed — `3tears-langgraph` — `threetears.langgraph.hooks`
+
+- **`_ComposedToolNodeHook` no longer lets a hook emitter abort a turn.** The
+  composer now wraps `on_tool_start` / `on_tool_end` / `on_heartbeat` emitter
+  dispatch in a guard that logs and swallows exceptions (a dispatch with no run
+  context, a transient event-bus error) instead of propagating them out of the
+  tool node and crashing the turn. `GraphBubbleUp` (LangGraph's control-flow
+  signal for interrupts/commands) is re-raised first so the guard never
+  swallows legitimate graph control flow.
 
 ## v0.13.4 -- 2026-06-22
 

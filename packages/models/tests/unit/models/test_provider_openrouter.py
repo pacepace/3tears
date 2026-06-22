@@ -252,6 +252,103 @@ class TestNameTranslatingChatOpenRouter:
         assert msg.invalid_tool_calls[0]["name"] == "threetears.calculator"
 
     @pytest.mark.asyncio
+    async def test_ainvoke_untranslates_when_aggregating_from_astream(self) -> None:
+        """``ainvoke`` un-translates tool-call names even when it aggregates
+        internally from the protected ``_astream``.
+
+        Regression for the metallm converged-loop tool-dispatch failure
+        (2026-06-22): the 3tears ``agent_node`` calls ``model.ainvoke`` while
+        an outer ``astream_events`` tap is active, so a v1 streaming handler
+        is attached and ``BaseChatModel.ainvoke`` routes through
+        ``_agenerate_with_cache`` -> ``self._astream`` (NOT ``_agenerate``).
+        That path bypassed BOTH the public ``astream`` override AND
+        ``_agenerate``, leaking the underscored wire name
+        ``threetears_calculator`` to the caller, which then missed the dotted
+        dispatch map and the model flailed on tool names. The public
+        ``ainvoke`` override post-processes the aggregated result, so names
+        are canonical regardless of the internal route.
+
+        ``stream=True`` makes ``_should_stream`` true (``chat_models.py``:
+        ``if kwargs.get("stream"): return True``), forcing the ``_astream``
+        aggregation path this test must exercise. Without the override the
+        returned name stays ``threetears_calculator`` and this fails.
+        """
+        from langchain_core.outputs import ChatGenerationChunk
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _fake_super_astream(
+            self: Any,
+            messages: Any,
+            stop: Any = None,
+            run_manager: Any = None,
+            **kwargs: Any,
+        ):
+            del self, messages, stop, run_manager, kwargs
+            # The wire form: the model called the tool by its mangled
+            # (underscored) name; un-translation has NOT happened yet.
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_call_chunks=[
+                        {
+                            "name": "threetears_calculator",
+                            "args": "{}",
+                            "id": "call_1",
+                            "index": 0,
+                        },
+                    ],
+                ),
+            )
+
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model.bind_tools([_DottedTool()])
+
+        original_astream = ChatOpenRouter._astream
+        try:
+            ChatOpenRouter._astream = _fake_super_astream  # type: ignore[method-assign]
+            result = await model.ainvoke("hi", stream=True)
+        finally:
+            ChatOpenRouter._astream = original_astream  # type: ignore[method-assign]
+
+        # The aggregated message's tool call carries the canonical dotted
+        # name, not the underscored wire form.
+        assert result.tool_calls, "expected an aggregated tool call"
+        assert result.tool_calls[0]["name"] == "threetears.calculator"
+
+    @pytest.mark.asyncio
+    async def test_agenerate_untranslates_tool_names(self) -> None:
+        """``agenerate`` (the batch chokepoint behind ``ainvoke``/``abatch``)
+        un-translates tool-call names on every generated message — covering a
+        direct ``agenerate`` caller that would otherwise see the wire form.
+        """
+        from langchain_core.outputs import ChatGeneration, LLMResult
+        from langchain_openrouter import ChatOpenRouter
+
+        async def _fake_super_agenerate(self: Any, messages: Any, *args: Any, **kwargs: Any) -> LLMResult:
+            del self, messages, args, kwargs
+            msg = AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "threetears_calculator", "args": {}, "id": "c1"},
+                ],
+            )
+            # agenerate returns LLMResult with NESTED generations (list[list]).
+            return LLMResult(generations=[[ChatGeneration(message=msg)]])
+
+        model = create_openrouter_chat("deepseek/deepseek-chat-v3-0324", "sk-test")
+        model.bind_tools([_DottedTool()])
+
+        original = ChatOpenRouter.agenerate
+        try:
+            ChatOpenRouter.agenerate = _fake_super_agenerate  # type: ignore[method-assign]
+            result = await model.agenerate([[AIMessage(content="hi")]])
+        finally:
+            ChatOpenRouter.agenerate = original  # type: ignore[method-assign]
+
+        name = result.generations[0][0].message.tool_calls[0]["name"]
+        assert name == "threetears.calculator"
+
+    @pytest.mark.asyncio
     async def test_astream_drops_invalid_tool_calls_with_junk_names(self) -> None:
         """``astream`` drops ``invalid_tool_calls`` entries whose names
         fail the canonical regex.

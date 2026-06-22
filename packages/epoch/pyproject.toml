@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-epoch"
-version = "0.13.4"
+version = "0.13.5"
 description = "Generation-stamped config epochs with NATS broadcast and per-message echo for cross-pod cache reload coherence"
 readme = "README.md"
 requires-python = ">=3.14"
