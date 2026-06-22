@@ -4,6 +4,20 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 17 workspace
 packages (bumped in lock-step).
 
+## v0.13.4 -- 2026-06-22
+
+Adds the op-log stream-head read a consumer needs to reconcile its
+committed-through cursor against an external record when the two diverge.
+
+### Added — `3tears-nats` — `threetears.nats.oplog`
+
+- **`OpLog.last_seq() -> int`** — the stream's current head sequence (one `stream_info()`
+  read, O(1)): the seq the next `append` will follow, i.e. the value `expected_last_seq`
+  must equal. A consumer that derives the op-log head from an external record (e.g. a git
+  `Op-Seq` commit trailer) can clamp to this when the two diverge — a reset/fresh stream
+  sitting behind an ahead-of-it external record — instead of wedging on a CAS that can never
+  match the shorter stream.
+
 ## v0.13.3 -- 2026-06-21
 
 Completes the conversation-folder relationship (referential integrity + helpers),

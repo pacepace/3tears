@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.13.3"
+version = "0.13.4"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
