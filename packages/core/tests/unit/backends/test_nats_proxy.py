@@ -271,6 +271,51 @@ class TestFetchrow:
 
 
 # ------------------------------------------------------------------
+# fetchval
+# ------------------------------------------------------------------
+
+
+class TestFetchval:
+    @pytest.mark.asyncio
+    async def test_fetchval_returns_first_column_of_first_row(self) -> None:
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [{"count": 7, "label": "ignored"}, {"count": 99}],
+                    "row_count": None,
+                    "duration_ms": 2,
+                }
+            )
+        )
+        proxy = _make_proxy(mock_nc)
+
+        value = await proxy.fetchval("SELECT count(*), label FROM foo")
+
+        assert value == 7
+
+    @pytest.mark.asyncio
+    async def test_fetchval_returns_none_for_empty(self) -> None:
+        mock_nc = MagicMock()
+        mock_nc.request = AsyncMock(
+            return_value=_make_reply(
+                {
+                    "success": True,
+                    "rows": [],
+                    "row_count": None,
+                    "duration_ms": 1,
+                }
+            )
+        )
+        proxy = _make_proxy(mock_nc)
+
+        value = await proxy.fetchval("SELECT count(*) FROM foo WHERE id = $1", "missing")
+
+        assert value is None
+
+
+# ------------------------------------------------------------------
 # execute
 # ------------------------------------------------------------------
 

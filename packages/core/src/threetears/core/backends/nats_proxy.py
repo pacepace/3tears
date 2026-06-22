@@ -189,7 +189,21 @@ class NatsProxyL3Backend:
     :ptype default_namespace: str | None
     :param timeout_ms: default query timeout in milliseconds
     :ptype timeout_ms: int
+
+    :cvar accepts_scoped_reads: capability marker read by :class:`SqlL3Backend` when
+        this backend is wrapped. ``True`` declares that the transport methods
+        (``fetch`` / ``fetchrow`` / ``fetchval`` / ``execute``) accept ``namespace``
+        and ``customer_scope`` and route them to the broker, so the wrapper forwards
+        those kwargs instead of dropping them. a bare asyncpg pool does not carry the
+        marker, so wrapping it is unchanged (the kwargs are dropped, as before).
     """
+
+    #: see the class docstring -- declares the namespace + customer_scope routing
+    #: capability so a wrapping SqlL3Backend forwards those kwargs rather than dropping
+    #: them. capability-sniffed (``getattr(pool, "accepts_scoped_reads", False)``), never
+    #: isinstance-checked: NatsProxyL3Backend does not satisfy the L3Backend protocol
+    #: structurally (it omits ``fetchval``), so an isinstance gate would silently fail.
+    accepts_scoped_reads: bool = True
 
     def __init__(
         self,
@@ -280,6 +294,39 @@ class NatsProxyL3Backend:
         """
         rows = await self.fetch(query, *params, namespace=namespace, customer_scope=customer_scope)
         result: dict[str, Any] | None = rows[0] if rows else None
+        return result
+
+    async def fetchval(
+        self,
+        query: str,
+        *params: Any,
+        namespace: str | None = None,
+        customer_scope: UUID | None = None,
+    ) -> Any:
+        """execute SELECT query and return first column of first row (scalar).
+
+        mirrors asyncpg's :meth:`Connection.fetchval`: the value of the first column
+        of the first row, or ``None`` when the result is empty. completes the
+        :class:`~threetears.core.backends.protocol.L3Backend` transport surface (the
+        protocol requires ``fetchval``; this backend previously omitted it, so it did
+        not structurally conform despite the protocol docstring claiming it does).
+
+        :param query: parameterized SQL query
+        :ptype query: str
+        :param params: query parameter values
+        :ptype params: Any
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :param customer_scope: conversation customer for the broker to clamp
+            Class-B reads to (broker-isolation-task-01); ``None`` ships no
+            scope. see :meth:`fetch`.
+        :ptype customer_scope: UUID | None
+        :return: first column of first row, or None when no rows
+        :rtype: Any
+        :raises DataLayerUnavailableError: if broker returns error
+        """
+        row = await self.fetchrow(query, *params, namespace=namespace, customer_scope=customer_scope)
+        result = next(iter(row.values())) if row else None
         return result
 
     async def execute(
