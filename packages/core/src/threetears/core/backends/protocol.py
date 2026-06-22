@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 __all__ = [
     "DurableStore",
@@ -43,17 +44,29 @@ class L3Backend(Protocol):
     satisfies :class:`DurableStore`. ``NatsProxyL3Backend`` and ``SqlL3Backend`` conform;
     conformance is asserted via :func:`isinstance` against this ``runtime_checkable``
     protocol. Errors surface as the data layer's typed unavailable error, never silently.
+
+    The read methods accept an optional ``customer_scope``: the broker-isolation clamp
+    for customer-scoped (Class-B) reads on the ``system.platform.rbac`` carve-out
+    (broker-isolation-task-01). ``NatsProxyL3Backend`` routes it to the broker; the
+    ``SqlL3Backend`` wrapper forwards it to a namespace-aware transport and drops it for
+    a bare asyncpg pool. ``None`` (the default) ships no scope.
     """
 
-    async def fetch(self, query: str, *params: Any, namespace: str | None = None) -> list[dict[str, Any]]:
+    async def fetch(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> list[dict[str, Any]]:
         """Run a SELECT and return all rows as dicts (empty list on no rows)."""
         ...
 
-    async def fetchrow(self, query: str, *params: Any, namespace: str | None = None) -> dict[str, Any] | None:
+    async def fetchrow(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> dict[str, Any] | None:
         """Run a SELECT and return the first row dict, or ``None``."""
         ...
 
-    async def fetchval(self, query: str, *params: Any, namespace: str | None = None) -> Any:
+    async def fetchval(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> Any:
         """Run a SELECT and return the first column of the first row (scalar), or ``None``."""
         ...
 
