@@ -189,7 +189,21 @@ class NatsProxyL3Backend:
     :ptype default_namespace: str | None
     :param timeout_ms: default query timeout in milliseconds
     :ptype timeout_ms: int
+
+    :cvar accepts_scoped_reads: capability marker read by :class:`SqlL3Backend` when
+        this backend is wrapped. ``True`` declares that the transport methods
+        (``fetch`` / ``fetchrow`` / ``fetchval`` / ``execute``) accept ``namespace``
+        and ``customer_scope`` and route them to the broker, so the wrapper forwards
+        those kwargs instead of dropping them. a bare asyncpg pool does not carry the
+        marker, so wrapping it is unchanged (the kwargs are dropped, as before).
     """
+
+    #: see the class docstring -- declares the namespace + customer_scope routing
+    #: capability so a wrapping SqlL3Backend forwards those kwargs rather than dropping
+    #: them. capability-sniffed (``getattr(pool, "accepts_scoped_reads", False)``), never
+    #: isinstance-checked: NatsProxyL3Backend does not satisfy the L3Backend protocol
+    #: structurally (it omits ``fetchval``), so an isinstance gate would silently fail.
+    accepts_scoped_reads: bool = True
 
     def __init__(
         self,

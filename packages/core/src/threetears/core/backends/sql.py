@@ -71,6 +71,15 @@ class SqlL3Backend:
         # structured DurableStore ops generate schema-aware SQL + run the per-column
         # read/write codec; otherwise the generic SELECT */INSERT path is used.
         self._schemas: dict[str, TableSchema] = {}
+        # capability sniff (mirrors the ``hasattr(self._pool, "transaction")`` check in
+        # ``transaction`` below): a namespace-aware transport such as
+        # ``NatsProxyL3Backend`` carries ``accepts_scoped_reads = True`` and routes
+        # ``namespace`` + ``customer_scope`` to the broker, so the raw-SQL transport
+        # methods forward those kwargs instead of dropping them. NOT an isinstance gate
+        # -- NatsProxyL3Backend omits ``fetchval`` so it fails the L3Backend protocol
+        # check, which would silently leave forwarding off. a bare asyncpg pool lacks
+        # the marker, so its behaviour is unchanged (kwargs dropped).
+        self._scope_aware: bool = bool(getattr(pool, "accepts_scoped_reads", False))
 
     def __getattr__(self, name: str) -> Any:
         """Delegate any unlisted attribute to the wrapped pool (the raw-SQL escape hatch).
@@ -108,23 +117,44 @@ class SqlL3Backend:
         self._schemas[table] = schema
 
     # ── L3Backend: raw-SQL transport (delegate to the pool) ─────────────────────────
-    async def fetch(self, query: str, *params: Any, namespace: str | None = None) -> list[dict[str, Any]]:
+    # ``namespace`` + extra ``**kwargs`` (e.g. NatsProxy's ``customer_scope``) are
+    # forwarded to the pool ONLY when it declared ``accepts_scoped_reads`` (see
+    # __init__): a namespace-aware transport routes them to the broker; a bare asyncpg
+    # pool would TypeError on them, so they are dropped for it (the historical path).
+    # generic by design -- the wrapper forwards opaque kwargs and stays ignorant of
+    # NATS-specific concepts like ``customer_scope``.
+    async def fetch(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         """Run a SELECT and return all rows as dicts (delegates to the pool)."""
-        rows = await self._pool.fetch(query, *params)
+        if self._scope_aware:
+            rows = await self._pool.fetch(query, *params, namespace=namespace, **kwargs)
+        else:
+            rows = await self._pool.fetch(query, *params)
         return [dict(r) for r in rows]
 
-    async def fetchrow(self, query: str, *params: Any, namespace: str | None = None) -> dict[str, Any] | None:
+    async def fetchrow(
+        self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
+    ) -> dict[str, Any] | None:
         """Run a SELECT and return the first row dict, or ``None`` (delegates to the pool)."""
-        row = await self._pool.fetchrow(query, *params)
+        if self._scope_aware:
+            row = await self._pool.fetchrow(query, *params, namespace=namespace, **kwargs)
+        else:
+            row = await self._pool.fetchrow(query, *params)
         return dict(row) if row is not None else None
 
-    async def fetchval(self, query: str, *params: Any, namespace: str | None = None) -> Any:
+    async def fetchval(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> Any:
         """Run a SELECT and return the first column of the first row (scalar) (delegates to the pool)."""
+        if self._scope_aware:
+            return await self._pool.fetchval(query, *params, namespace=namespace, **kwargs)
         return await self._pool.fetchval(query, *params)
 
-    async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
+    async def execute(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> str:
         """Run an INSERT/UPDATE/DELETE; return the asyncpg command-tag string (``"UPDATE 1"``)."""
-        result = await self._pool.execute(query, *params)
+        if self._scope_aware:
+            result = await self._pool.execute(query, *params, namespace=namespace, **kwargs)
+        else:
+            result = await self._pool.execute(query, *params)
         return result if isinstance(result, str) else ""
 
     async def execute_batch(
