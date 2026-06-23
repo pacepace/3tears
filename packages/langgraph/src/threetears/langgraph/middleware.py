@@ -88,7 +88,7 @@ def _stamp_cache_usage(response: ModelResponse) -> None:
         else:
             try:
                 message.usage_metadata = {"cache_usage": usage}  # type: ignore[assignment]
-            except (AttributeError, ValueError):
+            except Exception:  # noqa: BLE001 - exotic response shapes may refuse the assignment
                 log.debug(
                     "response message %s does not accept usage_metadata assignment",
                     type(message).__name__,

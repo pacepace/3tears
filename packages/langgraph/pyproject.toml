@@ -22,8 +22,9 @@ classifiers = [
 dependencies = [
     "3tears",
     "3tears-observe",
+    "langchain>=1.0",
     "langchain-core>=1.0",
-    "langgraph>=0.4",
+    "langgraph>=1.0",
     "langgraph-checkpoint>=4.0",
     "asyncpg",
     "uuid-utils",
