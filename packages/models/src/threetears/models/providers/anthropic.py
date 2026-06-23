@@ -22,7 +22,6 @@ OpenRouter-routed Bedrock, etc.).
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from langchain_core.outputs import ChatGeneration
@@ -509,10 +508,6 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
-        cost_per_input_token=Decimal("0.000015"),
-        cost_per_output_token=Decimal("0.000075"),
-        cost_per_cache_read_token=Decimal("0.0000015"),
-        cost_per_cache_write_token=Decimal("0.00001875"),
     ),
     "claude-sonnet-4-6": ModelCapabilities(
         model_name="claude-sonnet-4-6",
@@ -530,10 +525,6 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
-        cost_per_input_token=Decimal("0.000003"),
-        cost_per_output_token=Decimal("0.000015"),
-        cost_per_cache_read_token=Decimal("0.0000003"),
-        cost_per_cache_write_token=Decimal("0.00000375"),
     ),
     "claude-haiku-4-5-20251001": ModelCapabilities(
         model_name="claude-haiku-4-5-20251001",
@@ -551,10 +542,6 @@ _ANTHROPIC_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=False,
         min_cacheable_tokens=1024,
         cache_ttl_seconds=300,
-        cost_per_input_token=Decimal("0.0000008"),
-        cost_per_output_token=Decimal("0.000004"),
-        cost_per_cache_read_token=Decimal("0.00000008"),
-        cost_per_cache_write_token=Decimal("0.000001"),
     ),
 }
 

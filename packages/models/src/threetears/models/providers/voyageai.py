@@ -9,7 +9,6 @@ needs (see :mod:`._voyageai_compat`).
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from threetears.models.capabilities import ModelCapabilities, register_capabilities
@@ -78,9 +77,10 @@ def create_voyageai_embedding(
 
 # voyage-4 family is the current embedding lineup (verified live against the
 # VoyageAI API 2026-06-13: both ids embed at 1024 dims). the voyage-3 family
-# was retired -- the platform default moved to voyage-4. cost_per_input_token
-# is the per-token price; confirm against VoyageAI's published pricing on the
-# next rev (embedding cost is tracking-only, not correctness-bearing).
+# was retired -- the platform default moved to voyage-4. Pricing is NOT baked
+# here: 3tears does not bundle vendor prices (they change) and VoyageAI's
+# embedding models are not on OpenRouter, so consuming products admin-enter
+# their cost. The cost_* fields stay at their None default.
 _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
     "voyage-4": ModelCapabilities(
         model_name="voyage-4",
@@ -91,7 +91,6 @@ _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=1024,
         max_embedding_tokens=32_000,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000018"),
     ),
     "voyage-4-large": ModelCapabilities(
         model_name="voyage-4-large",
@@ -102,7 +101,6 @@ _VOYAGEAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=1024,
         max_embedding_tokens=32_000,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000020"),
     ),
 }
 

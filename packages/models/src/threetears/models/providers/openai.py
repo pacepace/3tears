@@ -20,7 +20,6 @@ in :mod:`threetears.models.tool_name_translation`.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from pydantic import PrivateAttr
@@ -295,9 +294,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
-        cost_per_input_token=Decimal("0.0000025"),
-        cost_per_output_token=Decimal("0.00001"),
-        cost_per_cache_read_token=Decimal("0.00000125"),
     ),
     "gpt-4o-mini": ModelCapabilities(
         model_name="gpt-4o-mini",
@@ -315,9 +311,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_openai_auto_cache=True,
         min_cacheable_tokens=0,
         cache_ttl_seconds=0,
-        cost_per_input_token=Decimal("0.00000015"),
-        cost_per_output_token=Decimal("0.0000006"),
-        cost_per_cache_read_token=Decimal("0.000000075"),
     ),
     "text-embedding-3-small": ModelCapabilities(
         model_name="text-embedding-3-small",
@@ -328,7 +321,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=1536,
         max_embedding_tokens=8_191,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000002"),
     ),
     "text-embedding-3-large": ModelCapabilities(
         model_name="text-embedding-3-large",
@@ -339,7 +331,6 @@ _OPENAI_CAPABILITIES: dict[str, ModelCapabilities] = {
         embedding_dimensions=3072,
         max_embedding_tokens=8_191,
         supports_batch_embedding=True,
-        cost_per_input_token=Decimal("0.00000013"),
     ),
 }
 
