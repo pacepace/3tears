@@ -54,6 +54,7 @@ from threetears.langgraph.hooks import (
     compose_tool_node_hooks,
     summarize_args,
 )
+from threetears.langgraph.middleware import PromptCachingMiddleware
 from threetears.langgraph.nodes import agent_node, has_tool_calls, tool_node
 from threetears.langgraph.protocols import (
     AsyncpgPoolAdapter,
@@ -98,6 +99,7 @@ __all__ = [
     "ImageGeneratedEvent",
     "PromptBuiltEvent",
     "PromptCachingHook",
+    "PromptCachingMiddleware",
     "ReasoningStreamedEvent",
     "ResponseCompletedEvent",
     "ResponseFailedEvent",
