@@ -4,6 +4,45 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.6 -- 2026-06-23
+
+Closes a permanent-staleness race in the cross-pod config-epoch machinery
+that any consumer loading local state before subscribing could hit -- it
+surfaced as a gateway serving a model catalog that contradicted the admin
+API, and the same shape sat latent in the MCP grant cache.
+
+### Fixed — `3tears-epoch` — `threetears.epoch.listener`
+
+- **`EpochListener.subscribe` gains an optional `primed_epoch` parameter so a
+  consumer that loaded local state before subscribing can never go permanently
+  stale.** `subscribe` primed its per-subject last-seen by reading
+  `EpochClient.current()` at subscribe time. A consumer that loads local state (a
+  model catalog, a grant cache) and only then subscribes therefore primed
+  last-seen to whatever epoch had committed by subscribe time — which can be
+  AHEAD of the epoch the loaded state actually reflects. A bump landing in the
+  load→subscribe window then pins last-seen past the loaded state, the periodic
+  `catch_up` sees `current == last_seen` and never fires, and the consumer serves
+  stale state forever with no recovery path. The fix is additive and
+  backward-compatible: pass `primed_epoch` = the epoch the loaded state reflects
+  (read `current()` BEFORE the load, then load, then subscribe). last-seen is then
+  never ahead of the loaded state, so any bump at or after the load is detected
+  (broadcast or `catch_up`); worst case is one redundant reload, never permanent
+  staleness. Omitting `primed_epoch` preserves the prior `current()`-at-subscribe
+  behaviour — correct only when no state was loaded against an earlier epoch.
+
+### Fixed — `3tears-mcp` — `threetears.mcp.auth`
+
+- **`LocalGrantAuthorizer.start` reads the rbac epoch BEFORE reloading the grant
+  cache and primes the listener to it.** `start` reloaded the grant cache and
+  then subscribed, so a `mcp.rbac` bump committing in that window pinned the
+  listener's last-seen past the freshly-loaded grants and the catch-up tick
+  (`current == last_seen`) never recovered it — the authorizer could serve a
+  permanently-stale grant set, making default-deny RBAC decisions on revoked or
+  stale grants. It now reads `current()` before the reload and passes it as
+  `primed_epoch`, mirroring the gateway catalog fix. Also asserts the listener is
+  non-None in the catch-up loop (only ever spawned under epoch mode), closing a
+  latent `union-attr`.
+
 ## v0.13.5 -- 2026-06-22
 
 Closes the remaining gaps that surfaced while converging a host app's bespoke
