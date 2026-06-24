@@ -68,7 +68,8 @@ class TestConnect:
         assert mock_transport.kv_bucket.await_count == 1
         kwargs = mock_transport.kv_bucket.call_args.kwargs
         assert kwargs["name"] == "collections"
-        assert kwargs["storage"] == "file"
+        # NATS is the L2 tier in 3tears — the collections bucket is memory, never file.
+        assert kwargs["storage"] == "memory"
 
     @pytest.mark.asyncio
     async def test_connect_with_extra_buckets(self) -> None:
