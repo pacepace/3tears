@@ -55,7 +55,7 @@ class BucketConfig:
     :ptype name: str
     :param ttl_seconds: per-entry time-to-live; ``0`` disables expiry
     :ptype ttl_seconds: int
-    :param storage: ``"file"`` (default; survives restarts) or ``"memory"``
+    :param storage: ``"memory"`` (default — NATS is L2) or ``"file"`` (opt-in)
     :ptype storage: str
     """
 
@@ -151,7 +151,7 @@ class NatsKvClient:
             client_name=f"{self._prefix}-kv",
         )
 
-        all_buckets = [BucketConfig("collections", 7200, storage="file")]
+        all_buckets = [BucketConfig("collections", 7200)]  # memory: NATS is L2 (durability = R3 + L3)
         if extra_buckets:
             all_buckets.extend(extra_buckets)
 

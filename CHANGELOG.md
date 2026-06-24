@@ -4,6 +4,28 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.7 -- 2026-06-23
+
+NATS is the **L2** tier in 3tears — ephemeral, with durability riding JetStream
+R3 replication plus the consumer's real L3 (git/DB). The JetStream helpers,
+however, defaulted to **file** storage, so any consumer running against a
+deliberately memory-only NATS deployment failed at first KV/stream creation with
+`10047 insufficient storage resources available` (it surfaced as a 500 on the
+first collections L2 access — presence join, entry read).
+
+### Fixed — `3tears-nats` / `3tears` — JetStream storage now defaults to memory
+
+- **`NatsClient.kv_bucket` and `NatsClient.ensure_jetstream_stream` now default
+  `storage="memory"`** (was `"file"`); `NatsKvBucket.__init__` matches. `"file"`
+  remains available as a deliberate, explicit opt-in for the rare object that
+  genuinely needs on-disk durability.
+- **`core.cache.NatsKvClient` no longer forces the `collections` bucket to
+  `file`** — it now uses the `BucketConfig` memory default. This is the bucket
+  whose file-backed creation failed on a memory-only account.
+- Net effect: a consumer on a memory-only NATS (no file store, `max_file: 0`)
+  works out of the box; nothing has to opt into memory. File storage is now the
+  conscious exception, matching the L2 contract.
+
 ## v0.13.6 -- 2026-06-23
 
 Closes a permanent-staleness race in the cross-pod config-epoch machinery

@@ -1089,7 +1089,7 @@ class NatsClient:
         *,
         name: str,
         ttl: timedelta | None = None,
-        storage: str = "file",
+        storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
     ) -> NatsKvBucket:
@@ -1097,14 +1097,16 @@ class NatsClient:
 
         bucket name is auto-prefixed with the configured namespace
         (``{namespace}-{name}``). passing ``ttl=None`` means values do
-        not expire. storage is one of ``"file"`` (default; survives
-        restarts) or ``"memory"``.
+        not expire. storage defaults to ``"memory"``: in 3tears, NATS is
+        the **L2** tier (ephemeral; durability rides JetStream R3
+        replication + the consumer's real L3). Pass ``"file"`` only as a
+        deliberate opt-in when a bucket genuinely needs on-disk durability.
 
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
-        :param storage: ``"file"`` or ``"memory"``
+        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param create_if_missing: create bucket if it does not exist
         :ptype create_if_missing: bool
@@ -1138,22 +1140,23 @@ class NatsClient:
         *,
         name: str,
         subjects: list[str],
-        storage: str = "file",
+        storage: str = "memory",
     ) -> str:
-        """create (or update) a durable JetStream stream over given subjects.
+        """create (or update) a JetStream stream over given subjects.
 
         idempotent: binds to an existing stream of the same name and reconciles
         its subject set, else creates it. the stream name is namespace-prefixed
-        (``{namespace}-{name}``) to match the KV-bucket convention. ``file``
-        storage rides the ``nats-jetstream`` named volume and survives restarts;
-        this is what makes a finished answer durable when no consumer is
-        attached at publish time.
+        (``{namespace}-{name}``) to match the KV-bucket convention. storage
+        defaults to ``"memory"``: NATS is the **L2** tier in 3tears (ephemeral;
+        durability rides JetStream R3 replication + the consumer's real L3).
+        Pass ``"file"`` only as a deliberate opt-in when a stream genuinely
+        needs on-disk durability.
 
         :param name: stream name suffix (namespace-prefixed)
         :ptype name: str
         :param subjects: subject patterns the stream captures
         :ptype subjects: list[str]
-        :param storage: ``"file"`` (durable, default) or ``"memory"``
+        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :return: full namespace-prefixed stream name
         :rtype: str

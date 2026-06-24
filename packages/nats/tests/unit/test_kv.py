@@ -120,6 +120,65 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     )
 
 
+class _CapturingJetStream:
+    """Captures the KeyValueConfig passed to create_key_value so storage can be asserted."""
+
+    def __init__(self) -> None:
+        self.config: Any = None
+
+    async def create_key_value(self, config: Any) -> _FakeKv:
+        self.config = config
+        return _FakeKv()
+
+
+class _CapturingClient:
+    def __init__(self, js: _CapturingJetStream) -> None:
+        self._js = js
+
+    def jetstream_context(self) -> _CapturingJetStream:
+        return self._js
+
+
+@pytest.mark.asyncio
+async def test_open_default_storage_is_memory() -> None:
+    """NATS is the L2 tier in 3tears: an unspecified-storage bucket is created MEMORY, never FILE.
+
+    The default lives on ``NatsClient.kv_bucket`` / ``NatsKvBucket.__init__``; here we prove the
+    create path maps it to the JetStream MEMORY storage type (not FILE).
+    """
+    from nats.js.api import StorageType
+
+    js = _CapturingJetStream()
+    # __init__ default storage (="memory") is what kv_bucket passes through when a caller omits it.
+    bucket = NatsKvBucket(client=_CapturingClient(js), full_name="aibots-tests", kv=_FakeKv(), ttl=None)  # type: ignore[arg-type]
+    await NatsKvBucket.open(
+        client=_CapturingClient(js),  # type: ignore[arg-type]
+        full_name="aibots-tests",
+        ttl=None,
+        storage=bucket._storage,  # the latent default, "memory"
+        create_if_missing=True,
+        history=1,
+    )
+    assert js.config.storage == StorageType.MEMORY
+
+
+@pytest.mark.asyncio
+async def test_open_file_storage_is_explicit_opt_in() -> None:
+    """``storage="file"`` still works as a deliberate opt-in (maps to FILE)."""
+    from nats.js.api import StorageType
+
+    js = _CapturingJetStream()
+    await NatsKvBucket.open(
+        client=_CapturingClient(js),  # type: ignore[arg-type]
+        full_name="aibots-tests",
+        ttl=None,
+        storage="file",
+        create_if_missing=True,
+        history=1,
+    )
+    assert js.config.storage == StorageType.FILE
+
+
 @pytest.mark.asyncio
 async def test_get_returns_none_on_miss() -> None:
     bucket, _ = _make_bucket()
