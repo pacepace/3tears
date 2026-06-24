@@ -7,6 +7,18 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [0.13.8]
+
+### Fixed
+
+- `RedshiftDriver` now terminates the **server-side** query on cancel. It captures
+  each connection's `pg_backend_pid()` at open and, on cancel, issues
+  `pg_terminate_backend(<pid>)` from a fresh short-lived connection before
+  closing/evicting the connection. Closing the client socket alone did not stop
+  the running Redshift query — a real abandoned query ran for 7.4h, leaking a
+  pool slot. Best-effort and non-fatal: the pid read and the terminate never raise
+  and never block the existing close + evict path.
+
 ## [0.13.3]
 
 ### Added

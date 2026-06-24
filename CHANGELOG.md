@@ -4,6 +4,32 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.8 -- 2026-06-24
+
+On cancel (e.g. a datasource tool-call timeout) the Redshift driver aborted the
+query by closing the client connection — but closing the **client** socket does
+not kill the running **server-side** Redshift query. A real abandoned query ran
+on the cluster for **7.4 hours**, leaking a connection-pool slot the whole time
+and re-exhausting the small pool faster than it could drain, which silently
+stopped an agent from answering.
+
+### Fixed — `3tears-datasources` — `RedshiftDriver` cancellation
+
+- **The driver now captures each connection's `pg_backend_pid()` at open and, on
+  cancel, issues `pg_terminate_backend(<pid>)` from a fresh short-lived
+  connection** before closing/evicting the poisoned connection. Closing the
+  client socket alone left the query running server-side; terminating the backend
+  actually stops it. (The DB user need not be a superuser — `pg_terminate_backend`
+  on one's own session works where `CANCEL` does not.)
+- **Best-effort and non-fatal throughout.** The pid read at open is best-effort
+  (a failure only degrades the server-side cancel; the connection stays usable).
+  The terminate runs in a worker thread under `wait_for`, logs on success,
+  logs + bumps the existing `cancellation.failed` counter on failure, and never
+  raises — the client-socket close + evict path runs regardless.
+- Pairs with consumers capping each datasource's `query_timeout_seconds` at its
+  tool-call timeout: that bounds queries that **respect** `statement_timeout`;
+  this terminates the ones that **wedge past** it.
+
 ## v0.13.7 -- 2026-06-23
 
 NATS is the **L2** tier in 3tears — ephemeral, with durability riding JetStream
