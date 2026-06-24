@@ -139,23 +139,31 @@ class _CapturingClient:
         return self._js
 
 
-@pytest.mark.asyncio
-async def test_open_default_storage_is_memory() -> None:
-    """NATS is the L2 tier in 3tears: an unspecified-storage bucket is created MEMORY, never FILE.
+def test_kv_default_storage_is_memory() -> None:
+    """NATS is the L2 tier in 3tears: the storage default is ``"memory"``, never file.
 
-    The default lives on ``NatsClient.kv_bucket`` / ``NatsKvBucket.__init__``; here we prove the
-    create path maps it to the JetStream MEMORY storage type (not FILE).
+    Asserted at the signature level (both the public ``NatsClient.kv_bucket`` entry point and
+    ``NatsKvBucket.__init__``) so the default can't silently drift back to file.
     """
+    import inspect
+
+    from threetears.nats import NatsClient
+
+    assert inspect.signature(NatsKvBucket.__init__).parameters["storage"].default == "memory"
+    assert inspect.signature(NatsClient.kv_bucket).parameters["storage"].default == "memory"
+
+
+@pytest.mark.asyncio
+async def test_open_memory_storage_maps_to_memory() -> None:
+    """``storage="memory"`` (the default) maps to the JetStream MEMORY storage type, not FILE."""
     from nats.js.api import StorageType
 
     js = _CapturingJetStream()
-    # __init__ default storage (="memory") is what kv_bucket passes through when a caller omits it.
-    bucket = NatsKvBucket(client=_CapturingClient(js), full_name="aibots-tests", kv=_FakeKv(), ttl=None)  # type: ignore[arg-type]
     await NatsKvBucket.open(
         client=_CapturingClient(js),  # type: ignore[arg-type]
         full_name="aibots-tests",
         ttl=None,
-        storage=bucket._storage,  # the latent default, "memory"
+        storage="memory",
         create_if_missing=True,
         history=1,
     )
