@@ -46,6 +46,24 @@ def _is_set_stmt_timeout(sql: str) -> bool:
     return sql.startswith("SET statement_timeout")
 
 
+def _is_open_setup_stmt(sql: str) -> bool:
+    """test helper: classify a SQL string as a connection-open setup call.
+
+    the driver issues a handful of statements at connection-open time
+    that are NOT the caller's query: ``SET statement_timeout``,
+    ``SET search_path``, and ``SELECT pg_backend_pid()`` (the last
+    captures the server-side backend pid so the cancel path can issue
+    ``pg_terminate_backend``). tests that want only the caller's query
+    filter these out.
+
+    :param sql: SQL text from a ``cursor.execute`` call
+    :ptype sql: str
+    :return: True iff this is an open-time setup statement
+    :rtype: bool
+    """
+    return sql.startswith("SET ") or sql.startswith("SELECT pg_backend_pid")
+
+
 # ---------------------------------------------------------------------------
 # Mock builder
 # ---------------------------------------------------------------------------
@@ -491,7 +509,7 @@ class TestQueryRouting:
             calls = [
                 c
                 for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_set_stmt_timeout(c.args[0])
+                if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             assert len(calls) == 1
             assert calls[0].args[0] == "SELECT %s, %s"
@@ -514,7 +532,7 @@ class TestQueryRouting:
             calls = [
                 c
                 for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_set_stmt_timeout(c.args[0])
+                if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             # SQL is built from template + IN-clause placeholder for one schema
             expected_sql = _REDSHIFT_TABLES_SQL_TEMPLATE.format(placeholders="%s")
@@ -550,7 +568,7 @@ class TestQueryRouting:
             calls = [
                 c
                 for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_set_stmt_timeout(c.args[0])
+                if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             expected_sql = _REDSHIFT_COLUMNS_SQL_TEMPLATE.format(placeholders="%s")
             assert calls[0].args[0] == expected_sql
@@ -578,7 +596,7 @@ class TestQueryRouting:
             calls = [
                 c
                 for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_set_stmt_timeout(c.args[0])
+                if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             expected_sql = _REDSHIFT_TABLE_HASHES_SQL_TEMPLATE.format(placeholders="%s")
             assert calls[0].args[0] == expected_sql
@@ -621,7 +639,7 @@ class TestTestConnection:
             calls = [
                 c
                 for c in conn._cursor.execute.call_args_list  # noqa: SLF001
-                if c.args and not _is_set_stmt_timeout(c.args[0])
+                if c.args and not _is_open_setup_stmt(c.args[0])
             ]
             assert any(c.args[0] == _PING_SQL for c in calls)
 
@@ -708,7 +726,7 @@ class TestCancellation:
         execute_blocked = asyncio.Event()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
-            if args and _is_set_stmt_timeout(args[0]):
+            if args and _is_open_setup_stmt(args[0]):
                 return
             # signal that the slow path is engaged, then block.
             execute_blocked.set()
@@ -759,7 +777,7 @@ class TestCancellation:
         execute_blocked = asyncio.Event()
 
         def _blocking_execute(*args: Any, **kwargs: Any) -> None:
-            if args and _is_set_stmt_timeout(args[0]):
+            if args and _is_open_setup_stmt(args[0]):
                 return
             execute_blocked.set()
             import time
@@ -800,6 +818,187 @@ class TestCancellation:
 
 
 # ---------------------------------------------------------------------------
+# Server-side backend termination on cancel
+# ---------------------------------------------------------------------------
+
+
+class TestBackendPidCancel:
+    """cancellation terminates the SERVER-SIDE backend via a fresh connection.
+
+    closing the CLIENT socket (``conn.close``) does NOT kill a running
+    Redshift query -- an abandoned query kept running for 7.4 hours in
+    production, leaking a connection-pool slot. the driver captures each
+    connection's backend pid at open (``SELECT pg_backend_pid()``) and,
+    on cancel, opens a FRESH short-lived connection to issue
+    ``SELECT pg_terminate_backend(<pid>)`` (our DB user is not a
+    superuser so ``CANCEL`` does not work; ``pg_terminate_backend``
+    does). these tests pin the pid-capture + fresh-connection-terminate
+    contract.
+    """
+
+    @pytest.mark.asyncio
+    async def test_backend_pid_captured_on_open(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """``pg_backend_pid()`` is read at open and stored keyed on the connection."""
+        conn = _build_mock_connection(
+            fetchall_rows=[],
+            description=[],
+            fetchone_row=(4242,),
+        )
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
+            assert driver._backend_pids.get(conn) == 4242  # noqa: SLF001
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_terminates_backend_via_fresh_connection(
+        self, redshift_config: RedshiftConnectionConfig
+    ) -> None:
+        """on cancel a FRESH connection issues ``pg_terminate_backend(<pid>)``."""
+        # main_conn runs the (blocking) query; its pg_backend_pid() read
+        # returns 4242. terminate_conn is the distinct fresh connection
+        # opened by the cancel path to issue pg_terminate_backend.
+        terminate_conn = _build_mock_connection()
+        main_conn = _build_mock_connection(fetchone_row=(4242,))
+
+        execute_blocked = asyncio.Event()
+
+        def _blocking_execute(*args: Any, **kwargs: Any) -> None:
+            # SET statement_timeout / SET search_path / pg_backend_pid
+            # must return immediately; only the real query blocks.
+            if args and _is_set_stmt_timeout(args[0]):
+                return
+            if args and "pg_backend_pid" in args[0]:
+                return
+            execute_blocked.set()
+            import time
+
+            for _ in range(100):
+                if main_conn.close.called:
+                    return
+                time.sleep(0.05)
+            return
+
+        main_conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            side_effect=[main_conn, terminate_conn],
+        ) as connect_mock:
+            driver = RedshiftDriver(redshift_config)
+            task = asyncio.create_task(driver.fetch("SELECT pg_sleep(60)"))
+            await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # a second connection was opened (the fresh terminate conn)
+            assert connect_mock.call_count >= 2
+            # the fresh connection executed pg_terminate_backend(4242)
+            terminate_calls = [
+                c.args[0]
+                for c in terminate_conn._cursor.execute.call_args_list  # noqa: SLF001
+                if c.args and "pg_terminate_backend" in c.args[0]
+            ]
+            assert len(terminate_calls) == 1
+            assert "4242" in terminate_calls[0]
+            # the client socket is still closed + evicted (unchanged path)
+            main_conn.close.assert_called()
+            assert main_conn not in driver._cache  # noqa: SLF001
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_backend_terminate_failure_is_nonfatal(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """fresh-connection terminate failure does not escape; WARNING logged."""
+        main_conn = _build_mock_connection(fetchone_row=(4242,))
+
+        execute_blocked = asyncio.Event()
+
+        def _blocking_execute(*args: Any, **kwargs: Any) -> None:
+            if args and _is_set_stmt_timeout(args[0]):
+                return
+            if args and "pg_backend_pid" in args[0]:
+                return
+            execute_blocked.set()
+            import time
+
+            for _ in range(100):
+                if main_conn.close.called:
+                    return
+                time.sleep(0.05)
+            return
+
+        main_conn._cursor.execute.side_effect = _blocking_execute  # noqa: SLF001
+
+        # first connect returns the main conn; the cancel path's fresh
+        # connect raises -- the terminate must degrade non-fatally.
+        def _connect_side_effect(*args: Any, **kwargs: Any) -> Any:
+            if not _connect_state["opened_main"]:
+                _connect_state["opened_main"] = True
+                return main_conn
+            raise RuntimeError("fresh connect for terminate failed")
+
+        _connect_state = {"opened_main": False}
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            side_effect=_connect_side_effect,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            task = asyncio.create_task(driver.fetch("SELECT pg_sleep(60)"))
+            await asyncio.wait_for(execute_blocked.wait(), timeout=2.0)
+            task.cancel()
+            # the task still cancels cleanly -- no exception escapes the
+            # best-effort terminate.
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+            assert any("terminate" in r.getMessage().lower() for r in warnings)
+            # the client socket close + evict still ran.
+            main_conn.close.assert_called()
+            assert main_conn not in driver._cache  # noqa: SLF001
+            await driver.close()
+
+    @pytest.mark.asyncio
+    async def test_backend_pid_read_failure_nonfatal_on_open(
+        self,
+        redshift_config: RedshiftConnectionConfig,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """a failed ``pg_backend_pid()`` read does not break open; pid simply absent."""
+        conn = _build_mock_connection(
+            fetchall_rows=[(1,)],
+            description=[("ok", None)],
+        )
+
+        def _fetchone_side_effect(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("pg_backend_pid read failed")
+
+        conn._cursor.fetchone.side_effect = _fetchone_side_effect  # noqa: SLF001
+
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ):
+            driver = RedshiftDriver(redshift_config)
+            # the connection still opens and the fetch succeeds despite
+            # the pid read failing.
+            rows = await driver.fetch("SELECT 1 AS ok")
+            assert rows == [{"ok": 1}]
+            # pid absent because the read failed
+            assert driver._backend_pids.get(conn) is None  # noqa: SLF001
+            warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+            assert any("pid" in r.getMessage().lower() for r in warnings)
+            await driver.close()
+
+
+# ---------------------------------------------------------------------------
 # Rollback on query error
 # ---------------------------------------------------------------------------
 
@@ -832,7 +1031,7 @@ class TestRollbackOnError:
             pass
 
         def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
-            if args and _is_set_stmt_timeout(args[0]):
+            if args and _is_open_setup_stmt(args[0]):
                 return
             raise _ProgrammingError("relation does not exist")
 
@@ -869,7 +1068,7 @@ class TestRollbackOnError:
             pass
 
         def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
-            if args and _is_set_stmt_timeout(args[0]):
+            if args and _is_open_setup_stmt(args[0]):
                 return
             raise _ProgrammingError("relation does not exist")
 
@@ -921,7 +1120,7 @@ class TestRollbackOnError:
         call_count = {"non_set": 0}
 
         def _execute_side_effect(*args: Any, **kwargs: Any) -> None:
-            if args and _is_set_stmt_timeout(args[0]):
+            if args and _is_open_setup_stmt(args[0]):
                 return
             call_count["non_set"] += 1
             if call_count["non_set"] == 1:
