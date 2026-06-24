@@ -69,7 +69,7 @@ class NatsKvBucket:
         full_name: str,
         kv: KeyValue,
         ttl: timedelta | None,
-        storage: str = "file",
+        storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
     ) -> None:

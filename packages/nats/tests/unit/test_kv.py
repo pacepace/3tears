@@ -120,6 +120,73 @@ def _make_self_healing_bucket(broken_kv: _FakeKv, healed_kv: _FakeKv) -> NatsKvB
     )
 
 
+class _CapturingJetStream:
+    """Captures the KeyValueConfig passed to create_key_value so storage can be asserted."""
+
+    def __init__(self) -> None:
+        self.config: Any = None
+
+    async def create_key_value(self, config: Any) -> _FakeKv:
+        self.config = config
+        return _FakeKv()
+
+
+class _CapturingClient:
+    def __init__(self, js: _CapturingJetStream) -> None:
+        self._js = js
+
+    def jetstream_context(self) -> _CapturingJetStream:
+        return self._js
+
+
+def test_kv_default_storage_is_memory() -> None:
+    """NATS is the L2 tier in 3tears: the storage default is ``"memory"``, never file.
+
+    Asserted at the signature level (both the public ``NatsClient.kv_bucket`` entry point and
+    ``NatsKvBucket.__init__``) so the default can't silently drift back to file.
+    """
+    import inspect
+
+    from threetears.nats import NatsClient
+
+    assert inspect.signature(NatsKvBucket.__init__).parameters["storage"].default == "memory"
+    assert inspect.signature(NatsClient.kv_bucket).parameters["storage"].default == "memory"
+
+
+@pytest.mark.asyncio
+async def test_open_memory_storage_maps_to_memory() -> None:
+    """``storage="memory"`` (the default) maps to the JetStream MEMORY storage type, not FILE."""
+    from nats.js.api import StorageType
+
+    js = _CapturingJetStream()
+    await NatsKvBucket.open(
+        client=_CapturingClient(js),  # type: ignore[arg-type]
+        full_name="aibots-tests",
+        ttl=None,
+        storage="memory",
+        create_if_missing=True,
+        history=1,
+    )
+    assert js.config.storage == StorageType.MEMORY
+
+
+@pytest.mark.asyncio
+async def test_open_file_storage_is_explicit_opt_in() -> None:
+    """``storage="file"`` still works as a deliberate opt-in (maps to FILE)."""
+    from nats.js.api import StorageType
+
+    js = _CapturingJetStream()
+    await NatsKvBucket.open(
+        client=_CapturingClient(js),  # type: ignore[arg-type]
+        full_name="aibots-tests",
+        ttl=None,
+        storage="file",
+        create_if_missing=True,
+        history=1,
+    )
+    assert js.config.storage == StorageType.FILE
+
+
 @pytest.mark.asyncio
 async def test_get_returns_none_on_miss() -> None:
     bucket, _ = _make_bucket()

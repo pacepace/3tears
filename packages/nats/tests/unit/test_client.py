@@ -569,6 +569,17 @@ async def test_ensure_jetstream_stream_memory_storage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_jetstream_stream_defaults_to_memory() -> None:
+    """NATS is the L2 tier in 3tears: with no storage arg the stream is MEMORY, never FILE."""
+    from nats.js.api import StorageType
+
+    client, js = _client_with_js()
+    await client.ensure_jetstream_stream(name="default", subjects=["aibots.x.*"])
+    config = js.add_stream.await_args.args[0]
+    assert config.storage == StorageType.MEMORY
+
+
+@pytest.mark.asyncio
 async def test_ensure_jetstream_stream_reconciles_existing() -> None:
     """when the stream already exists, fall back to update_stream (reconcile)."""
     client, js = _client_with_js()
