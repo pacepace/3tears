@@ -27,7 +27,7 @@ def _make_listener_capturing_subscribe() -> tuple[Any, Any, list[Any]]:
     fake_listener = MagicMock()
     captured: list[Any] = []
 
-    async def _subscribe(subject: Any, on_bump: Any) -> None:  # noqa: ARG001
+    async def _subscribe(subject: Any, on_bump: Any, primed_epoch: Any = None) -> None:  # noqa: ARG001
         captured.append(on_bump)
 
     fake_listener.subscribe = AsyncMock(side_effect=_subscribe)
@@ -216,6 +216,44 @@ class TestLocalGrantAuthorizer:
 
             called_subject = listener.subscribe.await_args.args[0]
             assert called_subject == Subjects.mcp_rbac_epoch()
+        finally:
+            await authz.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_primes_listener_to_epoch_read_before_cache_load(self) -> None:
+        """start() reads current() BEFORE reloading, primes to that epoch.
+
+        guards the permanent-staleness race: if the listener primed
+        last-seen via current()-at-subscribe (AFTER the cache load), a
+        bump landing in the load->subscribe window would pin last-seen
+        PAST the loaded grants and the catch-up tick (current ==
+        last_seen) would never recover. priming to the epoch read
+        BEFORE the load keeps last-seen <= the cache's epoch.
+        """
+        order: list[str] = []
+
+        async def _current(subject: Any) -> int:  # noqa: ARG001
+            order.append("current")
+            return 5
+
+        async def _loader() -> list[dict[str, Any]]:
+            order.append("reload")
+            return []
+
+        client, listener, _ = _make_listener_capturing_subscribe()
+        client.current = AsyncMock(side_effect=_current)
+        authz = LocalGrantAuthorizer(
+            grant_loader=AsyncMock(side_effect=_loader),
+            epoch_client=client,
+            epoch_listener=listener,
+            catchup_interval_seconds=3600.0,
+        )
+        await authz.start()
+        try:
+            # epoch read happened strictly before the cache load
+            assert order == ["current", "reload"]
+            # listener primed to the epoch the loaded cache reflects
+            assert listener.subscribe.await_args.kwargs["primed_epoch"] == 5
         finally:
             await authz.stop()
 

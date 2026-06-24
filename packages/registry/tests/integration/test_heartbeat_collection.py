@@ -84,7 +84,7 @@ class InMemoryNatsBus:
         *,
         name: str,  # noqa: ARG002 -- single shared bucket suffices for tests
         ttl: Any = None,  # noqa: ARG002
-        storage: str = "file",  # noqa: ARG002
+        storage: str = "memory",  # noqa: ARG002
         create_if_missing: bool = True,  # noqa: ARG002
         history: int = 1,  # noqa: ARG002
     ) -> _InMemoryKvBucket:

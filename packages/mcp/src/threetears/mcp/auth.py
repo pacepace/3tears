@@ -363,6 +363,18 @@ class LocalGrantAuthorizer:
         if self._started:
             log.warning("LocalGrantAuthorizer.start called twice; ignoring")
             return
+        # read the rbac epoch BEFORE loading the cache so last-seen is primed to
+        # the epoch the loaded grants reflect, never ahead of them. priming AFTER
+        # the load (the listener's default current()-at-subscribe) lets a bump
+        # landing in the load->subscribe window pin last-seen PAST the loaded
+        # cache -- the catch-up tick then sees current == last_seen and the
+        # grant cache serves permanently-stale authorization decisions. reading
+        # first keeps last-seen <= the cache's epoch, so any bump at/after the
+        # load is recovered (broadcast or catch-up); worst case one redundant
+        # reload.
+        primed_epoch: int | None = None
+        if self._epoch_client is not None:
+            primed_epoch = await self._epoch_client.current(Subjects.mcp_rbac_epoch())
         await self._reload_cache()
         epoch_mode = self._epoch_listener is not None
         if epoch_mode:
@@ -370,6 +382,7 @@ class LocalGrantAuthorizer:
             await self._epoch_listener.subscribe(
                 Subjects.mcp_rbac_epoch(),
                 self._on_rbac_bump,
+                primed_epoch=primed_epoch,
             )
         log_extras: dict[str, Any] = {
             "grant_count": len(self._cache),
@@ -429,6 +442,9 @@ class LocalGrantAuthorizer:
         :return: nothing
         :rtype: None
         """
+        # the loop is only ever spawned under epoch_mode (start() guards the
+        # create_task on epoch_mode), so the listener is non-None here.
+        assert self._epoch_listener is not None
         subject = Subjects.mcp_rbac_epoch()
         while True:
             try:

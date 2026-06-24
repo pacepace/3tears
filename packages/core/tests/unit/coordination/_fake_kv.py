@@ -172,7 +172,7 @@ class FakeNatsClient:
         *,
         name: str,
         ttl: object | None = None,
-        storage: str = "file",
+        storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
     ) -> FakeKvBucket:

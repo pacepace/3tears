@@ -18,6 +18,18 @@ and the package version moves in **lockstep** with the rest of the
   handshake — `verify-ca` fails there mid-handshake with a broken pipe. The default
   preserves the prior behavior, so existing callers are unaffected.
 
+## [0.13.8]
+
+### Fixed
+
+- `RedshiftDriver` now terminates the **server-side** query on cancel. It captures
+  each connection's `pg_backend_pid()` at open and, on cancel, issues
+  `pg_terminate_backend(<pid>)` from a fresh short-lived connection before
+  closing/evicting the connection. Closing the client socket alone did not stop
+  the running Redshift query — a real abandoned query ran for 7.4h, leaking a
+  pool slot. Best-effort and non-fatal: the pid read and the terminate never raise
+  and never block the existing close + evict path.
+
 ## [0.13.3]
 
 ### Added
@@ -171,7 +183,7 @@ and the package version moves in **lockstep** with the rest of the
 - Package version realigned to the monorepo lockstep (`0.9.1`); the
   earlier independent-SemVer experiment (`0.1.x`) is retired.
 
-## [Unreleased]
+## Roadmap
 
 Future enhancements after the initial driver migration ships:
 
