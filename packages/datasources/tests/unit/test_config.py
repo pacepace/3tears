@@ -231,6 +231,43 @@ class TestRedshiftConnectionConfig:
         assert not hasattr(cfg, "pool_min_size")
         assert not hasattr(cfg, "pool_max_size")
 
+    def test_sslmode_defaults_to_verify_ca(self) -> None:
+        # default preserves the redshift_connector library default, so existing
+        # callers are unaffected by the new field.
+        cfg = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="cluster.region.redshift.amazonaws.com",
+            database="analytics",
+            username="ots_user",
+            password_ref="env://OTS_REDSHIFT_PASSWORD",
+        )
+        assert cfg.sslmode == "verify-ca"
+
+    def test_sslmode_verify_full_is_accepted(self) -> None:
+        # verify-full is required to reach a proxy-fronted cluster (e.g. Satori).
+        cfg = RedshiftConnectionConfig(
+            datasource_type=DataSourceType.REDSHIFT,
+            host="cluster.satori.example",
+            database="analytics",
+            username="ots_user",
+            password_ref="env://OTS_REDSHIFT_PASSWORD",
+            sslmode="verify-full",
+        )
+        assert cfg.sslmode == "verify-full"
+
+    def test_sslmode_rejects_unsupported_mode(self) -> None:
+        # redshift_connector supports only verify-ca / verify-full; an unsupported
+        # libpq mode (e.g. 'require') is a config error, not a silent passthrough.
+        with pytest.raises(ValidationError):
+            RedshiftConnectionConfig(
+                datasource_type=DataSourceType.REDSHIFT,
+                host="h",
+                database="d",
+                username="u",
+                password_ref="env://PW",
+                sslmode="require",
+            )
+
 
 class TestSnowflakeConnectionConfig:
     """snowflake: account / warehouse / optional role; pool-sized."""

@@ -7,6 +7,17 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
+## [Unreleased]
+
+### Added
+
+- `RedshiftConnectionConfig.sslmode` (`verify-ca` | `verify-full`, default `verify-ca`)
+  — the TLS verification mode passed to `redshift_connector.connect`, now configurable
+  per datasource instead of hardcoded to the library default. A Redshift cluster fronted
+  by a TLS-terminating proxy (e.g. Satori) can require `verify-full` to complete the
+  handshake — `verify-ca` fails there mid-handshake with a broken pipe. The default
+  preserves the prior behavior, so existing callers are unaffected.
+
 ## [0.13.3]
 
 ### Added
