@@ -587,6 +587,15 @@ class RedshiftDriver(Driver):
         # retains -- the executor (executor_max_workers) bounds concurrent WORK,
         # this bounds concurrent open CONNECTIONS.
         self._connection_semaphore = asyncio.Semaphore(config.connection_cache_size)
+        # per-connection server-side backend pid captured at open via
+        # ``SELECT pg_backend_pid()``. on cancel the driver opens a
+        # FRESH connection to issue ``pg_terminate_backend(<pid>)`` --
+        # closing the CLIENT socket does NOT kill the SERVER-SIDE
+        # query (a real abandoned query ran for 7.4h in production,
+        # leaking a pool slot). a WeakKeyDictionary so an evicted /
+        # GC'd connection drops its pid entry automatically without a
+        # manual cleanup pass.
+        self._backend_pids: weakref.WeakKeyDictionary[RedshiftConnection, int] = weakref.WeakKeyDictionary()
         self._closed = False
         # read by :func:`_observed` as the ``datasource_name`` attribute
         # on every metric emission. matches the AsyncpgDriver contract.
@@ -685,7 +694,49 @@ class RedshiftDriver(Driver):
             with self._suppress_close():
                 conn.close()
             raise DriverConnectError(f"failed to set search_path on {cfg.host}:{cfg.port}/{cfg.database}") from None
+        # capture the server-side backend pid (best-effort) so the
+        # cancel path can issue ``pg_terminate_backend(<pid>)`` from a
+        # FRESH connection -- closing the client socket alone does NOT
+        # kill the running Redshift query. a failure to read the pid is
+        # NON-FATAL: the connection is still usable for queries, only
+        # the server-side cancel degrades, so we log + continue rather
+        # than close / raise.
+        pid = self._read_backend_pid_sync(conn)
+        if pid is not None:
+            self._backend_pids[conn] = pid
         return conn
+
+    def _read_backend_pid_sync(self, conn: RedshiftConnection) -> int | None:
+        """read ``pg_backend_pid()`` on ``conn`` best-effort (sync).
+
+        called from a worker thread at open. the pid lets the cancel
+        path terminate the SERVER-SIDE backend via a fresh connection.
+        ANY failure is non-fatal -- the connection stays usable for
+        queries; only the server-side cancel degrades -- so the failure
+        is logged at WARNING and ``None`` is returned rather than
+        raised.
+
+        :param conn: live redshift connection to read the pid from
+        :ptype conn: RedshiftConnection
+        :return: backend pid, or None when the read fails / is empty
+        :rtype: int | None
+        """
+        pid: int | None = None
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT pg_backend_pid()")
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
+            if row is not None:
+                pid = int(row[0])
+        except Exception as exc:  # noqa: BLE001 -- best-effort pid read
+            # non-fatal: the connection is still usable; only the
+            # server-side cancel degrades. log + continue.
+            log.warning("redshift backend pid read failed: %s; server-side cancel will degrade", exc)
+            pid = None
+        return pid
 
     def _apply_search_path_sync(self, conn: RedshiftConnection) -> None:
         """issue ``SET search_path`` on ``conn`` from the configured schemas (sync).
@@ -841,6 +892,81 @@ class RedshiftDriver(Driver):
                 cancel_cb=lambda: None,
             )
 
+    def _terminate_backend_sync(self, pid: int) -> None:
+        """open a fresh connection and ``pg_terminate_backend(<pid>)`` (sync).
+
+        called from a worker thread on the cancel path. closing the
+        CLIENT socket of the running connection does NOT kill the
+        SERVER-SIDE Redshift query; a fresh connection issuing
+        ``pg_terminate_backend`` does (our DB user is not a superuser,
+        so ``CANCEL`` does not work but ``pg_terminate_backend`` does).
+        the fresh connection uses EXACTLY the five connect kwargs of
+        :meth:`_open_connection_sync` (no statement_timeout / search_path
+        / extra kwargs) and is always closed in a ``finally``.
+
+        :param pid: server-side backend pid to terminate; captured from
+            the server at open via ``pg_backend_pid()``, never user SQL
+        :ptype pid: int
+        :return: nothing
+        :rtype: None
+        :raises Exception: any redshift_connector failure propagates to
+            the async wrapper, which logs + swallows it (best-effort)
+        """
+        cfg = self._config
+        conn = redshift_connector.connect(
+            host=cfg.host,
+            port=cfg.port,
+            database=cfg.database,
+            user=cfg.username,
+            password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+        )
+        try:
+            cursor = conn.cursor()
+            try:
+                # pid is an int captured from the SERVER at open
+                # (``pg_backend_pid()``), never user-controlled SQL --
+                # same justification as the inline statement_timeout
+                # format. Redshift also rejects bind params in this
+                # admin function call, so the int is formatted inline.
+                cursor.execute("SELECT pg_terminate_backend(%d)" % pid)
+            finally:
+                cursor.close()
+        finally:
+            with self._suppress_close():
+                conn.close()
+
+    async def _terminate_backend(self, pid: int) -> None:
+        """terminate the server-side backend ``pid`` best-effort via a fresh connection.
+
+        runs :meth:`_terminate_backend_sync` in a worker thread wrapped
+        in ``asyncio.wait_for`` so a hung connect / terminate cannot pin
+        the cancellation path. NEVER raises: a TimeoutError / Exception
+        is logged at WARNING (and the ``cancellation.failed`` counter is
+        bumped) so the failure is observable, never silent -- the
+        client-socket close + evict path still runs regardless.
+
+        :param pid: server-side backend pid to terminate
+        :ptype pid: int
+        :return: nothing
+        :rtype: None
+        """
+        cancel_failed = _get_cancellation_failed_counter()
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self._terminate_backend_sync, pid),
+                timeout=_CANCEL_TIMEOUT_SECONDS,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 -- best-effort terminate
+            log.warning(
+                "redshift server-side terminate (pg_terminate_backend) failed for pid=%s: %s",
+                pid,
+                exc,
+            )
+            if cancel_failed is not None:
+                cancel_failed.add(1, attributes={"driver_type": "redshift"})
+        else:
+            log.info("terminated server-side backend pid=%s", pid)
+
     async def _acquire_and_run(
         self,
         op: Callable[["RedshiftConnection"], Awaitable[Any]],
@@ -916,6 +1042,15 @@ class RedshiftDriver(Driver):
         async def _on_cancel() -> None:
             nonlocal connection_poisoned
             connection_poisoned = True
+            # FIRST: terminate the SERVER-SIDE backend via a fresh
+            # connection. closing the client socket below does NOT kill
+            # the running Redshift query (it leaked a pool slot for 7.4h
+            # in production); ``pg_terminate_backend(<pid>)`` from a
+            # fresh connection does. best-effort -- never raises; the
+            # close + evict path below always runs regardless.
+            pid = self._backend_pids.get(conn)
+            if pid is not None:
+                await self._terminate_backend(pid)
             # close in a worker thread so the asyncio loop stays
             # responsive; wrap in wait_for so a hung close does NOT
             # pin the cancellation path. on timeout / failure: still
