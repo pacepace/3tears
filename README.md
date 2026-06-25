@@ -1,16 +1,18 @@
 # 3tears
 
-**Smart data objects with a three-tier cache underneath. L1 SQLite. L2 NATS KV. L3 PostgreSQL.**
+**Build horizontally-scalable, agent-native apps without the tears.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-Reads stay local and fast. Writes flow through to durable storage. Your objects track their own changes and persist themselves.
+Going horizontal is where apps start to cry. State scatters across pods. Caches drift out of sync. Cross-pod coordination turns into a second job. Then you try to run an LLM agent on top of it all and the whole thing buckles.
 
-On that foundation sits an optional toolkit for building distributed LLM agents. Memory. Tools. RBAC. Model adapters. Channel integrations. LangGraph checkpointing. Take the whole stack or just the cache underneath it. The core stands on its own.
+3tears takes that pain. Your data becomes smart objects over a three-tier cache -- L1 SQLite, L2 NATS KV, L3 PostgreSQL. Every pod reads local and fast. Writes flow through to durable storage and stay coherent across the fleet. No hand-rolled invalidation. No per-pod state surgery.
 
-3tears ships as a family of namespace packages, each versioned in lockstep, each installable on its own.
+Agentic processes are first-class here, not bolted on. Memory, tools, RBAC, model adapters, channel integrations, and LangGraph checkpointing all sit on that same scalable foundation. An agent that runs across a dozen pods is built the same way as one that runs on your laptop.
+
+Take the whole stack or just the cache underneath it. The core stands on its own. 3tears ships as a family of namespace packages, each versioned in lockstep, each installable on its own.
 
 ## Project status
 
