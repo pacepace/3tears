@@ -9,6 +9,8 @@ description = "Dependency-free media capability contracts shared by 3tears provi
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

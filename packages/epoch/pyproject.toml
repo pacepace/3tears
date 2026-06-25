@@ -9,6 +9,8 @@ description = "Generation-stamped config epochs with NATS broadcast and per-mess
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

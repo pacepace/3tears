@@ -11,6 +11,8 @@ description = "datasource entities, collections, namespace helpers, agent-yaml c
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

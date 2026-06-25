@@ -5,23 +5,18 @@ labeled markdown procedures (`body`) and tool-surface modifications
 (`tool_additions`, `tool_restrictions`) plus a `prompt_mode` enum
 controlling how the body interacts with the consumer's base system prompt.
 
-This shard (01) provides only the schema + Collection layer:
+This package provides the schema + Collection layer:
 
 - `agent_skills` -- one row per skill (partition column `agent_id`).
 - `agent_skill_invocations` -- one row per skill load with synchronous
   outcome tracking populated by the consumer's post-LLM hook (partition
   column `agent_id`; composite FK CASCADE on parent skill).
 - Two `BaseEntity` subclasses (`AgentSkillEntity`, `AgentSkillInvocationEntity`).
-- Two `BaseCollection` subclasses with the methods listed under "Public
-  API" in `docs/agent-skills/shard-01-schema-and-collection.md`.
+- Two `BaseCollection` subclasses exposing the public skill-registry API.
 - A trigger-maintained `search_vector` (FTS for `skill_list`
   query-filter ranking; NOT auto-load).
 
-No agent tools (shard 02) and no per-turn composition renderer
-(shard 03) live here. See `docs/agent-skills/README.md` in the
-3tears repo for the package overview and the canonical PLACEMENT memo
-in `metallm/docs/skills/PLACEMENT.md` for the upstream design
-decisions.
+Agent tools and the per-turn composition renderer do not live here.
 
 ## Migration registration
 
@@ -37,12 +32,12 @@ Migrations are agent-scoped and depend on `conversations` (the
 invocation rows carry `conversation_id` -- ordering on apply, not an
 FK constraint).
 
-## `SkillRegistryClient` Protocol — why this package takes no ACL / tools deps
+## `SkillRegistryClient` Protocol -- why this package takes no ACL / tools deps
 
 `agent-memory` (a sibling package) takes direct dependencies on
 `3tears-agent-acl` and `3tears-agent-tools` because its memory tools
 need first-class ACL evaluator + tool-registry types in their public
-surface. `agent-skills` deliberately diverges: the tool factories take
+surface. `agent-skills` deliberately diverges. The tool factories take
 a thin `SkillRegistryClient` Protocol (three async methods,
 `acl_permits` / `list_skill_eligible_tools` / `get_tool_introspect`,
 plus a `ConversationIdResolver` / `ActiveSkillProbe` /
@@ -52,10 +47,9 @@ importing the ACL evaluator or the tool registry types directly.
 The trade-off: callers must implement a small adapter (~10 lines over
 their existing `NamespaceCollection` + ACL cache + in-process tool
 registry), but `agent-skills` ships with zero hard deps beyond core
-and `langchain-core`. The shard-02 spec explicitly endorses this
-(Implementation note 10: "the metallm consumer wires this; tests
-mock it"); PLACEMENT §3.2's ACL-via-evaluator note targets the
-shard-03 composition renderer, not the tools surface.
+and `langchain-core`. The consumer wires this; tests mock it. The
+ACL-via-evaluator approach targets the composition renderer, not the
+tools surface.
 
 Future sibling packages should follow whichever pattern their public
 surface demands -- direct deps when types are part of the contract,

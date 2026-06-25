@@ -72,7 +72,7 @@ Per-repo exemption files (e.g., `_cache_exemptions.txt`) stay in the consumer re
 ## How to add a new enforcement domain
 
 1. Create `src/threetears/enforcement/<domain>/` with `walkers.py`, `config.py`, `runner.py`, and `__init__.py`.
-2. Use `common/` helpers (`ast_helpers`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`) — do not duplicate scaffolding.
+2. Use `common/` helpers (`ast_helpers`, `repo_layout`, `pyproject_discovery`, `inheritance`, `exemptions`, `modes`, `violations`, `reports`). Do not duplicate scaffolding.
 3. Walkers return `list[Violation]`. Configs are frozen dataclasses. Runners orchestrate walker → exemption-application → mode-resolution → report.
 4. Write unit tests in `tests/<domain>/`.
 5. Document the domain in this README.

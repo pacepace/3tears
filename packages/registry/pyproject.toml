@@ -6,8 +6,11 @@ build-backend = "hatchling.build"
 name = "3tears-registry"
 version = "0.13.8"
 description = "MCP-compatible tool registry for 3tears tool system"
+readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "3tears",
     "3tears-agent-acl>=0.1.0",

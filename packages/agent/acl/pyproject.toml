@@ -9,6 +9,8 @@ description = "shared rbac evaluator + cache for the 3tears platform: groups, ro
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
