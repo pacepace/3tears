@@ -8,7 +8,7 @@ Three-tier caching library for Python applications. Provides collections (L1 SQL
 L1 (SQLite, in-process, sync)  ->  L2 (NATS KV, shared, async)  ->  L3 (PostgreSQL, persistent, async)
 ```
 
-- **L1**: In-memory SQLite via WAL mode. Sync access. Used by entity attribute reads/writes.
+- **L1**: In-memory SQLite via WAL mode. Sync access. Used by entity attribute reads and writes.
 - **L2**: NATS KV shared cache. Async. Cross-pod consistency for multi-instance deployments.
 - **L3**: PostgreSQL (or PostGIS, YugabyteDB, etc.). Async. Source of truth.
 
@@ -113,10 +113,10 @@ class CoreConfig(Protocol):
 
 ### Subscript Access (sync, transparent pull-through)
 
-Subscript access is the primary API. On L1 miss, data is transparently pulled through L2/L3 via a background event loop — no `await` needed, no `ensure()` required:
+Subscript access is the primary API. On L1 miss, data is transparently pulled through L2/L3 via a background event loop. No `await` needed, no `ensure()` required:
 
 ```python
-# Read entity — pulls through L2/L3 automatically on L1 miss
+# Read entity -- pulls through L2/L3 automatically on L1 miss
 entity = users[user_id]
 
 # Read single field
@@ -128,12 +128,13 @@ users[user_id, "name_display"] = "New Name"
 # Write full entity data (writes dict to L1)
 users[user_id] = {"user_id": user_id, "name_display": "New Name", ...}
 
-# Check if entity is in L1 (does NOT pull through — L1 only)
+# Check if entity is in L1 (does NOT pull through -- L1 only)
 if user_id in users:
     entity = users[user_id]
 ```
 
 `__getitem__` raises `KeyError` only if the entity doesn't exist in any tier. The L1 fast path is ~microseconds; an L1 miss with pull-through adds ~50-200us bridge overhead plus the actual L2/L3 I/O time.
+
 
 For hot-path code where you want to avoid the sync-async bridge overhead on first access, you can pre-warm L1:
 
@@ -218,6 +219,6 @@ If `rows_affected == 0` for an UPDATE, `BaseCollection.save_entity()` raises `Co
 
 ## Subclassing Guide
 
-**BaseEntity**: Set `primary_key_field` to your PK column name. Add computed properties as needed. Do NOT store data in instance attributes — all data lives in L1.
+**BaseEntity**: Set `primary_key_field` to your PK column name. Add computed properties as needed. Do NOT store data in instance attributes. All data lives in L1.
 
 **BaseCollection**: Set `primary_key_column`. Implement the 5 abstract methods: `fetch_from_store`, `save_to_store`, `delete_from_store`, `serialize`, `deserialize`. Use `self.l3_pool` for database access. Add domain-specific query methods (e.g., `find_by_email`).

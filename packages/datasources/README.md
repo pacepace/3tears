@@ -5,32 +5,32 @@ agent-yaml-facing `DatasourceConfig`, and the `Driver` abstraction
 (plus concrete asyncpg + Redshift drivers) for the 3tears platform.
 
 This is the single source of truth for "what is a datasource" across
-every 3tears consumer (the Hub, agent pods, future products).
+every 3tears consumer.
 
 ## Public surface
 
 Imported via `from threetears.datasources import …`:
 
-- **entities** — `DataSourceEntity`, `DataSourceTableEntity`,
+- **entities** -- `DataSourceEntity`, `DataSourceTableEntity`,
   `DataSourceColumnEntity`, `DataSourceRelationEntity`,
   `TableTemplateEntity` + the `DataSourceType`,
   `DataSourceAccessMode`, `DataSourceStatus` enums.
-- **collections** — `DataSourceCollection`,
+- **collections** -- `DataSourceCollection`,
   `DataSourceTableCollection`, `DataSourceColumnCollection`,
   `DataSourceRelationCollection`, `TableTemplateCollection`
   (three-tier `SchemaBackedCollection` / `BaseCollection` subclasses
   with L1/L2/L3 caching + `_publish_invalidation` on save).
-- **namespace** — `DATASOURCE_NAMESPACE_TYPE`,
+- **namespace** -- `DATASOURCE_NAMESPACE_TYPE`,
   `datasource_namespace_id(uuid) -> uuid`,
   `datasource_namespace_name(name) -> str`.
-- **config** — `DatasourceConfig` (the agent-yaml-facing model the
+- **config** -- `DatasourceConfig` (the agent-yaml-facing model the
   SDK validates against) plus the per-driver `ConnectionConfig`
-  discriminated union (lands in `datasource-task-08`).
+  discriminated union.
 
 ## Drivers
 
 The `Driver` ABC + `create_driver(config, *, hub_l3_pool=None)` factory
-land in `datasource-task-09`. Concrete drivers are accessed via the
+are the entry point. Concrete drivers are accessed via the
 factory, NOT imported directly:
 
 ```python
@@ -54,16 +54,14 @@ Postgres / Yugabyte / agent_internal coverage uses `asyncpg` which is
 a hard dep (no extras key required).
 
 See `IMPLEMENTING_DRIVERS.md` for the contract every new driver must
-satisfy (lands in `datasource-task-09`).
+satisfy.
 
 ## Versioning policy
 
 `3tears-datasources` versions in **lockstep** with the rest of the
 3tears monorepo: every package shares one version, which tracks the
-framework git tag (`v0.9.1` at time of writing). An earlier experiment
-versioned this package independently (`0.1.x`); that was retired
-because it diverged from how the monorepo actually releases — all
-packages move together.
+framework git tag (`v0.9.1` at time of writing). All packages move
+together.
 
 The `pyproject.toml` depends on 3tears core via a compatible-release
 range (`3tears>=0.9.1,<1.0`); because the monorepo bumps together, any

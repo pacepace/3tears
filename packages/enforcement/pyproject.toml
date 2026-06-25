@@ -9,6 +9,8 @@ description = "Static-analysis enforcement scanners for the 3tears ecosystem (ca
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
