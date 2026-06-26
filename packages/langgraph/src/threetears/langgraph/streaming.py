@@ -136,6 +136,16 @@ class StreamEndEvent(BaseModel):
     mutually exclusive with :class:`StreamErrorEvent` -- never both
     on the same correlation_id.
 
+    ``metadata`` carries turn-level metadata that is NOT part of the
+    token stream itself -- it originates wherever the terminal is
+    constructed (for an ack-early dispatch flow, the consumer enriches
+    the terminal from the separate request-reply once the graph
+    finishes). it is transport-agnostic and free-form; a consumer with
+    no terminal metadata leaves it empty. aibots rides response
+    metadata here (tool-call names, ``pending_grants``, ``status`` for
+    the human-in-the-loop grant flow) so a streaming caller sees the
+    same turn metadata a non-streaming reply carries.
+
     :param type: discriminator literal
     :ptype type: Literal["stream_end"]
     :param correlation_id: request trace identifier
@@ -144,12 +154,15 @@ class StreamEndEvent(BaseModel):
     :ptype content: str
     :param duration_ms: wall-clock milliseconds for the stream
     :ptype duration_ms: int
+    :param metadata: free-form turn-level metadata (empty when none)
+    :ptype metadata: dict[str, Any]
     """
 
     type: Literal["stream_end"] = "stream_end"
     correlation_id: UUID
     content: str
     duration_ms: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class StreamErrorEvent(BaseModel):
@@ -636,7 +649,7 @@ class StreamingResponse:
         await self._publish(event)
 
     @traced
-    async def end(self) -> None:
+    async def end(self, *, metadata: dict[str, Any] | None = None) -> None:
         """publish the success terminal :class:`StreamEndEvent` once.
 
         idempotent if a previous :meth:`end` already fired -- second
@@ -644,6 +657,9 @@ class StreamingResponse:
         :class:`StreamingResponseError` if a previous :meth:`error`
         already fired (lifecycle terminals are mutually exclusive).
 
+        :param metadata: optional free-form turn-level metadata to carry
+            on the terminal envelope (defaults to empty)
+        :ptype metadata: dict[str, Any] | None
         :return: nothing
         :rtype: None
         :raises StreamingResponseError: when ``error`` already fired
@@ -661,6 +677,7 @@ class StreamingResponse:
             correlation_id=self._correlation_id,
             content=self._accumulated_content,
             duration_ms=duration_ms,
+            metadata=dict(metadata) if metadata else {},
         )
         await self._publish(event)
 

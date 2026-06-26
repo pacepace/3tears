@@ -207,6 +207,32 @@ class TestStreamEndEventSerialization:
         assert data["content"] == "full response"
         assert data["duration_ms"] == 42
 
+    def test_metadata_defaults_empty(self) -> None:
+        """``metadata`` defaults to an empty dict when no caller supplies it."""
+        evt = StreamEndEvent(
+            correlation_id=_new_uuid(),
+            content="x",
+        )
+        assert evt.metadata == {}
+        assert json.loads(evt.model_dump_json())["metadata"] == {}
+
+    def test_metadata_round_trips_through_parse(self) -> None:
+        """``metadata`` survives serialize -> :func:`parse_stream_event`."""
+        cid = _new_uuid()
+        meta = {"tool_calls": ["lookup"], "status": "completed", "pending_grants": []}
+        payload = (
+            StreamEndEvent(
+                correlation_id=cid,
+                content="done",
+                metadata=meta,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
+        evt = parse_stream_event(payload)
+        assert isinstance(evt, StreamEndEvent)
+        assert evt.metadata == meta
+
 
 class TestStreamErrorEventSerialization:
     """:class:`StreamErrorEvent` serializes with the new failure shape."""
@@ -451,6 +477,20 @@ class TestStreamingResponseLifecycle:
         assert len(end_events) == 1
         assert end_events[0].content == "part1 part2"
         assert stream.closed is True
+
+    async def test_end_carries_supplied_metadata(self) -> None:
+        """:meth:`end` forwards caller metadata onto the terminal envelope."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.end(metadata={"status": "completed"})
+        end_events = [e for e in transport.events if isinstance(e, StreamEndEvent)]
+        assert len(end_events) == 1
+        assert end_events[0].metadata == {"status": "completed"}
 
     async def test_replace_content_sets_accumulated_buffer(self) -> None:
         """:meth:`replace_content` makes the terminal carry the new text.
