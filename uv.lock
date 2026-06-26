@@ -76,6 +76,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "nats-py" },
     { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "sqlalchemy" },
 ]
 
@@ -104,6 +105,7 @@ requires-dist = [
     { name = "nats-py" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20" },
     { name = "pydantic" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.8" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },
     { name = "sqlalchemy" },
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.0" },

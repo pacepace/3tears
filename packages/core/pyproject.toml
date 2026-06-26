@@ -30,6 +30,7 @@ dependencies = [
     "aiosqlite",
     "pydantic",
     "cryptography>=42",  # AES-256-GCM encryption-at-rest (core.security.encryption)
+    "pyjwt[crypto]>=2.8",  # EdDSA-signed identity tokens (core.security.identity_token)
 ]
 
 [project.optional-dependencies]

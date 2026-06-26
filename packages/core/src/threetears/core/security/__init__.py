@@ -11,9 +11,21 @@ public surface:
 - encryption at rest (``encryption``): :func:`seal` / :func:`open_secret` /
   :class:`DecryptionError` — AES-256-GCM under a master key, for the times a secret
   must be *stored* rather than referenced.
+- identity tokens (``identity_token``): :class:`IdentityClaims` / :class:`IdentityTokenError` /
+  :func:`sign_identity_token` / :func:`verify_identity_token` / :func:`build_jwks` /
+  :func:`generate_signing_keypair` — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
+  identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
+from threetears.core.security.identity_token import (
+    IdentityClaims,
+    IdentityTokenError,
+    build_jwks,
+    generate_signing_keypair,
+    sign_identity_token,
+    verify_identity_token,
+)
 from threetears.core.security.sandbox import (
     PathSandbox,
     Sandbox,
@@ -46,4 +58,11 @@ __all__ = [
     "DecryptionError",
     "open_secret",
     "seal",
+    # identity tokens
+    "IdentityClaims",
+    "IdentityTokenError",
+    "build_jwks",
+    "generate_signing_keypair",
+    "sign_identity_token",
+    "verify_identity_token",
 ]
