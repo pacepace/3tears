@@ -492,6 +492,21 @@ class TestStreamingResponseLifecycle:
         assert len(end_events) == 1
         assert end_events[0].metadata == {"status": "completed"}
 
+    async def test_end_mirrors_conversation_id_onto_terminal(self) -> None:
+        """:meth:`end` carries the conversation_id (redundant with the start)."""
+        conv = _new_uuid()
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=conv,
+        )
+        await stream.start()
+        await stream.end()
+        end_events = [e for e in transport.events if isinstance(e, StreamEndEvent)]
+        assert len(end_events) == 1
+        assert end_events[0].conversation_id == conv
+
     async def test_replace_content_sets_accumulated_buffer(self) -> None:
         """:meth:`replace_content` makes the terminal carry the new text.
 

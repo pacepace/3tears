@@ -154,6 +154,12 @@ class StreamEndEvent(BaseModel):
     :ptype content: str
     :param duration_ms: wall-clock milliseconds for the stream
     :ptype duration_ms: int
+    :param conversation_id: conversation identifier, mirrored from the
+        :class:`StreamStartEvent` so the terminal independently carries
+        it (the start frame and the terminal are a redundant pair over a
+        fire-and-forget transport; a consumer that misses one recovers
+        the id from the other)
+    :ptype conversation_id: UUID | None
     :param metadata: free-form turn-level metadata (empty when none)
     :ptype metadata: dict[str, Any]
     """
@@ -162,6 +168,7 @@ class StreamEndEvent(BaseModel):
     correlation_id: UUID
     content: str
     duration_ms: int = 0
+    conversation_id: UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -677,6 +684,7 @@ class StreamingResponse:
             correlation_id=self._correlation_id,
             content=self._accumulated_content,
             duration_ms=duration_ms,
+            conversation_id=self._conversation_id,
             metadata=dict(metadata) if metadata else {},
         )
         await self._publish(event)
