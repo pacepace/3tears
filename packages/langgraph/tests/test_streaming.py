@@ -28,6 +28,7 @@ from threetears.langgraph.streaming import (
     StreamErrorEvent,
     StreamingResponse,
     StreamingResponseError,
+    StreamInterruptEvent,
     StreamStartEvent,
     StreamTokenEvent,
     StreamTransport,
@@ -929,3 +930,119 @@ def test_recording_transport_satisfies_protocol() -> None:
     """:class:`_RecordingTransport` is a structural :class:`StreamTransport`."""
     t: StreamTransport = _RecordingTransport()
     assert hasattr(t, "publish")
+
+
+# ---------------------------------------------------------------------------
+# Interrupt surfacing (HITL pause terminal) -- v0.13.9 change #1
+# ---------------------------------------------------------------------------
+
+
+class _Interrupt:
+    """LangGraph ``Interrupt`` stand-in carrying the value a node passed to ``interrupt(...)``."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+class _Snapshot:
+    """``StateSnapshot`` stand-in exposing pending interrupts (and ``next`` when paused)."""
+
+    def __init__(self, interrupts: list[Any]) -> None:
+        self.interrupts = interrupts
+        self.next = ("exploit_node",) if interrupts else ()
+        self.tasks: tuple[Any, ...] = ()
+
+
+class _InterruptingGraph(_StubGraph):
+    """a :class:`_StubGraph` whose ``aget_state`` reports a snapshot after the stream completes."""
+
+    def __init__(self, events: list[Any], snapshot: Any) -> None:
+        super().__init__(events)
+        self._snapshot = snapshot
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        return self._snapshot
+
+
+def _stream(transport: _RecordingTransport) -> StreamingResponse:
+    return StreamingResponse(
+        transport=transport,
+        correlation_id=_new_uuid(),
+        conversation_id=_new_uuid(),
+    )
+
+
+class TestStreamInterruptEventSerialization:
+    def test_type_and_payload_round_trip(self) -> None:
+        evt = StreamInterruptEvent(
+            correlation_id=_new_uuid(),
+            payload={"action": "exploit.approve", "target": "10.0.0.1"},
+            conversation_id=_new_uuid(),
+        )
+        data = json.loads(evt.model_dump_json())
+        assert data["type"] == "stream_interrupt"
+        assert data["payload"] == {"action": "exploit.approve", "target": "10.0.0.1"}
+        parsed = parse_stream_event(evt.model_dump_json())
+        assert isinstance(parsed, StreamInterruptEvent)
+        assert parsed.payload == {"action": "exploit.approve", "target": "10.0.0.1"}
+
+
+class TestRunGraphInterrupt:
+    @pytest.mark.asyncio
+    async def test_paused_graph_emits_interrupt_not_end(self) -> None:
+        transport = _RecordingTransport()
+        prompt = {"action": "exploit.approve", "target": "10.0.0.1"}
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}],
+            _Snapshot([_Interrupt(prompt)]),
+        )
+        result = await _stream(transport).run_graph(graph, {"messages": []}, {})
+
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamInterruptEvent" in kinds
+        assert "StreamEndEvent" not in kinds  # a pause is NOT a (silent empty) end
+        evt = next(e for e in transport.events if isinstance(e, StreamInterruptEvent))
+        assert evt.payload == prompt
+        assert result["__interrupt__"] == prompt  # the synchronous caller sees the stash too
+
+    @pytest.mark.asyncio
+    async def test_interrupt_from_task_level_snapshot(self) -> None:
+        # older snapshot shape: interrupts live on the pending tasks, not snapshot.interrupts.
+        transport = _RecordingTransport()
+        snapshot = _Snapshot([])
+
+        class _Task:
+            interrupts = (_Interrupt("approve?"),)
+
+        snapshot.tasks = (_Task(),)
+        graph = _InterruptingGraph([{"event": "on_chain_end", "data": {"output": {}}}], snapshot)
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        evt = next(e for e in transport.events if isinstance(e, StreamInterruptEvent))
+        assert evt.payload == "approve?"
+
+    @pytest.mark.asyncio
+    async def test_unpaused_graph_with_aget_state_ends_normally(self) -> None:
+        transport = _RecordingTransport()
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}], _Snapshot([])
+        )
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamEndEvent" in kinds
+        assert "StreamInterruptEvent" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_graph_without_aget_state_ends_normally(self) -> None:
+        # no checkpointer -> no aget_state -> cannot interrupt (back-compat with the stub graph).
+        transport = _RecordingTransport()
+        graph = _StubGraph([{"event": "on_chain_end", "data": {"output": {}}}])
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        assert any(isinstance(e, StreamEndEvent) for e in transport.events)
+
+    @pytest.mark.asyncio
+    async def test_interrupt_terminal_is_mutually_exclusive_with_end(self) -> None:
+        stream = _stream(_RecordingTransport())
+        await stream.start()
+        await stream.interrupt(payload={"q": "approve?"})
+        with pytest.raises(StreamingResponseError):
+            await stream.end()
