@@ -273,6 +273,8 @@ module = [
     "apscheduler.*",
     "freezegun",
     "freezegun.*",
+    "nkeys",
+    "nkeys.*",
 ]
 ignore_missing_imports = true
 

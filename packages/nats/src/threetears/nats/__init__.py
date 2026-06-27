@@ -50,6 +50,11 @@ from threetears.nats.subjects import (
     get_default_namespace,
     set_default_namespace,
 )
+from threetears.nats.user_jwt import (
+    account_public_key,
+    generate_account_seed,
+    mint_user_jwt,
+)
 from threetears.nats.transport import (
     IncomingMessage,
     MessageCallback,
@@ -77,6 +82,10 @@ __all__ = [
     "PrincipalPermissions",
     "build_permissions",
     "inbox_prefix_for",
+    # NATS v2 user-JWT minting (decentralized auth)
+    "account_public_key",
+    "generate_account_seed",
+    "mint_user_jwt",
     # KV
     "NatsKvBucket",
     # op-log (durable write-path WAL)
