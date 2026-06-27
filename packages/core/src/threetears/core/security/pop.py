@@ -13,6 +13,8 @@ proof to choose how to check the signature.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,11 +24,27 @@ from jwt.algorithms import OKPAlgorithm
 
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
 
-__all__ = ["make_pop_proof", "verify_pop_proof"]
+__all__ = ["access_token_hash", "make_pop_proof", "verify_pop_proof"]
 
 _ALG = "EdDSA"
 _TYP = "pop+jwt"
 _REQUIRED = ["ath", "bh", "jti", "iat"]
+
+
+def access_token_hash(access_token: str) -> str:
+    """RFC 9449 ``ath``: base64url(SHA-256(access_token)) with padding stripped.
+
+    Both the holder (minting a proof) and the verifier (the proxy) compute the ``ath`` through
+    this one function, so a proof is cryptographically bound to the exact identity token it is
+    presented with -- a proof minted for one token cannot be replayed alongside another.
+
+    :param access_token: the compact identity-token JWS the proof accompanies
+    :ptype access_token: str
+    :return: the base64url SHA-256 digest of the token, padding stripped
+    :rtype: str
+    """
+    digest = hashlib.sha256(access_token.encode("ascii")).digest()
+    return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
 
 
 def make_pop_proof(

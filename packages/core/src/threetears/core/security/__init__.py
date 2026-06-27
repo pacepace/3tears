@@ -31,7 +31,7 @@ from threetears.core.security.identity_token import (
     verify_identity_token,
 )
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
-from threetears.core.security.pop import make_pop_proof, verify_pop_proof
+from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 from threetears.core.security.proxy_assertion import (
     ProxyAssertionClaims,
     mint_proxy_assertion,
@@ -76,6 +76,7 @@ __all__ = [
     "IdentityTokenError",
     "ProxyAssertionClaims",
     "ProxyAssertionSigner",
+    "access_token_hash",
     "build_jwks",
     "canonical_call_hash",
     "generate_signing_keypair",

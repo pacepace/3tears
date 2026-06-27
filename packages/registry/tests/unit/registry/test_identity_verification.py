@@ -21,18 +21,26 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid7
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.core.security.identity_token import (
     IdentityClaims,
     build_jwks,
+    canonical_call_hash,
     generate_signing_keypair,
+    jwk_thumbprint,
     sign_identity_token,
 )
+from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.config import IdentityEnforcement, get_identity_enforcement
+from threetears.registry.config import (
+    IdentityEnforcement,
+    get_identity_enforcement,
+    get_pop_enforcement,
+)
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
 _ENV = "THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT"
@@ -61,6 +69,7 @@ def _token(
     user_id: UUID | None,
     exp_delta: int = 600,
     iss: str = _ISS,
+    cnf: str | None = None,
 ) -> str:
     now = int(time.time())
     claims = IdentityClaims(
@@ -72,6 +81,7 @@ def _token(
         iss=iss,
         iat=now,
         exp=now + exp_delta,
+        cnf=cnf,
     )
     return sign_identity_token(claims, signing_key=priv, kid=_KID)
 
@@ -347,3 +357,208 @@ class TestDispatchIdentityEnforcement:
         nc.request_raw.assert_called_once()  # fail-open: still forwarded
         # claimed identity is kept (unverified) since verification failed
         assert self._forwarded_context(nc)["agent_id"] == str(claimed)
+
+
+# ---------------------------------------------------------------------------
+# v0.13.9 auth W4c: per-call proof-of-possession (the agent->proxy holder binding)
+# ---------------------------------------------------------------------------
+
+_POP_ENV = "THREETEARS_REGISTRY_POP_ENFORCEMENT"
+
+
+class _StubReplayGuard:
+    """returns a fixed freshness verdict so the proxy's replay wiring can be tested without a live
+    NATS-KV (the real guard's compare-and-set is covered by its own coordination tests)."""
+
+    def __init__(self, *, fresh: bool) -> None:
+        self._fresh = fresh
+        self.seen: list[str] = []
+
+    async def record_unique(self, nonce: str) -> bool:
+        self.seen.append(nonce)
+        return self._fresh
+
+
+def _pop_request(
+    priv: Any,
+    holder_key: Ed25519PrivateKey,
+    *,
+    correlation_id: UUID,
+    pop_body_args: dict[str, Any] | None = None,
+    include_pop: bool = True,
+    bind_cnf: bool = True,
+) -> ProxyCallRequest:
+    """a request carrying a cnf-bound token + a matching per-call pop proof.
+
+    ``bind_cnf=False`` mints a token with NO holder binding; ``include_pop=False`` omits the proof;
+    ``pop_body_args`` computes the proof's body hash from DIFFERENT arguments than the request
+    actually carries (a spliced proof).
+    """
+    args = {"expression": "2+2"}
+    cnf = jwk_thumbprint(holder_key.public_key()) if bind_cnf else None
+    token = _token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, cnf=cnf)
+    pop: str | None = None
+    if include_pop:
+        body_hash = canonical_call_hash(_TOOL, pop_body_args or args, str(correlation_id))
+        pop = make_pop_proof(
+            holder_key=holder_key,
+            access_token_hash=access_token_hash(token),
+            body_hash=body_hash,
+            nonce=str(uuid7()),
+            iat=int(time.time()),
+        )
+    return ProxyCallRequest(
+        tool_name=_TOOL,
+        tool_version="1.0.0",
+        arguments=args,
+        context=CallContext(
+            agent_id=uuid7(),
+            correlation_id=correlation_id,
+            identity_token=token,
+        ),
+        pop=pop,
+    )
+
+
+class TestPopEnforcementConfig:
+    """``get_pop_enforcement`` defaults off, parses the ladder, and fails loud on a typo."""
+
+    def test_default_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(_POP_ENV, raising=False)
+        assert get_pop_enforcement() is IdentityEnforcement.OFF
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("warn", IdentityEnforcement.WARN), ("enforce", IdentityEnforcement.ENFORCE)],
+    )
+    def test_valid_values(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str, expected: IdentityEnforcement
+    ) -> None:
+        monkeypatch.setenv(_POP_ENV, raw)
+        assert get_pop_enforcement() is expected
+
+    def test_invalid_value_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_POP_ENV, "audit")
+        with pytest.raises(ValueError):
+            get_pop_enforcement()
+
+
+class TestDispatchPopEnforcement:
+    """end-to-end through ``handle_call``: under enforce the proxy requires a valid per-call pop.
+
+    pop verification is self-contained (it re-verifies the token for a trusted cnf), so these run
+    with identity enforcement at its default OFF -- proving the two gates ladder independently.
+    """
+
+    async def _drive(
+        self,
+        mode: IdentityEnforcement,
+        jwks_provider: Any,
+        req: ProxyCallRequest,
+        *,
+        pop_replay_guard: Any = None,
+    ) -> AsyncMock:
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            namespace="test",
+            jwks_provider=jwks_provider,
+            pop_enforcement=mode,
+            pop_replay_guard=pop_replay_guard,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @pytest.mark.asyncio
+    async def test_enforce_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc.request_raw.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_missing_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), include_pop=False)
+        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_pop_for_a_different_body(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # a proof minted for different arguments cannot be spliced onto this call.
+        priv, jwks = hub
+        req = _pop_request(
+            priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_body_args={"expression": "9+9"}
+        )
+        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_token_without_cnf(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # a pop-enforced fleet requires holder-bound tokens; an unbound token cannot satisfy pop.
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), bind_cnf=False)
+        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_replayed_nonce(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = _StubReplayGuard(fresh=False)  # the nonce was already consumed
+        nc = await self._drive(
+            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=guard
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
+        assert len(guard.seen) == 1  # the proxy DID consult the guard before rejecting
+
+    @pytest.mark.asyncio
+    async def test_enforce_forwards_when_the_nonce_is_fresh(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        guard = _StubReplayGuard(fresh=True)
+        nc = await self._drive(
+            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=guard
+        )
+        nc.request_raw.assert_called_once()
+        assert len(guard.seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_off_forwards_without_a_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # pop OFF: a request with no pop is forwarded unchanged (the gate is inert).
+        _priv, jwks = hub
+        nc = await self._drive(IdentityEnforcement.OFF, lambda: jwks, _request(agent_id=uuid7(), token=None))
+        nc.request_raw.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_warn_fails_open_on_a_missing_pop(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), include_pop=False)
+        nc = await self._drive(IdentityEnforcement.WARN, lambda: jwks, req)
+        nc.request_raw.assert_called_once()  # fail-open: still forwarded

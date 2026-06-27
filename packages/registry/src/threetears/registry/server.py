@@ -16,6 +16,7 @@ import signal
 from collections.abc import Awaitable, Callable
 
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.security import (
     CachedHubJwksProvider,
@@ -34,7 +35,12 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
-from threetears.registry.config import get_jwks_request_timeout, get_proxy_assertion_signing_key_ref
+from threetears.registry.config import (
+    IdentityEnforcement,
+    get_jwks_request_timeout,
+    get_pop_enforcement,
+    get_proxy_assertion_signing_key_ref,
+)
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
@@ -43,6 +49,10 @@ __all__ = [
 ]
 
 _logger = get_logger(__name__)
+
+# a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
+# window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
+_POP_NONCE_TTL_SECONDS = 120
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +384,14 @@ class RegistryServer:
                 type(exc).__name__,
             )
 
+        # the pop replay guard records each per-call proof nonce for single-use enforcement; only
+        # provisioned when pop enforcement is enabled, so an inert deployment opens no KV bucket.
+        pop_replay_guard: ReplayGuard | None = None
+        if get_pop_enforcement() is not IdentityEnforcement.OFF:
+            pop_replay_guard = ReplayGuard(
+                nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS
+            )
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
@@ -381,6 +399,7 @@ class RegistryServer:
             authorizer=self._authorizer,
             jwks_provider=jwks_provider,
             proxy_signer=proxy_signer,
+            pop_replay_guard=pop_replay_guard,
         )
         self._call_proxy = call_proxy
         await retry_with_backoff(

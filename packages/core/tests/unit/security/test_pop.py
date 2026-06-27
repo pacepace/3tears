@@ -9,7 +9,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from threetears.core.security.identity_token import IdentityTokenError, jwk_thumbprint
-from threetears.core.security.pop import make_pop_proof, verify_pop_proof
+from threetears.core.security.pop import access_token_hash, make_pop_proof, verify_pop_proof
 
 
 def _proof(
@@ -103,3 +103,32 @@ class TestProofOfPossession:
         )
         with pytest.raises(IdentityTokenError):
             verify_pop_proof(forged, expected_jkt="x", access_token_hash="a", body_hash="b")
+
+
+class TestAccessTokenHash:
+    """the shared ``ath`` both ends compute so a proof binds to its exact identity token."""
+
+    def test_deterministic_and_url_safe(self) -> None:
+        # same token -> same hash; url-safe base64 with padding stripped (no '=', '+', '/').
+        digest = access_token_hash("header.payload.signature")
+        assert digest == access_token_hash("header.payload.signature")
+        assert not (set(digest) & set("=+/"))
+
+    def test_distinct_tokens_differ(self) -> None:
+        assert access_token_hash("token-a") != access_token_hash("token-b")
+
+    def test_binds_a_proof_to_its_token(self) -> None:
+        # a proof minted with one token's ath does not verify when presented with another token.
+        holder = Ed25519PrivateKey.generate()
+        jkt = jwk_thumbprint(holder.public_key())
+        proof = _proof(holder, ath=access_token_hash("real-token"), bh="bh-1")
+        assert verify_pop_proof(
+            proof, expected_jkt=jkt, access_token_hash=access_token_hash("real-token"), body_hash="bh-1"
+        )
+        with pytest.raises(IdentityTokenError):
+            verify_pop_proof(
+                proof,
+                expected_jkt=jkt,
+                access_token_hash=access_token_hash("other-token"),
+                body_hash="bh-1",
+            )

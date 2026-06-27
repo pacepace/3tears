@@ -22,19 +22,27 @@ from threetears.core.security.identity_token import (
     canonical_call_hash,
     verify_identity_token,
 )
+from threetears.core.security.pop import access_token_hash, verify_pop_proof
 from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
-from threetears.registry.config import IdentityEnforcement, get_identity_enforcement
+from threetears.registry.config import (
+    IdentityEnforcement,
+    get_identity_enforcement,
+    get_pop_enforcement,
+)
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
-# on exp/iat. constants for now; promote to config if operations need to tune them.
+# on exp/iat + the pop iat freshness window. constants for now; promote to config if operations
+# need to tune them.
 _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
+_POP_LEEWAY_SECONDS = 60
 
 if TYPE_CHECKING:
+    from threetears.core.coordination.replay_guard import ReplayGuard
     from threetears.core.security import ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
@@ -190,6 +198,8 @@ class CallProxy:
         identity_enforcement: IdentityEnforcement | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         proxy_signer: "ProxyAssertionSigner | None" = None,
+        pop_enforcement: IdentityEnforcement | None = None,
+        pop_replay_guard: "ReplayGuard | None" = None,
     ) -> None:
         """initialize call proxy.
 
@@ -223,6 +233,13 @@ class CallProxy:
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
         :ptype proxy_signer: ProxyAssertionSigner | None
+        :param pop_enforcement: how to treat the per-call proof-of-possession (off/warn/enforce);
+            sourced from ``THREETEARS_REGISTRY_POP_ENFORCEMENT`` when not provided
+        :ptype pop_enforcement: IdentityEnforcement | None
+        :param pop_replay_guard: records each pop nonce for single-use enforcement; ``None`` skips
+            the replay check (the crypto binding still holds, but a proof could be replayed
+            verbatim for the same call body)
+        :ptype pop_replay_guard: ReplayGuard | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -236,6 +253,10 @@ class CallProxy:
         )
         self._jwks_provider = jwks_provider
         self._proxy_signer = proxy_signer
+        self._pop_enforcement = (
+            pop_enforcement if pop_enforcement is not None else get_pop_enforcement()
+        )
+        self._pop_replay_guard = pop_replay_guard
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -441,6 +462,84 @@ class CallProxy:
             )
             return request, None
 
+    async def _verify_pop(self, request: "ProxyCallRequest") -> "ProxyCallResponse | None":
+        """verify the per-call proof-of-possession against the token's holder-key binding.
+
+        Self-contained: re-verifies the identity token to obtain a TRUSTED ``cnf`` thumbprint, then
+        checks the request's pop proves possession of that key for THIS token (``ath``) + THIS call
+        body (``bh``) + is fresh + single-use (the ``jti`` is recorded in the replay guard). So a
+        leaked token alone -- without the holder private key -- cannot be replayed.
+
+        mode behaviour mirrors :meth:`_verify_identity`: ``OFF`` no-ops; ``WARN`` logs and allows on
+        failure (fail-open); ``ENFORCE`` rejects on failure (fail-closed).
+
+        :param request: the identity-verified call request (its context carries the token + pop)
+        :ptype request: ProxyCallRequest
+        :return: an error response when the call must be rejected, else ``None``
+        :rtype: ProxyCallResponse | None
+        """
+        mode = self._pop_enforcement
+        if mode is IdentityEnforcement.OFF:
+            return None
+        context = request.context
+        assert context is not None  # guaranteed by the caller's agent_id presence check
+        try:
+            token = context.identity_token
+            if token is None:
+                raise IdentityTokenError("identity token absent; cannot verify pop")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for pop verification")
+            claims = verify_identity_token(
+                token,
+                jwks=self._load_jwks(),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+            if claims.cnf is None:
+                raise IdentityTokenError("identity token carries no cnf holder binding")
+            if request.pop is None:
+                raise IdentityTokenError("pop proof absent from request")
+            body_hash = canonical_call_hash(
+                request.tool_name,
+                request.arguments,
+                str(context.correlation_id) if context.correlation_id is not None else None,
+            )
+            jti = verify_pop_proof(
+                request.pop,
+                expected_jkt=claims.cnf,
+                access_token_hash=access_token_hash(token),
+                body_hash=body_hash,
+                leeway_seconds=_POP_LEEWAY_SECONDS,
+            )
+            if self._pop_replay_guard is not None and not await self._pop_replay_guard.record_unique(
+                jti
+            ):
+                raise IdentityTokenError("pop nonce replay")
+            return None
+        except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+            reason = type(exc).__name__
+            extra = {
+                "extra_data": {
+                    "tool_name": request.tool_name,
+                    "reason": reason,
+                    "correlation_id": _correlation_id_str(request),
+                }
+            }
+            if mode is IdentityEnforcement.ENFORCE:
+                log.warning("pop verification failed; rejecting call (enforce mode)", extra=extra)
+                return ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"pop verification failed ({reason})",
+                    error_code="TOOL_POP_UNVERIFIED",
+                    context=context,
+                )
+            log.warning(
+                "pop verification failed; allowing call (warn mode -- not yet enforced)",
+                extra=extra,
+            )
+            return None
+
     async def _dispatch_call(
         self,
         request: "ProxyCallRequest",
@@ -501,6 +600,18 @@ class CallProxy:
             request = verified_request
             bind_log_context(request.context)  # refresh log tags with the verified identity
         assert request.context is not None  # held by the agent_id check; re-narrow after re-stamp
+
+        # verify the per-call proof-of-possession: the caller must prove it holds the key the token
+        # is bound to (cnf), for THIS token + THIS body, once. self-contained (re-verifies the token
+        # for a trusted cnf) so it ladders independently of identity enforcement. inert at ``off``.
+        pop_error = await self._verify_pop(request)
+        if pop_error is not None:
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=pop_error,
+                )
+            return
 
         # log-border stringification of identity dimensions; the
         # ProxyCallResponse echoes the whole context so these string

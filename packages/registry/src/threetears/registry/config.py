@@ -23,12 +23,14 @@ __all__ = [
     "get_mcp_timeout",
     "get_proxy_assertion_signing_key_ref",
     "get_nats_proxy_timeout_ms",
+    "get_pop_enforcement",
     "get_probe_timeout",
 ]
 
 log = get_logger(__name__)
 
 _IDENTITY_ENFORCEMENT_ENV = "THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT"
+_POP_ENFORCEMENT_ENV = "THREETEARS_REGISTRY_POP_ENFORCEMENT"
 
 
 class IdentityEnforcement(StrEnum):
@@ -68,6 +70,31 @@ def get_identity_enforcement() -> IdentityEnforcement:
         valid = [member.value for member in IdentityEnforcement]
         raise ValueError(
             f"invalid {_IDENTITY_ENFORCEMENT_ENV}={raw!r}; expected one of {valid}"
+        ) from None
+
+
+def get_pop_enforcement() -> IdentityEnforcement:
+    """read the proxy-side proof-of-possession enforcement mode; default ``OFF``.
+
+    A SEPARATE control from identity-token enforcement so the proxy's two gates -- verifying the
+    Hub token (who the caller is) and verifying the per-call pop signature (that the caller holds
+    the token's bound key) -- ladder independently. env var:
+    ``THREETEARS_REGISTRY_POP_ENFORCEMENT`` (``off`` | ``warn`` | ``enforce``); unset defaults to
+    ``OFF`` (inert). A typo'd value fails loud at startup, never silently leaving pop unverified.
+
+    :return: the configured pop-enforcement mode
+    :rtype: IdentityEnforcement
+    :raises ValueError: when the env var is set to an unrecognized value
+    """
+    raw = os.environ.get(_POP_ENFORCEMENT_ENV)
+    if raw is None:
+        return IdentityEnforcement.OFF
+    try:
+        return IdentityEnforcement(raw.strip().lower())
+    except ValueError:
+        valid = [member.value for member in IdentityEnforcement]
+        raise ValueError(
+            f"invalid {_POP_ENFORCEMENT_ENV}={raw!r}; expected one of {valid}"
         ) from None
 
 # platform default for tool call timeout (seconds)
