@@ -48,6 +48,8 @@ __all__ = [
     "add_column_with_backfill",
     "add_index",
     "add_partition_column",
+    "create_policy_if_not_exists",
+    "enable_row_level_security",
     "replace_check_constraint",
     "replace_primary_key",
 ]
@@ -317,6 +319,129 @@ END
 $$;
 """
     await store.execute(sql)
+
+
+_RLS_COMMANDS = frozenset({"ALL", "SELECT", "INSERT", "UPDATE", "DELETE"})
+
+
+@traced
+async def create_policy_if_not_exists(
+    store: MigrationStore,
+    *,
+    table: str,
+    policy_name: str,
+    using: str,
+    command: str = "ALL",
+    check: str | None = None,
+    schema: str | None = None,
+    to_role: str | None = None,
+    permissive: bool = True,
+) -> None:
+    """
+    create an RLS policy guarded by a ``pg_policies`` probe.
+
+    ``CREATE POLICY`` has NO native ``IF NOT EXISTS`` form, so a re-run would raise
+    "policy already exists" and break migration replay. This emits one ``store.execute``
+    carrying a DO block that consults ``pg_policies`` and skips the CREATE when a policy of the
+    same name already exists on the table -- so a re-run is a clean no-op, mirroring
+    :func:`add_check_constraint`.
+
+    :param store: migration-time store
+    :ptype store: MigrationStore
+    :param table: target table (unqualified)
+    :ptype table: str
+    :param policy_name: policy name (unique per table)
+    :ptype policy_name: str
+    :param using: row-visibility expression for the ``USING`` clause, WITHOUT the keyword
+    :ptype using: str
+    :param command: the command the policy applies to: ``ALL``/``SELECT``/``INSERT``/
+        ``UPDATE``/``DELETE``
+    :ptype command: str
+    :param check: optional ``WITH CHECK`` expression (write policies: INSERT/UPDATE/ALL),
+        WITHOUT the keyword; ``None`` omits the clause
+    :ptype check: str | None
+    :param schema: optional schema name; qualifies the table and constrains the probe by
+        ``schemaname``
+    :ptype schema: str | None
+    :param to_role: optional role the policy applies to (``TO <role>``); ``None`` = all roles
+    :ptype to_role: str | None
+    :param permissive: ``PERMISSIVE`` (default, OR-combined) vs ``RESTRICTIVE`` (AND-combined)
+    :ptype permissive: bool
+    :return: nothing
+    :rtype: None
+    :raises ValueError: if ``command`` is not a recognized RLS command, or ``check`` is supplied
+        for a read-only command (SELECT/DELETE), which would be invalid SQL
+    """
+    command_norm = command.strip().upper()
+    if command_norm not in _RLS_COMMANDS:
+        raise ValueError(
+            f"create_policy_if_not_exists: unknown command {command!r}; "
+            f"expected one of {sorted(_RLS_COMMANDS)}"
+        )
+    if check is not None and command_norm in {"SELECT", "DELETE"}:
+        raise ValueError(
+            f"create_policy_if_not_exists: WITH CHECK is invalid for FOR {command_norm}; "
+            "use USING for read/delete visibility"
+        )
+    qualified = _qualify(table, schema)
+    log.info("migration helper: create policy %s on %s", policy_name, qualified)
+    as_clause = "PERMISSIVE" if permissive else "RESTRICTIVE"
+    to_clause = f"\n          TO {to_role}" if to_role else ""
+    check_clause = f"\n          WITH CHECK ({check})" if check is not None else ""
+    schema_filter = f"\n           AND schemaname = '{schema}'" if schema else ""
+    sql = f"""
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies
+         WHERE tablename = '{table}'
+           AND policyname = '{policy_name}'{schema_filter}
+    ) THEN
+        CREATE POLICY {policy_name} ON {qualified}
+          AS {as_clause}
+          FOR {command_norm}{to_clause}
+          USING ({using}){check_clause};
+    END IF;
+END
+$$;
+"""
+    await store.execute(sql)
+
+
+@traced
+async def enable_row_level_security(
+    store: MigrationStore,
+    *,
+    table: str,
+    force: bool = True,
+    schema: str | None = None,
+) -> None:
+    """
+    enable (and by default ``FORCE``) row-level security on ``table``.
+
+    ``ENABLE``/``FORCE ROW LEVEL SECURITY`` are idempotent in Postgres -- a re-run does not
+    error -- so these are emitted as bare ALTERs, replay-safe without a probe. ``force=True``
+    is the default AND the security-relevant choice: without ``FORCE`` the table OWNER bypasses
+    every policy, so RLS silently does nothing for the owning role. Emitted as SEPARATE execute
+    calls (each its own DDL statement; never mixed with DML).
+
+    :param store: migration-time store
+    :ptype store: MigrationStore
+    :param table: target table (unqualified)
+    :ptype table: str
+    :param force: also issue ``FORCE ROW LEVEL SECURITY`` so the table owner is subject to
+        policies (the secure default)
+    :ptype force: bool
+    :param schema: optional schema name; qualifies the table
+    :ptype schema: str | None
+    :return: nothing
+    :rtype: None
+    """
+    qualified = _qualify(table, schema)
+    log.info("migration helper: enable RLS on %s (force=%s)", qualified, force)
+    await store.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
+    if force:
+        await store.execute(f"ALTER TABLE {qualified} FORCE ROW LEVEL SECURITY")
 
 
 @traced
