@@ -24,6 +24,9 @@ from threetears.agent.tools.call_scope import (
 )
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.agent.tools.config import (
+    get_jwks_request_timeout,
+)
+from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
@@ -37,6 +40,7 @@ from threetears.agent.tools.identity_enforcement import (
     get_tool_identity_enforcement,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
 from threetears.nats import (
     IncomingMessage,
@@ -580,6 +584,7 @@ class ToolServer:
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
+        self._owned_jwks_provider: CachedHubJwksProvider | None = None
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -799,6 +804,16 @@ class ToolServer:
         # the injected client picked up at connect time.
         set_default_namespace(self._namespace)
         self._running = True
+
+        # when identity enforcement is on and no provider was injected, self-provision one that
+        # fetches the Hub JWKS over this pod's connection so the pod verifies tokens itself
+        # (defense in depth behind the registry proxy); fail-closed until the first fetch.
+        if self._identity_enforcement is not ToolIdentityEnforcement.OFF and self._jwks_provider is None:
+            assert self._nc is not None  # connected or injected above
+            owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
+            await owned.start()
+            self._jwks_provider = owned
+            self._owned_jwks_provider = owned
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
         # pod-specific (``{ns}.tools.internal.{pod_id}`` /
@@ -1709,6 +1724,10 @@ class ToolServer:
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._owned_jwks_provider is not None:
+            await self._owned_jwks_provider.stop()
+            self._owned_jwks_provider = None
 
         if self._nc is not None and self._owns_nats_connection:
             await self._nc.shutdown()

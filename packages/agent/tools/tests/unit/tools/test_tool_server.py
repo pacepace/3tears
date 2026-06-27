@@ -341,6 +341,47 @@ class TestToolServerServe:
         assert payload["tools"][0]["version"] == "1.0"
 
     @pytest.mark.asyncio
+    async def test_serve_self_provisions_jwks_provider_under_enforce(self) -> None:
+        """under enforcement with no injected provider, serve self-provisions a Hub-JWKS provider.
+
+        observable proof (no private access): the self-provisioned provider fetches the Hub JWKS
+        over this pod's own connection during serve.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="test-pod-jwks",
+            namespace_collection=None,
+            identity_enforcement=ToolIdentityEnforcement.ENFORCE,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        fetched_jwks = any(
+            getattr(call.kwargs.get("subject"), "path", "").endswith(".hub.jwks")
+            for call in mock_nc.request_raw.await_args_list
+        )
+        assert fetched_jwks, "enforce-mode serve must self-provision a provider that fetches the Hub JWKS"
+
+    @pytest.mark.asyncio
     async def test_serve_subscribes_to_call_subject(self) -> None:
         """serve subscribes to tool call subject with pod_id."""
         server = ToolServer(
