@@ -72,6 +72,14 @@ class CallContext(BaseModel):
         until the platform-auth rollout reaches the enforce stage; nothing
         reads it yet
     :ptype identity_token: str | None
+    :param engagement_id: the authorized engagement this call belongs to,
+        when it originates inside one. promoted from the ``trace`` escape
+        hatch to a first-class field (v0.13.9): a tool pod reads it (NEVER
+        from LLM-supplied tool args) to load the engagement's authorized
+        target scope and re-authorize each call pod-side, failing closed
+        when it is absent. ``None`` for calls not bound to an engagement
+        (the platform-wide default); nothing reads it yet
+    :ptype engagement_id: UUID | None
     :param trace: escape hatch for identity dimensions not yet promoted
         to first-class fields; map of short string keys to string
         values. intentionally narrow: do NOT use for arbitrary per-call
@@ -102,6 +110,7 @@ class CallContext(BaseModel):
     correlation_id: UUID | None = None
     agent_id: UUID | None = None
     identity_token: str | None = None
+    engagement_id: UUID | None = None
     trace: dict[str, str] = Field(default_factory=dict)
     user_timezone: str | None = None
     user_locale: str | None = None

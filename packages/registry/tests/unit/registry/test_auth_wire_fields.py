@@ -56,6 +56,15 @@ class TestProxyCallRequestAuthFields:
         assert req.context is not None
         assert req.context.identity_token == "eyJ.tok"
 
+    def test_forwards_engagement_id_in_context(self) -> None:
+        # engagement_id rides on CallContext (like identity_token), so it travels whole through
+        # ProxyCallRequest without touching the proxy model.
+        engagement_id = uuid7()
+        ctx = CallContext(agent_id=uuid7(), engagement_id=engagement_id)
+        req = ProxyCallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        assert req.context is not None
+        assert req.context.engagement_id == engagement_id
+
     def test_pop_round_trips_json(self) -> None:
         req = ProxyCallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, pop="p")
         parsed = ProxyCallRequest.model_validate_json(req.model_dump_json())

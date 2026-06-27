@@ -321,6 +321,40 @@ class TestAuthWireFields:
         merged = base.with_trace({"a": "1"})
         assert merged.identity_token == "tok"
 
+    def test_call_context_carries_engagement_id_round_trip(self) -> None:
+        """``engagement_id`` survives JSON round-trip as a typed UUID on the envelope."""
+        engagement_id = uuid7()
+        ctx = CallContext(agent_id=uuid7(), engagement_id=engagement_id)
+        wire = ctx.model_dump_json()
+        assert json.loads(wire)["engagement_id"] == str(engagement_id)
+        parsed = CallContext.model_validate_json(wire)
+        assert isinstance(parsed.engagement_id, UUID)
+        assert parsed.engagement_id == engagement_id
+
+    def test_call_context_engagement_id_defaults_none(self) -> None:
+        """``engagement_id`` defaults to ``None`` (calls not bound to an engagement)."""
+        assert CallContext().engagement_id is None
+
+    def test_call_context_without_engagement_id_still_parses(self) -> None:
+        """backward-compat: an envelope with no ``engagement_id`` deserializes fine."""
+        parsed = CallContext.model_validate_json(json.dumps({"agent_id": str(uuid7())}))
+        assert parsed.engagement_id is None
+
+    def test_with_trace_preserves_engagement_id(self) -> None:
+        """the ``with_trace`` copy keeps ``engagement_id`` (model_copy carries all fields)."""
+        engagement_id = uuid7()
+        base = CallContext(agent_id=uuid7(), engagement_id=engagement_id)
+        merged = base.with_trace({"a": "1"})
+        assert merged.engagement_id == engagement_id
+
+    def test_call_request_forwards_engagement_id_in_context(self) -> None:
+        """``engagement_id`` nested in ``context`` survives onto ``CallRequest``."""
+        engagement_id = uuid7()
+        ctx = CallContext(agent_id=uuid7(), engagement_id=engagement_id)
+        req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        assert req.context is not None
+        assert req.context.engagement_id == engagement_id
+
     def test_call_request_accepts_proxy_assertion(self) -> None:
         """the pod's ``CallRequest`` accepts the new ``proxy_assertion`` field."""
         req = CallRequest(
