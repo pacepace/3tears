@@ -32,7 +32,12 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.agent.tools.identity_enforcement import (
+    ToolIdentityEnforcement,
+    get_tool_identity_enforcement,
+)
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -127,6 +132,11 @@ if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
 
 log = get_logger(__name__)
+
+# the issuer the Hub stamps on identity tokens + the pod's clock-skew tolerance, for the
+# defense-in-depth pod-side verification of the inbound identity token.
+_IDENTITY_ISSUER = "hub"
+_IDENTITY_LEEWAY_SECONDS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +475,8 @@ class ToolServer:
         nats_client: "NatsClient | None" = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        identity_enforcement: ToolIdentityEnforcement | None = None,
+        jwks_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """initialize tool server.
 
@@ -553,6 +565,15 @@ class ToolServer:
         self._context_factory = context_factory
         self._agent_id = agent_id
         self._customer_id = customer_id
+        # defense-in-depth: re-verify the Hub identity token at the pod (closes the
+        # direct-internal-subject bypass). Read once at construction; ``None`` -> from
+        # THREETEARS_TOOL_IDENTITY_ENFORCEMENT (default off = inert, the historical behaviour).
+        self._jwks_provider = jwks_provider
+        self._identity_enforcement = (
+            identity_enforcement
+            if identity_enforcement is not None
+            else get_tool_identity_enforcement()
+        )
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
@@ -1204,6 +1225,84 @@ class ToolServer:
         )
 
     @traced(record_args=True)
+    def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
+        """re-verify the Hub identity token and RE-STAMP the verified identity (defense in depth).
+
+        The registry proxy already verifies + re-stamps identity, but anything that can publish on
+        the pod's internal subject would otherwise reach :meth:`handle_call` with the proxy + RBAC
+        never consulted. So the pod independently verifies the Hub-issued identity token and, on
+        success, OVERWRITES the call context's identity (``agent_id`` = ``token.sub``, plus
+        ``user_id`` / ``customer_id``) with the cryptographically verified values. Whatever the
+        inbound envelope claimed -- a matching identity, a forged one re-pointed at a captured
+        token, or an absent one stripped to skip a comparison -- is discarded; the tool always
+        runs (and audits) under the authenticated identity, never the self-asserted envelope. This
+        mirrors the proxy's re-stamp so a direct publisher cannot run a tool under an identity the
+        Hub never signed.
+
+        Gated by ``self._identity_enforcement``: off -> passthrough unchanged; warn -> verify, on
+        success re-stamp, on FAILURE log + ALLOW on the unverified envelope (observability while
+        the fleet completes rollout); enforce -> verify, on success re-stamp, on FAILURE REJECT.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :return: ``(request, reason)`` where ``request`` is the re-stamped request on verify
+            success (else the original) and ``reason`` is ``None`` when the call may proceed or a
+            rejection-reason string when the call MUST be rejected without dispatching
+            (enforce-mode failure)
+        :rtype: tuple[CallRequest, str | None]
+        """
+        mode = self._identity_enforcement
+        if mode is ToolIdentityEnforcement.OFF:
+            return request, None
+        context = request.context
+        try:
+            if context is None:
+                raise IdentityTokenError("inbound call has no context")
+            token = context.identity_token
+            if token is None:
+                raise IdentityTokenError("inbound call context has no identity token")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for pod identity verification")
+            try:
+                jwks = self._jwks_provider()
+            except Exception as exc:
+                # external provider; any failure means "cannot verify" -> a rejection reason, never
+                # an escaped exception that would hang the dispatch with no reply. log the real
+                # cause at the site (the wrapper below only sees IdentityTokenError).
+                log.warning(
+                    "JWKS provider failed during pod identity verification",
+                    extra={"extra_data": {"reason": type(exc).__name__, "tool_name": request.tool_name}},
+                )
+                raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
+            claims = verify_identity_token(
+                token,
+                jwks=jwks,
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+            # OVERWRITE the envelope's claimed identity with the verified token. a captured token
+            # re-pointed at a forged agent / customer, or stripped of its identity to skip a
+            # comparison, runs under the token's TRUE identity -- never the self-asserted one.
+            verified_context = context.model_copy(
+                update={
+                    "agent_id": UUID(claims.sub),
+                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
+                    "customer_id": UUID(claims.customer_id),
+                }
+            )
+            return request.model_copy(update={"context": verified_context}), None
+        except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+            reason = type(exc).__name__
+            extra = {"extra_data": {"reason": reason, "tool_name": request.tool_name}}
+            if mode is ToolIdentityEnforcement.ENFORCE:
+                log.warning("pod identity verification failed; rejecting call (enforce)", extra=extra)
+                return request, f"identity verification failed ({reason})"
+            log.warning(
+                "pod identity verification failed; allowing call (warn -- not yet enforced)",
+                extra=extra,
+            )
+            return request, None
+
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
@@ -1282,6 +1381,35 @@ class ToolServer:
             tool_name = request.tool_name
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
+
+            request, identity_rejection = self._verify_identity(request)
+            if identity_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=identity_rejection,
+                    context=request.context,
+                )
+                await self._respond(msg, error_response)
+                log.warning(
+                    "pod rejected call: identity unverified",
+                    extra={
+                        "extra_data": {
+                            "reason": identity_rejection,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = identity_rejection
+                return
+            # the verified identity now rides the (possibly re-stamped) request; re-bind the log
+            # tags so this dispatch's log lines + the baseline audit attribute to the authenticated
+            # identity, not the inbound envelope's claim. a no-op in off mode / the already-matching
+            # legit path; corrects attribution when the pod overrode a forged or absent identity.
+            bind_log_context(request.context)
+
             tool = self._tools.get(tool_key)
 
             if tool is None:

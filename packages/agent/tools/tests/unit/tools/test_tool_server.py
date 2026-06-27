@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -12,6 +13,7 @@ import pytest
 from pydantic import BaseModel
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
+from threetears.agent.tools.identity_enforcement import ToolIdentityEnforcement
 from threetears.agent.tools.server import (
     CallRequest,
     CallResponse,
@@ -19,6 +21,12 @@ from threetears.agent.tools.server import (
     RegistrationManifest,
     ToolManifestEntry,
     ToolServer,
+)
+from threetears.core.security.identity_token import (
+    IdentityClaims,
+    build_jwks,
+    generate_signing_keypair,
+    sign_identity_token,
 )
 from threetears.nats import IncomingMessage, Subject
 
@@ -854,9 +862,9 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> ToolResult:
                 """no-op execution path."""
-                return {"ok": True}
+                return ToolResult(success=True, content="")
 
         from threetears.agent.tools.server import (
             DiscoveryProbeResponse,
@@ -908,9 +916,9 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> ToolResult:
                 """no-op execution path."""
-                return {"ok": True}
+                return ToolResult(success=True, content="")
 
         from threetears.agent.tools.server import (
             DiscoveryProbeResponse,
@@ -1193,3 +1201,157 @@ class TestToolServerInjectedNatsClient:
         # the wrapper's ``shutdown()`` internally drains + closes the
         # underlying nats-py connection.
         nc.shutdown.assert_awaited_once()
+
+
+class TestToolServerIdentityVerification:
+    """v0.13.9 auth: the pod re-verifies the Hub identity token (defense in depth).
+
+    closes the direct-internal-subject bypass -- a publisher straight to the pod without a valid
+    Hub-signed token (or one that forged a different identity onto a captured token) is rejected
+    under enforce. gated off by default (the dispatch path is unchanged).
+    """
+
+    @staticmethod
+    def _hub() -> tuple[Any, dict[str, Any]]:
+        priv, pub = generate_signing_keypair()
+        return priv, build_jwks({"kid-1": pub})
+
+    @staticmethod
+    def _token(priv: Any, *, sub: Any, customer_id: Any) -> str:
+        now = int(time.time())
+        claims = IdentityClaims(
+            sub=str(sub),
+            customer_id=str(customer_id),
+            sid="sid-1",
+            pod_id="pod-1",
+            iss="hub",
+            iat=now,
+            exp=now + 600,
+        )
+        return sign_identity_token(claims, signing_key=priv, kid="kid-1")
+
+    @staticmethod
+    def _server(*, mode: ToolIdentityEnforcement, jwks_provider: Any) -> tuple[ToolServer, Any]:
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace_collection=None,
+            identity_enforcement=mode,
+            jwks_provider=jwks_provider,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        return server, _attach_recording_nc(server)
+
+    @staticmethod
+    def _msg(*, agent_id: Any = None, customer_id: Any = None, token: str | None = None) -> IncomingMessage:
+        context: dict[str, Any] = {"correlation_id": str(uuid4())}
+        if agent_id is not None:
+            context["agent_id"] = str(agent_id)
+        if customer_id is not None:
+            context["customer_id"] = str(customer_id)
+        if token is not None:
+            context["identity_token"] = token
+        return _make_nats_msg(
+            {"tool_name": "test.stub", "tool_version": "1.0", "arguments": {"key": "value"}, "context": context}
+        )
+
+    @staticmethod
+    def _response(rec: Any) -> dict[str, Any]:
+        result: dict[str, Any] = json.loads(rec.last_reply[1].model_dump_json())
+        return result
+
+    @pytest.mark.asyncio
+    async def test_off_dispatches_without_verification(self) -> None:
+        _priv, jwks = self._hub()
+        server, rec = self._server(mode=ToolIdentityEnforcement.OFF, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=uuid4(), token=None))
+        assert self._response(rec)["success"] is True  # off -> the tool ran, no verification
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_missing_token(self) -> None:
+        _priv, jwks = self._hub()
+        server, rec = self._server(mode=ToolIdentityEnforcement.ENFORCE, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=uuid4(), token=None))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+    @pytest.mark.asyncio
+    async def test_enforce_accepts_valid_matching_token(self) -> None:
+        priv, jwks = self._hub()
+        agent, cust = uuid4(), uuid4()
+        token = self._token(priv, sub=agent, customer_id=cust)
+        server, rec = self._server(mode=ToolIdentityEnforcement.ENFORCE, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=agent, customer_id=cust, token=token))
+        response = self._response(rec)
+        assert response["success"] is True  # verified -> the tool ran
+        # the dispatched call carries the verified identity (here identical to the envelope's claim).
+        assert response["context"]["agent_id"] == str(agent)
+        assert response["context"]["customer_id"] == str(cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_restamps_a_forged_identity_to_the_token(self) -> None:
+        # a captured token re-pointed at a forged agent/customer runs under the TOKEN's true
+        # identity -- the forged envelope claim is discarded, not honoured (and not merely rejected).
+        priv, jwks = self._hub()
+        true_agent, true_cust = uuid4(), uuid4()
+        token = self._token(priv, sub=true_agent, customer_id=true_cust)  # token minted for agent A
+        server, rec = self._server(mode=ToolIdentityEnforcement.ENFORCE, jwks_provider=lambda: jwks)
+        await server.handle_call(  # envelope forges agent/customer B
+            self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token)
+        )
+        response = self._response(rec)
+        assert response["success"] is True  # verified -> the tool ran under the re-stamped identity
+        assert response["context"]["agent_id"] == str(true_agent)  # B was overwritten with A
+        assert response["context"]["customer_id"] == str(true_cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_restamps_when_envelope_identity_is_absent(self) -> None:
+        # the bypass guard: a valid token presented with NO claimed agent/customer (stripped to
+        # skip any comparison) must NOT dispatch under a null identity -- it is re-stamped from the
+        # verified token, so the tool runs under the authenticated identity, never an unbound one.
+        priv, jwks = self._hub()
+        true_agent, true_cust = uuid4(), uuid4()
+        token = self._token(priv, sub=true_agent, customer_id=true_cust)
+        server, rec = self._server(mode=ToolIdentityEnforcement.ENFORCE, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=None, customer_id=None, token=token))
+        response = self._response(rec)
+        assert response["success"] is True
+        assert response["context"]["agent_id"] == str(true_agent)  # null -> verified identity
+        assert response["context"]["customer_id"] == str(true_cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_when_jwks_provider_raises(self) -> None:
+        # a flaky provider must become a fail-closed rejection, never an escaped exception that
+        # hangs the dispatch with no reply.
+        priv, jwks = self._hub()
+        token = self._token(priv, sub=uuid4(), customer_id=uuid4())
+
+        def _boom() -> dict[str, Any]:
+            raise RuntimeError("provider down")
+
+        server, rec = self._server(mode=ToolIdentityEnforcement.ENFORCE, jwks_provider=_boom)
+        await server.handle_call(self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+    @pytest.mark.asyncio
+    async def test_warn_allows_an_invalid_token(self) -> None:
+        _priv, jwks = self._hub()
+        server, rec = self._server(mode=ToolIdentityEnforcement.WARN, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=uuid4(), token="not.a.valid.jws"))
+        assert self._response(rec)["success"] is True  # fail-open: the tool ran
+
+    @pytest.mark.asyncio
+    async def test_warn_restamps_a_valid_token(self) -> None:
+        # warn is fail-OPEN on failure, but on SUCCESS it still re-stamps -- a valid token binds
+        # the dispatch to the verified identity even before the fleet flips to enforce.
+        priv, jwks = self._hub()
+        true_agent, true_cust = uuid4(), uuid4()
+        token = self._token(priv, sub=true_agent, customer_id=true_cust)
+        server, rec = self._server(mode=ToolIdentityEnforcement.WARN, jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token))
+        response = self._response(rec)
+        assert response["success"] is True
+        assert response["context"]["agent_id"] == str(true_agent)
+        assert response["context"]["customer_id"] == str(true_cust)
