@@ -35,7 +35,7 @@ import nkeys
 
 from threetears.nats.subject_permissions import PrincipalPermissions
 
-__all__ = ["account_public_key", "generate_account_seed", "mint_user_jwt"]
+__all__ = ["account_public_key", "encode_and_sign", "generate_account_seed", "mint_user_jwt"]
 
 _ALG = "ed25519-nkey"
 _HEADER: dict[str, str] = {"typ": "JWT", "alg": _ALG}
@@ -76,6 +76,29 @@ def account_public_key(account_seed: bytes) -> str:
     return _nkey_text(nkeys.from_seed(account_seed).public_key)
 
 
+def encode_and_sign(*, account_seed: bytes, payload: dict[str, Any]) -> str:
+    """encode + sign a NATS jwt/v2 claims payload with an account nkey -- the shared signing core.
+
+    header ``{"typ":"JWT","alg":"ed25519-nkey"}``; signature over the ASCII ``header.payload``; all
+    three segments base64url WITHOUT padding. The single implementation used for both user JWTs and
+    auth-callout response JWTs, so the security-critical encoding lives in exactly one place.
+
+    :param account_seed: the signing account nkey seed
+    :ptype account_seed: bytes
+    :param payload: the claims payload (caller sets ``iss``/``sub``/``nats``/etc.)
+    :ptype payload: dict[str, Any]
+    :return: the compact signed NATS v2 JWT
+    :rtype: str
+    """
+    signer = nkeys.from_seed(account_seed)
+    header_seg = _b64url(json.dumps(_HEADER, separators=(",", ":")).encode("ascii"))
+    payload_seg = _b64url(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("ascii")
+    )
+    signing_input = f"{header_seg}.{payload_seg}".encode("ascii")
+    return f"{header_seg}.{payload_seg}.{_b64url(bytes(signer.sign(signing_input)))}"
+
+
 def mint_user_jwt(
     *,
     account_seed: bytes,
@@ -112,7 +135,6 @@ def mint_user_jwt(
     :return: the compact NATS v2 user JWT
     :rtype: str
     """
-    signer = nkeys.from_seed(account_seed)
     issued_at = now if now is not None else int(time.time())
 
     nats_claim: dict[str, Any] = {
@@ -132,7 +154,7 @@ def mint_user_jwt(
         nats_claim["issuer_account"] = issuer_account
 
     payload: dict[str, Any] = {
-        "iss": _nkey_text(signer.public_key),
+        "iss": account_public_key(account_seed),
         "sub": user_public_key,
         "iat": issued_at,
         "exp": issued_at + expires_in_seconds,
@@ -142,14 +164,7 @@ def mint_user_jwt(
     if audience is not None:
         payload["aud"] = audience
     payload["jti"] = _claims_id(payload)
-
-    header_seg = _b64url(json.dumps(_HEADER, separators=(",", ":")).encode("ascii"))
-    payload_seg = _b64url(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("ascii")
-    )
-    signing_input = f"{header_seg}.{payload_seg}".encode("ascii")
-    signature = bytes(signer.sign(signing_input))
-    return f"{header_seg}.{payload_seg}.{_b64url(signature)}"
+    return encode_and_sign(account_seed=account_seed, payload=payload)
 
 
 def _claims_id(payload: dict[str, Any]) -> str:
