@@ -265,6 +265,8 @@ class NatsClient:
         client_name: str,
         cluster_urls: list[str] | None = None,
         auth_token: str | None = None,
+        user_credentials: str | None = None,
+        inbox_prefix: str | None = None,
         startup_timeout: timedelta = DEFAULT_STARTUP_TIMEOUT,
         verify_jetstream: bool = True,
     ) -> NatsClient:
@@ -284,8 +286,20 @@ class NatsClient:
         :ptype client_name: str
         :param cluster_urls: optional additional cluster member URLs
         :ptype cluster_urls: list[str] | None
-        :param auth_token: optional NATS auth token
+        :param auth_token: optional NATS auth token. under decentralized auth (platform-auth A)
+            this carries the pod's injected bootstrap token: the NATS server forwards it to the
+            Hub auth-callout responder, which validates it and mints the connection's user JWT +
+            subject permissions. anonymous (``None``) on the legacy shared bus.
         :ptype auth_token: str | None
+        :param user_credentials: optional path to a NATS ``.creds`` file (decentralized-auth static
+            credentials). used for principals provisioned with standing creds rather than the
+            auth-callout path; ``None`` leaves credential auth off.
+        :ptype user_credentials: str | None
+        :param inbox_prefix: optional request/reply inbox prefix. decentralized auth scopes each
+            principal to its OWN inbox (e.g. ``_INBOX_agent_pod_{pod_id}``) instead of the shared
+            global ``_INBOX`` tree, so a responder's replies cannot be observed cross-principal.
+            ``None`` keeps the nats-py default ``_INBOX``.
+        :ptype inbox_prefix: str | None
         :param startup_timeout: max wall time to spend obtaining first successful connection
         :ptype startup_timeout: timedelta
         :param verify_jetstream: when True (default) verify JetStream is reachable post-connect
@@ -316,6 +330,12 @@ class NatsClient:
         }
         if auth_token:
             options["token"] = auth_token
+        if user_credentials:
+            options["user_credentials"] = user_credentials
+        if inbox_prefix:
+            # nats-py takes the inbox prefix as bytes; scope it per-principal so request/reply
+            # inboxes never share the global `_INBOX` tree across principals.
+            options["inbox_prefix"] = inbox_prefix.encode("ascii")
 
         started_at = time.monotonic()
         try:

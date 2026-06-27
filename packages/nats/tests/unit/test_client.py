@@ -482,6 +482,64 @@ async def test_connect_validates_namespace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connect_passes_credentials_and_scoped_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """auth_token, user_credentials, and a scoped inbox_prefix reach the nats-py connect options."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="aibots",
+        client_name="agent-x",
+        auth_token="bootstrap-tok",
+        user_credentials="/run/secrets/agent.creds",
+        inbox_prefix="_INBOX_agent_pod_pod-1",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert options["token"] == "bootstrap-tok"  # presented to the auth-callout responder
+    assert options["user_credentials"] == "/run/secrets/agent.creds"
+    assert options["inbox_prefix"] == b"_INBOX_agent_pod_pod-1"  # bytes, scoped per-principal
+
+
+@pytest.mark.asyncio
+async def test_connect_omits_credential_options_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """anonymous connect (the legacy shared bus) sets none of the credential/inbox options."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert "token" not in options
+    assert "user_credentials" not in options
+    assert "inbox_prefix" not in options
+
+
+@pytest.mark.asyncio
 async def test_ping_returns_true_when_flush_succeeds() -> None:
     """ping forwards to nats-py flush and returns True on success."""
     client, fake = _make_client()
