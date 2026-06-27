@@ -37,6 +37,7 @@ from threetears.core.security.proxy_assertion import (
     mint_proxy_assertion,
     verify_proxy_assertion,
 )
+from threetears.core.security.proxy_signer import ProxyAssertionSigner
 from threetears.core.security.sandbox import (
     PathSandbox,
     Sandbox,
@@ -74,6 +75,7 @@ __all__ = [
     "IdentityClaims",
     "IdentityTokenError",
     "ProxyAssertionClaims",
+    "ProxyAssertionSigner",
     "build_jwks",
     "canonical_call_hash",
     "generate_signing_keypair",
