@@ -20,6 +20,9 @@ border) — consumers convert to their domain types (e.g. ``UUID``) at their own
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,6 +35,7 @@ __all__ = [
     "IdentityClaims",
     "IdentityTokenError",
     "build_jwks",
+    "canonical_call_hash",
     "generate_signing_keypair",
     "sign_identity_token",
     "verify_identity_token",
@@ -60,6 +64,8 @@ class IdentityClaims:
     """the verified identity a token asserts. ids are ``str`` (wire border); ``iat``/``exp`` are
 
     unix seconds. ``user_id`` is ``None`` for agent-initiated calls with no human principal.
+    ``cnf`` is the holder-key JWK thumbprint (DPoP ``jkt``) binding the token to a
+    proof-of-possession key, so a leaked token alone is unusable; ``None`` until pop is enabled.
     """
 
     sub: str  # the agent_id the token authenticates
@@ -70,6 +76,7 @@ class IdentityClaims:
     iat: int
     exp: int
     user_id: str | None = None
+    cnf: str | None = None  # holder-key thumbprint (jkt) for proof-of-possession
 
 
 def generate_signing_keypair() -> tuple[Ed25519PrivateKey, Ed25519PublicKey]:
@@ -121,6 +128,8 @@ def sign_identity_token(claims: IdentityClaims, *, signing_key: Ed25519PrivateKe
     }
     if claims.user_id is not None:
         payload["user_id"] = claims.user_id
+    if claims.cnf is not None:
+        payload["cnf"] = {"jkt": claims.cnf}
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid})
 
 
@@ -193,6 +202,8 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
     (future) claims are tolerated for a forward-compatible rollout.
     """
     user_id = payload.get("user_id")
+    cnf_claim = payload.get("cnf")
+    cnf = cnf_claim.get("jkt") if isinstance(cnf_claim, dict) else None
     return IdentityClaims(
         sub=_require_nonempty_str(payload, "sub"),
         customer_id=_require_nonempty_str(payload, "customer_id"),
@@ -202,6 +213,7 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
         iat=int(payload["iat"]),
         exp=int(payload["exp"]),
         user_id=None if user_id is None else _require_nonempty_str(payload, "user_id"),
+        cnf=cnf if isinstance(cnf, str) and cnf else None,
     )
 
 
@@ -214,3 +226,39 @@ def _require_nonempty_str(payload: dict[str, Any], claim: str) -> str:
     if not isinstance(value, str) or not value:
         raise IdentityTokenError(f"identity claim {claim!r} must be a non-empty string.")
     return value
+
+
+def canonical_call_hash(
+    tool_name: str, arguments: Mapping[str, Any], correlation_id: str | None
+) -> str:
+    """SHA-256 (base64url, unpadded) of the canonical call body.
+
+    The value both a proof-of-possession proof and a proxy->pod assertion BIND to, so a captured
+    proof cannot be spliced onto a DIFFERENT call. Canonical form = compact JSON with recursively
+    sorted keys; the signer and the verifier MUST hash through this one function or their digests
+    diverge (the classic canonicalization footgun).
+
+    :param tool_name: the dotted tool name being called
+    :ptype tool_name: str
+    :param arguments: the tool call arguments
+    :ptype arguments: Mapping[str, Any]
+    :param correlation_id: the call correlation id, or ``None``
+    :ptype correlation_id: str | None
+    :return: base64url(SHA-256(canonical-json)), unpadded
+    :rtype: str
+    """
+    canonical = json.dumps(
+        {
+            "arguments": dict(arguments),
+            "correlation_id": correlation_id,
+            "tool_name": tool_name,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+        ensure_ascii=True,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).digest()
+    # str(bytes, "ascii"), NOT bytes.decode(): the alg-pinning enforcement matches every ``.decode(``
+    # call in this module so a sneaky jwt decode can't dodge the EdDSA pin -- a bytes->str here is
+    # not a jwt decode, so it must not use ``.decode``.
+    return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")

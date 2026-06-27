@@ -29,6 +29,7 @@ from threetears.core.security.identity_token import (
     IdentityClaims,
     IdentityTokenError,
     build_jwks,
+    canonical_call_hash,
     generate_signing_keypair,
     sign_identity_token,
     verify_identity_token,
@@ -351,3 +352,37 @@ def test_error_does_not_echo_the_token(signed: tuple[str, dict[str, Any]]) -> No
     with pytest.raises(IdentityTokenError) as exc:
         verify_identity_token(token, jwks=bad, issuer=_ISS)
     assert token not in str(exc.value)
+
+
+def test_cnf_holder_key_thumbprint_round_trips(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(cnf="thumb-print-jkt"), signing_key=priv, kid="kid-1")
+    assert verify_identity_token(token, jwks=jwks, issuer=_ISS).cnf == "thumb-print-jkt"
+
+
+def test_cnf_is_none_when_absent(signed: tuple[str, dict[str, Any]]) -> None:
+    token, jwks = signed
+    assert verify_identity_token(token, jwks=jwks, issuer=_ISS).cnf is None
+
+
+def test_canonical_call_hash_is_arg_order_independent() -> None:
+    a = canonical_call_hash("pentest.nmap", {"target": "x", "ports": "1-1024"}, "corr-1")
+    b = canonical_call_hash("pentest.nmap", {"ports": "1-1024", "target": "x"}, "corr-1")
+    assert a == b  # argument key order must not change the body hash
+
+
+def test_canonical_call_hash_changes_with_any_field() -> None:
+    base = canonical_call_hash("t", {"a": 1}, "c")
+    assert canonical_call_hash("t2", {"a": 1}, "c") != base  # tool_name
+    assert canonical_call_hash("t", {"a": 2}, "c") != base  # arguments
+    assert canonical_call_hash("t", {"a": 1}, "c2") != base  # correlation_id
+    assert canonical_call_hash("t", {"a": 1}, None) != base  # None vs a value
+
+
+def test_canonical_call_hash_is_unpadded_base64url() -> None:
+    h = canonical_call_hash("t", {}, None)
+    assert "=" not in h and "+" not in h and "/" not in h
+    assert len(h) == 43  # SHA-256 (32 bytes) -> 43 base64url chars, unpadded
