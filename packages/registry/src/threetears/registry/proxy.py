@@ -9,17 +9,26 @@ NATS request-reply.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
+from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
 from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
+from threetears.registry.config import IdentityEnforcement, get_identity_enforcement
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
+
+# the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
+# on exp/iat. constants for now; promote to config if operations need to tune them.
+_IDENTITY_ISSUER = "hub"
+_IDENTITY_LEEWAY_SECONDS = 60
 
 if TYPE_CHECKING:
     from threetears.nats import NatsClient, Subscription
@@ -173,6 +182,8 @@ class CallProxy:
         namespace: str = "aibots",
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
+        identity_enforcement: IdentityEnforcement | None = None,
+        jwks_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """initialize call proxy.
 
@@ -192,6 +203,16 @@ class CallProxy:
         :ptype timeout: float | None
         :param routing_strategy: endpoint selection strategy (defaults to least-connections)
         :ptype routing_strategy: RoutingStrategy | None
+        :param identity_enforcement: how to treat the Hub-issued identity
+            token on each call (off/warn/enforce); sourced from
+            ``THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT`` when not provided
+        :ptype identity_enforcement: IdentityEnforcement | None
+        :param jwks_provider: zero-arg callable returning the current Hub
+            JWKS (the public keys the identity token is verified against).
+            ``None`` until the Hub distribution is wired; with no provider,
+            verification fails (allowed in warn, rejected in enforce). The
+            provider's contract is to return a JWKS dict
+        :ptype jwks_provider: Callable[[], dict[str, Any]] | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -200,6 +221,10 @@ class CallProxy:
         self.timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
+        self._identity_enforcement = (
+            identity_enforcement if identity_enforcement is not None else get_identity_enforcement()
+        )
+        self._jwks_provider = jwks_provider
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -307,6 +332,104 @@ class CallProxy:
         finally:
             clear_context()
 
+    def _load_jwks(self) -> dict[str, Any]:
+        """fetch the current Hub JWKS via the injected provider, converting ANY provider
+
+        failure into an :class:`IdentityTokenError`. Once the provider is Hub-backed it may be a
+        network fetch and can raise far beyond the verification exceptions (ConnectionError,
+        TimeoutError, ...). Converting here keeps a flaky provider from ESCAPING verification
+        and hanging the call: it becomes a well-typed verification failure that warn allows and
+        enforce rejects -- always a response, never a silent hang. The failure is logged (not
+        swallowed) before being re-raised.
+        """
+        assert self._jwks_provider is not None  # guarded by the caller
+        try:
+            return self._jwks_provider()
+        except Exception as exc:
+            # the provider is external (a network fetch once Hub-wired); we cannot enumerate its
+            # failure modes, and any of them means "cannot verify" -> fail to a response.
+            log.warning(
+                "JWKS provider failed during identity verification",
+                extra={"extra_data": {"reason": type(exc).__name__}},
+            )
+            raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
+
+    def _verify_identity(
+        self, request: "ProxyCallRequest"
+    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+        """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
+
+        the heart of the platform-auth fix: authorization + forwarding must act on an
+        authenticated identity, not the self-asserted envelope. on success the verified
+        ``agent_id`` (``= token.sub``), ``user_id``, and ``customer_id`` overwrite whatever the
+        envelope claimed; the envelope's claimed identity is discarded.
+
+        mode behaviour (caller guarantees ``request.context`` and ``context.agent_id`` present):
+
+        - ``OFF``: no-op passthrough -- returns ``(request, None)`` unchanged.
+        - ``WARN``: verify; on success return the re-stamped request; on FAILURE log and return
+          ``(request, None)`` -- the call proceeds on the unverified envelope identity
+          (fail-open, observability only, for an incomplete fleet mid-migration).
+        - ``ENFORCE``: verify; on success return the re-stamped request; on FAILURE return
+          ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects the call
+          (fail-closed).
+
+        :param request: the parsed call request (its context carries the identity token)
+        :ptype request: ProxyCallRequest
+        :return: ``(possibly re-stamped request, error response or None)``. a non-None response
+            means the caller must reject the call without dispatching
+        :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None]
+        """
+        mode = self._identity_enforcement
+        if mode is IdentityEnforcement.OFF:
+            return request, None
+        context = request.context
+        assert context is not None  # guaranteed by the caller's agent_id presence check
+        try:
+            token = context.identity_token
+            if token is None:
+                raise IdentityTokenError("identity token absent from call context")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for identity verification")
+            claims = verify_identity_token(
+                token,
+                jwks=self._load_jwks(),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+            verified_context = context.model_copy(
+                update={
+                    "agent_id": UUID(claims.sub),
+                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
+                    "customer_id": UUID(claims.customer_id),
+                }
+            )
+            return request.model_copy(update={"context": verified_context}), None
+        except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+            reason = type(exc).__name__
+            extra = {
+                "extra_data": {
+                    "tool_name": request.tool_name,
+                    "reason": reason,
+                    "correlation_id": _correlation_id_str(request),
+                }
+            }
+            if mode is IdentityEnforcement.ENFORCE:
+                log.warning("identity verification failed; rejecting call (enforce mode)", extra=extra)
+                response = ProxyCallResponse(
+                    success=False,
+                    content="",
+                    error=f"identity verification failed ({reason})",
+                    error_code="TOOL_IDENTITY_UNVERIFIED",
+                    context=context,
+                )
+                return request, response
+            log.warning(
+                "identity verification failed; allowing call (warn mode -- not yet enforced)",
+                extra=extra,
+            )
+            return request, None
+
     async def _dispatch_call(
         self,
         request: "ProxyCallRequest",
@@ -351,6 +474,22 @@ class CallProxy:
                 },
             )
             return
+
+        # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
+        # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
+        # authenticated identity rather than the self-asserted envelope. inert at ``off``.
+        verified_request, identity_error = self._verify_identity(request)
+        if identity_error is not None:
+            if msg.reply_subject is not None:
+                await self._nc.publish_reply(
+                    reply_subject=msg.reply_subject,
+                    message=identity_error,
+                )
+            return
+        if verified_request is not request:
+            request = verified_request
+            bind_log_context(request.context)  # refresh log tags with the verified identity
+        assert request.context is not None  # held by the agent_id check; re-narrow after re-stamp
 
         # log-border stringification of identity dimensions; the
         # ProxyCallResponse echoes the whole context so these string

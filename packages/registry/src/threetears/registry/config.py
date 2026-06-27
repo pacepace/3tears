@@ -9,19 +9,64 @@ hierarchy: env var -> platform default (120s for tool calls).
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 
 from threetears.observe import get_logger
 
 __all__ = [
+    "IdentityEnforcement",
     "get_call_timeout",
     "get_heartbeat_check_interval",
     "get_heartbeat_timeout",
+    "get_identity_enforcement",
     "get_mcp_timeout",
     "get_nats_proxy_timeout_ms",
     "get_probe_timeout",
 ]
 
 log = get_logger(__name__)
+
+_IDENTITY_ENFORCEMENT_ENV = "THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT"
+
+
+class IdentityEnforcement(StrEnum):
+    """how the registry proxy treats the Hub-issued identity token on a tool call.
+
+    rollout ladder for platform-auth: ``OFF`` (default) ignores the token entirely -- the
+    legacy self-asserted envelope identity is used, exactly as before. ``WARN`` verifies the
+    token and re-stamps the verified identity on success, but on a verification FAILURE it
+    logs and ALLOWS the call (fail-open, observability only) so an incomplete fleet is not
+    broken mid-migration. ``ENFORCE`` verifies and re-stamps on success, and REJECTS on
+    failure (fail-closed) -- the end state once every caller emits a valid token.
+    """
+
+    OFF = "off"
+    WARN = "warn"
+    ENFORCE = "enforce"
+
+
+def get_identity_enforcement() -> IdentityEnforcement:
+    """read the identity-enforcement mode from the environment; default ``OFF``.
+
+    env var: ``THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT`` (``off`` | ``warn`` | ``enforce``).
+    Unset defaults to ``OFF`` so the platform-auth code lands inert during a receiver-first
+    rollout. A PRESENT-but-invalid value raises rather than silently defaulting -- a typo'd
+    security control must fail loud at startup, never quietly leave enforcement off.
+
+    :return: the configured enforcement mode
+    :rtype: IdentityEnforcement
+    :raises ValueError: when the env var is set to an unrecognized value
+    """
+    raw = os.environ.get(_IDENTITY_ENFORCEMENT_ENV)
+    if raw is None:
+        return IdentityEnforcement.OFF
+    try:
+        return IdentityEnforcement(raw.strip().lower())
+    except ValueError:
+        valid = [member.value for member in IdentityEnforcement]
+        raise ValueError(
+            f"invalid {_IDENTITY_ENFORCEMENT_ENV}={raw!r}; expected one of {valid}"
+        ) from None
 
 # platform default for tool call timeout (seconds)
 _PLATFORM_DEFAULT_CALL_TIMEOUT = 120.0
