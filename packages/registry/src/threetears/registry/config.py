@@ -19,6 +19,7 @@ __all__ = [
     "get_heartbeat_check_interval",
     "get_heartbeat_timeout",
     "get_identity_enforcement",
+    "get_jwks_request_timeout",
     "get_mcp_timeout",
     "get_nats_proxy_timeout_ms",
     "get_probe_timeout",
@@ -76,6 +77,8 @@ _PLATFORM_DEFAULT_HEARTBEAT_TIMEOUT = 45.0
 _PLATFORM_DEFAULT_HEARTBEAT_CHECK_INTERVAL = 5.0
 # platform default for tool pod reachability probe timeout (seconds)
 _PLATFORM_DEFAULT_PROBE_TIMEOUT = 3.0
+# platform default for the Hub JWKS fetch request/reply timeout (seconds)
+_PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
 
 
 def get_call_timeout() -> float:
@@ -201,3 +204,24 @@ def get_nats_proxy_timeout_ms() -> int:
                 raw,
             )
     return 5000
+
+
+def get_jwks_request_timeout() -> float:
+    """read the Hub JWKS fetch request timeout from environment or return platform default.
+
+    env var: THREETEARS_REGISTRY_JWKS_REQUEST_TIMEOUT
+
+    :return: JWKS fetch request/reply timeout in seconds
+    :rtype: float
+    """
+    raw = os.environ.get("THREETEARS_REGISTRY_JWKS_REQUEST_TIMEOUT")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            log.warning(
+                "invalid THREETEARS_REGISTRY_JWKS_REQUEST_TIMEOUT=%r, using default %.1f",
+                raw,
+                _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT,
+            )
+    return _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT

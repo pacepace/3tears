@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.security import CachedHubJwksProvider
 from threetears.nats import NatsClient
 from threetears.observe import HealthCheck, HealthServer, get_logger
 from threetears.observe.resilience import retry_with_backoff
@@ -27,6 +28,7 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
+from threetears.registry.config import get_jwks_request_timeout
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
@@ -169,6 +171,7 @@ class RegistryServer:
         self._heartbeat_subscriber: HeartbeatSubscriber | None = None
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
+        self._jwks_provider: CachedHubJwksProvider | None = None
         self._health_server: HealthServer | None = None
         self._shutdown_event = asyncio.Event()
 
@@ -343,11 +346,20 @@ class RegistryServer:
             "registry.discovery_handler.start",
         )
 
+        # a real JWKS provider that fetches the Hub's published identity-token keys (request/reply)
+        # and caches them, so the proxy verifies tokens against live Hub keys before RBAC. fetch is
+        # best-effort at start (fail-closed empty cache until the first success); a refresh loop
+        # keeps it current through key rotation.
+        jwks_provider = CachedHubJwksProvider(nc, request_timeout_seconds=get_jwks_request_timeout())
+        await jwks_provider.start()
+        self._jwks_provider = jwks_provider
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
+            jwks_provider=jwks_provider,
         )
         self._call_proxy = call_proxy
         await retry_with_backoff(
@@ -408,6 +420,8 @@ class RegistryServer:
             await self._health_server.stop()
         if self._call_proxy is not None:
             await self._call_proxy.stop()
+        if self._jwks_provider is not None:
+            await self._jwks_provider.stop()
         if self._discovery_handler is not None:
             await self._discovery_handler.stop()
         if self._heartbeat_subscriber is not None:

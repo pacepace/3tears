@@ -15,6 +15,8 @@ public surface:
   :func:`sign_identity_token` / :func:`verify_identity_token` / :func:`build_jwks` /
   :func:`generate_signing_keypair` — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
   identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
+  :class:`~threetears.core.security.jwks_provider.CachedHubJwksProvider` fetches + caches that
+  JWKS over NATS so a verifier's ``jwks_provider()`` returns it with no hot-path IO.
 """
 
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
@@ -26,6 +28,7 @@ from threetears.core.security.identity_token import (
     sign_identity_token,
     verify_identity_token,
 )
+from threetears.core.security.jwks_provider import CachedHubJwksProvider
 from threetears.core.security.sandbox import (
     PathSandbox,
     Sandbox,
@@ -59,6 +62,7 @@ __all__ = [
     "open_secret",
     "seal",
     # identity tokens
+    "CachedHubJwksProvider",
     "IdentityClaims",
     "IdentityTokenError",
     "build_jwks",

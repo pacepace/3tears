@@ -451,6 +451,18 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.handshake", kind="point")
 
     @classmethod
+    def hub_jwks(cls) -> Subject:
+        """request/reply subject for the Hub identity-token JWKS fetched by verifiers.
+
+        The registry proxy + tool pods request this to fetch the public keys identity tokens are
+        signed under, then verify tokens against it before RBAC (platform-auth Option B).
+
+        :return: subject ``{ns}.hub.jwks``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.jwks", kind="point")
+
+    @classmethod
     def hub_secrets_request(cls) -> Subject:
         """request/reply subject for encrypted secret delivery from hub.
 
