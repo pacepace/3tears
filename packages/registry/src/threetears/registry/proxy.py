@@ -68,6 +68,12 @@ class ProxyCallRequest(BaseModel):
         utility calls still populate :class:`CallContext` even if only
         with ``agent_id`` + ``correlation_id``
     :ptype context: CallContext | None
+    :param pop: proof-of-possession for THIS request on the agent→proxy
+        hop (the caller signs over the request so a leaked identity
+        token alone is unusable). ``None`` until the platform-auth
+        rollout reaches enforce; the proxy accepts it now (receiver-first
+        — this model is ``extra='forbid'``) but does not yet verify it
+    :ptype pop: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,6 +82,7 @@ class ProxyCallRequest(BaseModel):
     tool_version: str
     arguments: dict[str, Any]
     context: CallContext | None = None
+    pop: str | None = None
 
     @model_validator(mode="before")
     @classmethod

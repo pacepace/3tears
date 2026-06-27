@@ -61,6 +61,17 @@ class CallContext(BaseModel):
         :class:`~threetears.registry.proxy.ProxyCallRequest` -- this
         is the single source of truth
     :ptype agent_id: UUID | None
+    :param identity_token: Hub-issued, EdDSA-signed identity assertion
+        (a compact JWS; see
+        :mod:`threetears.core.security.identity_token`) verified at the
+        registry proxy before RBAC, so authorization evaluates a VERIFIED
+        caller identity rather than the self-asserted envelope. rides on
+        the context so it travels whole through both
+        :class:`~threetears.registry.proxy.ProxyCallRequest` and
+        :class:`~threetears.agent.tools.server.CallRequest`. ``None``
+        until the platform-auth rollout reaches the enforce stage; nothing
+        reads it yet
+    :ptype identity_token: str | None
     :param trace: escape hatch for identity dimensions not yet promoted
         to first-class fields; map of short string keys to string
         values. intentionally narrow: do NOT use for arbitrary per-call
@@ -90,6 +101,7 @@ class CallContext(BaseModel):
     customer_id: UUID | None = None
     correlation_id: UUID | None = None
     agent_id: UUID | None = None
+    identity_token: str | None = None
     trace: dict[str, str] = Field(default_factory=dict)
     user_timezone: str | None = None
     user_locale: str | None = None

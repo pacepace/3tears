@@ -286,3 +286,66 @@ class TestBindLogContext:
         bind_log_context(CallContext())
 
         assert get_context() == {}
+
+
+class TestAuthWireFields:
+    """v0.13.9 auth C2: receiver-first wire fields, all optional and INERT (off).
+
+    ``identity_token`` (the Hub-issued JWS) rides on :class:`CallContext`, so it travels whole
+    through both ``ProxyCallRequest`` and ``CallRequest`` without touching either model.
+    ``proxy_assertion`` (the proxy's body-bound assertion to the pod) is a top-level field on
+    ``CallRequest`` — which is ``extra='forbid'``, so the receiver must ACCEPT it before any
+    sender emits it. Nothing READS these yet; verification + emission land in later chunks.
+    """
+
+    def test_call_context_carries_identity_token_round_trip(self) -> None:
+        """``identity_token`` survives JSON round-trip on the context envelope."""
+        ctx = CallContext(agent_id=uuid7(), identity_token="eyJhbGciOiJFZERTQSJ9.payload.sig")
+        wire = ctx.model_dump_json()
+        assert json.loads(wire)["identity_token"] == "eyJhbGciOiJFZERTQSJ9.payload.sig"
+        parsed = CallContext.model_validate_json(wire)
+        assert parsed.identity_token == "eyJhbGciOiJFZERTQSJ9.payload.sig"
+
+    def test_call_context_identity_token_defaults_none(self) -> None:
+        """``identity_token`` defaults to ``None`` (the off state)."""
+        assert CallContext().identity_token is None
+
+    def test_call_context_without_identity_token_still_parses(self) -> None:
+        """backward-compat: an old envelope with no ``identity_token`` deserializes fine."""
+        parsed = CallContext.model_validate_json(json.dumps({"agent_id": str(uuid7())}))
+        assert parsed.identity_token is None
+
+    def test_with_trace_preserves_identity_token(self) -> None:
+        """the ``with_trace`` copy keeps ``identity_token`` (model_copy carries all fields)."""
+        base = CallContext(agent_id=uuid7(), identity_token="tok")
+        merged = base.with_trace({"a": "1"})
+        assert merged.identity_token == "tok"
+
+    def test_call_request_accepts_proxy_assertion(self) -> None:
+        """the pod's ``CallRequest`` accepts the new ``proxy_assertion`` field."""
+        req = CallRequest(
+            tool_name="test.stub", tool_version="1.0", arguments={}, proxy_assertion="assert-blob"
+        )
+        assert req.proxy_assertion == "assert-blob"
+
+    def test_call_request_proxy_assertion_defaults_none(self) -> None:
+        """``proxy_assertion`` defaults to ``None`` (the off state)."""
+        req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={})
+        assert req.proxy_assertion is None
+
+    def test_call_request_still_forbids_a_genuinely_unknown_field(self) -> None:
+        """extra='forbid' stays intact: only the declared auth field is accepted, not any extra."""
+        with pytest.raises(ValidationError):
+            CallRequest(
+                tool_name="test.stub",
+                tool_version="1.0",
+                arguments={},
+                totally_unknown="x",  # type: ignore[call-arg]
+            )
+
+    def test_call_request_forwards_identity_token_in_context(self) -> None:
+        """``identity_token`` nested in ``context`` survives onto ``CallRequest``."""
+        ctx = CallContext(agent_id=uuid7(), identity_token="eyJ.tok")
+        req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        assert req.context is not None
+        assert req.context.identity_token == "eyJ.tok"

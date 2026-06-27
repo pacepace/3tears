@@ -265,6 +265,13 @@ class CallRequest(BaseModel):
         ``None`` for stateless tool invocations. includes the
         ``correlation_id`` used for response routing and log correlation
     :ptype context: CallContext | None
+    :param proxy_assertion: the registry proxy's body-bound, signed
+        assertion for THIS request on the proxy→pod hop (binds the tool +
+        arguments + a nonce so the discoverable internal subject can't be
+        spliced/replayed). ``None`` until the platform-auth rollout
+        reaches enforce; the pod accepts it now (receiver-first — this
+        model is ``extra='forbid'``) but does not yet verify it
+    :ptype proxy_assertion: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -273,6 +280,7 @@ class CallRequest(BaseModel):
     tool_version: str
     arguments: dict[str, Any]
     context: CallContext | None = None
+    proxy_assertion: str | None = None
 
     @model_validator(mode="before")
     @classmethod
