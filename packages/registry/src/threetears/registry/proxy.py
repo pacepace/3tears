@@ -10,14 +10,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
-from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
+from threetears.core.security.identity_token import (
+    IdentityTokenError,
+    canonical_call_hash,
+    verify_identity_token,
+)
 from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
@@ -31,6 +35,7 @@ _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
 
 if TYPE_CHECKING:
+    from threetears.core.security import ProxyAssertionSigner
     from threetears.nats import NatsClient, Subscription
 
 __all__ = [
@@ -184,6 +189,7 @@ class CallProxy:
         routing_strategy: RoutingStrategy | None = None,
         identity_enforcement: IdentityEnforcement | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
+        proxy_signer: "ProxyAssertionSigner | None" = None,
     ) -> None:
         """initialize call proxy.
 
@@ -213,6 +219,10 @@ class CallProxy:
             verification fails (allowed in warn, rejected in enforce). The
             provider's contract is to return a JWKS dict
         :ptype jwks_provider: Callable[[], dict[str, Any]] | None
+        :param proxy_signer: signs a proxy->pod assertion onto each forwarded call so the pod can
+            verify the call came from the proxy, for this body, once; ``None`` leaves the call
+            unsigned (the binding is inert until the proxy key is provisioned)
+        :ptype proxy_signer: ProxyAssertionSigner | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -225,6 +235,7 @@ class CallProxy:
             identity_enforcement if identity_enforcement is not None else get_identity_enforcement()
         )
         self._jwks_provider = jwks_provider
+        self._proxy_signer = proxy_signer
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
         self._active_tasks: set[asyncio.Task[None]] = set()
@@ -679,7 +690,7 @@ class CallProxy:
         if self._nc is None:
             raise RuntimeError("_forward_call invoked before NATS connected")
         internal_subject = Subjects.tools_internal(pod_id)
-        internal_payload = _build_internal_payload(request)
+        internal_payload = _build_internal_payload(request, self._mint_proxy_assertion(request, pod_id))
         effective_timeout = self._resolve_timeout(request.tool_name, request.tool_version)
         correlation_id_log = _correlation_id_str(request)
 
@@ -724,6 +735,45 @@ class CallProxy:
             )
         return response
 
+    def _mint_proxy_assertion(self, request: ProxyCallRequest, pod_id: str) -> str | None:
+        """sign a proxy->pod assertion for a forwarded call, or ``None`` when unsignable.
+
+        Binds the VERIFIED caller identity (already re-stamped onto the context by
+        :meth:`_verify_identity`) + the call body + a single-use nonce + the target pod, so the pod
+        can verify the call came from THIS proxy, for THIS body, once. Returns ``None`` when no
+        signer is configured (the binding is inert) or the verified identity is incomplete.
+
+        :param request: the forwarded call request (its context carries the verified identity)
+        :ptype request: ProxyCallRequest
+        :param pod_id: the target pod id (the assertion ``aud``)
+        :ptype pod_id: str
+        :return: a compact JWS assertion, or ``None``
+        :rtype: str | None
+        """
+        context = request.context
+        result: str | None = None
+        if (
+            self._proxy_signer is not None
+            and context is not None
+            and context.agent_id is not None
+            and context.customer_id is not None
+        ):
+            body_hash = canonical_call_hash(
+                request.tool_name,
+                request.arguments,
+                str(context.correlation_id) if context.correlation_id is not None else None,
+            )
+            result = self._proxy_signer.mint(
+                pod_id=pod_id,
+                agent_id=str(context.agent_id),
+                customer_id=str(context.customer_id),
+                body_hash=body_hash,
+                nonce=str(uuid4()),
+                now=int(datetime.now(UTC).timestamp()),
+                user_id=str(context.user_id) if context.user_id is not None else None,
+            )
+        return result
+
 
 def _correlation_id_str(request: ProxyCallRequest) -> str:
     """stringify the correlation id riding on ``request.context``.
@@ -747,16 +797,20 @@ def _correlation_id_str(request: ProxyCallRequest) -> str:
     return result
 
 
-def _build_internal_payload(request: ProxyCallRequest) -> bytes:
+def _build_internal_payload(request: ProxyCallRequest, proxy_assertion: str | None = None) -> bytes:
     """build internal NATS payload for forwarding to tool pod.
 
     constructs :class:`CallRequest` from the proxy request, copying
     ``context`` through verbatim so identity dimensions (including
     ``correlation_id`` which now lives exclusively on
     :class:`CallContext`) survive the hop from registry to tool pod.
+    ``proxy_assertion`` is the proxy's body-bound signature for the pod
+    to verify, or ``None`` when the binding is inert.
 
     :param request: original proxy call request
     :ptype request: ProxyCallRequest
+    :param proxy_assertion: the proxy->pod assertion JWS, or ``None``
+    :ptype proxy_assertion: str | None
     :return: serialized internal call request bytes
     :rtype: bytes
     """
@@ -767,6 +821,7 @@ def _build_internal_payload(request: ProxyCallRequest) -> bytes:
         tool_version=request.tool_version,
         arguments=request.arguments,
         context=request.context,
+        proxy_assertion=proxy_assertion,
     )
     result = internal_request.model_dump_json().encode("utf-8")
     return result

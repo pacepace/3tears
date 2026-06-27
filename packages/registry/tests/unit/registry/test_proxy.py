@@ -214,6 +214,70 @@ class TestCallProxySuccess:
         assert forwarded_payload["arguments"] == original_args
 
     @pytest.mark.asyncio
+    async def test_forwards_a_verifiable_proxy_assertion_when_signer_configured(self) -> None:
+        """with a proxy signer + a verified identity, the forwarded payload carries a proxy
+        assertion the pod can verify -- binding the identity + the call body + the target pod."""
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from pydantic import SecretStr
+
+        from threetears.core.security import (
+            ProxyAssertionSigner,
+            canonical_call_hash,
+            verify_proxy_assertion,
+        )
+
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        catalog = ToolCatalog()
+        await catalog.register(_make_entry(pod_id="pod-z"))
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", proxy_signer=signer)
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        customer_id = UUID("01948a00-cccc-7000-8000-0000000000c1")
+        request = _make_call_request()
+        request = request.model_copy(
+            update={"context": request.context.model_copy(update={"customer_id": customer_id})}
+        )
+        msg = _make_nats_msg(data=request.model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        forwarded = json.loads(nc.request_raw.call_args.kwargs["payload"])
+        assert forwarded["proxy_assertion"] is not None
+        body_hash = canonical_call_hash(
+            "threetears.calculator", {"expression": "2+2"}, str(_DEFAULT_CORRELATION_ID)
+        )
+        claims = verify_proxy_assertion(
+            forwarded["proxy_assertion"],
+            jwks=signer.public_jwks(),
+            expected_pod_id="pod-z",
+            body_hash=body_hash,
+        )
+        assert claims.sub == str(_DEFAULT_AGENT_ID)
+        assert claims.customer_id == str(customer_id)
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_assertion_when_no_signer_configured(self) -> None:
+        """without a signer the binding is inert: the forwarded call carries no assertion."""
+        catalog = ToolCatalog()
+        await catalog.register(_make_entry(pod_id="pod-001"))
+        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_make_tool_response())
+        await proxy.start(nc)
+
+        msg = _make_nats_msg(data=_make_call_request().model_dump_json().encode("utf-8"))
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+
+        forwarded = json.loads(nc.request_raw.call_args.kwargs["payload"])
+        assert forwarded.get("proxy_assertion") is None
+
+    @pytest.mark.asyncio
     async def test_does_not_modify_results(self) -> None:
         """proxy returns tool pod response without modification."""
         catalog = ToolCatalog()

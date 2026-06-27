@@ -21,6 +21,7 @@ __all__ = [
     "get_identity_enforcement",
     "get_jwks_request_timeout",
     "get_mcp_timeout",
+    "get_proxy_assertion_signing_key_ref",
     "get_nats_proxy_timeout_ms",
     "get_probe_timeout",
 ]
@@ -204,6 +205,23 @@ def get_nats_proxy_timeout_ms() -> int:
                 raw,
             )
     return 5000
+
+
+def get_proxy_assertion_signing_key_ref() -> str:
+    """read the secret reference to the proxy's assertion-signing key.
+
+    env var: ``THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF`` (a ``scheme://locator``
+    secret reference); defaults to ``env://FOURTEENAIBOTS_PROXY_ASSERTION_SIGNING_KEY`` -- the
+    SAME key the Hub publishes in its JWKS. When the reference does not resolve, the proxy mints
+    no assertion (the binding is inert until the key is provisioned).
+
+    :return: the secret reference
+    :rtype: str
+    """
+    return os.environ.get(
+        "THREETEARS_REGISTRY_PROXY_ASSERTION_SIGNING_KEY_REF",
+        "env://FOURTEENAIBOTS_PROXY_ASSERTION_SIGNING_KEY",
+    )
 
 
 def get_jwks_request_timeout() -> float:

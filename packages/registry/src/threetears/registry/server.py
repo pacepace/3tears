@@ -17,7 +17,13 @@ from collections.abc import Awaitable, Callable
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
-from threetears.core.security import CachedHubJwksProvider
+from threetears.core.security import (
+    CachedHubJwksProvider,
+    IdentityTokenError,
+    ProxyAssertionSigner,
+    SecretResolutionError,
+    resolve_secret,
+)
 from threetears.nats import NatsClient
 from threetears.observe import HealthCheck, HealthServer, get_logger
 from threetears.observe.resilience import retry_with_backoff
@@ -28,7 +34,7 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
-from threetears.registry.config import get_jwks_request_timeout
+from threetears.registry.config import get_jwks_request_timeout, get_proxy_assertion_signing_key_ref
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
@@ -354,12 +360,27 @@ class RegistryServer:
         await jwks_provider.start()
         self._jwks_provider = jwks_provider
 
+        # the proxy's assertion-signing key (shared secret_ref with the Hub, which publishes its
+        # PUBLIC key in the JWKS). when the key is not provisioned the binding is inert: the proxy
+        # forwards calls unsigned and the pod requires no assertion.
+        proxy_signer: ProxyAssertionSigner | None = None
+        try:
+            proxy_signer = ProxyAssertionSigner.from_secret(
+                resolve_secret(get_proxy_assertion_signing_key_ref())
+            )
+        except (SecretResolutionError, IdentityTokenError) as exc:
+            _logger.info(
+                "proxy assertion signing key unavailable (%s); proxy->pod assertions inert",
+                type(exc).__name__,
+            )
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
             jwks_provider=jwks_provider,
+            proxy_signer=proxy_signer,
         )
         self._call_proxy = call_proxy
         await retry_with_backoff(
