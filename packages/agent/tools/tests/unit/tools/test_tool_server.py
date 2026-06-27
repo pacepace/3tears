@@ -1396,3 +1396,99 @@ class TestToolServerIdentityVerification:
         assert response["success"] is True
         assert response["context"]["agent_id"] == str(true_agent)
         assert response["context"]["customer_id"] == str(true_cust)
+
+
+class TestToolServerProxyAssertionVerification:
+    """v0.13.9 auth: the pod verifies the proxy's body-bound assertion (the pod's PRIMARY gate).
+
+    gated by THREETEARS_TOOL_PROXY_ASSERTION_ENFORCEMENT, INDEPENDENT of the identity-token flag,
+    so a direct publisher to the internal subject -- without a valid proxy assertion for THIS call
+    body -- is rejected under enforce.
+    """
+
+    @staticmethod
+    def _signer_and_jwks() -> tuple[Any, dict[str, Any]]:
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from pydantic import SecretStr
+
+        from threetears.core.security import ProxyAssertionSigner
+
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        return signer, signer.public_jwks()
+
+    @staticmethod
+    def _server(jwks: dict[str, Any]) -> tuple[ToolServer, Any]:
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace_collection=None,
+            pod_id="test-pod",
+            proxy_assertion_enforcement=ToolIdentityEnforcement.ENFORCE,
+            jwks_provider=lambda: jwks,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        return server, _attach_recording_nc(server)
+
+    @staticmethod
+    def _msg(*, assertion: str | None, correlation_id: str) -> IncomingMessage:
+        envelope: dict[str, Any] = {
+            "tool_name": "test.stub",
+            "tool_version": "1.0",
+            "arguments": {"key": "value"},
+            "context": {"correlation_id": correlation_id},
+        }
+        if assertion is not None:
+            envelope["proxy_assertion"] = assertion
+        return _make_nats_msg(envelope)
+
+    @staticmethod
+    def _response(rec: Any) -> dict[str, Any]:
+        return json.loads(rec.last_reply[1].model_dump_json())
+
+    @staticmethod
+    def _assertion_for(signer: Any, *, body_hash: str) -> str:
+        return signer.mint(
+            pod_id="test-pod",
+            agent_id=str(uuid4()),
+            customer_id=str(uuid4()),
+            body_hash=body_hash,
+            nonce=str(uuid4()),
+            now=int(time.time()),
+        )
+
+    @pytest.mark.asyncio
+    async def test_enforce_accepts_a_valid_assertion(self) -> None:
+        from threetears.core.security import canonical_call_hash
+
+        signer, jwks = self._signer_and_jwks()
+        server, rec = self._server(jwks)
+        corr = str(uuid4())
+        body_hash = canonical_call_hash("test.stub", {"key": "value"}, corr)
+        await server.handle_call(
+            self._msg(assertion=self._assertion_for(signer, body_hash=body_hash), correlation_id=corr)
+        )
+        assert self._response(rec)["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_missing_assertion(self) -> None:
+        _signer, jwks = self._signer_and_jwks()
+        server, rec = self._server(jwks)
+        await server.handle_call(self._msg(assertion=None, correlation_id=str(uuid4())))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "proxy assertion verification failed" in response["error"]
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_an_assertion_for_a_different_body(self) -> None:
+        signer, jwks = self._signer_and_jwks()
+        server, rec = self._server(jwks)
+        # an assertion bound to a DIFFERENT body than the actual call -> splice rejected.
+        await server.handle_call(
+            self._msg(
+                assertion=self._assertion_for(signer, body_hash="WRONG-BODY"),
+                correlation_id=str(uuid4()),
+            )
+        )
+        assert self._response(rec)["success"] is False

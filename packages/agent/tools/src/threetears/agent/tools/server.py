@@ -38,10 +38,17 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.identity_enforcement import (
     ToolIdentityEnforcement,
     get_tool_identity_enforcement,
+    get_tool_proxy_assertion_enforcement,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
-from threetears.core.security.identity_token import IdentityTokenError, verify_identity_token
+from threetears.core.security.identity_token import (
+    IdentityTokenError,
+    canonical_call_hash,
+    verify_identity_token,
+)
+from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -141,6 +148,9 @@ log = get_logger(__name__)
 # defense-in-depth pod-side verification of the inbound identity token.
 _IDENTITY_ISSUER = "hub"
 _IDENTITY_LEEWAY_SECONDS = 60
+# how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
+# sized to the assertion's short accept window (its exp + clock skew).
+_ASSERTION_NONCE_TTL_SECONDS = 60
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +490,7 @@ class ToolServer:
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
         identity_enforcement: ToolIdentityEnforcement | None = None,
+        proxy_assertion_enforcement: ToolIdentityEnforcement | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         """initialize tool server.
@@ -578,6 +589,11 @@ class ToolServer:
             if identity_enforcement is not None
             else get_tool_identity_enforcement()
         )
+        self._proxy_assertion_enforcement = (
+            proxy_assertion_enforcement
+            if proxy_assertion_enforcement is not None
+            else get_tool_proxy_assertion_enforcement()
+        )
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
@@ -585,6 +601,7 @@ class ToolServer:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
+        self._assertion_replay_guard: ReplayGuard | None = None
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -805,15 +822,26 @@ class ToolServer:
         set_default_namespace(self._namespace)
         self._running = True
 
-        # when identity enforcement is on and no provider was injected, self-provision one that
-        # fetches the Hub JWKS over this pod's connection so the pod verifies tokens itself
-        # (defense in depth behind the registry proxy); fail-closed until the first fetch.
-        if self._identity_enforcement is not ToolIdentityEnforcement.OFF and self._jwks_provider is None:
+        # when identity enforcement is on, self-provision the pod's verifier dependencies over this
+        # connection: a Hub-JWKS provider (verifies tokens + proxy assertions) and a replay guard
+        # (single-use proxy-assertion nonces). fail-closed until the first JWKS fetch.
+        identity_on = self._identity_enforcement is not ToolIdentityEnforcement.OFF
+        assertion_on = self._proxy_assertion_enforcement is not ToolIdentityEnforcement.OFF
+        if identity_on or assertion_on:
             assert self._nc is not None  # connected or injected above
-            owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
-            await owned.start()
-            self._jwks_provider = owned
-            self._owned_jwks_provider = owned
+            if self._jwks_provider is None:
+                owned = CachedHubJwksProvider(
+                    self._nc, request_timeout_seconds=get_jwks_request_timeout()
+                )
+                await owned.start()
+                self._jwks_provider = owned
+                self._owned_jwks_provider = owned
+            if assertion_on and self._assertion_replay_guard is None:
+                self._assertion_replay_guard = ReplayGuard(
+                    self._nc,
+                    bucket_name="proxy_assertion_nonces",
+                    ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+                )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
         # pod-specific (``{ns}.tools.internal.{pod_id}`` /
@@ -1318,6 +1346,62 @@ class ToolServer:
             )
             return request, None
 
+    async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
+        """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
+
+        The proxy signs an assertion binding the verified caller identity + the call body + a
+        single-use nonce + this pod; the pod verifies it against the Hub JWKS (which carries the
+        proxy's public key), so a publisher straight to the internal subject -- without a valid
+        proxy assertion for THIS body -- is rejected. Gated by ``self._identity_enforcement``: off
+        -> skip; warn -> verify, log + ALLOW on failure; enforce -> verify, REJECT on failure. The
+        ``jti`` nonce is recorded in the replay guard (when configured) for single-use enforcement.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :return: ``None`` when the call may proceed; a rejection-reason string when it MUST be
+            rejected (enforce-mode failure)
+        :rtype: str | None
+        """
+        mode = self._proxy_assertion_enforcement
+        if mode is ToolIdentityEnforcement.OFF:
+            return None
+        reason: str | None = None
+        try:
+            assertion = request.proxy_assertion
+            if assertion is None:
+                raise IdentityTokenError("inbound call carries no proxy assertion")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider for proxy assertion verification")
+            context = request.context
+            correlation_id = (
+                str(context.correlation_id)
+                if context is not None and context.correlation_id is not None
+                else None
+            )
+            body_hash = canonical_call_hash(request.tool_name, request.arguments, correlation_id)
+            claims = verify_proxy_assertion(
+                assertion,
+                jwks=self._jwks_provider(),
+                expected_pod_id=self._pod_id,
+                body_hash=body_hash,
+            )
+            if self._assertion_replay_guard is not None and not await self._assertion_replay_guard.record_unique(
+                claims.jti
+            ):
+                raise IdentityTokenError("proxy assertion nonce replay")
+        except (IdentityTokenError, ValueError) as exc:
+            kind = type(exc).__name__
+            extra = {"extra_data": {"reason": kind, "tool_name": request.tool_name}}
+            if mode is ToolIdentityEnforcement.ENFORCE:
+                log.warning("pod proxy-assertion verification failed; rejecting (enforce)", extra=extra)
+                reason = f"proxy assertion verification failed ({kind})"
+            else:
+                log.warning(
+                    "pod proxy-assertion verification failed; allowing (warn -- not yet enforced)",
+                    extra=extra,
+                )
+        return reason
+
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
@@ -1424,6 +1508,29 @@ class ToolServer:
             # identity, not the inbound envelope's claim. a no-op in off mode / the already-matching
             # legit path; corrects attribution when the pod overrode a forged or absent identity.
             bind_log_context(request.context)
+
+            assertion_rejection = await self._verify_proxy_assertion(request)
+            if assertion_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=assertion_rejection,
+                    context=request.context,
+                )
+                await self._respond(msg, error_response)
+                log.warning(
+                    "pod rejected call: proxy assertion unverified",
+                    extra={
+                        "extra_data": {
+                            "reason": assertion_rejection,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = assertion_rejection
+                return
 
             tool = self._tools.get(tool_key)
 

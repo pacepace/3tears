@@ -11,6 +11,7 @@ import pytest
 from threetears.agent.tools.identity_enforcement import (
     ToolIdentityEnforcement,
     get_tool_identity_enforcement,
+    get_tool_proxy_assertion_enforcement,
 )
 
 _ENV = "THREETEARS_TOOL_IDENTITY_ENFORCEMENT"
@@ -41,3 +42,23 @@ class TestToolIdentityEnforcement:
         monkeypatch.setenv(_ENV, "on")
         with pytest.raises(ValueError):
             get_tool_identity_enforcement()
+
+
+_PROXY_ENV = "THREETEARS_TOOL_PROXY_ASSERTION_ENFORCEMENT"
+
+
+class TestToolProxyAssertionEnforcement:
+    """the proxy-assertion flag ladders INDEPENDENTLY of the identity-token flag."""
+
+    def test_default_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(_PROXY_ENV, raising=False)
+        assert get_tool_proxy_assertion_enforcement() is ToolIdentityEnforcement.OFF
+
+    def test_enforce_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_PROXY_ENV, "enforce")
+        assert get_tool_proxy_assertion_enforcement() is ToolIdentityEnforcement.ENFORCE
+
+    def test_invalid_value_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_PROXY_ENV, "on")
+        with pytest.raises(ValueError):
+            get_tool_proxy_assertion_enforcement()

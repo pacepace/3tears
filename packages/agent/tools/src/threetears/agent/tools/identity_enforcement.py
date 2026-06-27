@@ -23,9 +23,14 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 
-__all__ = ["ToolIdentityEnforcement", "get_tool_identity_enforcement"]
+__all__ = [
+    "ToolIdentityEnforcement",
+    "get_tool_identity_enforcement",
+    "get_tool_proxy_assertion_enforcement",
+]
 
 _TOOL_IDENTITY_ENFORCEMENT_ENV = "THREETEARS_TOOL_IDENTITY_ENFORCEMENT"
+_TOOL_PROXY_ASSERTION_ENFORCEMENT_ENV = "THREETEARS_TOOL_PROXY_ASSERTION_ENFORCEMENT"
 
 
 class ToolIdentityEnforcement(StrEnum):
@@ -57,4 +62,28 @@ def get_tool_identity_enforcement() -> ToolIdentityEnforcement:
         valid = [member.value for member in ToolIdentityEnforcement]
         raise ValueError(
             f"invalid {_TOOL_IDENTITY_ENFORCEMENT_ENV}={raw!r}; expected one of {valid}"
+        ) from None
+
+
+def get_tool_proxy_assertion_enforcement() -> ToolIdentityEnforcement:
+    """read the pod-side PROXY-ASSERTION enforcement mode from the environment; default ``OFF``.
+
+    A SEPARATE control from the identity-token enforcement so the pod's two gates -- re-verifying
+    the Hub token (belt) and verifying the proxy's body-bound assertion (primary) -- ladder
+    independently. env var: ``THREETEARS_TOOL_PROXY_ASSERTION_ENFORCEMENT`` (``off`` | ``warn`` |
+    ``enforce``); unset defaults to ``OFF`` (inert). A typo'd value fails loud at startup.
+
+    :return: the configured proxy-assertion enforcement mode
+    :rtype: ToolIdentityEnforcement
+    :raises ValueError: when the env var is set to an unrecognized value
+    """
+    raw = os.environ.get(_TOOL_PROXY_ASSERTION_ENFORCEMENT_ENV)
+    if raw is None:
+        return ToolIdentityEnforcement.OFF
+    try:
+        return ToolIdentityEnforcement(raw.strip().lower())
+    except ValueError:
+        valid = [member.value for member in ToolIdentityEnforcement]
+        raise ValueError(
+            f"invalid {_TOOL_PROXY_ASSERTION_ENFORCEMENT_ENV}={raw!r}; expected one of {valid}"
         ) from None
