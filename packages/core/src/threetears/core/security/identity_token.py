@@ -37,6 +37,7 @@ __all__ = [
     "build_jwks",
     "canonical_call_hash",
     "generate_signing_keypair",
+    "jwk_thumbprint",
     "sign_identity_token",
     "verify_identity_token",
 ]
@@ -261,4 +262,27 @@ def canonical_call_hash(
     # str(bytes, "ascii"), NOT bytes.decode(): the alg-pinning enforcement matches every ``.decode(``
     # call in this module so a sneaky jwt decode can't dodge the EdDSA pin -- a bytes->str here is
     # not a jwt decode, so it must not use ``.decode``.
+    return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
+
+
+def jwk_thumbprint(public_key: Ed25519PublicKey) -> str:
+    """RFC 7638 JWK thumbprint (SHA-256, base64url, unpadded) of an Ed25519 public key.
+
+    The stable identifier for a holder/signing key: the Hub puts it in a token's ``cnf`` claim and
+    the proxy recomputes it from a proof-of-possession proof's inline key to confirm the caller
+    holds the bound key. Both sides MUST compute it through this one function so they always agree.
+
+    :param public_key: the Ed25519 public key to fingerprint
+    :ptype public_key: Ed25519PublicKey
+    :return: the base64url thumbprint
+    :rtype: str
+    """
+    jwk = OKPAlgorithm.to_jwk(public_key, as_dict=True)
+    canonical = json.dumps(
+        {"crv": jwk["crv"], "kty": jwk["kty"], "x": jwk["x"]},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).digest()
+    # str(bytes, "ascii"), not .decode() -- see canonical_call_hash (alg-pinning enforcement).
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")

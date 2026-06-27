@@ -26,10 +26,12 @@ from threetears.core.security.identity_token import (
     build_jwks,
     canonical_call_hash,
     generate_signing_keypair,
+    jwk_thumbprint,
     sign_identity_token,
     verify_identity_token,
 )
 from threetears.core.security.jwks_provider import CachedHubJwksProvider
+from threetears.core.security.pop import make_pop_proof, verify_pop_proof
 from threetears.core.security.sandbox import (
     PathSandbox,
     Sandbox,
@@ -69,6 +71,9 @@ __all__ = [
     "build_jwks",
     "canonical_call_hash",
     "generate_signing_keypair",
+    "jwk_thumbprint",
+    "make_pop_proof",
     "sign_identity_token",
     "verify_identity_token",
+    "verify_pop_proof",
 ]
