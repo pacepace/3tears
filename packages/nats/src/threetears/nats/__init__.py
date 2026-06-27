@@ -35,6 +35,13 @@ from threetears.nats.errors import (
 )
 from threetears.nats.kv import NatsKvBucket
 from threetears.nats.oplog import AppendResult, OpLog, OpRecord
+from threetears.nats.subject_permissions import (
+    CROSS_PLATFORM_CACHE_INVALIDATE,
+    Principal,
+    PrincipalPermissions,
+    build_permissions,
+    inbox_prefix_for,
+)
 from threetears.nats.subjects import (
     DEFAULT_NAMESPACE,
     Subject,
@@ -64,6 +71,12 @@ __all__ = [
     "Subjects",
     "get_default_namespace",
     "set_default_namespace",
+    # subject permissions (decentralized-auth allow-lists)
+    "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "Principal",
+    "PrincipalPermissions",
+    "build_permissions",
+    "inbox_prefix_for",
     # KV
     "NatsKvBucket",
     # op-log (durable write-path WAL)
