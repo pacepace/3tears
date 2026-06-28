@@ -41,8 +41,13 @@ class CachedHubJwksProvider:
     :param request_timeout_seconds: per-fetch request/reply timeout; sourced from the caller's
         config layer (no default here -- timeouts are configuration, not a buried magic number)
     :ptype request_timeout_seconds: float
-    :param refresh_interval_seconds: seconds between background refreshes
+    :param refresh_interval_seconds: seconds between background refreshes once the cache is warm
     :ptype refresh_interval_seconds: float
+    :param initial_retry_interval_seconds: seconds between retries BEFORE the first successful fetch.
+        Short so a verifier that started before the Hub's JWKS responder was up warms within seconds
+        rather than waiting a full ``refresh_interval`` -- under enforce an empty cache rejects every
+        call, so a slow cold-start warm is a multi-minute reject window.
+    :ptype initial_retry_interval_seconds: float
     """
 
     def __init__(
@@ -51,12 +56,16 @@ class CachedHubJwksProvider:
         *,
         request_timeout_seconds: float,
         refresh_interval_seconds: float = 300.0,
+        initial_retry_interval_seconds: float = 2.0,
     ) -> None:
         self._nc = nats_client
         self._refresh_interval = refresh_interval_seconds
+        self._initial_retry_interval = initial_retry_interval_seconds
         self._request_timeout = request_timeout_seconds
         self._jwks: dict[str, Any] = dict(_EMPTY_JWKS)
         self._task: asyncio.Task[None] | None = None
+        #: True after the first SUCCESSFUL fetch; gates the fast cold-start retry vs the steady loop
+        self._warmed = False
 
     def __call__(self) -> dict[str, Any]:
         """return the cached JWKS (sync, no IO); EMPTY until the first successful fetch.
@@ -110,6 +119,7 @@ class CachedHubJwksProvider:
             if not isinstance(jwks, dict) or "keys" not in jwks:
                 raise ValueError("hub jwks reply is not a JWKS document")
             self._jwks = jwks
+            self._warmed = True
             log.debug("hub jwks refreshed: keys=%d", len(jwks.get("keys", [])))
         except (RequestError, ValueError) as exc:
             # tolerate a transient Hub blip + overlap-window rotation: keep the last good JWKS,
@@ -117,7 +127,14 @@ class CachedHubJwksProvider:
             log.warning("hub jwks refresh failed; keeping cached keys: %s", type(exc).__name__)
 
     async def _refresh_loop(self) -> None:
-        """refresh the JWKS on the configured interval until cancelled."""
+        """refresh the JWKS until cancelled.
+
+        Until the first SUCCESSFUL fetch the loop retries on the short ``initial_retry_interval`` so
+        a verifier whose initial fetch raced the Hub's responder at boot warms within seconds (under
+        enforce an empty cache rejects every call). After the first success it settles to the steady
+        ``refresh_interval``.
+        """
         while True:
-            await asyncio.sleep(self._refresh_interval)
+            interval = self._refresh_interval if self._warmed else self._initial_retry_interval
+            await asyncio.sleep(interval)
             await self.refresh()

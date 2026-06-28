@@ -1,14 +1,16 @@
-"""v0.13.9 auth C3: the proxy verifies the Hub identity token + re-stamps verified identity.
+"""v0.13.9 auth C3 (enforce-only): the proxy verifies the Hub identity token + the per-call pop on
+EVERY dispatch and re-stamps the verified identity.
 
 The contract this pins (exercised end-to-end through the public dispatch surface):
 
-- the enforcement flag ladders off -> warn -> enforce (default off; a typo'd value fails loud);
-- ``off`` is fully inert: the token is ignored and the self-asserted envelope is used as before;
+- verification is UNCONDITIONAL and fail-closed -- there is no off/warn ladder. a call the proxy
+  cannot authenticate (absent/invalid/expired/wrong-issuer token, unverifiable pop, replayed nonce)
+  is rejected with ``TOOL_IDENTITY_UNVERIFIED`` / ``TOOL_POP_UNVERIFIED`` and never forwarded;
 - on a VALID token the verified ``agent_id``/``user_id``/``customer_id`` OVERWRITE whatever the
-  envelope claimed -- so a lying envelope cannot impersonate another agent or inject a user_id;
-  the verified identity is what reaches BOTH the authorizer and the tool pod;
-- ``warn`` fails OPEN (verify, log on failure, still forward) so an incomplete fleet isn't broken;
-- ``enforce`` fails CLOSED (reject with TOOL_IDENTITY_UNVERIFIED, never forwarding).
+  envelope claimed -- so a lying envelope cannot impersonate another agent or inject a user_id; the
+  verified identity is what reaches BOTH the authorizer and the tool pod;
+- the per-call pop proves the caller holds the token's bound key for THIS token + THIS body, once
+  (single-use via a mandatory replay guard) -- so a leaked token alone is unusable.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import asyncio
 import json
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid7
 
 import pytest
@@ -36,17 +38,17 @@ from threetears.core.security.pop import access_token_hash, make_pop_proof
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.auth import AllowAllAuthorizer
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.config import (
-    IdentityEnforcement,
-    get_identity_enforcement,
-    get_pop_enforcement,
-)
 from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
 
-_ENV = "THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT"
 _ISS = "hub"
 _KID = "kid-1"
 _TOOL = "threetears.calculator"
+
+# one ephemeral holder key whose thumbprint binds every token's ``cnf``; the per-call pop proves
+# possession of it. shared across this module so the proxy's pop gate accepts the authenticated
+# requests the identity-forwarding tests build.
+_HOLDER_KEY = Ed25519PrivateKey.generate()
+_HOLDER_CNF = jwk_thumbprint(_HOLDER_KEY.public_key())
 
 
 @pytest.fixture(autouse=True)
@@ -59,6 +61,19 @@ def hub() -> tuple[Any, dict[str, Any]]:
     """a Hub signing key + the matching JWKS the proxy verifies against."""
     priv, pub = generate_signing_keypair()
     return priv, build_jwks({_KID: pub})
+
+
+class _StubReplayGuard:
+    """returns a fixed freshness verdict so the proxy's replay wiring can be tested without a live
+    NATS-KV (the real guard's compare-and-set is covered by its own coordination tests)."""
+
+    def __init__(self, *, fresh: bool = True) -> None:
+        self._fresh = fresh
+        self.seen: list[str] = []
+
+    async def record_unique(self, nonce: str) -> bool:
+        self.seen.append(nonce)
+        return self._fresh
 
 
 def _token(
@@ -93,6 +108,8 @@ def _request(
     customer_id: UUID | None = None,
     token: str | None = None,
 ) -> ProxyCallRequest:
+    """a request carrying NO pop -- used by the identity-gate REJECTION tests, which short-circuit
+    at the identity gate (the first gate) before pop verification is reached."""
     return ProxyCallRequest(
         tool_name=_TOOL,
         tool_version="1.0.0",
@@ -105,6 +122,76 @@ def _request(
             identity_token=token,
         ),
     )
+
+
+def _authed_request(
+    priv: Any,
+    *,
+    token_sub: UUID,
+    token_customer: UUID,
+    token_user: UUID | None,
+    envelope_agent: UUID,
+    envelope_user: UUID | None = None,
+    exp_delta: int = 600,
+    arguments: dict[str, Any] | None = None,
+    user_assertion: str | None = None,
+) -> ProxyCallRequest:
+    """a FULLY-authenticated request: a cnf-bound token (sub=token_sub) + a matching per-call pop.
+
+    the ENVELOPE is free to claim a different (or null) agent/user than the token so the verified
+    re-stamp (which overwrites the envelope's claim with the token's identity) is observable through
+    the forwarded payload / the authorizer. the pop binds to THIS body so the unconditional pop gate
+    accepts it. ``user_assertion`` is the optional Hub-minted, cnf-LESS user-identity token the proxy
+    verifies, binds to the handshake token, and re-stamps ``user_id`` from.
+    """
+    args = arguments if arguments is not None else {"expression": "2+2"}
+    correlation_id = uuid7()
+    token = _token(
+        priv,
+        sub=token_sub,
+        customer_id=token_customer,
+        user_id=token_user,
+        exp_delta=exp_delta,
+        cnf=_HOLDER_CNF,
+    )
+    body_hash = canonical_call_hash(_TOOL, args, str(correlation_id))
+    pop = make_pop_proof(
+        holder_key=_HOLDER_KEY,
+        access_token_hash=access_token_hash(token),
+        body_hash=body_hash,
+        nonce=str(uuid7()),
+        iat=int(time.time()),
+    )
+    return ProxyCallRequest(
+        tool_name=_TOOL,
+        tool_version="1.0.0",
+        arguments=args,
+        context=CallContext(
+            agent_id=envelope_agent,
+            user_id=envelope_user,
+            correlation_id=correlation_id,
+            identity_token=token,
+            user_identity_token=user_assertion,
+        ),
+        pop=pop,
+    )
+
+
+def _user_assertion(
+    priv: Any,
+    *,
+    sub: UUID,
+    customer_id: UUID,
+    user_id: UUID,
+    exp_delta: int = 3600,
+) -> str:
+    """mint a Hub-style, cnf-LESS user-assertion (carries the per-turn verified user_id).
+
+    signed by the same Hub key the handshake token uses, so the proxy verifies it against the SAME
+    JWKS/issuer. carries NO ``cnf`` (the Hub cannot know the target pod's holder key at mint) -- the
+    proxy binds it to the handshake token by ``sub`` + ``customer_id`` instead of by pop.
+    """
+    return _token(priv, sub=sub, customer_id=customer_id, user_id=user_id, exp_delta=exp_delta)
 
 
 def _entry() -> CatalogEntry:
@@ -137,33 +224,14 @@ def _raising_provider() -> dict[str, Any]:
     raise ConnectionError("hub jwks endpoint unavailable")
 
 
-class TestIdentityEnforcementConfig:
-    """``get_identity_enforcement`` defaults off, parses the ladder, and fails loud on a typo."""
+class TestProxyConstruction:
+    """the enforce-only proxy structurally REQUIRES a pop replay guard."""
 
-    def test_default_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(_ENV, raising=False)
-        assert get_identity_enforcement() is IdentityEnforcement.OFF
-
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [
-            ("off", IdentityEnforcement.OFF),
-            ("warn", IdentityEnforcement.WARN),
-            ("enforce", IdentityEnforcement.ENFORCE),
-            ("ENFORCE", IdentityEnforcement.ENFORCE),
-            ("  Warn  ", IdentityEnforcement.WARN),
-        ],
-    )
-    def test_valid_values(
-        self, monkeypatch: pytest.MonkeyPatch, raw: str, expected: IdentityEnforcement
-    ) -> None:
-        monkeypatch.setenv(_ENV, raw)
-        assert get_identity_enforcement() is expected
-
-    def test_invalid_value_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(_ENV, "audit")
-        with pytest.raises(ValueError):
-            get_identity_enforcement()
+    def test_requires_a_replay_guard(self) -> None:
+        # without a replay guard a captured pop could be replayed verbatim in-window; the guard is a
+        # required constructor argument so a guardless (replay-vulnerable) proxy cannot be built.
+        with pytest.raises(TypeError):
+            CallProxy(ToolCatalog(), AllowAllAuthorizer())  # type: ignore[call-arg]
 
 
 class TestDispatchIdentityEnforcement:
@@ -171,7 +239,6 @@ class TestDispatchIdentityEnforcement:
 
     async def _drive(
         self,
-        mode: IdentityEnforcement,
         jwks_provider: Any,
         req: ProxyCallRequest,
         *,
@@ -180,8 +247,8 @@ class TestDispatchIdentityEnforcement:
         proxy = CallProxy(
             await _catalog(),
             authorizer if authorizer is not None else AllowAllAuthorizer(),
+            _StubReplayGuard(fresh=True),
             namespace="test",
-            identity_enforcement=mode,
             jwks_provider=jwks_provider,
         )
         nc = AsyncMock()
@@ -207,62 +274,57 @@ class TestDispatchIdentityEnforcement:
         message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
         return message
 
-    # -- off: fully inert --
+    # -- fail closed, verified identity flows on success --
 
     @pytest.mark.asyncio
-    async def test_off_forwards_claimed_identity_unverified(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_rejects_unverified_without_forwarding(self, hub: tuple[Any, dict[str, Any]]) -> None:
         _priv, jwks = hub
-        claimed = uuid7()
-        nc = await self._drive(IdentityEnforcement.OFF, lambda: jwks, _request(agent_id=claimed, token=None))
-        nc.request_raw.assert_called_once()
-        assert self._forwarded_context(nc)["agent_id"] == str(claimed)
-
-    # -- enforce: fail closed, verified identity flows on success --
-
-    @pytest.mark.asyncio
-    async def test_enforce_rejects_unverified_without_forwarding(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
-        _priv, jwks = hub
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, _request(agent_id=uuid7(), token=None))
+        nc = await self._drive(lambda: jwks, _request(agent_id=uuid7(), token=None))
         nc.request_raw.assert_not_called()
         reply = self._reply(nc)
         assert reply.success is False
         assert reply.error_code == "TOOL_IDENTITY_UNVERIFIED"
 
     @pytest.mark.asyncio
-    async def test_enforce_forwards_verified_identity_to_pod_over_a_lie(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_forwards_verified_identity_to_pod_over_a_lie(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         real_agent, real_cust = uuid7(), uuid7()
-        token = _token(priv, sub=real_agent, customer_id=real_cust, user_id=None)
         # the envelope claims a DIFFERENT agent than the token; the pod must get the verified one
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, _request(agent_id=uuid7(), token=token))
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=real_agent,
+                token_customer=real_cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+            ),
+        )
         nc.request_raw.assert_called_once()
         forwarded = self._forwarded_context(nc)
         assert forwarded["agent_id"] == str(real_agent)
         assert forwarded["customer_id"] == str(real_cust)
 
     @pytest.mark.asyncio
-    async def test_enforce_verified_user_id_none_overrides_claimed_user(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_verified_user_id_none_overrides_claimed_user(self, hub: tuple[Any, dict[str, Any]]) -> None:
         # privilege guard: a token with NO user_id blanks the envelope's claimed user_id.
         priv, jwks = hub
-        token = _token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None)
         nc = await self._drive(
-            IdentityEnforcement.ENFORCE, lambda: jwks, _request(agent_id=uuid7(), user_id=uuid7(), token=token)
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+                envelope_user=uuid7(),
+            ),
         )
         nc.request_raw.assert_called_once()
         assert self._forwarded_context(nc)["user_id"] is None
 
     @pytest.mark.asyncio
-    async def test_enforce_restamped_identity_reaches_authorizer(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_restamped_identity_reaches_authorizer(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         real_agent, real_user = uuid7(), uuid7()
         captured: dict[str, str | None] = {}
@@ -276,11 +338,16 @@ class TestDispatchIdentityEnforcement:
                 return True
 
         # envelope claims a different agent AND a different user than the token
-        token = _token(priv, sub=real_agent, customer_id=uuid7(), user_id=real_user)
         await self._drive(
-            IdentityEnforcement.ENFORCE,
             lambda: jwks,
-            _request(agent_id=uuid7(), user_id=uuid7(), token=token),
+            _authed_request(
+                priv,
+                token_sub=real_agent,
+                token_customer=uuid7(),
+                token_user=real_user,
+                envelope_agent=uuid7(),
+                envelope_user=uuid7(),
+            ),
             authorizer=_RecordingAuthorizer(),
         )
         assert captured["agent_id"] == str(real_agent)  # authorizer saw the VERIFIED agent
@@ -290,9 +357,7 @@ class TestDispatchIdentityEnforcement:
     @pytest.mark.parametrize(
         "flavor", ["invalid", "absent", "no_provider", "expired", "wrong_issuer", "provider_raises"]
     )
-    async def test_enforce_rejects_each_failure_mode(
-        self, hub: tuple[Any, dict[str, Any]], flavor: str
-    ) -> None:
+    async def test_rejects_each_failure_mode(self, hub: tuple[Any, dict[str, Any]], flavor: str) -> None:
         priv, jwks = hub
         provider: Any = lambda: jwks
         if flavor == "invalid":
@@ -303,80 +368,347 @@ class TestDispatchIdentityEnforcement:
             provider = None
             req = _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None))
         elif flavor == "expired":
-            req = _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, exp_delta=-120))
+            req = _request(
+                agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, exp_delta=-120)
+            )
         elif flavor == "wrong_issuer":
-            req = _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, iss="evil"))
+            req = _request(
+                agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, iss="evil")
+            )
         else:  # provider_raises -- a flaky/Hub-down JWKS fetch must reject cleanly, never hang
             provider = _raising_provider
             req = _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None))
-        nc = await self._drive(IdentityEnforcement.ENFORCE, provider, req)
+        nc = await self._drive(provider, req)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
 
     @pytest.mark.asyncio
-    async def test_enforce_forwards_within_leeway(self, hub: tuple[Any, dict[str, Any]]) -> None:
+    async def test_forwards_within_leeway(self, hub: tuple[Any, dict[str, Any]]) -> None:
         # a token expired by less than the proxy's clock-skew leeway is still accepted + forwarded.
         priv, jwks = hub
         real_agent = uuid7()
-        token = _token(priv, sub=real_agent, customer_id=uuid7(), user_id=None, exp_delta=-30)
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, _request(agent_id=uuid7(), token=token))
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=real_agent,
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+                exp_delta=-30,
+            ),
+        )
         nc.request_raw.assert_called_once()
         assert self._forwarded_context(nc)["agent_id"] == str(real_agent)
 
     @pytest.mark.asyncio
-    async def test_warn_provider_failure_fails_open_not_hang(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
-        # a throwing provider in warn mode must allow the call (fail-open), never hang it.
-        priv, _jwks = hub
-        token = _token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None)
-        nc = await self._drive(IdentityEnforcement.WARN, _raising_provider, _request(agent_id=uuid7(), token=token))
-        nc.request_raw.assert_called_once()
-
-    # -- warn: fail open --
-
-    @pytest.mark.asyncio
-    async def test_warn_forwards_verified_identity_on_valid_token(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_malformed_non_uuid_handshake_claim_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a SIGNED-but-malformed (non-UUID) handshake claim must fail closed at the identity gate, not
+        # escape as an uncaught ValueError that would hang the dispatch with no reply. locks the NIT
+        # fix that moved the handshake UUID conversions INSIDE the verify try (symmetric with the
+        # user-assertion's user_id conversion).
         priv, jwks = hub
-        real_agent = uuid7()
-        token = _token(priv, sub=real_agent, customer_id=uuid7(), user_id=None)
-        nc = await self._drive(IdentityEnforcement.WARN, lambda: jwks, _request(agent_id=uuid7(), token=token))
-        nc.request_raw.assert_called_once()
-        assert self._forwarded_context(nc)["agent_id"] == str(real_agent)
+        now = int(time.time())
+        claims = IdentityClaims(
+            sub="not-a-uuid",  # signed, but not coercible to UUID
+            customer_id=str(uuid7()),
+            user_id=None,
+            sid="sid-1",
+            pod_id="pod-1",
+            iss=_ISS,
+            iat=now,
+            exp=now + 600,
+        )
+        token = sign_identity_token(claims, signing_key=priv, kid=_KID)
+        nc = await self._drive(lambda: jwks, _request(agent_id=uuid7(), token=token))
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+
+# ---------------------------------------------------------------------------
+# v0.13.9 enforce-flip final piece: the Hub-minted, cnf-less user-assertion (two-token design).
+#
+# the handshake token is one-per-pod and carries NO user_id (the user varies per turn), so the
+# proxy re-stamp nulls user_id on a user-driven tool call -> RBAC two-sided-denies. a SECOND token
+# -- a Hub-minted, cnf-less user-assertion -- carries the per-turn verified user_id; the proxy
+# verifies it, BINDS it to the handshake token (sub + customer must match), and re-stamps user_id.
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchUserAssertion:
+    """end-to-end through ``handle_call``: the proxy binds + re-stamps the user-assertion's user_id.
+
+    these run with a valid (identity + pop passing) handshake token so the case under test is the
+    USER-ASSERTION gate specifically. the handshake token carries ``token_user=None`` (an agent
+    handshake token never carries a user) so any non-null forwarded user_id can ONLY have come from
+    the bound user-assertion.
+    """
+
+    async def _drive(
+        self,
+        jwks_provider: Any,
+        req: ProxyCallRequest,
+        *,
+        authorizer: Any = None,
+    ) -> AsyncMock:
+        proxy = CallProxy(
+            await _catalog(),
+            authorizer if authorizer is not None else AllowAllAuthorizer(),
+            _StubReplayGuard(fresh=True),
+            namespace="test",
+            jwks_provider=jwks_provider,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _forwarded_context(nc: AsyncMock) -> dict[str, Any]:
+        payload = json.loads(nc.request_raw.call_args.kwargs["payload"])
+        context: dict[str, Any] = payload["context"]
+        return context
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("token", ["bad.token", None])
-    async def test_warn_forwards_despite_verification_failure(
-        self, hub: tuple[Any, dict[str, Any]], token: str | None
+    async def test_bound_user_assertion_restamps_user_id_to_pod(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the handshake token carries NO user; a bound user-assertion supplies the verified user_id
+        # that reaches the pod.
+        priv, jwks = hub
+        agent, cust, real_user = uuid7(), uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                envelope_user=uuid7(),  # the envelope's claimed user is discarded
+                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+            ),
+        )
+        nc.request_raw.assert_called_once()
+        assert self._forwarded_context(nc)["user_id"] == str(real_user)
+
+    @pytest.mark.asyncio
+    async def test_bound_user_assertion_reaches_authorizer(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        agent, cust, real_user = uuid7(), uuid7(), uuid7()
+        captured: dict[str, str | None] = {}
+
+        class _RecordingAuthorizer:
+            async def is_authorized(
+                self, agent_id: str, user_id: str | None, tool_name: str, tool_version: str
+            ) -> bool:
+                captured["agent_id"] = agent_id
+                captured["user_id"] = user_id
+                return True
+
+        await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+            ),
+            authorizer=_RecordingAuthorizer(),
+        )
+        assert captured["agent_id"] == str(agent)
+        assert captured["user_id"] == str(real_user)  # RBAC saw the VERIFIED, bound user
+
+    @pytest.mark.asyncio
+    async def test_absent_user_assertion_leaves_user_id_none(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # back-compat: no user-assertion -> user_id stays as the handshake token's (None here).
+        priv, jwks = hub
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=None,
+            ),
+        )
+        nc.request_raw.assert_called_once()
+        assert self._forwarded_context(nc)["user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_user_assertion_treated_as_absent(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # an empty-string user-assertion (a caller that built the envelope without one) is ABSENT,
+        # not a verification failure: the call forwards with the handshake token's user_id (None).
+        priv, jwks = hub
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=uuid7(),
+                token_customer=uuid7(),
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion="",
+            ),
+        )
+        nc.request_raw.assert_called_once()
+        assert self._forwarded_context(nc)["user_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_sub_mismatch_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a user-assertion minted for a DIFFERENT agent must not be usable here (cross-agent replay).
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=_user_assertion(priv, sub=uuid7(), customer_id=cust, user_id=uuid7()),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_customer_mismatch_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a user-assertion for a DIFFERENT customer must not bind (cross-customer replay).
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=_user_assertion(priv, sub=agent, customer_id=uuid7(), user_id=uuid7()),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_expired_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=_user_assertion(
+                    priv, sub=agent, customer_id=cust, user_id=uuid7(), exp_delta=-120
+                ),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_invalid_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a non-JWS / unverifiable user-assertion is rejected fail-closed, never forwarded.
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion="not.a.valid.jws",
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_null_user_id_user_assertion_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a present, signed, BOUND user-assertion whose user_id claim is NULL is not a valid per-turn
+        # user -> deny fail-closed. locks proxy.py's "user-assertion carries no user_id" contract so a
+        # user-less assertion can never re-stamp a None user_id past the gate as if it were verified.
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        null_user_assertion = _token(priv, sub=agent, customer_id=cust, user_id=None)
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                user_assertion=null_user_assertion,
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_pop_still_verifies_against_handshake_token_with_user_assertion(
+        self, hub: tuple[Any, dict[str, Any]]
     ) -> None:
-        _priv, jwks = hub
-        claimed = uuid7()
-        nc = await self._drive(IdentityEnforcement.WARN, lambda: jwks, _request(agent_id=claimed, token=token))
-        nc.request_raw.assert_called_once()  # fail-open: still forwarded
-        # claimed identity is kept (unverified) since verification failed
-        assert self._forwarded_context(nc)["agent_id"] == str(claimed)
+        # the pop path is UNCHANGED: it binds the HANDSHAKE token's cnf. adding a (cnf-less)
+        # user-assertion must not disturb it -- a fully-authed request with a bound assertion still
+        # passes the pop gate and forwards.
+        priv, jwks = hub
+        agent, cust, real_user = uuid7(), uuid7(), uuid7()
+        guard = _StubReplayGuard(fresh=True)
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            guard,
+            namespace="test",
+            jwks_provider=lambda: jwks,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        req = _authed_request(
+            priv,
+            token_sub=agent,
+            token_customer=cust,
+            token_user=None,
+            envelope_agent=uuid7(),
+            user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+        )
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        nc.request_raw.assert_called_once()
+        assert len(guard.seen) == 1  # the pop gate DID run (consulted the replay guard) and passed
 
 
 # ---------------------------------------------------------------------------
 # v0.13.9 auth W4c: per-call proof-of-possession (the agent->proxy holder binding)
 # ---------------------------------------------------------------------------
-
-_POP_ENV = "THREETEARS_REGISTRY_POP_ENFORCEMENT"
-
-
-class _StubReplayGuard:
-    """returns a fixed freshness verdict so the proxy's replay wiring can be tested without a live
-    NATS-KV (the real guard's compare-and-set is covered by its own coordination tests)."""
-
-    def __init__(self, *, fresh: bool) -> None:
-        self._fresh = fresh
-        self.seen: list[str] = []
-
-    async def record_unique(self, nonce: str) -> bool:
-        self.seen.append(nonce)
-        return self._fresh
 
 
 def _pop_request(
@@ -420,39 +752,15 @@ def _pop_request(
     )
 
 
-class TestPopEnforcementConfig:
-    """``get_pop_enforcement`` defaults off, parses the ladder, and fails loud on a typo."""
-
-    def test_default_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv(_POP_ENV, raising=False)
-        assert get_pop_enforcement() is IdentityEnforcement.OFF
-
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [("warn", IdentityEnforcement.WARN), ("enforce", IdentityEnforcement.ENFORCE)],
-    )
-    def test_valid_values(
-        self, monkeypatch: pytest.MonkeyPatch, raw: str, expected: IdentityEnforcement
-    ) -> None:
-        monkeypatch.setenv(_POP_ENV, raw)
-        assert get_pop_enforcement() is expected
-
-    def test_invalid_value_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv(_POP_ENV, "audit")
-        with pytest.raises(ValueError):
-            get_pop_enforcement()
-
-
 class TestDispatchPopEnforcement:
-    """end-to-end through ``handle_call``: under enforce the proxy requires a valid per-call pop.
+    """end-to-end through ``handle_call``: the proxy requires a valid per-call pop on every dispatch.
 
-    pop verification is self-contained (it re-verifies the token for a trusted cnf), so these run
-    with identity enforcement at its default OFF -- proving the two gates ladder independently.
+    pop verification is self-contained (it re-verifies the token for a trusted cnf); these run with
+    a valid (identity-passing) token so the case under test is the POP gate specifically.
     """
 
     async def _drive(
         self,
-        mode: IdentityEnforcement,
         jwks_provider: Any,
         req: ProxyCallRequest,
         *,
@@ -461,10 +769,9 @@ class TestDispatchPopEnforcement:
         proxy = CallProxy(
             await _catalog(),
             AllowAllAuthorizer(),
+            pop_replay_guard if pop_replay_guard is not None else _StubReplayGuard(fresh=True),
             namespace="test",
             jwks_provider=jwks_provider,
-            pop_enforcement=mode,
-            pop_replay_guard=pop_replay_guard,
         )
         nc = AsyncMock()
         nc.request_raw = AsyncMock(return_value=_tool_reply())
@@ -484,94 +791,55 @@ class TestDispatchPopEnforcement:
         return message
 
     @pytest.mark.asyncio
-    async def test_enforce_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
+    async def test_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        nc = await self._drive(
-            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=_StubReplayGuard(fresh=True)
-        )
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=_StubReplayGuard(fresh=True))
         nc.request_raw.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_enforce_without_a_replay_guard_denies(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
-        # fail closed: ENFORCE without a replay guard would allow verbatim pop replay in-window.
-        priv, jwks = hub
-        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)  # no guard
-        nc.request_raw.assert_not_called()
-        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
-
-    @pytest.mark.asyncio
-    async def test_enforce_rejects_a_missing_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
+    async def test_rejects_a_missing_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), include_pop=False)
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc = await self._drive(lambda: jwks, req)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
 
     @pytest.mark.asyncio
-    async def test_enforce_rejects_a_pop_for_a_different_body(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_rejects_a_pop_for_a_different_body(self, hub: tuple[Any, dict[str, Any]]) -> None:
         # a proof minted for different arguments cannot be spliced onto this call.
         priv, jwks = hub
         req = _pop_request(
             priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), pop_body_args={"expression": "9+9"}
         )
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc = await self._drive(lambda: jwks, req)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
 
     @pytest.mark.asyncio
-    async def test_enforce_rejects_a_token_without_cnf(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_rejects_a_token_without_cnf(self, hub: tuple[Any, dict[str, Any]]) -> None:
         # a pop-enforced fleet requires holder-bound tokens; an unbound token cannot satisfy pop.
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), bind_cnf=False)
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc = await self._drive(lambda: jwks, req)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
 
     @pytest.mark.asyncio
-    async def test_enforce_rejects_a_replayed_nonce(self, hub: tuple[Any, dict[str, Any]]) -> None:
+    async def test_rejects_a_replayed_nonce(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
         guard = _StubReplayGuard(fresh=False)  # the nonce was already consumed
-        nc = await self._drive(
-            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=guard
-        )
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_not_called()
         assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
         assert len(guard.seen) == 1  # the proxy DID consult the guard before rejecting
 
     @pytest.mark.asyncio
-    async def test_enforce_forwards_when_the_nonce_is_fresh(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
+    async def test_forwards_when_the_nonce_is_fresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
         guard = _StubReplayGuard(fresh=True)
-        nc = await self._drive(
-            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=guard
-        )
+        nc = await self._drive(lambda: jwks, req, pop_replay_guard=guard)
         nc.request_raw.assert_called_once()
         assert len(guard.seen) == 1
-
-    @pytest.mark.asyncio
-    async def test_off_forwards_without_a_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
-        # pop OFF: a request with no pop is forwarded unchanged (the gate is inert).
-        _priv, jwks = hub
-        nc = await self._drive(IdentityEnforcement.OFF, lambda: jwks, _request(agent_id=uuid7(), token=None))
-        nc.request_raw.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_warn_fails_open_on_a_missing_pop(
-        self, hub: tuple[Any, dict[str, Any]]
-    ) -> None:
-        priv, jwks = hub
-        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7(), include_pop=False)
-        nc = await self._drive(IdentityEnforcement.WARN, lambda: jwks, req)
-        nc.request_raw.assert_called_once()  # fail-open: still forwarded

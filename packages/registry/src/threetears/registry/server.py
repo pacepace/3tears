@@ -20,9 +20,7 @@ from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.security import (
     CachedHubJwksProvider,
-    IdentityTokenError,
     ProxyAssertionSigner,
-    SecretResolutionError,
     resolve_secret,
 )
 from threetears.nats import NatsClient
@@ -36,9 +34,7 @@ from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.config import (
-    IdentityEnforcement,
     get_jwks_request_timeout,
-    get_pop_enforcement,
     get_proxy_assertion_signing_key_ref,
 )
 from threetears.registry.registration import RegistrationHandler
@@ -371,26 +367,16 @@ class RegistryServer:
         self._jwks_provider = jwks_provider
 
         # the proxy's assertion-signing key (shared secret_ref with the Hub, which publishes its
-        # PUBLIC key in the JWKS). when the key is not provisioned the binding is inert: the proxy
-        # forwards calls unsigned and the pod requires no assertion.
-        proxy_signer: ProxyAssertionSigner | None = None
-        try:
-            proxy_signer = ProxyAssertionSigner.from_secret(
-                resolve_secret(get_proxy_assertion_signing_key_ref())
-            )
-        except (SecretResolutionError, IdentityTokenError) as exc:
-            _logger.info(
-                "proxy assertion signing key unavailable (%s); proxy->pod assertions inert",
-                type(exc).__name__,
-            )
+        # PUBLIC key in the JWKS) is REQUIRED under enforce-only: a registry that cannot sign a
+        # proxy->pod assertion would forward unsigned calls every pod is bound to reject. an absent
+        # or malformed key must fail startup loudly (the exception propagates out of serve) rather
+        # than boot the registry into a silently-broken state.
+        proxy_signer = ProxyAssertionSigner.from_secret(resolve_secret(get_proxy_assertion_signing_key_ref()))
 
-        # the pop replay guard records each per-call proof nonce for single-use enforcement; only
-        # provisioned when pop enforcement is enabled, so an inert deployment opens no KV bucket.
-        pop_replay_guard: ReplayGuard | None = None
-        if get_pop_enforcement() is not IdentityEnforcement.OFF:
-            pop_replay_guard = ReplayGuard(
-                nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS
-            )
+        # the pop replay guard records each per-call proof nonce for single-use enforcement;
+        # always provisioned under enforce-only so a captured pop can never be replayed verbatim
+        # for the same call body within the iat freshness window.
+        pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
 
         call_proxy = CallProxy(
             self._catalog,

@@ -35,11 +35,6 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
-from threetears.agent.tools.identity_enforcement import (
-    ToolIdentityEnforcement,
-    get_tool_identity_enforcement,
-    get_tool_proxy_assertion_enforcement,
-)
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
@@ -292,9 +287,8 @@ class CallRequest(BaseModel):
     :param proxy_assertion: the registry proxy's body-bound, signed
         assertion for THIS request on the proxy→pod hop (binds the tool +
         arguments + a nonce so the discoverable internal subject can't be
-        spliced/replayed). ``None`` until the platform-auth rollout
-        reaches enforce; the pod accepts it now (receiver-first — this
-        model is ``extra='forbid'``) but does not yet verify it
+        spliced/replayed). the pod verifies it on every call (enforce-only);
+        a request without a valid assertion for this body is rejected
     :ptype proxy_assertion: str | None
     """
 
@@ -489,9 +483,8 @@ class ToolServer:
         nats_client: "NatsClient | None" = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
-        identity_enforcement: ToolIdentityEnforcement | None = None,
-        proxy_assertion_enforcement: ToolIdentityEnforcement | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
+        assertion_replay_guard: "ReplayGuard | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -580,20 +573,10 @@ class ToolServer:
         self._context_factory = context_factory
         self._agent_id = agent_id
         self._customer_id = customer_id
-        # defense-in-depth: re-verify the Hub identity token at the pod (closes the
-        # direct-internal-subject bypass). Read once at construction; ``None`` -> from
-        # THREETEARS_TOOL_IDENTITY_ENFORCEMENT (default off = inert, the historical behaviour).
+        # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
+        # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
+        # -- there is no off/warn ladder; a call the pod cannot verify is always rejected.
         self._jwks_provider = jwks_provider
-        self._identity_enforcement = (
-            identity_enforcement
-            if identity_enforcement is not None
-            else get_tool_identity_enforcement()
-        )
-        self._proxy_assertion_enforcement = (
-            proxy_assertion_enforcement
-            if proxy_assertion_enforcement is not None
-            else get_tool_proxy_assertion_enforcement()
-        )
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
@@ -601,7 +584,10 @@ class ToolServer:
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
         self._owned_jwks_provider: CachedHubJwksProvider | None = None
-        self._assertion_replay_guard: ReplayGuard | None = None
+        # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
+        # silently skip single-use enforcement). serve() always provisions it over the pod's
+        # connection; callers driving handle_call without serve() (tests) inject one here.
+        self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -822,26 +808,22 @@ class ToolServer:
         set_default_namespace(self._namespace)
         self._running = True
 
-        # when identity enforcement is on, self-provision the pod's verifier dependencies over this
-        # connection: a Hub-JWKS provider (verifies tokens + proxy assertions) and a replay guard
-        # (single-use proxy-assertion nonces). fail-closed until the first JWKS fetch.
-        identity_on = self._identity_enforcement is not ToolIdentityEnforcement.OFF
-        assertion_on = self._proxy_assertion_enforcement is not ToolIdentityEnforcement.OFF
-        if identity_on or assertion_on:
-            assert self._nc is not None  # connected or injected above
-            if self._jwks_provider is None:
-                owned = CachedHubJwksProvider(
-                    self._nc, request_timeout_seconds=get_jwks_request_timeout()
-                )
-                await owned.start()
-                self._jwks_provider = owned
-                self._owned_jwks_provider = owned
-            if assertion_on and self._assertion_replay_guard is None:
-                self._assertion_replay_guard = ReplayGuard(
-                    self._nc,
-                    bucket_name="proxy_assertion_nonces",
-                    ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
-                )
+        # self-provision the pod's verifier dependencies over this connection: a Hub-JWKS provider
+        # (verifies the identity token + the proxy's body-bound assertion) and a replay guard
+        # (single-use proxy-assertion nonces). always provisioned under enforce-only; fail-closed
+        # until the first JWKS fetch.
+        assert self._nc is not None  # connected or injected above
+        if self._jwks_provider is None:
+            owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
+            await owned.start()
+            self._jwks_provider = owned
+            self._owned_jwks_provider = owned
+        if self._assertion_replay_guard is None:
+            self._assertion_replay_guard = ReplayGuard(
+                self._nc,
+                bucket_name="proxy_assertion_nonces",
+                ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+            )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
         # pod-specific (``{ns}.tools.internal.{pod_id}`` /
@@ -1282,21 +1264,24 @@ class ToolServer:
         mirrors the proxy's re-stamp so a direct publisher cannot run a tool under an identity the
         Hub never signed.
 
-        Gated by ``self._identity_enforcement``: off -> passthrough unchanged; warn -> verify, on
-        success re-stamp, on FAILURE log + ALLOW on the unverified envelope (observability while
-        the fleet completes rollout); enforce -> verify, on success re-stamp, on FAILURE REJECT.
+        The handshake identity token is one-per-pod and user-LESS, so a user-driven turn carries the
+        per-turn VERIFIED user_id as a SECOND, cnf-LESS user-assertion (``context.user_identity_token``).
+        This method MIRRORS the registry proxy's user-assertion gate: when present it is verified
+        against the SAME issuer/JWKS and BOUND to the handshake token (``sub`` + ``customer_id`` must
+        match), then re-stamps ``user_id``; without it the defense-in-depth re-stamp would null the
+        proxy-verified user_id (losing audit actor attribution + the per-user context manager).
+
+        Verification is UNCONDITIONAL and fail-closed: verify, on success re-stamp the verified
+        identity, on ANY failure REJECT the call (return a rejection reason). there is no off/warn
+        passthrough -- a call the pod cannot authenticate never runs on the unverified envelope.
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
         :return: ``(request, reason)`` where ``request`` is the re-stamped request on verify
             success (else the original) and ``reason`` is ``None`` when the call may proceed or a
             rejection-reason string when the call MUST be rejected without dispatching
-            (enforce-mode failure)
         :rtype: tuple[CallRequest, str | None]
         """
-        mode = self._identity_enforcement
-        if mode is ToolIdentityEnforcement.OFF:
-            return request, None
         context = request.context
         try:
             if context is None:
@@ -1326,25 +1311,65 @@ class ToolServer:
             # OVERWRITE the envelope's claimed identity with the verified token. a captured token
             # re-pointed at a forged agent / customer, or stripped of its identity to skip a
             # comparison, runs under the token's TRUE identity -- never the self-asserted one.
-            verified_context = context.model_copy(
-                update={
-                    "agent_id": UUID(claims.sub),
-                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
-                    "customer_id": UUID(claims.customer_id),
-                }
-            )
-            return request.model_copy(update={"context": verified_context}), None
+            # these UUID conversions live INSIDE the try so a malformed-but-signed non-UUID claim
+            # fails closed (rejects) rather than escaping as an uncaught ValueError. user_id DEFAULTS
+            # to the handshake token's: ``None`` for a per-pod agent handshake token (it CANNOT carry
+            # the per-turn user); the bound user-assertion below may override it.
+            agent_id_value = UUID(claims.sub)
+            customer_id_value = UUID(claims.customer_id)
+            user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
             extra = {"extra_data": {"reason": reason, "tool_name": request.tool_name}}
-            if mode is ToolIdentityEnforcement.ENFORCE:
-                log.warning("pod identity verification failed; rejecting call (enforce)", extra=extra)
-                return request, f"identity verification failed ({reason})"
-            log.warning(
-                "pod identity verification failed; allowing call (warn -- not yet enforced)",
-                extra=extra,
-            )
-            return request, None
+            log.warning("pod identity verification failed; rejecting call", extra=extra)
+            return request, f"identity verification failed ({reason})"
+
+        # the handshake token verified above, so ``context`` is non-None (the try raised + returned
+        # otherwise). re-narrow for the type checker.
+        assert context is not None
+
+        # MIRROR THE PROXY's user-assertion gate (registry/proxy.py ``_verify_identity``): a
+        # user-driven turn's tool call ALSO carries a Hub-minted, cnf-LESS user-assertion
+        # (``context.user_identity_token``) holding the per-turn VERIFIED user_id. the handshake
+        # token is one-per-pod and user-LESS, so without this the pod's defense-in-depth re-stamp
+        # would clobber the proxy-verified user_id back to ``None`` -- losing audit actor
+        # attribution and breaking the per-user ToolContextManager. verify it against the SAME
+        # issuer/JWKS and BIND it to the handshake token (``sub`` + ``customer_id`` MUST match) so a
+        # user-assertion minted for agent A (customer X) cannot be replayed under agent B (or
+        # customer Y). on ANY failure the call is rejected fail-closed (mirroring the proxy's
+        # TOOL_USER_IDENTITY_UNVERIFIED). an empty string is treated as ABSENT (the user_id stays
+        # the handshake token's) -- a caller that builds the envelope without a user-assertion must
+        # never trip a fail-closed deny on the empty value.
+        user_assertion = context.user_identity_token
+        if user_assertion:
+            try:
+                user_claims = verify_identity_token(
+                    user_assertion,
+                    jwks=jwks,
+                    issuer=_IDENTITY_ISSUER,
+                    leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+                )
+                if user_claims.sub != claims.sub or user_claims.customer_id != claims.customer_id:
+                    raise IdentityTokenError(
+                        "user-assertion not bound to the handshake identity (sub/customer mismatch)"
+                    )
+                if user_claims.user_id is None:
+                    raise IdentityTokenError("user-assertion carries no user_id")
+                user_id_value = UUID(user_claims.user_id)
+            except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+                reason = type(exc).__name__
+                extra = {"extra_data": {"reason": reason, "tool_name": request.tool_name}}
+                log.warning("pod user-assertion verification failed; rejecting call", extra=extra)
+                return request, f"user-assertion verification failed ({reason})"
+
+        verified_context = context.model_copy(
+            update={
+                "agent_id": agent_id_value,
+                "user_id": user_id_value,
+                "customer_id": customer_id_value,
+            }
+        )
+        return request.model_copy(update={"context": verified_context}), None
 
     async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
         """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
@@ -1352,19 +1377,17 @@ class ToolServer:
         The proxy signs an assertion binding the verified caller identity + the call body + a
         single-use nonce + this pod; the pod verifies it against the Hub JWKS (which carries the
         proxy's public key), so a publisher straight to the internal subject -- without a valid
-        proxy assertion for THIS body -- is rejected. Gated by ``self._identity_enforcement``: off
-        -> skip; warn -> verify, log + ALLOW on failure; enforce -> verify, REJECT on failure. The
-        ``jti`` nonce is recorded in the replay guard (when configured) for single-use enforcement.
+        proxy assertion for THIS body -- is rejected. Verification is UNCONDITIONAL and fail-closed:
+        verify, on ANY failure REJECT the call. The replay guard is MANDATORY here (it must be
+        provisioned by serve() or injected) -- a guardless pod fails closed rather than silently
+        skipping single-use enforcement, mirroring the registry proxy's required pop replay guard.
 
         :param request: the parsed inbound call request
         :ptype request: CallRequest
         :return: ``None`` when the call may proceed; a rejection-reason string when it MUST be
-            rejected (enforce-mode failure)
+            rejected
         :rtype: str | None
         """
-        mode = self._proxy_assertion_enforcement
-        if mode is ToolIdentityEnforcement.OFF:
-            return None
         reason: str | None = None
         try:
             assertion = request.proxy_assertion
@@ -1372,11 +1395,14 @@ class ToolServer:
                 raise IdentityTokenError("inbound call carries no proxy assertion")
             if self._jwks_provider is None:
                 raise IdentityTokenError("no JWKS provider for proxy assertion verification")
+            if self._assertion_replay_guard is None:
+                # fail closed: without a replay guard a captured assertion could be replayed verbatim
+                # within its accept window. serve() always provisions one; a guardless pod must not
+                # silently drop single-use enforcement.
+                raise IdentityTokenError("proxy assertion verification requires a replay guard")
             context = request.context
             correlation_id = (
-                str(context.correlation_id)
-                if context is not None and context.correlation_id is not None
-                else None
+                str(context.correlation_id) if context is not None and context.correlation_id is not None else None
             )
             body_hash = canonical_call_hash(request.tool_name, request.arguments, correlation_id)
             claims = verify_proxy_assertion(
@@ -1385,21 +1411,13 @@ class ToolServer:
                 expected_pod_id=self._pod_id,
                 body_hash=body_hash,
             )
-            if self._assertion_replay_guard is not None and not await self._assertion_replay_guard.record_unique(
-                claims.jti
-            ):
+            if not await self._assertion_replay_guard.record_unique(claims.jti):
                 raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
             extra = {"extra_data": {"reason": kind, "tool_name": request.tool_name}}
-            if mode is ToolIdentityEnforcement.ENFORCE:
-                log.warning("pod proxy-assertion verification failed; rejecting (enforce)", extra=extra)
-                reason = f"proxy assertion verification failed ({kind})"
-            else:
-                log.warning(
-                    "pod proxy-assertion verification failed; allowing (warn -- not yet enforced)",
-                    extra=extra,
-                )
+            log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
+            reason = f"proxy assertion verification failed ({kind})"
         return reason
 
     async def handle_call(self, msg: IncomingMessage) -> None:
@@ -1503,10 +1521,10 @@ class ToolServer:
                 outcome = "failure"
                 failure_reason = identity_rejection
                 return
-            # the verified identity now rides the (possibly re-stamped) request; re-bind the log
-            # tags so this dispatch's log lines + the baseline audit attribute to the authenticated
-            # identity, not the inbound envelope's claim. a no-op in off mode / the already-matching
-            # legit path; corrects attribution when the pod overrode a forged or absent identity.
+            # the verified identity now rides the re-stamped request; re-bind the log tags so this
+            # dispatch's log lines + the baseline audit attribute to the authenticated identity, not
+            # the inbound envelope's claim. a no-op on the already-matching legit path; corrects
+            # attribution when the pod overrode a forged or absent identity.
             bind_log_context(request.context)
 
             assertion_rejection = await self._verify_proxy_assertion(request)

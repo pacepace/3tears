@@ -72,6 +72,22 @@ class CallContext(BaseModel):
         until the platform-auth rollout reaches the enforce stage; nothing
         reads it yet
     :ptype identity_token: str | None
+    :param user_identity_token: Hub-minted, EdDSA-signed, cnf-LESS user
+        assertion carrying the VERIFIED ``user_id`` for the turn this tool
+        call belongs to. the handshake :attr:`identity_token` is one per pod
+        and cannot carry the per-turn user (the user varies each inbound
+        message), and a single per-turn token cannot be pop-bound (the Hub
+        cannot know the target pod's holder key at mint), so the verified
+        user rides as a SECOND token here. the registry proxy verifies it
+        against the same Hub JWKS/issuer, BINDS it to the handshake token
+        (``sub`` + ``customer_id`` must match), and re-stamps ``user_id`` from
+        it before RBAC; a user-driven turn's tool call would otherwise lose
+        the user identity at the proxy re-stamp (the handshake token's
+        ``user_id`` is ``None``) and two-sided-deny. ``None`` for
+        agent-initiated calls with no human in the loop; rides whole through
+        :class:`~threetears.registry.proxy.ProxyCallRequest` and
+        :class:`~threetears.agent.tools.server.CallRequest`
+    :ptype user_identity_token: str | None
     :param engagement_id: the authorized engagement this call belongs to,
         when it originates inside one. promoted from the ``trace`` escape
         hatch to a first-class field (v0.13.9): a tool pod reads it (NEVER
@@ -110,6 +126,7 @@ class CallContext(BaseModel):
     correlation_id: UUID | None = None
     agent_id: UUID | None = None
     identity_token: str | None = None
+    user_identity_token: str | None = None
     engagement_id: UUID | None = None
     trace: dict[str, str] = Field(default_factory=dict)
     user_timezone: str | None = None

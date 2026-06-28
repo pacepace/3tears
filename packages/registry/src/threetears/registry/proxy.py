@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid7
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -27,11 +27,6 @@ from threetears.nats import IncomingMessage, RequestError, Subject, Subjects
 from threetears.observe import clear_context, get_logger
 from threetears.registry.auth import AgentToolAuthorizer
 from threetears.registry.catalog import ToolCatalog
-from threetears.registry.config import (
-    IdentityEnforcement,
-    get_identity_enforcement,
-    get_pop_enforcement,
-)
 from threetears.registry.routing import LeastConnectionsStrategy, RoutingStrategy
 
 # the issuer the Hub stamps on identity tokens, and the clock-skew tolerance the proxy allows
@@ -92,9 +87,8 @@ class ProxyCallRequest(BaseModel):
     :ptype context: CallContext | None
     :param pop: proof-of-possession for THIS request on the agent→proxy
         hop (the caller signs over the request so a leaked identity
-        token alone is unusable). ``None`` until the platform-auth
-        rollout reaches enforce; the proxy accepts it now (receiver-first
-        — this model is ``extra='forbid'``) but does not yet verify it
+        token alone is unusable). the proxy verifies it on every call
+        (enforce-only); a request without a valid pop is rejected
     :ptype pop: str | None
     """
 
@@ -192,16 +186,19 @@ class CallProxy:
         self,
         catalog: ToolCatalog,
         authorizer: AgentToolAuthorizer,
+        pop_replay_guard: "ReplayGuard",
         namespace: str = "aibots",
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
-        identity_enforcement: IdentityEnforcement | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         proxy_signer: "ProxyAssertionSigner | None" = None,
-        pop_enforcement: IdentityEnforcement | None = None,
-        pop_replay_guard: "ReplayGuard | None" = None,
     ) -> None:
         """initialize call proxy.
+
+        platform-auth is now ENFORCE-ONLY: every dispatch verifies the Hub-issued identity
+        token and the per-call proof-of-possession unconditionally and re-stamps the verified
+        identity onto the request; a call that fails either gate is rejected (fail-closed). There
+        is no off/warn ladder and no inert path.
 
         :param catalog: tool catalog for tool lookup
         :ptype catalog: ToolCatalog
@@ -212,6 +209,10 @@ class CallProxy:
             :class:`DenyAllAuthorizer`; production wires
             :class:`RbacEvaluatorAuthorizer`
         :ptype authorizer: AgentToolAuthorizer
+        :param pop_replay_guard: records each pop nonce for single-use enforcement; REQUIRED.
+            without it a captured pop could be replayed verbatim for the same call body within the
+            iat freshness window, so the enforce-only proxy must always carry one
+        :ptype pop_replay_guard: ReplayGuard
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
         :param timeout: default timeout in seconds for forwarded NATS requests.
@@ -219,27 +220,15 @@ class CallProxy:
         :ptype timeout: float | None
         :param routing_strategy: endpoint selection strategy (defaults to least-connections)
         :ptype routing_strategy: RoutingStrategy | None
-        :param identity_enforcement: how to treat the Hub-issued identity
-            token on each call (off/warn/enforce); sourced from
-            ``THREETEARS_REGISTRY_IDENTITY_ENFORCEMENT`` when not provided
-        :ptype identity_enforcement: IdentityEnforcement | None
         :param jwks_provider: zero-arg callable returning the current Hub
             JWKS (the public keys the identity token is verified against).
-            ``None`` until the Hub distribution is wired; with no provider,
-            verification fails (allowed in warn, rejected in enforce). The
+            ``None`` makes every verification fail-closed (the call is rejected). The
             provider's contract is to return a JWKS dict
         :ptype jwks_provider: Callable[[], dict[str, Any]] | None
         :param proxy_signer: signs a proxy->pod assertion onto each forwarded call so the pod can
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
         :ptype proxy_signer: ProxyAssertionSigner | None
-        :param pop_enforcement: how to treat the per-call proof-of-possession (off/warn/enforce);
-            sourced from ``THREETEARS_REGISTRY_POP_ENFORCEMENT`` when not provided
-        :ptype pop_enforcement: IdentityEnforcement | None
-        :param pop_replay_guard: records each pop nonce for single-use enforcement; ``None`` skips
-            the replay check (the crypto binding still holds, but a proof could be replayed
-            verbatim for the same call body)
-        :ptype pop_replay_guard: ReplayGuard | None
         """
         from threetears.registry.config import get_call_timeout
 
@@ -248,14 +237,8 @@ class CallProxy:
         self.timeout = timeout if timeout is not None else get_call_timeout()
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
-        self._identity_enforcement = (
-            identity_enforcement if identity_enforcement is not None else get_identity_enforcement()
-        )
         self._jwks_provider = jwks_provider
         self._proxy_signer = proxy_signer
-        self._pop_enforcement = (
-            pop_enforcement if pop_enforcement is not None else get_pop_enforcement()
-        )
         self._pop_replay_guard = pop_replay_guard
         self._nc: "NatsClient | None" = None
         self._sub: "Subscription | None" = None
@@ -370,8 +353,8 @@ class CallProxy:
         failure into an :class:`IdentityTokenError`. Once the provider is Hub-backed it may be a
         network fetch and can raise far beyond the verification exceptions (ConnectionError,
         TimeoutError, ...). Converting here keeps a flaky provider from ESCAPING verification
-        and hanging the call: it becomes a well-typed verification failure that warn allows and
-        enforce rejects -- always a response, never a silent hang. The failure is logged (not
+        and hanging the call: it becomes a well-typed verification failure that fails the call
+        closed -- always a response, never a silent hang. The failure is logged (not
         swallowed) before being re-raised.
         """
         assert self._jwks_provider is not None  # guarded by the caller
@@ -386,9 +369,7 @@ class CallProxy:
             )
             raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
 
-    def _verify_identity(
-        self, request: "ProxyCallRequest"
-    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+    def _verify_identity(self, request: "ProxyCallRequest") -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
         """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
 
         the heart of the platform-auth fix: authorization + forwarding must act on an
@@ -396,15 +377,11 @@ class CallProxy:
         ``agent_id`` (``= token.sub``), ``user_id``, and ``customer_id`` overwrite whatever the
         envelope claimed; the envelope's claimed identity is discarded.
 
-        mode behaviour (caller guarantees ``request.context`` and ``context.agent_id`` present):
-
-        - ``OFF``: no-op passthrough -- returns ``(request, None)`` unchanged.
-        - ``WARN``: verify; on success return the re-stamped request; on FAILURE log and return
-          ``(request, None)`` -- the call proceeds on the unverified envelope identity
-          (fail-open, observability only, for an incomplete fleet mid-migration).
-        - ``ENFORCE``: verify; on success return the re-stamped request; on FAILURE return
-          ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects the call
-          (fail-closed).
+        verification is UNCONDITIONAL and fail-closed (caller guarantees ``request.context`` and
+        ``context.agent_id`` present): verify; on success return the re-stamped request; on ANY
+        failure return ``(request, <TOOL_IDENTITY_UNVERIFIED response>)`` so the dispatcher rejects
+        the call without forwarding. there is no off/warn passthrough -- a call the proxy cannot
+        authenticate never reaches the tool pod on the self-asserted envelope.
 
         :param request: the parsed call request (its context carries the identity token)
         :ptype request: ProxyCallRequest
@@ -412,9 +389,6 @@ class CallProxy:
             means the caller must reject the call without dispatching
         :rtype: tuple[ProxyCallRequest, ProxyCallResponse | None]
         """
-        mode = self._identity_enforcement
-        if mode is IdentityEnforcement.OFF:
-            return request, None
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
         try:
@@ -429,14 +403,15 @@ class CallProxy:
                 issuer=_IDENTITY_ISSUER,
                 leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
             )
-            verified_context = context.model_copy(
-                update={
-                    "agent_id": UUID(claims.sub),
-                    "user_id": UUID(claims.user_id) if claims.user_id is not None else None,
-                    "customer_id": UUID(claims.customer_id),
-                }
-            )
-            return request.model_copy(update={"context": verified_context}), None
+            # the VERIFIED handshake identity. these UUID conversions live INSIDE the try so a
+            # malformed-but-signed non-UUID claim fails closed (TOOL_IDENTITY_UNVERIFIED) rather
+            # than escaping as an uncaught ValueError. user_id DEFAULTS to the handshake token's:
+            # ``None`` for an agent handshake token (one per pod; it CANNOT carry the per-turn
+            # user), the system principal for a hub-originated call. the bound user-assertion below
+            # may override it with the per-turn verified user.
+            agent_id_value = UUID(claims.sub)
+            customer_id_value = UUID(claims.customer_id)
+            user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
             extra = {
@@ -446,21 +421,85 @@ class CallProxy:
                     "correlation_id": _correlation_id_str(request),
                 }
             }
-            if mode is IdentityEnforcement.ENFORCE:
-                log.warning("identity verification failed; rejecting call (enforce mode)", extra=extra)
+            log.warning("identity verification failed; rejecting call", extra=extra)
+            response = ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"identity verification failed ({reason})",
+                error_code="TOOL_IDENTITY_UNVERIFIED",
+                context=context,
+            )
+            return request, response
+
+        # the verified user identity DEFAULTS to the handshake token's user_id: ``None`` for an
+        # agent handshake token (one per pod; it CANNOT carry the per-turn user), the system
+        # principal for a hub-originated call. a user-driven turn's tool call ALSO carries a
+        # Hub-minted, cnf-LESS user-assertion (``context.user_identity_token``) holding the
+        # per-turn VERIFIED user_id. verify it against the SAME issuer/JWKS and BIND it to the
+        # handshake token -- the assertion's ``sub`` and ``customer_id`` MUST match the handshake
+        # token's -- so a user-assertion minted for agent A (customer X) cannot be replayed under
+        # agent B (or customer Y). on ANY failure the call is rejected fail-closed; the verified
+        # user_id then re-stamps ``context.user_id`` below, so RBAC evaluates an AUTHENTICATED user.
+        #
+        # SECURITY RESIDUAL (documented, accepted for now): the user-assertion is cnf-LESS, because
+        # the Hub cannot know the target pod's holder key at mint time (a single per-turn token,
+        # bound to no pod). so -- unlike the handshake token -- it is NOT proof-of-possession bound:
+        # a user-assertion captured off the bus could in principle be replayed within its TTL. this
+        # is mitigated by (1) connection auth (only an authenticated pod can reach the tools.call
+        # subject at all) and (2) the sub+customer binding above (a captured assertion is usable
+        # only under its own agent+customer, never to impersonate a user to a DIFFERENT agent). a
+        # generous-but-bounded TTL keeps the replay window to roughly one turn. conversation-binding
+        # -- stamping the conversation_id into the assertion and re-checking it here -- is a future
+        # hardening option that would shrink the window further; it is intentionally skipped now.
+        #
+        # ``user_id_value`` was seeded from the handshake token inside the try above (so a malformed
+        # claim fails closed); the bound user-assertion below may override it.
+        # a present, NON-EMPTY user-assertion triggers verify + bind. an empty string is treated as
+        # ABSENT (the user_id stays the handshake token's) -- a caller that builds the envelope
+        # without a user-assertion must never trip a fail-closed deny on the empty value.
+        user_assertion = context.user_identity_token
+        if user_assertion:
+            try:
+                user_claims = verify_identity_token(
+                    user_assertion,
+                    jwks=self._load_jwks(),
+                    issuer=_IDENTITY_ISSUER,
+                    leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+                )
+                if user_claims.sub != claims.sub or user_claims.customer_id != claims.customer_id:
+                    raise IdentityTokenError(
+                        "user-assertion not bound to the handshake identity (sub/customer mismatch)"
+                    )
+                if user_claims.user_id is None:
+                    raise IdentityTokenError("user-assertion carries no user_id")
+                user_id_value = UUID(user_claims.user_id)
+            except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+                reason = type(exc).__name__
+                extra = {
+                    "extra_data": {
+                        "tool_name": request.tool_name,
+                        "reason": reason,
+                        "correlation_id": _correlation_id_str(request),
+                    }
+                }
+                log.warning("user-assertion verification failed; rejecting call", extra=extra)
                 response = ProxyCallResponse(
                     success=False,
                     content="",
-                    error=f"identity verification failed ({reason})",
-                    error_code="TOOL_IDENTITY_UNVERIFIED",
+                    error=f"user-assertion verification failed ({reason})",
+                    error_code="TOOL_USER_IDENTITY_UNVERIFIED",
                     context=context,
                 )
                 return request, response
-            log.warning(
-                "identity verification failed; allowing call (warn mode -- not yet enforced)",
-                extra=extra,
-            )
-            return request, None
+
+        verified_context = context.model_copy(
+            update={
+                "agent_id": agent_id_value,
+                "user_id": user_id_value,
+                "customer_id": customer_id_value,
+            }
+        )
+        return request.model_copy(update={"context": verified_context}), None
 
     async def _verify_pop(self, request: "ProxyCallRequest") -> "ProxyCallResponse | None":
         """verify the per-call proof-of-possession against the token's holder-key binding.
@@ -470,17 +509,16 @@ class CallProxy:
         body (``bh``) + is fresh + single-use (the ``jti`` is recorded in the replay guard). So a
         leaked token alone -- without the holder private key -- cannot be replayed.
 
-        mode behaviour mirrors :meth:`_verify_identity`: ``OFF`` no-ops; ``WARN`` logs and allows on
-        failure (fail-open); ``ENFORCE`` rejects on failure (fail-closed).
+        verification is UNCONDITIONAL and fail-closed: on ANY failure (absent/invalid token, no
+        ``cnf`` holder binding, absent/invalid pop, spliced body, or a nonce the replay guard has
+        already seen) the call is rejected with a TOOL_POP_UNVERIFIED response. the replay guard is
+        always present (required at construction), so a captured pop can never be replayed verbatim.
 
         :param request: the identity-verified call request (its context carries the token + pop)
         :ptype request: ProxyCallRequest
         :return: an error response when the call must be rejected, else ``None``
         :rtype: ProxyCallResponse | None
         """
-        mode = self._pop_enforcement
-        if mode is IdentityEnforcement.OFF:
-            return None
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
         try:
@@ -511,13 +549,7 @@ class CallProxy:
                 body_hash=body_hash,
                 leeway_seconds=_POP_LEEWAY_SECONDS,
             )
-            if self._pop_replay_guard is None:
-                # fail closed under ENFORCE: without a replay guard a captured pop is replayable
-                # verbatim for the same body within the iat freshness window. WARN is fail-open by
-                # design (it never rejects), so a missing guard there is acceptable.
-                if mode is IdentityEnforcement.ENFORCE:
-                    raise IdentityTokenError("pop enforcement requires a replay guard")
-            elif not await self._pop_replay_guard.record_unique(jti):
+            if not await self._pop_replay_guard.record_unique(jti):
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
@@ -529,20 +561,14 @@ class CallProxy:
                     "correlation_id": _correlation_id_str(request),
                 }
             }
-            if mode is IdentityEnforcement.ENFORCE:
-                log.warning("pop verification failed; rejecting call (enforce mode)", extra=extra)
-                return ProxyCallResponse(
-                    success=False,
-                    content="",
-                    error=f"pop verification failed ({reason})",
-                    error_code="TOOL_POP_UNVERIFIED",
-                    context=context,
-                )
-            log.warning(
-                "pop verification failed; allowing call (warn mode -- not yet enforced)",
-                extra=extra,
+            log.warning("pop verification failed; rejecting call", extra=extra)
+            return ProxyCallResponse(
+                success=False,
+                content="",
+                error=f"pop verification failed ({reason})",
+                error_code="TOOL_POP_UNVERIFIED",
+                context=context,
             )
-            return None
 
     async def _dispatch_call(
         self,
@@ -591,7 +617,7 @@ class CallProxy:
 
         # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
         # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
-        # authenticated identity rather than the self-asserted envelope. inert at ``off``.
+        # authenticated identity rather than the self-asserted envelope. unconditional + fail-closed.
         verified_request, identity_error = self._verify_identity(request)
         if identity_error is not None:
             if msg.reply_subject is not None:
@@ -607,7 +633,7 @@ class CallProxy:
 
         # verify the per-call proof-of-possession: the caller must prove it holds the key the token
         # is bound to (cnf), for THIS token + THIS body, once. self-contained (re-verifies the token
-        # for a trusted cnf) so it ladders independently of identity enforcement. inert at ``off``.
+        # for a trusted cnf). unconditional + fail-closed, same as identity verification above.
         pop_error = await self._verify_pop(request)
         if pop_error is not None:
             if msg.reply_subject is not None:
@@ -883,7 +909,7 @@ class CallProxy:
                 agent_id=str(context.agent_id),
                 customer_id=str(context.customer_id),
                 body_hash=body_hash,
-                nonce=str(uuid4()),
+                nonce=str(uuid7()),
                 now=int(datetime.now(UTC).timestamp()),
                 user_id=str(context.user_id) if context.user_id is not None else None,
             )

@@ -383,3 +383,33 @@ class TestAuthWireFields:
         req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
         assert req.context is not None
         assert req.context.identity_token == "eyJ.tok"
+
+    def test_call_context_carries_user_identity_token_round_trip(self) -> None:
+        """the Hub-minted ``user_identity_token`` survives JSON round-trip on the context envelope."""
+        ctx = CallContext(agent_id=uuid7(), user_identity_token="eyJhbGciOiJFZERTQSJ9.usr.sig")
+        wire = ctx.model_dump_json()
+        assert json.loads(wire)["user_identity_token"] == "eyJhbGciOiJFZERTQSJ9.usr.sig"
+        parsed = CallContext.model_validate_json(wire)
+        assert parsed.user_identity_token == "eyJhbGciOiJFZERTQSJ9.usr.sig"
+
+    def test_call_context_user_identity_token_defaults_none(self) -> None:
+        """``user_identity_token`` defaults to ``None`` (agent-initiated, no human in the loop)."""
+        assert CallContext().user_identity_token is None
+
+    def test_call_context_without_user_identity_token_still_parses(self) -> None:
+        """backward-compat: an envelope with no ``user_identity_token`` deserializes fine."""
+        parsed = CallContext.model_validate_json(json.dumps({"agent_id": str(uuid7())}))
+        assert parsed.user_identity_token is None
+
+    def test_with_trace_preserves_user_identity_token(self) -> None:
+        """the ``with_trace`` copy keeps ``user_identity_token`` (model_copy carries all fields)."""
+        base = CallContext(agent_id=uuid7(), user_identity_token="usr")
+        merged = base.with_trace({"a": "1"})
+        assert merged.user_identity_token == "usr"
+
+    def test_call_request_forwards_user_identity_token_in_context(self) -> None:
+        """``user_identity_token`` nested in ``context`` survives onto ``CallRequest``."""
+        ctx = CallContext(agent_id=uuid7(), user_identity_token="eyJ.usr")
+        req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        assert req.context is not None
+        assert req.context.user_identity_token == "eyJ.usr"

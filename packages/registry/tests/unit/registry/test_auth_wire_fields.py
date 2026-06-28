@@ -69,3 +69,22 @@ class TestProxyCallRequestAuthFields:
         req = ProxyCallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, pop="p")
         parsed = ProxyCallRequest.model_validate_json(req.model_dump_json())
         assert parsed.pop == "p"
+
+    def test_forwards_user_identity_token_in_context(self) -> None:
+        # the Hub-minted user-assertion rides on CallContext (like identity_token), so it travels
+        # whole through ProxyCallRequest without touching the proxy model.
+        ctx = CallContext(agent_id=uuid7(), identity_token="eyJ.tok", user_identity_token="eyJ.usr")
+        req = ProxyCallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        assert req.context is not None
+        assert req.context.user_identity_token == "eyJ.usr"
+
+    def test_user_identity_token_round_trips_json(self) -> None:
+        ctx = CallContext(agent_id=uuid7(), user_identity_token="eyJ.usr")
+        req = ProxyCallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, context=ctx)
+        parsed = ProxyCallRequest.model_validate_json(req.model_dump_json())
+        assert parsed.context is not None
+        assert parsed.context.user_identity_token == "eyJ.usr"
+
+    def test_user_identity_token_defaults_none(self) -> None:
+        ctx = CallContext(agent_id=uuid7())
+        assert ctx.user_identity_token is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -73,3 +74,33 @@ class TestCachedHubJwksProvider:
         await provider.start()
         assert provider() == _JWKS
         await provider.stop()  # idempotent + must not raise
+
+    @pytest.mark.asyncio
+    async def test_cold_start_retries_fast_until_first_success(self) -> None:
+        # the initial fetch races the Hub's responder at boot and FAILS; the steady refresh interval
+        # is long (an hour), but the cold-start retry is short, so the cache warms within the short
+        # interval instead of waiting an hour. under enforce an empty cache rejects every call, so a
+        # slow warm is a multi-minute outage -- this is the regression guard for that.
+        nc = MagicMock()
+        nc.request_raw = AsyncMock(
+            side_effect=[RequestError("hub responder not up yet"), json.dumps(_JWKS).encode("utf-8")]
+        )
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=0.01)
+        await provider.start()  # initial refresh fails -> cache empty, not warmed
+        assert provider() == {"keys": []}
+        await asyncio.sleep(0.05)  # >> the 0.01s cold-start retry, << the 3600s steady interval
+        assert provider() == _JWKS  # the FAST retry warmed it, not the hour-long steady loop
+        await provider.stop()
+
+    @pytest.mark.asyncio
+    async def test_steady_interval_after_warm_no_busy_retry(self) -> None:
+        # once warmed, the loop uses the long steady interval -- a single fetch is enough and there
+        # is no busy fast-retry afterwards (the side_effect would raise StopAsyncIteration on a 2nd).
+        nc = MagicMock()
+        nc.request_raw = AsyncMock(side_effect=[json.dumps(_JWKS).encode("utf-8")])
+        provider = _provider(nc, refresh_interval_seconds=3600, initial_retry_interval_seconds=0.01)
+        await provider.start()  # one successful fetch -> warmed -> steady 3600s loop
+        assert provider() == _JWKS
+        await asyncio.sleep(0.05)  # no further fetch (would exhaust the single side_effect)
+        assert provider() == _JWKS
+        await provider.stop()
