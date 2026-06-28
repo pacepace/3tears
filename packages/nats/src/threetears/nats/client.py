@@ -266,6 +266,8 @@ class NatsClient:
         cluster_urls: list[str] | None = None,
         auth_token: str | None = None,
         user_credentials: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
         inbox_prefix: str | None = None,
         startup_timeout: timedelta = DEFAULT_STARTUP_TIMEOUT,
         verify_jetstream: bool = True,
@@ -295,6 +297,14 @@ class NatsClient:
             credentials). used for principals provisioned with standing creds rather than the
             auth-callout path; ``None`` leaves credential auth off.
         :ptype user_credentials: str | None
+        :param user: optional NATS username for centralized config-mode static auth (server
+            ``authorization.users``). each platform service connects with its OWN user/password so
+            the server applies that user's least-privilege subject permissions; pairs with
+            ``password``. ``None`` leaves username/password auth off.
+        :ptype user: str | None
+        :param password: optional NATS password paired with ``user`` for config-mode static auth.
+            ``None`` leaves username/password auth off.
+        :ptype password: str | None
         :param inbox_prefix: optional request/reply inbox prefix. decentralized auth scopes each
             principal to its OWN inbox (e.g. ``_INBOX_agent_pod_{pod_id}``) instead of the shared
             global ``_INBOX`` tree, so a responder's replies cannot be observed cross-principal.
@@ -332,6 +342,10 @@ class NatsClient:
             options["token"] = auth_token
         if user_credentials:
             options["user_credentials"] = user_credentials
+        if user:
+            options["user"] = user
+        if password:
+            options["password"] = password
         if inbox_prefix:
             # nats-py takes the inbox prefix as bytes; scope it per-principal so request/reply
             # inboxes never share the global `_INBOX` tree across principals.

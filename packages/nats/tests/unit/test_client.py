@@ -513,6 +513,35 @@ async def test_connect_passes_credentials_and_scoped_inbox(
 
 
 @pytest.mark.asyncio
+async def test_connect_passes_user_and_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """user + password reach the nats-py connect options (config-mode static auth_users)."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="aibots",
+        client_name="gateway-svc",
+        user="gateway",
+        password="s3cret",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert options["user"] == "gateway"
+    assert options["password"] == "s3cret"
+
+
+@pytest.mark.asyncio
 async def test_connect_omits_credential_options_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -536,6 +565,8 @@ async def test_connect_omits_credential_options_when_absent(
     options = captured["options"]
     assert "token" not in options
     assert "user_credentials" not in options
+    assert "user" not in options
+    assert "password" not in options
     assert "inbox_prefix" not in options
 
 
