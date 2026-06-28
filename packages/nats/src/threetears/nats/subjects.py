@@ -241,15 +241,26 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.deregister", kind="point")
 
     @classmethod
-    def agent_heartbeat(cls, pod_id: str | UUID) -> Subject:
+    def agent_heartbeat(cls, agent_id: str | UUID, pod_id: str | UUID) -> Subject:
         """publish subject for one agent pod's heartbeat.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment
+        (the connecting pod's token-verified agent identity); ``pod_id``
+        comes from the spoofable connect name. Keying on ``agent_id``
+        first means a pod can publish heartbeats only under its own
+        authenticated agent and cannot forge a peer agent's heartbeat.
+
+        :param agent_id: authenticated agent identity the pod serves
+        :ptype agent_id: str | UUID
         :param pod_id: agent pod identifier
         :ptype pod_id: str | UUID
-        :return: subject ``{ns}.agents.heartbeat.{pod_id}``
+        :return: subject ``{ns}.agents.heartbeat.{agent_id}.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.heartbeat.{_sanitize(pod_id)}", kind="point")
+        return Subject(
+            path=f"{_ns()}.agents.heartbeat.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
+            kind="point",
+        )
 
     @classmethod
     def agent_heartbeat_wildcard(cls) -> Subject:
@@ -261,7 +272,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.heartbeat.>", kind="pattern")
 
     @classmethod
-    def agent_reregister_request(cls, pod_id: str | UUID) -> Subject:
+    def agent_reregister_request(cls, agent_id: str | UUID, pod_id: str | UUID) -> Subject:
         """router -> agent pod nudge to re-register after deregistration.
 
         Published by :class:`AgentHeartbeatMonitor.handle_heartbeat` when a
@@ -269,17 +280,25 @@ class Subjects:
         catalog (typically because the heartbeat-timeout monitor
         deregistered the pod during a long host pause such as a laptop
         sleep, and the pod is now back alive and emitting heartbeats
-        again). The agent pod subscribes to its own ``pod_id``-tailed
-        subject and runs the full registration handshake on receipt --
-        restoring the catalog endpoint without forcing a process restart.
+        again). The agent pod subscribes to its own
+        ``{agent_id}.{pod_id}``-tailed subject and runs the full
+        registration handshake on receipt -- restoring the catalog
+        endpoint without forcing a process restart.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        a pod subscribes (and the router targets) only its own agent's
+        reregister channel; the spoofable ``pod_id`` can no longer stand
+        alone to address a peer agent's pod.
+
+        :param agent_id: authenticated agent identity the target pod serves
+        :ptype agent_id: str | UUID
         :param pod_id: target agent pod identifier
         :ptype pod_id: str | UUID
-        :return: subject ``{ns}.agents.reregister_request.{pod_id}``
+        :return: subject ``{ns}.agents.reregister_request.{agent_id}.{pod_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.agents.reregister_request.{_sanitize(pod_id)}",
+            path=f"{_ns()}.agents.reregister_request.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
             kind="point",
         )
 
@@ -424,16 +443,23 @@ class Subjects:
         return Subject(path=f"{_ns()}.gateway.health", kind="point")
 
     @classmethod
-    def gateway_stream(cls, correlation_id: str | UUID) -> Subject:
+    def gateway_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
         """publish subject for gateway -> agent token streaming.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        an agent subscribes only its OWN gateway token streams; a bare
+        ``gateway.stream.*`` wildcard would let any agent sniff every
+        customer's in-flight token stream.
+
+        :param agent_id: authenticated agent the stream is destined for
+        :ptype agent_id: str | UUID
         :param correlation_id: correlation identifier shared with originating request
         :ptype correlation_id: str | UUID
-        :return: subject ``{ns}.gateway.stream.{correlation_id}``
+        :return: subject ``{ns}.gateway.stream.{agent_id}.{correlation_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.gateway.stream.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.gateway.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
             kind="point",
         )
 
@@ -537,16 +563,23 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.usage.track", kind="point")
 
     @classmethod
-    def hub_stream(cls, correlation_id: str | UUID) -> Subject:
+    def hub_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
         """publish subject for agent -> hub token streaming.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        an agent publishes tokens only under its OWN identity; a bare
+        ``hub.stream.*`` publish grant would let a malicious agent forge
+        or inject tokens onto a peer's in-flight request.
+
+        :param agent_id: authenticated agent publishing the stream
+        :ptype agent_id: str | UUID
         :param correlation_id: correlation identifier for client request
         :ptype correlation_id: str | UUID
-        :return: subject ``{ns}.hub.stream.{correlation_id}``
+        :return: subject ``{ns}.hub.stream.{agent_id}.{correlation_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.hub.stream.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.hub.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
             kind="point",
         )
 

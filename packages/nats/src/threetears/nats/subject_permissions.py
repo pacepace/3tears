@@ -163,7 +163,7 @@ def _agent_pod(
     publish = (
         str(Subjects.agent_register()),
         str(Subjects.agent_deregister()),
-        str(Subjects.agent_heartbeat(p)),  # own pod only
+        str(Subjects.agent_heartbeat(a, p)),  # own authed agent + own pod only
         str(Subjects.hub_handshake()),
         str(Subjects.hub_secrets_request()),
         str(Subjects.hub_jwks()),
@@ -178,18 +178,18 @@ def _agent_pod(
         str(Subjects.l3_batch()),
         f"{ns}.l3.tx.*",  # mirrors Subjects.l3_tx(op) over all six ops
         f"{ns}.channels.deliver.*",  # publishes finished answers (any inbound channel type)
-        f"{ns}.hub.stream.*",  # streams tokens for its own (per-request) correlation ids
+        f"{ns}.hub.stream.{_seg(a)}.*",  # streams tokens for its own (per-request) correlation ids under its own authed agent id
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
     subscribe = (
         f"{inbox}.>",  # scoped reply inbox
         str(Subjects.agent_internal(a, p)),  # own agent + own pod only
-        str(Subjects.agent_reregister_request(p)),  # own pod only
+        str(Subjects.agent_reregister_request(a, p)),  # own authed agent + own pod only
         str(Subjects.acl_invalidate("membership")),
         str(Subjects.acl_invalidate("assignment")),
         str(Subjects.acl_invalidate("role")),
         CROSS_PLATFORM_CACHE_INVALIDATE,
-        f"{ns}.gateway.stream.*",  # token stream for its own in-flight requests
+        f"{ns}.gateway.stream.{_seg(a)}.*",  # token stream for its own in-flight requests under its own authed agent id
         str(Subjects.mcp_rbac_epoch()),
     )
     return PrincipalPermissions(
@@ -270,7 +270,7 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
     ns = _ns()
     publish = (
         f"{ns}.agents.route.*",  # routes user messages to any agent
-        f"{ns}.agents.reregister_request.*",  # nudges any pod to re-register
+        f"{ns}.agents.reregister_request.*.*",  # nudges any agent's pod to re-register ({agent_id}.{pod_id})
         str(Subjects.gateway_completion()),  # hub-side completions (e.g. summarization)
         str(Subjects.gateway_embedding()),
         str(Subjects.acl_invalidate("membership")),
@@ -304,7 +304,7 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         str(Subjects.acl_invalidate("membership")),
         str(Subjects.acl_invalidate("assignment")),
         str(Subjects.acl_invalidate("role")),
-        f"{ns}.hub.stream.*",  # subscribes to agent token streams it dispatched
+        f"{ns}.hub.stream.*.*",  # subscribes to agent token streams it dispatched ({agent_id}.{correlation_id})
         str(Subjects.gateway_catalog_epoch()),
         str(Subjects.mcp_rbac_epoch()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
@@ -333,7 +333,7 @@ def _gateway(
     inbox = inbox_prefix_for(Principal.GATEWAY, conn_id=c)
     ns = _ns()
     publish = (
-        f"{ns}.gateway.stream.*",  # streams tokens back for any in-flight completion
+        f"{ns}.gateway.stream.*.*",  # streams tokens back for any in-flight completion ({agent_id}.{correlation_id})
         str(Subjects.hub_usage_track()),
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )

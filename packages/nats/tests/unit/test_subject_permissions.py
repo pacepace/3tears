@@ -117,6 +117,27 @@ class TestIdentityIsolation:
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         assert f"{_NS}.tools.heartbeat.>" not in a.publish
 
+    def test_agent_pod_heartbeat_and_reregister_are_agent_scoped(self) -> None:
+        # the agent_id leads heartbeat / reregister subjects as the
+        # AUTHENTICATED segment (token-hash->DB), so a pod can publish
+        # heartbeats and receive reregister nudges only under its OWN
+        # agent -- it cannot forge a peer agent's heartbeat (B2) nor hold
+        # a peer agent's reregister grant.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.agents.heartbeat.agent-A.pod-A" in a.publish
+        assert f"{_NS}.agents.reregister_request.agent-A.pod-A" in a.subscribe
+        # a peer agent's heartbeat / reregister subjects are NOT granted.
+        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
+        assert f"{_NS}.agents.heartbeat.agent-B.pod-B" not in a.publish
+        assert f"{_NS}.agents.reregister_request.agent-B.pod-B" not in a.subscribe
+        assert f"{_NS}.agents.heartbeat.agent-A.pod-A" not in b.publish
+        # the spoofable-pod-only legacy single-segment grant is gone, and no
+        # wildcard heartbeat publish exists.
+        assert f"{_NS}.agents.heartbeat.pod-A" not in a.publish
+        assert f"{_NS}.agents.heartbeat.*" not in a.publish
+        assert f"{_NS}.agents.heartbeat.>" not in a.publish
+        assert f"{_NS}.agents.reregister_request.pod-A" not in a.subscribe
+
 
 class TestBootCompleteness:
     @pytest.mark.parametrize(
@@ -159,7 +180,30 @@ class TestBootCompleteness:
         assert f"{_NS}.l3.query" in perm.publish
         assert f"{_NS}.l3.tx.*" in perm.publish
         assert f"{_NS}.gateway.completion" in perm.publish
-        assert f"{_NS}.gateway.stream.*" in perm.subscribe  # receives its streamed tokens
+        # receives its streamed tokens on its OWN agent-scoped subject (W1);
+        # a bare `gateway.stream.*` wildcard would let it sniff every other
+        # customer's in-flight token stream.
+        assert f"{_NS}.gateway.stream.agent-1.*" in perm.subscribe
+        assert f"{_NS}.gateway.stream.*" not in perm.subscribe
+        # and it publishes its hub token stream only under its own agent id
+        # (hub.stream W1): a bare `hub.stream.*` publish grant would let it
+        # forge/inject tokens onto a peer's in-flight request.
+        assert f"{_NS}.hub.stream.agent-1.*" in perm.publish
+        assert f"{_NS}.hub.stream.*" not in perm.publish
+
+    def test_infra_stream_wildcards_are_two_segment(self) -> None:
+        # gateway.stream / hub.stream / reregister now carry a leading
+        # AUTHENTICATED {agent_id}; the infra-side grants MUST widen to a
+        # two-segment wildcard (`*.*`) or they silently stop matching the
+        # agent-scoped subjects the moment auth is enforced.
+        hub = _build(Principal.HUB)
+        assert f"{_NS}.hub.stream.*.*" in hub.subscribe
+        assert f"{_NS}.hub.stream.*" not in hub.subscribe
+        assert f"{_NS}.agents.reregister_request.*.*" in hub.publish
+        assert f"{_NS}.agents.reregister_request.*" not in hub.publish
+        gw = _build(Principal.GATEWAY)
+        assert f"{_NS}.gateway.stream.*.*" in gw.publish
+        assert f"{_NS}.gateway.stream.*" not in gw.publish
 
 
 class TestFailClosed:
