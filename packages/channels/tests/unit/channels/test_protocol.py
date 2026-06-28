@@ -99,6 +99,7 @@ class TestChannelMessage:
             sender_id="user-1",
         )
         assert msg.sender_name is None
+        assert msg.customer_id is None
         assert msg.conversation_id is None
         assert msg.channel_id is None
         assert msg.workspace_id is None
@@ -132,6 +133,7 @@ class TestChannelMessage:
             content="check this doc",
             sender_id="U99999",
             sender_name="Alice",
+            customer_id="cust-001",
             conversation_id="T-123-456",
             channel_id="C-789",
             workspace_id="W-001",
@@ -141,6 +143,7 @@ class TestChannelMessage:
             timestamp=ts,
         )
         assert msg.sender_name == "Alice"
+        assert msg.customer_id == "cust-001"
         assert msg.conversation_id == "T-123-456"
         assert msg.channel_id == "C-789"
         assert msg.workspace_id == "W-001"
