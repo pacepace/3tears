@@ -375,8 +375,7 @@ async def create_policy_if_not_exists(
     command_norm = command.strip().upper()
     if command_norm not in _RLS_COMMANDS:
         raise ValueError(
-            f"create_policy_if_not_exists: unknown command {command!r}; "
-            f"expected one of {sorted(_RLS_COMMANDS)}"
+            f"create_policy_if_not_exists: unknown command {command!r}; expected one of {sorted(_RLS_COMMANDS)}"
         )
     if check is not None and command_norm in {"SELECT", "DELETE"}:
         raise ValueError(

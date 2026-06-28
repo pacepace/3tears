@@ -67,6 +67,11 @@ class IdentityClaims:
     unix seconds. ``user_id`` is ``None`` for agent-initiated calls with no human principal.
     ``cnf`` is the holder-key JWK thumbprint (DPoP ``jkt``) binding the token to a
     proof-of-possession key, so a leaked token alone is unusable; ``None`` until pop is enabled.
+    ``conversation_id`` is the conversation a per-turn user-assertion was minted for: the registry
+    proxy and the tool pod re-check it against the inbound call's ``conversation_id`` and reject a
+    mismatch, so a captured user-assertion cannot be replayed into a DIFFERENT conversation (the
+    cross-conversation impersonation residual). ``None`` for the handshake identity token (which
+    binds no conversation) -- only the user-assertion sets it.
     """
 
     sub: str  # the agent_id the token authenticates
@@ -78,6 +83,7 @@ class IdentityClaims:
     exp: int
     user_id: str | None = None
     cnf: str | None = None  # holder-key thumbprint (jkt) for proof-of-possession
+    conversation_id: str | None = None  # the conversation a user-assertion is bound to
 
 
 def generate_signing_keypair() -> tuple[Ed25519PrivateKey, Ed25519PublicKey]:
@@ -131,6 +137,8 @@ def sign_identity_token(claims: IdentityClaims, *, signing_key: Ed25519PrivateKe
         payload["user_id"] = claims.user_id
     if claims.cnf is not None:
         payload["cnf"] = {"jkt": claims.cnf}
+    if claims.conversation_id is not None:
+        payload["conversation_id"] = claims.conversation_id
     return jwt.encode(payload, key=signing_key, algorithm=_ALG, headers={"kid": kid})
 
 
@@ -205,6 +213,11 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
     user_id = payload.get("user_id")
     cnf_claim = payload.get("cnf")
     cnf = cnf_claim.get("jkt") if isinstance(cnf_claim, dict) else None
+    # conversation_id is an OPTIONAL claim (only a user-assertion sets it). when present it must be
+    # a non-empty string -- a present-but-empty/null value is not a usable conversation binding and
+    # is normalized to ``None`` so the verify gates' "user-assertion carries no conversation_id"
+    # deny fires rather than a confusing empty-string mismatch.
+    conversation_id = payload.get("conversation_id")
     return IdentityClaims(
         sub=_require_nonempty_str(payload, "sub"),
         customer_id=_require_nonempty_str(payload, "customer_id"),
@@ -215,6 +228,7 @@ def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:
         exp=int(payload["exp"]),
         user_id=None if user_id is None else _require_nonempty_str(payload, "user_id"),
         cnf=cnf if isinstance(cnf, str) and cnf else None,
+        conversation_id=conversation_id if isinstance(conversation_id, str) and conversation_id else None,
     )
 
 
@@ -229,9 +243,7 @@ def _require_nonempty_str(payload: dict[str, Any], claim: str) -> str:
     return value
 
 
-def canonical_call_hash(
-    tool_name: str, arguments: Mapping[str, Any], correlation_id: str | None
-) -> str:
+def canonical_call_hash(tool_name: str, arguments: Mapping[str, Any], correlation_id: str | None) -> str:
     """SHA-256 (base64url, unpadded) of the canonical call body.
 
     The value both a proof-of-possession proof and a proxy->pod assertion BIND to, so a captured

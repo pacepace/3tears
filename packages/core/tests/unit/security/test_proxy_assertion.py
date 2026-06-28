@@ -37,9 +37,7 @@ class TestProxyAssertion:
     def test_round_trips_and_carries_verified_identity(self) -> None:
         priv, pub = generate_signing_keypair()
         jwks = build_jwks({"proxy-1": pub})
-        claims = verify_proxy_assertion(
-            _mint(priv), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1"
-        )
+        claims = verify_proxy_assertion(_mint(priv), jwks=jwks, expected_pod_id="pod-1", body_hash="bh-1")
         assert claims.sub == "agent-1"
         assert claims.customer_id == "cust-1"
         assert claims.pod_id == "pod-1"

@@ -56,7 +56,13 @@ _POP_NONCE_TTL_SECONDS = 120
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(
+    url: str,
+    *,
+    namespace: str = "aibots",
+    user: str | None = None,
+    password: str | None = None,
+) -> NatsClient:
     """connect to NATS server via the canonical :class:`NatsClient` wrapper.
 
     delegates to :meth:`NatsClient.connect` which handles dual-phase
@@ -64,10 +70,19 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
     :class:`Subjects`. tests patch this symbol to swap a fake
     transport into :class:`RegistryServer.serve`.
 
+    under enforce-only connection auth (v0.13.9) the registry presents its OWN static
+    user/password (NATS ``authorization.users``) so the server applies the registry user's
+    coarse subject permissions; the enforcing bus has no ``no_auth_user``, so ``user``/``password``
+    are REQUIRED there. ``None`` leaves credential auth off for tests + a non-enforcing bus.
+
     :param url: NATS server URL
     :ptype url: str
     :param namespace: NATS subject namespace prefix bound on the wrapper
     :ptype namespace: str
+    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds
+    :ptype user: str | None
+    :param password: NATS static password paired with ``user``; ``None`` -> no creds
+    :ptype password: str | None
     :return: connected canonical wrapper client
     :rtype: NatsClient
     """
@@ -75,6 +90,8 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
         nats_url=url,
         nats_subject_namespace=namespace,
         client_name="registry",
+        user=user,
+        password=password,
     )
 
 
@@ -162,6 +179,12 @@ class RegistryServer:
             "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
             "aibots",
         )
+        # enforce-only connection auth (v0.13.9): the registry connects as its OWN static NATS user
+        # (the enforcing dev bus has no ``no_auth_user``). registry is a 3tears-package consumer, so
+        # the creds come from the THREETEARS_NATS_ env namespace. unset -> anonymous (tests + a
+        # non-enforcing bus); on the enforcing bus the compose / Procfile sets these.
+        self._nats_user = os.environ.get("THREETEARS_NATS_USER") or None
+        self._nats_password = os.environ.get("THREETEARS_NATS_PASSWORD") or None
         self._heartbeat_check_interval = (
             heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
         )
@@ -229,7 +252,12 @@ class RegistryServer:
         handlers, installs signal handlers, and blocks until
         shutdown is requested.
         """
-        self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
+        self._nc = await nats_connect(
+            self._nats_url,
+            namespace=self._namespace,
+            user=self._nats_user,
+            password=self._nats_password,
+        )
         _logger.info(
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},

@@ -532,8 +532,6 @@ async def test_execute_batch_runs_on_bound_conn_in_the_request_transaction() -> 
     conn = _RecordingConn()
     backend = SqlL3Backend(pool)
     async with bound_request_connection(conn):
-        await backend.execute_batch(
-            [{"query": "INSERT 1"}, {"query": "INSERT 2", "params": ["p"]}]
-        )
+        await backend.execute_batch([{"query": "INSERT 1"}, {"query": "INSERT 2", "params": ["p"]}])
     assert conn.calls == [("INSERT 1", ()), ("INSERT 2", ("p",))]
     assert pool.calls == []

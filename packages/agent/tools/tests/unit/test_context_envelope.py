@@ -357,9 +357,7 @@ class TestAuthWireFields:
 
     def test_call_request_accepts_proxy_assertion(self) -> None:
         """the pod's ``CallRequest`` accepts the new ``proxy_assertion`` field."""
-        req = CallRequest(
-            tool_name="test.stub", tool_version="1.0", arguments={}, proxy_assertion="assert-blob"
-        )
+        req = CallRequest(tool_name="test.stub", tool_version="1.0", arguments={}, proxy_assertion="assert-blob")
         assert req.proxy_assertion == "assert-blob"
 
     def test_call_request_proxy_assertion_defaults_none(self) -> None:

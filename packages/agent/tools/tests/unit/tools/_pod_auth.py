@@ -64,12 +64,19 @@ def jwks_provider() -> dict[str, Any]:
     return _JWKS
 
 
-def _hub_token(*, sub: UUID, customer_id: UUID, user_id: UUID | None, exp_delta: int = 600) -> str:
+def _hub_token(
+    *,
+    sub: UUID,
+    customer_id: UUID,
+    user_id: UUID | None,
+    exp_delta: int = 600,
+    conversation_id: UUID | None = None,
+) -> str:
     """sign a Hub-style, cnf-LESS identity token (shared by the handshake token + the user-assertion).
 
     both are Hub-signed and verify against the same ``jwks_provider``/issuer; the user-assertion is
     just a second such token carrying the per-turn ``user_id`` and bound to the handshake token by
-    ``sub`` + ``customer_id`` rather than by pop.
+    ``sub`` + ``customer_id`` rather than by pop, plus the ``conversation_id`` it was minted for.
     """
     now = int(time.time())
     claims = IdentityClaims(
@@ -81,20 +88,31 @@ def _hub_token(*, sub: UUID, customer_id: UUID, user_id: UUID | None, exp_delta:
         iss="hub",
         iat=now,
         exp=now + exp_delta,
+        conversation_id=str(conversation_id) if conversation_id is not None else None,
     )
     return sign_identity_token(claims, signing_key=_HUB_PRIV, kid="kid-1")
 
 
-def mint_user_assertion(*, sub: UUID, customer_id: UUID, user_id: UUID | None, exp_delta: int = 3600) -> str:
+def mint_user_assertion(
+    *,
+    sub: UUID,
+    customer_id: UUID,
+    user_id: UUID | None,
+    exp_delta: int = 3600,
+    conversation_id: UUID | None = None,
+) -> str:
     """mint a Hub-style, cnf-LESS user-assertion (the per-turn verified ``user_id`` token).
 
     signed by the same Hub key the handshake token uses, so the pod verifies it against the SAME
     JWKS/issuer. carries NO ``cnf`` (the Hub cannot know the target pod's holder key at mint) -- the
-    pod binds it to the handshake token by ``sub`` + ``customer_id``. callers drive the pod's
-    user-assertion deny paths by passing a mismatched ``sub``/``customer_id``, a ``None`` ``user_id``,
-    or a negative ``exp_delta`` (expired).
+    pod binds it to the handshake token by ``sub`` + ``customer_id`` AND to ``conversation_id``.
+    callers drive the pod's user-assertion deny paths by passing a mismatched ``sub``/``customer_id``,
+    a ``None`` ``user_id``, a negative ``exp_delta`` (expired), or a ``conversation_id`` that does not
+    match the call's (cross-conversation replay) / omitting it (no conversation binding).
     """
-    return _hub_token(sub=sub, customer_id=customer_id, user_id=user_id, exp_delta=exp_delta)
+    return _hub_token(
+        sub=sub, customer_id=customer_id, user_id=user_id, exp_delta=exp_delta, conversation_id=conversation_id
+    )
 
 
 def signed_call_payload(
@@ -120,12 +138,14 @@ def signed_call_payload(
     proxy).
 
     ``user_id`` (when set) mints a BOUND user-assertion (``sub`` = the handshake ``agent_id``,
-    ``customer_id`` = the handshake ``customer_id``, that ``user_id``) so the pod re-stamps the
-    dispatch user from it. callers exercising the user-assertion DENY paths pass an explicit
-    ``user_assertion=`` (a mis-bound :func:`mint_user_assertion`, an expired one, or a raw
-    non-JWS string) which overrides and is attached verbatim. ``conversation_id`` rides on the
-    envelope unchanged (the pod re-stamps only agent/user/customer) so the per-user context manager
-    gate can be exercised.
+    ``customer_id`` = the handshake ``customer_id``, that ``user_id``, and the SAME
+    ``conversation_id`` the call carries) so the pod re-stamps the dispatch user from it and the
+    conversation-binding gate accepts it. callers exercising the user-assertion DENY paths pass an
+    explicit ``user_assertion=`` (a mis-bound :func:`mint_user_assertion`, an expired one, one minted
+    for a DIFFERENT conversation, one with no conversation binding, or a raw non-JWS string) which
+    overrides and is attached verbatim. ``conversation_id`` rides on the envelope unchanged (the pod
+    re-stamps only agent/user/customer) so the per-user context manager + conversation-binding gates
+    can be exercised.
 
     the server under test MUST be constructed with ``pod_id=<pod_id>`` and ``jwks_provider`` (so the
     proxy assertion's ``aud`` matches and both gates verify). the handshake agent/customer are NOT
@@ -137,9 +157,16 @@ def signed_call_payload(
     effective_customer_id = customer_id if customer_id is not None else uuid4()
     token = _hub_token(sub=effective_agent_id, customer_id=effective_customer_id, user_id=None)
     # a bound user-assertion is minted when a user_id is asked for; an explicit ``user_assertion``
-    # (mis-bound / expired / invalid) overrides for the deny-path tests.
+    # (mis-bound / expired / wrong-conversation / invalid) overrides for the deny-path tests. the
+    # bound mint binds the SAME conversation_id the call carries so the conversation-binding gate
+    # accepts it (mint with the call's conversation, never a mismatched one).
     if user_assertion is None and user_id is not None:
-        user_assertion = mint_user_assertion(sub=effective_agent_id, customer_id=effective_customer_id, user_id=user_id)
+        user_assertion = mint_user_assertion(
+            sub=effective_agent_id,
+            customer_id=effective_customer_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
     body_hash = canonical_call_hash(tool_name, args, corr)
     proxy_assertion = _SIGNER.mint(
         pod_id=pod_id,

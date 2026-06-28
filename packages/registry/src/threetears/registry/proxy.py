@@ -438,19 +438,24 @@ class CallProxy:
         # per-turn VERIFIED user_id. verify it against the SAME issuer/JWKS and BIND it to the
         # handshake token -- the assertion's ``sub`` and ``customer_id`` MUST match the handshake
         # token's -- so a user-assertion minted for agent A (customer X) cannot be replayed under
-        # agent B (or customer Y). on ANY failure the call is rejected fail-closed; the verified
-        # user_id then re-stamps ``context.user_id`` below, so RBAC evaluates an AUTHENTICATED user.
+        # agent B (or customer Y); AND bind it to the conversation -- the assertion's
+        # ``conversation_id`` MUST equal the inbound call's -- so a captured assertion cannot be
+        # replayed into a DIFFERENT conversation. on ANY failure the call is rejected fail-closed;
+        # the verified user_id then re-stamps ``context.user_id`` below, so RBAC evaluates an
+        # AUTHENTICATED user.
         #
-        # SECURITY RESIDUAL (documented, accepted for now): the user-assertion is cnf-LESS, because
-        # the Hub cannot know the target pod's holder key at mint time (a single per-turn token,
-        # bound to no pod). so -- unlike the handshake token -- it is NOT proof-of-possession bound:
-        # a user-assertion captured off the bus could in principle be replayed within its TTL. this
-        # is mitigated by (1) connection auth (only an authenticated pod can reach the tools.call
-        # subject at all) and (2) the sub+customer binding above (a captured assertion is usable
-        # only under its own agent+customer, never to impersonate a user to a DIFFERENT agent). a
-        # generous-but-bounded TTL keeps the replay window to roughly one turn. conversation-binding
-        # -- stamping the conversation_id into the assertion and re-checking it here -- is a future
-        # hardening option that would shrink the window further; it is intentionally skipped now.
+        # SECURITY (the user-assertion is cnf-LESS, because the Hub cannot know the target pod's
+        # holder key at mint time -- a single per-turn token, bound to no pod -- so unlike the
+        # handshake token it is NOT proof-of-possession bound). a user-assertion captured off the bus
+        # is contained by three bindings: (1) connection auth (only an authenticated pod can reach
+        # the tools.call subject at all); (2) the sub+customer binding below (a captured assertion is
+        # usable only under its own agent+customer, never to impersonate a user to a DIFFERENT
+        # agent); and (3) CONVERSATION-BINDING below (the assertion carries the conversation_id it was
+        # minted for, and the call is rejected unless the inbound CallContext.conversation_id matches)
+        # -- so a captured assertion cannot be replayed into a DIFFERENT conversation (acting as the
+        # user where they are not, or after they have left), only into the SAME conversation it was
+        # minted for, where that user legitimately is and this agent legitimately serves. a
+        # generous-but-bounded TTL bounds the in-conversation window to roughly one turn.
         #
         # ``user_id_value`` was seeded from the handshake token inside the try above (so a malformed
         # claim fails closed); the bound user-assertion below may override it.
@@ -472,6 +477,19 @@ class CallProxy:
                     )
                 if user_claims.user_id is None:
                     raise IdentityTokenError("user-assertion carries no user_id")
+                # CONVERSATION-BINDING: the assertion must carry the conversation_id it was minted
+                # for, and it must equal this call's. a user-driven turn ALWAYS mints with a
+                # conversation_id, so an assertion lacking one is a denial -- never a check the
+                # caller can skip by omitting it. a mismatch (or a call with no conversation_id at
+                # all, when the assertion carries one) is the cross-conversation replay this gate
+                # closes. ``context.conversation_id`` is a UUID; stringify to compare against the
+                # wire-string claim.
+                if user_claims.conversation_id is None:
+                    raise IdentityTokenError("user-assertion carries no conversation_id")
+                if context.conversation_id is None or str(context.conversation_id) != user_claims.conversation_id:
+                    raise IdentityTokenError(
+                        "user-assertion conversation_id does not match the call (cross-conversation replay)"
+                    )
                 user_id_value = UUID(user_claims.user_id)
             except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
                 reason = type(exc).__name__

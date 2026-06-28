@@ -48,9 +48,7 @@ class TestReplayGuard:
         assert await guard.record_unique("b") is True
 
     @pytest.mark.asyncio
-    async def test_replay_detected_across_instances_sharing_a_bucket(
-        self, client: FakeNatsClient
-    ) -> None:
+    async def test_replay_detected_across_instances_sharing_a_bucket(self, client: FakeNatsClient) -> None:
         # two guards == two replica processes against the SAME shared bucket; a nonce recorded by
         # one must be a replay for the other. an in-process set could never catch this.
         g1 = ReplayGuard(client, bucket_name="shared", ttl_seconds=120)  # type: ignore[arg-type]
@@ -101,9 +99,7 @@ class TestReplayGuard:
         spy_client.kv_bucket.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_concurrent_record_of_same_nonce_has_one_winner(
-        self, client: FakeNatsClient
-    ) -> None:
+    async def test_concurrent_record_of_same_nonce_has_one_winner(self, client: FakeNatsClient) -> None:
         # CAS create-if-absent guarantees exactly one "fresh" even when the same nonce is recorded
         # concurrently -- e.g. a replay racing the original.
         guard = ReplayGuard(client, bucket_name="race", ttl_seconds=120)  # type: ignore[arg-type]

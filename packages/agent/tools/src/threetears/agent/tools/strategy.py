@@ -72,6 +72,24 @@ class BootstrapContext:
         strategies publish / subscribe on this connection rather than
         opening their own
     :ivar agent_id: agent UUID this bootstrap is initializing
+    :ivar pod_id: this pod instance's id -- the SAME value the bootstrap
+        used as the NATS connect ``client_name`` (used directly for the
+        ``agents.internal.{agent_id}.{pod_id}`` / heartbeat / reregister
+        subjects, which already lead with the authenticated agent id). a
+        strategy that stands up an IN-PROCESS :class:`ToolServer` on the
+        agent's own connection (the devx ``DevInProcessStrategy`` builtins,
+        the prod ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``
+        tools) does NOT pass this raw instance id as the tool server's
+        pod_id: it composes the ``{agent_id}.{instance}`` routing pod-id
+        (:meth:`Subjects.agent_inprocess_pod_id`) so the server's
+        ``tools.internal`` / ``tools.probe`` / ``tools.heartbeat`` subjects
+        nest under the ``tools.internal.{agent_id}.>`` subtree the agent's
+        least-privilege JWT grants -- bound to the AUTHENTICATED agent
+        identity, never the spoofable connect-name pod id; a peer-agent or
+        freshly-generated id would fall outside the grant and the registry's
+        reachability probe would find no responder. ``None`` when the caller
+        did not thread it (the ToolServer then generates its own id, matching
+        pre-auth behavior)
     :ivar namespace: NATS subject-namespace prefix
     :ivar nats_url: NATS server URL the bootstrap connected with.
         strategies that stand up their own :class:`ToolServer` (which
@@ -129,6 +147,7 @@ class BootstrapContext:
     nats_client: Any
     agent_id: UUID
     namespace: str
+    pod_id: str | None = None
     nats_url: str = ""
     bootstrap_token: str | None = None
     workspace_runtime: Any = None

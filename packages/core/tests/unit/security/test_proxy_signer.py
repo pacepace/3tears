@@ -32,9 +32,7 @@ class TestProxyAssertionSigner:
             now=int(time.time()),
             user_id="user-1",
         )
-        claims = verify_proxy_assertion(
-            assertion, jwks=signer.public_jwks(), expected_pod_id="pod-1", body_hash="bh-1"
-        )
+        claims = verify_proxy_assertion(assertion, jwks=signer.public_jwks(), expected_pod_id="pod-1", body_hash="bh-1")
         assert claims.sub == "agent-1"
         assert claims.customer_id == "cust-1"
         assert claims.user_id == "user-1"

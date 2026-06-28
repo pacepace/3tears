@@ -36,17 +36,13 @@ class TestProofOfPossession:
         holder = Ed25519PrivateKey.generate()
         jkt = jwk_thumbprint(holder.public_key())
         proof = _proof(holder, ath="ath-x", bh="bh-y", nonce="n-1")
-        assert verify_pop_proof(
-            proof, expected_jkt=jkt, access_token_hash="ath-x", body_hash="bh-y"
-        ) == "n-1"
+        assert verify_pop_proof(proof, expected_jkt=jkt, access_token_hash="ath-x", body_hash="bh-y") == "n-1"
 
     def test_wrong_holder_key_rejected(self) -> None:
         holder = Ed25519PrivateKey.generate()
         other_jkt = jwk_thumbprint(Ed25519PrivateKey.generate().public_key())
         with pytest.raises(IdentityTokenError):
-            verify_pop_proof(
-                _proof(holder), expected_jkt=other_jkt, access_token_hash="ath-1", body_hash="bh-1"
-            )
+            verify_pop_proof(_proof(holder), expected_jkt=other_jkt, access_token_hash="ath-1", body_hash="bh-1")
 
     def test_wrong_ath_rejected(self) -> None:
         holder = Ed25519PrivateKey.generate()

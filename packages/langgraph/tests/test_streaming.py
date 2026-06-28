@@ -1033,9 +1033,7 @@ class TestRunGraphInterrupt:
     @pytest.mark.asyncio
     async def test_unpaused_graph_with_aget_state_ends_normally(self) -> None:
         transport = _RecordingTransport()
-        graph = _InterruptingGraph(
-            [{"event": "on_chain_end", "data": {"output": {}}}], _Snapshot([])
-        )
+        graph = _InterruptingGraph([{"event": "on_chain_end", "data": {"output": {}}}], _Snapshot([]))
         await _stream(transport).run_graph(graph, {"messages": []}, {})
         kinds = {type(e).__name__ for e in transport.events}
         assert "StreamEndEvent" in kinds

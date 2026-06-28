@@ -56,9 +56,7 @@ class TestLeastPrivilege:
     def test_no_full_wildcard_or_global_inbox(self, principal: Principal) -> None:
         perm = _build(principal)
         for subj in _all_subjects(perm):
-            assert subj not in {">", "*", "_INBOX.>", "_INBOX.*"}, (
-                f"{principal}: bare wildcard {subj!r}"
-            )
+            assert subj not in {">", "*", "_INBOX.>", "_INBOX.*"}, f"{principal}: bare wildcard {subj!r}"
             assert subj != f"{_NS}.>", f"{principal}: namespace-wide wildcard {subj!r}"
             # the scoped inbox is `_INBOX_<principal>_<id>` (underscore) -- the global `_INBOX.`
             # (dot) tree is forbidden so a responder's replies cannot be sniffed cross-principal.
@@ -117,6 +115,82 @@ class TestIdentityIsolation:
         assert f"{_NS}.tools.heartbeat.*" not in a.publish
         assert f"{_NS}.tools.heartbeat.>" not in a.publish
 
+    def test_agent_pod_may_serve_only_its_own_in_process_tools(self) -> None:
+        # an agent hosts its in-process tools (devx ``DevInProcessStrategy`` builtins, prod
+        # ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``) on its OWN ``AGENT_POD``
+        # connection rather than as separate Tool Pods, so ``_agent_pod`` grants the tool-serving
+        # subjects -- but every one is scoped to the AUTHENTICATED ``agent_id`` subtree
+        # (``tools.{internal,probe,heartbeat}.{agent_id}.>``), NOT the spoofable connect-name pod id.
+        # the in-process server runs under the ``{agent_id}.{instance}`` composite pod-id, so its
+        # ``tools.internal.{agent_id}.{instance}`` subscription nests under the granted subtree while
+        # a peer agent can NEVER be granted a subject under this agent's identity.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        # its own in-process tool server: register (point) + heartbeat scoped to its own agent subtree.
+        assert f"{_NS}.tools.register" in a.publish
+        assert f"{_NS}.tools.heartbeat.agent-A.>" in a.publish
+        # receives the registry's proxied calls + reachability probes for its OWN agent subtree only.
+        assert f"{_NS}.tools.internal.agent-A.>" in a.subscribe
+        assert f"{_NS}.tools.probe.agent-A.>" in a.subscribe
+        # the grant is scoped on the AUTHENTICATED agent id, never the spoofable connect-name pod id:
+        # the legacy single-token pod-scoped grants are GONE (closing the connect-name wiretap).
+        assert f"{_NS}.tools.internal.pod-A" not in a.subscribe
+        assert f"{_NS}.tools.probe.pod-A" not in a.subscribe
+        assert f"{_NS}.tools.heartbeat.pod-A" not in a.publish
+        # and never the registry's router-wide ``>`` (that belongs to the trusted router alone) nor
+        # the single-token ``.*``.
+        assert f"{_NS}.tools.internal.>" not in a.subscribe
+        assert f"{_NS}.tools.internal.*" not in a.subscribe
+        assert f"{_NS}.tools.probe.>" not in a.subscribe
+        assert f"{_NS}.tools.probe.*" not in a.subscribe
+        assert f"{_NS}.tools.heartbeat.>" not in a.publish
+        assert f"{_NS}.tools.heartbeat.*" not in a.publish
+        # a PEER agent's subtree is a DIFFERENT subject -> never granted in either direction, so one
+        # tenant can never be granted a subject under a peer agent's identity (the core invariant).
+        b = build_permissions(Principal.AGENT_POD, agent_id="agent-B", pod_id="pod-B")
+        assert f"{_NS}.tools.internal.agent-B.>" not in a.subscribe
+        assert f"{_NS}.tools.probe.agent-B.>" not in a.subscribe
+        assert f"{_NS}.tools.heartbeat.agent-B.>" not in a.publish
+        assert f"{_NS}.tools.internal.agent-A.>" not in b.subscribe
+        assert f"{_NS}.tools.probe.agent-A.>" not in b.subscribe
+        assert f"{_NS}.tools.heartbeat.agent-A.>" not in b.publish
+
+    def test_agent_in_process_tool_subjects_are_independent_of_the_connect_name(self) -> None:
+        # SAME authenticated agent, DIFFERENT connect-name pod ids (replicas): the in-process tool
+        # grants are identical because they are scoped on the agent subtree, NOT the pod id. this is
+        # what lets a tenant set any connect ``name`` (even a peer pod's) without ever shifting its
+        # tool grant onto a peer agent's identity -- the connect name simply does not feed these.
+        p1 = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-1")
+        p2 = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="victim-pod-id")
+        tool_subjects = lambda perm: sorted(  # noqa: E731 -- terse local for the assertion
+            s
+            for s in _all_subjects(perm)
+            if ".tools.internal." in s or ".tools.probe." in s or ".tools.heartbeat." in s
+        )
+        assert (
+            tool_subjects(p1)
+            == tool_subjects(p2)
+            == [
+                f"{_NS}.tools.heartbeat.agent-A.>",
+                f"{_NS}.tools.internal.agent-A.>",
+                f"{_NS}.tools.probe.agent-A.>",
+            ]
+        )
+
+    def test_agent_pod_may_publish_its_own_tool_call_audit(self) -> None:
+        # serving builtins in-process means the in-process tool server emits the baseline
+        # ``tool.call`` audit envelope on every dispatch (mirrors ``_tool_pod``). audit
+        # non-repudiation is REQUIRED on this platform, so the grant is mandatory -- without
+        # it the actor/audit row for an agent-served tool call would be silently dropped.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}.audit.tool.call" in a.publish
+
+    def test_agent_pod_holds_proxy_assertion_nonce_bucket(self) -> None:
+        # the in-process tool server verifies the proxy's body-bound assertion under enforce
+        # and records single-use nonces in this KV bucket (mirrors ``_tool_pod``); without the
+        # grant the agent could not serve its own builtins under enforced connection-auth.
+        a = build_permissions(Principal.AGENT_POD, agent_id="agent-A", pod_id="pod-A")
+        assert f"{_NS}-proxy_assertion_nonces" in a.kv_buckets
+
     def test_agent_pod_heartbeat_and_reregister_are_agent_scoped(self) -> None:
         # the agent_id leads heartbeat / reregister subjects as the
         # AUTHENTICATED segment (token-hash->DB), so a pod can publish
@@ -155,17 +229,17 @@ class TestBootCompleteness:
             ),
             (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks"]),
             (
+                # the router forward grant is ``tools.internal.>`` (not ``.*``) so it spans BOTH
+                # single-token tool pods and two-token agent in-process pods.
                 Principal.REGISTRY,
-                [f"{_NS}.tools.call", f"{_NS}.tools.internal.*", f"{_NS}.hub.jwks"],
+                [f"{_NS}.tools.call", f"{_NS}.tools.internal.>", f"{_NS}.hub.jwks"],
             ),
             (Principal.HUB, [f"{_NS}.hub.handshake", f"{_NS}.hub.jwks", f"{_NS}.hub.secrets.request"]),
             (Principal.GATEWAY, [f"{_NS}.gateway.completion", f"{_NS}.gateway.embedding"]),
             (Principal.CHANNEL_ADAPTER, [f"{_NS}.channels.deliver.*", f"{_NS}.hub.channel.installs"]),
         ],
     )
-    def test_boot_critical_subjects_present(
-        self, principal: Principal, required: list[str]
-    ) -> None:
+    def test_boot_critical_subjects_present(self, principal: Principal, required: list[str]) -> None:
         present = set(_all_subjects(_build(principal)))
         missing = [s for s in required if s not in present]
         assert not missing, f"{principal}: missing boot-critical {missing}"
@@ -204,6 +278,19 @@ class TestBootCompleteness:
         gw = _build(Principal.GATEWAY)
         assert f"{_NS}.gateway.stream.*.*" in gw.publish
         assert f"{_NS}.gateway.stream.*" not in gw.publish
+
+    def test_registry_forward_wildcard_spans_two_token_agent_pods(self) -> None:
+        # the registry router forwards proxied calls / probes to ``tools.internal.{pod_id}``. once an
+        # agent in-process pod registers under the two-token ``{agent_id}.{instance}`` composite, a
+        # single-token ``tools.internal.*`` grant would silently STOP matching it (a ToolReadinessTimeout
+        # at boot). the router grant MUST be the ``>`` subtree, which spans both pod shapes.
+        reg = _build(Principal.REGISTRY)
+        assert f"{_NS}.tools.internal.>" in reg.publish
+        assert f"{_NS}.tools.probe.>" in reg.publish
+        assert f"{_NS}.tools.internal.*" not in reg.publish
+        assert f"{_NS}.tools.probe.*" not in reg.publish
+        # the heartbeat monitor subscribes the global ``>`` so it sees both pod shapes' heartbeats.
+        assert f"{_NS}.tools.heartbeat.>" in reg.subscribe
 
 
 class TestFailClosed:

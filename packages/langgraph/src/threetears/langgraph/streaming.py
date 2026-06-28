@@ -1088,8 +1088,6 @@ def _snapshot_interrupts(snapshot: Any) -> list[Any]:
         result = list(direct)
     else:
         result = [
-            item
-            for task in getattr(snapshot, "tasks", ()) or ()
-            for item in getattr(task, "interrupts", ()) or ()
+            item for task in getattr(snapshot, "tasks", ()) or () for item in getattr(task, "interrupts", ()) or ()
         ]
     return result

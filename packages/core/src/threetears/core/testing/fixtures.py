@@ -43,11 +43,24 @@ __all__ = [
 def db_image(request: pytest.FixtureRequest) -> str:
     """docker image tag for the session-scoped postgres container.
 
-    defaults to ``postgres:16``. tests that need pgvector parameterize
-    via::
+    defaults to ``pgvector/pgvector:pg16`` -- a strict superset of the
+    official ``postgres:16`` image (same Postgres 16 server, plus the
+    ``vector`` extension binaries). the default carries pgvector on
+    purpose: :func:`db_container` is *session*-scoped and therefore
+    SHARED across every package in the workspace. whichever test first
+    materialises the container pins its image for the whole session, so
+    a plain ``postgres:16`` default lets a non-vector consumer (run
+    earlier in collection order) poison the shared container for the
+    vector-bearing suites that run later -- they would fail with
+    ``extension "vector" is not available`` even though they declare a
+    pgvector override of their own. defaulting to pgvector removes that
+    cross-package ordering trap entirely; the extension is a no-op for
+    suites that never touch a ``vector`` column.
+
+    tests that genuinely need a leaner image can still parameterize via::
 
         @pytest.mark.parametrize(
-            "db_image", ["pgvector/pgvector:pg16"], indirect=True,
+            "db_image", ["postgres:16"], indirect=True,
         )
 
     :param request: pytest fixture request exposing indirect params
@@ -55,7 +68,7 @@ def db_image(request: pytest.FixtureRequest) -> str:
     :return: container image reference
     :rtype: str
     """
-    return getattr(request, "param", "postgres:16")
+    return getattr(request, "param", "pgvector/pgvector:pg16")
 
 
 @pytest.fixture(scope="session")
@@ -82,10 +95,14 @@ def db_container(db_image: str) -> Iterator[str]:
     fresh checkouts without docker get a clean ``pytest.skip``
     instead of a connection-refused stack trace.
 
-    parameterise the image via ``db_image`` indirect parametrize when
-    tests need pgvector.
+    the image defaults to ``pgvector/pgvector:pg16`` (see
+    :func:`db_image`) so the shared session container is vector-capable
+    for every consumer regardless of collection order. override
+    ``db_image`` via indirect parametrize for a leaner image when a
+    suite never touches a ``vector`` column.
 
-    :param db_image: docker image tag (defaults to ``postgres:16``)
+    :param db_image: docker image tag (defaults to
+        ``pgvector/pgvector:pg16``)
     :ptype db_image: str
     :yield: asyncpg-compatible PostgreSQL connection URL
     :rtype: Iterator[str]

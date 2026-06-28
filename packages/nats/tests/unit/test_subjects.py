@@ -99,6 +99,40 @@ def test_tools_subjects() -> None:
     assert Subjects.tools_probe(pod_id).path == "aibots.tools.probe.tool-pod-xyz"
 
 
+def test_agent_inprocess_pod_id_composes_two_token_routing_key() -> None:
+    """an agent in-process tool pod-id is the ``{agent_id}.{instance}`` composite."""
+    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    assert composite == "agent-A.inst-1"
+
+
+def test_tools_subjects_preserve_the_agent_composite_structural_dot() -> None:
+    """a composite pod-id renders as a TWO-token subject under the agent subtree.
+
+    the structural dot between ``{agent_id}`` and ``{instance}`` must survive into the subject
+    (unlike single-token tool-pod ids that :func:`_sanitize` leaves intact) so the agent-id segment
+    is its own NATS token and the ``tools.internal.{agent_id}.>`` grant can wildcard-match it. a
+    sanitize-collapsed ``agent-A-inst-1`` single token would make the subtree grant impossible.
+    """
+    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    assert Subjects.tools_internal(composite).path == "aibots.tools.internal.agent-A.inst-1"
+    assert Subjects.tools_probe(composite).path == "aibots.tools.probe.agent-A.inst-1"
+    assert Subjects.tools_heartbeat(composite).path == "aibots.tools.heartbeat.agent-A.inst-1"
+    # the composite subject nests UNDER the authenticated-agent subtree grant ...
+    assert Subjects.tools_internal(composite).path.startswith("aibots.tools.internal.agent-A.")
+    # ... but NOT under a peer agent's subtree (different leading token).
+    assert not Subjects.tools_internal(composite).path.startswith("aibots.tools.internal.agent-B.")
+
+
+def test_tools_subtree_and_router_wildcards() -> None:
+    """agent-subtree grant patterns + the registry router ``>`` wildcards."""
+    assert Subjects.tools_internal_agent_subtree("agent-A").path == "aibots.tools.internal.agent-A.>"
+    assert Subjects.tools_probe_agent_subtree("agent-A").path == "aibots.tools.probe.agent-A.>"
+    assert Subjects.tools_heartbeat_agent_subtree("agent-A").path == "aibots.tools.heartbeat.agent-A.>"
+    # registry router forward/probe wildcards span single-token tool pods AND two-token agent pods.
+    assert Subjects.tools_internal_wildcard().path == "aibots.tools.internal.>"
+    assert Subjects.tools_probe_wildcard().path == "aibots.tools.probe.>"
+
+
 def test_gateway_subjects() -> None:
     """gateway subject builders produce documented shapes."""
     agent_id = "agent-7"

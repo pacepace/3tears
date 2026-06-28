@@ -85,6 +85,7 @@ def _token(
     exp_delta: int = 600,
     iss: str = _ISS,
     cnf: str | None = None,
+    conversation_id: UUID | None = None,
 ) -> str:
     now = int(time.time())
     claims = IdentityClaims(
@@ -97,6 +98,7 @@ def _token(
         iat=now,
         exp=now + exp_delta,
         cnf=cnf,
+        conversation_id=str(conversation_id) if conversation_id is not None else None,
     )
     return sign_identity_token(claims, signing_key=priv, kid=_KID)
 
@@ -135,6 +137,7 @@ def _authed_request(
     exp_delta: int = 600,
     arguments: dict[str, Any] | None = None,
     user_assertion: str | None = None,
+    conversation_id: UUID | None = None,
 ) -> ProxyCallRequest:
     """a FULLY-authenticated request: a cnf-bound token (sub=token_sub) + a matching per-call pop.
 
@@ -142,7 +145,8 @@ def _authed_request(
     re-stamp (which overwrites the envelope's claim with the token's identity) is observable through
     the forwarded payload / the authorizer. the pop binds to THIS body so the unconditional pop gate
     accepts it. ``user_assertion`` is the optional Hub-minted, cnf-LESS user-identity token the proxy
-    verifies, binds to the handshake token, and re-stamps ``user_id`` from.
+    verifies, binds to the handshake token, and re-stamps ``user_id`` from. ``conversation_id`` rides
+    on the CallContext -- the proxy re-checks the user-assertion's bound conversation_id against it.
     """
     args = arguments if arguments is not None else {"expression": "2+2"}
     correlation_id = uuid7()
@@ -169,6 +173,7 @@ def _authed_request(
         context=CallContext(
             agent_id=envelope_agent,
             user_id=envelope_user,
+            conversation_id=conversation_id,
             correlation_id=correlation_id,
             identity_token=token,
             user_identity_token=user_assertion,
@@ -184,14 +189,18 @@ def _user_assertion(
     customer_id: UUID,
     user_id: UUID,
     exp_delta: int = 3600,
+    conversation_id: UUID | None = None,
 ) -> str:
     """mint a Hub-style, cnf-LESS user-assertion (carries the per-turn verified user_id).
 
     signed by the same Hub key the handshake token uses, so the proxy verifies it against the SAME
     JWKS/issuer. carries NO ``cnf`` (the Hub cannot know the target pod's holder key at mint) -- the
-    proxy binds it to the handshake token by ``sub`` + ``customer_id`` instead of by pop.
+    proxy binds it to the handshake token by ``sub`` + ``customer_id`` (and to ``conversation_id``)
+    instead of by pop.
     """
-    return _token(priv, sub=sub, customer_id=customer_id, user_id=user_id, exp_delta=exp_delta)
+    return _token(
+        priv, sub=sub, customer_id=customer_id, user_id=user_id, exp_delta=exp_delta, conversation_id=conversation_id
+    )
 
 
 def _entry() -> CatalogEntry:
@@ -486,7 +495,7 @@ class TestDispatchUserAssertion:
         # the handshake token carries NO user; a bound user-assertion supplies the verified user_id
         # that reaches the pod.
         priv, jwks = hub
-        agent, cust, real_user = uuid7(), uuid7(), uuid7()
+        agent, cust, real_user, conv = uuid7(), uuid7(), uuid7(), uuid7()
         nc = await self._drive(
             lambda: jwks,
             _authed_request(
@@ -496,7 +505,10 @@ class TestDispatchUserAssertion:
                 token_user=None,
                 envelope_agent=uuid7(),
                 envelope_user=uuid7(),  # the envelope's claimed user is discarded
-                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv, sub=agent, customer_id=cust, user_id=real_user, conversation_id=conv
+                ),
             ),
         )
         nc.request_raw.assert_called_once()
@@ -516,6 +528,7 @@ class TestDispatchUserAssertion:
                 captured["user_id"] = user_id
                 return True
 
+        conv = uuid7()
         await self._drive(
             lambda: jwks,
             _authed_request(
@@ -524,7 +537,10 @@ class TestDispatchUserAssertion:
                 token_customer=cust,
                 token_user=None,
                 envelope_agent=uuid7(),
-                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv, sub=agent, customer_id=cust, user_id=real_user, conversation_id=conv
+                ),
             ),
             authorizer=_RecordingAuthorizer(),
         )
@@ -618,9 +634,7 @@ class TestDispatchUserAssertion:
                 token_customer=cust,
                 token_user=None,
                 envelope_agent=uuid7(),
-                user_assertion=_user_assertion(
-                    priv, sub=agent, customer_id=cust, user_id=uuid7(), exp_delta=-120
-                ),
+                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=uuid7(), exp_delta=-120),
             ),
         )
         nc.request_raw.assert_not_called()
@@ -668,6 +682,79 @@ class TestDispatchUserAssertion:
         assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
 
     @pytest.mark.asyncio
+    async def test_user_assertion_for_same_conversation_is_accepted(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # CONVERSATION-BINDING accept: an assertion minted for conversation C, on a call for C, is
+        # accepted and re-stamps the verified user_id.
+        priv, jwks = hub
+        agent, cust, real_user, conv = uuid7(), uuid7(), uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                conversation_id=conv,
+                user_assertion=_user_assertion(
+                    priv, sub=agent, customer_id=cust, user_id=real_user, conversation_id=conv
+                ),
+            ),
+        )
+        nc.request_raw.assert_called_once()
+        assert self._forwarded_context(nc)["user_id"] == str(real_user)
+
+    @pytest.mark.asyncio
+    async def test_user_assertion_replayed_into_different_conversation_denies(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # CONVERSATION-BINDING deny: an assertion minted for conversation C, REPLAYED on a call for a
+        # DIFFERENT conversation D, is rejected fail-closed -- the cross-conversation impersonation a
+        # compromised pod could attempt (inject a captured user-U assertion into another conversation)
+        # is denied, so U is never acted-as outside conversation C.
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        conv_minted_for, conv_of_call = uuid7(), uuid7()  # C != D
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                conversation_id=conv_of_call,  # the call is for conversation D...
+                # ...but the captured assertion was minted for conversation C
+                user_assertion=_user_assertion(
+                    priv, sub=agent, customer_id=cust, user_id=uuid7(), conversation_id=conv_minted_for
+                ),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_user_assertion_with_no_conversation_id_denies(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a user-driven turn ALWAYS mints with a conversation_id; a present assertion lacking one is a
+        # denial -- "no conversation_id" must NOT skip the conversation-binding check.
+        priv, jwks = hub
+        agent, cust = uuid7(), uuid7()
+        nc = await self._drive(
+            lambda: jwks,
+            _authed_request(
+                priv,
+                token_sub=agent,
+                token_customer=cust,
+                token_user=None,
+                envelope_agent=uuid7(),
+                conversation_id=uuid7(),  # the call has a conversation; the assertion has none
+                user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=uuid7()),
+            ),
+        )
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_USER_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
     async def test_pop_still_verifies_against_handshake_token_with_user_assertion(
         self, hub: tuple[Any, dict[str, Any]]
     ) -> None:
@@ -675,7 +762,7 @@ class TestDispatchUserAssertion:
         # user-assertion must not disturb it -- a fully-authed request with a bound assertion still
         # passes the pop gate and forwards.
         priv, jwks = hub
-        agent, cust, real_user = uuid7(), uuid7(), uuid7()
+        agent, cust, real_user, conv = uuid7(), uuid7(), uuid7(), uuid7()
         guard = _StubReplayGuard(fresh=True)
         proxy = CallProxy(
             await _catalog(),
@@ -693,7 +780,8 @@ class TestDispatchUserAssertion:
             token_customer=cust,
             token_user=None,
             envelope_agent=uuid7(),
-            user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user),
+            conversation_id=conv,
+            user_assertion=_user_assertion(priv, sub=agent, customer_id=cust, user_id=real_user, conversation_id=conv),
         )
         msg = IncomingMessage(
             data=req.model_dump_json().encode("utf-8"),

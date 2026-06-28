@@ -40,6 +40,62 @@ __all__ = ["account_public_key", "encode_and_sign", "generate_account_seed", "mi
 _ALG = "ed25519-nkey"
 _HEADER: dict[str, str] = {"typ": "JWT", "alg": _ALG}
 
+#: the ONE account-level (stream-less) JetStream API subject a JS-using principal is granted.
+#: ``$JS.API.INFO`` returns only the connection's OWN account JetStream limits/usage -- it cannot
+#: read another principal's stream/bucket data. it is unavoidable here: ``NatsClient.connect`` runs
+#: ``account_info()`` as its post-connect JetStream reachability probe (``_verify_jetstream``, fatal
+#: on failure) and the core KV cache's ``ping()`` health check calls it too, so omitting it would
+#: brick every JS principal at connect under enforce. it carries no stream token, so it cannot be
+#: pinned per-stream; it is granted (pub-only) only to principals that declare a bucket/stream.
+_JS_API_ACCOUNT_INFO = "$JS.API.INFO"
+
+
+def _js_api_grants_for_stream(stream: str) -> list[str]:
+    """the JetStream control-plane subjects scoped to ONE stream ``stream``, pinned by literal name.
+
+    Every entry carries ``stream`` as a LITERAL subject token, so the grant permits exactly the JS
+    API operations nats-py issues against THIS principal's own stream and matches no other stream's
+    control subjects (the cross-tenant ``$JS.API.STREAM.MSG.GET.KV_<other>`` direct-read and
+    ``STREAM.DELETE``/``PURGE`` destroy that a bare ``$JS.API.>`` would have allowed are denied). a
+    KV bucket ``<b>`` is backed by the stream ``KV_<b>``; a declared stream is its own name.
+
+    The stream-name token position differs per op family (verified against the installed nats-py
+    2.x: ``nats/js/manager.py`` STREAM/CONSUMER/DIRECT builders + ``nats/js/client.py`` pull-consumer
+    ``CONSUMER.MSG.NEXT``), so the set pins the name at each position it can occupy:
+
+    - ``$JS.API.STREAM.*.{stream}`` -- STREAM INFO/CREATE/UPDATE/DELETE/PURGE (name at token 5);
+      ``manager.stream_info``/``add_stream``/``update_stream``/``delete_stream``/``purge_stream``.
+    - ``$JS.API.STREAM.MSG.*.{stream}`` -- STREAM.MSG.GET / STREAM.MSG.DELETE (name at token 6);
+      ``manager.get_msg`` (non-direct) / ``manager.delete_msg``.
+    - ``$JS.API.DIRECT.GET.{stream}`` -- direct get by sequence (``manager.get_msg`` direct path).
+    - ``$JS.API.DIRECT.GET.{stream}.>`` -- direct get by subject; the ``$KV.<b>.<key>`` suffix the
+      KV ``get`` appends has its own dots, so it rides the ``>`` tail.
+    - ``$JS.API.CONSUMER.*.{stream}`` -- CONSUMER CREATE (ephemeral, no name) / LIST (name at token 5).
+    - ``$JS.API.CONSUMER.*.{stream}.>`` -- CONSUMER CREATE.<name>[.<filter>] / INFO / DELETE / PAUSE
+      (name at token 5, with a trailing consumer/name/filter tail).
+    - ``$JS.API.CONSUMER.*.*.{stream}.>`` -- CONSUMER DURABLE.CREATE.<durable> and MSG.NEXT.<consumer>
+      (name at token 6; both are the only 7-token consumer ops and both put the stream at token 6,
+      so a literal ``{stream}`` there can only ever target this stream).
+
+    JetStream consumer ACK/NAK is NOT listed: it publishes to the delivered message's ``$JS.ACK.*``
+    reply subject and rides the principal's ``allow_responses`` grant (the same way it did under the
+    old ``$JS.API.>``, which never covered ``$JS.ACK``), so it needs no standing control grant here.
+
+    :param stream: the JetStream stream name to pin every entry to
+    :ptype stream: str
+    :return: the per-stream JS-API control-plane allow-list (publish subjects)
+    :rtype: list[str]
+    """
+    return [
+        f"$JS.API.STREAM.*.{stream}",
+        f"$JS.API.STREAM.MSG.*.{stream}",
+        f"$JS.API.DIRECT.GET.{stream}",
+        f"$JS.API.DIRECT.GET.{stream}.>",
+        f"$JS.API.CONSUMER.*.{stream}",
+        f"$JS.API.CONSUMER.*.{stream}.>",
+        f"$JS.API.CONSUMER.*.*.{stream}.>",
+    ]
+
 
 def _b64url(raw: bytes) -> str:
     """base64url WITHOUT padding -- the NATS jwt/v2 segment encoding."""
@@ -92,9 +148,7 @@ def encode_and_sign(*, account_seed: bytes, payload: dict[str, Any]) -> str:
     """
     signer = nkeys.from_seed(account_seed)
     header_seg = _b64url(json.dumps(_HEADER, separators=(",", ":")).encode("ascii"))
-    payload_seg = _b64url(
-        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("ascii")
-    )
+    payload_seg = _b64url(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("ascii"))
     signing_input = f"{header_seg}.{payload_seg}".encode("ascii")
     return f"{header_seg}.{payload_seg}.{_b64url(bytes(signer.sign(signing_input)))}"
 
@@ -137,9 +191,39 @@ def mint_user_jwt(
     """
     issued_at = now if now is not None else int(time.time())
 
+    # JetStream grants for a callout-minted principal: a scoped user JWT carries its OWN pub/sub
+    # allow-list (there is no account-wide JS grant behind it in config mode), so a principal that
+    # touches KV/streams must be granted the JetStream subjects HERE or its JS operations time out.
+    #   - per declared KV bucket: the bucket's data subtree ``$KV.{bucket}.>`` (pub + sub).
+    #   - the JetStream control plane scoped to ONLY the streams this principal declares (pub; the
+    #     API is request/reply and the reply rides the principal's already-scoped inbox). A KV bucket
+    #     ``<b>`` is backed by the stream ``KV_<b>``; a declared stream is its own name. Each control
+    #     subject is PINNED to its stream's literal name (see ``_js_api_grants_for_stream``), so the
+    #     principal can drive every JS op against its OWN streams but is DENIED the cross-tenant
+    #     direct-read (``$JS.API.STREAM.MSG.GET.KV_<other>``) / destroy (``STREAM.DELETE``/``PURGE``)
+    #     that a bare ``$JS.API.>`` exposed on a shared account. Plus one account-level (stream-less)
+    #     subject, ``$JS.API.INFO`` -- see ``_JS_API_ACCOUNT_INFO`` for why it cannot be scoped away.
+    #
+    # RESIDUAL (deliberate, not a regression): the ``$KV.{bucket}.>`` data grant is bucket-scoped but
+    # NOT key-scoped. Buckets shared across principals (``{ns}-collections`` keyed by entity, the
+    # ``checkpoints`` bucket keyed by thread/conversation, ``{ns}_agent_config``) intentionally hold
+    # no per-agent key prefix -- the collections L2 key is ``{table}.{pk}`` and the checkpoint key is
+    # ``{thread_id}[.{ns}]`` (see ``collections/base.py:l2_key`` / ``langgraph/checkpoint.py:l2_key``),
+    # so a peer that legitimately holds the same bucket can read peers' keys within it. Tightening to
+    # ``$KV.{bucket}.{prefix}.>`` is impossible without a key-prefix the data layer does not write; it
+    # would break every read. Per-bucket isolation (the control-plane fix above) is what closes the
+    # cross-BUCKET hole; intra-bucket key isolation is tracked separately.
+    kv_data = [f"$KV.{bucket}.>" for bucket in permissions.kv_buckets]
+    js_streams = [f"KV_{bucket}" for bucket in permissions.kv_buckets] + list(permissions.streams)
+    js_control: list[str] = []
+    if js_streams:
+        js_control.append(_JS_API_ACCOUNT_INFO)
+        for stream in js_streams:
+            js_control.extend(_js_api_grants_for_stream(stream))
+
     nats_claim: dict[str, Any] = {
-        "pub": {"allow": list(permissions.publish)},
-        "sub": {"allow": list(permissions.subscribe)},
+        "pub": {"allow": [*permissions.publish, *kv_data, *js_control]},
+        "sub": {"allow": [*permissions.subscribe, *kv_data]},
         "subs": -1,
         "data": -1,
         "payload": -1,

@@ -20,9 +20,11 @@ broad ``_INBOX.>`` publish grant.
 
 The application pub/sub subjects below are built through the canonical :class:`Subjects` factory (the
 namespace prefix is never hand-typed). Each principal additionally DECLARES the JetStream KV buckets
-and streams it touches by name; the live NATS account config grants the matching ``$JS.API`` / ``$KV``
-rights (scoping the JetStream control-plane per stream is a hardening follow-up tracked with the
-live-enable — see the module's enforcement test for the safety invariants checked here).
+and streams it touches by name; the minted user JWT grants the matching ``$KV`` data subtree plus a
+JetStream control-plane allow-list PINNED per declared stream (a KV bucket ``<b>`` is backed by the
+stream ``KV_<b>``), so a principal can drive JS ops only against its OWN streams and is denied the
+cross-tenant direct-read / destroy a bare ``$JS.API.>`` would expose (see
+:func:`threetears.nats.user_jwt._js_api_grants_for_stream`).
 """
 
 from __future__ import annotations
@@ -153,9 +155,7 @@ def _require(value: str | None, *, name: str, principal: Principal) -> str:
     return value
 
 
-def _agent_pod(
-    *, agent_id: str | None, pod_id: str | None, conn_id: str | None
-) -> PrincipalPermissions:
+def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
     a = _require(agent_id, name="agent_id", principal=Principal.AGENT_POD)
     p = _require(pod_id, name="pod_id", principal=Principal.AGENT_POD)
     inbox = inbox_prefix_for(Principal.AGENT_POD, conn_id=conn_id or p)
@@ -171,6 +171,21 @@ def _agent_pod(
         str(Subjects.gateway_embedding()),
         str(Subjects.tools_discover()),
         str(Subjects.tools_call()),
+        # in-process tool serving: an agent runs context-bound tools on ITS OWN ``AGENT_POD``
+        # connection rather than as separate Tool Pods -- the devx ``DevInProcessStrategy`` standard
+        # builtins, AND (in production) the ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``
+        # tools. so it must publish the registration + heartbeat subjects a tool pod publishes. the
+        # heartbeat is scoped to the AUTHENTICATED ``agent_id`` subtree (``tools.heartbeat.{a}.>``),
+        # NOT the spoofable connect-name pod id: the in-process server runs under the
+        # ``{agent_id}.{instance}`` composite pod-id (``Subjects.agent_inprocess_pod_id``) so a tenant
+        # can never publish a heartbeat under a peer agent's identity. EXTERNAL user-tool pods are a
+        # separate ``TOOL_POD`` principal carrying single-token grants under their own ``_tool_pod`` JWT.
+        str(Subjects.tools_register()),
+        str(Subjects.tools_heartbeat_agent_subtree(a)),  # heartbeats only under its own authed agent subtree
+        # the in-process tool server emits the baseline ``tool.call`` audit envelope on every
+        # dispatch (mirrors ``_tool_pod``); audit non-repudiation is required, so the grant is
+        # mandatory -- without it an agent-served tool call's actor/audit row is silently dropped.
+        str(Subjects.audit_event("tool.call")),
         str(Subjects.knowledge_draft()),
         str(Subjects.workspaces_create()),
         str(Subjects.namespace_discover()),
@@ -185,6 +200,15 @@ def _agent_pod(
         f"{inbox}.>",  # scoped reply inbox
         str(Subjects.agent_internal(a, p)),  # own agent + own pod only
         str(Subjects.agent_reregister_request(a, p)),  # own authed agent + own pod only
+        # in-process tool serving: receive the registry's proxied calls + reachability probe for its
+        # OWN in-process tool server. scoped to the AUTHENTICATED ``agent_id`` subtree
+        # (``tools.internal.{a}.>`` / ``tools.probe.{a}.>``), NOT the spoofable connect-name pod id:
+        # the server subscribes ``tools.{internal,probe}.{a}.{instance}`` under the
+        # ``{agent_id}.{instance}`` composite pod-id, so a tenant can NEVER be granted a subject under
+        # a peer agent's identity and thus can never wiretap another agent's proxied in-process tool
+        # calls. the ``{instance}`` tail keeps replicas of the same agent independently routable.
+        str(Subjects.tools_internal_agent_subtree(a)),  # proxied calls to its own in-process tools
+        str(Subjects.tools_probe_agent_subtree(a)),  # the registry's reachability probe for its own pods
         str(Subjects.acl_invalidate("membership")),
         str(Subjects.acl_invalidate("assignment")),
         str(Subjects.acl_invalidate("role")),
@@ -197,14 +221,21 @@ def _agent_pod(
         subscribe=subscribe,
         allow_responses=True,  # replies to the hub's route request
         inbox_prefix=inbox,
-        kv_buckets=(f"{ns}_agent_config", f"{ns}-collections", "checkpoints"),
+        kv_buckets=(
+            f"{ns}_agent_config",
+            f"{ns}-collections",
+            "checkpoints",
+            # in-process tool serving: the in-process tool server verifies the proxy's body-bound
+            # assertion under enforce and records single-use nonces here (mirrors ``_tool_pod``). used
+            # in BOTH devx (``DevInProcessStrategy`` builtins) and production
+            # (``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts`` tools).
+            f"{ns}-proxy_assertion_nonces",
+        ),
         streams=(f"{ns}_channels_deliver",),
     )
 
 
-def _tool_pod(
-    *, agent_id: str | None, pod_id: str | None, conn_id: str | None
-) -> PrincipalPermissions:
+def _tool_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
     p = _require(pod_id, name="pod_id", principal=Principal.TOOL_POD)
     inbox = inbox_prefix_for(Principal.TOOL_POD, conn_id=conn_id or p)
     ns = _ns()
@@ -229,15 +260,17 @@ def _tool_pod(
     )
 
 
-def _registry(
-    *, agent_id: str | None, pod_id: str | None, conn_id: str | None
-) -> PrincipalPermissions:
+def _registry(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.REGISTRY)
     inbox = inbox_prefix_for(Principal.REGISTRY, conn_id=c)
     ns = _ns()
     publish = (
-        f"{ns}.tools.internal.*",  # forwards calls to ANY tool pod
-        f"{ns}.tools.probe.*",  # probes ANY tool pod
+        # forwards calls to / probes ANY pod. the ``>`` tail (not ``.*``) spans BOTH single-token
+        # Tool Pods (``tools.internal.{pod_id}``) and two-token agent in-process pods
+        # (``tools.internal.{agent_id}.{instance}``); a single-token ``.*`` would silently stop
+        # routing to agent in-process tool servers the moment they adopt the composite pod-id.
+        str(Subjects.tools_internal_wildcard()),  # forwards calls to ANY pod (tool pod or agent in-process)
+        str(Subjects.tools_probe_wildcard()),  # probes ANY pod
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify identity tokens + pop
         CROSS_PLATFORM_CACHE_INVALIDATE,
     )
@@ -326,9 +359,7 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
     )
 
 
-def _gateway(
-    *, agent_id: str | None, pod_id: str | None, conn_id: str | None
-) -> PrincipalPermissions:
+def _gateway(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.GATEWAY)
     inbox = inbox_prefix_for(Principal.GATEWAY, conn_id=c)
     ns = _ns()
@@ -357,9 +388,7 @@ def _gateway(
     )
 
 
-def _channel_adapter(
-    *, agent_id: str | None, pod_id: str | None, conn_id: str | None
-) -> PrincipalPermissions:
+def _channel_adapter(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> PrincipalPermissions:
     c = _require(conn_id, name="conn_id", principal=Principal.CHANNEL_ADAPTER)
     inbox = inbox_prefix_for(Principal.CHANNEL_ADAPTER, conn_id=c)
     ns = _ns()

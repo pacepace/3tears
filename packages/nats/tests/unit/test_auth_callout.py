@@ -65,9 +65,7 @@ def _verify_response(token: str, account_pub: str) -> dict[str, Any]:
 
 class TestDecodeAuthRequest:
     def test_extracts_server_user_and_bootstrap_token(self) -> None:
-        req = decode_auth_request(
-            _request_jwt(server_id="NABC", user_nkey="UXYZ", auth_token="tok-1")
-        )
+        req = decode_auth_request(_request_jwt(server_id="NABC", user_nkey="UXYZ", auth_token="tok-1"))
         assert req.server_id_value == "NABC"
         assert req.user_nkey == "UXYZ"
         assert req.bootstrap_token == "tok-1"
@@ -89,9 +87,7 @@ class TestDecodeAuthRequest:
 class TestMintAuthResponse:
     def test_admit_carries_user_jwt_and_verifies(self) -> None:
         seed = generate_account_seed()
-        token = mint_auth_response(
-            account_seed=seed, server_id="NSRV", user_nkey="UUSR", user_jwt="THE.USER.JWT"
-        )
+        token = mint_auth_response(account_seed=seed, server_id="NSRV", user_nkey="UUSR", user_jwt="THE.USER.JWT")
         payload = _verify_response(token, account_public_key(seed))
         assert payload["aud"] == "NSRV"  # must equal the requesting server id
         assert payload["sub"] == "UUSR"  # must equal the server-supplied user nkey
@@ -114,13 +110,9 @@ class TestMintAuthResponse:
         with pytest.raises(ValueError):
             mint_auth_response(account_seed=seed, server_id="N", user_nkey="U")  # neither
         with pytest.raises(ValueError):
-            mint_auth_response(
-                account_seed=seed, server_id="N", user_nkey="U", user_jwt="j", error="e"
-            )  # both
+            mint_auth_response(account_seed=seed, server_id="N", user_nkey="U", user_jwt="j", error="e")  # both
 
     def test_signature_fails_under_a_different_account(self) -> None:
-        token = mint_auth_response(
-            account_seed=generate_account_seed(), server_id="N", user_nkey="U", user_jwt="j"
-        )
+        token = mint_auth_response(account_seed=generate_account_seed(), server_id="N", user_nkey="U", user_jwt="j")
         with pytest.raises(InvalidSignature):
             _verify_response(token, account_public_key(generate_account_seed()))

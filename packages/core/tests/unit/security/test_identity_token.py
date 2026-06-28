@@ -310,6 +310,55 @@ def test_user_id_is_optional(
     assert claims.user_id is None
 
 
+def test_conversation_id_round_trips_when_set(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # the user-assertion's conversation-binding claim survives sign -> verify so the proxy + pod can
+    # re-check it against the inbound call's conversation_id.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    token = sign_identity_token(_claims(conversation_id="conv-7"), signing_key=priv, kid="kid-1")
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.conversation_id == "conv-7"
+
+
+def test_conversation_id_is_optional_and_defaults_none(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # the handshake identity token carries NO conversation binding; it must verify with
+    # conversation_id None (the claim is emitted only when set, so the handshake token is unaffected).
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    # decode the (unverified) payload segment to confirm the claim is not even emitted when unset.
+    token = sign_identity_token(_claims(), signing_key=priv, kid="kid-1")
+    assert "conversation_id" not in pyjwt.decode(token, options={"verify_signature": False})
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.conversation_id is None
+
+
+def test_empty_conversation_id_normalizes_to_none(
+    keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+) -> None:
+    # a present-but-empty conversation_id is not a usable binding -> normalized to None so the verify
+    # gates' "carries no conversation_id" deny fires rather than an empty-string match.
+    priv, pub = keypair
+    jwks = build_jwks({"kid-1": pub})
+    now = int(time.time())
+    payload = {
+        "sub": "a",
+        "customer_id": "c",
+        "sid": "s",
+        "pod_id": "p",
+        "iss": _ISS,
+        "iat": now,
+        "exp": now + 600,
+        "conversation_id": "",
+    }
+    token = pyjwt.encode(payload, key=priv, algorithm="EdDSA", headers={"kid": "kid-1"})
+    claims = verify_identity_token(token, jwks=jwks, issuer=_ISS)
+    assert claims.conversation_id is None
+
+
 def test_multi_kid_jwks_supports_overlap_window_rotation(
     keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
 ) -> None:

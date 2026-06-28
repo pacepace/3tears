@@ -44,9 +44,7 @@ class ProxyAssertionSigner:
     :ptype ttl_seconds: int
     """
 
-    def __init__(
-        self, *, signing_key: Ed25519PrivateKey, ttl_seconds: int = _DEFAULT_TTL_SECONDS
-    ) -> None:
+    def __init__(self, *, signing_key: Ed25519PrivateKey, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
         if ttl_seconds <= 0:
             raise IdentityTokenError("ttl_seconds must be positive")
         self._key = signing_key
@@ -55,9 +53,7 @@ class ProxyAssertionSigner:
         self._ttl = ttl_seconds
 
     @classmethod
-    def from_secret(
-        cls, secret: SecretStr, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS
-    ) -> ProxyAssertionSigner:
+    def from_secret(cls, secret: SecretStr, *, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> ProxyAssertionSigner:
         """build the signer from a base64(url) 32-byte Ed25519 seed held in ``secret_refs``.
 
         Fail closed: a malformed/wrong-length/empty secret raises rather than signing on a junk key.
@@ -75,9 +71,7 @@ class ProxyAssertionSigner:
                 raise ValueError(f"expected a {_ED25519_SEED_LEN}-byte seed, got {len(seed)}")
             key = Ed25519PrivateKey.from_private_bytes(seed)
         except ValueError as exc:
-            raise IdentityTokenError(
-                f"invalid proxy assertion signing key ({type(exc).__name__})"
-            ) from None
+            raise IdentityTokenError(f"invalid proxy assertion signing key ({type(exc).__name__})") from None
         return cls(signing_key=key, ttl_seconds=ttl_seconds)
 
     @property

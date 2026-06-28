@@ -153,17 +153,33 @@ _ASSERTION_NONCE_TTL_SECONDS = 60
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(
+    url: str,
+    *,
+    namespace: str = "aibots",
+    user: str | None = None,
+    password: str | None = None,
+) -> NatsClient:
     """connect to NATS server via the canonical wrapper.
 
     standalone tool pods that did not receive a pre-connected
     :class:`NatsClient` from the bootstrap call this helper to open
     their own. tests patch this symbol to swap a fake transport in.
 
+    under enforce-only connection auth (v0.13.9) a standalone tool server presents its OWN static
+    user/password (NATS ``authorization.users``); the enforcing bus has no ``no_auth_user``, so
+    ``user``/``password`` are REQUIRED there. ``None`` leaves credential auth off for tests + a
+    non-enforcing bus. (agent-owned tool pods take the pre-connected ``nats_client`` path instead --
+    that connection is the agent runtime's, authenticated via the callout.)
+
     :param url: NATS server URL
     :ptype url: str
     :param namespace: NATS subject namespace prefix bound on the wrapper
     :ptype namespace: str
+    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds
+    :ptype user: str | None
+    :param password: NATS static password paired with ``user``; ``None`` -> no creds
+    :ptype password: str | None
     :return: connected canonical wrapper client
     :rtype: NatsClient
     """
@@ -171,6 +187,8 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
         nats_url=url,
         nats_subject_namespace=namespace,
         client_name="tool-server",
+        user=user,
+        password=password,
     )
 
 
@@ -476,6 +494,8 @@ class ToolServer:
         namespace_collection: Any,
         nats_url: str = "",
         namespace: str = "aibots",
+        nats_user: str | None = None,
+        nats_password: str | None = None,
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
@@ -503,6 +523,13 @@ class ToolServer:
         :ptype nats_url: str
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
+        :param nats_user: NATS static username for the standalone (``nats_url``) connect path under
+            enforce-only connection auth; the enforcing bus has no ``no_auth_user`` so a standalone
+            tool server MUST present a credential. ignored on the pre-connected ``nats_client`` path
+            (that connection carries its own auth). ``None`` -> anonymous (tests / non-enforcing bus)
+        :ptype nats_user: str | None
+        :param nats_password: NATS static password paired with ``nats_user``
+        :ptype nats_password: str | None
         :param pod_id: unique pod identifier (generated if not provided)
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
@@ -567,6 +594,8 @@ class ToolServer:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
         self._nats_url = nats_url
         self._namespace = namespace
+        self._nats_user = nats_user
+        self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
@@ -779,7 +808,12 @@ class ToolServer:
         not yet bound.
         """
         if self._nc is None:
-            self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
+            self._nc = await nats_connect(
+                self._nats_url,
+                namespace=self._namespace,
+                user=self._nats_user,
+                password=self._nats_password,
+            )
             log.info(
                 "connected to NATS",
                 extra={
@@ -1268,8 +1302,10 @@ class ToolServer:
         per-turn VERIFIED user_id as a SECOND, cnf-LESS user-assertion (``context.user_identity_token``).
         This method MIRRORS the registry proxy's user-assertion gate: when present it is verified
         against the SAME issuer/JWKS and BOUND to the handshake token (``sub`` + ``customer_id`` must
-        match), then re-stamps ``user_id``; without it the defense-in-depth re-stamp would null the
-        proxy-verified user_id (losing audit actor attribution + the per-user context manager).
+        match) AND to the conversation (the assertion's ``conversation_id`` must equal the call's, so
+        a captured assertion cannot be replayed into a DIFFERENT conversation), then re-stamps
+        ``user_id``; without it the defense-in-depth re-stamp would null the proxy-verified user_id
+        (losing audit actor attribution + the per-user context manager).
 
         Verification is UNCONDITIONAL and fail-closed: verify, on success re-stamp the verified
         identity, on ANY failure REJECT the call (return a rejection reason). there is no off/warn
@@ -1355,6 +1391,19 @@ class ToolServer:
                     )
                 if user_claims.user_id is None:
                     raise IdentityTokenError("user-assertion carries no user_id")
+                # CONVERSATION-BINDING (MIRRORS the proxy): the assertion must carry the
+                # conversation_id it was minted for, and it must equal this call's -- so a captured
+                # user-assertion cannot be replayed into a DIFFERENT conversation. a user-driven turn
+                # always mints with a conversation_id, so an assertion lacking one is a denial, never
+                # a skippable check; a mismatch (or a call carrying no conversation_id while the
+                # assertion carries one) is the cross-conversation replay this gate closes.
+                # ``context.conversation_id`` is a UUID; stringify to compare the wire-string claim.
+                if user_claims.conversation_id is None:
+                    raise IdentityTokenError("user-assertion carries no conversation_id")
+                if context.conversation_id is None or str(context.conversation_id) != user_claims.conversation_id:
+                    raise IdentityTokenError(
+                        "user-assertion conversation_id does not match the call (cross-conversation replay)"
+                    )
                 user_id_value = UUID(user_claims.user_id)
             except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
                 reason = type(exc).__name__

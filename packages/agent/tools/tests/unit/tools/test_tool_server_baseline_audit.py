@@ -180,6 +180,7 @@ async def test_baseline_audit_emitted_on_success_path() -> None:
             tool_version="1.0",
             agent_id=calling_agent_id,
             customer_id=customer_id,
+            conversation_id=uuid4(),  # the bound user-assertion is minted for this conversation
             user_id=user_id,
             correlation_id=str(correlation_id),
         )
@@ -483,7 +484,7 @@ async def test_bound_user_assertion_restamps_actor_user_id() -> None:
     """a bound user-assertion supplies the audited actor_user_id; the handshake token is user-less."""
     set_default_namespace("ns")
     nats = _FakeNats()
-    agent_id, customer_id, real_user = uuid4(), uuid4(), uuid4()
+    agent_id, customer_id, real_user, conv_id = uuid4(), uuid4(), uuid4(), uuid4()
     server = ToolServer(
         namespace="ns",
         nats_client=nats,
@@ -500,6 +501,7 @@ async def test_bound_user_assertion_restamps_actor_user_id() -> None:
             tool_version="1.0",
             agent_id=agent_id,
             customer_id=customer_id,
+            conversation_id=conv_id,  # the bound user-assertion is minted for this conversation
             user_id=real_user,  # mints a bound user-assertion (sub=agent_id, customer=customer_id)
         )
     )
@@ -641,3 +643,142 @@ async def test_user_assertion_failclosed_denies(flavor: str) -> None:
     assert env["outcome"] == "failure"
     assert env["actor_user_id"] is None
     assert "user-assertion verification failed" in env["details"]["failure_reason"]
+
+
+# ---------------------------------------------------------------------------
+# v0.13.9 conversation-binding (the cross-conversation replay residual): the user-assertion carries
+# the conversation_id it was minted for, and the pod MIRRORS the proxy by rejecting a call whose
+# CallContext.conversation_id does not match. confines a captured (cnf-less) assertion to the SAME
+# conversation it was minted for -- closing the dangerous cross-conversation impersonation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_user_assertion_for_same_conversation_is_accepted() -> None:
+    """a user-assertion minted for conversation C, on a call for conversation C -> ACCEPTED, re-stamped."""
+    set_default_namespace("ns")
+    nats = _FakeNats()
+    agent_id, customer_id, real_user, conv_id = uuid4(), uuid4(), uuid4(), uuid4()
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+        pod_id="ua-pod",
+        namespace_collection=None,
+        jwks_provider=_pod_jwks_provider,
+        assertion_replay_guard=_PodReplayGuard(),
+    )
+    server.register(_StubTool())
+    # the bound assertion is minted for conv_id (the helper binds the call's conversation), and the
+    # call carries the SAME conv_id -> the conversation-binding gate accepts and re-stamps the user.
+    msg = _make_msg(
+        _signed_call_payload(
+            pod_id="ua-pod",
+            tool_name="test.stub",
+            tool_version="1.0",
+            agent_id=agent_id,
+            customer_id=customer_id,
+            conversation_id=conv_id,
+            user_id=real_user,
+        )
+    )
+
+    await server.handle_call(msg)
+
+    env = _audit_envelopes(nats, ".audit.tool.call")[0]
+    assert env["outcome"] == "success"  # accepted: same conversation
+    assert env["actor_user_id"] == str(real_user)  # the verified user was re-stamped
+
+
+@pytest.mark.asyncio
+async def test_user_assertion_replayed_into_different_conversation_denies() -> None:
+    """a user-assertion minted for conversation C, REPLAYED on a call for conversation D -> REJECTED.
+
+    this is the cross-conversation impersonation a compromised pod could attempt: inject a captured
+    user-U assertion (minted for conv C) into a tool call it builds for a DIFFERENT conversation D.
+    the conversation-binding gate denies it fail-closed, so U is never impersonated outside conv C.
+    """
+    set_default_namespace("ns")
+    nats = _FakeNats()
+    agent_id, customer_id, real_user = uuid4(), uuid4(), uuid4()
+    conv_minted_for, conv_of_call = uuid4(), uuid4()  # C != D
+    # mint a fully-valid, BOUND assertion for conversation C (the captured token)...
+    captured = _mint_user_assertion(
+        sub=agent_id, customer_id=customer_id, user_id=real_user, conversation_id=conv_minted_for
+    )
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+        pod_id="ua-pod",
+        namespace_collection=None,
+        jwks_provider=_pod_jwks_provider,
+        assertion_replay_guard=_PodReplayGuard(),
+    )
+    server.register(_StubTool())
+    # ...and replay it on a call for conversation D.
+    msg = _make_msg(
+        _signed_call_payload(
+            pod_id="ua-pod",
+            tool_name="test.stub",
+            tool_version="1.0",
+            agent_id=agent_id,
+            customer_id=customer_id,
+            conversation_id=conv_of_call,
+            user_assertion=captured,
+        )
+    )
+
+    await server.handle_call(msg)
+
+    assert len(nats.replies) == 1
+    _reply_subject, response = nats.replies[0]
+    response_data = json.loads(response.model_dump_json())
+    assert response_data["success"] is False  # the cross-conversation replay is denied
+    assert "user-assertion verification failed" in response_data["error"]
+    env = _audit_envelopes(nats, ".audit.tool.call")[0]
+    assert env["outcome"] == "failure"
+    assert env["actor_user_id"] is None  # U was NOT impersonated in conversation D
+
+
+@pytest.mark.asyncio
+async def test_user_assertion_with_no_conversation_id_denies() -> None:
+    """a user-assertion that carries NO conversation_id, on a user-driven call -> REJECTED.
+
+    a user-driven turn ALWAYS mints with a conversation_id, so a present assertion lacking one is a
+    denial -- the gate never lets "no conversation_id" skip the conversation-binding check.
+    """
+    set_default_namespace("ns")
+    nats = _FakeNats()
+    agent_id, customer_id = uuid4(), uuid4()
+    # an otherwise-valid bound assertion, but minted with NO conversation binding.
+    unbound = _mint_user_assertion(sub=agent_id, customer_id=customer_id, user_id=uuid4())
+    server = ToolServer(
+        namespace="ns",
+        nats_client=nats,
+        pod_id="ua-pod",
+        namespace_collection=None,
+        jwks_provider=_pod_jwks_provider,
+        assertion_replay_guard=_PodReplayGuard(),
+    )
+    server.register(_StubTool())
+    msg = _make_msg(
+        _signed_call_payload(
+            pod_id="ua-pod",
+            tool_name="test.stub",
+            tool_version="1.0",
+            agent_id=agent_id,
+            customer_id=customer_id,
+            conversation_id=uuid4(),  # the call has a conversation; the assertion has none -> deny
+            user_assertion=unbound,
+        )
+    )
+
+    await server.handle_call(msg)
+
+    assert len(nats.replies) == 1
+    _reply_subject, response = nats.replies[0]
+    response_data = json.loads(response.model_dump_json())
+    assert response_data["success"] is False
+    assert "user-assertion verification failed" in response_data["error"]
+    env = _audit_envelopes(nats, ".audit.tool.call")[0]
+    assert env["outcome"] == "failure"
+    assert env["actor_user_id"] is None
