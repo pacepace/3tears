@@ -140,17 +140,24 @@ class TestJetStreamGrants:
         assert not any(g == "$JS.API.>" or g.startswith("$JS.API.*") for g in pub)
 
     def test_every_js_grant_pins_a_declared_stream_or_is_account_info(self) -> None:
-        # every $JS grant must carry a declared stream name as a literal token -- or be the single
-        # documented account-level INFO probe. nothing else is account-wide.
+        # every $JS grant must carry a declared stream name as a literal token -- or be one of the two
+        # documented stream-LESS account subjects (the INFO connect probe + STREAM.NAMES, which
+        # nats-py needs to resolve a KV bucket's stream for a kv.watch()/hot-reload). nothing else is
+        # account-wide.
         declared = {"KV_aibots_agent_config", "KV_checkpoints", "aibots_channels_deliver"}
+        account_level = {"$JS.API.INFO", "$JS.API.STREAM.NAMES"}
         for grant in self._js_pub():
-            if grant == "$JS.API.INFO":
+            if grant in account_level:
                 continue
             tokens = grant.split(".")
             assert any(tok in declared for tok in tokens), grant
 
-    def test_account_info_granted_once_for_js_principal(self) -> None:
-        assert self._js_pub().count("$JS.API.INFO") == 1
+    def test_account_level_subjects_granted_once_for_js_principal(self) -> None:
+        # both stream-less account subjects granted exactly once: INFO (connect probe) +
+        # STREAM.NAMES (KV-watch stream resolution -- without it agent.yaml hot-reload silently dies).
+        js = self._js_pub()
+        assert js.count("$JS.API.INFO") == 1
+        assert js.count("$JS.API.STREAM.NAMES") == 1
 
     def test_real_js_ops_on_declared_streams_are_admitted(self) -> None:
         # the EXACT $JS.API subjects nats-py constructs for the KV + stream paths must each be
@@ -194,7 +201,9 @@ class TestJetStreamGrants:
             "$JS.API.CONSUMER.DURABLE.CREATE.KV_other.spy",
             "$JS.API.CONSUMER.MSG.NEXT.KV_other.spy",
             "$JS.API.STREAM.MSG.GET.aibots_other_stream",
-            "$JS.API.STREAM.NAMES",  # account-level stream enumeration (not granted)
+            # NB: $JS.API.STREAM.NAMES IS granted (account-level) -- nats-py needs it to resolve a KV
+            # bucket's stream for kv.watch(); it enumerates only platform-constant stream names, no
+            # stream DATA. STREAM.LIST (full per-stream config) is NOT needed by any client path.
             "$JS.API.STREAM.LIST",
         ]
         for op in forbidden:

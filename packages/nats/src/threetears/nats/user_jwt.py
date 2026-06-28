@@ -40,14 +40,19 @@ __all__ = ["account_public_key", "encode_and_sign", "generate_account_seed", "mi
 _ALG = "ed25519-nkey"
 _HEADER: dict[str, str] = {"typ": "JWT", "alg": _ALG}
 
-#: the ONE account-level (stream-less) JetStream API subject a JS-using principal is granted.
-#: ``$JS.API.INFO`` returns only the connection's OWN account JetStream limits/usage -- it cannot
-#: read another principal's stream/bucket data. it is unavoidable here: ``NatsClient.connect`` runs
-#: ``account_info()`` as its post-connect JetStream reachability probe (``_verify_jetstream``, fatal
-#: on failure) and the core KV cache's ``ping()`` health check calls it too, so omitting it would
-#: brick every JS principal at connect under enforce. it carries no stream token, so it cannot be
-#: pinned per-stream; it is granted (pub-only) only to principals that declare a bucket/stream.
-_JS_API_ACCOUNT_INFO = "$JS.API.INFO"
+#: account-level (stream-LESS) JetStream API subjects a JS-using principal is granted. Neither
+#: carries a stream token, so neither can be pinned per-stream; both only inspect/enumerate the
+#: connection's OWN account (per-customer-account prod) or the shared account's platform-constant
+#: stream names (shared-account dev) -- never another principal's stream/bucket DATA. Granted
+#: (pub-only) only to principals that declare a bucket/stream.
+#:   - ``$JS.API.INFO``: ``NatsClient.connect`` runs ``account_info()`` as its post-connect JetStream
+#:     reachability probe (``_verify_jetstream``, fatal on failure) and the core KV cache's ``ping()``
+#:     calls it; omitting it bricks every JS principal at connect under enforce.
+#:   - ``$JS.API.STREAM.NAMES``: nats-py resolves a KV bucket's backing stream by subject when setting
+#:     up a ``kv.watch()`` (the agent-config hot-reload watcher, ``runtime/hot_reload.py``). Without
+#:     it the WATCH fails (KV get/put/bind still work via the per-stream grants), silently disabling
+#:     agent.yaml hot-reload under enforce.
+_JS_API_ACCOUNT = ("$JS.API.INFO", "$JS.API.STREAM.NAMES")
 
 
 def _js_api_grants_for_stream(stream: str) -> list[str]:
@@ -202,7 +207,8 @@ def mint_user_jwt(
     #     principal can drive every JS op against its OWN streams but is DENIED the cross-tenant
     #     direct-read (``$JS.API.STREAM.MSG.GET.KV_<other>``) / destroy (``STREAM.DELETE``/``PURGE``)
     #     that a bare ``$JS.API.>`` exposed on a shared account. Plus one account-level (stream-less)
-    #     subject, ``$JS.API.INFO`` -- see ``_JS_API_ACCOUNT_INFO`` for why it cannot be scoped away.
+    #     subjects (``$JS.API.INFO`` + ``$JS.API.STREAM.NAMES``) -- see ``_JS_API_ACCOUNT`` for why
+    #     they cannot be scoped per-stream.
     #
     # RESIDUAL (deliberate, not a regression): the ``$KV.{bucket}.>`` data grant is bucket-scoped but
     # NOT key-scoped. Buckets shared across principals (``{ns}-collections`` keyed by entity, the
@@ -217,7 +223,7 @@ def mint_user_jwt(
     js_streams = [f"KV_{bucket}" for bucket in permissions.kv_buckets] + list(permissions.streams)
     js_control: list[str] = []
     if js_streams:
-        js_control.append(_JS_API_ACCOUNT_INFO)
+        js_control.extend(_JS_API_ACCOUNT)
         for stream in js_streams:
             js_control.extend(_js_api_grants_for_stream(stream))
 
