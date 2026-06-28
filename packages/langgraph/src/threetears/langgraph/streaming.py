@@ -41,6 +41,7 @@ from threetears.observe import get_logger, traced
 
 __all__ = [
     "NOSTREAM_TAG",
+    "NO_INTERRUPT",
     "StreamStartEvent",
     "StreamTokenEvent",
     "StreamEndEvent",
@@ -51,6 +52,8 @@ __all__ = [
     "ToolCallProgressEvent",
     "StreamEvent",
     "parse_stream_event",
+    "detect_interrupt",
+    "render_interrupt_prompt",
     "StreamTransport",
     "StreamingResponse",
     "StreamingResponseError",
@@ -74,6 +77,12 @@ NOSTREAM_TAG = "threetears:nostream"
 #: whose payload happens to be ``None``": :func:`_detect_interrupt` returns this when there is NO
 #: pending interrupt, so a genuine ``interrupt(None)`` is never mistaken for a normal completion.
 _NO_INTERRUPT: Any = object()
+
+#: public alias of :data:`_NO_INTERRUPT` so a NON-streaming consumer (the SDK's ``ainvoke`` path)
+#: can compare against the SAME sentinel object the streaming detection uses -- single source of
+#: truth, no second sentinel to drift. :func:`detect_interrupt` returns this when the graph
+#: completed normally; identity (``is NO_INTERRUPT``) is the test, never equality.
+NO_INTERRUPT: Any = _NO_INTERRUPT
 
 
 # ---------------------------------------------------------------------------
@@ -986,6 +995,51 @@ def _extract_token(event: dict[str, Any]) -> str:
         chunk = raw_data
     content = getattr(chunk, "content", None) if chunk is not None else None
     return content if isinstance(content, str) else ""
+
+
+async def detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:
+    """return the pending interrupt payload when the graph PAUSED, else :data:`NO_INTERRUPT`.
+
+    public, transport-agnostic wrapper over the private :func:`_detect_interrupt` so a NON-streaming
+    consumer (the SDK's ``compiled.ainvoke(...)`` path) detects a human-in-the-loop pause the SAME
+    way the streaming :meth:`StreamingResponse.run_graph` does -- the snapshot-shape logic lives in
+    ONE place (``_detect_interrupt`` / :func:`_snapshot_interrupts`), never duplicated in the SDK.
+    a failing checkpointer-backed ``aget_state`` is NOT swallowed -- it propagates so the caller can
+    surface a real error rather than a silent empty reply (the bug the interrupt path exists to kill).
+
+    :param compiled_graph: the compiled LangGraph (may expose ``aget_state`` / ``checkpointer``)
+    :ptype compiled_graph: Any
+    :param config: the LangGraph runtime config (carries the thread id)
+    :ptype config: dict[str, Any]
+    :return: the interrupt payload, or :data:`NO_INTERRUPT` when the graph completed normally
+    :rtype: Any
+    :raises Exception: re-raises a checkpointer-backed ``aget_state`` failure (never swallowed)
+    """
+    return await _detect_interrupt(compiled_graph, config)
+
+
+def render_interrupt_prompt(payload: Any) -> str:
+    """render a minimal, generic human-facing prompt from a raw interrupt payload.
+
+    when a graph PAUSES on a human-in-the-loop ``interrupt(...)`` every text surface that shows the
+    pause to a human -- the agent's synchronous reply ``content``, a channel delivery, the hub's
+    WebSocket terminal frame -- needs a string. this is the platform's GENERIC floor and lives here,
+    in the shared wire module, so EVERY surface renders an interrupt IDENTICALLY (single source of
+    truth, no per-consumer drift). it stringifies the payload and appends a one-line "what to do
+    next" hint. RICH rendering (a structured approval card, action-specific copy) is the consuming
+    agent's job -- it owns the payload shape and can render from the first-class ``interrupt`` field
+    on the response metadata / :attr:`StreamInterruptEvent.payload`. ``None`` and a blank/whitespace
+    payload both collapse to the hint alone so the surface never shows a literal ``"None"`` or a
+    blank bubble.
+
+    :param payload: the value a node passed to ``interrupt(...)``
+    :ptype payload: Any
+    :return: a human-readable prompt string
+    :rtype: str
+    """
+    rendered = "" if payload is None else str(payload).strip()
+    hint = "Reply to approve or deny to continue."
+    return f"{rendered}\n\n{hint}" if rendered else hint
 
 
 async def _detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:

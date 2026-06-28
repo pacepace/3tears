@@ -23,6 +23,7 @@ from langgraph.types import Command
 from uuid_utils import uuid7
 
 from threetears.langgraph.streaming import (
+    NO_INTERRUPT,
     NOSTREAM_TAG,
     StreamEndEvent,
     StreamErrorEvent,
@@ -35,7 +36,9 @@ from threetears.langgraph.streaming import (
     ToolCallEndEvent,
     ToolCallProgressEvent,
     ToolCallStartEvent,
+    detect_interrupt,
     parse_stream_event,
+    render_interrupt_prompt,
 )
 
 
@@ -1067,3 +1070,50 @@ class TestRunGraphInterrupt:
         kinds = {type(e).__name__ for e in transport.events}
         assert "StreamErrorEvent" in kinds
         assert "StreamEndEvent" not in kinds
+
+
+class TestDetectInterruptPublic:
+    """the public :func:`detect_interrupt` is the single source of truth for the NON-streaming path.
+
+    the SDK's ``ainvoke`` consumer reads a pending HITL pause through this wrapper rather than
+    re-deriving the snapshot shape; these tests pin the public surface (payload + sentinel) so the
+    non-streaming consumer and the streaming :meth:`StreamingResponse.run_graph` stay in lockstep.
+    """
+
+    @pytest.mark.asyncio
+    async def test_detect_interrupt_public_returns_payload(self) -> None:
+        prompt = {"action": "exploit.approve", "target": "10.0.0.1"}
+        graph = _InterruptingGraph([], _Snapshot([_Interrupt(prompt)]))
+        result = await detect_interrupt(graph, {})
+        assert result == prompt
+        assert result is not NO_INTERRUPT
+
+    @pytest.mark.asyncio
+    async def test_detect_interrupt_public_returns_sentinel_when_unpaused(self) -> None:
+        graph = _InterruptingGraph([], _Snapshot([]))
+        result = await detect_interrupt(graph, {})
+        assert result is NO_INTERRUPT
+
+
+class TestRenderInterruptPrompt:
+    """the shared generic renderer: stringify the payload + a continue hint, single source of truth.
+
+    every interrupt surface (the SDK's synchronous reply + channel delivery, the hub's WS terminal)
+    renders through this one function so a pause looks identical everywhere.
+    """
+
+    def test_includes_payload_and_hint(self) -> None:
+        out = render_interrupt_prompt({"action": "exploit.approve"})
+        assert "exploit.approve" in out
+        assert "approve" in out.lower()
+        assert "deny" in out.lower()
+
+    def test_blank_payload_falls_back_to_hint_only(self) -> None:
+        assert render_interrupt_prompt("") == "Reply to approve or deny to continue."
+        assert render_interrupt_prompt("   ") == "Reply to approve or deny to continue."
+
+    def test_none_payload_renders_hint_not_literal_none(self) -> None:
+        # regression: a None payload must not render the literal string "None".
+        out = render_interrupt_prompt(None)
+        assert out == "Reply to approve or deny to continue."
+        assert "None" not in out
