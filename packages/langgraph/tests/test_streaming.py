@@ -954,13 +954,20 @@ class _Snapshot:
 
 
 class _InterruptingGraph(_StubGraph):
-    """a :class:`_StubGraph` whose ``aget_state`` reports a snapshot after the stream completes."""
+    """a checkpointer-backed :class:`_StubGraph` whose ``aget_state`` reports a snapshot (or raises).
+
+    a non-None ``checkpointer`` marks the graph as interruptible; passing a ``BaseException`` as the
+    snapshot makes ``aget_state`` raise (the transient-checkpointer-failure path).
+    """
 
     def __init__(self, events: list[Any], snapshot: Any) -> None:
         super().__init__(events)
         self._snapshot = snapshot
+        self.checkpointer = object()
 
     async def aget_state(self, config: dict[str, Any]) -> Any:
+        if isinstance(self._snapshot, BaseException):
+            raise self._snapshot
         return self._snapshot
 
 
@@ -1046,3 +1053,17 @@ class TestRunGraphInterrupt:
         await stream.interrupt(payload={"q": "approve?"})
         with pytest.raises(StreamingResponseError):
             await stream.end()
+
+    @pytest.mark.asyncio
+    async def test_checkpointer_aget_state_failure_fires_error_not_empty_end(self) -> None:
+        # Critic W2: a checkpointer-backed graph whose post-run state query fails must surface an
+        # error terminal, never be swallowed as "no interrupt" -> empty StreamEndEvent (silent hang).
+        transport = _RecordingTransport()
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}], RuntimeError("checkpointer blip")
+        )
+        with pytest.raises(RuntimeError):
+            await _stream(transport).run_graph(graph, {"messages": []}, {})
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamErrorEvent" in kinds
+        assert "StreamEndEvent" not in kinds

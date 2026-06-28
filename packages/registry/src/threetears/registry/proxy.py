@@ -511,9 +511,13 @@ class CallProxy:
                 body_hash=body_hash,
                 leeway_seconds=_POP_LEEWAY_SECONDS,
             )
-            if self._pop_replay_guard is not None and not await self._pop_replay_guard.record_unique(
-                jti
-            ):
+            if self._pop_replay_guard is None:
+                # fail closed under ENFORCE: without a replay guard a captured pop is replayable
+                # verbatim for the same body within the iat freshness window. WARN is fail-open by
+                # design (it never rejects), so a missing guard there is acceptable.
+                if mode is IdentityEnforcement.ENFORCE:
+                    raise IdentityTokenError("pop enforcement requires a replay guard")
+            elif not await self._pop_replay_guard.record_unique(jti):
                 raise IdentityTokenError("pop nonce replay")
             return None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:

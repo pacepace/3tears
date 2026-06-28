@@ -894,7 +894,23 @@ class StreamingResponse:
             await self.error(code="AGENT_FAILED", message=str(exc))
             raise
         else:
-            interrupt_payload = await _detect_interrupt(compiled_graph, config)
+            try:
+                interrupt_payload = await _detect_interrupt(compiled_graph, config)
+            except Exception as exc:
+                # a checkpointer-backed graph whose post-run state query FAILS must surface a real
+                # error terminal, never a silent empty StreamEndEvent.
+                log.error(
+                    "interrupt detection failed after graph completion",
+                    extra={
+                        "extra_data": {
+                            "correlation_id": str(self._correlation_id),
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                    exc_info=True,
+                )
+                await self.error(code="AGENT_FAILED", message=str(exc))
+                raise
             if interrupt_payload is not _NO_INTERRUPT:
                 # the graph PAUSED on a human-in-the-loop interrupt rather than completing: stash the
                 # payload for the synchronous caller and end the turn as a pause, never an empty
@@ -977,31 +993,28 @@ async def _detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:
 
     a graph compiled with a checkpointer surfaces a dynamic ``interrupt(value)`` as a paused
     snapshot whose ``aget_state(config)`` carries pending interrupts; the payload is the value a node
-    passed to ``interrupt(...)``. graphs without a checkpointer cannot interrupt, so an absent or
-    failing ``aget_state`` is treated as a normal completion (the sentinel). a single interrupt
-    returns its value directly; concurrent interrupts return the list of values.
+    passed to ``interrupt(...)``. graphs WITHOUT a checkpointer cannot interrupt, so detection is
+    skipped (the sentinel). when a checkpointer IS present a failing ``aget_state`` is NOT swallowed
+    as "no interrupt" -- it propagates so the caller surfaces an error terminal rather than a silent
+    empty end (the exact bug the interrupt terminal exists to kill). a single interrupt returns its
+    value directly; concurrent interrupts return the list of values.
 
-    :param compiled_graph: the compiled LangGraph (may expose ``aget_state``)
+    :param compiled_graph: the compiled LangGraph (may expose ``aget_state`` / ``checkpointer``)
     :ptype compiled_graph: Any
     :param config: the LangGraph runtime config (carries the thread id)
     :ptype config: dict[str, Any]
     :return: the interrupt payload, or :data:`_NO_INTERRUPT` when the graph completed normally
     :rtype: Any
+    :raises Exception: re-raises a checkpointer-backed ``aget_state`` failure (never swallowed)
     """
     get_state = getattr(compiled_graph, "aget_state", None)
+    has_checkpointer = getattr(compiled_graph, "checkpointer", None) is not None
     result: Any = _NO_INTERRUPT
-    if get_state is not None:
-        snapshot: Any = None
-        try:
-            snapshot = await get_state(config)
-        except Exception as exc:
-            # no checkpointer / no state for this thread -> the graph cannot have interrupted.
-            log.debug("aget_state unavailable; treating as no interrupt (%s)", type(exc).__name__)
-        if snapshot is not None:
-            interrupts = _snapshot_interrupts(snapshot)
-            if interrupts:
-                values = [getattr(item, "value", item) for item in interrupts]
-                result = values[0] if len(values) == 1 else values
+    if get_state is not None and has_checkpointer:
+        interrupts = _snapshot_interrupts(await get_state(config))
+        if interrupts:
+            values = [getattr(item, "value", item) for item in interrupts]
+            result = values[0] if len(values) == 1 else values
     return result
 
 

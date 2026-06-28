@@ -487,8 +487,21 @@ class TestDispatchPopEnforcement:
     async def test_enforce_forwards_a_valid_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
         priv, jwks = hub
         req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
-        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)
+        nc = await self._drive(
+            IdentityEnforcement.ENFORCE, lambda: jwks, req, pop_replay_guard=_StubReplayGuard(fresh=True)
+        )
         nc.request_raw.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_enforce_without_a_replay_guard_denies(
+        self, hub: tuple[Any, dict[str, Any]]
+    ) -> None:
+        # fail closed: ENFORCE without a replay guard would allow verbatim pop replay in-window.
+        priv, jwks = hub
+        req = _pop_request(priv, Ed25519PrivateKey.generate(), correlation_id=uuid7())
+        nc = await self._drive(IdentityEnforcement.ENFORCE, lambda: jwks, req)  # no guard
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_POP_UNVERIFIED"
 
     @pytest.mark.asyncio
     async def test_enforce_rejects_a_missing_pop(self, hub: tuple[Any, dict[str, Any]]) -> None:
