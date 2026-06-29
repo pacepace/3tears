@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-skills"
-version = "0.13.8"
+version = "0.13.9"
 description = "Procedural memory for LLM agents -- skill definitions + invocation history"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

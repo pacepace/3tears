@@ -6,11 +6,13 @@ build-backend = "hatchling.build"
 name = "3tears-datasources"
 # versioned in lockstep with the rest of the 3tears monorepo (every
 # package tracks the framework git tag). do NOT decouple this number.
-version = "0.13.8"
+version = "0.13.9"
 description = "datasource entities, collections, namespace helpers, agent-yaml config model + driver abstraction for postgres/redshift/snowflake/bigquery backends"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

@@ -550,6 +550,13 @@ class WebSocketHandler:
                 channel_type="websocket",
                 content=content,
                 sender_id=user_id,
+                # customer_id is the SERVER-authenticated scope from the auth
+                # payload (the access-token ``customer_id`` claim, surfaced via
+                # ``_message_loop``), NOT a client-supplied ``metadata`` value:
+                # the host mints identity from it, so a client must not be able
+                # to spoof it. empty (chat config with no customer) normalizes
+                # to None so the field reads as "absent" rather than "".
+                customer_id=customer_id or None,
                 metadata=metadata,
                 user_timezone=user_tz if isinstance(user_tz, str) and user_tz else None,
                 user_locale=user_locale if isinstance(user_locale, str) and user_locale else None,

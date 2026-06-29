@@ -53,6 +53,15 @@ class ChannelMessage:
     :ptype sender_id: str
     :param sender_name: display name of sender
     :ptype sender_name: str | None
+    :param customer_id: platform customer scope for the sender, surfaced by
+        the host from its server-authenticated session (e.g. the websocket
+        access-token ``customer_id`` claim). carried so a host that already
+        knows the authenticated customer can populate the outbound envelope
+        without re-resolving it, and so it is never sourced from
+        client-supplied ``metadata`` (which a client could spoof). None when
+        the adapter has no authenticated customer (e.g. the realm-gated
+        Slack/Discord adapters, which resolve the customer hub-side).
+    :ptype customer_id: str | None
     :param conversation_id: platform thread or conversation reference
     :ptype conversation_id: str | None
     :param channel_id: platform channel or room reference
@@ -91,6 +100,7 @@ class ChannelMessage:
     content: str
     sender_id: str
     sender_name: str | None = None
+    customer_id: str | None = None
     conversation_id: str | None = None
     channel_id: str | None = None
     workspace_id: str | None = None

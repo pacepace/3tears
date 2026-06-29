@@ -287,6 +287,31 @@ class TestConnectionCaching:
             assert len(driver._cache) == 1  # noqa: SLF001
 
     @pytest.mark.asyncio
+    async def test_connect_passes_default_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """the config's sslmode (default verify-ca) is passed to connect."""
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
+            driver = RedshiftDriver(redshift_config)
+            await driver.fetch("SELECT 1")
+            assert connect_mock.call_args.kwargs["sslmode"] == "verify-ca"
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_verify_full_sslmode(self, redshift_config: RedshiftConnectionConfig) -> None:
+        """verify-full (for a proxy-fronted cluster) reaches connect unchanged."""
+        cfg = redshift_config.model_copy(update={"sslmode": "verify-full"})
+        conn = _build_mock_connection(fetchall_rows=[], description=[])
+        with patch(
+            "threetears.datasources.drivers.redshift_driver.redshift_connector.connect",
+            return_value=conn,
+        ) as connect_mock:
+            driver = RedshiftDriver(cfg)
+            await driver.fetch("SELECT 1")
+            assert connect_mock.call_args.kwargs["sslmode"] == "verify-full"
+
+    @pytest.mark.asyncio
     async def test_second_fetch_hits_cache(self, redshift_config: RedshiftConnectionConfig) -> None:
         """second fetch reuses the cached connection (no second connect)."""
         conn = _build_mock_connection(

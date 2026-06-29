@@ -211,9 +211,16 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
         """build standalone ``ToolServer`` from environment variables."""
         nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
         namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
+        # enforce-only connection auth (v0.13.9): this standalone pod presents its OWN static NATS
+        # user/password (the enforcing bus has no ``no_auth_user``). unset -> anonymous, for a
+        # non-enforcing bus; the compose / Procfile sets these on the enforcing dev/prod bus.
+        nats_user = os.environ.get("FOURTEENAIBOTS_NATS_USER") or None
+        nats_password = os.environ.get("FOURTEENAIBOTS_NATS_PASSWORD") or None
         return ToolServer(
             nats_url=nats_url,
             namespace=namespace,
+            nats_user=nats_user,
+            nats_password=nats_password,
             namespace_collection=None,
         )
 

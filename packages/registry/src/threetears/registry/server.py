@@ -16,7 +16,13 @@ import signal
 from collections.abc import Awaitable, Callable
 
 from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.security import (
+    CachedHubJwksProvider,
+    ProxyAssertionSigner,
+    resolve_secret,
+)
 from threetears.nats import NatsClient
 from threetears.observe import HealthCheck, HealthServer, get_logger
 from threetears.observe.resilience import retry_with_backoff
@@ -27,6 +33,10 @@ from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
 from threetears.registry.proxy import CallProxy
 from threetears.registry.auth import AgentToolAuthorizer
+from threetears.registry.config import (
+    get_jwks_request_timeout,
+    get_proxy_assertion_signing_key_ref,
+)
 from threetears.registry.registration import RegistrationHandler
 
 __all__ = [
@@ -36,13 +46,23 @@ __all__ = [
 
 _logger = get_logger(__name__)
 
+# a pop nonce must be remembered at least as long as a proof stays valid: the iat freshness
+# window is +/- the pop leeway, so a captured proof is acceptable across twice that span.
+_POP_NONCE_TTL_SECONDS = 120
+
 
 # ---------------------------------------------------------------------------
 # NATS connection helper (patched in tests)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(
+    url: str,
+    *,
+    namespace: str = "aibots",
+    user: str | None = None,
+    password: str | None = None,
+) -> NatsClient:
     """connect to NATS server via the canonical :class:`NatsClient` wrapper.
 
     delegates to :meth:`NatsClient.connect` which handles dual-phase
@@ -50,10 +70,19 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
     :class:`Subjects`. tests patch this symbol to swap a fake
     transport into :class:`RegistryServer.serve`.
 
+    under enforce-only connection auth (v0.13.9) the registry presents its OWN static
+    user/password (NATS ``authorization.users``) so the server applies the registry user's
+    coarse subject permissions; the enforcing bus has no ``no_auth_user``, so ``user``/``password``
+    are REQUIRED there. ``None`` leaves credential auth off for tests + a non-enforcing bus.
+
     :param url: NATS server URL
     :ptype url: str
     :param namespace: NATS subject namespace prefix bound on the wrapper
     :ptype namespace: str
+    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds
+    :ptype user: str | None
+    :param password: NATS static password paired with ``user``; ``None`` -> no creds
+    :ptype password: str | None
     :return: connected canonical wrapper client
     :rtype: NatsClient
     """
@@ -61,6 +90,8 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
         nats_url=url,
         nats_subject_namespace=namespace,
         client_name="registry",
+        user=user,
+        password=password,
     )
 
 
@@ -148,6 +179,12 @@ class RegistryServer:
             "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
             "aibots",
         )
+        # enforce-only connection auth (v0.13.9): the registry connects as its OWN static NATS user
+        # (the enforcing dev bus has no ``no_auth_user``). registry is a 3tears-package consumer, so
+        # the creds come from the THREETEARS_NATS_ env namespace. unset -> anonymous (tests + a
+        # non-enforcing bus); on the enforcing bus the compose / Procfile sets these.
+        self._nats_user = os.environ.get("THREETEARS_NATS_USER") or None
+        self._nats_password = os.environ.get("THREETEARS_NATS_PASSWORD") or None
         self._heartbeat_check_interval = (
             heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
         )
@@ -169,6 +206,7 @@ class RegistryServer:
         self._heartbeat_subscriber: HeartbeatSubscriber | None = None
         self._discovery_handler: DiscoveryHandler | None = None
         self._call_proxy: CallProxy | None = None
+        self._jwks_provider: CachedHubJwksProvider | None = None
         self._health_server: HealthServer | None = None
         self._shutdown_event = asyncio.Event()
 
@@ -214,7 +252,12 @@ class RegistryServer:
         handlers, installs signal handlers, and blocks until
         shutdown is requested.
         """
-        self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
+        self._nc = await nats_connect(
+            self._nats_url,
+            namespace=self._namespace,
+            user=self._nats_user,
+            password=self._nats_password,
+        )
         _logger.info(
             "connected to NATS",
             extra={"extra_data": {"nats_url": self._nats_url}},
@@ -343,11 +386,38 @@ class RegistryServer:
             "registry.discovery_handler.start",
         )
 
+        # a real JWKS provider that fetches the Hub's published identity-token keys (request/reply)
+        # and caches them, so the proxy verifies tokens against live Hub keys before RBAC. fetch is
+        # best-effort at start (fail-closed empty cache until the first success); a refresh loop
+        # keeps it current through key rotation.
+        jwks_provider = CachedHubJwksProvider(nc, request_timeout_seconds=get_jwks_request_timeout())
+        await jwks_provider.start()
+        self._jwks_provider = jwks_provider
+
+        # the proxy's assertion-signing key (shared secret_ref with the Hub, which publishes its
+        # PUBLIC key in the JWKS) is REQUIRED under enforce-only: a registry that cannot sign a
+        # proxy->pod assertion would forward unsigned calls every pod is bound to reject. an absent
+        # or malformed key must fail startup loudly (the exception propagates out of serve) rather
+        # than boot the registry into a silently-broken state.
+        proxy_signer = ProxyAssertionSigner.from_secret(resolve_secret(get_proxy_assertion_signing_key_ref()))
+
+        # the pop replay guard records each per-call proof nonce for single-use enforcement;
+        # always provisioned under enforce-only so a captured pop can never be replayed verbatim
+        # for the same call body within the iat freshness window.
+        pop_replay_guard = ReplayGuard(nc, bucket_name="pop_nonces", ttl_seconds=_POP_NONCE_TTL_SECONDS)
+
         call_proxy = CallProxy(
             self._catalog,
             namespace=self._namespace,
             timeout=self._call_timeout,
             authorizer=self._authorizer,
+            jwks_provider=jwks_provider,
+            # reactive self-heal on a Hub re-key: a kid-not-in-cache miss triggers ONE immediate,
+            # debounced + rate-limited refresh + re-verify, so a valid token signed under a freshly-
+            # rotated Hub key heals on the first failed-but-valid call rather than after the steady tick.
+            jwks_refresh=jwks_provider.refresh_now,
+            proxy_signer=proxy_signer,
+            pop_replay_guard=pop_replay_guard,
         )
         self._call_proxy = call_proxy
         await retry_with_backoff(
@@ -380,6 +450,16 @@ class RegistryServer:
                     name="call_proxy",
                     probe=lambda: self._call_proxy is not None,
                 ),
+                # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
+                # successful fetch. before it warms, the proxy verifies every identity token against
+                # an EMPTY keyset and rejects fail-closed (TOOL_IDENTITY_UNVERIFIED), so a k8s
+                # readiness probe that flipped ready too early would route calls the proxy is
+                # guaranteed to fail. gating on is_warmed keeps the registry out of rotation until it
+                # can actually verify a token.
+                HealthCheck(
+                    name="jwks_warmed",
+                    probe=lambda: self._jwks_provider is not None and self._jwks_provider.is_warmed,
+                ),
             ],
         )
         await health_server.start()
@@ -408,6 +488,8 @@ class RegistryServer:
             await self._health_server.stop()
         if self._call_proxy is not None:
             await self._call_proxy.stop()
+        if self._jwks_provider is not None:
+            await self._jwks_provider.stop()
         if self._discovery_handler is not None:
             await self._discovery_handler.stop()
         if self._heartbeat_subscriber is not None:

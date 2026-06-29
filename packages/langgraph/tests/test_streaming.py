@@ -23,18 +23,22 @@ from langgraph.types import Command
 from uuid_utils import uuid7
 
 from threetears.langgraph.streaming import (
+    NO_INTERRUPT,
     NOSTREAM_TAG,
     StreamEndEvent,
     StreamErrorEvent,
     StreamingResponse,
     StreamingResponseError,
+    StreamInterruptEvent,
     StreamStartEvent,
     StreamTokenEvent,
     StreamTransport,
     ToolCallEndEvent,
     ToolCallProgressEvent,
     ToolCallStartEvent,
+    detect_interrupt,
     parse_stream_event,
+    render_interrupt_prompt,
 )
 
 
@@ -206,6 +210,32 @@ class TestStreamEndEventSerialization:
         assert data["type"] == "stream_end"
         assert data["content"] == "full response"
         assert data["duration_ms"] == 42
+
+    def test_metadata_defaults_empty(self) -> None:
+        """``metadata`` defaults to an empty dict when no caller supplies it."""
+        evt = StreamEndEvent(
+            correlation_id=_new_uuid(),
+            content="x",
+        )
+        assert evt.metadata == {}
+        assert json.loads(evt.model_dump_json())["metadata"] == {}
+
+    def test_metadata_round_trips_through_parse(self) -> None:
+        """``metadata`` survives serialize -> :func:`parse_stream_event`."""
+        cid = _new_uuid()
+        meta = {"tool_calls": ["lookup"], "status": "completed", "pending_grants": []}
+        payload = (
+            StreamEndEvent(
+                correlation_id=cid,
+                content="done",
+                metadata=meta,
+            )
+            .model_dump_json()
+            .encode("utf-8")
+        )
+        evt = parse_stream_event(payload)
+        assert isinstance(evt, StreamEndEvent)
+        assert evt.metadata == meta
 
 
 class TestStreamErrorEventSerialization:
@@ -451,6 +481,35 @@ class TestStreamingResponseLifecycle:
         assert len(end_events) == 1
         assert end_events[0].content == "part1 part2"
         assert stream.closed is True
+
+    async def test_end_carries_supplied_metadata(self) -> None:
+        """:meth:`end` forwards caller metadata onto the terminal envelope."""
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=_new_uuid(),
+        )
+        await stream.start()
+        await stream.end(metadata={"status": "completed"})
+        end_events = [e for e in transport.events if isinstance(e, StreamEndEvent)]
+        assert len(end_events) == 1
+        assert end_events[0].metadata == {"status": "completed"}
+
+    async def test_end_mirrors_conversation_id_onto_terminal(self) -> None:
+        """:meth:`end` carries the conversation_id (redundant with the start)."""
+        conv = _new_uuid()
+        transport = _RecordingTransport()
+        stream = StreamingResponse(
+            transport=transport,
+            correlation_id=_new_uuid(),
+            conversation_id=conv,
+        )
+        await stream.start()
+        await stream.end()
+        end_events = [e for e in transport.events if isinstance(e, StreamEndEvent)]
+        assert len(end_events) == 1
+        assert end_events[0].conversation_id == conv
 
     async def test_replace_content_sets_accumulated_buffer(self) -> None:
         """:meth:`replace_content` makes the terminal carry the new text.
@@ -874,3 +933,185 @@ def test_recording_transport_satisfies_protocol() -> None:
     """:class:`_RecordingTransport` is a structural :class:`StreamTransport`."""
     t: StreamTransport = _RecordingTransport()
     assert hasattr(t, "publish")
+
+
+# ---------------------------------------------------------------------------
+# Interrupt surfacing (HITL pause terminal) -- v0.13.9 change #1
+# ---------------------------------------------------------------------------
+
+
+class _Interrupt:
+    """LangGraph ``Interrupt`` stand-in carrying the value a node passed to ``interrupt(...)``."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+
+class _Snapshot:
+    """``StateSnapshot`` stand-in exposing pending interrupts (and ``next`` when paused)."""
+
+    def __init__(self, interrupts: list[Any]) -> None:
+        self.interrupts = interrupts
+        self.next = ("exploit_node",) if interrupts else ()
+        self.tasks: tuple[Any, ...] = ()
+
+
+class _InterruptingGraph(_StubGraph):
+    """a checkpointer-backed :class:`_StubGraph` whose ``aget_state`` reports a snapshot (or raises).
+
+    a non-None ``checkpointer`` marks the graph as interruptible; passing a ``BaseException`` as the
+    snapshot makes ``aget_state`` raise (the transient-checkpointer-failure path).
+    """
+
+    def __init__(self, events: list[Any], snapshot: Any) -> None:
+        super().__init__(events)
+        self._snapshot = snapshot
+        self.checkpointer = object()
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        if isinstance(self._snapshot, BaseException):
+            raise self._snapshot
+        return self._snapshot
+
+
+def _stream(transport: _RecordingTransport) -> StreamingResponse:
+    return StreamingResponse(
+        transport=transport,
+        correlation_id=_new_uuid(),
+        conversation_id=_new_uuid(),
+    )
+
+
+class TestStreamInterruptEventSerialization:
+    def test_type_and_payload_round_trip(self) -> None:
+        evt = StreamInterruptEvent(
+            correlation_id=_new_uuid(),
+            payload={"action": "exploit.approve", "target": "10.0.0.1"},
+            conversation_id=_new_uuid(),
+        )
+        data = json.loads(evt.model_dump_json())
+        assert data["type"] == "stream_interrupt"
+        assert data["payload"] == {"action": "exploit.approve", "target": "10.0.0.1"}
+        parsed = parse_stream_event(evt.model_dump_json())
+        assert isinstance(parsed, StreamInterruptEvent)
+        assert parsed.payload == {"action": "exploit.approve", "target": "10.0.0.1"}
+
+
+class TestRunGraphInterrupt:
+    @pytest.mark.asyncio
+    async def test_paused_graph_emits_interrupt_not_end(self) -> None:
+        transport = _RecordingTransport()
+        prompt = {"action": "exploit.approve", "target": "10.0.0.1"}
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}],
+            _Snapshot([_Interrupt(prompt)]),
+        )
+        result = await _stream(transport).run_graph(graph, {"messages": []}, {})
+
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamInterruptEvent" in kinds
+        assert "StreamEndEvent" not in kinds  # a pause is NOT a (silent empty) end
+        evt = next(e for e in transport.events if isinstance(e, StreamInterruptEvent))
+        assert evt.payload == prompt
+        assert result["__interrupt__"] == prompt  # the synchronous caller sees the stash too
+
+    @pytest.mark.asyncio
+    async def test_interrupt_from_task_level_snapshot(self) -> None:
+        # older snapshot shape: interrupts live on the pending tasks, not snapshot.interrupts.
+        transport = _RecordingTransport()
+        snapshot = _Snapshot([])
+
+        class _Task:
+            interrupts = (_Interrupt("approve?"),)
+
+        snapshot.tasks = (_Task(),)
+        graph = _InterruptingGraph([{"event": "on_chain_end", "data": {"output": {}}}], snapshot)
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        evt = next(e for e in transport.events if isinstance(e, StreamInterruptEvent))
+        assert evt.payload == "approve?"
+
+    @pytest.mark.asyncio
+    async def test_unpaused_graph_with_aget_state_ends_normally(self) -> None:
+        transport = _RecordingTransport()
+        graph = _InterruptingGraph([{"event": "on_chain_end", "data": {"output": {}}}], _Snapshot([]))
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamEndEvent" in kinds
+        assert "StreamInterruptEvent" not in kinds
+
+    @pytest.mark.asyncio
+    async def test_graph_without_aget_state_ends_normally(self) -> None:
+        # no checkpointer -> no aget_state -> cannot interrupt (back-compat with the stub graph).
+        transport = _RecordingTransport()
+        graph = _StubGraph([{"event": "on_chain_end", "data": {"output": {}}}])
+        await _stream(transport).run_graph(graph, {"messages": []}, {})
+        assert any(isinstance(e, StreamEndEvent) for e in transport.events)
+
+    @pytest.mark.asyncio
+    async def test_interrupt_terminal_is_mutually_exclusive_with_end(self) -> None:
+        stream = _stream(_RecordingTransport())
+        await stream.start()
+        await stream.interrupt(payload={"q": "approve?"})
+        with pytest.raises(StreamingResponseError):
+            await stream.end()
+
+    @pytest.mark.asyncio
+    async def test_checkpointer_aget_state_failure_fires_error_not_empty_end(self) -> None:
+        # Critic W2: a checkpointer-backed graph whose post-run state query fails must surface an
+        # error terminal, never be swallowed as "no interrupt" -> empty StreamEndEvent (silent hang).
+        transport = _RecordingTransport()
+        graph = _InterruptingGraph(
+            [{"event": "on_chain_end", "data": {"output": {}}}], RuntimeError("checkpointer blip")
+        )
+        with pytest.raises(RuntimeError):
+            await _stream(transport).run_graph(graph, {"messages": []}, {})
+        kinds = {type(e).__name__ for e in transport.events}
+        assert "StreamErrorEvent" in kinds
+        assert "StreamEndEvent" not in kinds
+
+
+class TestDetectInterruptPublic:
+    """the public :func:`detect_interrupt` is the single source of truth for the NON-streaming path.
+
+    the SDK's ``ainvoke`` consumer reads a pending HITL pause through this wrapper rather than
+    re-deriving the snapshot shape; these tests pin the public surface (payload + sentinel) so the
+    non-streaming consumer and the streaming :meth:`StreamingResponse.run_graph` stay in lockstep.
+    """
+
+    @pytest.mark.asyncio
+    async def test_detect_interrupt_public_returns_payload(self) -> None:
+        prompt = {"action": "exploit.approve", "target": "10.0.0.1"}
+        graph = _InterruptingGraph([], _Snapshot([_Interrupt(prompt)]))
+        result = await detect_interrupt(graph, {})
+        assert result == prompt
+        assert result is not NO_INTERRUPT
+
+    @pytest.mark.asyncio
+    async def test_detect_interrupt_public_returns_sentinel_when_unpaused(self) -> None:
+        graph = _InterruptingGraph([], _Snapshot([]))
+        result = await detect_interrupt(graph, {})
+        assert result is NO_INTERRUPT
+
+
+class TestRenderInterruptPrompt:
+    """the shared generic renderer: stringify the payload + a continue hint, single source of truth.
+
+    every interrupt surface (the SDK's synchronous reply + channel delivery, the hub's WS terminal)
+    renders through this one function so a pause looks identical everywhere.
+    """
+
+    def test_includes_payload_and_hint(self) -> None:
+        out = render_interrupt_prompt({"action": "exploit.approve"})
+        assert "exploit.approve" in out
+        assert "approve" in out.lower()
+        assert "deny" in out.lower()
+
+    def test_blank_payload_falls_back_to_hint_only(self) -> None:
+        assert render_interrupt_prompt("") == "Reply to approve or deny to continue."
+        assert render_interrupt_prompt("   ") == "Reply to approve or deny to continue."
+
+    def test_none_payload_renders_hint_not_literal_none(self) -> None:
+        # regression: a None payload must not render the literal string "None".
+        out = render_interrupt_prompt(None)
+        assert out == "Reply to approve or deny to continue."
+        assert "None" not in out

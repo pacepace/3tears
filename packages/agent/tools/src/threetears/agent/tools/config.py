@@ -15,6 +15,7 @@ import os
 from threetears.observe import get_logger
 
 __all__ = [
+    "get_jwks_request_timeout",
     "get_ready_poll_interval",
     "get_ready_timeout",
     "get_serve_ready_timeout",
@@ -25,6 +26,7 @@ log = get_logger(__name__)
 _PLATFORM_DEFAULT_READY_TIMEOUT = 10.0
 _PLATFORM_DEFAULT_READY_POLL_INTERVAL = 0.05
 _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT = 30.0
+_PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT = 5.0
 
 
 def _env_float(name: str, fallback: float) -> float:
@@ -82,4 +84,16 @@ def get_serve_ready_timeout() -> float:
     return _env_float(
         "THREETEARS_TOOLSERVER_SERVE_READY_TIMEOUT",
         _PLATFORM_DEFAULT_SERVE_READY_TIMEOUT,
+    )
+
+
+def get_jwks_request_timeout() -> float:
+    """return the Hub JWKS fetch request/reply timeout in seconds.
+
+    :return: timeout from THREETEARS_TOOLSERVER_JWKS_REQUEST_TIMEOUT or platform default
+    :rtype: float
+    """
+    return _env_float(
+        "THREETEARS_TOOLSERVER_JWKS_REQUEST_TIMEOUT",
+        _PLATFORM_DEFAULT_JWKS_REQUEST_TIMEOUT,
     )

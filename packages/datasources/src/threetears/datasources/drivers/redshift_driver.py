@@ -641,6 +641,7 @@ class RedshiftDriver(Driver):
                 database=cfg.database,
                 user=cfg.username,
                 password=(cfg.resolve_password().get_secret_value() if cfg.password_ref is not None else None),
+                sslmode=cfg.sslmode,
             )
         except Exception:
             # break the cause chain (``from None``) so the original

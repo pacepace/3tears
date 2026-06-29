@@ -8,16 +8,12 @@ payload models.
 
 Single source of truth for "can actor do action on namespace" decisions
 PLUS the persistence layer that feeds them. The same pure-Python
-evaluator + canonical Collections + loader adapters run in the hub
-broker, inside every agent pod, and inside any other 3tears app that
-participates in the unified RBAC story, so authorization answers are
-byte-identical across processes and one set of unit tests covers every
-caller.
+evaluator, canonical Collections, and loader adapters run in every
+consuming application, so authorization answers are byte-identical
+across processes and one set of unit tests covers every caller.
 
-Produced by `rbac-task-01` (Groups / Roles / Assignments); generalized
-by `acl-promotion-task-01` so the Collections + loaders + invalidation
-models are reusable across any 3tears app, not just the aibots hub.
-Supersedes the previous per-resource ACL code paths
+The Collections, loaders, and invalidation models are reusable across
+any 3tears app. The package supersedes per-resource ACL code paths
 (`namespace_grants`, workspace-specific checks, tool-access fnmatch
 lists).
 
@@ -27,36 +23,36 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 
 ### Evaluation
 
-- `evaluate_decision(ctx, *, cache: AclCache) -> bool` — fast yes/no
+- `evaluate_decision(ctx, *, cache: AclCache) -> bool` -- fast yes/no
   hot path. The cache is consulted for membership and per-namespace
   contribution layers on every call, falling back to its loaders only
   on cache miss; production hit rate against repeated authz checks
   for the same `(actor, namespace)` is ~100% within the cache TTL.
-- `evaluate_with_trail(ctx, *, cache) -> EvaluationResult` —
+- `evaluate_with_trail(ctx, *, cache) -> EvaluationResult` --
   introspection path returning every
-  `(group, assignment, role) → contributed_actions` chain plus
+  `(group, assignment, role) -> contributed_actions` chain plus
   `limiting_side` for user×agent intersection queries. Uses the same
   cache layers as `evaluate_decision`; trails are stored alongside
   the action set so successive decision-mode and trail-mode calls
   for the same actor + namespace serve from cache.
 - `evaluate_file_access(*, namespace, user_id, agent_id, path,
-  direction, cache) -> bool` — workspace path-glob gate; same cache
+  direction, cache) -> bool` -- workspace path-glob gate; same cache
   semantics.
 - `authorize(*, namespace_collection, namespace_name, action,
-  user_id, agent_id, cache) -> EvaluationResult` — canonical
-  authorization primitive every 3tears app's resource-typed wrapper
+  user_id, agent_id, cache) -> EvaluationResult` -- canonical
+  authorization primitive every app's resource-typed wrapper
   is built on. Looks up the namespace by name, runs
   `evaluate_with_trail` through the cache, raises generic
   `AccessDenied` on deny / `NamespaceNotFound` on missing row.
-- `authorize_with_trail` — variant returning `(result, ns_entity)`
+- `authorize_with_trail` -- variant returning `(result, ns_entity)`
   for wrappers needing the entity.
-- `AccessDenied` / `NamespaceNotFound` — generic + namespace-miss
+- `AccessDenied` / `NamespaceNotFound` -- generic + namespace-miss
   exception classes; per-resource wrappers subclass `AccessDenied`
   to carry typed catching at endpoint code (e.g.
   `MemoryAccessDenied`, `DatasourceAccessDenied`).
-- `AclCache` — three-layer in-process TTL cache
-  (`actor → [GroupMembership]`, `(group_id, namespace_id) → action_set
-  + trails`, `(group_id, namespace_type, customer_id) → action_set
+- `AclCache` -- three-layer in-process TTL cache
+  (`actor -> [GroupMembership]`, `(group_id, namespace_id) -> action_set
+  + trails`, `(group_id, namespace_type, customer_id) -> action_set
   + trails`) with fine-grained invalidation hooks fired on
   group-membership / role / assignment change. The `ActorMembershipEntry`
   carries the full memberships tuple so the evaluator's
@@ -65,29 +61,28 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 ### Persistence
 
 - `GroupCollection`, `GroupMemberCollection`, `RoleCollection`,
-  `RoleAssignmentCollection`, `NamespaceCollection` — three-tier
+  `RoleAssignmentCollection`, `NamespaceCollection` -- three-tier
   `SchemaBackedCollection` subclasses fronting the canonical RBAC
   tables (`groups`, `group_members`, `roles`, `role_assignments`,
   `namespaces`). Schemas use canonical RBAC names with no
-  deploy-specific schema prefix; the prefix (e.g. `platform.` in the
-  aibots hub deployment) is set on the L3 pool's `search_path`, not
-  in the schema name on the Collection.
+  deploy-specific schema prefix; the prefix is set on the L3 pool's
+  `search_path`, not in the schema name on the Collection.
 - `GroupEntity`, `GroupMemberEntity`, `RoleEntity`,
-  `RoleAssignmentEntity`, `NamespaceEntity` — `BaseEntity`
+  `RoleAssignmentEntity`, `NamespaceEntity` -- `BaseEntity`
   subclasses; four use composite primary keys post-row_scope
   partitioning (`(row_scope, id)` for groups / role_assignments /
   namespaces; `(group_id, id)` for group_members).
-- `CollectionMembershipLoader`, `CollectionGrantLoader` — concrete
+- `CollectionMembershipLoader`, `CollectionGrantLoader` -- concrete
   loader adapters satisfying the `MembershipLoader` /
   `GrantLoader` Protocols, wired against the canonical Collections.
 
 ### Invalidation
 
 - `MembershipInvalidatePayload`, `AssignmentInvalidatePayload`,
-  `RoleInvalidatePayload` — typed Pydantic models for the three
+  `RoleInvalidatePayload` -- typed Pydantic models for the three
   `{ns}.acl.*.invalidate` NATS subjects. Wire format is single-source:
   every publisher (admin endpoints, agent self-mutations) and every
-  subscriber (hub broker, agent-pod cache, any other app) speaks
+  subscriber (cache subscribers in any consuming app) speaks
   these models.
 
 ### Value types & protocols
@@ -95,18 +90,18 @@ Exports (see `src/threetears/agent/acl/__init__.py`):
 - Value types: `Group`, `GroupMembership`, `Role`, `RoleAssignment`,
   `Namespace`, `EvaluationContext`, `EvaluationResult`, `Trail`.
 - Enums: `ActorType`, `MemberType`, `ScopeType`, `LimitingSide`.
-- I/O protocols: `GrantLoader`, `MembershipLoader` — callers may
+- I/O protocols: `GrantLoader`, `MembershipLoader` -- callers may
   implement these against any persistence layer; the canonical
   `Collection*Loader` adapters above are the reference impls.
 
 ## Consuming the package from a 3tears app
 
 Each app constructs the canonical Collections against its own L3
-pool (direct asyncpg in a hub-style deployment, NATS-proxied L3 in
+pool (direct asyncpg in a server-style deployment, NATS-proxied L3 in
 each agent pod) and wires the canonical loader adapters + cache.
-Hub-specific admin query shapes (dynamic `list_by_filter` /
+Deployment-specific admin query shapes (dynamic `list_by_filter` /
 per-cardinality counts / multi-table discovery JOINs) live on
-deploying-app subclasses (e.g. `aibots.hub.rbac.collections.HubRoleAssignmentCollection`).
+consuming-app subclasses.
 
 ```python
 from threetears.agent.acl import (
@@ -162,15 +157,3 @@ Implicit ownership: if `namespace.owner_agent_id == ctx.agent_id`,
 the agent side short-circuits to full permissions with no group
 lookup or assignment query. Ownership is a property of the namespace
 row, never a grant.
-
-## Reference
-
-- Initial promotion: `14-eng-ai-bot/docs/acl-promotion-task-01.md`
-- Original RBAC design: `14-eng-ai-bot/docs/rbac-task-01-groups-roles-assignments.md`
-- Hub-side admin extensions: `14-eng-ai-bot/src/aibots/hub/rbac/collections.py`
-  (`HubGroupCollection` etc.), `14-eng-ai-bot/src/aibots/hub/broker/namespaces.py`
-  (`HubNamespaceCollection`), `14-eng-ai-bot/src/aibots/hub/broker/acl.py`
-  (`BrokerAclGateway`)
-- Agent SDK consumer: `14-eng-ai-bot-agents/src/aibots_agents/runtime/three_tier_stack.py`
-- Last commit (phase 1): 3tears `9bff571`; promotion: 3tears `abde333`,
-  aibots `230d83e`, aibots-agents `a83226f`

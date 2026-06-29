@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-nats"
-version = "0.13.8"
+version = "0.13.9"
 description = "Typed NATS client wrapper, subject builders, and JetStream KV bucket primitives for 3tears applications"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
@@ -22,6 +24,7 @@ classifiers = [
 dependencies = [
     "3tears-observe",
     "nats-py>=2.10",
+    "nkeys>=0.2",
     "pydantic>=2.10",
 ]
 

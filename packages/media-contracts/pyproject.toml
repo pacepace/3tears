@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-media-contracts"
-version = "0.13.8"
+version = "0.13.9"
 description = "Dependency-free media capability contracts shared by 3tears providers and tools"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

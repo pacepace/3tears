@@ -1,6 +1,6 @@
 # 3tears-agent-wake
 
-Long-running-agent foundation for 3tears-based agents. This shard (01)
+Long-running-agent foundation for 3tears-based agents. This package
 ships the schema + Collection layer for three platform tables:
 
 - `agent_wake_schedules` -- one row per active wake schedule for a
@@ -19,8 +19,8 @@ Plus three `BaseEntity` subclasses, three `BaseCollection` subclasses,
 and an agent-scope migration registration declaring
 `depends_on=("conversations", "agent_skills")`.
 
-No tick engine, no dispatch handler, no agent tools, no Pydantic API
-models in this shard -- those land in shards 02-06.
+No tick engine, no dispatch handler, no agent tools, and no Pydantic
+API models live in this package.
 
 ## Partitioning
 
@@ -40,8 +40,8 @@ governed by app-level cascade through `ConversationsCollection`.
 
 **Orphan-row implication.** Because there is no DB-level FK, deleting a
 row from `conversations` does NOT automatically remove the wake
-schedules, fires, or webhook subscriptions for that conversation —
-they become orphans (rows whose `conversation_id` no longer resolves).
+schedules, fires, or webhook subscriptions for that conversation.
+They become orphans (rows whose `conversation_id` no longer resolves).
 The partition-column enforcement walker keeps the application blind to
 orphans (every query is filtered by `conversation_id` so an orphan is
 invisible at the read path), but the rows still occupy storage. This
@@ -69,11 +69,5 @@ table is created.
 
 ## Design references
 
-See `docs/agent-wake/README.md` for the package overview, the
-2026-05-19 revision deltas, and the locked design decisions.
-Authoritative source-of-truth precedence (per PLACEMENT §9):
-
-1. `metallm/docs/long_running/PLACEMENT.md`
-2. `docs/agent-wake/README.md`
-3. The shard's revision-deltas section (top of file).
-4. The shard body.
+See `docs/agent-wake/README.md` for the package overview and the
+locked design decisions.

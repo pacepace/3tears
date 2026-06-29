@@ -4,11 +4,11 @@ Generation-stamped configuration epochs with NATS broadcast and per-message echo
 
 ## Why
 
-Multiple in-memory configuration caches across the 3tears platform need to stay coherent across pods on admin writes:
+Multiple in-memory configuration caches across the platform need to stay coherent across pods on admin writes:
 
-- metallm's `ModelCapabilities` registry (registered at startup from the `models` table)
-- 14-eng-ai-bot gateway's catalog cache (`gateway_models` + `gateway_providers` + `gateway_credit_rates`)
-- per-tool MCP RBAC grants (when MCP shared framework lands)
+- a model capabilities registry (registered at startup from the `models` table)
+- a catalog cache (`gateway_models` + `gateway_providers` + `gateway_credit_rates`)
+- per-tool MCP RBAC grants
 
 Pure NATS broadcast (push) ships with a missed-message hole: a pod that didn't receive the broadcast (subscriber blip, pod just started during the window, JetStream redelivery edge) stays stale. Pure polling (pull) is correct but expensive on hot paths.
 
@@ -20,7 +20,7 @@ This is the standard pattern from etcd `mod_revision` + watch, K8s `resourceVers
 
 The unit of identity is the **NATS subject path**. Each consumer:
 
-1. Defines or uses an existing `Subject` builder for the configuration domain it owns (e.g. `Subjects.metallm_capabilities_epoch()` -> `metallm.capabilities.epoch`).
+1. Defines or uses an existing `Subject` builder for the configuration domain it owns (e.g. `Subjects.capabilities_epoch()` -> `capabilities.epoch`).
 2. Calls `EpochClient.bump(subject, payload=...)` after committing the row mutation that motivates the reload.
 3. Subscribes via `EpochListener.subscribe(subject, on_bump=...)` from sibling pods.
 
@@ -30,9 +30,9 @@ The `platform.config_epochs` row PK is the subject path string. Postgres is the 
 
 `EpochBumpMessage` is a frozen Pydantic v2 model:
 
-- `subject_path: str` -- the namespaced subject the bump targets (matches the row PK)
-- `epoch: int` -- the new strictly-monotonic value
-- `payload: dict[str, Any] | None` -- opaque hint for the consumer's reload callback (e.g. `{"model_id": "...", "action": "create"}`)
+- `subject_path: str` is the namespaced subject the bump targets (matches the row PK)
+- `epoch: int` is the new strictly-monotonic value
+- `payload: dict[str, Any] | None` is an opaque hint for the consumer's reload callback (e.g. `{"model_id": "...", "action": "create"}`)
 
 The framework never inspects `payload`. Consumers parse if useful, ignore if not. The hint exists so a domain that only changes one row can avoid reloading the entire derived view.
 

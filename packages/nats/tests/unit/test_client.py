@@ -482,6 +482,275 @@ async def test_connect_validates_namespace() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connect_passes_credentials_and_scoped_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """auth_token, user_credentials, and a scoped inbox_prefix reach the nats-py connect options."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="aibots",
+        client_name="agent-x",
+        auth_token="bootstrap-tok",
+        user_credentials="/run/secrets/agent.creds",
+        inbox_prefix="_INBOX_agent_pod_pod-1",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert options["token"] == "bootstrap-tok"  # presented to the auth-callout responder
+    assert options["user_credentials"] == "/run/secrets/agent.creds"
+    assert options["inbox_prefix"] == b"_INBOX_agent_pod_pod-1"  # bytes, scoped per-principal
+
+
+@pytest.mark.asyncio
+async def test_connect_passes_user_and_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """user + password reach the nats-py connect options (config-mode static auth_users)."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        nats_subject_namespace="aibots",
+        client_name="gateway-svc",
+        user="gateway",
+        password="s3cret",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert options["user"] == "gateway"
+    assert options["password"] == "s3cret"
+
+
+@pytest.mark.asyncio
+async def test_connect_omits_credential_options_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """anonymous connect (the legacy shared bus) sets none of the credential/inbox options."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    assert "token" not in options
+    assert "user_credentials" not in options
+    assert "user" not in options
+    assert "password" not in options
+    assert "inbox_prefix" not in options
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_forever_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """runtime reconnect is unbounded: the options reaching nats-py carry
+    ``max_reconnect_attempts=-1`` (forever) paced by a bounded per-attempt wait.
+
+    this is the k8s-resilience contract -- a NATS outage of ANY duration must be
+    ridden out and auto-recovered with no human action, never give up after a
+    finite ceiling. the previous value (100, ~200s of budget) closed the client
+    for good on any longer outage, bricking every service with no self-heal.
+    """
+    import threetears.nats.client as client_module
+
+    # the contract the constant encodes is forever, not a finite ceiling.
+    assert client_module.RUNTIME_MAX_RECONNECT_ATTEMPTS == -1
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    options = captured["options"]
+    # forever-reconnect: the value that actually reaches nats-py (``< 0`` ==
+    # unbounded; nats-py never empties the server pool, so it never raises
+    # NoServersError and never permanently closes the client on a reconnect).
+    assert options["max_reconnect_attempts"] == -1
+    assert options["allow_reconnect"] is True
+    # each attempt is paced so forever-retry is a bounded loop, not a hot spin.
+    assert options["reconnect_time_wait"] == 2
+
+
+@pytest.mark.asyncio
+async def test_dispatch_loop_survives_message_gap_across_reconnect() -> None:
+    """the dispatch loop keeps delivering after a quiet gap (a reconnect window).
+
+    the audit's failure mode: after a long outage the old finite-ceiling client
+    CLOSED, which ended ``raw_sub.messages`` so the dispatch loop exited silently
+    -- messages that resumed post-recovery were never delivered. with
+    forever-reconnect the client never closes and nats-py replays the
+    subscription on the SAME object, so the loop reads the same queue across the
+    gap. here the fake's message stream goes quiet then resumes (no
+    close/sentinel); the loop must still deliver the post-gap message and stay
+    alive.
+    """
+    client, fake = _make_client()
+    received: list[_Hello] = []
+
+    async def on_msg(msg: _Hello) -> None:
+        received.append(msg)
+
+    sub = await client.subscribe_typed(
+        subject=Subjects.tools_call(),
+        cb=on_msg,
+        message_type=_Hello,
+    )
+    fake_sub = fake.subscribed[0][2]
+
+    # pre-outage message delivered.
+    before = _Hello(greeting="before", count=1)
+    await fake_sub.queue.put(_FakeMsg(data=before.model_dump_json().encode("utf-8")))
+    await asyncio.sleep(0.05)
+    assert received == [before]
+
+    # a quiet gap stands in for the disconnect/reconnect window: no message and
+    # NO close/sentinel. the loop must NOT end.
+    await asyncio.sleep(0.05)
+    assert sub.is_closed is False
+    assert sub.dispatch_task.done() is False
+
+    # post-recovery message: nats-py replayed the SUB onto the same queue, so the
+    # SAME dispatch loop delivers it.
+    after = _Hello(greeting="after", count=2)
+    await fake_sub.queue.put(_FakeMsg(data=after.model_dump_json().encode("utf-8")))
+    await asyncio.sleep(0.05)
+    assert received == [before, after]
+    assert sub.dispatch_task.done() is False
+
+    await client.unsubscribe(sub)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_callbacks_fan_out_on_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """callbacks registered via ``add_reconnect_callback`` fire in order on reconnect.
+
+    forever-reconnect rides out an outage and replays subscriptions, but the BROKER
+    may have dropped state backing a short-lived credential meanwhile; a consumer
+    hook re-establishes it once the connection returns. this pins the shared-list
+    bridge: nats-py has a single ``reconnected_cb`` slot wired at connect time, and
+    the instance adopts the SAME list the dispatcher closes over, so post-connect
+    registrations are visible to the already-installed slot.
+    """
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    order: list[str] = []
+
+    async def _first() -> None:
+        order.append("first")
+
+    async def _second() -> None:
+        order.append("second")
+
+    client.add_reconnect_callback(_first)
+    client.add_reconnect_callback(_second)
+
+    # invoke the exact slot nats-py would call on a reconnect.
+    await captured["options"]["reconnected_cb"]()
+
+    assert order == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_callback_failure_is_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """one reconnect hook raising is logged and does not abort the others.
+
+    a re-mint hook that fails must not break the callback chain or the nats-py
+    reconnect path -- otherwise a single bad consumer would re-introduce the wedge
+    forever-reconnect exists to prevent.
+    """
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    ran: list[str] = []
+
+    async def _boom() -> None:
+        ran.append("boom")
+        raise RuntimeError("re-mint failed")
+
+    async def _after() -> None:
+        ran.append("after")
+
+    client.add_reconnect_callback(_boom)
+    client.add_reconnect_callback(_after)
+
+    # must NOT raise: the dispatcher logs the failure and continues to the next hook.
+    await captured["options"]["reconnected_cb"]()
+
+    assert ran == ["boom", "after"]
+
+
+@pytest.mark.asyncio
 async def test_ping_returns_true_when_flush_succeeds() -> None:
     """ping forwards to nats-py flush and returns True on success."""
     client, fake = _make_client()
@@ -738,3 +1007,80 @@ async def test_durable_cb_dead_letters_at_budget() -> None:
     js.publish.assert_awaited_once_with(dlq.path, b"poison")
     msg.ack.assert_awaited_once()
     msg.nak.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# reconnect callback fan-out (consumer-registered post-reconnect hooks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_reconnect_callback_runs_on_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a callback registered via ``add_reconnect_callback`` fires when nats-py reconnects.
+
+    nats-py exposes a single ``reconnected_cb`` slot; the wrapper installs a dispatcher there at
+    connect time and fans each reconnect out to consumer-registered callbacks. this is the seam the
+    agent SDK uses to re-handshake (re-mint its short-lived identity token + re-establish the Hub
+    session) after an outage, so tool calls resume immediately instead of failing until the next
+    scheduled refresh.
+    """
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    hook = AsyncMock()
+    client.add_reconnect_callback(hook)
+
+    # the dispatcher nats-py would invoke on reconnect is whatever reached the connect options.
+    dispatcher = captured["options"]["reconnected_cb"]
+    await dispatcher()
+
+    hook.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_dispatcher_isolates_failing_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """a callback that raises is logged but does not abort the others or the reconnect path."""
+    import threetears.nats.client as client_module
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_establish(servers: list[str], options: dict[str, Any], nats_url: str) -> Any:
+        captured["options"] = options
+        return MagicMock()
+
+    monkeypatch.setattr(client_module, "_establish_connection", _fake_establish)
+
+    client = await NatsClient.connect(
+        nats_url="nats://localhost:4222",
+        client_name="agent-x",
+        verify_jetstream=False,
+    )
+
+    boom = AsyncMock(side_effect=RuntimeError("hook blew up"))
+    after = AsyncMock()
+    client.add_reconnect_callback(boom)
+    client.add_reconnect_callback(after)
+
+    dispatcher = captured["options"]["reconnected_cb"]
+    # must not raise even though the first hook does.
+    await dispatcher()
+
+    boom.assert_awaited_once_with()
+    after.assert_awaited_once_with()
