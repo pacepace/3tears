@@ -20,7 +20,7 @@ import pytest
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 
-from tests.unit.registry._dispatch_auth import make_authed_request, make_proxy
+from ._dispatch_auth import make_authed_request, make_proxy
 
 
 @pytest.fixture(autouse=True)

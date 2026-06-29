@@ -15,7 +15,7 @@ from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
 from threetears.registry.proxy import ProxyCallResponse
 
-from tests.unit.registry._dispatch_auth import (
+from ._dispatch_auth import (
     DEFAULT_AGENT_ID,
     DEFAULT_CORRELATION_ID,
     make_authed_request,
