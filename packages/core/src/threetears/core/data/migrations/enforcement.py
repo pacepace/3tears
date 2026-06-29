@@ -89,6 +89,10 @@ _DDL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bADD\s+CONSTRAINT\b", re.IGNORECASE),
     re.compile(r"\bRENAME\s+COLUMN\b", re.IGNORECASE),
     re.compile(r"\bRENAME\s+TO\b", re.IGNORECASE),
+    re.compile(r"\bCREATE\s+POLICY\b", re.IGNORECASE),
+    re.compile(r"\bDROP\s+POLICY\b", re.IGNORECASE),
+    # ENABLE / FORCE / DISABLE ... ROW LEVEL SECURITY (RLS DDL)
+    re.compile(r"\bROW\s+LEVEL\s+SECURITY\b", re.IGNORECASE),
 )
 
 

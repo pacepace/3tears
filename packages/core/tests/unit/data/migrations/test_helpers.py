@@ -24,12 +24,16 @@ every test uses :class:`FakeDataStore` so the suite stays under the
 
 from __future__ import annotations
 
+import pytest
+
 from threetears.core.data.migrations.helpers import (
     InboundFk,
     add_check_constraint,
     add_column_with_backfill,
     add_index,
     add_partition_column,
+    create_policy_if_not_exists,
+    enable_row_level_security,
     replace_check_constraint,
     replace_primary_key,
 )
@@ -417,3 +421,106 @@ class TestGenericSqlDiscipline:
         assert "namespaces" not in joined
         assert "audit_events" not in joined
         assert "my_app_widgets" in joined
+
+
+# ---------------------------------------------------------------------------
+# create_policy_if_not_exists (RLS)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePolicyIfNotExists:
+    """``create_policy_if_not_exists`` is idempotent via a ``pg_policies`` probe."""
+
+    async def test_emits_pg_policies_probe(self) -> None:
+        """one DO block consults pg_policies and creates the policy when absent."""
+        store = FakeDataStore()
+        await create_policy_if_not_exists(
+            store,
+            table="memories",
+            policy_name="memories_tenant",
+            using="customer_id = current_setting('app.customer_id', true)::uuid",
+        )
+        assert len(store.executed) == 1  # single statement (DO block)
+        sql = store.executed[0][0]
+        assert "pg_policies" in sql
+        assert "IF NOT EXISTS" in sql
+        assert "CREATE POLICY memories_tenant ON memories" in sql
+        assert "FOR ALL" in sql
+        assert "USING (customer_id = current_setting('app.customer_id', true)::uuid)" in sql
+
+    async def test_with_check_clause_for_write_policy(self) -> None:
+        store = FakeDataStore()
+        await create_policy_if_not_exists(
+            store, table="t", policy_name="p", command="INSERT", using="true", check="customer_id = '1'"
+        )
+        sql = store.executed[0][0]
+        assert "FOR INSERT" in sql
+        assert "WITH CHECK (customer_id = '1')" in sql
+
+    async def test_schema_qualified_and_probe_filtered(self) -> None:
+        store = FakeDataStore()
+        await create_policy_if_not_exists(store, table="t", policy_name="p", using="true", schema="agent_abc")
+        sql = store.executed[0][0]
+        assert "ON agent_abc.t" in sql
+        assert "schemaname = 'agent_abc'" in sql
+
+    async def test_to_role_and_restrictive(self) -> None:
+        store = FakeDataStore()
+        await create_policy_if_not_exists(
+            store, table="t", policy_name="p", using="true", to_role="app_subject", permissive=False
+        )
+        sql = store.executed[0][0]
+        assert "TO app_subject" in sql
+        assert "AS RESTRICTIVE" in sql
+
+    async def test_unknown_command_rejected(self) -> None:
+        store = FakeDataStore()
+        with pytest.raises(ValueError):
+            await create_policy_if_not_exists(store, table="t", policy_name="p", using="true", command="GRANT")
+
+    async def test_check_on_read_command_rejected(self) -> None:
+        # WITH CHECK is invalid SQL for FOR SELECT/DELETE -> reject early, not at the DB.
+        store = FakeDataStore()
+        with pytest.raises(ValueError):
+            await create_policy_if_not_exists(
+                store, table="t", policy_name="p", using="true", command="SELECT", check="x"
+            )
+
+    async def test_no_aibots_table_names_baked_in(self) -> None:
+        store = FakeDataStore()
+        await create_policy_if_not_exists(store, table="my_widgets", policy_name="p", using="true")
+        joined = "\n".join(sql for sql, _ in store.executed)
+        assert "namespaces" not in joined
+        assert "my_widgets" in joined
+
+
+# ---------------------------------------------------------------------------
+# enable_row_level_security
+# ---------------------------------------------------------------------------
+
+
+class TestEnableRowLevelSecurity:
+    """``enable_row_level_security`` enables + FORCEs RLS as separate idempotent DDL."""
+
+    async def test_enable_and_force_by_default(self) -> None:
+        store = FakeDataStore()
+        await enable_row_level_security(store, table="memories")
+        sqls = [sql for sql, _ in store.executed]
+        assert sqls == [
+            "ALTER TABLE memories ENABLE ROW LEVEL SECURITY",
+            "ALTER TABLE memories FORCE ROW LEVEL SECURITY",
+        ]
+
+    async def test_force_false_enables_only(self) -> None:
+        # without FORCE the table owner bypasses policies -- only use force=False deliberately.
+        store = FakeDataStore()
+        await enable_row_level_security(store, table="t", force=False)
+        sqls = [sql for sql, _ in store.executed]
+        assert len(sqls) == 1
+        assert "FORCE" not in sqls[0]
+        assert "ENABLE ROW LEVEL SECURITY" in sqls[0]
+
+    async def test_schema_qualified(self) -> None:
+        store = FakeDataStore()
+        await enable_row_level_security(store, table="t", schema="agent_abc")
+        assert all("agent_abc.t" in sql for sql, _ in store.executed)

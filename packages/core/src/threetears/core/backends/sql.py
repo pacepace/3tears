@@ -27,7 +27,9 @@ The wrapped pool is the previously-untyped ``l3_pool`` (a bare asyncpg ``Pool`` 
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -37,9 +39,61 @@ from threetears.core.backends.protocol import parse_rowcount
 if TYPE_CHECKING:
     from threetears.core.collections.schema_backed import TableSchema
 
-__all__ = ["SqlL3Backend"]
+__all__ = ["SqlL3Backend", "bound_request_connection"]
 
 _ON_CONFLICT_VALUES = frozenset({"update", "ignore", "raise"})
+
+
+# ── request-scoped L3 connection (per-request transaction; RLS session-GUC support) ─────────
+# When a connection is bound here, every ``SqlL3Backend`` op in the async context runs ITS
+# statements on that one connection -- so a hub request can open ONE transaction, set a
+# txn-local session GUC (e.g. RLS's ``app.customer_ids``) on it, and have every collection
+# read/write in the request share that transaction + GUC, instead of each statement taking a
+# fresh autocommit connection from the pool. UNBOUND (the default) the behaviour is unchanged:
+# ops go straight to the pool exactly as before. The binder owns the connection lifecycle +
+# the transaction; ``SqlL3Backend`` only READS this var.
+_request_l3_conn: ContextVar[Any | None] = ContextVar("threetears_request_l3_conn", default=None)
+
+
+@asynccontextmanager
+async def bound_request_connection(conn: Any) -> AsyncIterator[Any]:
+    """Bind ``conn`` as the request-scoped L3 connection for the enclosing async context.
+
+    Within the context, every :class:`SqlL3Backend` ``fetch`` / ``execute`` / ``transaction`` /
+    ``acquire`` runs on ``conn`` (one transaction). The CALLER owns ``conn`` -- acquire it, open
+    its transaction, set any session/txn GUCs, then enter this context; this helper only sets +
+    resets the context variable. Nested binds restore the previous binding on exit.
+
+    :param conn: an asyncpg-shaped connection already inside a transaction.
+    :ptype conn: Any
+    :return: async iterator yielding ``conn``.
+    :rtype: AsyncIterator[Any]
+    """
+    token = _request_l3_conn.set(conn)
+    try:
+        yield conn
+    finally:
+        _request_l3_conn.reset(token)
+
+
+class _BoundConnCM:
+    """Async-CM yielding an already-bound request connection WITHOUT acquiring/releasing it.
+
+    Returned by :meth:`SqlL3Backend.acquire` / :meth:`SqlL3Backend.transaction` when a request
+    connection is bound, so explicit-connection / transactional code reuses the one request
+    transaction instead of escaping to a fresh pooled connection (which would miss the request's
+    session GUC and, under RLS ``FORCE``, see zero rows). Enter/exit are no-ops: the binder owns
+    the connection's lifecycle and transaction.
+    """
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> Any:
+        return self._conn
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
 
 
 def _quote_ident(name: str) -> str:
@@ -128,44 +182,70 @@ class SqlL3Backend:
     # pool would TypeError on them, so they are dropped for it (the historical path).
     # generic by design -- the wrapper forwards opaque kwargs and stays ignorant of
     # NATS-specific concepts like ``customer_scope``.
+    def _target(self) -> tuple[Any, bool]:
+        """The handle to run a statement on, plus whether it forwards scoped-read kwargs.
+
+        A request-scoped bound connection (a raw conn whose ``search_path`` + session GUCs the
+        binder already set) takes precedence over the pool and is NOT scope-aware (``namespace``
+        + ``customer_scope`` kwargs dropped -- routing is already pinned on the connection).
+        UNBOUND, the pool is used with its declared scope-awareness -- the historical path,
+        byte-for-byte unchanged.
+        """
+        bound = _request_l3_conn.get()
+        if bound is not None:
+            return bound, False
+        return self._pool, self._scope_aware
+
     async def fetch(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
     ) -> list[dict[str, Any]]:
-        """Run a SELECT and return all rows as dicts (delegates to the pool)."""
-        if self._scope_aware:
-            rows = await self._pool.fetch(query, *params, namespace=namespace, **kwargs)
+        """Run a SELECT and return all rows as dicts (bound request conn, else the pool)."""
+        target, scope_aware = self._target()
+        if scope_aware:
+            rows = await target.fetch(query, *params, namespace=namespace, **kwargs)
         else:
-            rows = await self._pool.fetch(query, *params)
+            rows = await target.fetch(query, *params)
         return [dict(r) for r in rows]
 
     async def fetchrow(
         self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any
     ) -> dict[str, Any] | None:
-        """Run a SELECT and return the first row dict, or ``None`` (delegates to the pool)."""
-        if self._scope_aware:
-            row = await self._pool.fetchrow(query, *params, namespace=namespace, **kwargs)
+        """Run a SELECT and return the first row dict, or ``None`` (bound request conn, else pool)."""
+        target, scope_aware = self._target()
+        if scope_aware:
+            row = await target.fetchrow(query, *params, namespace=namespace, **kwargs)
         else:
-            row = await self._pool.fetchrow(query, *params)
+            row = await target.fetchrow(query, *params)
         return dict(row) if row is not None else None
 
     async def fetchval(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> Any:
-        """Run a SELECT and return the first column of the first row (scalar) (delegates to the pool)."""
-        if self._scope_aware:
-            return await self._pool.fetchval(query, *params, namespace=namespace, **kwargs)
-        return await self._pool.fetchval(query, *params)
+        """Run a SELECT and return the first column of the first row (bound request conn, else pool)."""
+        target, scope_aware = self._target()
+        if scope_aware:
+            return await target.fetchval(query, *params, namespace=namespace, **kwargs)
+        return await target.fetchval(query, *params)
 
     async def execute(self, query: str, *params: Any, namespace: str | None = None, **kwargs: Any) -> str:
-        """Run an INSERT/UPDATE/DELETE; return the asyncpg command-tag string (``"UPDATE 1"``)."""
-        if self._scope_aware:
-            result = await self._pool.execute(query, *params, namespace=namespace, **kwargs)
+        """Run an INSERT/UPDATE/DELETE; return the command-tag (bound request conn, else pool)."""
+        target, scope_aware = self._target()
+        if scope_aware:
+            result = await target.execute(query, *params, namespace=namespace, **kwargs)
         else:
-            result = await self._pool.execute(query, *params)
+            result = await target.execute(query, *params)
         return result if isinstance(result, str) else ""
 
     async def execute_batch(
         self, queries: list[dict[str, Any]], *, namespace: str | None = None, transaction: bool = True
     ) -> list[Any]:
-        """Run ``{query, params}`` dicts; atomically in one pool transaction when ``transaction``."""
+        """Run ``{query, params}`` dicts atomically in one transaction when ``transaction``."""
+        bound = _request_l3_conn.get()
+        if bound is not None:
+            # already inside the request transaction; run every statement on the bound conn so
+            # the batch shares the request's transaction + session GUC (no nested transaction).
+            on_conn: list[Any] = []
+            for q in queries:
+                on_conn.append(await bound.execute(q["query"], *q.get("params", [])))
+            return on_conn
         if not transaction:
             results: list[Any] = []
             for q in queries:
@@ -179,11 +259,20 @@ class SqlL3Backend:
                 return out
 
     def acquire(self) -> Any:
-        """Return the pool's ``acquire()`` async context manager (a pooled connection)."""
+        """Return an ``acquire()`` async-CM: the bound request conn when set, else a pooled one."""
+        bound = _request_l3_conn.get()
+        if bound is not None:
+            return _BoundConnCM(bound)
         return self._pool.acquire()
 
     def transaction(self, namespace: str | None = None) -> Any:
-        """Return a pool-level transaction async context manager (``acquire`` + ``conn.transaction``)."""
+        """Return a transaction async-CM: the bound request conn when set (reuse the request
+
+        transaction, no nesting), else a fresh pool-level transaction.
+        """
+        bound = _request_l3_conn.get()
+        if bound is not None:
+            return _BoundConnCM(bound)
         if hasattr(self._pool, "transaction"):
             return self._pool.transaction(namespace=namespace)
         return _PoolTransactionCM(self._pool)

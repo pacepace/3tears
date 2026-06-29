@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "3tears-observe",
     "nats-py>=2.10",
+    "nkeys>=0.2",
     "pydantic>=2.10",
 ]
 

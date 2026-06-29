@@ -24,6 +24,9 @@ from threetears.agent.tools.call_scope import (
 )
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.agent.tools.config import (
+    get_jwks_request_timeout,
+)
+from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
@@ -33,6 +36,16 @@ from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
+from threetears.core.coordination.replay_guard import ReplayGuard
+from threetears.core.security import CachedHubJwksProvider
+from threetears.core.security.identity_token import (
+    IdentityClaims,
+    IdentityKeyNotFoundError,
+    IdentityTokenError,
+    canonical_call_hash,
+    verify_identity_token,
+)
+from threetears.core.security.proxy_assertion import verify_proxy_assertion
 from threetears.nats import (
     IncomingMessage,
     NatsClient,
@@ -128,23 +141,47 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# the issuer the Hub stamps on identity tokens + the pod's clock-skew tolerance, for the
+# defense-in-depth pod-side verification of the inbound identity token.
+_IDENTITY_ISSUER = "hub"
+_IDENTITY_LEEWAY_SECONDS = 60
+# how long a proxy-assertion nonce is remembered for single-use enforcement; a TTL (not a timeout),
+# sized to the assertion's short accept window (its exp + clock skew).
+_ASSERTION_NONCE_TTL_SECONDS = 60
+
 
 # ---------------------------------------------------------------------------
 # NATS connection helper (patched in tests)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(
+    url: str,
+    *,
+    namespace: str = "aibots",
+    user: str | None = None,
+    password: str | None = None,
+) -> NatsClient:
     """connect to NATS server via the canonical wrapper.
 
     standalone tool pods that did not receive a pre-connected
     :class:`NatsClient` from the bootstrap call this helper to open
     their own. tests patch this symbol to swap a fake transport in.
 
+    under enforce-only connection auth (v0.13.9) a standalone tool server presents its OWN static
+    user/password (NATS ``authorization.users``); the enforcing bus has no ``no_auth_user``, so
+    ``user``/``password`` are REQUIRED there. ``None`` leaves credential auth off for tests + a
+    non-enforcing bus. (agent-owned tool pods take the pre-connected ``nats_client`` path instead --
+    that connection is the agent runtime's, authenticated via the callout.)
+
     :param url: NATS server URL
     :ptype url: str
     :param namespace: NATS subject namespace prefix bound on the wrapper
     :ptype namespace: str
+    :param user: NATS static username (config-mode ``authorization.users``); ``None`` -> no creds
+    :ptype user: str | None
+    :param password: NATS static password paired with ``user``; ``None`` -> no creds
+    :ptype password: str | None
     :return: connected canonical wrapper client
     :rtype: NatsClient
     """
@@ -152,6 +189,8 @@ async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
         nats_url=url,
         nats_subject_namespace=namespace,
         client_name="tool-server",
+        user=user,
+        password=password,
     )
 
 
@@ -265,6 +304,12 @@ class CallRequest(BaseModel):
         ``None`` for stateless tool invocations. includes the
         ``correlation_id`` used for response routing and log correlation
     :ptype context: CallContext | None
+    :param proxy_assertion: the registry proxy's body-bound, signed
+        assertion for THIS request on the proxy→pod hop (binds the tool +
+        arguments + a nonce so the discoverable internal subject can't be
+        spliced/replayed). the pod verifies it on every call (enforce-only);
+        a request without a valid assertion for this body is rejected
+    :ptype proxy_assertion: str | None
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -273,6 +318,7 @@ class CallRequest(BaseModel):
     tool_version: str
     arguments: dict[str, Any]
     context: CallContext | None = None
+    proxy_assertion: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -450,6 +496,8 @@ class ToolServer:
         namespace_collection: Any,
         nats_url: str = "",
         namespace: str = "aibots",
+        nats_user: str | None = None,
+        nats_password: str | None = None,
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
@@ -457,6 +505,9 @@ class ToolServer:
         nats_client: "NatsClient | None" = None,
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
+        jwks_provider: Callable[[], dict[str, Any]] | None = None,
+        jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
+        assertion_replay_guard: "ReplayGuard | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -475,6 +526,13 @@ class ToolServer:
         :ptype nats_url: str
         :param namespace: NATS subject namespace prefix
         :ptype namespace: str
+        :param nats_user: NATS static username for the standalone (``nats_url``) connect path under
+            enforce-only connection auth; the enforcing bus has no ``no_auth_user`` so a standalone
+            tool server MUST present a credential. ignored on the pre-connected ``nats_client`` path
+            (that connection carries its own auth). ``None`` -> anonymous (tests / non-enforcing bus)
+        :ptype nats_user: str | None
+        :param nats_password: NATS static password paired with ``nats_user``
+        :ptype nats_password: str | None
         :param pod_id: unique pod identifier (generated if not provided)
         :ptype pod_id: str | None
         :param heartbeat_interval: seconds between heartbeat publishes
@@ -532,6 +590,19 @@ class ToolServer:
             Collection or namespace materialization silently falls
             behind and rbac resolution fails open.
         :ptype namespace_collection: Any
+        :param jwks_refresh: optional zero-arg coroutine triggering ONE
+            immediate, debounced + rate-limited Hub JWKS refresh, returning
+            whether it ran (typically
+            :meth:`CachedHubJwksProvider.refresh_now`). When a pod-side token
+            verification fails because the cached JWKS holds no key for the
+            token's ``kid`` (a Hub re-key the cache has not caught up to),
+            :meth:`_verify_identity` calls it ONCE and re-verifies, so a valid
+            token signed under a freshly-rotated key self-heals on the first
+            such failure rather than after a full steady refresh interval. Left
+            ``None`` here for the injected-provider path (tests); :meth:`serve`
+            wires it to the owned provider's ``refresh_now`` when the pod
+            self-provisions its JWKS provider.
+        :ptype jwks_refresh: Callable[[], Awaitable[bool]] | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -539,18 +610,32 @@ class ToolServer:
             raise ValueError("ToolServer requires either nats_url or nats_client; neither was supplied")
         self._nats_url = nats_url
         self._namespace = namespace
+        self._nats_user = nats_user
+        self._nats_password = nats_password
         self._pod_id = pod_id or str(uuid7())
         self._heartbeat_interval = heartbeat_interval
         self._bootstrap_token = bootstrap_token
         self._context_factory = context_factory
         self._agent_id = agent_id
         self._customer_id = customer_id
+        # defense-in-depth: the pod re-verifies the Hub identity token AND the proxy's body-bound
+        # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
+        # -- there is no off/warn ladder; a call the pod cannot verify is always rejected.
+        self._jwks_provider = jwks_provider
+        # reactive Hub-rekey self-heal: ``serve()`` wires this to the owned provider's refresh_now
+        # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
+        self._jwks_refresh = jwks_refresh
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
+        self._owned_jwks_provider: CachedHubJwksProvider | None = None
+        # the proxy-assertion replay guard is REQUIRED at verify time (a guardless pod must NOT
+        # silently skip single-use enforcement). serve() always provisions it over the pod's
+        # connection; callers driving handle_call without serve() (tests) inject one here.
+        self._assertion_replay_guard: ReplayGuard | None = assertion_replay_guard
         self._shutdown_event = asyncio.Event()
         self._ready_event = asyncio.Event()
 
@@ -623,6 +708,29 @@ class ToolServer:
         :rtype: bool
         """
         return self._nc is not None
+
+    @property
+    def jwks_warmed(self) -> bool:
+        """whether the pod's Hub-JWKS provider has completed its first successful fetch.
+
+        readiness gate: before the JWKS cache warms, the pod verifies every inbound identity token
+        against an EMPTY keyset and rejects fail-closed, so a k8s readiness probe must report
+        NOT-READY until this is true -- otherwise the pod accepts calls it is guaranteed to fail.
+        The owned :class:`CachedHubJwksProvider` (self-provisioned in :meth:`serve`) exposes
+        ``is_warmed``; that drives this. Before :meth:`serve` provisions a provider it is ``False``
+        (NOT-READY). An INJECTED provider with no warmth signal (tests / a static JWKS that needs no
+        warm-up) is treated as ready, since it returns keys synchronously from the first call.
+
+        :return: true once the pod's JWKS provider can verify a token (or there is nothing to warm)
+        :rtype: bool
+        """
+        provider = self._jwks_provider
+        if provider is None:
+            return False
+        warmed = getattr(provider, "is_warmed", None)
+        if isinstance(warmed, bool):
+            return warmed
+        return True
 
     @property
     def is_running(self) -> bool:
@@ -742,7 +850,12 @@ class ToolServer:
         not yet bound.
         """
         if self._nc is None:
-            self._nc = await nats_connect(self._nats_url, namespace=self._namespace)
+            self._nc = await nats_connect(
+                self._nats_url,
+                namespace=self._namespace,
+                user=self._nats_user,
+                password=self._nats_password,
+            )
             log.info(
                 "connected to NATS",
                 extra={
@@ -770,6 +883,28 @@ class ToolServer:
         # the injected client picked up at connect time.
         set_default_namespace(self._namespace)
         self._running = True
+
+        # self-provision the pod's verifier dependencies over this connection: a Hub-JWKS provider
+        # (verifies the identity token + the proxy's body-bound assertion) and a replay guard
+        # (single-use proxy-assertion nonces). always provisioned under enforce-only; fail-closed
+        # until the first JWKS fetch.
+        assert self._nc is not None  # connected or injected above
+        if self._jwks_provider is None:
+            owned = CachedHubJwksProvider(self._nc, request_timeout_seconds=get_jwks_request_timeout())
+            await owned.start()
+            self._jwks_provider = owned
+            self._owned_jwks_provider = owned
+            # reactive self-heal on a Hub re-key: wire the verify path to the owned provider's
+            # refresh_now so a kid-not-in-cache miss triggers ONE immediate, debounced + rate-limited
+            # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
+            # whatever (possibly None) trigger the constructor was given.
+            self._jwks_refresh = owned.refresh_now
+        if self._assertion_replay_guard is None:
+            self._assertion_replay_guard = ReplayGuard(
+                self._nc,
+                bucket_name="proxy_assertion_nonces",
+                ttl_seconds=_ASSERTION_NONCE_TTL_SECONDS,
+            )
 
         # DQ-B7 queue-group sweep: call_subject and probe_subject are
         # pod-specific (``{ns}.tools.internal.{pod_id}`` /
@@ -1195,7 +1330,251 @@ class ToolServer:
             },
         )
 
+    def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
+        """fetch the cached Hub JWKS via the injected provider, converting ANY provider failure to a
+
+        well-typed :class:`IdentityTokenError`. The provider is external (a network-backed cache); any
+        failure means "cannot verify" -> a rejection reason, never an escaped exception that would
+        hang the dispatch with no reply. Logs the real cause (type + MESSAGE) at the site, since the
+        wrapping verify catch only sees the re-raised :class:`IdentityTokenError`.
+
+        :param tool_name: the requested tool name, for the failure log line
+        :ptype tool_name: str
+        :return: the current cached JWKS document
+        :rtype: dict[str, Any]
+        :raises IdentityTokenError: when the provider call fails
+        """
+        assert self._jwks_provider is not None  # guarded by the caller
+        try:
+            return self._jwks_provider()
+        except Exception as exc:
+            log.warning(
+                "JWKS provider failed during pod identity verification",
+                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc), "tool_name": tool_name}},
+            )
+            raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
+
+    async def _verify_token_reactively(self, token: str, *, tool_name: str, refreshed: list[bool]) -> IdentityClaims:
+        """verify a Hub token against the cached JWKS; on a kid-not-in-cache miss, refresh once + retry.
+
+        Mirrors the registry proxy's reactive self-heal: :func:`verify_identity_token` raises the
+        distinct :class:`IdentityKeyNotFoundError` when the cached JWKS holds no key for the token's
+        ``kid`` (a Hub re-key, or a stale cache after a Hub pod move). That -- and ONLY that -- is
+        recoverable, so this triggers one immediate :attr:`_jwks_refresh` and re-verifies against the
+        refreshed cache. An expired / bad-signature / malformed token raises the BASE
+        :class:`IdentityTokenError`, which is NOT caught here, so it never provokes a Hub fetch. The
+        refresh fires at most ONCE per verify-path call (``refreshed`` is shared across the handshake
+        + user-assertion verifications) and :meth:`refresh_now` is itself debounced + rate-limited, so
+        a flood of bad tokens cannot stampede the Hub.
+
+        :param token: the compact-JWS identity token to verify
+        :ptype token: str
+        :param tool_name: the requested tool name, for any provider-failure log line
+        :ptype tool_name: str
+        :param refreshed: a single-element mutable flag, shared across this call's verifications, so
+            the reactive refresh fires at most once even if both tokens miss the cache
+        :ptype refreshed: list[bool]
+        :return: the verified identity claims
+        :rtype: IdentityClaims
+        :raises IdentityTokenError: when the token cannot be verified (after the at-most-one refresh)
+        """
+        try:
+            return verify_identity_token(
+                token,
+                jwks=self._load_pod_jwks(tool_name),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+        except IdentityKeyNotFoundError:
+            if self._jwks_refresh is None or refreshed[0]:
+                raise  # no reactive trigger wired, or already refreshed once this call -> reject
+            refreshed[0] = True
+            await self._jwks_refresh()
+            return verify_identity_token(
+                token,
+                jwks=self._load_pod_jwks(tool_name),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+
     @traced(record_args=True)
+    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
+        """re-verify the Hub identity token and RE-STAMP the verified identity (defense in depth).
+
+        The registry proxy already verifies + re-stamps identity, but anything that can publish on
+        the pod's internal subject would otherwise reach :meth:`handle_call` with the proxy + RBAC
+        never consulted. So the pod independently verifies the Hub-issued identity token and, on
+        success, OVERWRITES the call context's identity (``agent_id`` = ``token.sub``, plus
+        ``user_id`` / ``customer_id``) with the cryptographically verified values. Whatever the
+        inbound envelope claimed -- a matching identity, a forged one re-pointed at a captured
+        token, or an absent one stripped to skip a comparison -- is discarded; the tool always
+        runs (and audits) under the authenticated identity, never the self-asserted envelope. This
+        mirrors the proxy's re-stamp so a direct publisher cannot run a tool under an identity the
+        Hub never signed.
+
+        The handshake identity token is one-per-pod and user-LESS, so a user-driven turn carries the
+        per-turn VERIFIED user_id as a SECOND, cnf-LESS user-assertion (``context.user_identity_token``).
+        This method MIRRORS the registry proxy's user-assertion gate: when present it is verified
+        against the SAME issuer/JWKS and BOUND to the handshake token (``sub`` + ``customer_id`` must
+        match) AND to the conversation (the assertion's ``conversation_id`` must equal the call's, so
+        a captured assertion cannot be replayed into a DIFFERENT conversation), then re-stamps
+        ``user_id``; without it the defense-in-depth re-stamp would null the proxy-verified user_id
+        (losing audit actor attribution + the per-user context manager).
+
+        Verification is UNCONDITIONAL and fail-closed: verify, on success re-stamp the verified
+        identity, on ANY failure REJECT the call (return a rejection reason). there is no off/warn
+        passthrough -- a call the pod cannot authenticate never runs on the unverified envelope.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :return: ``(request, reason)`` where ``request`` is the re-stamped request on verify
+            success (else the original) and ``reason`` is ``None`` when the call may proceed or a
+            rejection-reason string when the call MUST be rejected without dispatching
+        :rtype: tuple[CallRequest, str | None]
+        """
+        context = request.context
+        # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
+        # a kid-not-in-cache miss) fires at most ONCE per dispatch, not once per token.
+        refreshed = [False]
+        try:
+            if context is None:
+                raise IdentityTokenError("inbound call has no context")
+            token = context.identity_token
+            if token is None:
+                raise IdentityTokenError("inbound call context has no identity token")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider configured for pod identity verification")
+            claims = await self._verify_token_reactively(token, tool_name=request.tool_name, refreshed=refreshed)
+            # OVERWRITE the envelope's claimed identity with the verified token. a captured token
+            # re-pointed at a forged agent / customer, or stripped of its identity to skip a
+            # comparison, runs under the token's TRUE identity -- never the self-asserted one.
+            # these UUID conversions live INSIDE the try so a malformed-but-signed non-UUID claim
+            # fails closed (rejects) rather than escaping as an uncaught ValueError. user_id DEFAULTS
+            # to the handshake token's: ``None`` for a per-pod agent handshake token (it CANNOT carry
+            # the per-turn user); the bound user-assertion below may override it.
+            agent_id_value = UUID(claims.sub)
+            customer_id_value = UUID(claims.customer_id)
+            user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
+        except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+            reason = type(exc).__name__
+            # log the exception MESSAGE too (the structural failure reason -- "no JWKS key matches the
+            # token kid" vs "token expired" vs "token absent"), so a stale-JWKS failure is
+            # distinguishable from an expired-token failure in production. str(exc) is never token or
+            # key material (IdentityTokenError carries only the structural reason).
+            extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
+            log.warning("pod identity verification failed; rejecting call", extra=extra)
+            return request, f"identity verification failed ({reason})"
+
+        # the handshake token verified above, so ``context`` is non-None (the try raised + returned
+        # otherwise). re-narrow for the type checker.
+        assert context is not None
+
+        # MIRROR THE PROXY's user-assertion gate (registry/proxy.py ``_verify_identity``): a
+        # user-driven turn's tool call ALSO carries a Hub-minted, cnf-LESS user-assertion
+        # (``context.user_identity_token``) holding the per-turn VERIFIED user_id. the handshake
+        # token is one-per-pod and user-LESS, so without this the pod's defense-in-depth re-stamp
+        # would clobber the proxy-verified user_id back to ``None`` -- losing audit actor
+        # attribution and breaking the per-user ToolContextManager. verify it against the SAME
+        # issuer/JWKS and BIND it to the handshake token (``sub`` + ``customer_id`` MUST match) so a
+        # user-assertion minted for agent A (customer X) cannot be replayed under agent B (or
+        # customer Y). on ANY failure the call is rejected fail-closed (mirroring the proxy's
+        # TOOL_USER_IDENTITY_UNVERIFIED). an empty string is treated as ABSENT (the user_id stays
+        # the handshake token's) -- a caller that builds the envelope without a user-assertion must
+        # never trip a fail-closed deny on the empty value.
+        user_assertion = context.user_identity_token
+        if user_assertion:
+            try:
+                user_claims = await self._verify_token_reactively(
+                    user_assertion, tool_name=request.tool_name, refreshed=refreshed
+                )
+                if user_claims.sub != claims.sub or user_claims.customer_id != claims.customer_id:
+                    raise IdentityTokenError(
+                        "user-assertion not bound to the handshake identity (sub/customer mismatch)"
+                    )
+                if user_claims.user_id is None:
+                    raise IdentityTokenError("user-assertion carries no user_id")
+                # CONVERSATION-BINDING (MIRRORS the proxy): the assertion must carry the
+                # conversation_id it was minted for, and it must equal this call's -- so a captured
+                # user-assertion cannot be replayed into a DIFFERENT conversation. a user-driven turn
+                # always mints with a conversation_id, so an assertion lacking one is a denial, never
+                # a skippable check; a mismatch (or a call carrying no conversation_id while the
+                # assertion carries one) is the cross-conversation replay this gate closes.
+                # ``context.conversation_id`` is a UUID; stringify to compare the wire-string claim.
+                if user_claims.conversation_id is None:
+                    raise IdentityTokenError("user-assertion carries no conversation_id")
+                if context.conversation_id is None or str(context.conversation_id) != user_claims.conversation_id:
+                    raise IdentityTokenError(
+                        "user-assertion conversation_id does not match the call (cross-conversation replay)"
+                    )
+                user_id_value = UUID(user_claims.user_id)
+            except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
+                reason = type(exc).__name__
+                # the structural failure reason (binding mismatch vs cross-conversation replay vs
+                # expired/absent assertion), never token or key material.
+                extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
+                log.warning("pod user-assertion verification failed; rejecting call", extra=extra)
+                return request, f"user-assertion verification failed ({reason})"
+
+        verified_context = context.model_copy(
+            update={
+                "agent_id": agent_id_value,
+                "user_id": user_id_value,
+                "customer_id": customer_id_value,
+            }
+        )
+        return request.model_copy(update={"context": verified_context}), None
+
+    async def _verify_proxy_assertion(self, request: CallRequest) -> str | None:
+        """verify the registry proxy's body-bound assertion (the pod's PRIMARY identity gate).
+
+        The proxy signs an assertion binding the verified caller identity + the call body + a
+        single-use nonce + this pod; the pod verifies it against the Hub JWKS (which carries the
+        proxy's public key), so a publisher straight to the internal subject -- without a valid
+        proxy assertion for THIS body -- is rejected. Verification is UNCONDITIONAL and fail-closed:
+        verify, on ANY failure REJECT the call. The replay guard is MANDATORY here (it must be
+        provisioned by serve() or injected) -- a guardless pod fails closed rather than silently
+        skipping single-use enforcement, mirroring the registry proxy's required pop replay guard.
+
+        :param request: the parsed inbound call request
+        :ptype request: CallRequest
+        :return: ``None`` when the call may proceed; a rejection-reason string when it MUST be
+            rejected
+        :rtype: str | None
+        """
+        reason: str | None = None
+        try:
+            assertion = request.proxy_assertion
+            if assertion is None:
+                raise IdentityTokenError("inbound call carries no proxy assertion")
+            if self._jwks_provider is None:
+                raise IdentityTokenError("no JWKS provider for proxy assertion verification")
+            if self._assertion_replay_guard is None:
+                # fail closed: without a replay guard a captured assertion could be replayed verbatim
+                # within its accept window. serve() always provisions one; a guardless pod must not
+                # silently drop single-use enforcement.
+                raise IdentityTokenError("proxy assertion verification requires a replay guard")
+            context = request.context
+            correlation_id = (
+                str(context.correlation_id) if context is not None and context.correlation_id is not None else None
+            )
+            body_hash = canonical_call_hash(request.tool_name, request.arguments, correlation_id)
+            claims = verify_proxy_assertion(
+                assertion,
+                jwks=self._jwks_provider(),
+                expected_pod_id=self._pod_id,
+                body_hash=body_hash,
+            )
+            if not await self._assertion_replay_guard.record_unique(claims.jti):
+                raise IdentityTokenError("proxy assertion nonce replay")
+        except (IdentityTokenError, ValueError) as exc:
+            kind = type(exc).__name__
+            # the structural failure reason (absent assertion, kid miss, spliced body, replayed
+            # nonce), never token or key material.
+            extra = {"extra_data": {"reason": kind, "detail": str(exc), "tool_name": request.tool_name}}
+            log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
+            reason = f"proxy assertion verification failed ({kind})"
+        return reason
+
     async def handle_call(self, msg: IncomingMessage) -> None:
         """public NATS-subject handler for incoming tool call request.
 
@@ -1274,6 +1653,58 @@ class ToolServer:
             tool_name = request.tool_name
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
+
+            request, identity_rejection = await self._verify_identity(request)
+            if identity_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=identity_rejection,
+                    context=request.context,
+                )
+                await self._respond(msg, error_response)
+                log.warning(
+                    "pod rejected call: identity unverified",
+                    extra={
+                        "extra_data": {
+                            "reason": identity_rejection,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = identity_rejection
+                return
+            # the verified identity now rides the re-stamped request; re-bind the log tags so this
+            # dispatch's log lines + the baseline audit attribute to the authenticated identity, not
+            # the inbound envelope's claim. a no-op on the already-matching legit path; corrects
+            # attribution when the pod overrode a forged or absent identity.
+            bind_log_context(request.context)
+
+            assertion_rejection = await self._verify_proxy_assertion(request)
+            if assertion_rejection is not None:
+                error_response = CallResponse(
+                    success=False,
+                    content="",
+                    error=assertion_rejection,
+                    context=request.context,
+                )
+                await self._respond(msg, error_response)
+                log.warning(
+                    "pod rejected call: proxy assertion unverified",
+                    extra={
+                        "extra_data": {
+                            "reason": assertion_rejection,
+                            "tool_key": tool_key,
+                            "correlation_id": correlation_id_log,
+                        }
+                    },
+                )
+                outcome = "failure"
+                failure_reason = assertion_rejection
+                return
+
             tool = self._tools.get(tool_key)
 
             if tool is None:
@@ -1573,6 +2004,10 @@ class ToolServer:
             except asyncio.CancelledError:
                 pass
             self._heartbeat_task = None
+
+        if self._owned_jwks_provider is not None:
+            await self._owned_jwks_provider.stop()
+            self._owned_jwks_provider = None
 
         if self._nc is not None and self._owns_nats_connection:
             await self._nc.shutdown()

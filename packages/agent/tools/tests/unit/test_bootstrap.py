@@ -107,6 +107,42 @@ class TestRunServe:
         server.serve.assert_awaited_once()
 
 
+class _ReadinessFakeServer:
+    """a ToolServer stand-in exposing the three probe surfaces the bootstrap health server reads;
+    ``jwks_warmed`` is flipped by the test to drive the NOT-READY -> READY transition."""
+
+    def __init__(self) -> None:
+        self.is_connected = True
+        self.tools_count = 1
+        self.jwks_warmed = False
+
+
+class TestHealthServerReadinessGate:
+    """B5: the tool-pod health server gates readiness on the JWKS being warm -- it must report
+    NOT-READY (503) until the pod's JWKS provider can actually verify a token."""
+
+    async def test_reports_not_ready_until_jwks_warmed(self) -> None:
+        srv = _ReadinessFakeServer()
+        # health_port=0 -> OS-assigned ephemeral port, so the listener never collides in CI.
+        bootstrap = ToolServerBootstrap("test-pod", health_port=0)
+        health_server = await bootstrap._start_health_server(srv)  # noqa: SLF001 -- intra-package wiring seam
+        assert health_server is not None
+        try:
+            # before the JWKS warms: the jwks_warmed component is unhealthy -> overall NOT-READY.
+            before = health_server.get_status()
+            comps = {c.name: c.healthy for c in before.components}
+            assert "jwks_warmed" in comps, "the tool-pod health server must wire a jwks_warmed readiness gate"
+            assert comps["jwks_warmed"] is False
+            assert before.healthy is False
+            # after the first successful JWKS fetch: the gate clears -> READY.
+            srv.jwks_warmed = True
+            after = health_server.get_status()
+            assert all(c.healthy for c in after.components)
+            assert after.healthy is True
+        finally:
+            await health_server.stop()
+
+
 def test_signal_handler_uses_service_name_in_task_name() -> None:
     bootstrap = ToolServerBootstrap("my-svc")
     server = MagicMock()

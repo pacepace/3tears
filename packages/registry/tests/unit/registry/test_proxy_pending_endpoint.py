@@ -16,12 +16,11 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
-from threetears.agent.tools.context_envelope import CallContext
 
 from threetears.nats import IncomingMessage, set_default_namespace
 from threetears.registry.catalog import CatalogEntry, ToolCatalog, ToolEndpoint
-from threetears.registry.auth import AllowAllAuthorizer
-from threetears.registry.proxy import CallProxy, ProxyCallRequest
+
+from ._dispatch_auth import make_authed_request, make_proxy
 
 
 @pytest.fixture(autouse=True)
@@ -33,38 +32,11 @@ def _bind_namespace() -> None:
 # -- helpers --
 
 
-_DEFAULT_CORRELATION_ID = UUID("01948a00-3333-7000-8000-00000000beef")
-_DEFAULT_AGENT_ID = UUID("01948a00-3333-7000-8000-000000a9e999")
-
-
-def _make_call_request(
-    tool_name: str = "threetears.calculator",
-    tool_version: str = "1.0.0",
-    correlation_id: UUID | None = None,
-) -> ProxyCallRequest:
-    """create proxy call request for testing.
-
-    :param tool_name: namespaced tool name
-    :ptype tool_name: str
-    :param tool_version: semver version string
-    :ptype tool_version: str
-    :param correlation_id: request correlation identifier stamped on
-        the carried :class:`CallContext`; defaults to stable UUID
-    :ptype correlation_id: UUID | None
-    :return: test proxy call request
-    :rtype: ProxyCallRequest
-    """
-    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    result = ProxyCallRequest(
-        tool_name=tool_name,
-        tool_version=tool_version,
-        arguments={"expression": "1+1"},
-        context=CallContext(
-            correlation_id=effective_correlation_id,
-            agent_id=_DEFAULT_AGENT_ID,
-        ),
-    )
-    return result
+# the enforce-only auth scaffolding (token+pop requests + a JWKS-wired proxy) is shared across the
+# registry dispatch-test modules; see ``_dispatch_auth``. these aliases keep the test bodies reading
+# the same while every dispatch is now authenticated (v0.13.9 verifies identity + pop, fail-closed).
+_make_call_request = make_authed_request
+_make_proxy = make_proxy
 
 
 def _make_nats_msg(
@@ -124,7 +96,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        proxy = _make_proxy(catalog, namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -145,7 +117,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint(pod_id="pod-not-ready")
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        proxy = _make_proxy(catalog, namespace="test")
         nc = AsyncMock()
         nc.request_raw = AsyncMock()
         await proxy.start(nc)
@@ -166,7 +138,7 @@ class TestCallProxyRefusesPendingEndpoints:
         entry = _make_entry_with_pending_endpoint()
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        proxy = _make_proxy(catalog, namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 
@@ -206,7 +178,7 @@ class TestCallProxyRefusesPendingEndpoints:
             b'{"correlation_id": "' + str(correlation_id).encode("ascii") + b'"}}'
         )
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        proxy = _make_proxy(catalog, namespace="test")
         nc = AsyncMock()
         nc.request_raw = AsyncMock(return_value=reply_bytes)
         await proxy.start(nc)
@@ -241,7 +213,7 @@ class TestCallProxyRefusesPendingEndpoints:
         await catalog.register(entry_unavail)
         await catalog.register(entry_pending)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test")
+        proxy = _make_proxy(catalog, namespace="test")
         nc = AsyncMock()
         await proxy.start(nc)
 

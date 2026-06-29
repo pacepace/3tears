@@ -186,6 +186,15 @@ class ToolServerBootstrap:
                     name="tools_registered",
                     probe=lambda: server.tools_count > 0,
                 ),
+                # readiness gate: report NOT-READY until the pod's Hub-JWKS cache has had its first
+                # successful fetch. before it warms, the pod verifies every inbound identity token
+                # against an EMPTY keyset and rejects fail-closed, so a k8s readiness probe that
+                # flipped ready too early would route calls the pod is guaranteed to fail. gating on
+                # jwks_warmed keeps the pod out of rotation until it can actually verify a token.
+                HealthCheck(
+                    name="jwks_warmed",
+                    probe=lambda: server.jwks_warmed,
+                ),
             ],
         )
         try:

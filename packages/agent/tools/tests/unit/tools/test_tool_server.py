@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -20,7 +22,18 @@ from threetears.agent.tools.server import (
     ToolManifestEntry,
     ToolServer,
 )
+from threetears.core.security.identity_token import (
+    IdentityClaims,
+    build_jwks,
+    generate_signing_keypair,
+    sign_identity_token,
+)
 from threetears.nats import IncomingMessage, Subject
+
+from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
+from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
+from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
 # -- helpers --
@@ -266,6 +279,9 @@ class TestToolServerServe:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             # start serve in background, then shut down quickly
@@ -300,6 +316,9 @@ class TestToolServerServe:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -333,6 +352,48 @@ class TestToolServerServe:
         assert payload["tools"][0]["version"] == "1.0"
 
     @pytest.mark.asyncio
+    async def test_serve_self_provisions_jwks_provider(self) -> None:
+        """with no injected provider, serve self-provisions a Hub-JWKS provider (enforce-only).
+
+        observable proof (no private access): the self-provisioned provider fetches the Hub JWKS
+        over this pod's own connection during serve.
+        """
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace="testns",
+            pod_id="test-pod-jwks",
+            namespace_collection=None,
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+
+        mock_nc = AsyncMock()
+        mock_nc.is_connected = True
+        mock_nc.subscribe = AsyncMock()
+        mock_nc.publish = AsyncMock()
+        mock_nc.drain = AsyncMock()
+        mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
+
+        with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
+            serve_task = asyncio.create_task(server.serve())
+            await asyncio.sleep(0.05)
+            await server.shutdown()
+            await asyncio.sleep(0.05)
+            serve_task.cancel()
+            try:
+                await serve_task
+            except asyncio.CancelledError:
+                pass
+
+        fetched_jwks = any(
+            getattr(call.kwargs.get("subject"), "path", "").endswith(".hub.jwks")
+            for call in mock_nc.request_raw.await_args_list
+        )
+        assert fetched_jwks, "serve must self-provision a provider that fetches the Hub JWKS"
+
+    @pytest.mark.asyncio
     async def test_serve_subscribes_to_call_subject(self) -> None:
         """serve subscribes to tool call subject with pod_id."""
         server = ToolServer(
@@ -350,6 +411,9 @@ class TestToolServerServe:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -382,18 +446,25 @@ class TestToolServerHandleCall:
         :class:`CallContext` back on :class:`CallResponse.context` so
         the response shape matches the request.
         """
-        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=_pod_jwks_provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
         correlation_id = uuid4()
         msg = _make_nats_msg(
-            {
-                "tool_name": "test.stub",
-                "tool_version": "1.0",
-                "arguments": {"key": "value"},
-                "context": {"correlation_id": str(correlation_id)},
-            }
+            _signed_call_payload(
+                pod_id="test-pod",
+                tool_name="test.stub",
+                tool_version="1.0",
+                arguments={"key": "value"},
+                correlation_id=str(correlation_id),
+            )
         )
         rec = _attach_recording_nc(server)
 
@@ -412,18 +483,17 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_tool_result_on_success(self) -> None:
         """handle_call returns serialized ToolResult with success=True."""
-        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=_pod_jwks_provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
         tool = StubTool(name="test.stub", version="1.0")
         server.register(tool)
 
-        msg = _make_nats_msg(
-            {
-                "tool_name": "test.stub",
-                "tool_version": "1.0",
-                "arguments": {},
-                "context": {"correlation_id": str(uuid4())},
-            }
-        )
+        msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
         rec = _attach_recording_nc(server)
 
         await server.handle_call(msg)
@@ -435,16 +505,22 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_unknown_tool(self) -> None:
         """handle_call returns error response for unregistered tool."""
-        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=_pod_jwks_provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
 
         correlation_id = uuid4()
         msg = _make_nats_msg(
-            {
-                "tool_name": "nonexistent.tool",
-                "tool_version": "1.0",
-                "arguments": {},
-                "context": {"correlation_id": str(correlation_id)},
-            }
+            _signed_call_payload(
+                pod_id="test-pod",
+                tool_name="nonexistent.tool",
+                tool_version="1.0",
+                correlation_id=str(correlation_id),
+            )
         )
         rec = _attach_recording_nc(server)
 
@@ -458,18 +534,24 @@ class TestToolServerHandleCall:
     @pytest.mark.asyncio
     async def test_handle_call_returns_error_on_execution_failure(self) -> None:
         """handle_call returns error response when tool raises exception."""
-        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=_pod_jwks_provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
         tool = FailingTool()
         server.register(tool)
 
         correlation_id = uuid4()
         msg = _make_nats_msg(
-            {
-                "tool_name": "test.failing",
-                "tool_version": "1.0",
-                "arguments": {},
-                "context": {"correlation_id": str(correlation_id)},
-            }
+            _signed_call_payload(
+                pod_id="test-pod",
+                tool_name="test.failing",
+                tool_version="1.0",
+                correlation_id=str(correlation_id),
+            )
         )
         rec = _attach_recording_nc(server)
 
@@ -525,6 +607,9 @@ class TestToolServerHeartbeat:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -573,6 +658,9 @@ class TestToolServerShutdown:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -702,6 +790,9 @@ class TestToolServerProbe:
         mock_nc.publish = AsyncMock()
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -751,6 +842,9 @@ class TestToolServerProbe:
         mock_nc.publish = AsyncMock(side_effect=record_publish)
         mock_nc.drain = AsyncMock()
         mock_nc.close = AsyncMock()
+        # serve() now always self-provisions a Hub-JWKS provider (enforce-only); give the mock a
+        # JWKS reply so the best-effort initial fetch parses instead of choking on a bare mock.
+        mock_nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
 
         with patch("threetears.agent.tools.server.nats_connect", return_value=mock_nc):
             serve_task = asyncio.create_task(server.serve())
@@ -854,9 +948,9 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> ToolResult:
                 """no-op execution path."""
-                return {"ok": True}
+                return ToolResult(success=True, content="")
 
         from threetears.agent.tools.server import (
             DiscoveryProbeResponse,
@@ -908,9 +1002,9 @@ class TestToolServerProbe:
                     input_schema={"type": "object", "properties": {}},
                 )
 
-            async def execute(self, **_kwargs: Any) -> dict[str, Any]:
+            async def execute(self, **_kwargs: Any) -> ToolResult:
                 """no-op execution path."""
-                return {"ok": True}
+                return ToolResult(success=True, content="")
 
         from threetears.agent.tools.server import (
             DiscoveryProbeResponse,
@@ -1132,6 +1226,9 @@ class TestToolServerInjectedNatsClient:
         ``nats_connect`` is never awaited.
         """
         nc = AsyncMock()
+        # serve() self-provisions a Hub-JWKS provider over the injected client (enforce-only); feed
+        # the mock a JWKS reply so the best-effort initial fetch parses.
+        nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
         server = ToolServer(
             nats_client=nc,
             heartbeat_interval=3600.0,
@@ -1157,6 +1254,9 @@ class TestToolServerInjectedNatsClient:
     async def test_shutdown_does_not_close_injected_client(self) -> None:
         """caller-owned connection stays open after ``shutdown()``."""
         nc = AsyncMock()
+        # serve() self-provisions a Hub-JWKS provider over the injected client (enforce-only); feed
+        # the mock a JWKS reply so the best-effort initial fetch parses.
+        nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
         server = ToolServer(
             nats_client=nc,
             heartbeat_interval=3600.0,
@@ -1176,6 +1276,9 @@ class TestToolServerInjectedNatsClient:
     async def test_shutdown_closes_self_owned_client(self) -> None:
         """server-owned connection is shut down (drain + close) on ``shutdown()``."""
         nc = AsyncMock()
+        # serve() self-provisions a Hub-JWKS provider over the opened client (enforce-only); feed
+        # the mock a JWKS reply so the best-effort initial fetch parses.
+        nc.request_raw = AsyncMock(return_value=json.dumps({"keys": []}).encode("utf-8"))
         server = ToolServer(
             nats_url="nats://localhost:4222",
             heartbeat_interval=3600.0,
@@ -1193,3 +1296,543 @@ class TestToolServerInjectedNatsClient:
         # the wrapper's ``shutdown()`` internally drains + closes the
         # underlying nats-py connection.
         nc.shutdown.assert_awaited_once()
+
+
+class TestToolServerIdentityVerification:
+    """v0.13.9 enforce-only: the pod re-verifies the Hub identity token (defense in depth).
+
+    closes the direct-internal-subject bypass -- a publisher straight to the pod without a valid
+    Hub-signed token (or one that forged a different identity onto a captured token) is rejected.
+    verification is UNCONDITIONAL; there is no off/warn path. the pod ALSO verifies the proxy's
+    body-bound assertion on every call (its own class below), so the cases that assert the tool
+    RAN carry a valid assertion too; the identity-gate REJECTION cases short-circuit at the
+    identity gate (the first gate) and need none.
+    """
+
+    @staticmethod
+    def _hub_and_proxy() -> tuple[Any, Any, dict[str, Any]]:
+        """a Hub identity keypair + a proxy-assertion signer + the COMBINED JWKS the pod verifies
+        BOTH the identity token and the proxy assertion against (one ``jwks_provider`` feeds both
+        gates, so the document carries both public keys under distinct kids)."""
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from pydantic import SecretStr
+
+        from threetears.core.security import ProxyAssertionSigner
+
+        priv, pub = generate_signing_keypair()
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        combined = {"keys": [*build_jwks({"kid-1": pub})["keys"], *signer.public_jwks()["keys"]]}
+        return priv, signer, combined
+
+    @staticmethod
+    def _token(priv: Any, *, sub: Any, customer_id: Any) -> str:
+        now = int(time.time())
+        claims = IdentityClaims(
+            sub=str(sub),
+            customer_id=str(customer_id),
+            sid="sid-1",
+            pod_id="pod-1",
+            iss="hub",
+            iat=now,
+            exp=now + 600,
+        )
+        return sign_identity_token(claims, signing_key=priv, kid="kid-1")
+
+    @staticmethod
+    def _server(*, jwks_provider: Any) -> tuple[ToolServer, Any]:
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace_collection=None,
+            pod_id="test-pod",
+            jwks_provider=jwks_provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        return server, _attach_recording_nc(server)
+
+    @staticmethod
+    def _assertion(signer: Any, *, body_hash: str) -> str:
+        return signer.mint(
+            pod_id="test-pod",
+            agent_id=str(uuid4()),
+            customer_id=str(uuid4()),
+            body_hash=body_hash,
+            nonce=str(uuid4()),
+            now=int(time.time()),
+        )
+
+    @staticmethod
+    def _msg(
+        *,
+        agent_id: Any = None,
+        customer_id: Any = None,
+        token: str | None = None,
+        assertion: str | None = None,
+        correlation_id: str | None = None,
+    ) -> IncomingMessage:
+        context: dict[str, Any] = {"correlation_id": correlation_id or str(uuid4())}
+        if agent_id is not None:
+            context["agent_id"] = str(agent_id)
+        if customer_id is not None:
+            context["customer_id"] = str(customer_id)
+        if token is not None:
+            context["identity_token"] = token
+        envelope: dict[str, Any] = {
+            "tool_name": "test.stub",
+            "tool_version": "1.0",
+            "arguments": {"key": "value"},
+            "context": context,
+        }
+        if assertion is not None:
+            envelope["proxy_assertion"] = assertion
+        return _make_nats_msg(envelope)
+
+    @classmethod
+    def _signed_msg(
+        cls,
+        priv: Any,
+        signer: Any,
+        *,
+        envelope_agent_id: Any,
+        envelope_customer_id: Any,
+        token_sub: Any,
+        token_customer: Any,
+    ) -> IncomingMessage:
+        """a full happy-path message: a valid identity token + a valid proxy assertion bound to the
+        exact call body, with the ENVELOPE free to claim a different (or absent) identity so the
+        re-stamp behaviour is observable through the public dispatch surface."""
+        from threetears.core.security import canonical_call_hash
+
+        correlation_id = str(uuid4())
+        token = cls._token(priv, sub=token_sub, customer_id=token_customer)
+        body_hash = canonical_call_hash("test.stub", {"key": "value"}, correlation_id)
+        assertion = cls._assertion(signer, body_hash=body_hash)
+        return cls._msg(
+            agent_id=envelope_agent_id,
+            customer_id=envelope_customer_id,
+            token=token,
+            assertion=assertion,
+            correlation_id=correlation_id,
+        )
+
+    @staticmethod
+    def _response(rec: Any) -> dict[str, Any]:
+        result: dict[str, Any] = json.loads(rec.last_reply[1].model_dump_json())
+        return result
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_missing_token(self) -> None:
+        _priv, _signer, jwks = self._hub_and_proxy()
+        server, rec = self._server(jwks_provider=lambda: jwks)
+        await server.handle_call(self._msg(agent_id=uuid4(), token=None))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+    @pytest.mark.asyncio
+    async def test_enforce_accepts_valid_matching_token(self) -> None:
+        priv, signer, jwks = self._hub_and_proxy()
+        agent, cust = uuid4(), uuid4()
+        server, rec = self._server(jwks_provider=lambda: jwks)
+        await server.handle_call(
+            self._signed_msg(
+                priv,
+                signer,
+                envelope_agent_id=agent,
+                envelope_customer_id=cust,
+                token_sub=agent,
+                token_customer=cust,
+            )
+        )
+        response = self._response(rec)
+        assert response["success"] is True  # verified -> the tool ran
+        # the dispatched call carries the verified identity (here identical to the envelope's claim).
+        assert response["context"]["agent_id"] == str(agent)
+        assert response["context"]["customer_id"] == str(cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_restamps_a_forged_identity_to_the_token(self) -> None:
+        # a captured token re-pointed at a forged agent/customer runs under the TOKEN's true
+        # identity -- the forged envelope claim is discarded, not honoured (and not merely rejected).
+        priv, signer, jwks = self._hub_and_proxy()
+        true_agent, true_cust = uuid4(), uuid4()  # token minted for agent A
+        server, rec = self._server(jwks_provider=lambda: jwks)
+        await server.handle_call(  # envelope forges agent/customer B
+            self._signed_msg(
+                priv,
+                signer,
+                envelope_agent_id=uuid4(),
+                envelope_customer_id=uuid4(),
+                token_sub=true_agent,
+                token_customer=true_cust,
+            )
+        )
+        response = self._response(rec)
+        assert response["success"] is True  # verified -> the tool ran under the re-stamped identity
+        assert response["context"]["agent_id"] == str(true_agent)  # B was overwritten with A
+        assert response["context"]["customer_id"] == str(true_cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_restamps_when_envelope_identity_is_absent(self) -> None:
+        # the bypass guard: a valid token presented with NO claimed agent/customer (stripped to
+        # skip any comparison) must NOT dispatch under a null identity -- it is re-stamped from the
+        # verified token, so the tool runs under the authenticated identity, never an unbound one.
+        priv, signer, jwks = self._hub_and_proxy()
+        true_agent, true_cust = uuid4(), uuid4()
+        server, rec = self._server(jwks_provider=lambda: jwks)
+        await server.handle_call(
+            self._signed_msg(
+                priv,
+                signer,
+                envelope_agent_id=None,
+                envelope_customer_id=None,
+                token_sub=true_agent,
+                token_customer=true_cust,
+            )
+        )
+        response = self._response(rec)
+        assert response["success"] is True
+        assert response["context"]["agent_id"] == str(true_agent)  # null -> verified identity
+        assert response["context"]["customer_id"] == str(true_cust)
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_when_jwks_provider_raises(self) -> None:
+        # a flaky provider must become a fail-closed rejection at the identity gate, never an
+        # escaped exception that hangs the dispatch with no reply.
+        priv, _signer, _jwks = self._hub_and_proxy()
+        token = self._token(priv, sub=uuid4(), customer_id=uuid4())
+
+        def _boom() -> dict[str, Any]:
+            raise RuntimeError("provider down")
+
+        server, rec = self._server(jwks_provider=_boom)
+        await server.handle_call(self._msg(agent_id=uuid4(), customer_id=uuid4(), token=token))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+
+class TestToolServerProxyAssertionVerification:
+    """v0.13.9 enforce-only: the pod verifies the proxy's body-bound assertion (the pod's PRIMARY
+    gate).
+
+    a direct publisher to the internal subject -- without a valid proxy assertion for THIS call
+    body -- is rejected. verification is unconditional. because the pod verifies the identity token
+    FIRST, every message here also carries a valid token so the ASSERTION gate is the one under
+    test (a tokenless message would short-circuit at the identity gate instead).
+    """
+
+    @staticmethod
+    def _hub_and_proxy() -> tuple[Any, Any, dict[str, Any]]:
+        """a Hub identity keypair + a proxy-assertion signer + the COMBINED JWKS the pod verifies
+        the identity token AND the proxy assertion against."""
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from pydantic import SecretStr
+
+        from threetears.core.security import ProxyAssertionSigner
+
+        priv, pub = generate_signing_keypair()
+        seed = base64.urlsafe_b64encode(Ed25519PrivateKey.generate().private_bytes_raw()).decode("ascii")
+        signer = ProxyAssertionSigner.from_secret(SecretStr(seed))
+        combined = {"keys": [*build_jwks({"kid-1": pub})["keys"], *signer.public_jwks()["keys"]]}
+        return priv, signer, combined
+
+    @staticmethod
+    def _token(priv: Any) -> str:
+        now = int(time.time())
+        claims = IdentityClaims(
+            sub=str(uuid4()),
+            customer_id=str(uuid4()),
+            sid="sid-1",
+            pod_id="pod-1",
+            iss="hub",
+            iat=now,
+            exp=now + 600,
+        )
+        return sign_identity_token(claims, signing_key=priv, kid="kid-1")
+
+    @staticmethod
+    def _server(jwks: dict[str, Any], *, assertion_replay_guard: Any = None) -> tuple[ToolServer, Any]:
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace_collection=None,
+            pod_id="test-pod",
+            jwks_provider=lambda: jwks,
+            assertion_replay_guard=assertion_replay_guard if assertion_replay_guard is not None else _PodReplayGuard(),
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        return server, _attach_recording_nc(server)
+
+    @staticmethod
+    def _msg(*, token: str, assertion: str | None, correlation_id: str) -> IncomingMessage:
+        context: dict[str, Any] = {"correlation_id": correlation_id, "identity_token": token}
+        envelope: dict[str, Any] = {
+            "tool_name": "test.stub",
+            "tool_version": "1.0",
+            "arguments": {"key": "value"},
+            "context": context,
+        }
+        if assertion is not None:
+            envelope["proxy_assertion"] = assertion
+        return _make_nats_msg(envelope)
+
+    @staticmethod
+    def _response(rec: Any) -> dict[str, Any]:
+        return json.loads(rec.last_reply[1].model_dump_json())
+
+    @staticmethod
+    def _assertion_for(signer: Any, *, body_hash: str) -> str:
+        return signer.mint(
+            pod_id="test-pod",
+            agent_id=str(uuid4()),
+            customer_id=str(uuid4()),
+            body_hash=body_hash,
+            nonce=str(uuid4()),
+            now=int(time.time()),
+        )
+
+    @pytest.mark.asyncio
+    async def test_enforce_accepts_a_valid_assertion(self) -> None:
+        from threetears.core.security import canonical_call_hash
+
+        priv, signer, jwks = self._hub_and_proxy()
+        server, rec = self._server(jwks)
+        corr = str(uuid4())
+        body_hash = canonical_call_hash("test.stub", {"key": "value"}, corr)
+        await server.handle_call(
+            self._msg(
+                token=self._token(priv),
+                assertion=self._assertion_for(signer, body_hash=body_hash),
+                correlation_id=corr,
+            )
+        )
+        assert self._response(rec)["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_a_missing_assertion(self) -> None:
+        priv, _signer, jwks = self._hub_and_proxy()
+        server, rec = self._server(jwks)
+        # a valid token clears the identity gate; the absent assertion is what the assertion gate
+        # must reject (proving the two gates are both live).
+        await server.handle_call(self._msg(token=self._token(priv), assertion=None, correlation_id=str(uuid4())))
+        response = self._response(rec)
+        assert response["success"] is False
+        assert "proxy assertion verification failed" in response["error"]
+
+    @pytest.mark.asyncio
+    async def test_enforce_rejects_an_assertion_for_a_different_body(self) -> None:
+        priv, signer, jwks = self._hub_and_proxy()
+        server, rec = self._server(jwks)
+        # an assertion bound to a DIFFERENT body than the actual call -> splice rejected.
+        await server.handle_call(
+            self._msg(
+                token=self._token(priv),
+                assertion=self._assertion_for(signer, body_hash="WRONG-BODY"),
+                correlation_id=str(uuid4()),
+            )
+        )
+        assert self._response(rec)["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_enforce_requires_an_assertion_replay_guard(self) -> None:
+        # mirror the registry's required pop replay guard: a pod with NO assertion replay guard must
+        # NOT silently skip single-use enforcement -- even a VALID token + VALID assertion is
+        # rejected (fail closed). serve() always provisions the guard; this pins the verify-site
+        # guard so a regression that drops it surfaces as a rejection, not a silent replay window.
+        from threetears.core.security import canonical_call_hash
+
+        priv, signer, jwks = self._hub_and_proxy()
+        server = ToolServer(
+            nats_url="nats://localhost:9999",
+            namespace_collection=None,
+            pod_id="test-pod",
+            jwks_provider=lambda: jwks,
+            # NOTE: assertion_replay_guard omitted -> None -> the verify site must fail closed.
+        )
+        server.register(StubTool(name="test.stub", version="1.0"))
+        rec = _attach_recording_nc(server)
+        corr = str(uuid4())
+        body_hash = canonical_call_hash("test.stub", {"key": "value"}, corr)
+        await server.handle_call(
+            self._msg(
+                token=self._token(priv),
+                assertion=self._assertion_for(signer, body_hash=body_hash),
+                correlation_id=corr,
+            )
+        )
+        response = self._response(rec)
+        # the call is rejected at the proxy-assertion gate (the missing guard makes it fail closed);
+        # the wire error carries the gate name + exception type, not the internal message.
+        assert response["success"] is False
+        assert "proxy assertion verification failed" in response["error"]
+
+
+class _PodRekeyingProvider:
+    """models a tool-pod JWKS cache that is STALE for the Hub identity key until ONE reactive refresh
+    brings it current (a Hub re-key the cache had not caught up to). counts reactive refreshes so a
+    test can assert "exactly one, never a stampede"."""
+
+    def __init__(self, *, stale: dict[str, Any], fresh: dict[str, Any]) -> None:
+        self._jwks = stale
+        self._fresh = fresh
+        self.refresh_calls = 0
+
+    def __call__(self) -> dict[str, Any]:
+        return self._jwks
+
+    async def refresh_now(self) -> bool:
+        self.refresh_calls += 1
+        self._jwks = self._fresh
+        return True
+
+
+def _pod_jwks_without_hub_kid() -> dict[str, Any]:
+    """the combined pod JWKS with the Hub identity key (kid-1) REMOVED.
+
+    leaves the proxy-assertion signer key(s) intact, so the proxy-assertion gate still verifies; only
+    the Hub identity-token gate sees a kid-miss -- exactly the stale-after-re-key shape B5 self-heals.
+    """
+    fresh = _pod_jwks_provider()
+    return {"keys": [k for k in fresh["keys"] if k.get("kid") != "kid-1"]}
+
+
+class TestToolServerJwksWarmedReadiness:
+    """B5: ``jwks_warmed`` is the readiness signal the tool-pod gates its k8s readiness on -- it must
+    report NOT-READY until the JWKS provider can actually verify a token."""
+
+    def test_not_warmed_before_serve_provisions_a_provider(self) -> None:
+        # no provider yet (serve() self-provisions it) -> the pod must report NOT-READY.
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        assert server.jwks_warmed is False
+
+    def test_reflects_an_injected_providers_warmth(self) -> None:
+        class _Provider:
+            def __init__(self) -> None:
+                self.is_warmed = False
+
+            def __call__(self) -> dict[str, Any]:
+                return {"keys": []}
+
+        provider = _Provider()
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None, jwks_provider=provider)
+        assert server.jwks_warmed is False  # unwarmed cache -> NOT-READY
+        provider.is_warmed = True
+        assert server.jwks_warmed is True  # first successful fetch -> READY
+
+    def test_static_injected_provider_with_no_warmth_signal_is_ready(self) -> None:
+        # a static JWKS callable (tests) has no warm-up phase: it returns keys synchronously, so the
+        # readiness gate treats it as ready rather than wedging NOT-READY forever.
+        server = ToolServer(
+            nats_url="nats://localhost:9999", namespace_collection=None, jwks_provider=_pod_jwks_provider
+        )
+        assert server.jwks_warmed is True
+
+
+class TestToolServerReactiveJwksRefresh:
+    """B5: pod-side reactive self-heal mirrors the proxy -- a kid-not-in-cache miss triggers exactly
+    ONE reactive refresh + re-verify; an expired token does NOT trigger a refresh."""
+
+    def _server(self, provider: Any) -> ToolServer:
+        return ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=provider,
+            jwks_refresh=provider.refresh_now,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_triggers_one_reactive_refresh_then_dispatches(self) -> None:
+        # the cache lacks the Hub identity key after a re-key; the FIRST reactive refresh brings it,
+        # so a valid call self-heals and dispatches rather than being rejected for a steady interval.
+        provider = _PodRekeyingProvider(stale=_pod_jwks_without_hub_kid(), fresh=_pod_jwks_provider())
+        server = self._server(provider)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        rec = _attach_recording_nc(server)
+        msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
+
+        await server.handle_call(msg)
+
+        assert provider.refresh_calls == 1  # EXACTLY one reactive refresh
+        response = json.loads(rec.last_reply[1].model_dump_json())
+        assert response["success"] is True  # re-verify succeeded -> the tool ran
+
+    @pytest.mark.asyncio
+    async def test_expired_token_does_not_trigger_refresh(self) -> None:
+        # an expired handshake token is signed under a key the cache HOLDS -> the failure is expiry,
+        # not a kid-miss, so it must NOT provoke a Hub refresh (else every bad token hits the Hub).
+        provider = _PodRekeyingProvider(stale=_pod_jwks_provider(), fresh=_pod_jwks_provider())
+        server = self._server(provider)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        rec = _attach_recording_nc(server)
+        # swap the payload's handshake token for an EXPIRED one signed by the same Hub key the cache
+        # holds (mint_user_assertion signs with the pod's Hub key under kid-1, so its kid IS present).
+        payload = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
+        payload["context"]["identity_token"] = _pod_mint_hub_token(
+            sub=uuid4(), customer_id=uuid4(), user_id=None, exp_delta=-3600
+        )
+
+        await server.handle_call(_make_nats_msg(payload))
+
+        assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
+        response = json.loads(rec.last_reply[1].model_dump_json())
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+
+class TestToolServerVerificationObservability:
+    """B8: the pod's verify-failure log carries the exception MESSAGE so a stale-JWKS (kid-miss)
+    failure is distinguishable from an absent/expired-token failure (the gap that masked the
+    datasource failure). The message is the STRUCTURAL reason, never token or key material."""
+
+    def _server(self, provider: Any) -> ToolServer:
+        return ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
+
+    @staticmethod
+    def _detail(caplog: pytest.LogCaptureFixture) -> str:
+        rec = next(r for r in caplog.records if r.getMessage() == "pod identity verification failed; rejecting call")
+        extra = getattr(rec, "extra_data", None)
+        assert extra is not None, "the pod identity-verification-failed log must carry structured extra_data"
+        detail: str = extra["detail"]
+        return detail
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_vs_absent_logs_are_distinguishable(self, caplog: pytest.LogCaptureFixture) -> None:
+        # (1) kid-MISS: the cache lacks the Hub identity key (stale after a re-key), no reactive
+        # refresh wired -> the failure logs "no JWKS key matches the token kid".
+        stale = _pod_jwks_without_hub_kid()
+        server = self._server(lambda: stale)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        _attach_recording_nc(server)
+        msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            await server.handle_call(msg)
+        kid_miss_detail = self._detail(caplog)
+
+        # (2) token ABSENT: a different, distinct reason.
+        server2 = self._server(_pod_jwks_provider)
+        server2.register(StubTool(name="test.stub", version="1.0"))
+        _attach_recording_nc(server2)
+        bad = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
+        bad["context"].pop("identity_token", None)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            await server2.handle_call(_make_nats_msg(bad))
+        absent_detail = self._detail(caplog)
+
+        assert "no JWKS key matches the token kid" in kid_miss_detail
+        assert "no identity token" in absent_detail
+        assert kid_miss_detail != absent_detail  # the two failure modes are distinguishable

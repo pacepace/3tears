@@ -29,11 +29,23 @@ _TIME_FORMATS = [
     "%H:%M:%S",
 ]
 
+# Sentinels that mean "the current instant". When the caller passes one of
+# these, the tool reads the clock itself instead of requiring an explicit
+# datetime -- the current time is data the tool must carry, never a value an
+# LLM caller infers (which it cannot do reliably).
+_NOW_TOKENS = frozenset({"", "now", "current", "current time", "right now"})
+
 
 class TimezoneConverterInput(BaseModel):
     """Input for the timezone converter tool."""
 
-    time_str: str = Field(description="Time string to convert (e.g. '2024-01-15 14:30', '3:00 PM')")
+    time_str: str = Field(
+        description=(
+            "Time to convert. Pass 'now' for the current time and the tool resolves "
+            "it -- do not compute the current time yourself. Otherwise an explicit "
+            "time, e.g. '2024-01-15 14:30' or '3:00 PM'."
+        )
+    )
     from_timezone: str = Field(description="Source IANA timezone (e.g. 'America/New_York')")
     to_timezone: str = Field(description="Target IANA timezone (e.g. 'Europe/London')")
 
@@ -49,24 +61,30 @@ def _convert_timezone(time_str: str, from_timezone: str, to_timezone: str) -> st
     except ZoneInfoNotFoundError, KeyError:
         return tool_error("timezone_converter", "convert", f"unknown timezone: {to_timezone}")
 
-    parsed: datetime | None = None
-    for fmt in _TIME_FORMATS:
-        try:
-            parsed = datetime.strptime(time_str.strip(), fmt)
-            break
-        except ValueError:
-            continue
+    if time_str.strip().lower() in _NOW_TOKENS:
+        # "now": resolve the current instant in the source timezone directly,
+        # so the caller never has to know or pass the current datetime.
+        source_dt = datetime.now(from_tz)
+    else:
+        parsed: datetime | None = None
+        for fmt in _TIME_FORMATS:
+            try:
+                parsed = datetime.strptime(time_str.strip(), fmt)
+                break
+            except ValueError:
+                continue
 
-    if parsed is None:
-        return tool_error("timezone_converter", "convert", f"could not parse time: {time_str}")
+        if parsed is None:
+            return tool_error("timezone_converter", "convert", f"could not parse time: {time_str}")
 
-    # If parsed year == 1900 (time-only format), use today's date
-    if parsed.year == 1900:
-        today = date.today()
-        parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
+        # If parsed year == 1900 (time-only format), use today's date
+        if parsed.year == 1900:
+            today = date.today()
+            parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
 
-    # Localize to source timezone and convert
-    source_dt = parsed.replace(tzinfo=from_tz)
+        # Localize to source timezone
+        source_dt = parsed.replace(tzinfo=from_tz)
+
     target_dt = source_dt.astimezone(to_tz)
 
     fmt_str = "%A, %B %d, %Y %I:%M %p %Z"
@@ -102,7 +120,10 @@ class TimezoneConverterTool(TearsTool):
         "properties": {
             "time_str": {
                 "type": "string",
-                "description": "e.g. '2024-01-15 14:30' or '3:00 PM'.",
+                "description": (
+                    "Pass 'now' for the current time (resolved by the tool); "
+                    "otherwise an explicit time e.g. '2024-01-15 14:30' or '3:00 PM'."
+                ),
             },
             "from_timezone": {
                 "type": "string",

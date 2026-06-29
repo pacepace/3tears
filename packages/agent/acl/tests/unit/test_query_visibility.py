@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from threetears.agent.acl import (
     caller_visible_customer_clause,
+    caller_visible_customers_query,
     customer_scope_visibility_clause,
     three_scope_visibility_clause,
 )
@@ -215,3 +216,48 @@ def test_three_scope_columns_embedded_verbatim() -> None:
     )
     assert "ra.scope_customer_id = ec.customer_id" in fragment
     assert "(ec.user_id IS NULL OR ec.user_id = $1)" in fragment
+
+
+# ---------------------------------------------------------------------------
+# caller_visible_customers_query: the concrete visible-customer set for the RLS GUC
+# ---------------------------------------------------------------------------
+
+
+def test_visible_customers_query_returns_sql_and_single_user_id_bind() -> None:
+    user_id = uuid4()
+    sql, params = caller_visible_customers_query(user_id=user_id)
+    assert params == [user_id]
+    assert "$1" in sql
+
+
+def test_visible_customers_query_mirrors_the_three_scope_arms() -> None:
+    # the SET resolver must read the SAME three scope arms as the per-row EXISTS clause, or the
+    # RLS GUC would admit a different set of rows than the app-layer visibility rule -- a leak or
+    # an over-restriction. pins each arm so an edit to one generator without the other fails loud.
+    sql, _ = caller_visible_customers_query(user_id=uuid4())
+    assert "FROM role_assignments ra" in sql
+    assert "JOIN group_members gm ON gm.group_id = ra.group_id" in sql
+    assert "LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id" in sql
+    assert "gm.member_type = 'user'" in sql
+    # scope=all -> the is_all flag (becomes the GUC '*' wildcard)
+    assert "bool_or(ra.scope_type = 'all')" in sql
+    assert "AS is_all" in sql
+    # type_customer + namespace arms feed the concrete customer_ids array
+    assert "ra.scope_type = 'type_customer' THEN ra.scope_customer_id" in sql
+    assert "ra.scope_type = 'namespace' THEN ns.customer_id" in sql
+    assert "AS customer_ids" in sql
+
+
+def test_visible_customers_query_is_fail_closed_on_no_grants() -> None:
+    # a caller with no grants must yield a non-NULL (empty) array, not NULL -- so the GUC admits
+    # only platform (customer_id IS NULL) rows, never silently widening.
+    sql, _ = caller_visible_customers_query(user_id=uuid4())
+    assert "COALESCE(bool_or(ra.scope_type = 'all'), false)" in sql
+    assert "ARRAY[]::uuid[]" in sql
+    assert "array_remove(" in sql
+
+
+def test_visible_customers_query_respects_param_offset() -> None:
+    sql, params = caller_visible_customers_query(user_id=uuid4(), param_offset=3)
+    assert "gm.member_id = $3" in sql
+    assert len(params) == 1

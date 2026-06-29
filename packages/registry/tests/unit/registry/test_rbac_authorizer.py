@@ -321,6 +321,78 @@ class TestRbacEvaluatorAuthorizer:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_deny_cross_customer_tool_call(self) -> None:
+        """a fully valid grant in customer A does NOT authorize a tool owned by customer B.
+
+        The evaluator's cross-customer wall drops a customer-scoped membership/group against
+        another customer's namespace, so even an otherwise-complete two-sided grant yields a
+        DENY. This locks tenant isolation on the tool-call path specifically (v0.13.9 auth C5):
+        post-C3 the proxy feeds ``is_authorized`` the VERIFIED caller identity, and a verified
+        caller cannot reach across the customer line into another tenant's tools -- the wall
+        keys off the DB-sourced membership customer, never the (self-asserted) envelope.
+        """
+        user_id = uuid4()
+        agent_id = uuid4()
+        customer_a = uuid4()  # the caller's grant lives here
+        customer_b = uuid4()  # the tool namespace is owned here
+        group_id = uuid4()
+        role_id = uuid4()
+        namespace_id = uuid4()
+
+        group = Group(id=group_id, name="tool-access:agent-abc", customer_id=customer_a)
+        role = Role(
+            id=role_id,
+            name="ToolCaller",
+            permissions={"tool": frozenset({"tool.call"})},
+            is_built_in=True,
+        )
+        user_membership = GroupMembership(
+            group_id=group_id, member_id=user_id, member_type=MemberType.USER, customer_id=customer_a
+        )
+        agent_membership = GroupMembership(
+            group_id=group_id, member_id=agent_id, member_type=MemberType.AGENT, customer_id=customer_a
+        )
+        assignment = RoleAssignment(
+            id=uuid4(),
+            group_id=group_id,
+            role_id=role_id,
+            scope_type=ScopeType.NAMESPACE,
+            scope_namespace_id=namespace_id,
+            scope_namespace_type=None,
+            scope_customer_id=None,
+        )
+
+        authorizer = RbacEvaluatorAuthorizer(
+            acl_cache=_cache(
+                _FakeMembershipLoader(
+                    users={user_id: (user_membership,)},
+                    agents={agent_id: (agent_membership,)},
+                ),
+                _FakeGrantLoader(
+                    assignments={group_id: (assignment,)},
+                    roles={role_id: role},
+                    groups={group_id: group},
+                ),
+            ),
+            namespace_collection=_FakeNamespaceCollection(
+                _StubToolNamespace(
+                    id=namespace_id,
+                    namespace_type="tool",
+                    owner_agent_id=None,
+                    customer_id=customer_b,  # DIFFERENT customer than the grant
+                ),
+            ),
+        )
+
+        result = await authorizer.is_authorized(
+            str(agent_id),
+            str(user_id),
+            "aibots.calc",
+            "1.0",
+        )
+        assert result is False  # cross-customer wall denies despite a valid same-customer grant
+
+    @pytest.mark.asyncio
     async def test_deny_when_no_memberships(self) -> None:
         """actor without memberships is denied."""
         user_id = uuid4()

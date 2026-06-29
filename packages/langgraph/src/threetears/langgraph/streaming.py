@@ -41,15 +41,19 @@ from threetears.observe import get_logger, traced
 
 __all__ = [
     "NOSTREAM_TAG",
+    "NO_INTERRUPT",
     "StreamStartEvent",
     "StreamTokenEvent",
     "StreamEndEvent",
     "StreamErrorEvent",
+    "StreamInterruptEvent",
     "ToolCallStartEvent",
     "ToolCallEndEvent",
     "ToolCallProgressEvent",
     "StreamEvent",
     "parse_stream_event",
+    "detect_interrupt",
+    "render_interrupt_prompt",
     "StreamTransport",
     "StreamingResponse",
     "StreamingResponseError",
@@ -68,6 +72,17 @@ log = get_logger(__name__)
 #: leak verbatim into what the user sees. the run loop drops any
 #: ``on_chat_model_stream`` whose event ``tags`` include this marker.
 NOSTREAM_TAG = "threetears:nostream"
+
+#: sentinel distinguishing "the graph completed normally" from "the graph paused on an interrupt
+#: whose payload happens to be ``None``": :func:`_detect_interrupt` returns this when there is NO
+#: pending interrupt, so a genuine ``interrupt(None)`` is never mistaken for a normal completion.
+_NO_INTERRUPT: Any = object()
+
+#: public alias of :data:`_NO_INTERRUPT` so a NON-streaming consumer (the SDK's ``ainvoke`` path)
+#: can compare against the SAME sentinel object the streaming detection uses -- single source of
+#: truth, no second sentinel to drift. :func:`detect_interrupt` returns this when the graph
+#: completed normally; identity (``is NO_INTERRUPT``) is the test, never equality.
+NO_INTERRUPT: Any = _NO_INTERRUPT
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +151,16 @@ class StreamEndEvent(BaseModel):
     mutually exclusive with :class:`StreamErrorEvent` -- never both
     on the same correlation_id.
 
+    ``metadata`` carries turn-level metadata that is NOT part of the
+    token stream itself -- it originates wherever the terminal is
+    constructed (for an ack-early dispatch flow, the consumer enriches
+    the terminal from the separate request-reply once the graph
+    finishes). it is transport-agnostic and free-form; a consumer with
+    no terminal metadata leaves it empty. aibots rides response
+    metadata here (tool-call names, ``pending_grants``, ``status`` for
+    the human-in-the-loop grant flow) so a streaming caller sees the
+    same turn metadata a non-streaming reply carries.
+
     :param type: discriminator literal
     :ptype type: Literal["stream_end"]
     :param correlation_id: request trace identifier
@@ -144,12 +169,22 @@ class StreamEndEvent(BaseModel):
     :ptype content: str
     :param duration_ms: wall-clock milliseconds for the stream
     :ptype duration_ms: int
+    :param conversation_id: conversation identifier, mirrored from the
+        :class:`StreamStartEvent` so the terminal independently carries
+        it (the start frame and the terminal are a redundant pair over a
+        fire-and-forget transport; a consumer that misses one recovers
+        the id from the other)
+    :ptype conversation_id: UUID | None
+    :param metadata: free-form turn-level metadata (empty when none)
+    :ptype metadata: dict[str, Any]
     """
 
     type: Literal["stream_end"] = "stream_end"
     correlation_id: UUID
     content: str
     duration_ms: int = 0
+    conversation_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class StreamErrorEvent(BaseModel):
@@ -183,6 +218,43 @@ class StreamErrorEvent(BaseModel):
     code: str
     message: str
     duration_ms: int = 0
+
+
+class StreamInterruptEvent(BaseModel):
+    """pause terminal event: the graph stopped on a human-in-the-loop ``interrupt(...)``.
+
+    Published exactly once when the graph reaches a LangGraph dynamic ``interrupt(value)`` instead
+    of running to completion -- the turn ends as a legitimate PAUSE, distinct from a success
+    (:class:`StreamEndEvent`), a failure (:class:`StreamErrorEvent`), and the empty-end bug. Before
+    this envelope existed an interrupted graph yielded an empty :class:`StreamEndEvent` and the turn
+    silently hung (the consumer never surfaced the prompt). ``payload`` carries the value the node
+    passed to ``interrupt(...)`` (e.g. an exploit-approval prompt) for the consumer to surface to
+    the human; the graph resumes on a later turn via ``run_graph(Command(resume=...))`` against the
+    same checkpointed thread.
+
+    mutually exclusive with :class:`StreamEndEvent` / :class:`StreamErrorEvent` -- never two
+    terminals on the same correlation_id.
+
+    :param type: discriminator literal
+    :ptype type: Literal["stream_interrupt"]
+    :param correlation_id: request trace identifier
+    :ptype correlation_id: UUID
+    :param payload: the value the node passed to ``interrupt(...)`` (the prompt to resolve)
+    :ptype payload: Any
+    :param conversation_id: conversation identifier, mirrored from the start frame
+    :ptype conversation_id: UUID | None
+    :param duration_ms: wall-clock milliseconds elapsed before the pause
+    :ptype duration_ms: int
+    :param metadata: free-form turn-level metadata (empty when none)
+    :ptype metadata: dict[str, Any]
+    """
+
+    type: Literal["stream_interrupt"] = "stream_interrupt"
+    correlation_id: UUID
+    payload: Any
+    conversation_id: UUID | None = None
+    duration_ms: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolCallStartEvent(BaseModel):
@@ -273,6 +345,7 @@ StreamEvent = Annotated[
         StreamTokenEvent,
         StreamEndEvent,
         StreamErrorEvent,
+        StreamInterruptEvent,
         ToolCallStartEvent,
         ToolCallEndEvent,
         ToolCallProgressEvent,
@@ -420,7 +493,7 @@ class StreamingResponse:
         self._accumulated_content: str = ""
         self._started: bool = False
         self._closed: bool = False
-        self._terminal_kind: str | None = None  # "end" or "error" once closed
+        self._terminal_kind: str | None = None  # "end", "error", or "interrupt" once closed
         # turn-level keepalive sequence (LRT-02), distinct from the per-tool
         # heartbeat sequence the ToolCallProgressHook owns. emit_keepalive
         # advances this so a long time-to-first-token / between-node gap never
@@ -636,7 +709,7 @@ class StreamingResponse:
         await self._publish(event)
 
     @traced
-    async def end(self) -> None:
+    async def end(self, *, metadata: dict[str, Any] | None = None) -> None:
         """publish the success terminal :class:`StreamEndEvent` once.
 
         idempotent if a previous :meth:`end` already fired -- second
@@ -644,6 +717,9 @@ class StreamingResponse:
         :class:`StreamingResponseError` if a previous :meth:`error`
         already fired (lifecycle terminals are mutually exclusive).
 
+        :param metadata: optional free-form turn-level metadata to carry
+            on the terminal envelope (defaults to empty)
+        :ptype metadata: dict[str, Any] | None
         :return: nothing
         :rtype: None
         :raises StreamingResponseError: when ``error`` already fired
@@ -661,6 +737,8 @@ class StreamingResponse:
             correlation_id=self._correlation_id,
             content=self._accumulated_content,
             duration_ms=duration_ms,
+            conversation_id=self._conversation_id,
+            metadata=dict(metadata) if metadata else {},
         )
         await self._publish(event)
 
@@ -695,6 +773,42 @@ class StreamingResponse:
             code=code,
             message=message,
             duration_ms=duration_ms,
+        )
+        await self._publish(event)
+
+    @traced
+    async def interrupt(self, *, payload: Any, metadata: dict[str, Any] | None = None) -> None:
+        """publish the PAUSE terminal :class:`StreamInterruptEvent` once.
+
+        the graph reached a human-in-the-loop ``interrupt(...)`` instead of completing; the turn
+        ends as a legitimate pause carrying the interrupt payload for the consumer to surface +
+        later resume. idempotent if a previous :meth:`interrupt` already fired; raises
+        :class:`StreamingResponseError` if a previous :meth:`end` / :meth:`error` already fired
+        (lifecycle terminals are mutually exclusive).
+
+        :param payload: the value the node passed to ``interrupt(...)`` (the prompt to resolve)
+        :ptype payload: Any
+        :param metadata: optional free-form turn-level metadata for the terminal envelope
+        :ptype metadata: dict[str, Any] | None
+        :return: nothing
+        :rtype: None
+        :raises StreamingResponseError: when a different terminal already fired
+        """
+        if self._closed:
+            if self._terminal_kind == "interrupt":
+                return
+            raise StreamingResponseError(
+                "cannot call interrupt() after a different terminal fired on this stream",
+            )
+        self._closed = True
+        self._terminal_kind = "interrupt"
+        duration_ms = self._compute_duration_ms()
+        event = StreamInterruptEvent(
+            correlation_id=self._correlation_id,
+            payload=payload,
+            duration_ms=duration_ms,
+            conversation_id=self._conversation_id,
+            metadata=dict(metadata) if metadata else {},
         )
         await self._publish(event)
 
@@ -789,7 +903,31 @@ class StreamingResponse:
             await self.error(code="AGENT_FAILED", message=str(exc))
             raise
         else:
-            await self.end()
+            try:
+                interrupt_payload = await _detect_interrupt(compiled_graph, config)
+            except Exception as exc:
+                # a checkpointer-backed graph whose post-run state query FAILS must surface a real
+                # error terminal, never a silent empty StreamEndEvent.
+                log.error(
+                    "interrupt detection failed after graph completion",
+                    extra={
+                        "extra_data": {
+                            "correlation_id": str(self._correlation_id),
+                            "error_type": type(exc).__name__,
+                        }
+                    },
+                    exc_info=True,
+                )
+                await self.error(code="AGENT_FAILED", message=str(exc))
+                raise
+            if interrupt_payload is not _NO_INTERRUPT:
+                # the graph PAUSED on a human-in-the-loop interrupt rather than completing: stash the
+                # payload for the synchronous caller and end the turn as a pause, never an empty
+                # StreamEndEvent (the silent-hang bug).
+                final_state["__interrupt__"] = interrupt_payload
+                await self.interrupt(payload=interrupt_payload)
+            else:
+                await self.end()
         return final_state
 
     def _compute_duration_ms(self) -> int:
@@ -857,3 +995,99 @@ def _extract_token(event: dict[str, Any]) -> str:
         chunk = raw_data
     content = getattr(chunk, "content", None) if chunk is not None else None
     return content if isinstance(content, str) else ""
+
+
+async def detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:
+    """return the pending interrupt payload when the graph PAUSED, else :data:`NO_INTERRUPT`.
+
+    public, transport-agnostic wrapper over the private :func:`_detect_interrupt` so a NON-streaming
+    consumer (the SDK's ``compiled.ainvoke(...)`` path) detects a human-in-the-loop pause the SAME
+    way the streaming :meth:`StreamingResponse.run_graph` does -- the snapshot-shape logic lives in
+    ONE place (``_detect_interrupt`` / :func:`_snapshot_interrupts`), never duplicated in the SDK.
+    a failing checkpointer-backed ``aget_state`` is NOT swallowed -- it propagates so the caller can
+    surface a real error rather than a silent empty reply (the bug the interrupt path exists to kill).
+
+    :param compiled_graph: the compiled LangGraph (may expose ``aget_state`` / ``checkpointer``)
+    :ptype compiled_graph: Any
+    :param config: the LangGraph runtime config (carries the thread id)
+    :ptype config: dict[str, Any]
+    :return: the interrupt payload, or :data:`NO_INTERRUPT` when the graph completed normally
+    :rtype: Any
+    :raises Exception: re-raises a checkpointer-backed ``aget_state`` failure (never swallowed)
+    """
+    return await _detect_interrupt(compiled_graph, config)
+
+
+def render_interrupt_prompt(payload: Any) -> str:
+    """render a minimal, generic human-facing prompt from a raw interrupt payload.
+
+    when a graph PAUSES on a human-in-the-loop ``interrupt(...)`` every text surface that shows the
+    pause to a human -- the agent's synchronous reply ``content``, a channel delivery, the hub's
+    WebSocket terminal frame -- needs a string. this is the platform's GENERIC floor and lives here,
+    in the shared wire module, so EVERY surface renders an interrupt IDENTICALLY (single source of
+    truth, no per-consumer drift). it stringifies the payload and appends a one-line "what to do
+    next" hint. RICH rendering (a structured approval card, action-specific copy) is the consuming
+    agent's job -- it owns the payload shape and can render from the first-class ``interrupt`` field
+    on the response metadata / :attr:`StreamInterruptEvent.payload`. ``None`` and a blank/whitespace
+    payload both collapse to the hint alone so the surface never shows a literal ``"None"`` or a
+    blank bubble.
+
+    :param payload: the value a node passed to ``interrupt(...)``
+    :ptype payload: Any
+    :return: a human-readable prompt string
+    :rtype: str
+    """
+    rendered = "" if payload is None else str(payload).strip()
+    hint = "Reply to approve or deny to continue."
+    return f"{rendered}\n\n{hint}" if rendered else hint
+
+
+async def _detect_interrupt(compiled_graph: Any, config: dict[str, Any]) -> Any:
+    """return the pending interrupt payload when the graph PAUSED, else :data:`_NO_INTERRUPT`.
+
+    a graph compiled with a checkpointer surfaces a dynamic ``interrupt(value)`` as a paused
+    snapshot whose ``aget_state(config)`` carries pending interrupts; the payload is the value a node
+    passed to ``interrupt(...)``. graphs WITHOUT a checkpointer cannot interrupt, so detection is
+    skipped (the sentinel). when a checkpointer IS present a failing ``aget_state`` is NOT swallowed
+    as "no interrupt" -- it propagates so the caller surfaces an error terminal rather than a silent
+    empty end (the exact bug the interrupt terminal exists to kill). a single interrupt returns its
+    value directly; concurrent interrupts return the list of values.
+
+    :param compiled_graph: the compiled LangGraph (may expose ``aget_state`` / ``checkpointer``)
+    :ptype compiled_graph: Any
+    :param config: the LangGraph runtime config (carries the thread id)
+    :ptype config: dict[str, Any]
+    :return: the interrupt payload, or :data:`_NO_INTERRUPT` when the graph completed normally
+    :rtype: Any
+    :raises Exception: re-raises a checkpointer-backed ``aget_state`` failure (never swallowed)
+    """
+    get_state = getattr(compiled_graph, "aget_state", None)
+    has_checkpointer = getattr(compiled_graph, "checkpointer", None) is not None
+    result: Any = _NO_INTERRUPT
+    if get_state is not None and has_checkpointer:
+        interrupts = _snapshot_interrupts(await get_state(config))
+        if interrupts:
+            values = [getattr(item, "value", item) for item in interrupts]
+            result = values[0] if len(values) == 1 else values
+    return result
+
+
+def _snapshot_interrupts(snapshot: Any) -> list[Any]:
+    """collect pending interrupts from a LangGraph StateSnapshot across version shapes.
+
+    recent LangGraph exposes ``snapshot.interrupts``; older shapes carry them per pending task
+    (``snapshot.tasks[i].interrupts``). returns an empty list when the graph is not paused.
+
+    :param snapshot: a LangGraph ``StateSnapshot``
+    :ptype snapshot: Any
+    :return: the pending ``Interrupt`` objects (empty when the graph is not paused)
+    :rtype: list[Any]
+    """
+    direct = getattr(snapshot, "interrupts", None)
+    if direct:
+        result = list(direct)
+    else:
+        result = [
+            item for task in getattr(snapshot, "tasks", ()) or () for item in getattr(task, "interrupts", ()) or ()
+        ]
+    return result

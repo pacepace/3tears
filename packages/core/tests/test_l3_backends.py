@@ -18,7 +18,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from threetears.core.backends import DurableStore, L3Backend, NatsProxyL3Backend, SqlL3Backend, parse_rowcount
+from threetears.core.backends import (
+    DurableStore,
+    L3Backend,
+    NatsProxyL3Backend,
+    SqlL3Backend,
+    bound_request_connection,
+    parse_rowcount,
+)
 
 
 class _RecordingPool:
@@ -424,4 +431,107 @@ async def test_schema_aware_upsert_binds_to_caller_conn() -> None:
     # the write went to the caller's connection; the pool saw nothing
     assert len(conn.calls) == 1
     assert "INSERT INTO items" in conn.calls[0][0]
+    assert pool.calls == []
+
+
+# ── request-scoped connection binding (RLS per-request transaction; v0.13.9 R1) ─────────────
+
+
+class _RecordingConn:
+    """A bound request connection that records the statements run on it (raw-conn surface)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
+        self.calls.append((query, params))
+        return []
+
+    async def fetchrow(self, query: str, *params: Any) -> dict[str, Any] | None:
+        self.calls.append((query, params))
+        return None
+
+    async def fetchval(self, query: str, *params: Any) -> Any:
+        self.calls.append((query, params))
+        return None
+
+    async def execute(self, query: str, *params: Any) -> str:
+        self.calls.append((query, params))
+        return "UPDATE 1"
+
+
+@pytest.mark.asyncio
+async def test_unbound_ops_go_to_the_pool() -> None:
+    # the inert default: with no request connection bound, ops hit the pool exactly as before.
+    pool = _BareScopelessPool()
+    backend = SqlL3Backend(pool)
+    await backend.fetch("SELECT 1")
+    await backend.execute("UPDATE t SET x=1")
+    assert pool.calls == [("SELECT 1", ()), ("UPDATE t SET x=1", ())]
+
+
+@pytest.mark.asyncio
+async def test_bound_request_conn_receives_all_ops_not_the_pool() -> None:
+    pool = _BareScopelessPool()
+    conn = _RecordingConn()
+    backend = SqlL3Backend(pool)
+    async with bound_request_connection(conn):
+        await backend.fetch("SELECT 1", "p")
+        await backend.fetchrow("SELECT 2")
+        await backend.fetchval("SELECT 3")
+        await backend.execute("UPDATE t SET x=1")
+    assert conn.calls == [
+        ("SELECT 1", ("p",)),
+        ("SELECT 2", ()),
+        ("SELECT 3", ()),
+        ("UPDATE t SET x=1", ()),
+    ]
+    assert pool.calls == []  # every op went to the bound conn; the pool saw nothing
+
+
+@pytest.mark.asyncio
+async def test_bound_request_conn_drops_scoped_read_kwargs() -> None:
+    # the bound conn already has search_path + the session GUC set; scoped-read kwargs are
+    # dropped (it is a raw conn, not the scope-aware transport).
+    pool = _BareScopelessPool()
+    conn = _RecordingConn()
+    backend = SqlL3Backend(pool)
+    async with bound_request_connection(conn):
+        await backend.fetch("SELECT 1", namespace="ns", customer_scope=_CUSTOMER_SCOPE)
+    assert conn.calls == [("SELECT 1", ())]
+
+
+@pytest.mark.asyncio
+async def test_binding_resets_on_context_exit() -> None:
+    pool = _BareScopelessPool()
+    conn = _RecordingConn()
+    backend = SqlL3Backend(pool)
+    async with bound_request_connection(conn):
+        await backend.fetch("SELECT bound")
+    await backend.fetch("SELECT unbound")  # outside the context -> pool again
+    assert conn.calls == [("SELECT bound", ())]
+    assert pool.calls == [("SELECT unbound", ())]
+
+
+@pytest.mark.asyncio
+async def test_acquire_and_transaction_yield_the_bound_conn() -> None:
+    # explicit-connection / transactional code reuses the request conn (no escape to the pool).
+    pool = _BareScopelessPool()
+    conn = _RecordingConn()
+    backend = SqlL3Backend(pool)
+    async with bound_request_connection(conn):
+        async with backend.acquire() as acquired:
+            assert acquired is conn
+        async with backend.transaction() as tx_conn:
+            assert tx_conn is conn
+
+
+@pytest.mark.asyncio
+async def test_execute_batch_runs_on_bound_conn_in_the_request_transaction() -> None:
+    pool = _BareScopelessPool()  # must NOT be acquired -- the batch shares the request txn
+    conn = _RecordingConn()
+    backend = SqlL3Backend(pool)
+    async with bound_request_connection(conn):
+        await backend.execute_batch([{"query": "INSERT 1"}, {"query": "INSERT 2", "params": ["p"]}])
+    assert conn.calls == [("INSERT 1", ()), ("INSERT 2", ("p",))]
     assert pool.calls == []

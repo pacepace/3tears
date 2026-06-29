@@ -90,6 +90,13 @@ async def _always_reject_auth(token: str) -> dict[str, Any] | None:
     return None
 
 
+async def _valid_auth_with_customer(token: str) -> dict[str, Any] | None:
+    """auth validator that returns a user id AND a customer scope on the payload."""
+    if token == "valid-token":
+        return {"user_id": "user-123", "customer_id": "cust-authenticated", "name": "Test User"}
+    return None
+
+
 # ============================================================
 # Enforcement tests
 # ============================================================
@@ -626,6 +633,71 @@ class TestWebSocketHandlerChannelMessage:
         assert received_messages[0].channel_type == "websocket"
         assert received_messages[0].sender_id == "user-123"
         assert received_messages[0].content == "hello"
+
+    @pytest.mark.asyncio
+    async def test_customer_id_from_auth_payload_not_client_metadata(self) -> None:
+        """ChannelMessage.customer_id comes from the AUTHENTICATED payload, never client metadata.
+
+        the host mints identity from the customer scope, so it must be the server-authenticated
+        value (the access-token ``customer_id`` claim surfaced by the auth validator), and a client
+        that puts a different ``customer_id`` in ``metadata`` must NOT be able to override it.
+        """
+        from threetears.channels.websocket import WebSocketHandler
+
+        received_messages: list[ChannelMessage] = []
+
+        class _CapturingRouter:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
+                received_messages.append(message)
+                return None
+
+        router = _CapturingRouter()
+        handler = WebSocketHandler(router=router, auth_validator=_valid_auth_with_customer)
+
+        # the client tries to spoof a different customer via metadata.
+        user_msg = json.dumps(
+            {
+                "type": "message",
+                "content": "hello",
+                "metadata": {"customer_id": "cust-SPOOFED"},
+            }
+        )
+        ws = MockWebSocket(
+            messages=[user_msg],
+            query_params={"token": "valid-token"},
+        )
+        await handler.handle_connection(ws)
+
+        assert len(received_messages) == 1
+        # the authenticated customer wins; the spoof is ignored on the first-class field.
+        assert received_messages[0].customer_id == "cust-authenticated"
+        assert received_messages[0].customer_id != "cust-SPOOFED"
+
+    @pytest.mark.asyncio
+    async def test_customer_id_none_when_auth_payload_omits_it(self) -> None:
+        """no customer on the auth payload -> ChannelMessage.customer_id stays None (chat config)."""
+        from threetears.channels.websocket import WebSocketHandler
+
+        received_messages: list[ChannelMessage] = []
+
+        class _CapturingRouter:
+            async def route_inbound(self, message: ChannelMessage) -> ChannelResponse | None:
+                received_messages.append(message)
+                return None
+
+        router = _CapturingRouter()
+        # _valid_auth returns no customer_id.
+        handler = WebSocketHandler(router=router, auth_validator=_valid_auth)
+
+        user_msg = json.dumps({"type": "message", "content": "hello", "metadata": {}})
+        ws = MockWebSocket(
+            messages=[user_msg],
+            query_params={"token": "valid-token"},
+        )
+        await handler.handle_connection(ws)
+
+        assert len(received_messages) == 1
+        assert received_messages[0].customer_id is None
 
 
 class TestWebSocketHandlerConfig:
