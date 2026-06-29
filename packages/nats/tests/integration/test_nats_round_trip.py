@@ -97,6 +97,70 @@ async def test_request_response_round_trip(nats_container: str) -> None:
             await nc.unsubscribe(sub)
 
 
+async def test_reconnect_preserves_connection_and_subscription(nats_container: str) -> None:
+    """reconnect() drives a real nats-py reconnect: the client stays open and subs survive.
+
+    proves the proactive re-auth primitive against a real broker -- after ``reconnect()`` the
+    SAME client is still connected (not closed) and the subscription registered before the
+    reconnect still delivers, because nats-py replays it under its original ``sid``. on the live
+    enforcing bus the reconnect additionally re-runs the auth-callout to mint a fresh user JWT;
+    that end-to-end re-auth is proven against the running stack, while this pins the wrapper-level
+    reconnect contract (connection + subscription continuity) on a real server.
+    """
+    set_default_namespace("itest")
+    async with await NatsClient.connect(
+        nats_url=nats_container,
+        nats_subject_namespace="itest",
+        client_name="reconnect-itest",
+    ) as nc:
+        received: list[_Echo] = []
+
+        async def on_msg(msg: _Echo) -> None:
+            received.append(msg)
+
+        reconnected: list[bool] = []
+
+        async def _on_reconnect() -> None:
+            reconnected.append(True)
+
+        nc.add_reconnect_callback(_on_reconnect)
+
+        sub = await nc.subscribe_typed(
+            subject=Subjects.tools_call(),
+            cb=on_msg,
+            message_type=_Echo,
+        )
+        await asyncio.sleep(0.1)  # let subscription register
+
+        # pre-reconnect delivery
+        await nc.publish(subject=Subjects.tools_call(), message=_Echo(text="before", n=1))
+        await asyncio.sleep(0.3)
+        assert received == [_Echo(text="before", n=1)]
+
+        # force a clean reconnect while connected (the proactive re-auth trigger).
+        await nc.reconnect()
+
+        # wait for nats-py to complete the reconnect (it spawns _attempt_reconnect in the
+        # background); confirm a real server round-trip, not just the cached socket state.
+        deadline = 10.0
+        waited = 0.0
+        while waited < deadline and not await nc.ping(timeout=1.0):
+            await asyncio.sleep(0.2)
+            waited += 0.2
+        assert nc.is_closed is False
+        assert await nc.ping(timeout=2.0) is True
+        # the reconnected_cb fan-out fired on the real reconnect.
+        assert reconnected == [True]
+
+        # post-reconnect delivery: nats-py replayed the SUB under its original sid, so the SAME
+        # subscription still delivers without any re-subscribe.
+        await nc.publish(subject=Subjects.tools_call(), message=_Echo(text="after", n=2))
+        await asyncio.sleep(0.3)
+        assert _Echo(text="after", n=2) in received
+
+        await nc.unsubscribe(sub)
+
+
 async def test_kv_bucket_round_trip(nats_container: str) -> None:
     """KV bucket put / get / delete round-trip."""
     set_default_namespace("itest")

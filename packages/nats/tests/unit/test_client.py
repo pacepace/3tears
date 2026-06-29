@@ -77,6 +77,12 @@ class _FakeNatsPyClient:
         self.subscribed: list[tuple[str, str | None, _FakeSubscription]] = []
         self.request_response: bytes = b"{}"
         self.request_calls: list[tuple[str, bytes, float]] = []
+        # records errors passed to the nats-py op-error reconnect entry point that
+        # :meth:`NatsClient.reconnect` drives.
+        self.op_err_calls: list[Exception] = []
+
+    async def _process_op_err(self, e: Exception) -> None:
+        self.op_err_calls.append(e)
 
     async def publish(self, subject: str, payload: bytes, reply: str | None = None) -> None:
         self.published.append((subject, payload, reply))
@@ -748,6 +754,69 @@ async def test_reconnect_callback_failure_is_isolated(
     await captured["options"]["reconnected_cb"]()
 
     assert ran == ["boom", "after"]
+
+
+# ---------------------------------------------------------------------------
+# reconnect() — proactive force-reconnect primitive (NATS-JWT re-auth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconnect_triggers_nats_py_reconnect_when_connected() -> None:
+    """on a CONNECTED client, reconnect() drives nats-py's own op-error reconnect path.
+
+    this is the proactive NATS-JWT re-auth primitive: forcing a reconnect while the current
+    short-lived user JWT is still valid makes nats-py re-run the auth-callout and mint a FRESH
+    JWT, so the connection never reaches the auth-expiry close (which nats-py routes straight to
+    a terminal ``_close``, bypassing forever-reconnect). the synthesized error is a
+    StaleConnectionError -- the connection is about to go stale as the JWT nears expiry.
+    """
+    from nats.errors import StaleConnectionError
+
+    client, fake = _make_client()
+    fake.is_connected = True
+    fake.is_closed = False
+
+    await client.reconnect()
+
+    assert len(fake.op_err_calls) == 1
+    assert isinstance(fake.op_err_calls[0], StaleConnectionError)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_raises_on_closed_client() -> None:
+    """reconnect() on a terminally-closed client raises -- it cannot revive a closed ``_raw``.
+
+    once nats-py has run ``_close(CLOSED)`` (the auth-expiry terminal path), ``_attempt_reconnect``
+    early-returns on ``is_closed``; a proactive trigger cannot help. the caller's reactive
+    self-heal path (a fresh re-establish) owns that case. failing loud keeps the two paths distinct
+    and never silently lets ``_process_op_err`` fall into its connection-closing else-branch.
+    """
+    from threetears.nats import NatsClientError
+
+    client, fake = _make_client()
+    fake.is_closed = True
+
+    with pytest.raises(NatsClientError):
+        await client.reconnect()
+    assert fake.op_err_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reconnect_noops_when_not_currently_connected() -> None:
+    """reconnect() is a no-op when not connected (but not closed) -- a reconnect is already in flight.
+
+    forever-reconnect drives an in-flight reconnect after a network drop. forcing another through
+    ``_process_op_err`` while disconnected would hit its else-branch and ``_close`` the client; the
+    ``is_connected`` guard keeps reconnect() out of that branch entirely.
+    """
+    client, fake = _make_client()
+    fake.is_connected = False
+    fake.is_closed = False
+
+    await client.reconnect()
+
+    assert fake.op_err_calls == []
 
 
 @pytest.mark.asyncio
