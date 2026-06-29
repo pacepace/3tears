@@ -112,7 +112,7 @@ packages/agent/tools/tests/unit/test_strategy.py:18:_FakeStrategy
 # rationale: NatsClient subset for the tool-server baseline-audit unit test; the test exercises publish + subscribe_typed only and the wrapper's full surface is out of scope
 packages/agent/tools/tests/unit/tools/test_tool_server_baseline_audit.py:43:_FakeNats
 # rationale: MediaStorage subset for one utility tools test that needs only get_media; the analyze_media + protocols tests have markers for the full surface
-packages/agent/tools/tests/unit/tools/test_utility_tools_mcp.py:18:_FakeMediaStorage
+packages/agent/tools/tests/unit/tools/test_utility_tools_mcp.py:23:_FakeMediaStorage
 # rationale: asyncpg Pool subset shim used by the agent-tools test_helpers module; the test_helpers shim returns rows from a dict the agent-tools collection tests share
 packages/agent/tools/tests/testing_utils.py:66:FakePool
 
