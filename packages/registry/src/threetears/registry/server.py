@@ -412,6 +412,10 @@ class RegistryServer:
             timeout=self._call_timeout,
             authorizer=self._authorizer,
             jwks_provider=jwks_provider,
+            # reactive self-heal on a Hub re-key: a kid-not-in-cache miss triggers ONE immediate,
+            # debounced + rate-limited refresh + re-verify, so a valid token signed under a freshly-
+            # rotated Hub key heals on the first failed-but-valid call rather than after the steady tick.
+            jwks_refresh=jwks_provider.refresh_now,
             proxy_signer=proxy_signer,
             pop_replay_guard=pop_replay_guard,
         )
@@ -445,6 +449,16 @@ class RegistryServer:
                 HealthCheck(
                     name="call_proxy",
                     probe=lambda: self._call_proxy is not None,
+                ),
+                # readiness gate: report NOT-READY until the Hub JWKS cache has had its first
+                # successful fetch. before it warms, the proxy verifies every identity token against
+                # an EMPTY keyset and rejects fail-closed (TOOL_IDENTITY_UNVERIFIED), so a k8s
+                # readiness probe that flipped ready too early would route calls the proxy is
+                # guaranteed to fail. gating on is_warmed keeps the registry out of rotation until it
+                # can actually verify a token.
+                HealthCheck(
+                    name="jwks_warmed",
+                    probe=lambda: self._jwks_provider is not None and self._jwks_provider.is_warmed,
                 ),
             ],
         )

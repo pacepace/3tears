@@ -153,6 +153,9 @@ def _routing_token(pod_id: str | UUID) -> str:
     :return: dot-joined sanitized token(s)
     :rtype: str
     """
+    # the pod_id is rendered into its NATS-subject routing token(s) here; a single UUID token or the
+    # agent composite is split on its structural dots and each token is subject-sanitized.
+    # convert at border: pod_id -> published NATS subject string
     return ".".join(_sanitize(token) for token in str(pod_id).split("."))
 
 

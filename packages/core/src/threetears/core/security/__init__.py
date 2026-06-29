@@ -12,6 +12,8 @@ public surface:
   :class:`DecryptionError` — AES-256-GCM under a master key, for the times a secret
   must be *stored* rather than referenced.
 - identity tokens (``identity_token``): :class:`IdentityClaims` / :class:`IdentityTokenError` /
+  :class:`IdentityKeyNotFoundError` (the recoverable kid-not-in-cache signal a verifier reacts to
+  with a reactive JWKS refresh) /
   :func:`sign_identity_token` / :func:`verify_identity_token` / :func:`build_jwks` /
   :func:`generate_signing_keypair` — Hub-issued EdDSA-signed JWS asserting a VERIFIED caller
   identity, verified against the Hub JWKS before RBAC (platform-auth Option B).
@@ -22,6 +24,7 @@ public surface:
 from threetears.core.security.encryption import DecryptionError, open_secret, seal
 from threetears.core.security.identity_token import (
     IdentityClaims,
+    IdentityKeyNotFoundError,
     IdentityTokenError,
     build_jwks,
     canonical_call_hash,
@@ -73,6 +76,7 @@ __all__ = [
     # identity tokens
     "CachedHubJwksProvider",
     "IdentityClaims",
+    "IdentityKeyNotFoundError",
     "IdentityTokenError",
     "ProxyAssertionClaims",
     "ProxyAssertionSigner",

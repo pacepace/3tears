@@ -39,6 +39,8 @@ from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
 from threetears.core.security.identity_token import (
+    IdentityClaims,
+    IdentityKeyNotFoundError,
     IdentityTokenError,
     canonical_call_hash,
     verify_identity_token,
@@ -504,6 +506,7 @@ class ToolServer:
         agent_id: UUID | None = None,
         customer_id: UUID | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
+        jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
     ) -> None:
         """initialize tool server.
@@ -587,6 +590,19 @@ class ToolServer:
             Collection or namespace materialization silently falls
             behind and rbac resolution fails open.
         :ptype namespace_collection: Any
+        :param jwks_refresh: optional zero-arg coroutine triggering ONE
+            immediate, debounced + rate-limited Hub JWKS refresh, returning
+            whether it ran (typically
+            :meth:`CachedHubJwksProvider.refresh_now`). When a pod-side token
+            verification fails because the cached JWKS holds no key for the
+            token's ``kid`` (a Hub re-key the cache has not caught up to),
+            :meth:`_verify_identity` calls it ONCE and re-verifies, so a valid
+            token signed under a freshly-rotated key self-heals on the first
+            such failure rather than after a full steady refresh interval. Left
+            ``None`` here for the injected-provider path (tests); :meth:`serve`
+            wires it to the owned provider's ``refresh_now`` when the pod
+            self-provisions its JWKS provider.
+        :ptype jwks_refresh: Callable[[], Awaitable[bool]] | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -606,6 +622,9 @@ class ToolServer:
         # assertion on every inbound call (closes the direct-internal-subject bypass). enforce-only
         # -- there is no off/warn ladder; a call the pod cannot verify is always rejected.
         self._jwks_provider = jwks_provider
+        # reactive Hub-rekey self-heal: ``serve()`` wires this to the owned provider's refresh_now
+        # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
+        self._jwks_refresh = jwks_refresh
         self._namespace_collection = namespace_collection
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
@@ -689,6 +708,29 @@ class ToolServer:
         :rtype: bool
         """
         return self._nc is not None
+
+    @property
+    def jwks_warmed(self) -> bool:
+        """whether the pod's Hub-JWKS provider has completed its first successful fetch.
+
+        readiness gate: before the JWKS cache warms, the pod verifies every inbound identity token
+        against an EMPTY keyset and rejects fail-closed, so a k8s readiness probe must report
+        NOT-READY until this is true -- otherwise the pod accepts calls it is guaranteed to fail.
+        The owned :class:`CachedHubJwksProvider` (self-provisioned in :meth:`serve`) exposes
+        ``is_warmed``; that drives this. Before :meth:`serve` provisions a provider it is ``False``
+        (NOT-READY). An INJECTED provider with no warmth signal (tests / a static JWKS that needs no
+        warm-up) is treated as ready, since it returns keys synchronously from the first call.
+
+        :return: true once the pod's JWKS provider can verify a token (or there is nothing to warm)
+        :rtype: bool
+        """
+        provider = self._jwks_provider
+        if provider is None:
+            return False
+        warmed = getattr(provider, "is_warmed", None)
+        if isinstance(warmed, bool):
+            return warmed
+        return True
 
     @property
     def is_running(self) -> bool:
@@ -852,6 +894,11 @@ class ToolServer:
             await owned.start()
             self._jwks_provider = owned
             self._owned_jwks_provider = owned
+            # reactive self-heal on a Hub re-key: wire the verify path to the owned provider's
+            # refresh_now so a kid-not-in-cache miss triggers ONE immediate, debounced + rate-limited
+            # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
+            # whatever (possibly None) trigger the constructor was given.
+            self._jwks_refresh = owned.refresh_now
         if self._assertion_replay_guard is None:
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
@@ -1283,8 +1330,75 @@ class ToolServer:
             },
         )
 
+    def _load_pod_jwks(self, tool_name: str) -> dict[str, Any]:
+        """fetch the cached Hub JWKS via the injected provider, converting ANY provider failure to a
+
+        well-typed :class:`IdentityTokenError`. The provider is external (a network-backed cache); any
+        failure means "cannot verify" -> a rejection reason, never an escaped exception that would
+        hang the dispatch with no reply. Logs the real cause (type + MESSAGE) at the site, since the
+        wrapping verify catch only sees the re-raised :class:`IdentityTokenError`.
+
+        :param tool_name: the requested tool name, for the failure log line
+        :ptype tool_name: str
+        :return: the current cached JWKS document
+        :rtype: dict[str, Any]
+        :raises IdentityTokenError: when the provider call fails
+        """
+        assert self._jwks_provider is not None  # guarded by the caller
+        try:
+            return self._jwks_provider()
+        except Exception as exc:
+            log.warning(
+                "JWKS provider failed during pod identity verification",
+                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc), "tool_name": tool_name}},
+            )
+            raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
+
+    async def _verify_token_reactively(self, token: str, *, tool_name: str, refreshed: list[bool]) -> IdentityClaims:
+        """verify a Hub token against the cached JWKS; on a kid-not-in-cache miss, refresh once + retry.
+
+        Mirrors the registry proxy's reactive self-heal: :func:`verify_identity_token` raises the
+        distinct :class:`IdentityKeyNotFoundError` when the cached JWKS holds no key for the token's
+        ``kid`` (a Hub re-key, or a stale cache after a Hub pod move). That -- and ONLY that -- is
+        recoverable, so this triggers one immediate :attr:`_jwks_refresh` and re-verifies against the
+        refreshed cache. An expired / bad-signature / malformed token raises the BASE
+        :class:`IdentityTokenError`, which is NOT caught here, so it never provokes a Hub fetch. The
+        refresh fires at most ONCE per verify-path call (``refreshed`` is shared across the handshake
+        + user-assertion verifications) and :meth:`refresh_now` is itself debounced + rate-limited, so
+        a flood of bad tokens cannot stampede the Hub.
+
+        :param token: the compact-JWS identity token to verify
+        :ptype token: str
+        :param tool_name: the requested tool name, for any provider-failure log line
+        :ptype tool_name: str
+        :param refreshed: a single-element mutable flag, shared across this call's verifications, so
+            the reactive refresh fires at most once even if both tokens miss the cache
+        :ptype refreshed: list[bool]
+        :return: the verified identity claims
+        :rtype: IdentityClaims
+        :raises IdentityTokenError: when the token cannot be verified (after the at-most-one refresh)
+        """
+        try:
+            return verify_identity_token(
+                token,
+                jwks=self._load_pod_jwks(tool_name),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+        except IdentityKeyNotFoundError:
+            if self._jwks_refresh is None or refreshed[0]:
+                raise  # no reactive trigger wired, or already refreshed once this call -> reject
+            refreshed[0] = True
+            await self._jwks_refresh()
+            return verify_identity_token(
+                token,
+                jwks=self._load_pod_jwks(tool_name),
+                issuer=_IDENTITY_ISSUER,
+                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+            )
+
     @traced(record_args=True)
-    def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
+    async def _verify_identity(self, request: CallRequest) -> tuple[CallRequest, str | None]:
         """re-verify the Hub identity token and RE-STAMP the verified identity (defense in depth).
 
         The registry proxy already verifies + re-stamps identity, but anything that can publish on
@@ -1319,6 +1433,9 @@ class ToolServer:
         :rtype: tuple[CallRequest, str | None]
         """
         context = request.context
+        # shared across the handshake + user-assertion verifications so the reactive Hub refresh (on
+        # a kid-not-in-cache miss) fires at most ONCE per dispatch, not once per token.
+        refreshed = [False]
         try:
             if context is None:
                 raise IdentityTokenError("inbound call has no context")
@@ -1327,23 +1444,7 @@ class ToolServer:
                 raise IdentityTokenError("inbound call context has no identity token")
             if self._jwks_provider is None:
                 raise IdentityTokenError("no JWKS provider configured for pod identity verification")
-            try:
-                jwks = self._jwks_provider()
-            except Exception as exc:
-                # external provider; any failure means "cannot verify" -> a rejection reason, never
-                # an escaped exception that would hang the dispatch with no reply. log the real
-                # cause at the site (the wrapper below only sees IdentityTokenError).
-                log.warning(
-                    "JWKS provider failed during pod identity verification",
-                    extra={"extra_data": {"reason": type(exc).__name__, "tool_name": request.tool_name}},
-                )
-                raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
-            claims = verify_identity_token(
-                token,
-                jwks=jwks,
-                issuer=_IDENTITY_ISSUER,
-                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
-            )
+            claims = await self._verify_token_reactively(token, tool_name=request.tool_name, refreshed=refreshed)
             # OVERWRITE the envelope's claimed identity with the verified token. a captured token
             # re-pointed at a forged agent / customer, or stripped of its identity to skip a
             # comparison, runs under the token's TRUE identity -- never the self-asserted one.
@@ -1356,7 +1457,11 @@ class ToolServer:
             user_id_value: UUID | None = UUID(claims.user_id) if claims.user_id is not None else None
         except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
             reason = type(exc).__name__
-            extra = {"extra_data": {"reason": reason, "tool_name": request.tool_name}}
+            # log the exception MESSAGE too (the structural failure reason -- "no JWKS key matches the
+            # token kid" vs "token expired" vs "token absent"), so a stale-JWKS failure is
+            # distinguishable from an expired-token failure in production. str(exc) is never token or
+            # key material (IdentityTokenError carries only the structural reason).
+            extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod identity verification failed; rejecting call", extra=extra)
             return request, f"identity verification failed ({reason})"
 
@@ -1379,11 +1484,8 @@ class ToolServer:
         user_assertion = context.user_identity_token
         if user_assertion:
             try:
-                user_claims = verify_identity_token(
-                    user_assertion,
-                    jwks=jwks,
-                    issuer=_IDENTITY_ISSUER,
-                    leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
+                user_claims = await self._verify_token_reactively(
+                    user_assertion, tool_name=request.tool_name, refreshed=refreshed
                 )
                 if user_claims.sub != claims.sub or user_claims.customer_id != claims.customer_id:
                     raise IdentityTokenError(
@@ -1407,7 +1509,9 @@ class ToolServer:
                 user_id_value = UUID(user_claims.user_id)
             except (IdentityTokenError, ValueError, KeyError, TypeError) as exc:
                 reason = type(exc).__name__
-                extra = {"extra_data": {"reason": reason, "tool_name": request.tool_name}}
+                # the structural failure reason (binding mismatch vs cross-conversation replay vs
+                # expired/absent assertion), never token or key material.
+                extra = {"extra_data": {"reason": reason, "detail": str(exc), "tool_name": request.tool_name}}
                 log.warning("pod user-assertion verification failed; rejecting call", extra=extra)
                 return request, f"user-assertion verification failed ({reason})"
 
@@ -1464,7 +1568,9 @@ class ToolServer:
                 raise IdentityTokenError("proxy assertion nonce replay")
         except (IdentityTokenError, ValueError) as exc:
             kind = type(exc).__name__
-            extra = {"extra_data": {"reason": kind, "tool_name": request.tool_name}}
+            # the structural failure reason (absent assertion, kid miss, spliced body, replayed
+            # nonce), never token or key material.
+            extra = {"extra_data": {"reason": kind, "detail": str(exc), "tool_name": request.tool_name}}
             log.warning("pod proxy-assertion verification failed; rejecting", extra=extra)
             reason = f"proxy assertion verification failed ({kind})"
         return reason
@@ -1548,7 +1654,7 @@ class ToolServer:
             tool_version = request.tool_version
             tool_key = f"{tool_name}@{tool_version}"
 
-            request, identity_rejection = self._verify_identity(request)
+            request, identity_rejection = await self._verify_identity(request)
             if identity_rejection is not None:
                 error_response = CallResponse(
                     success=False,

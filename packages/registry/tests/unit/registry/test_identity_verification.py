@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 from unittest.mock import AsyncMock
@@ -838,6 +839,212 @@ def _pop_request(
         ),
         pop=pop,
     )
+
+
+class _RekeyingProvider:
+    """models a verifier JWKS cache that is STALE for the token's signing key until ONE reactive
+    refresh brings it current -- the Hub re-key / pod-move scenario B5 self-heals. ``refresh_calls``
+    counts reactive refreshes so a test can assert "exactly one, never a stampede"."""
+
+    def __init__(self, *, stale: dict[str, Any], fresh: dict[str, Any]) -> None:
+        self._jwks = stale
+        self._fresh = fresh
+        self.refresh_calls = 0
+
+    def __call__(self) -> dict[str, Any]:
+        return self._jwks
+
+    async def refresh_now(self) -> bool:
+        self.refresh_calls += 1
+        self._jwks = self._fresh
+        return True
+
+
+class _CountingProvider:
+    """a fixed-JWKS provider that counts reactive refreshes -- which must NOT happen for a token
+    whose verification fails for a reason a refresh cannot fix (expired / bad signature)."""
+
+    def __init__(self, jwks: dict[str, Any]) -> None:
+        self._jwks = jwks
+        self.refresh_calls = 0
+
+    def __call__(self) -> dict[str, Any]:
+        return self._jwks
+
+    async def refresh_now(self) -> bool:
+        self.refresh_calls += 1
+        return True
+
+
+class TestDispatchReactiveJwksRefresh:
+    """B5: a kid-not-in-cache miss triggers exactly ONE reactive JWKS refresh + re-verify (Hub re-key
+    self-heal); an expired / bad-signature token does NOT, so a flood of bad tokens cannot stampede
+    the Hub."""
+
+    async def _drive(self, provider: Any, req: ProxyCallRequest) -> AsyncMock:
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            _StubReplayGuard(fresh=True),
+            namespace="test",
+            jwks_provider=provider,
+            jwks_refresh=provider.refresh_now,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        await proxy.handle_call(msg)
+        await asyncio.sleep(0)
+        return nc
+
+    @staticmethod
+    def _reply(nc: AsyncMock) -> ProxyCallResponse:
+        message: ProxyCallResponse = nc.publish_reply.call_args.kwargs["message"]
+        return message
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_triggers_one_reactive_refresh_then_forwards(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # the cache is stale (empty) for the token's key after a Hub re-key; the key arrives on the
+        # FIRST reactive refresh, so a VALID token self-heals and forwards rather than being rejected
+        # for up to a full steady refresh interval.
+        priv, jwks = hub
+        real_agent = uuid7()
+        provider = _RekeyingProvider(stale={"keys": []}, fresh=jwks)
+        nc = await self._drive(
+            provider,
+            _authed_request(
+                priv, token_sub=real_agent, token_customer=uuid7(), token_user=None, envelope_agent=uuid7()
+            ),
+        )
+        assert provider.refresh_calls == 1  # EXACTLY one reactive refresh
+        nc.request_raw.assert_called_once()  # re-verify succeeded -> the call forwarded
+        forwarded = json.loads(nc.request_raw.call_args.kwargs["payload"])["context"]
+        assert forwarded["agent_id"] == str(real_agent)  # the verified, re-stamped identity
+
+    @pytest.mark.asyncio
+    async def test_expired_token_does_not_trigger_refresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # an expired token is signed under a key the cache HOLDS -> the failure is expiry, not a
+        # kid-miss, so it must NOT provoke a Hub refresh (else every bad token becomes a Hub request).
+        priv, jwks = hub
+        provider = _CountingProvider(jwks)
+        nc = await self._drive(
+            provider,
+            _request(
+                agent_id=uuid7(),
+                token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, exp_delta=-3600),
+            ),
+        )
+        assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature_does_not_trigger_refresh(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a token signed by a DIFFERENT key but carrying the cache's kid fails the signature check
+        # (the key IS present, so it is not a kid-miss) -> must NOT provoke a refresh.
+        _priv, jwks = hub
+        other_priv = Ed25519PrivateKey.generate()
+        forged = _token(other_priv, sub=uuid7(), customer_id=uuid7(), user_id=None)  # signed by other_priv, kid=_KID
+        provider = _CountingProvider(jwks)
+        nc = await self._drive(provider, _request(agent_id=uuid7(), token=forged))
+        assert provider.refresh_calls == 0  # bad signature against a PRESENT key is not refreshable
+        nc.request_raw.assert_not_called()
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_unresolved_refreshes_once_then_rejects(self, hub: tuple[Any, dict[str, Any]]) -> None:
+        # a kid the Hub genuinely does not have: the reactive refresh runs ONCE, the key still is not
+        # there, and the call is rejected. proves the "only once" bound -- a flood of such tokens
+        # cannot turn into a Hub stampede (and refresh_now is itself rate-limited on top).
+        priv, _jwks = hub
+        provider = _RekeyingProvider(stale={"keys": []}, fresh={"keys": []})  # refresh never brings the key
+        nc = await self._drive(
+            provider,
+            _request(agent_id=uuid7(), token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None)),
+        )
+        assert provider.refresh_calls == 1  # tried exactly once
+        nc.request_raw.assert_not_called()  # still rejected (the key truly is not at the Hub)
+        assert self._reply(nc).error_code == "TOOL_IDENTITY_UNVERIFIED"
+
+
+class TestVerificationObservability:
+    """B8: the verify-failure log carries the exception MESSAGE so a stale-JWKS (kid-miss) failure is
+    distinguishable from an expired-token failure in production (the gap that masked the datasource
+    failure). The message is the STRUCTURAL reason -- never token or key material."""
+
+    async def _drive_capture(self, provider: Any, req: ProxyCallRequest, caplog: pytest.LogCaptureFixture) -> None:
+        proxy = CallProxy(
+            await _catalog(),
+            AllowAllAuthorizer(),
+            _StubReplayGuard(fresh=True),
+            namespace="test",
+            jwks_provider=provider,
+        )
+        nc = AsyncMock()
+        nc.request_raw = AsyncMock(return_value=_tool_reply())
+        await proxy.start(nc)
+        msg = IncomingMessage(
+            data=req.model_dump_json().encode("utf-8"),
+            reply_subject="reply.subject",
+            subject="test.tools.call",
+        )
+        with caplog.at_level(logging.WARNING, logger="threetears.registry.proxy"):
+            await proxy.handle_call(msg)
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def _identity_detail(caplog: pytest.LogCaptureFixture) -> str:
+        rec = next(r for r in caplog.records if r.getMessage() == "identity verification failed; rejecting call")
+        extra = getattr(rec, "extra_data", None)
+        assert extra is not None, "the identity-verification-failed log must carry structured extra_data"
+        detail: str = extra["detail"]
+        return detail
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_vs_expired_logs_are_distinguishable(
+        self, hub: tuple[Any, dict[str, Any]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        priv, jwks = hub
+        # (1) an EXPIRED token, with the signing key present in the cache.
+        caplog.clear()
+        await self._drive_capture(
+            lambda: jwks,
+            _request(
+                agent_id=uuid7(),
+                token=_token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None, exp_delta=-3600),
+            ),
+            caplog,
+        )
+        expired_detail = self._identity_detail(caplog)
+        # (2) a kid-MISS: the cache holds a DIFFERENT kid, so the token's key is absent (stale cache).
+        caplog.clear()
+        other_jwks = build_jwks({"kid-other": generate_signing_keypair()[1]})
+        token = _token(priv, sub=uuid7(), customer_id=uuid7(), user_id=None)
+        await self._drive_capture(lambda: other_jwks, _request(agent_id=uuid7(), token=token), caplog)
+        kid_miss_detail = self._identity_detail(caplog)
+
+        # the two failure modes log DIFFERENT, recognizable reasons -- the gap B8 closes.
+        assert "no JWKS key matches the token kid" in kid_miss_detail
+        assert "ExpiredSignature" in expired_detail
+        assert expired_detail != kid_miss_detail
+        # security: the structured detail is the structural reason, never the token string itself.
+        assert token not in kid_miss_detail
+        assert token not in expired_detail
+
+    @pytest.mark.asyncio
+    async def test_absent_token_logs_its_own_reason(
+        self, hub: tuple[Any, dict[str, Any]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # a third, distinct failure mode: no token at all -> "token absent", not a JWKS/expiry reason.
+        _priv, jwks = hub
+        caplog.clear()
+        await self._drive_capture(lambda: jwks, _request(agent_id=uuid7(), token=None), caplog)
+        assert "identity token absent" in self._identity_detail(caplog)
 
 
 class TestDispatchPopEnforcement:

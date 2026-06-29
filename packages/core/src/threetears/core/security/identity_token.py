@@ -33,6 +33,7 @@ from jwt.algorithms import OKPAlgorithm
 
 __all__ = [
     "IdentityClaims",
+    "IdentityKeyNotFoundError",
     "IdentityTokenError",
     "build_jwks",
     "canonical_call_hash",
@@ -57,6 +58,19 @@ class IdentityTokenError(Exception):
 
     a malformed token / JWKS. Deliberately carries only the STRUCTURAL reason — never the token
     string, a claim value, or key material — so it is safe to log at the verification boundary.
+    """
+
+
+class IdentityKeyNotFoundError(IdentityTokenError):
+    """raised specifically when no key for the token's ``kid`` is present in the verifier's JWKS.
+
+    A SUBCLASS of :class:`IdentityTokenError`, so every existing ``except IdentityTokenError`` keeps
+    catching it (fail-closed is unchanged). It is the distinct, RECOVERABLE signal a verifier reacts
+    to: a token signed under a key the verifier's CACHED JWKS does not yet hold (the Hub re-keyed, or
+    the cache is empty/stale after a Hub pod move) is well-formed but un-checkable against the stale
+    cache, so the consumer can trigger ONE reactive JWKS refresh and re-verify before rejecting. An
+    expired / bad-signature / malformed token raises the BASE error instead -- a refresh cannot fix
+    those, so they must NOT provoke a Hub fetch.
     """
 
 
@@ -180,7 +194,21 @@ def verify_identity_token(token: str, *, jwks: dict[str, Any], issuer: str, leew
 
 
 def _select_public_key(jwks: dict[str, Any], kid: str) -> Ed25519PublicKey:
-    """resolve the public key for ``kid`` from a JWKS, or reject."""
+    """resolve the public key for ``kid`` from a JWKS, or reject.
+
+    A "key not present" condition -- an EMPTY keyset (typically a never-warmed cache) or a keyset that
+    holds no key matching ``kid`` (a Hub re-key the cache has not caught up to) -- raises the distinct
+    :class:`IdentityKeyNotFoundError`, the RECOVERABLE signal a verifier reacts to with one reactive
+    JWKS refresh + re-verify. A structurally MALFORMED JWKS (not a JWKS document at all) raises the
+    base :class:`IdentityTokenError` -- a refresh will not turn a non-JWKS into one, so it must not
+    provoke a Hub fetch.
+    """
+    # an empty keyset is "no key for this kid", not a malformed document: surface it as the
+    # recoverable key-not-found signal (a never-warmed / stale cache self-heals on a reactive refresh)
+    # BEFORE PyJWKSet.from_dict raises its generic "did not contain any keys" error.
+    keys = jwks.get("keys") if isinstance(jwks, dict) else None
+    if isinstance(keys, list) and not keys:
+        raise IdentityKeyNotFoundError("JWKS holds no keys for the token kid.")
     try:
         key_set = jwt.PyJWKSet.from_dict(jwks)
     except (
@@ -198,7 +226,7 @@ def _select_public_key(jwks: dict[str, Any], kid: str) -> Ed25519PublicKey:
             if not isinstance(key, Ed25519PublicKey):
                 raise IdentityTokenError("JWKS key for kid is not an Ed25519 public key.")
             return key
-    raise IdentityTokenError("no JWKS key matches the token kid.")
+    raise IdentityKeyNotFoundError("no JWKS key matches the token kid.")
 
 
 def _payload_to_claims(payload: dict[str, Any]) -> IdentityClaims:

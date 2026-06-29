@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +32,7 @@ from threetears.nats import IncomingMessage, Subject
 
 from unit.tools._pod_auth import StubReplayGuard as _PodReplayGuard
 from unit.tools._pod_auth import jwks_provider as _pod_jwks_provider
+from unit.tools._pod_auth import mint_user_assertion as _pod_mint_hub_token
 from unit.tools._pod_auth import signed_call_payload as _signed_call_payload
 
 
@@ -1668,3 +1670,169 @@ class TestToolServerProxyAssertionVerification:
         # the wire error carries the gate name + exception type, not the internal message.
         assert response["success"] is False
         assert "proxy assertion verification failed" in response["error"]
+
+
+class _PodRekeyingProvider:
+    """models a tool-pod JWKS cache that is STALE for the Hub identity key until ONE reactive refresh
+    brings it current (a Hub re-key the cache had not caught up to). counts reactive refreshes so a
+    test can assert "exactly one, never a stampede"."""
+
+    def __init__(self, *, stale: dict[str, Any], fresh: dict[str, Any]) -> None:
+        self._jwks = stale
+        self._fresh = fresh
+        self.refresh_calls = 0
+
+    def __call__(self) -> dict[str, Any]:
+        return self._jwks
+
+    async def refresh_now(self) -> bool:
+        self.refresh_calls += 1
+        self._jwks = self._fresh
+        return True
+
+
+def _pod_jwks_without_hub_kid() -> dict[str, Any]:
+    """the combined pod JWKS with the Hub identity key (kid-1) REMOVED.
+
+    leaves the proxy-assertion signer key(s) intact, so the proxy-assertion gate still verifies; only
+    the Hub identity-token gate sees a kid-miss -- exactly the stale-after-re-key shape B5 self-heals.
+    """
+    fresh = _pod_jwks_provider()
+    return {"keys": [k for k in fresh["keys"] if k.get("kid") != "kid-1"]}
+
+
+class TestToolServerJwksWarmedReadiness:
+    """B5: ``jwks_warmed`` is the readiness signal the tool-pod gates its k8s readiness on -- it must
+    report NOT-READY until the JWKS provider can actually verify a token."""
+
+    def test_not_warmed_before_serve_provisions_a_provider(self) -> None:
+        # no provider yet (serve() self-provisions it) -> the pod must report NOT-READY.
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None)
+        assert server.jwks_warmed is False
+
+    def test_reflects_an_injected_providers_warmth(self) -> None:
+        class _Provider:
+            def __init__(self) -> None:
+                self.is_warmed = False
+
+            def __call__(self) -> dict[str, Any]:
+                return {"keys": []}
+
+        provider = _Provider()
+        server = ToolServer(nats_url="nats://localhost:9999", namespace_collection=None, jwks_provider=provider)
+        assert server.jwks_warmed is False  # unwarmed cache -> NOT-READY
+        provider.is_warmed = True
+        assert server.jwks_warmed is True  # first successful fetch -> READY
+
+    def test_static_injected_provider_with_no_warmth_signal_is_ready(self) -> None:
+        # a static JWKS callable (tests) has no warm-up phase: it returns keys synchronously, so the
+        # readiness gate treats it as ready rather than wedging NOT-READY forever.
+        server = ToolServer(
+            nats_url="nats://localhost:9999", namespace_collection=None, jwks_provider=_pod_jwks_provider
+        )
+        assert server.jwks_warmed is True
+
+
+class TestToolServerReactiveJwksRefresh:
+    """B5: pod-side reactive self-heal mirrors the proxy -- a kid-not-in-cache miss triggers exactly
+    ONE reactive refresh + re-verify; an expired token does NOT trigger a refresh."""
+
+    def _server(self, provider: Any) -> ToolServer:
+        return ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=provider,
+            jwks_refresh=provider.refresh_now,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_triggers_one_reactive_refresh_then_dispatches(self) -> None:
+        # the cache lacks the Hub identity key after a re-key; the FIRST reactive refresh brings it,
+        # so a valid call self-heals and dispatches rather than being rejected for a steady interval.
+        provider = _PodRekeyingProvider(stale=_pod_jwks_without_hub_kid(), fresh=_pod_jwks_provider())
+        server = self._server(provider)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        rec = _attach_recording_nc(server)
+        msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
+
+        await server.handle_call(msg)
+
+        assert provider.refresh_calls == 1  # EXACTLY one reactive refresh
+        response = json.loads(rec.last_reply[1].model_dump_json())
+        assert response["success"] is True  # re-verify succeeded -> the tool ran
+
+    @pytest.mark.asyncio
+    async def test_expired_token_does_not_trigger_refresh(self) -> None:
+        # an expired handshake token is signed under a key the cache HOLDS -> the failure is expiry,
+        # not a kid-miss, so it must NOT provoke a Hub refresh (else every bad token hits the Hub).
+        provider = _PodRekeyingProvider(stale=_pod_jwks_provider(), fresh=_pod_jwks_provider())
+        server = self._server(provider)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        rec = _attach_recording_nc(server)
+        # swap the payload's handshake token for an EXPIRED one signed by the same Hub key the cache
+        # holds (mint_user_assertion signs with the pod's Hub key under kid-1, so its kid IS present).
+        payload = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
+        payload["context"]["identity_token"] = _pod_mint_hub_token(
+            sub=uuid4(), customer_id=uuid4(), user_id=None, exp_delta=-3600
+        )
+
+        await server.handle_call(_make_nats_msg(payload))
+
+        assert provider.refresh_calls == 0  # NO reactive refresh on an expired token
+        response = json.loads(rec.last_reply[1].model_dump_json())
+        assert response["success"] is False
+        assert "identity verification failed" in response["error"]
+
+
+class TestToolServerVerificationObservability:
+    """B8: the pod's verify-failure log carries the exception MESSAGE so a stale-JWKS (kid-miss)
+    failure is distinguishable from an absent/expired-token failure (the gap that masked the
+    datasource failure). The message is the STRUCTURAL reason, never token or key material."""
+
+    def _server(self, provider: Any) -> ToolServer:
+        return ToolServer(
+            nats_url="nats://localhost:9999",
+            pod_id="test-pod",
+            namespace_collection=None,
+            jwks_provider=provider,
+            assertion_replay_guard=_PodReplayGuard(),
+        )
+
+    @staticmethod
+    def _detail(caplog: pytest.LogCaptureFixture) -> str:
+        rec = next(r for r in caplog.records if r.getMessage() == "pod identity verification failed; rejecting call")
+        extra = getattr(rec, "extra_data", None)
+        assert extra is not None, "the pod identity-verification-failed log must carry structured extra_data"
+        detail: str = extra["detail"]
+        return detail
+
+    @pytest.mark.asyncio
+    async def test_kid_miss_vs_absent_logs_are_distinguishable(self, caplog: pytest.LogCaptureFixture) -> None:
+        # (1) kid-MISS: the cache lacks the Hub identity key (stale after a re-key), no reactive
+        # refresh wired -> the failure logs "no JWKS key matches the token kid".
+        stale = _pod_jwks_without_hub_kid()
+        server = self._server(lambda: stale)
+        server.register(StubTool(name="test.stub", version="1.0"))
+        _attach_recording_nc(server)
+        msg = _make_nats_msg(_signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0"))
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            await server.handle_call(msg)
+        kid_miss_detail = self._detail(caplog)
+
+        # (2) token ABSENT: a different, distinct reason.
+        server2 = self._server(_pod_jwks_provider)
+        server2.register(StubTool(name="test.stub", version="1.0"))
+        _attach_recording_nc(server2)
+        bad = _signed_call_payload(pod_id="test-pod", tool_name="test.stub", tool_version="1.0")
+        bad["context"].pop("identity_token", None)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="threetears.agent.tools.server"):
+            await server2.handle_call(_make_nats_msg(bad))
+        absent_detail = self._detail(caplog)
+
+        assert "no JWKS key matches the token kid" in kid_miss_detail
+        assert "no identity token" in absent_detail
+        assert kid_miss_detail != absent_detail  # the two failure modes are distinguishable

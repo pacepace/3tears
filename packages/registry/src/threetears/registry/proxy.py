@@ -9,7 +9,7 @@ NATS request-reply.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid7
@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 from threetears.agent.tools.context_envelope import CallContext, bind_log_context
 from threetears.core.security.identity_token import (
+    IdentityClaims,
+    IdentityKeyNotFoundError,
     IdentityTokenError,
     canonical_call_hash,
     verify_identity_token,
@@ -191,6 +193,7 @@ class CallProxy:
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
+        jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         proxy_signer: "ProxyAssertionSigner | None" = None,
     ) -> None:
         """initialize call proxy.
@@ -225,6 +228,17 @@ class CallProxy:
             ``None`` makes every verification fail-closed (the call is rejected). The
             provider's contract is to return a JWKS dict
         :ptype jwks_provider: Callable[[], dict[str, Any]] | None
+        :param jwks_refresh: optional zero-arg coroutine that triggers ONE
+            immediate, debounced + rate-limited Hub JWKS refresh and returns
+            whether it ran (typically :meth:`CachedHubJwksProvider.refresh_now`).
+            When a token verification fails because the cached JWKS holds no key
+            for the token's ``kid`` (a Hub re-key the cache has not caught up to),
+            ``_verify_identity`` calls this ONCE and re-verifies, so a valid token
+            signed under a freshly-rotated key self-heals on the first such failure
+            rather than after a full steady refresh interval. ``None`` (the only
+            shape dev/test callers wire, with a static JWKS) disables the reactive
+            path -- verification stays fail-closed against the supplied JWKS
+        :ptype jwks_refresh: Callable[[], Awaitable[bool]] | None
         :param proxy_signer: signs a proxy->pod assertion onto each forwarded call so the pod can
             verify the call came from the proxy, for this body, once; ``None`` leaves the call
             unsigned (the binding is inert until the proxy key is provisioned)
@@ -238,6 +252,7 @@ class CallProxy:
         self._authorizer = authorizer
         self._routing_strategy: RoutingStrategy = routing_strategy or LeastConnectionsStrategy()
         self._jwks_provider = jwks_provider
+        self._jwks_refresh = jwks_refresh
         self._proxy_signer = proxy_signer
         self._pop_replay_guard = pop_replay_guard
         self._nc: "NatsClient | None" = None
@@ -362,14 +377,54 @@ class CallProxy:
             return self._jwks_provider()
         except Exception as exc:
             # the provider is external (a network fetch once Hub-wired); we cannot enumerate its
-            # failure modes, and any of them means "cannot verify" -> fail to a response.
+            # failure modes, and any of them means "cannot verify" -> fail to a response. log the
+            # exception MESSAGE (str(exc)) alongside its type so a provider-unavailable failure is
+            # distinguishable in the log from a token/JWKS-shape failure (the message is a structural
+            # reason, never token or key material).
             log.warning(
                 "JWKS provider failed during identity verification",
-                extra={"extra_data": {"reason": type(exc).__name__}},
+                extra={"extra_data": {"reason": type(exc).__name__, "detail": str(exc)}},
             )
             raise IdentityTokenError(f"JWKS provider unavailable ({type(exc).__name__})") from exc
 
-    def _verify_identity(self, request: "ProxyCallRequest") -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
+    async def _verify_token_reactively(self, token: str, *, refreshed: list[bool]) -> "IdentityClaims":
+        """verify a Hub token against the cached JWKS; on a kid-not-in-cache miss, refresh once + retry.
+
+        The reactive self-heal for a Hub re-key: :func:`verify_identity_token` raises the distinct
+        :class:`IdentityKeyNotFoundError` when the cached JWKS holds no key for the token's ``kid``
+        (the Hub rotated, or the cache is stale after a Hub pod move). That -- and ONLY that -- is
+        recoverable, so this triggers one immediate :attr:`_jwks_refresh` and re-verifies. An expired
+        / bad-signature / malformed token raises the BASE :class:`IdentityTokenError`, which is NOT
+        caught here, so it never provokes a Hub fetch -- a flood of bad tokens cannot be turned into a
+        Hub stampede. The refresh is fired at most ONCE per verify-path call (``refreshed`` is shared
+        across the handshake + user-assertion verifications), and :meth:`refresh_now` is itself
+        debounced + rate-limited, so the two layers together bound Hub load.
+
+        :param token: the compact-JWS identity token to verify
+        :ptype token: str
+        :param refreshed: a single-element mutable flag, shared across this call's verifications, so
+            the reactive refresh fires at most once even if both tokens miss the cache
+        :ptype refreshed: list[bool]
+        :return: the verified identity claims
+        :rtype: IdentityClaims
+        :raises IdentityTokenError: when the token cannot be verified (after the at-most-one refresh)
+        """
+        try:
+            return verify_identity_token(
+                token, jwks=self._load_jwks(), issuer=_IDENTITY_ISSUER, leeway_seconds=_IDENTITY_LEEWAY_SECONDS
+            )
+        except IdentityKeyNotFoundError:
+            if self._jwks_refresh is None or refreshed[0]:
+                raise  # no reactive trigger wired, or we already refreshed once this call -> reject
+            refreshed[0] = True
+            await self._jwks_refresh()
+            return verify_identity_token(
+                token, jwks=self._load_jwks(), issuer=_IDENTITY_ISSUER, leeway_seconds=_IDENTITY_LEEWAY_SECONDS
+            )
+
+    async def _verify_identity(
+        self, request: "ProxyCallRequest"
+    ) -> tuple["ProxyCallRequest", "ProxyCallResponse | None"]:
         """verify the Hub-issued identity token and re-stamp the VERIFIED identity.
 
         the heart of the platform-auth fix: authorization + forwarding must act on an
@@ -391,18 +446,16 @@ class CallProxy:
         """
         context = request.context
         assert context is not None  # guaranteed by the caller's agent_id presence check
+        # shared across the handshake + user-assertion verifications so the reactive Hub refresh
+        # (on a kid-not-in-cache miss) fires at most ONCE per dispatch, not once per token.
+        refreshed = [False]
         try:
             token = context.identity_token
             if token is None:
                 raise IdentityTokenError("identity token absent from call context")
             if self._jwks_provider is None:
                 raise IdentityTokenError("no JWKS provider configured for identity verification")
-            claims = verify_identity_token(
-                token,
-                jwks=self._load_jwks(),
-                issuer=_IDENTITY_ISSUER,
-                leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
-            )
+            claims = await self._verify_token_reactively(token, refreshed=refreshed)
             # the VERIFIED handshake identity. these UUID conversions live INSIDE the try so a
             # malformed-but-signed non-UUID claim fails closed (TOOL_IDENTITY_UNVERIFIED) rather
             # than escaping as an uncaught ValueError. user_id DEFAULTS to the handshake token's:
@@ -418,6 +471,11 @@ class CallProxy:
                 "extra_data": {
                     "tool_name": request.tool_name,
                     "reason": reason,
+                    # log the exception MESSAGE too (the structural failure reason -- "no JWKS key
+                    # matches the token kid" vs "token expired" vs "token absent"), so a stale-JWKS
+                    # failure is distinguishable from an expired-token failure in production (the gap
+                    # that masked the datasource failure). str(exc) is never token or key material.
+                    "detail": str(exc),
                     "correlation_id": _correlation_id_str(request),
                 }
             }
@@ -465,12 +523,7 @@ class CallProxy:
         user_assertion = context.user_identity_token
         if user_assertion:
             try:
-                user_claims = verify_identity_token(
-                    user_assertion,
-                    jwks=self._load_jwks(),
-                    issuer=_IDENTITY_ISSUER,
-                    leeway_seconds=_IDENTITY_LEEWAY_SECONDS,
-                )
+                user_claims = await self._verify_token_reactively(user_assertion, refreshed=refreshed)
                 if user_claims.sub != claims.sub or user_claims.customer_id != claims.customer_id:
                     raise IdentityTokenError(
                         "user-assertion not bound to the handshake identity (sub/customer mismatch)"
@@ -497,6 +550,9 @@ class CallProxy:
                     "extra_data": {
                         "tool_name": request.tool_name,
                         "reason": reason,
+                        # the structural failure reason (binding mismatch vs cross-conversation
+                        # replay vs expired/absent assertion), never token or key material.
+                        "detail": str(exc),
                         "correlation_id": _correlation_id_str(request),
                     }
                 }
@@ -576,6 +632,9 @@ class CallProxy:
                 "extra_data": {
                     "tool_name": request.tool_name,
                     "reason": reason,
+                    # the structural pop-failure reason (absent token/pop, no cnf binding, spliced
+                    # body, replayed nonce), never token or key material.
+                    "detail": str(exc),
                     "correlation_id": _correlation_id_str(request),
                 }
             }
@@ -636,7 +695,7 @@ class CallProxy:
         # verify the Hub-issued identity token and re-stamp the VERIFIED identity onto the
         # request BEFORE authorization + forwarding, so RBAC and the tool pod act on an
         # authenticated identity rather than the self-asserted envelope. unconditional + fail-closed.
-        verified_request, identity_error = self._verify_identity(request)
+        verified_request, identity_error = await self._verify_identity(request)
         if identity_error is not None:
             if msg.reply_subject is not None:
                 await self._nc.publish_reply(

@@ -28,10 +28,15 @@ design notes
   :meth:`shutdown` all take ``timedelta`` (not raw seconds floats) so
   callers cannot pass a bare ``5`` ambiguously.
 - **dual-phase reconnect**: startup is bounded by ``startup_timeout``
-  via ``asyncio.wait_for``; runtime uses
-  :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` so a transient blip does not
-  kill the process. inherits the rationale from
-  ``aibots/hub/common/nats.py`` (deleted as part of this consolidation).
+  via ``asyncio.wait_for``; once connected, runtime reconnect is
+  UNBOUNDED (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` ``= -1``) so a NATS
+  outage of any duration -- broker restart, node failure, network
+  partition -- is ridden out and recovered with no human action,
+  instead of the client giving up and self-closing after a finite
+  ceiling. subscriptions survive because nats-py replays them under
+  their original ``sid`` on every reconnect. inherits the rationale
+  from ``aibots/hub/common/nats.py`` (deleted as part of this
+  consolidation).
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
@@ -87,6 +92,7 @@ __all__ = [
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "NatsClient",
+    "ReconnectCallback",
     "Subscription",
 ]
 
@@ -96,6 +102,11 @@ log = get_logger(__name__)
 
 _T = TypeVar("_T", bound=BaseModel)
 
+#: an async, argument-less callback a consumer registers via :meth:`NatsClient.add_reconnect_callback`
+#: to run after each successful NATS reconnect (e.g. re-mint a short-lived credential whose backing
+#: session the broker may have dropped during the outage).
+ReconnectCallback = Callable[[], Awaitable[None]]
+
 
 # ---------------------------------------------------------------------------
 # tunables
@@ -104,10 +115,22 @@ _T = TypeVar("_T", bound=BaseModel)
 #: max reconnect attempts during startup (asyncio.wait_for enforces wall-time bound).
 STARTUP_MAX_RECONNECT_ATTEMPTS: Final[int] = 15
 
-#: max reconnect attempts after first successful connect. ``-1`` (forever) is rejected
-#: deliberately; ~200s of reconnect budget at ``reconnect_time_wait=2s`` covers any real
-#: transient outage without becoming an infinite-retry sink.
-RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = 100
+#: max reconnect attempts after first successful connect. ``-1`` means FOREVER: a
+#: pod that loses NATS -- broker restart, node failure, network partition of ANY
+#: duration -- must keep retrying until NATS returns, never give up and self-close.
+#: nats-py treats ``< 0`` as unbounded: in ``_select_next_server`` the
+#: ``max_reconnect_attempts > 0`` discard branch is skipped, so the server is never
+#: evicted from the pool and ``NoServersError`` -- the one trigger that permanently
+#: ``close()``s the client on the reconnect path -- is never raised; subscriptions
+#: are replayed on every reconnect under their original ``sid`` so the wrapper's
+#: dispatch loops survive untouched. each attempt is paced by ``reconnect_time_wait``
+#: (a bounded 2s retry, never a hot spin). the previous finite ceiling (100, ~200s of
+#: budget) was the live k8s-resilience bug: any outage longer than the budget closed
+#: the client for good with NO auto-recovery -- and because consumer liveness stayed
+#: 200, k8s never restarted the wedged pod either. forever-reconnect removes the
+#: brick; the consumer's liveness ``is_closed`` check is the last-resort net for the
+#: residual non-recoverable close paths (e.g. a persistent auth violation).
+RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = -1
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -236,6 +259,7 @@ class NatsClient:
         "_subscriptions",
         "_buckets",
         "_kv_lock",
+        "_reconnect_callbacks",
     )
 
     def __init__(
@@ -251,6 +275,10 @@ class NatsClient:
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
+        # consumer-registered post-reconnect hooks. nats-py exposes a SINGLE reconnect callback slot
+        # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
+        # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
+        self._reconnect_callbacks: list[ReconnectCallback] = []
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -329,12 +357,29 @@ class NatsClient:
         if cluster_urls:
             servers.extend(u.strip() for u in cluster_urls if u.strip())
 
+        # nats-py reads its single ``reconnected_cb`` slot at reconnect time, but the wrapper instance
+        # does not exist yet (it is built after ``nats.connect`` returns). bridge the gap with a list
+        # the dispatcher closes over now and the instance adopts below, so consumer callbacks
+        # registered post-connect via :meth:`add_reconnect_callback` are dispatched on every reconnect.
+        reconnect_callbacks: list[ReconnectCallback] = []
+
+        async def _dispatch_reconnected() -> None:
+            """fan a reconnect out to the wrapper log + every consumer-registered callback."""
+            await _on_reconnected()
+            for callback in list(reconnect_callbacks):
+                try:
+                    await callback()
+                except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
+                    # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
+                    # it must never break the reconnect callback chain or the nats-py reconnect path.
+                    log.warning("reconnect callback failed: %s", exc)
+
         options: dict[str, object] = {
             "name": client_name,
             "allow_reconnect": True,
             "max_reconnect_attempts": RUNTIME_MAX_RECONNECT_ATTEMPTS,
             "reconnect_time_wait": 2,
-            "reconnected_cb": _on_reconnected,
+            "reconnected_cb": _dispatch_reconnected,
             "disconnected_cb": _on_disconnected,
             "error_cb": _on_error,
         }
@@ -385,7 +430,28 @@ class NatsClient:
             },
         )
 
-        return cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
+        client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
+        # adopt the SAME list the dispatcher closes over, so ``add_reconnect_callback`` appends are
+        # visible to the already-installed ``reconnected_cb``.
+        client._reconnect_callbacks = reconnect_callbacks
+        return client
+
+    def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
+        """register an async callback invoked after each successful NATS reconnect.
+
+        the wrapper rides out an outage of any duration (unbounded runtime reconnect) and replays
+        subscriptions automatically, but state the BROKER holds for this connection -- e.g. a
+        Hub-side session backing a short-lived credential -- may have been dropped meanwhile. a
+        consumer registers a hook here to re-establish such state (re-handshake, re-mint a token)
+        once the connection is back. callbacks run in registration order; one raising is logged and
+        does not stop the others or the reconnect path.
+
+        :param callback: an argument-less coroutine function run after each reconnect
+        :ptype callback: ReconnectCallback
+        :return: nothing
+        :rtype: None
+        """
+        self._reconnect_callbacks.append(callback)
 
     @property
     def namespace(self) -> str:
@@ -1473,6 +1539,18 @@ async def _verify_jetstream(nc: _NatsPyClient, primary_url: str) -> None:
 
 async def _on_reconnected() -> None:
     """nats-py callback invoked on reconnect.
+
+    no re-subscription is needed here: nats-py replays every live
+    subscription under its original ``sid`` inside ``_attempt_reconnect``
+    (it re-sends the ``SUB`` command for each entry in ``client._subs``
+    and never touches the subscription's pending-message queue), so the
+    wrapper's per-subscription dispatch loop -- which iterates
+    ``raw_sub.messages`` -- keeps reading the SAME queue across the
+    disconnect/reconnect and is never observed ending. the loop only
+    ends on an explicit unsubscribe/drain or a permanent client close;
+    with forever-reconnect (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` ``=
+    -1``) the reconnect path never closes the client, so an outage can
+    no longer silently kill a subscription.
 
     :return: nothing
     :rtype: None
