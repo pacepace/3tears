@@ -4,6 +4,41 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.10 -- 2026-06-29
+
+Fixes the platform-wide **1-hour agent cliff**: every long-lived agent pod went
+dead ~1h after boot because the auth-callout's NATS user JWT (default 3600s TTL)
+expired while connected, and the NATS server's auth `-ERR` is routed by nats-py
+straight to a terminal `close` that bypasses `_attempt_reconnect` — so
+forever-reconnect (the network-drop path) never recovers it, and host daemons have
+no k8s liveness net.
+
+### Added
+
+- **`NatsClient.reconnect()`** (`threetears.nats`) — a force-reconnect primitive
+  that drives nats-py's own `_attempt_reconnect` on a still-connected client
+  (synthesizing a `StaleConnectionError` through `_process_op_err`), so the
+  transport cycles and the server auth handshake re-runs — under decentralized
+  auth this re-runs the Hub auth-callout, minting a **fresh user JWT with full
+  TTL** — while subscriptions replay under their original `sid` and the same
+  underlying client object is reused (consumers holding `.raw` stay valid).
+  Raises on an already-closed client; no-ops when not currently connected (so it
+  never trips `_process_op_err`'s connection-closing else-branch).
+
+This is the primitive the SDK uses for **proactive NATS-JWT re-auth**: forcing a
+reconnect a margin *before* expiry, while the current JWT is still valid, so the
+connection never reaches the terminal auth-expiry close. (The SDK-side re-auth
+loop, the Hub's TTL-in-handshake reporting, and the env-overridable TTL knob ride
+on this primitive and live in the consumer repos.)
+
+### Fixed
+
+- Three pre-existing over-strict third-party-stub `mypy` errors in
+  `threetears.nats.client` (the gate-excluded `nats` package is now mypy-clean):
+  the wrapper's float `flush()` timeout (nats-py annotates `int` but waits via
+  `asyncio.wait_for`, which accepts float) and `_subscribe_internal`'s `Subject |
+  str` subject (it already coerces `str`).
+
 ## v0.13.9 -- 2026-06-28
 
 Platform-wide authentication lands and is **enforced**. The NATS bus is
