@@ -123,9 +123,7 @@ class TestTimezoneConverterTool:
     def test_now_via_run_succeeds(self) -> None:
         """tool.run with time_str='now' returns a successful ToolResult."""
         tool = TimezoneConverterTool()
-        result = asyncio.run(
-            tool.run(time_str="now", from_timezone="America/New_York", to_timezone="Asia/Tokyo")
-        )
+        result = asyncio.run(tool.run(time_str="now", from_timezone="America/New_York", to_timezone="Asia/Tokyo"))
         assert isinstance(result, ToolResult)
         assert result.success is True
         assert result.error is None

@@ -4,6 +4,69 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.9 -- 2026-06-28
+
+Platform-wide authentication lands and is **enforced**. The NATS bus is
+fail-closed (an anonymous connect is rejected); every tool call carries a
+Hub-issued, cryptographically-bound caller identity; and RBAC evaluates the
+**verified** identity rather than a self-asserted envelope field. Shipped
+enforce-only — no warn rung, no `no_auth_user`. Also: first-class
+human-in-the-loop interrupts, an `engagement_id` identity dimension, and a
+Kubernetes-resilience pass across the NATS + identity-verifier layer.
+
+### Added — platform auth (A: NATS connection auth)
+
+- **Auth-callout connection auth.** A connecting agent/tool pod presents its
+  bootstrap token; the Hub's auth-callout responder resolves the principal and
+  mints a **least-privilege, per-principal NATS user JWT** (`threetears.nats`:
+  `user_jwt`, `auth_callout`, `subject_permissions`). Each principal's pub/sub
+  allow-list is scoped to its own identity-bound subjects + reply inbox — no bare
+  `>` wildcards, no cross-tenant KV/stream reach.
+- Ships **enforce-only**: `no_auth_user` removed, anonymous connect rejected
+  (`Authorization Violation`); platform services authenticate with per-service
+  static users.
+
+### Added — platform auth (B: identity tokens + crypto binding)
+
+- **Hub-issued identity tokens** — EdDSA/Ed25519 JWS, alg-pinned, published via
+  JWKS over NATS request/reply, minted at the bootstrap handshake and attached to
+  every outgoing `CallContext` (`threetears.core.security`: `identity_token`,
+  `jwks_provider`).
+- **Verify-and-re-stamp at the registry proxy AND the tool pod** — the verified
+  agent/user/customer overwrite the envelope, so RBAC authorizes the verified
+  identity, never a self-asserted one. Fail-closed.
+- **Crypto binding (DPoP-style).** A per-pod proof-of-possession key binds each
+  call (`cnf` + `ath` + body-hash + single-use nonce, replay-guarded); the proxy
+  mints a body-bound `proxy_assertion` (Ed25519 JWS, `aud=pod_id`) the tool pod
+  verifies (`threetears.core.security`: `pop`, `proxy_assertion`, `replay_guard`).
+
+### Added — HITL + identity
+
+- **Human-in-the-loop interrupt surfacing** in `threetears.langgraph` streaming:
+  a LangGraph `interrupt()` emits a `StreamInterruptEvent` terminal and stashes
+  `__interrupt__` instead of an empty end, so an approval gate can pause and
+  resume via `Command(resume=)`. Additive — uninterrupted graphs end as before.
+- **`engagement_id`** promoted to a first-class typed `CallContext` field.
+
+### Changed — Kubernetes resilience
+
+- **Identity-token refresh lifecycle** — pods re-handshake before expiry reusing
+  the pop key (cnf intact), so tool-calling survives past the token TTL.
+- Forever-retry startup for critical bindings (never flip ready with a dead
+  handler); honest liveness/readiness (real `ping()` + a `jwks_warmed` gate);
+  effectively-infinite NATS reconnect; reactive JWKS self-heal on a kid-miss;
+  guarded background loops. Built for undefined start order, N replicas, and pod
+  movement, not a later resilience pass.
+
+### Fixed
+
+- `timezone_converter` resolves `"now"` itself instead of requiring the caller to
+  supply the current datetime — the tool carries the value, the caller never
+  infers it.
+- Three registry proxy tests import their shared dispatch helper relatively, so
+  the canonical full-suite run (`pytest packages/ tests/`) collects cleanly, not
+  only per-package.
+
 ## v0.13.8 -- 2026-06-24
 
 On cancel (e.g. a datasource tool-call timeout) the Redshift driver aborted the

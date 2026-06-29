@@ -7,7 +7,7 @@ and the package version moves in **lockstep** with the rest of the
 3tears monorepo (every package tracks the framework git tag; see
 `README.md` "Versioning policy").
 
-## [Unreleased]
+## [0.13.9]
 
 ### Added
 
