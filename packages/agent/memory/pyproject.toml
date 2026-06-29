@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-memory"
-version = "0.13.9"
+version = "0.13.10"
 description = "Memory system for LLM agents -- extraction, retrieval, hybrid search, and MMR reranking"
 readme = "README.md"
 requires-python = ">=3.14"

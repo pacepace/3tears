@@ -62,6 +62,7 @@ from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsCons
 from nats.errors import (
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
+    StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
 from pydantic import BaseModel, ValidationError
@@ -509,10 +510,56 @@ class NatsClient:
         if not self._raw.is_connected:
             return False
         try:
-            await self._raw.flush(timeout=timeout)
+            # nats-py annotates flush(timeout: int) but its body waits via asyncio.wait_for, which
+            # accepts a float; the wrapper deliberately exposes sub-second float timeouts (a 1.5s
+            # health-check ping), so the int annotation is over-strict, not a real mismatch.
+            await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
         except Exception:
             return False
         return True
+
+    async def reconnect(self) -> None:
+        """force a clean reconnect of the underlying connection, re-running server auth.
+
+        nats-py exposes no public force-reconnect. this drives its OWN op-error reconnect path
+        (``nats.aio.client.Client._process_op_err``) on a still-CONNECTED client: that transitions
+        the client to ``RECONNECTING`` and spawns ``_attempt_reconnect``, which drops + re-opens the
+        transport, re-runs the server handshake -- under decentralized auth (platform-auth A) this
+        re-runs the Hub auth-callout, minting a FRESH user JWT with full TTL -- and replays every
+        live subscription under its original ``sid``. the registered
+        :meth:`add_reconnect_callback` hooks then fire.
+
+        the motivating use is **proactive NATS-JWT re-auth**: a pod's auth-callout-minted user JWT
+        is short-lived, and at expiry the server sends an ``-ERR`` that nats-py routes STRAIGHT to a
+        terminal ``_close`` (it never enters ``_attempt_reconnect``, so forever-reconnect --
+        :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` -- does NOT cover it). triggering this reconnect a
+        margin BEFORE expiry re-auths while the current JWT is still valid, so the connection never
+        reaches that terminal close. the SAME underlying ``_raw`` object is reused, so consumers
+        holding :attr:`raw` (e.g. the L3 proxy backend) stay valid across the cycle.
+
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: if the client is already terminally closed -- a closed connection
+            cannot be reconnected in place and the caller must establish a fresh client (the
+            reactive self-heal path)
+        """
+        raw = self._raw
+        if raw.is_closed:
+            raise NatsClientError(
+                "cannot reconnect a closed NATS client; a closed connection requires a fresh connect",
+            )
+        if not raw.is_connected:
+            # nats-py is already mid-reconnect (forever-reconnect after a drop); a forced trigger is
+            # moot AND, via _process_op_err's not-connected else-branch, would _close the client.
+            log.debug("reconnect() skipped: client not currently connected (a reconnect is already in flight)")
+            return
+        # rationale: _process_op_err is nats-py's single internal entry point that, on a CONNECTED
+        # client, transitions to RECONNECTING and spawns _attempt_reconnect (drop+reopen transport,
+        # re-run auth-callout, replay subs under their sid, fire reconnected_cb). we synthesize a
+        # StaleConnectionError -- the connection is about to go stale as the user JWT nears expiry --
+        # so the reconnect+re-auth happens proactively. the is_connected guard above keeps us out of
+        # the method's else-branch, which would _close. nats-py 2.x exposes no public alternative.
+        await raw._process_op_err(_NatsStaleConnectionError())  # noqa: SLF001 -- no public force-reconnect; see rationale above
 
     @property
     def raw(self) -> _NatsPyClient:
@@ -623,7 +670,9 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        await self._raw.flush(timeout=timeout)
+        # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float); the
+        # wrapper's float timeout is intentional, so the int annotation is over-strict.
+        await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
 
     async def publish(
         self,
@@ -892,7 +941,7 @@ class NatsClient:
     async def _subscribe_internal(
         self,
         *,
-        subject: Subject,
+        subject: Subject | str,
         raw_cb: "RawMessageCallback | None",
         typed_cb: Callable[[Any], Awaitable[None]] | None,
         message_type: type[BaseModel] | None,
@@ -902,8 +951,11 @@ class NatsClient:
     ) -> Subscription:
         """common subscribe path used by :meth:`subscribe` / :meth:`subscribe_typed`.
 
-        :param subject: subject pattern or point
-        :ptype subject: Subject
+        a bare ``str`` subject is accepted and coerced to :class:`Subject` below (the
+        test-ergonomic shorthand), so the param is ``Subject | str`` to match both callers.
+
+        :param subject: subject pattern or point (``str`` coerced to :class:`Subject`)
+        :ptype subject: Subject | str
         :param raw_cb: raw-bytes callback (mutually exclusive with typed_cb)
         :ptype raw_cb: RawMessageCallback | None
         :param typed_cb: Pydantic-decoded callback (mutually exclusive with raw_cb)
