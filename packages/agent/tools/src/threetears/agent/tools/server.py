@@ -137,6 +137,8 @@ def tool_namespace_id(
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 
 if TYPE_CHECKING:
+    from threetears.media.contracts import ObjectStore
+
     from threetears.agent.tools.context import ToolContextManager
 
 log = get_logger(__name__)
@@ -508,6 +510,7 @@ class ToolServer:
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
+        object_store: "ObjectStore | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -603,6 +606,13 @@ class ToolServer:
             wires it to the owned provider's ``refresh_now`` when the pod
             self-provisions its JWKS provider.
         :ptype jwks_refresh: Callable[[], Awaitable[bool]] | None
+        :param object_store: the pod's single streaming object store, or
+            ``None`` when no S3 is configured. installed on every per-call
+            :class:`ToolCallScope` (alongside the context manager) so
+            producing tools reach it through :func:`current_scope` without
+            per-tool constructor plumbing; the pod owns the one instance,
+            the scope just carries the reference per call.
+        :ptype object_store: ObjectStore | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -626,6 +636,9 @@ class ToolServer:
         # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
         self._jwks_refresh = jwks_refresh
         self._namespace_collection = namespace_collection
+        # the pod's single object store (None when no S3 configured); installed on
+        # every per-call ToolCallScope so producing tools reach it ambiently.
+        self._object_store = object_store
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -1939,6 +1952,7 @@ class ToolServer:
         return ToolCallScope(
             context=context,
             context_manager=context_manager,
+            object_store=self._object_store,
         )
 
     async def _heartbeat_loop(self) -> None:

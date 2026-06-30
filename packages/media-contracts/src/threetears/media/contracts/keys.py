@@ -11,6 +11,12 @@ framework-general owning-context label the producer supplies
 ``object_id`` is a UUIDv7 (unique + time-ordered) folder so derivatives
 co-locate; ``filename`` keeps the original name + extension for human
 readability and correct download naming.
+
+This builder lives in the dependency-free contract (beside
+:class:`~threetears.media.contracts.protocols.ObjectHandle`) rather than the
+S3 impl package: the layout is a *contract* every producer encodes, and a
+producing tool must be able to build a key without inheriting the aioboto3
+client tree. The impl package re-exports it for back-compat.
 """
 
 from __future__ import annotations

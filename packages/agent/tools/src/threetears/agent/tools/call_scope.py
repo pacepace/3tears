@@ -50,6 +50,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, AsyncIterator
 
+from threetears.media.contracts import ObjectStore
+
 from threetears.agent.tools.context_envelope import CallContext
 
 __all__ = [
@@ -82,10 +84,19 @@ class ToolCallScope:
         ``None`` when the server has no factory wired or when the
         envelope did not carry conversation/user identifiers
     :ptype context_manager: ToolContextManager | None
+    :param object_store: the pod's streaming object store, installed by
+        the tool server from its single pod-level instance so producing
+        tools reach it through :func:`current_scope` -- the same way they
+        reach :attr:`context_manager` -- without per-tool constructor
+        plumbing. ``None`` when the pod was not wired with an object store
+        (no S3 configured); a producing tool that needs it fails closed at
+        first use rather than running with no place to put bytes
+    :ptype object_store: ObjectStore | None
     """
 
     context: CallContext = field(default_factory=CallContext)
     context_manager: "ToolContextManager | None" = None
+    object_store: ObjectStore | None = None
 
 
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(
