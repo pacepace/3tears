@@ -22,8 +22,11 @@ classifiers = [
 ]
 # the contract is dependency-free (media-contracts); this impl package
 # isolates the aioboto3 (-> aiobotocore -> botocore) S3 client tree so it
-# never leaks into the contract or its other consumers.
+# never leaks into the contract or its other consumers. core (``3tears``) is
+# pulled in for the secret_refs resolver used by the wiring helper -- core is
+# foundational + acyclic and brings no aioboto3, so the isolation still holds.
 dependencies = [
+    "3tears",
     "3tears-media-contracts",
     "3tears-observe",
     "aioboto3>=13",
@@ -33,6 +36,7 @@ dependencies = [
 Repository = "https://github.com/pacepace/3tears"
 
 [tool.uv.sources]
+3tears = { workspace = true }
 3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
 
