@@ -205,3 +205,9 @@ packages/channels/tests/unit/channels/test_websocket_task03.py:45:_FakeRoomState
 packages/channels/tests/unit/channels/test_websocket_task03.py:59:_FakeFanout
 # rationale: op-handler seam stand-in returning incrementing op-log seqs + recording appended frames; intentional subset
 packages/channels/tests/unit/channels/test_websocket_task03.py:101:_FakeOpHandler
+# rationale: in-memory fake of the external aioboto3 S3 client; aioboto3 is untyped with no in-repo protocol to assert parity against, and the fake covers only the S3 operations S3ObjectStore actually calls
+packages/object-store/tests/unit/test_s3_streaming.py:49:_FakeS3Client
+# rationale: stand-in for aiobotocore's streaming response Body exposing only iter_chunks; external dependency with no in-repo protocol
+packages/object-store/tests/unit/test_s3_streaming.py:19:_FakeBody
+# rationale: stand-in for aioboto3.Session handing out fake S3 clients; external dependency with no in-repo protocol
+packages/object-store/tests/unit/test_s3_streaming.py:121:_FakeSession

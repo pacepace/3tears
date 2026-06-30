@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-object-store"
+version = "0.13.10"
+description = "Streaming S3-compatible object store for large binary artifacts (Path-2)"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# the contract is dependency-free (media-contracts); this impl package
+# isolates the aioboto3 (-> aiobotocore -> botocore) S3 client tree so it
+# never leaks into the contract or its other consumers.
+dependencies = [
+    "3tears-media-contracts",
+    "3tears-observe",
+    "aioboto3>=13",
+]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.uv.sources]
+3tears-media-contracts = { workspace = true }
+3tears-observe = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
