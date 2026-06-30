@@ -294,10 +294,35 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
 
         success = True
         tool = tool_map.get(tool_call["name"])
+        tool_message: ToolMessage | None = None
         try:
             if tool is not None:
                 try:
-                    tool_result = await tool.ainvoke(tool_call["args"], config=config)
+                    # invoke ToolCall-style (NOT plain args) so a tool declaring
+                    # ``response_format="content_and_artifact"`` returns a
+                    # ToolMessage carrying both content AND its structured
+                    # artifact -- LangChain drops the artifact on a plain-args
+                    # ``ainvoke`` (2b). aligns this hand-rolled node with
+                    # LangGraph's own ToolNode dispatch; a content-format tool
+                    # (the default) returns a ToolMessage with ``artifact=None``.
+                    invoked = await tool.ainvoke(
+                        {
+                            "type": "tool_call",
+                            "id": tool_call["id"],
+                            "name": tool_call["name"],
+                            "args": tool_call["args"],
+                        },
+                        config=config,
+                    )
+                    if isinstance(invoked, ToolMessage):
+                        tool_message = invoked
+                        tool_result = invoked.content
+                        if invoked.status == "error":
+                            success = False
+                    else:
+                        # defensive: a tool that bypassed ToolMessage wrapping
+                        # and returned raw content -- treat it as the content.
+                        tool_result = invoked
                 except GraphBubbleUp:
                     # GraphInterrupt (and the GraphBubbleUp family generally) is the
                     # control-flow signal LangGraph uses to pause the graph at an
@@ -351,20 +376,37 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             config,
             state_view,
         )
+        # lift the tool's structured artifact + its authored summary (2b)
+        # from the ToolMessage the dispatch produced. the artifact is the
+        # programmatic channel the graph can persist findings through; a
+        # content-format tool has ``artifact=None`` -> no summary, unchanged.
+        tool_artifact = tool_message.artifact if tool_message is not None else None
+        tool_summary: str | None = None
+        if isinstance(tool_artifact, dict):
+            raw_summary = tool_artifact.get("summary")
+            if isinstance(raw_summary, str) and raw_summary:
+                tool_summary = raw_summary
         # large-result offload seam: when an offloader is injected and the
         # serialized content exceeds the configured threshold, store the
         # full content out-of-band and show the model a summary + recall
         # handle instead of the raw dump. no offloader / under threshold /
         # not a success / offloader declines (None) -> byte-for-byte the
-        # previous ``str(tool_result)`` content (backward compatible).
+        # previous ``str(tool_result)`` content (backward compatible). the
+        # structured artifact is preserved on the ToolMessage even when the
+        # content is offloaded.
         message_content = await _maybe_offload_result(
             configurable,
             tool_call["name"],
             str(tool_result),
             success,
+            tool_summary,
         )
         tool_messages.append(
-            ToolMessage(content=message_content, tool_call_id=tool_call["id"]),
+            ToolMessage(
+                content=message_content,
+                tool_call_id=tool_call["id"],
+                artifact=tool_artifact,
+            ),
         )
 
     result = {"messages": tool_messages}
@@ -376,6 +418,7 @@ async def _maybe_offload_result(
     tool_name: str,
     content: str,
     success: bool,
+    tool_summary: str | None = None,
 ) -> str:
     """offload an oversized tool result, returning the model-visible text.
 
@@ -404,6 +447,12 @@ async def _maybe_offload_result(
     :param success: whether the tool invocation succeeded; failures are
         never offloaded so the error text stays inline for the model.
     :ptype success: bool
+    :param tool_summary: a tool-authored summary (2b) lifted from the
+        result's ``ToolMessage.artifact``, or ``None``; forwarded to the
+        offloader (which prefers it), unless it meets the offload threshold
+        or carries a ``[ctx:`` token -- then it is dropped for the
+        structural summary.
+    :ptype tool_summary: str | None
     :return: the content to place in the ``ToolMessage`` -- either the
         ``summary + [ctx:<handle>]`` form or the original ``content``.
     :rtype: str
@@ -414,6 +463,12 @@ async def _maybe_offload_result(
     )
     conversation_id = configurable.get("conversation_id")
     user_id = configurable.get("user_id")
+    # 2b: only honor a tool-authored summary that is actually a SUMMARY -- one
+    # at/above the threshold saves no context (reintroducing the very bloat
+    # offload removes), and one carrying the "[ctx:" handle token could
+    # surface a spurious recall handle to the model. fall back to structural.
+    if tool_summary is not None and (len(tool_summary) >= threshold or "[ctx:" in tool_summary):
+        tool_summary = None
     # never offload a tool whose result IS recalled content (the recall
     # tool itself): re-offloading it loops -- the model asked for the
     # bytes and would get a fresh handle instead.
@@ -433,6 +488,7 @@ async def _maybe_offload_result(
                 content=content,
                 conversation_id=conversation_id,
                 user_id=user_id,
+                tool_summary=tool_summary,
             )
         except GraphBubbleUp:
             # control-flow signal (interrupt / subgraph bubble) -- never a

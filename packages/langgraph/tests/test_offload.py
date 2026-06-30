@@ -20,6 +20,7 @@ from uuid import UUID, uuid4
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import StructuredTool
 from threetears.langgraph.nodes import tool_node
 from threetears.langgraph.offload import (
     DEFAULT_OFFLOAD_THRESHOLD_CHARS,
@@ -63,6 +64,7 @@ class _FakeOffloader:
         content: str,
         conversation_id: UUID,
         user_id: UUID | None,
+        tool_summary: str | None = None,
     ) -> OffloadResult | None:
         """record the call, then raise / decline / return per construction."""
         self.calls.append(
@@ -71,6 +73,7 @@ class _FakeOffloader:
                 "content": content,
                 "conversation_id": conversation_id,
                 "user_id": user_id,
+                "tool_summary": tool_summary,
             },
         )
         if self._raises is not None:
@@ -97,6 +100,25 @@ class _StubTool:
     async def ainvoke(self, args: Any, config: Any = None) -> str:
         """return the canned payload regardless of args."""
         return self._payload
+
+
+def _ca_tool(name: str, content: str, artifact: Any) -> StructuredTool:
+    """build a REAL LangChain ``content_and_artifact`` StructuredTool.
+
+    invoking it ToolCall-style yields a ToolMessage carrying both content
+    and ``artifact`` -- the actual LangChain behavior the seam threads (a
+    plain-args invoke would drop the artifact, which is the whole point).
+    """
+
+    async def _impl(**kwargs: Any) -> tuple[str, Any]:
+        return content, artifact
+
+    return StructuredTool.from_function(
+        coroutine=_impl,
+        name=name,
+        description="content_and_artifact stub",
+        response_format="content_and_artifact",
+    )
 
 
 def _config(
@@ -172,8 +194,128 @@ class TestToolNodeOffloadSeam:
                 "content": big,
                 "conversation_id": conv,
                 "user_id": user,
+                "tool_summary": None,
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_content_and_artifact_summary_preferred_and_artifact_kept(
+        self,
+    ) -> None:
+        """a real content_and_artifact tool: its summary reaches the offloader and
+        the structured artifact survives on the ToolMessage even when offloaded."""
+        big = "y" * 100
+        tool = _ca_tool("scan", big, {"summary": "3 open ports", "rows": 3})
+        offloader = _FakeOffloader(handle="h9", summary="structural-default")
+        conv, user = uuid4(), uuid4()
+        # threshold sits between the short summary (kept) and the 100-char
+        # content (offloaded), so the summary is preferred, not guard-dropped.
+        config = _config(tool, offloader=offloader, threshold=50, conversation_id=conv, user_id=user)
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        result = await tool_node(state, config)  # type: ignore[arg-type]
+        message = result["messages"][0]
+        assert offloader.calls[0]["tool_summary"] == "3 open ports"
+        assert offloader.calls[0]["content"] == big
+        # structured artifact survives on the ToolMessage (programmatic channel)
+        # even though the content was offloaded.
+        assert message.artifact == {"summary": "3 open ports", "rows": 3}
+
+    @pytest.mark.asyncio
+    async def test_content_and_artifact_below_threshold_keeps_artifact(self) -> None:
+        """under threshold: content inline, not offloaded, artifact preserved."""
+        tool = _ca_tool("scan", "tiny", {"summary": "ok"})
+        offloader = _FakeOffloader()
+        config = _config(
+            tool,
+            offloader=offloader,
+            threshold=1000,
+            conversation_id=uuid4(),
+            user_id=uuid4(),
+        )
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        result = await tool_node(state, config)  # type: ignore[arg-type]
+        message = result["messages"][0]
+        assert message.content == "tiny"
+        assert offloader.calls == []
+        assert message.artifact == {"summary": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_content_format_tool_has_no_artifact(self) -> None:
+        """a real content-format tool: ToolMessage artifact=None, still offloads,
+        forwards tool_summary=None (2a compat)."""
+
+        async def _impl(**kwargs: Any) -> str:
+            return "x" * 100
+
+        tool = StructuredTool.from_function(coroutine=_impl, name="scan", description="d")
+        offloader = _FakeOffloader(handle="hc", summary="structural")
+        config = _config(
+            tool,
+            offloader=offloader,
+            threshold=10,
+            conversation_id=uuid4(),
+            user_id=uuid4(),
+        )
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        result = await tool_node(state, config)  # type: ignore[arg-type]
+        message = result["messages"][0]
+        assert message.artifact is None
+        assert offloader.calls[0]["tool_summary"] is None
+        assert message.content == "structural\n\n[ctx:hc]"
+
+    @pytest.mark.asyncio
+    async def test_oversized_tool_summary_falls_back_to_structural(self) -> None:
+        """a tool summary at/above the threshold is ignored (it saves no context)."""
+        tool = _ca_tool("scan", "y" * 200, {"summary": "S" * 200})
+        offloader = _FakeOffloader()
+        config = _config(
+            tool,
+            offloader=offloader,
+            threshold=100,
+            conversation_id=uuid4(),
+            user_id=uuid4(),
+        )
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        await tool_node(state, config)  # type: ignore[arg-type]
+        assert offloader.calls[0]["tool_summary"] is None
+
+    @pytest.mark.asyncio
+    async def test_tool_summary_with_ctx_token_falls_back_to_structural(self) -> None:
+        """a tool summary carrying a ``[ctx:`` token is ignored (handle-spoof guard)."""
+        tool = _ca_tool("scan", "y" * 200, {"summary": "a[ctx:x]b"})
+        offloader = _FakeOffloader()
+        config = _config(
+            tool,
+            offloader=offloader,
+            threshold=100,
+            conversation_id=uuid4(),
+            user_id=uuid4(),
+        )
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        await tool_node(state, config)  # type: ignore[arg-type]
+        assert offloader.calls[0]["tool_summary"] is None
+
+    @pytest.mark.asyncio
+    async def test_real_tool_graph_interrupt_propagates(self) -> None:
+        """a REAL StructuredTool raising GraphInterrupt propagates through the
+        ToolCall-style dispatch -- LangChain must not wrap the interrupt into a
+        ToolMessage (HITL / ``interrupt()`` depends on it bubbling up)."""
+        from langgraph.errors import GraphBubbleUp, GraphInterrupt
+
+        async def _impl(**kwargs: Any) -> str:
+            raise GraphInterrupt(())
+
+        tool = StructuredTool.from_function(coroutine=_impl, name="scan", description="d")
+        config = _config(
+            tool,
+            offloader=_FakeOffloader(),
+            threshold=1,
+            conversation_id=uuid4(),
+            user_id=uuid4(),
+        )
+        state: dict[str, Any] = {"messages": [_ai_with_tool_call("scan")]}
+        with pytest.raises(GraphBubbleUp):
+            await tool_node(state, config)  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_no_offload_below_threshold(self) -> None:

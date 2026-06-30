@@ -172,6 +172,7 @@ class ToolResultOffloader(Protocol):
         content: str,
         conversation_id: UUID,
         user_id: UUID | None,
+        tool_summary: str | None = None,
     ) -> OffloadResult | None:
         """store ``content`` out-of-band and return a summary + handle.
 
@@ -186,6 +187,12 @@ class ToolResultOffloader(Protocol):
         :param user_id: verified invoking user, or ``None`` when the
             envelope carried no user identity.
         :ptype user_id: UUID | None
+        :param tool_summary: a tool-authored summary (2b) the seam lifts
+            from the result's ``ToolMessage.artifact``; when present the
+            offloader uses it verbatim as the model-visible summary instead
+            of the structural byte-count default (a good tool summary is
+            what makes recall rare). ``None`` -> the structural summary.
+        :ptype tool_summary: str | None
         :return: an :class:`OffloadResult` on success, or ``None`` when
             the offloader declines to store (e.g. no context manager is
             available for the conversation); ``None`` makes the seam fall
