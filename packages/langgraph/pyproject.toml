@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "3tears-media-contracts",
     "3tears-observe",
     "langchain-core>=1.0",
     "langgraph>=0.4",
@@ -39,6 +40,7 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
 
 [tool.mypy]

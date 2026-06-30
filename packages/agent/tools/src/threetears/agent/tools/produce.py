@@ -22,16 +22,24 @@ unscoped or untenanted object.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 from uuid import uuid7
 
-from threetears.media.contracts import ObjectHandle, build_object_key
+from threetears.media.contracts import (
+    OBJECT_HANDLE_METADATA_KEY,
+    ObjectHandle,
+    build_object_key,
+)
 from threetears.observe import get_logger
 
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.tools.context_envelope import CallContext
 
-__all__ = ["ProduceObjectError", "stream_result_to_object_store"]
+__all__ = [
+    "ProduceObjectError",
+    "object_handle_result_metadata",
+    "stream_result_to_object_store",
+]
 
 _log = get_logger(__name__)
 
@@ -177,4 +185,22 @@ async def stream_result_to_object_store(
         mime_type=content_type,
         size_bytes=streamed,
         summary=summary,
+        category=category,
     )
+
+
+def object_handle_result_metadata(handle: ObjectHandle) -> dict[str, Any]:
+    """Build the ``ToolResult.metadata`` dict that carries a produced object.
+
+    A producing tool returns ``ToolResult(content=<summary>, metadata=...)``;
+    pass the handle from :func:`stream_result_to_object_store` here to get the
+    metadata the agent's catalog seam recognises (the handle under
+    :data:`~threetears.media.contracts.OBJECT_HANDLE_METADATA_KEY`). Merge extra
+    keys in if the tool also carries its own metadata.
+
+    :param handle: the handle for the streamed object
+    :ptype handle: ObjectHandle
+    :return: ``{OBJECT_HANDLE_METADATA_KEY: handle.to_metadata()}``
+    :rtype: dict[str, Any]
+    """
+    return {OBJECT_HANDLE_METADATA_KEY: handle.to_metadata()}

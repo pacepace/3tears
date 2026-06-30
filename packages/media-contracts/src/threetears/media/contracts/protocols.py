@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
     "MediaInfo",
@@ -223,15 +224,22 @@ class TranscriptionProvider(Protocol):
         ...
 
 
+#: the key under which a producing tool places its :class:`ObjectHandle`
+#: (as :meth:`ObjectHandle.to_metadata`) in ``ToolResult.metadata`` so the
+#: agent's catalog seam can recognise + persist it as a ``media`` row.
+OBJECT_HANDLE_METADATA_KEY = "object_handle"
+
+
 @dataclass
 class ObjectHandle:
     """Handle to a stored object -- the small descriptor that crosses NATS
     in place of the bytes.
 
-    The producing tool returns this (in ``ToolResult.metadata``); the agent
-    catalogs it into the ``media`` row; consumers resolve ``object_id`` back
-    to ``s3_key`` (tenant-safe, pod-side) and stream the bytes down. The
-    bytes themselves never travel with the handle.
+    The producing tool returns this (in ``ToolResult.metadata`` under
+    :data:`OBJECT_HANDLE_METADATA_KEY`); the agent catalogs it into the
+    ``media`` row; consumers resolve ``object_id`` back to ``s3_key``
+    (tenant-safe, pod-side) and stream the bytes down. The bytes themselves
+    never travel with the handle.
     """
 
     object_id: UUID
@@ -239,6 +247,46 @@ class ObjectHandle:
     mime_type: str
     size_bytes: int
     summary: str | None = None
+    category: str | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Project the handle to a JSON-safe dict for ``ToolResult.metadata``.
+
+        UUIDs are stringified at this border so the descriptor survives the
+        NATS/JSON round-trip to the agent intact.
+
+        :return: a JSON-safe representation of this handle
+        :rtype: dict[str, Any]
+        """
+        return {
+            "object_id": str(self.object_id),
+            "s3_key": self.s3_key,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "summary": self.summary,
+            "category": self.category,
+        }
+
+    @classmethod
+    def from_metadata(cls, data: dict[str, Any]) -> ObjectHandle:
+        """Reconstruct a handle from its :meth:`to_metadata` dict.
+
+        :param data: the JSON-safe handle dict (as produced by
+            :meth:`to_metadata`)
+        :ptype data: dict[str, Any]
+        :return: the reconstructed handle
+        :rtype: ObjectHandle
+        :raises KeyError: when a required field is absent
+        :raises ValueError: when ``object_id`` is not a valid UUID
+        """
+        return cls(
+            object_id=UUID(str(data["object_id"])),
+            s3_key=str(data["s3_key"]),
+            mime_type=str(data["mime_type"]),
+            size_bytes=int(data["size_bytes"]),
+            summary=data.get("summary"),
+            category=data.get("category"),
+        )
 
 
 @runtime_checkable

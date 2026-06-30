@@ -45,6 +45,7 @@ from threetears.langgraph.offload import (
     format_offload_handle,
     is_never_offload_tool,
 )
+from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 from threetears.observe import get_logger
 
 __all__ = [
@@ -401,6 +402,17 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             success,
             tool_summary,
         )
+        # Path-2 catalog seam: when the tool streamed a large artifact to the
+        # object store and returned an ObjectHandle in its metadata, persist the
+        # `media` row. independent of offload (offload handles large TEXT; this
+        # handles the out-of-band binary). soft-fails so a catalog error never
+        # breaks the tool result -- an uncataloged object is reconciled.
+        await _maybe_catalog_object(
+            configurable,
+            tool_call["name"],
+            tool_artifact,
+            success,
+        )
         tool_messages.append(
             ToolMessage(
                 content=message_content,
@@ -512,6 +524,91 @@ async def _maybe_offload_result(
         if offload_result is not None:
             message_content = f"{offload_result.summary}\n\n{format_offload_handle(offload_result.handle)}"
     return message_content
+
+
+async def _maybe_catalog_object(
+    configurable: dict[str, Any],
+    tool_name: str,
+    tool_artifact: Any,
+    success: bool,
+) -> None:
+    """catalog a produced object (an ObjectHandle in the tool artifact) as a media row.
+
+    Fires only when ALL hold: the tool succeeded, a
+    :class:`~threetears.langgraph.catalog.ObjectCataloger` is injected on
+    ``configurable``, the artifact carries an ``OBJECT_HANDLE_METADATA_KEY``
+    descriptor, and the VERIFIED conversation + customer identity are known
+    (read from ``call_context`` / the offload-seam keys, mirroring
+    :func:`_maybe_offload_result`).
+
+    SOFT-FAIL: a malformed handle or a catalog error is logged and swallowed --
+    the object is already in the store but uncataloged, so it becomes an orphan
+    the hub-side reconciler garbage-collects past its grace window. A failed
+    catalog must never break the tool result. ``GraphBubbleUp`` propagates (it is
+    a control-flow signal, not a catalog error), mirroring the dispatch + offload
+    paths.
+
+    :param configurable: the ``config["configurable"]`` dict for this run.
+    :ptype configurable: dict[str, Any]
+    :param tool_name: name of the tool whose result is being processed.
+    :ptype tool_name: str
+    :param tool_artifact: the tool's structured artifact (``ToolMessage.artifact``);
+        the handle descriptor rides under ``OBJECT_HANDLE_METADATA_KEY`` when present.
+    :ptype tool_artifact: Any
+    :param success: whether the tool invocation succeeded; a failed tool is
+        never cataloged (it produced no object).
+    :ptype success: bool
+    :return: nothing
+    :rtype: None
+    """
+    cataloger = configurable.get("object_cataloger")
+    handle_data = tool_artifact.get(OBJECT_HANDLE_METADATA_KEY) if isinstance(tool_artifact, dict) else None
+    if not (success and cataloger is not None and isinstance(handle_data, dict)):
+        return
+    call_context = configurable.get("call_context")
+    conversation_id = configurable.get("conversation_id")
+    if conversation_id is None and call_context is not None:
+        conversation_id = call_context.conversation_id
+    user_id = configurable.get("user_id")
+    if user_id is None and call_context is not None:
+        user_id = call_context.user_id
+    customer_id = call_context.customer_id if call_context is not None else None
+    if conversation_id is None or customer_id is None:
+        log.warning(
+            "produced object not cataloged: missing verified conversation/customer identity",
+            extra={
+                "extra_data": {
+                    "tool_name": tool_name,
+                    "has_conversation": conversation_id is not None,
+                    "has_customer": customer_id is not None,
+                },
+            },
+        )
+        return
+    try:
+        handle = ObjectHandle.from_metadata(handle_data)
+    except (KeyError, ValueError, TypeError) as exc:
+        log.warning(
+            "produced object handle malformed; not cataloged",
+            extra={"extra_data": {"tool_name": tool_name, "error": str(exc)}},
+        )
+        return
+    try:
+        await cataloger.catalog(
+            handle,
+            conversation_id=conversation_id,
+            customer_id=customer_id,
+            user_id=user_id,
+        )
+    except GraphBubbleUp:
+        raise
+    except Exception as exc:
+        object_id_log = str(handle.object_id)  # convert at border: catalog-failed log extra_data field
+        log.warning(
+            "produced object catalog failed; object will be reconciled if it stays uncataloged",
+            extra={"extra_data": {"tool_name": tool_name, "object_id": object_id_log, "error": str(exc)}},
+            exc_info=True,
+        )
 
 
 async def _heartbeat_loop(

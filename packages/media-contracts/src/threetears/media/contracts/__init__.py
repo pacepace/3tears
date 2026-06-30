@@ -10,6 +10,7 @@ contract-purity check in the workspace's ``tests/enforcement/``.
 
 from threetears.media.contracts.keys import build_object_key, sanitize_segment
 from threetears.media.contracts.protocols import (
+    OBJECT_HANDLE_METADATA_KEY,
     GeneratedImage,
     ImageGenerationBackend,
     MediaInfo,
@@ -22,6 +23,7 @@ from threetears.media.contracts.protocols import (
 )
 
 __all__ = [
+    "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
     "MediaInfo",

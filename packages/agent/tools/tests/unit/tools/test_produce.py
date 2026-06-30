@@ -20,14 +20,17 @@ from threetears.agent.tools.call_scope import ToolCallScope, enter_call_scope
 from threetears.agent.tools.context_envelope import CallContext
 from threetears.agent.tools.produce import (
     ProduceObjectError,
+    object_handle_result_metadata,
     stream_result_to_object_store,
 )
+from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
 from threetears.agent.tools.server import CallRequest, ToolServer
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _CONVERSATION = UUID("019f1900-0000-7000-8000-000000000001")
 _AGENT = UUID("019f1900-0000-7000-8000-000000000002")
 _ENGAGEMENT = UUID("019f1900-0000-7000-8000-000000000003")
+_OBJECT_FOR_META = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
 _CREATED = datetime(2026, 6, 30, 14, 5, 0, tzinfo=UTC)
 
 
@@ -105,6 +108,35 @@ async def test_streams_to_store_and_returns_handle() -> None:
     assert handle.s3_key.startswith(f"{_CUSTOMER}/conversation-{_CONVERSATION}/scans/")
     assert handle.s3_key.endswith(f"/{handle.object_id}/scan.xml")
     assert "2026/06/30" in handle.s3_key
+
+
+async def test_handle_carries_category_for_catalog() -> None:
+    """The produced handle records its category (the catalog uses it)."""
+    store = _FakeStore()
+    context = CallContext(customer_id=_CUSTOMER, conversation_id=_CONVERSATION)
+    async with enter_call_scope(_scope(store, context)):
+        handle = await stream_result_to_object_store(
+            _abytes(b"x"),
+            filename="r.pdf",
+            content_type="application/pdf",
+            category="reports",
+            created=_CREATED,
+        )
+    assert handle.category == "reports"
+
+
+def test_object_handle_result_metadata_wraps_under_the_key() -> None:
+    """The metadata helper nests the handle under OBJECT_HANDLE_METADATA_KEY."""
+    handle = ObjectHandle(
+        object_id=_OBJECT_FOR_META,
+        s3_key="k",
+        mime_type="application/pdf",
+        size_bytes=3,
+        summary="s",
+        category="reports",
+    )
+    metadata = object_handle_result_metadata(handle)
+    assert metadata == {OBJECT_HANDLE_METADATA_KEY: handle.to_metadata()}
 
 
 async def test_handle_size_is_counted_not_the_hint() -> None:
