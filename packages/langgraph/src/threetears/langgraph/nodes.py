@@ -40,6 +40,11 @@ from threetears.langgraph.hooks import (
     compose_agent_node_hooks,
     compose_tool_node_hooks,
 )
+from threetears.langgraph.offload import (
+    DEFAULT_OFFLOAD_THRESHOLD_CHARS,
+    format_offload_handle,
+    is_never_offload_tool,
+)
 from threetears.observe import get_logger
 
 __all__ = [
@@ -346,12 +351,111 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             config,
             state_view,
         )
+        # large-result offload seam: when an offloader is injected and the
+        # serialized content exceeds the configured threshold, store the
+        # full content out-of-band and show the model a summary + recall
+        # handle instead of the raw dump. no offloader / under threshold /
+        # not a success / offloader declines (None) -> byte-for-byte the
+        # previous ``str(tool_result)`` content (backward compatible).
+        message_content = await _maybe_offload_result(
+            configurable,
+            tool_call["name"],
+            str(tool_result),
+            success,
+        )
         tool_messages.append(
-            ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]),
+            ToolMessage(content=message_content, tool_call_id=tool_call["id"]),
         )
 
     result = {"messages": tool_messages}
     return result
+
+
+async def _maybe_offload_result(
+    configurable: dict[str, Any],
+    tool_name: str,
+    content: str,
+    success: bool,
+) -> str:
+    """offload an oversized tool result, returning the model-visible text.
+
+    reads the optional :class:`~threetears.langgraph.offload.ToolResultOffloader`
+    and the size threshold off ``configurable`` (mirroring how
+    ``context_manager`` is read in :func:`agent_node`). offload fires only
+    when ALL hold: the tool succeeded, an offloader is present, a
+    ``conversation_id`` is known, and ``len(content)`` exceeds the
+    threshold. on a returned :class:`~threetears.langgraph.offload.OffloadResult`
+    the model sees ``"<summary>\\n\\n[ctx:<handle>]"``; otherwise (no
+    offloader, under threshold, not success, declined, or a soft-failed
+    offload) the original ``content`` is returned unchanged.
+
+    SOFT-FAIL: an exception from ``offload(...)`` is logged with context
+    and the full ``content`` is returned -- a big message beats a dropped
+    tool result. ``GraphBubbleUp`` is not a concern here: this runs after
+    the tool dispatch completed, and the offloader only touches the
+    context store.
+
+    :param configurable: the ``config["configurable"]`` dict for this run.
+    :ptype configurable: dict[str, Any]
+    :param tool_name: name of the tool whose result may be offloaded.
+    :ptype tool_name: str
+    :param content: serialized tool-result content (already ``str()``-ed).
+    :ptype content: str
+    :param success: whether the tool invocation succeeded; failures are
+        never offloaded so the error text stays inline for the model.
+    :ptype success: bool
+    :return: the content to place in the ``ToolMessage`` -- either the
+        ``summary + [ctx:<handle>]`` form or the original ``content``.
+    :rtype: str
+    """
+    offloader = configurable.get("tool_result_offloader")
+    threshold = int(
+        configurable.get("offload_threshold_chars", DEFAULT_OFFLOAD_THRESHOLD_CHARS),
+    )
+    conversation_id = configurable.get("conversation_id")
+    user_id = configurable.get("user_id")
+    # never offload a tool whose result IS recalled content (the recall
+    # tool itself): re-offloading it loops -- the model asked for the
+    # bytes and would get a fresh handle instead.
+    should_offload = (
+        success
+        and offloader is not None
+        and conversation_id is not None
+        and not is_never_offload_tool(tool_name)
+        and len(content) > threshold
+    )
+    message_content = content
+    if should_offload:
+        offload_result = None
+        try:
+            offload_result = await offloader.offload(
+                tool_name=tool_name,
+                content=content,
+                conversation_id=conversation_id,
+                user_id=user_id,
+            )
+        except GraphBubbleUp:
+            # control-flow signal (interrupt / subgraph bubble) -- never a
+            # storage error; it MUST propagate exactly as the tool-dispatch
+            # path re-raises it, so the broad soft-fail below cannot swallow
+            # it. theoretical here (the offloader only touches the context
+            # store) but mirrored for consistency and future-proofing.
+            raise
+        except Exception as exc:
+            log.warning(
+                "tool-result offload failed; falling back to full content",
+                extra={
+                    "extra_data": {
+                        "tool_name": tool_name,
+                        "content_chars": len(content),
+                        "error": str(exc),
+                    },
+                },
+                exc_info=True,
+            )
+        if offload_result is not None:
+            message_content = f"{offload_result.summary}\n\n{format_offload_handle(offload_result.handle)}"
+    return message_content
 
 
 async def _heartbeat_loop(

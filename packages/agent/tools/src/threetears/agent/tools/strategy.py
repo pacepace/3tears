@@ -142,6 +142,19 @@ class BootstrapContext:
         the strategy-protocol boundary to keep this package free of
         an aibots hub dependency (the concrete
         :class:`NamespaceCollection` lives in the aibots package)
+    :ivar context_integration: per-pod conversation-context integration
+        handle (the aibots SDK's ``ContextIntegration``) constructed
+        during the three-tier stack phase. its
+        ``get_manager(conversation_id, user_id)`` mints / caches the
+        per-conversation :class:`ToolContextManager` the agent graph
+        uses. a strategy that owns an in-process :class:`ToolServer` can
+        derive a ``context_factory`` from it so conversation-aware
+        builtins (e.g. ``context_recall``) resolve the SAME manager the
+        graph reads/writes -- without depending on a workspace runtime.
+        ``None`` when the agent has no context layer. typed ``Any`` at
+        the strategy-protocol boundary to keep this package free of the
+        aibots SDK dependency (the concrete ``ContextIntegration`` lives
+        in the aibots-agents package)
     """
 
     nats_client: Any
@@ -155,6 +168,7 @@ class BootstrapContext:
     acl_cache: Any = None
     namespace_collection: Any = None
     knowledge_integration: Any = None
+    context_integration: Any = None
 
 
 @runtime_checkable
