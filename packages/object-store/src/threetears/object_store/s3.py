@@ -16,7 +16,7 @@ from typing import Any
 import aioboto3  # type: ignore[import-untyped]
 from botocore.config import Config as BotoConfig  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
-from threetears.media.contracts import ObjectStore
+from threetears.media.contracts import ObjectListing, ObjectStore
 from threetears.observe import get_logger
 
 __all__ = ["S3ObjectStore"]
@@ -272,14 +272,16 @@ class S3ObjectStore:
                         },
                     )
 
-    async def list_keys(self, prefix: str | None = None) -> AsyncIterator[str]:
-        """Yield object keys (paginated), optionally restricted to ``prefix``.
+    async def _iter_contents(self, prefix: str | None) -> AsyncIterator[dict[str, Any]]:
+        """Yield each ``Contents`` entry across every listing page.
 
-        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
-            ``None`` lists the whole bucket
+        Shared pagination for :meth:`list_keys` and :meth:`list_entries` so the
+        continuation-token walk lives in one place.
+
+        :param prefix: key-prefix filter, or ``None`` for the whole bucket
         :ptype prefix: str | None
-        :return: async iterator over object keys
-        :rtype: AsyncIterator[str]
+        :return: async iterator over raw ``list_objects_v2`` ``Contents`` dicts
+        :rtype: AsyncIterator[dict[str, Any]]
         """
         async with self._client() as client:
             token: str | None = None
@@ -291,10 +293,41 @@ class S3ObjectStore:
                     kwargs["ContinuationToken"] = token
                 resp = await client.list_objects_v2(**kwargs)
                 for obj in resp.get("Contents", []):
-                    yield obj["Key"]
+                    yield obj
                 if not resp.get("IsTruncated"):
                     break
                 token = resp.get("NextContinuationToken")
+
+    async def list_keys(self, prefix: str | None = None) -> AsyncIterator[str]:
+        """Yield object keys (paginated), optionally restricted to ``prefix``.
+
+        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
+            ``None`` lists the whole bucket
+        :ptype prefix: str | None
+        :return: async iterator over object keys
+        :rtype: AsyncIterator[str]
+        """
+        async for obj in self._iter_contents(prefix):
+            yield obj["Key"]
+
+    async def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:
+        """Yield object listings (key + last-modified + size), optionally by ``prefix``.
+
+        Carries the ``LastModified`` + ``Size`` metadata S3 already returns on a
+        list so the reconciler can judge orphan age without a per-key HEAD.
+
+        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
+            ``None`` lists the whole bucket
+        :ptype prefix: str | None
+        :return: async iterator over object listings
+        :rtype: AsyncIterator[ObjectListing]
+        """
+        async for obj in self._iter_contents(prefix):
+            yield ObjectListing(
+                key=obj["Key"],
+                last_modified=obj["LastModified"],
+                size_bytes=int(obj["Size"]),
+            )
 
     async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
         """Presigned GET URL for delivery -- bytes never cross the agent.

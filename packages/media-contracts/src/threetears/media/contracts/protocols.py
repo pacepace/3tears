@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -19,6 +20,7 @@ __all__ = [
     "MediaInfo",
     "MediaStorage",
     "ObjectHandle",
+    "ObjectListing",
     "ObjectStore",
     "TextProvider",
     "TranscriptionProvider",
@@ -289,6 +291,21 @@ class ObjectHandle:
         )
 
 
+@dataclass
+class ObjectListing:
+    """One entry from an object-store listing: key plus server metadata.
+
+    Yielded by :meth:`ObjectStore.list_entries` so a reconciler can decide
+    orphan-eligibility by age (``last_modified``) without a per-key HEAD
+    round-trip. ``last_modified`` is the store's own last-modified timestamp
+    (timezone-aware); ``size_bytes`` is the stored object size.
+    """
+
+    key: str
+    last_modified: datetime
+    size_bytes: int
+
+
 @runtime_checkable
 class ObjectStore(Protocol):
     """Streaming S3-compatible store for large binary artifacts.
@@ -363,6 +380,20 @@ class ObjectStore(Protocol):
         :ptype prefix: str | None
         :return: async iterator over object keys
         :rtype: AsyncIterator[str]
+        """
+        ...
+
+    def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:
+        """Yield object listings (key + last-modified + size), optionally by ``prefix``.
+
+        Like :meth:`list_keys` but carries each object's server metadata so a
+        reconciler can judge orphan age without a per-key HEAD request.
+
+        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
+            None lists the whole bucket
+        :ptype prefix: str | None
+        :return: async iterator over object listings
+        :rtype: AsyncIterator[ObjectListing]
         """
         ...
 

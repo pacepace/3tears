@@ -150,6 +150,8 @@ def test_hub_subjects() -> None:
     assert Subjects.hub_handshake().path == "aibots.hub.handshake"
     assert Subjects.hub_secrets_request().path == "aibots.hub.secrets.request"
     assert Subjects.hub_user_resolve().path == "aibots.hub.user.resolve"
+    assert Subjects.hub_object_commit().path == "aibots.hub.object.commit"
+    assert Subjects.hub_object_resolve().path == "aibots.hub.object.resolve"
     assert Subjects.hub_usage_track().path == "aibots.hub.usage.track"
     assert Subjects.hub_stream(agent_id, correlation_id).path == "aibots.hub.stream.agent-3.corr-9"
 

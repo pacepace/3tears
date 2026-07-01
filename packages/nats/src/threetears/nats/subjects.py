@@ -670,6 +670,33 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.user.resolve", kind="point")
 
     @classmethod
+    def hub_object_commit(cls) -> Subject:
+        """request/reply subject for committing a produced object to the hub catalog.
+
+        The agent sends its produced-object handle here (Path-2); the hub verifies
+        the agent's session, derives the owning customer server-side, asserts the
+        object key is under that tenant, and writes the ``platform.objects`` row.
+
+        :return: subject ``{ns}.hub.object.commit``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.commit", kind="point")
+
+    @classmethod
+    def hub_object_resolve(cls) -> Subject:
+        """request/reply subject for resolving an object id to its stored key.
+
+        The consuming agent asks the hub to resolve an ``object_id`` to its
+        ``s3_key`` (Path-2 S0 keystone); the hub verifies the agent's session,
+        derives the owning customer, and returns the key only when the row is
+        owned by that tenant (fail-closed).
+
+        :return: subject ``{ns}.hub.object.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
+
+    @classmethod
     def hub_channel_installs(cls) -> Subject:
         """request/reply subject for a channel adapter to fetch its installs.
 

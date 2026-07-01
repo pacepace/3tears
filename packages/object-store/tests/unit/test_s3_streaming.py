@@ -9,6 +9,7 @@ uploads, >1000-key delete batching, and multi-page listing.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -39,6 +40,7 @@ class _S3State:
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.mtimes: dict[str, datetime] = {}
         self.delete_batches: list[list[str]] = []
         self.aborted: list[str] = []
         self.completed: list[str] = []
@@ -111,7 +113,17 @@ class _FakeS3Client:
         matched = sorted(k for k in self._s.objects if Prefix is None or k.startswith(Prefix))
         start = int(ContinuationToken) if ContinuationToken else 0
         page = matched[start : start + self._s.page_size]
-        resp: dict[str, Any] = {"Contents": [{"Key": k} for k in page]}
+        _epoch = datetime(2020, 1, 1, tzinfo=UTC)
+        resp: dict[str, Any] = {
+            "Contents": [
+                {
+                    "Key": k,
+                    "Size": len(self._s.objects[k]),
+                    "LastModified": self._s.mtimes.get(k, _epoch),
+                }
+                for k in page
+            ]
+        }
         if start + self._s.page_size < len(matched):
             resp["IsTruncated"] = True
             resp["NextContinuationToken"] = str(start + self._s.page_size)
@@ -275,6 +287,29 @@ async def test_list_keys_paginates_and_filters_by_prefix() -> None:
     state.objects["other"] = b"x"
     keys = [k async for k in _store(state).list_keys(prefix="p/")]
     assert sorted(keys) == ["p/0", "p/1", "p/2", "p/3", "p/4"]
+
+
+@pytest.mark.asyncio
+async def test_list_entries_carries_key_size_and_mtime() -> None:
+    """list_entries paginates and yields each object's key, size, and mtime."""
+    state = _S3State()
+    state.page_size = 2
+    older = datetime(2021, 6, 1, tzinfo=UTC)
+    newer = datetime(2023, 6, 1, tzinfo=UTC)
+    state.objects["p/old"] = b"abc"
+    state.mtimes["p/old"] = older
+    state.objects["p/new"] = b"defgh"
+    state.mtimes["p/new"] = newer
+    state.objects["p/mid"] = b"z"
+    state.objects["other"] = b"x"
+    entries = {e.key: e async for e in _store(state).list_entries(prefix="p/")}
+    assert sorted(entries) == ["p/mid", "p/new", "p/old"]
+    assert entries["p/old"].size_bytes == 3
+    assert entries["p/old"].last_modified == older
+    assert entries["p/new"].size_bytes == 5
+    assert entries["p/new"].last_modified == newer
+    # unset mtime falls back to the fake's epoch default, never crashes
+    assert entries["p/mid"].last_modified == datetime(2020, 1, 1, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

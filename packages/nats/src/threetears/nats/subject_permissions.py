@@ -166,6 +166,8 @@ def _agent_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None)
         str(Subjects.agent_heartbeat(a, p)),  # own authed agent + own pod only
         str(Subjects.hub_handshake()),
         str(Subjects.hub_secrets_request()),
+        str(Subjects.hub_object_commit()),  # Path-2: catalogs a produced object under its own tenant
+        str(Subjects.hub_object_resolve()),  # Path-2: resolves an object id it owns to its stored key
         str(Subjects.hub_jwks()),
         str(Subjects.gateway_completion()),
         str(Subjects.gateway_embedding()),
@@ -320,6 +322,8 @@ def _hub(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) -> Pr
         str(Subjects.hub_jwks()),  # serves the JWKS
         str(Subjects.hub_secrets_request()),
         str(Subjects.hub_user_resolve()),
+        str(Subjects.hub_object_commit()),  # Path-2: responds to object catalog commits
+        str(Subjects.hub_object_resolve()),  # Path-2: responds to object id -> key resolves
         str(Subjects.hub_channel_installs()),
         str(Subjects.namespace_discover()),
         str(Subjects.agent_register()),
