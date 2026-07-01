@@ -247,6 +247,10 @@ def _tool_pod(*, agent_id: str | None, pod_id: str | None, conn_id: str | None) 
         str(Subjects.tools_discover()),  # polls discovery during wait_until_ready
         str(Subjects.hub_jwks()),  # fetches the JWKS to verify proxy assertions
         str(Subjects.audit_event("tool.call")),
+        # Path-2 consume: a consuming tool resolves an object id -> its stored
+        # key (forwarding the invoking agent's identity token; the hub verifies
+        # + tenant-scopes). NOT hub_object_commit -- commit is agent-side.
+        str(Subjects.hub_object_resolve()),
     )
     subscribe = (
         f"{inbox}.>",

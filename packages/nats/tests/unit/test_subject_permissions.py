@@ -227,7 +227,10 @@ class TestBootCompleteness:
                     f"{_NS}.hub.secrets.request",
                 ],
             ),
-            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks"]),
+            # hub.object.resolve is boot-critical for the Path-2 consume path: a
+            # consuming tool that cannot publish it fails closed at the bus and
+            # the whole resolve->stream capability goes silently inert.
+            (Principal.TOOL_POD, [f"{_NS}.tools.register", f"{_NS}.hub.jwks", f"{_NS}.hub.object.resolve"]),
             (
                 # the router forward grant is ``tools.internal.>`` (not ``.*``) so it spans BOTH
                 # single-token tool pods and two-token agent in-process pods.
