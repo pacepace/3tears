@@ -155,6 +155,17 @@ class BootstrapContext:
         the strategy-protocol boundary to keep this package free of the
         aibots SDK dependency (the concrete ``ContextIntegration`` lives
         in the aibots-agents package)
+    :ivar engagement_provider: per-pod active-engagement provider handle
+        (the aibots SDK's ``EngagementProvider``) constructed during the
+        three-tier stack phase. a strategy that owns an in-process
+        :class:`ToolServer` binds it into the context-bound
+        ``set_active_engagement`` tool so an operator can select / clear
+        the conversation's active engagement in-conversation; the tool
+        writes ``conversations.metadata['active_engagement_id']`` through
+        it. ``None`` when the agent has no conversations layer. typed
+        ``Any`` at the strategy-protocol boundary to keep this package
+        free of the aibots SDK dependency (the concrete
+        ``EngagementProvider`` lives in the aibots-agents package)
     """
 
     nats_client: Any
@@ -169,6 +180,7 @@ class BootstrapContext:
     namespace_collection: Any = None
     knowledge_integration: Any = None
     context_integration: Any = None
+    engagement_provider: Any = None
 
 
 @runtime_checkable
