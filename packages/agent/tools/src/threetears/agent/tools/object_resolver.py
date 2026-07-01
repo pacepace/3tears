@@ -70,7 +70,9 @@ class ObjectResolveRequestModel(BaseModel):
     :param identity_token: the hub-minted identity assertion the invoking agent
         carries on the call context; the hub verifies it + derives the customer
     :ptype identity_token: str
-    :param correlation_id: unique correlation id for replay protection
+    :param correlation_id: transport correlation id echoed in the reply (NOT a
+        replay control -- resolve replay is bounded by token expiry + session
+        liveness hub-side)
     :ptype correlation_id: UUID
     :param object_id: the object id to resolve
     :ptype object_id: UUID

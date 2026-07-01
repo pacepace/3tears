@@ -207,4 +207,11 @@ async def resolve_object(object_id: UUID) -> "ObjectHandle":
     identity_token = scope.context.identity_token
     if identity_token is None:
         raise ConsumeObjectError("the call context carries no identity_token; cannot authenticate the object resolve")
-    return await resolver.resolve(object_id, customer_id=customer_id, identity_token=identity_token)
+    handle = await resolver.resolve(object_id, customer_id=customer_id, identity_token=identity_token)
+    if not handle.s3_key.startswith(f"{customer_id}/"):
+        # defense in depth, symmetric with the stream/deliver helpers: the hub's
+        # lookup is customer-scoped + authoritative, but re-assert the resolved
+        # key belongs to the verified customer here too, so the tenant guarantee
+        # holds regardless of what the caller does with handle.s3_key downstream.
+        raise ConsumeObjectError("the resolved object key is not owned by the verified customer")
+    return handle

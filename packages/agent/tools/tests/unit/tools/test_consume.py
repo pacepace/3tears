@@ -262,6 +262,21 @@ async def test_resolve_object_propagates_resolver_error() -> None:
             await resolve_object(_OBJECT)
 
 
+async def test_resolve_object_rejects_foreign_resolved_key() -> None:
+    """Defense in depth: a resolved key under a foreign prefix is refused.
+
+    The hub lookup is authoritative, but resolve_object re-asserts the resolved
+    key belongs to the verified customer, so the tenant guarantee holds even if
+    the resolved key is later used outside the stream/deliver helpers.
+    """
+    foreign_handle = ObjectHandle(object_id=_OBJECT, s3_key=_FOREIGN_KEY, mime_type="text/markdown", size_bytes=5)
+    resolver = _FakeResolver(handle=foreign_handle)
+    context = CallContext(customer_id=_CUSTOMER, identity_token=_TOKEN)
+    async with enter_call_scope(_scope(None, context, resolver=resolver)):
+        with pytest.raises(ConsumeObjectError, match="not owned by the verified customer"):
+            await resolve_object(_OBJECT)
+
+
 async def test_tool_server_wires_injected_resolver_into_scope() -> None:
     """An injected resolver flows onto every per-call scope (like the store)."""
     resolver = _FakeResolver(handle=None)
