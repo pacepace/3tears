@@ -23,7 +23,7 @@ from threetears.agent.tools.produce import (
     object_handle_result_metadata,
     stream_result_to_object_store,
 )
-from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle
+from threetears.media.contracts import OBJECT_HANDLE_METADATA_KEY, ObjectHandle, ObjectListing
 from threetears.agent.tools.server import CallRequest, ToolServer
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
@@ -63,6 +63,9 @@ class _FakeStore:
         raise NotImplementedError
 
     def list_keys(self, prefix: str | None = None) -> AsyncIterator[str]:  # pragma: no cover
+        raise NotImplementedError
+
+    def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:  # pragma: no cover
         raise NotImplementedError
 
     async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:  # pragma: no cover

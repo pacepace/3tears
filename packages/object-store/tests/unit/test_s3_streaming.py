@@ -17,6 +17,7 @@ import pytest
 from threetears.object_store.s3 import S3ObjectStore
 
 
+# parity-exempt: aiobotocore StreamingBody stub -- botocore's dynamically-built response body has no importable Protocol to declare parity against; only iter_chunks is exercised
 class _FakeBody:
     """Streaming body stub exposing aiobotocore's ``iter_chunks``."""
 
@@ -48,6 +49,7 @@ class _S3State:
         self.fail_part: int | None = None
 
 
+# parity-exempt: aioboto3 S3 client stub -- a botocore-generated client with hundreds of operations and no importable Protocol; only the get/put/list/delete/presign calls S3ObjectStore makes are stubbed
 class _FakeS3Client:
     """Minimal in-memory S3 client matching the calls S3ObjectStore makes."""
 
@@ -130,6 +132,7 @@ class _FakeS3Client:
         return resp
 
 
+# parity-exempt: aioboto3 Session.client() factory stub -- an external SDK context-manager factory with no importable Protocol to mirror
 class _FakeSession:
     """Fake aioboto3 session handing out fresh in-memory clients."""
 
