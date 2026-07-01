@@ -30,6 +30,9 @@ from threetears.agent.tools.config import (
     get_object_resolve_request_timeout,
 )
 from threetears.agent.tools.config import (
+    get_engagement_scope_request_timeout,
+)
+from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
@@ -38,6 +41,7 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
 from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
@@ -141,6 +145,7 @@ def tool_namespace_id(
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 
 if TYPE_CHECKING:
+    from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
     from threetears.agent.tools.object_resolver import ObjectResolver
     from threetears.media.contracts import ObjectStore
 
@@ -517,6 +522,7 @@ class ToolServer:
         assertion_replay_guard: "ReplayGuard | None" = None,
         object_store: "ObjectStore | None" = None,
         object_resolver: "ObjectResolver | None" = None,
+        engagement_resolver: "EngagementScopeResolver | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -626,6 +632,14 @@ class ToolServer:
             ids to keys through :func:`current_scope`. an injected resolver
             (tests) is used as-is and not self-provisioned.
         :ptype object_resolver: ObjectResolver | None
+        :param engagement_resolver: the pod's engagement-scope resolver, or
+            ``None`` to self-provision one in :meth:`serve` from the NATS client
+            (the default; it needs no S3 creds, only NATS). installed on every
+            per-call :class:`ToolCallScope` so tools resolve the call's
+            ``engagement_id`` to its authorized target set through
+            :func:`current_scope`. an injected resolver (tests) is used as-is and
+            not self-provisioned.
+        :ptype engagement_resolver: EngagementScopeResolver | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -656,6 +670,10 @@ class ToolServer:
         # serve() from the NATS client (needs no S3 creds), then installed on
         # every per-call ToolCallScope so consuming tools resolve ids ambiently.
         self._object_resolver = object_resolver
+        # the pod's single engagement-scope resolver; None here is self-provisioned
+        # in serve() from the NATS client (needs no S3 creds), then installed on
+        # every per-call ToolCallScope so tools re-authorize against the engagement.
+        self._engagement_resolver = engagement_resolver
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -938,6 +956,16 @@ class ToolServer:
             self._object_resolver = HubObjectResolver(
                 self._nc,
                 request_timeout_seconds=get_object_resolve_request_timeout(),
+            )
+        if self._engagement_resolver is None:
+            # self-provision the engagement-scope resolver over this connection so
+            # tools can re-authorize each call against the engagement's target set.
+            # like the object resolver it needs only NATS (the hub verifies the
+            # forwarded identity_token + owns the engagement tables), so the pod
+            # does not have to hold any creds of its own to resolve scope.
+            self._engagement_resolver = HubEngagementScopeResolver(
+                self._nc,
+                request_timeout_seconds=get_engagement_scope_request_timeout(),
             )
         if self._assertion_replay_guard is None:
             self._assertion_replay_guard = ReplayGuard(
@@ -1981,6 +2009,7 @@ class ToolServer:
             context_manager=context_manager,
             object_store=self._object_store,
             object_resolver=self._object_resolver,
+            engagement_resolver=self._engagement_resolver,
         )
 
     async def _heartbeat_loop(self) -> None:

@@ -697,6 +697,23 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
 
     @classmethod
+    def hub_engagement_scope(cls) -> Subject:
+        """request/reply subject for resolving an engagement's authorized target scope.
+
+        A consuming TOOL POD asks the hub for the in-scope targets of the
+        ``engagement_id`` on its call context (engagement scope, consumer A of
+        the §2 keystone). The pod has no hub session of its own, so it forwards
+        the invoking agent's ``identity_token``; the hub verifies it, derives the
+        owning customer from the signed claim, and returns the active target set
+        only when the engagement is owned by that tenant (fail-closed). The
+        read-side twin of :meth:`hub_object_resolve`.
+
+        :return: subject ``{ns}.hub.engagement.scope``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
+
+    @classmethod
     def hub_channel_installs(cls) -> Subject:
         """request/reply subject for a channel adapter to fetch its installs.
 
