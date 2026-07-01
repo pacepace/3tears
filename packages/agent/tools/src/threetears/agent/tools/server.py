@@ -27,6 +27,9 @@ from threetears.agent.tools.config import (
     get_jwks_request_timeout,
 )
 from threetears.agent.tools.config import (
+    get_object_resolve_request_timeout,
+)
+from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
@@ -35,6 +38,7 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
@@ -137,6 +141,7 @@ def tool_namespace_id(
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 
 if TYPE_CHECKING:
+    from threetears.agent.tools.object_resolver import ObjectResolver
     from threetears.media.contracts import ObjectStore
 
     from threetears.agent.tools.context import ToolContextManager
@@ -511,6 +516,7 @@ class ToolServer:
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
         object_store: "ObjectStore | None" = None,
+        object_resolver: "ObjectResolver | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -613,6 +619,13 @@ class ToolServer:
             per-tool constructor plumbing; the pod owns the one instance,
             the scope just carries the reference per call.
         :ptype object_store: ObjectStore | None
+        :param object_resolver: the pod's object-id resolver, or ``None`` to
+            self-provision one in :meth:`serve` from the NATS client (the
+            default; it needs no S3 creds, only NATS). installed on every
+            per-call :class:`ToolCallScope` so consuming tools resolve object
+            ids to keys through :func:`current_scope`. an injected resolver
+            (tests) is used as-is and not self-provisioned.
+        :ptype object_resolver: ObjectResolver | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -639,6 +652,10 @@ class ToolServer:
         # the pod's single object store (None when no S3 configured); installed on
         # every per-call ToolCallScope so producing tools reach it ambiently.
         self._object_store = object_store
+        # the pod's single object-id resolver; None here is self-provisioned in
+        # serve() from the NATS client (needs no S3 creds), then installed on
+        # every per-call ToolCallScope so consuming tools resolve ids ambiently.
+        self._object_resolver = object_resolver
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -912,6 +929,16 @@ class ToolServer:
             # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
             # whatever (possibly None) trigger the constructor was given.
             self._jwks_refresh = owned.refresh_now
+        if self._object_resolver is None:
+            # self-provision the object-id resolver over this connection so
+            # consuming tools can turn an object id into its stored key. it
+            # needs only NATS (the hub verifies the caller's identity_token +
+            # owns the objects table), so -- unlike the object store -- the pod
+            # does not have to be wired with S3 creds to resolve.
+            self._object_resolver = HubObjectResolver(
+                self._nc,
+                request_timeout_seconds=get_object_resolve_request_timeout(),
+            )
         if self._assertion_replay_guard is None:
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
@@ -1953,6 +1980,7 @@ class ToolServer:
             context=context,
             context_manager=context_manager,
             object_store=self._object_store,
+            object_resolver=self._object_resolver,
         )
 
     async def _heartbeat_loop(self) -> None:

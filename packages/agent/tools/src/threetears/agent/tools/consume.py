@@ -22,18 +22,20 @@ tool must never read or deliver an object outside its tenant.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, AsyncIterator
+from uuid import UUID
 
 from threetears.observe import get_logger
 
 from threetears.agent.tools.call_scope import current_scope
 
 if TYPE_CHECKING:
-    from threetears.media.contracts import ObjectStore
+    from threetears.media.contracts import ObjectHandle, ObjectStore
 
 __all__ = [
     "ConsumeObjectError",
     "open_object_stream",
     "presigned_object_url",
+    "resolve_object",
 ]
 
 _log = get_logger(__name__)
@@ -154,3 +156,55 @@ async def presigned_object_url(s3_key: str, *, expires_in: int = _DEFAULT_PRESIG
     url = await store.presigned_get_url(s3_key, expires_in=expires_in)
     _log.debug("presigned object for delivery")
     return url
+
+
+async def resolve_object(object_id: UUID) -> "ObjectHandle":
+    """Resolve an object id to a handle carrying its stored key, tenant-safely.
+
+    The tenant-safety keystone of the consume path. Reads the pod's resolver +
+    the VERIFIED identity off the current call scope and asks the hub to map
+    ``object_id`` to its key under the verified customer. A bare object id is an
+    untrusted input (an LLM tool arg, a cross-turn reference); only the hub --
+    which owns the objects table -- can safely decide whether the verified
+    customer owns it, so the resolve is where cross-tenant access is refused for
+    the id-not-handle path. The caller then hands ``handle.s3_key`` to
+    :func:`open_object_stream` or :func:`presigned_object_url` (which re-assert
+    the tenant prefix, defense in depth).
+
+    Authentication uses the invoking agent's ``identity_token`` from the call
+    context -- the hub verifies it and derives the customer from the verified
+    claim -- so this pure-``threetears`` pod needs no hub session of its own.
+
+    :param object_id: the object id to resolve (untrusted; the hub authorizes it
+        against the verified customer)
+    :ptype object_id: UUID
+    :return: a handle whose ``s3_key`` locates the object for streaming/delivery
+        (``summary`` / ``category`` are ``None`` -- resolve returns only the
+        storage-locating fields)
+    :rtype: ObjectHandle
+    :raises ConsumeObjectError: no scope / no resolver wired / no verified
+        customer / no identity_token to authenticate the resolve
+    :raises ResolveObjectError: the hub rejected the resolve (identity
+        unverified, or the customer does not own the object) or it failed in
+        transit -- raised by the resolver and propagated
+    """
+    scope = current_scope()
+    if scope is None:
+        raise ConsumeObjectError(
+            "object consume helper called outside a ToolServer call scope; a "
+            "consuming tool runs inside enter_call_scope"
+        )
+    resolver = scope.object_resolver
+    if resolver is None:
+        raise ConsumeObjectError(
+            "the current call scope carries no object resolver; the tool pod was not wired with one (no NATS client)"
+        )
+    customer_id = scope.context.customer_id
+    if customer_id is None:
+        raise ConsumeObjectError(
+            "the call context carries no verified customer_id; refusing to resolve an untenanted object"
+        )
+    identity_token = scope.context.identity_token
+    if identity_token is None:
+        raise ConsumeObjectError("the call context carries no identity_token; cannot authenticate the object resolve")
+    return await resolver.resolve(object_id, customer_id=customer_id, identity_token=identity_token)

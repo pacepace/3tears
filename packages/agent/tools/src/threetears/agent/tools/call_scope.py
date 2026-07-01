@@ -64,6 +64,7 @@ __all__ = [
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
+    from threetears.agent.tools.object_resolver import ObjectResolver
 
 
 @dataclass(frozen=True)
@@ -92,11 +93,20 @@ class ToolCallScope:
         (no S3 configured); a producing tool that needs it fails closed at
         first use rather than running with no place to put bytes
     :ptype object_store: ObjectStore | None
+    :param object_resolver: the pod's object-id resolver, installed by the tool
+        server from its single self-provisioned instance so consuming tools
+        reach it through :func:`current_scope` -- the same way they reach
+        :attr:`object_store` -- to turn an object id into its stored key
+        tenant-safely. ``None`` when the server was not wired with one (no NATS
+        client, as in unit tests); a consuming tool that needs it fails closed
+        at first use rather than resolving nothing
+    :ptype object_resolver: ObjectResolver | None
     """
 
     context: CallContext = field(default_factory=CallContext)
     context_manager: "ToolContextManager | None" = None
     object_store: ObjectStore | None = None
+    object_resolver: "ObjectResolver | None" = None
 
 
 _current_scope: ContextVar[ToolCallScope | None] = ContextVar(

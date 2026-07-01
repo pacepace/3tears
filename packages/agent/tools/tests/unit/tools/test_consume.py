@@ -20,14 +20,18 @@ from threetears.agent.tools.consume import (
     ConsumeObjectError,
     open_object_stream,
     presigned_object_url,
+    resolve_object,
 )
 from threetears.agent.tools.context_envelope import CallContext
-from threetears.media.contracts import ObjectListing
+from threetears.agent.tools.object_resolver import ResolveObjectError
+from threetears.agent.tools.server import CallRequest, ToolServer
+from threetears.media.contracts import ObjectHandle, ObjectListing
 
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
 _OTHER_CUSTOMER = UUID("06a41d51-a6d5-7824-8000-2222aaaa2222")
 _CONVERSATION = UUID("019f1900-0000-7000-8000-000000000001")
 _OBJECT = UUID("019f1924-1a31-72d3-81b4-855415bd34ba")
+_TOKEN = "hub.identity.token.value"
 
 # a key under the verified customer's prefix (scope-first layout, keys.py).
 _OWNED_KEY = f"{_CUSTOMER}/conversation-{_CONVERSATION}/reports/2026/06/30/{_OBJECT}/report.md"
@@ -79,9 +83,26 @@ class _FakeReadStore:
         raise NotImplementedError
 
 
-def _scope(store: object | None, context: CallContext) -> ToolCallScope:
-    """Build a call scope carrying ``store`` + ``context``."""
-    return ToolCallScope(context=context, object_store=store)  # type: ignore[arg-type]
+def _scope(store: object | None, context: CallContext, *, resolver: object | None = None) -> ToolCallScope:
+    """Build a call scope carrying ``store`` + ``context`` (+ optional resolver)."""
+    return ToolCallScope(context=context, object_store=store, object_resolver=resolver)  # type: ignore[arg-type]
+
+
+# parity-with: threetears.agent.tools.object_resolver.ObjectResolver
+class _FakeResolver:
+    """Returns a fixed handle for resolve, or raises; records the call args."""
+
+    def __init__(self, *, handle: ObjectHandle | None = None, error: Exception | None = None) -> None:
+        self._handle = handle
+        self._error = error
+        self.calls: list[tuple[UUID, UUID, str]] = []
+
+    async def resolve(self, object_id: UUID, *, customer_id: UUID, identity_token: str) -> ObjectHandle:
+        self.calls.append((object_id, customer_id, identity_token))
+        if self._error is not None:
+            raise self._error
+        assert self._handle is not None
+        return self._handle
 
 
 async def _collect(stream: AsyncIterator[bytes]) -> bytes:
@@ -184,3 +205,76 @@ async def test_prefix_check_is_boundary_exact() -> None:
         with pytest.raises(ConsumeObjectError, match="not owned by the verified customer"):
             open_object_stream(look_alike_key)
     assert store.opened == []
+
+
+async def test_resolve_object_returns_handle_from_resolver() -> None:
+    """resolve_object passes the verified customer + identity_token to the resolver."""
+    handle = ObjectHandle(object_id=_OBJECT, s3_key=_OWNED_KEY, mime_type="text/markdown", size_bytes=5)
+    resolver = _FakeResolver(handle=handle)
+    context = CallContext(customer_id=_CUSTOMER, conversation_id=_CONVERSATION, identity_token=_TOKEN)
+    async with enter_call_scope(_scope(None, context, resolver=resolver)):
+        got = await resolve_object(_OBJECT)
+    assert got is handle
+    # the verified customer + the identity_token are threaded from the scope.
+    assert resolver.calls == [(_OBJECT, _CUSTOMER, _TOKEN)]
+
+
+async def test_resolve_object_fail_closed_outside_scope() -> None:
+    """Called outside a call scope, resolve_object refuses."""
+    with pytest.raises(ConsumeObjectError, match="outside a ToolServer call scope"):
+        await resolve_object(_OBJECT)
+
+
+async def test_resolve_object_fail_closed_no_resolver() -> None:
+    """A scope with no resolver wired refuses rather than resolving nothing."""
+    context = CallContext(customer_id=_CUSTOMER, identity_token=_TOKEN)
+    async with enter_call_scope(_scope(None, context, resolver=None)):
+        with pytest.raises(ConsumeObjectError, match="no object resolver"):
+            await resolve_object(_OBJECT)
+
+
+async def test_resolve_object_fail_closed_no_customer() -> None:
+    """Without a verified customer_id resolve_object refuses (and never calls out)."""
+    resolver = _FakeResolver(handle=None)
+    context = CallContext(identity_token=_TOKEN)  # no customer_id
+    async with enter_call_scope(_scope(None, context, resolver=resolver)):
+        with pytest.raises(ConsumeObjectError, match="no verified customer_id"):
+            await resolve_object(_OBJECT)
+    assert resolver.calls == []
+
+
+async def test_resolve_object_fail_closed_no_identity_token() -> None:
+    """Without an identity_token resolve_object cannot authenticate -> refuses."""
+    resolver = _FakeResolver(handle=None)
+    context = CallContext(customer_id=_CUSTOMER)  # no identity_token
+    async with enter_call_scope(_scope(None, context, resolver=resolver)):
+        with pytest.raises(ConsumeObjectError, match="no identity_token"):
+            await resolve_object(_OBJECT)
+    assert resolver.calls == []
+
+
+async def test_resolve_object_propagates_resolver_error() -> None:
+    """A hub rejection surfaced by the resolver propagates unchanged."""
+    resolver = _FakeResolver(error=ResolveObjectError("object resolve rejected: OBJECT_NOT_FOUND: nope"))
+    context = CallContext(customer_id=_CUSTOMER, identity_token=_TOKEN)
+    async with enter_call_scope(_scope(None, context, resolver=resolver)):
+        with pytest.raises(ResolveObjectError, match="OBJECT_NOT_FOUND"):
+            await resolve_object(_OBJECT)
+
+
+async def test_tool_server_wires_injected_resolver_into_scope() -> None:
+    """An injected resolver flows onto every per-call scope (like the store)."""
+    resolver = _FakeResolver(handle=None)
+    server = ToolServer(
+        nats_url="nats://localhost:4222",
+        namespace_collection=None,
+        object_resolver=resolver,  # type: ignore[arg-type]
+    )
+    request = CallRequest(
+        tool_name="t",
+        tool_version="1.0.0",
+        arguments={},
+        context=CallContext(customer_id=_CUSTOMER),
+    )
+    scope = await server._build_call_scope(request)  # noqa: SLF001 -- wiring seam: server propagates its resolver to the per-call scope
+    assert scope.object_resolver is resolver
