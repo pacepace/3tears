@@ -94,7 +94,8 @@ class CallContext(BaseModel):
         from LLM-supplied tool args) to load the engagement's authorized
         target scope and re-authorize each call pod-side, failing closed
         when it is absent. ``None`` for calls not bound to an engagement
-        (the platform-wide default); nothing reads it yet
+        (the platform-wide default). read by
+        :func:`~threetears.agent.tools.engagement.resolve_engagement_scope`
     :ptype engagement_id: UUID | None
     :param trace: escape hatch for identity dimensions not yet promoted
         to first-class fields; map of short string keys to string

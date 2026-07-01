@@ -27,6 +27,12 @@ resolve is one sub-ms request), so resolve-per-scan is not a hot path. A short-T
 cache is a possible future optimisation ONLY with an explicit, documented staleness
 bound -- intentionally not built here.
 
+Fresh-per-call kills cross-CALL staleness, not the residual TOCTOU WITHIN one call:
+re-authorization runs once at the start of a scan, so a target deactivated while a
+(minutes-long) scan is mid-flight keeps being scanned until that run finishes. That
+window is bounded by the scan duration, not zero -- inherent to any resolve-then-act
+control; the next scan re-resolves and sees the change.
+
 Fail-closed: a transport error, a hub error reply (identity unverified / engagement
 not found), or a malformed success reply raises :class:`ResolveEngagementScopeError`.
 A tool must never proceed on an unresolved or cross-tenant scope.
