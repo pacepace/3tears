@@ -98,6 +98,18 @@ async def test_delivers_presigned_url_for_owned_object() -> None:
     assert result.metadata["size_bytes"] == 42
     # presigned with the resolved (owned) key + the default TTL.
     assert store.presigned == [(_OWNED_KEY, 3600)]
+    # no key material leaks: the raw s3_key is never in the metadata or content
+    # (only the presigned URL, which is the intended deliverable to the owner).
+    assert "s3_key" not in result.metadata
+    assert _OWNED_KEY not in result.content
+
+
+async def test_whitespace_object_id_fails_closed() -> None:
+    """A whitespace-only object_id -> a clean refusal (never a lookup)."""
+    async with enter_call_scope(_scope(resolver=_FakeResolver(handle=_handle()), store=_FakeStore())):
+        result = await DeliverObjectTool().execute(object_id="   ")
+    assert result.success is False
+    assert "object_id" in (result.error or "")
 
 
 async def test_missing_object_id_fails_closed() -> None:
