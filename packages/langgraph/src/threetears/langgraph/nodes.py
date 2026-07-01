@@ -403,10 +403,10 @@ async def tool_node(state: MessagesState, config: RunnableConfig) -> dict[str, A
             tool_summary,
         )
         # Path-2 catalog seam: when the tool streamed a large artifact to the
-        # object store and returned an ObjectHandle in its metadata, persist the
-        # `media` row. independent of offload (offload handles large TEXT; this
-        # handles the out-of-band binary). soft-fails so a catalog error never
-        # breaks the tool result -- an uncataloged object is reconciled.
+        # object store and returned an ObjectHandle in its metadata, persist a
+        # catalog record for it. independent of offload (offload handles large
+        # TEXT; this handles the out-of-band binary). soft-fails so a catalog
+        # error never breaks the tool result -- an uncataloged object is reconciled.
         await _maybe_catalog_object(
             configurable,
             tool_call["name"],
@@ -532,7 +532,7 @@ async def _maybe_catalog_object(
     tool_artifact: Any,
     success: bool,
 ) -> None:
-    """catalog a produced object (an ObjectHandle in the tool artifact) as a media row.
+    """catalog a produced object (an ObjectHandle in the tool artifact) via the cataloger.
 
     Fires only when ALL hold: the tool succeeded, a
     :class:`~threetears.langgraph.catalog.ObjectCataloger` is injected on

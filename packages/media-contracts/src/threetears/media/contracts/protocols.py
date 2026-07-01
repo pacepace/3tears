@@ -228,7 +228,7 @@ class TranscriptionProvider(Protocol):
 
 #: the key under which a producing tool places its :class:`ObjectHandle`
 #: (as :meth:`ObjectHandle.to_metadata`) in ``ToolResult.metadata`` so the
-#: agent's catalog seam can recognise + persist it as a ``media`` row.
+#: agent's catalog seam can recognise + persist it in the object catalog.
 OBJECT_HANDLE_METADATA_KEY = "object_handle"
 
 
@@ -239,9 +239,9 @@ class ObjectHandle:
 
     The producing tool returns this (in ``ToolResult.metadata`` under
     :data:`OBJECT_HANDLE_METADATA_KEY`); the agent catalogs it into the
-    ``media`` row; consumers resolve ``object_id`` back to ``s3_key``
-    (tenant-safe, pod-side) and stream the bytes down. The bytes themselves
-    never travel with the handle.
+    hub-owned ``objects`` catalog; consumers resolve ``object_id`` back to
+    ``s3_key`` (customer-safe, pod-side) and stream the bytes down. The bytes
+    themselves never travel with the handle.
     """
 
     object_id: UUID
