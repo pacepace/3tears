@@ -9,7 +9,7 @@ and ``write_file_matching:<glob>`` (see
 :data:`threetears.agent.acl.WRITE_FILE_MATCHING_PREFIX`). the legacy
 ``workspace.allow.read`` / ``workspace.allow.write`` config fields are
 read at bootstrap by
-:func:`aibots_agents.runtime.access_translation.translate_workspace_allow_to_assignments`
+:func:`3tears_agents.runtime.access_translation.translate_workspace_allow_to_assignments`
 and translated into role assignments; this module no longer consults
 those fields.
 

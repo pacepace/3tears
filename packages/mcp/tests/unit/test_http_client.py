@@ -230,14 +230,14 @@ class TestVerbHelpers:
 
 
 class TestFromEnv:
-    """env-var constructor reads conventional METALLM_* vars."""
+    """env-var constructor reads conventional MCP_* vars."""
 
     @pytest.mark.asyncio
     async def test_from_env_picks_up_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """env-var values flow through to the client config."""
-        monkeypatch.setenv("METALLM_E2E_URL", "http://override.example")
-        monkeypatch.setenv("METALLM_ADMIN_EMAIL", "ops@example.org")
-        monkeypatch.setenv("METALLM_ADMIN_PASSWORD", "topsecret")
+        monkeypatch.setenv("MCP_E2E_URL", "http://override.example")
+        monkeypatch.setenv("MCP_ADMIN_EMAIL", "ops@example.org")
+        monkeypatch.setenv("MCP_ADMIN_PASSWORD", "topsecret")
         client = PlatformHttpClient.from_env()
         try:
             assert client._base_url == "http://override.example"  # noqa: SLF001
@@ -265,7 +265,7 @@ class TestUpload:
             captured["body"] = request.content
             captured["filename_marker"] = b'filename="readme.md"' in request.content
             captured["field_marker"] = b'name="file"' in request.content
-            captured["bytes_marker"] = b"# MetaLLM\n" in request.content
+            captured["bytes_marker"] = b"# Doc\n" in request.content
             return httpx.Response(
                 200,
                 json={"media_id": "019dff00-aaaa-bbbb-cccc-ddddeeeeffff"},
@@ -277,7 +277,7 @@ class TestUpload:
             response = await client.upload(
                 "/api/v1/media/upload",
                 file_field="file",
-                file_data=b"# MetaLLM\nHello world",
+                file_data=b"# Doc\nHello world",
                 filename="readme.md",
                 content_type="text/markdown",
             )

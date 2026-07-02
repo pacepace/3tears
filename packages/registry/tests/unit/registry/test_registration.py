@@ -100,7 +100,7 @@ def _make_manifest(
 def _make_nats_msg(
     data: bytes,
     reply: str | None = "reply.subject",
-    subject: str = "aibots.tools.register",
+    subject: str = "3tears.tools.register",
 ) -> IncomingMessage:
     """build a wrapper :class:`IncomingMessage` envelope.
 

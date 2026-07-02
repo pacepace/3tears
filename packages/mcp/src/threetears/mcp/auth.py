@@ -115,7 +115,7 @@ class IdentityProvider(Protocol):
 class EnvVarIdentityProvider:
     """v1 stdio :class:`IdentityProvider` -- one identity per server lifetime.
 
-    reads the admin user UUID from env vars (``METALLM_ADMIN_USER_ID``
+    reads the admin user UUID from env vars (``MCP_ADMIN_USER_ID``
     by default; configurable). future v2 :class:`BearerTokenIdentityProvider`
     will resolve per request from the MCP-client-supplied bearer
     token using the same :class:`Identity` shape.
@@ -140,7 +140,7 @@ class EnvVarIdentityProvider:
         self,
         *,
         principal_id: UUID | None = None,
-        user_id_env_var: str = "METALLM_ADMIN_USER_ID",
+        user_id_env_var: str = "MCP_ADMIN_USER_ID",
         is_admin: bool = True,
     ) -> None:
         """capture identity source; resolve at :meth:`identify` call.

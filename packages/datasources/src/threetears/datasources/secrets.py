@@ -5,7 +5,7 @@ canonical home, so any 3tears app consumes it from ``core`` without depending on
 package). This module re-exports the same public surface so existing imports —
 ``from threetears.datasources.secrets import resolve_secret, validate_ref`` — keep working
 unchanged. The ``env://`` / ``k8s://`` backends and the
-``AIBOTS_DATASOURCE_SECRETS_DIR`` mount override are identical; new schemes are added via
+``THREETEARS_DATASOURCE_SECRETS_DIR`` mount override are identical; new schemes are added via
 ``threetears.core.security.register_scheme``.
 """
 

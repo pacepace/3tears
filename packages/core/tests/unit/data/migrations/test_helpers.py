@@ -14,7 +14,7 @@ assert that:
 - ``replace_primary_key`` emits the FK-preservation dance: drop inbound
   FKs, drop old PK, add new composite PK, add ``UNIQUE`` on the
   preserved id column, recreate inbound FKs
-- generic SQL types only -- no aibots-specific imports leak through
+- generic SQL types only -- no 3tears-specific imports leak through
 - helpers accept an optional ``schema=`` kwarg that propagates to the
   emitted SQL as a schema-qualified prefix
 
@@ -397,14 +397,14 @@ class TestAddIndex:
 
 
 # ---------------------------------------------------------------------------
-# generic-SQL discipline (no aibots-specific imports)
+# generic-SQL discipline (no 3tears-specific imports)
 # ---------------------------------------------------------------------------
 
 
 class TestGenericSqlDiscipline:
-    """helpers must reference no aibots-specific tables in their generated SQL."""
+    """helpers must reference no 3tears-specific tables in their generated SQL."""
 
-    async def test_no_aibots_table_names_baked_in(self) -> None:
+    async def test_no_3tears_table_names_baked_in(self) -> None:
         """smoke test: passing a generic table name yields generic SQL."""
         store = FakeDataStore()
         await replace_check_constraint(

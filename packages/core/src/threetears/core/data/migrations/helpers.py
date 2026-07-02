@@ -12,8 +12,8 @@ design points:
 
 - helpers are FREE FUNCTIONS, not methods on :class:`DataStore`. data
   layer / migration layer separation keeps the runtime surface lean
-  and lets aibots / metallm / future apps share the same primitives.
-- signatures use generic SQL types and reference NO aibots-specific
+  and lets 3tears and downstream apps share the same primitives.
+- signatures use generic SQL types and reference NO 3tears-specific
   table names. nothing in this module knows about ``namespaces`` /
   ``audit_events`` / ``memories``.
 - every helper is :func:`@traced <threetears.observe.tracing.traced>`
@@ -550,7 +550,7 @@ async def replace_primary_key(
         defaults to ``{table}_pkey``
     :ptype pk_name: str | None
     :param preserve_unique_id_column: column to receive ``UNIQUE``;
-        default ``"id"`` matches the convention every aibots /
+        default ``"id"`` matches the convention every 3tears /
         agent-memory partitioned table uses
     :ptype preserve_unique_id_column: str
     :param inbound_fks: descriptors of inbound FKs to drop and recreate

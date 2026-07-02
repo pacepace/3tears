@@ -285,7 +285,7 @@ class ScheduleCapExceeded(Exception):
 
     Carries the conversation, the observed active count, and the cap so
     both consumers (the agent ``wake_schedule_create`` tool and the
-    metallm REST router) can render their own surface-appropriate error
+    consumer's REST router) can render their own surface-appropriate error
     (a ``[TOOL ERROR]`` string vs. an HTTP 400) without re-counting.
 
     :ivar conversation_id: conversation whose cap was hit
@@ -400,7 +400,7 @@ async def resume_schedule_serialized(
 
     The mirror of :func:`create_schedule_serialized` for transitions
     INTO ``status='active'`` (the agent ``wake_schedule_resume`` tool and
-    the metallm REST ``PATCH status=active``). Without this, a
+    the REST ``PATCH status=active``). Without this, a
     pause -> create-to-fill -> resume sequence could push the active
     count past the cap because the resume path never re-checked it
     (PLACEMENT §1.9).
@@ -483,7 +483,7 @@ async def resume_schedule_serialized(
     # ``invalidate_cache`` here: an eviction would strip the row out from
     # under any LIVE entity proxy the caller still holds (the proxy reads
     # every field through L1 via ``get_field_sync``), turning a subsequent
-    # ``entity.schedule_id`` read into ``None``. The metallm REST caller
+    # ``entity.schedule_id`` read into ``None``. The REST caller
     # reflects the new ``status`` / ``next_fire_at`` onto its proxy via
     # field setters (which write through to L1) for the response; the
     # agent tool caller returns a string and re-reads on the next ``get``.

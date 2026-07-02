@@ -13,7 +13,7 @@ audit, so cascade-on-delete is the right primitive (per PLACEMENT
 §1.1 disposition).
 
 ``message_id`` is deliberately NOT FK'd to ``messages``: the messages
-table is consumer-owned (metallm has it; future consumers may
+table is consumer-owned (a consumer has it; future consumers may
 differ) and rows may be hard-deleted. The invocation history must
 survive a message deletion, so the column is a plain UUID with no
 FK constraint.

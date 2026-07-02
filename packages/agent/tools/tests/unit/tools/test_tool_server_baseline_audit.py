@@ -117,7 +117,7 @@ def _make_msg(payload: dict[str, Any] | bytes) -> IncomingMessage:
     return IncomingMessage(
         data=data,
         reply_subject="_INBOX.audit-test",
-        subject="aibots.tools.internal.test-pod",
+        subject="3tears.tools.internal.test-pod",
     )
 
 
@@ -132,8 +132,8 @@ def _audit_envelopes(nats: _FakeNats, subject_suffix: str) -> list[dict[str, Any
 
 @pytest.fixture(autouse=True)
 def _bind_namespace() -> None:
-    """default ``aibots`` namespace so :class:`Subjects` builders are deterministic."""
-    set_default_namespace("aibots")
+    """default ``3tears`` namespace so :class:`Subjects` builders are deterministic."""
+    set_default_namespace("3tears")
 
 
 # ---------------------------------------------------------------------------

@@ -1469,7 +1469,7 @@ async def load_chunk_search_tool(
     the same path the memory-retrieval node uses for grounding.
     optionally records each surfaced chunk via ``ledger_callback`` so
     the host application can dedup chunks already shown in the
-    current conversation (the metallm-ledger pattern).
+    current conversation (the ledger pattern).
 
     :param user_id: caller's user UUID
     :ptype user_id: UUID

@@ -1,6 +1,6 @@
 """SQLAlchemy ``Table`` factories for the agent-wake L3 tables.
 
-Cross-package consumers (metallm, future hosts) register the
+Cross-package consumers (future hosts) register the
 agent-wake tables on their own SQLAlchemy ``MetaData`` -- the L1
 SQLite cache builds from that metadata, and Alembic ``target_metadata``
 reflection sees the same shape for auto-generate. The agent-memory

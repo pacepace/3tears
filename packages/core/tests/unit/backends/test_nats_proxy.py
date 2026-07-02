@@ -722,7 +722,7 @@ class TestFetchDeserializesBytes:
 
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
-            namespace_prefix="aibots",
+            namespace_prefix="3tears",
             agent_id="agent-test",
         )
 
@@ -751,7 +751,7 @@ class TestFetchDeserializesBytes:
 
         proxy = NatsProxyL3Backend(
             nats_client=mock_nc,
-            namespace_prefix="aibots",
+            namespace_prefix="3tears",
             agent_id="agent-test",
         )
 

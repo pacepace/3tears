@@ -70,7 +70,7 @@ def _make_nats_msg(
     :return: wrapper-shaped envelope
     :rtype: IncomingMessage
     """
-    return IncomingMessage(data=data, reply_subject=reply, subject="aibots.tools.call")
+    return IncomingMessage(data=data, reply_subject=reply, subject="3tears.tools.call")
 
 
 # static UUID used as the default correlation id in test fixtures.

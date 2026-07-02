@@ -13,7 +13,7 @@ a leading digit -- ``prometheus_client`` silently rewrites the leading
 ``3`` to ``_``, yielding ``_tears_agent_wake_*`` on /metrics. Using
 ``threetears_`` mirrors the existing
 :mod:`threetears.models.tracking` (``threetears_llm_*``) pattern that
-metallm's Grafana dashboards already grep against, keeps the
+consumer Grafana dashboards already grep against, keeps the
 ``threetears`` Python namespace and the Prometheus prefix coherent,
 and stays Prometheus-spec-legal. Names are locked: renaming any
 instrument breaks consumer dashboards. Adding a new instrument is

@@ -37,8 +37,8 @@ The composite FK ``(agent_id, conversation_id)
 -> conversations(agent_id, conversation_id)`` would be the correct
 shape -- BUT ``context_items`` does NOT carry an ``agent_id``
 column on the 3tears side (the table is partitioned by
-``conversation_id`` alone; the prod metallm ``context_items``
-table likewise has no ``agent_id`` column because metallm's
+``conversation_id`` alone; the prod ``context_items``
+table likewise has no ``agent_id`` column because the prod
 ``conversations`` table has a non-composite PK on ``id`` only).
 
 Therefore: v003 declares NO FK on ``conversation_id``. The 3tears
@@ -46,12 +46,12 @@ side relies on app-level cascade (
 :class:`ConversationsCollection` is the sole writer to
 ``conversations`` and triggers context-item cleanup through the
 :class:`ContextItemCollection` when a conversation is closed /
-deleted). Prod metallm keeps the metallm-shaped single-column FK
+deleted). Prod keeps the prod-shaped single-column FK
 because its ``conversations.id`` is a non-composite PK; that side
 is unaffected by this divergence.
 
 The ``ContextItemCollection.schema.foreign_keys`` declaration in
-:mod:`threetears.agent.tools.collections` keeps the metallm-shaped
+:mod:`threetears.agent.tools.collections` keeps the prod-shaped
 single-column FK so the ``to_sqlalchemy_table`` factory produces a
 metadata table consumers can introspect. The 3tears integration
 test fixtures override the metadata before applying it to a real
@@ -61,7 +61,7 @@ Idempotency: every CREATE / DROP uses IF EXISTS / IF NOT EXISTS, the
 SET NOT NULL is guarded by an ``information_schema`` DO block
 (Postgres has no SET NOT NULL IF NOT NULL). v0.8.0 schema parity is
 the target shape; subsequent test runs should observe zero phantom
-migrations between the 3tears migration output and the prod metallm
+migrations between the 3tears migration output and the prod
 Alembic output for the ``context_items`` index / column shape.
 """
 
@@ -82,7 +82,7 @@ _DROP_LEGACY_CONV_IDX_SQL = "DROP INDEX IF EXISTS idx_ctx_conversation"
 
 _DROP_LEGACY_CONV_TYPE_IDX_SQL = "DROP INDEX IF EXISTS idx_ctx_conversation_type"
 
-# Create the four v0.8.0 indexes matching prod metallm + the v0.8.0
+# Create the four v0.8.0 indexes matching prod + the v0.8.0
 # ``ContextItemCollection.schema`` declaration.
 _CREATE_CONV_IDX_SQL = "CREATE INDEX IF NOT EXISTS ix_context_items_conv ON context_items (conversation_id)"
 
@@ -130,13 +130,13 @@ $$
 # and ``context_items`` has no ``agent_id`` column, so no FK shape is
 # legal. App-level cascade handles conversation -> context_items
 # cleanup; the schema declaration in
-# ``ContextItemCollection.schema.foreign_keys`` keeps the metallm-
+# ``ContextItemCollection.schema.foreign_keys`` keeps the prod-
 # shaped single-column FK so ``to_sqlalchemy_table`` produces a
 # metadata table consumers can introspect.
 # A previously-installed FK from earlier v003 drafts would block
 # further work on agent-aware partitioning, so drop it by name if
 # present. The constraint name ``fk_context_items_conversation``
-# matches the prod metallm declaration; on 3tears agent schemas
+# matches the prod declaration; on 3tears agent schemas
 # that never carried it, the DROP IF EXISTS is a no-op.
 _DROP_LEGACY_FK_CONVERSATION_SQL = "ALTER TABLE context_items DROP CONSTRAINT IF EXISTS fk_context_items_conversation"
 

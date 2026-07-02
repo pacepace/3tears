@@ -42,7 +42,7 @@ _logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(url: str, *, namespace: str = "3tears") -> NatsClient:
     """connect to NATS server via the canonical :class:`NatsClient` wrapper.
 
     delegates to :meth:`NatsClient.connect` which handles dual-phase
@@ -94,7 +94,7 @@ class RegistryServer:
 
         :param nats_url: NATS server URL (defaults to THREETEARS_NATS_URL env var)
         :ptype nats_url: str | None
-        :param namespace: NATS subject namespace prefix (defaults to FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE env var)
+        :param namespace: NATS subject namespace prefix (defaults to THREETEARS_NATS_SUBJECT_NAMESPACE env var)
         :ptype namespace: str | None
         :param heartbeat_check_interval: seconds between heartbeat check sweeps.
             sourced from THREETEARS_REGISTRY_HEARTBEAT_CHECK_INTERVAL env var if not provided.
@@ -144,10 +144,10 @@ class RegistryServer:
             "THREETEARS_NATS_URL",
             "nats://localhost:4222",
         )
-        self._namespace = namespace or os.environ.get(
-            "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
-            "aibots",
-        )
+        namespace_value = namespace or os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
+        if not namespace_value:
+            raise ValueError("namespace must be provided or THREETEARS_NATS_SUBJECT_NAMESPACE must be set")
+        self._namespace = namespace_value
         self._heartbeat_check_interval = (
             heartbeat_check_interval if heartbeat_check_interval is not None else get_heartbeat_check_interval()
         )
@@ -356,8 +356,8 @@ class RegistryServer:
         )
 
         # canonical /healthz endpoint -- consumed by docker compose +
-        # k8s liveness probes + the aibots devx preflight. port 8000
-        # matches the inherited aibots-hub Dockerfile HEALTHCHECK so
+        # k8s liveness probes + the 3tears devx preflight. port 8000
+        # matches the inherited 3tears-hub Dockerfile HEALTHCHECK so
         # the same probe works whether the container runs as the hub,
         # the registry, or any other consumer of that base.
         health_server = HealthServer(
@@ -427,7 +427,7 @@ def _run_server() -> None:
 
     authorization mode resolution:
 
-    1. ``FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true`` -> the
+    1. ``THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true`` -> the
        :class:`~threetears.registry.auth.AllowAllAuthorizer`. test
        fixtures and dev sandboxes that intentionally bypass rbac.
     2. otherwise -> the production
@@ -451,7 +451,7 @@ def _run_server() -> None:
     :meth:`RegistryServer._start_handlers` -- the rbac stack rides
     the same client). returning ``DenyAllAuthorizer`` only happens
     when the operator explicitly opts in via
-    ``FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true``, which exists
+    ``THREETEARS_REGISTRY_FORCE_DENY_ALL=true``, which exists
     purely as a panic-button kill switch for misconfigured prod
     deployments.
     """
@@ -461,14 +461,14 @@ def _run_server() -> None:
 
     allow_all = (
         os.environ.get(
-            "FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS",
+            "THREETEARS_REGISTRY_ALLOW_ALL_TOOLS",
             "",
         ).lower()
         == "true"
     )
     force_deny = (
         os.environ.get(
-            "FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL",
+            "THREETEARS_REGISTRY_FORCE_DENY_ALL",
             "",
         ).lower()
         == "true"
@@ -482,7 +482,7 @@ def _run_server() -> None:
 
         authorizer = AllowAllAuthorizer()
         _logger.warning(
-            "registry running in allow-all mode (FOURTEENAIBOTS_REGISTRY_ALLOW_ALL_TOOLS=true)",
+            "registry running in allow-all mode (THREETEARS_REGISTRY_ALLOW_ALL_TOOLS=true)",
             extra={"extra_data": {"mode": "allow_all"}},
         )
     elif force_deny:
@@ -491,7 +491,7 @@ def _run_server() -> None:
         authorizer = DenyAllAuthorizer()
         _logger.warning(
             "registry running in forced deny-all mode "
-            "(FOURTEENAIBOTS_REGISTRY_FORCE_DENY_ALL=true). every tool "
+            "(THREETEARS_REGISTRY_FORCE_DENY_ALL=true). every tool "
             "dispatch will be denied -- intentional kill-switch.",
             extra={"extra_data": {"mode": "deny_all_forced"}},
         )
@@ -516,14 +516,10 @@ def _run_server() -> None:
                 build_registry_rbac_stack,
             )
 
-            namespace = os.environ.get(
-                "FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE",
-                "aibots",
-            )
             l1_backend = create_registry_l1_backend()
             stack = build_registry_rbac_stack(
                 nats_client=nc,
-                subject_namespace=namespace,
+                subject_namespace=self._namespace,
                 l1_backend=l1_backend,
             )
             await stack.subscribe_invalidations()

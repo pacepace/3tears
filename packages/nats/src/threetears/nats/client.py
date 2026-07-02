@@ -4,9 +4,9 @@
 talk to NATS. it absorbs the lifecycle, dual-phase reconnect-ceiling,
 rate-limited error logging, deadletter dispatch, typed publish, and
 JetStream KV access that previously lived in three half-overlapping
-wrappers (``aibots/hub/common/nats.py``,
+wrappers (``3tears/hub/common/nats.py``,
 ``threetears.core.cache.kv.NatsKvClient`` (formerly
-``cache.nats.NatsClient``), ``aibots_agents.runtime.nats_transport``).
+``cache.nats.NatsClient``), ``3tears_agents.runtime.nats_transport``).
 there is exactly one canonical wrapper now; :func:`from nats import`
 outside this module is flagged by the per-repo enforcement walker.
 
@@ -31,7 +31,7 @@ design notes
   via ``asyncio.wait_for``; runtime uses
   :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` so a transient blip does not
   kill the process. inherits the rationale from
-  ``aibots/hub/common/nats.py`` (deleted as part of this consolidation).
+  ``3tears/hub/common/nats.py`` (deleted as part of this consolidation).
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
@@ -261,7 +261,7 @@ class NatsClient:
         cls,
         *,
         nats_url: str,
-        nats_subject_namespace: str = "aibots",
+        nats_subject_namespace: str,
         client_name: str,
         cluster_urls: list[str] | None = None,
         auth_token: str | None = None,
@@ -357,7 +357,7 @@ class NatsClient:
     def namespace(self) -> str:
         """subject namespace prefix bound at connect time.
 
-        :return: namespace prefix (e.g. ``aibots``)
+        :return: namespace prefix (e.g. ``3tears``)
         :rtype: str
         """
         return self._namespace

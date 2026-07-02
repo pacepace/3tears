@@ -1,8 +1,8 @@
 """Bulk-register product model rows in the shared capabilities registry.
 
 Every product that talks to LLMs stores its own per-row model metadata
-somewhere -- metallm has the ``models`` table, 14-eng-ai-bot has its
-hub equivalent, the agent products will too.  All of them want the
+somewhere -- one product has the ``models`` table, another has its
+own equivalent, the agent products will too.  All of them want the
 same downstream observability: cost-per-call recorded on
 ``threetears_llm_cost_usd_total``, latency histogram on
 ``threetears_llm_latency_seconds``, ``llm.usage`` OTel spans tagged
@@ -124,7 +124,7 @@ def register_model_capabilities_bulk(
     """register every row in the shared 3tears capabilities registry.
 
     Each row is a mapping with a flexible set of keys; the loader
-    accepts both the metallm column names (``cost_per_1m_prompt_tokens``,
+    accepts both the legacy column names (``cost_per_1m_prompt_tokens``,
     ``context_window_tokens``) and the canonical 3tears names
     (``cost_per_1m_input_tokens``, ``context_window``).  Either set
     works; the loader picks whichever is present.
@@ -165,8 +165,8 @@ def register_model_capabilities_bulk(
     count = 0
     for row in rows:
         # Resolve canonical model name -- the registry key.  Try the
-        # metallm column name first, then alternates, so the same
-        # helper works for both metallm and the hub without a
+        # legacy column name first, then alternates, so the same
+        # helper works for every product without a
         # per-product adapter.
         name_value = row.get("model_name") or row.get("name_api") or row.get("model_id")
         if not name_value:

@@ -3,7 +3,7 @@
 one HTTP-client implementation, two transports:
 
 - MCP server tool handlers consume this client to call their backend
-  REST API (e.g. metallm-mcp-server.py's ``list_conversations`` tool
+  REST API (e.g. an MCP server's ``list_conversations`` tool
   delegates to ``client.get("/api/v1/admin/conversations")``).
 - CLI scripts (``debug-api.py``, ``debug-token.py``,
   ``settings-transfer.py``) consume the same client; the shell
@@ -12,7 +12,7 @@ one HTTP-client implementation, two transports:
 
 JWT login + automatic refresh-on-401 lives here exactly once. before
 this consolidation each consumer reimplemented its own auth logic
-(metallm-mcp-server's ``_login`` + ``_api``, debug-api's bespoke
+(an MCP server's ``_login`` + ``_api``, debug-api's bespoke
 auth, settings-transfer's standalone httpx). the consolidation
 removes a real source of drift: a JWT-shape change today requires
 updating N call sites; with this client it's one update.
@@ -144,9 +144,9 @@ class PlatformHttpClient:
     def from_env(
         cls,
         *,
-        url_env_var: str = "METALLM_E2E_URL",
-        email_env_var: str = "METALLM_ADMIN_EMAIL",
-        password_env_var: str = "METALLM_ADMIN_PASSWORD",
+        url_env_var: str = "MCP_E2E_URL",
+        email_env_var: str = "MCP_ADMIN_EMAIL",
+        password_env_var: str = "MCP_ADMIN_PASSWORD",
         url_default: str = "http://localhost:8002",
         email_default: str = "admin@example.org",
         password_default: str = "password",

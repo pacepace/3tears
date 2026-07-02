@@ -1,6 +1,6 @@
-"""Enforcement test: no residual MetaLLM import paths in threetears.core.
+"""Enforcement test: no residual parent product import paths in threetears.core.
 
-Guards against accidental imports from the MetaLLM application codebase
+Guards against accidental imports from the parent product application codebase
 (src.*, api.src.*, api.*) that should have been replaced during extraction.
 """
 
@@ -25,11 +25,11 @@ def _is_banned(module_name: str) -> bool:
     return any(module_name.startswith(prefix) or module_name == prefix.rstrip(".") for prefix in _BANNED_PREFIXES)
 
 
-class TestNoMetallmImports:
-    """No MetaLLM import paths in core."""
+class TestNoParentProductImports:
+    """No parent product import paths in core."""
 
-    def test_no_metallm_imports(self) -> None:
-        """Scan all imports in core source for MetaLLM paths."""
+    def test_no_parent_product_imports(self) -> None:
+        """Scan all imports in core source for parent product paths."""
         violations: list[str] = []
         for path in _collect_src_files():
             try:
@@ -46,6 +46,6 @@ class TestNoMetallmImports:
                     if node.module and _is_banned(node.module):
                         violations.append(f"{path.relative_to(_SRC_ROOT)}:{node.lineno}: from {node.module} import ...")
 
-        assert not violations, f"MetaLLM imports found in core ({len(violations)} location(s)):\n" + "\n".join(
+        assert not violations, f"Parent product imports found in core ({len(violations)} location(s)):\n" + "\n".join(
             violations
         )

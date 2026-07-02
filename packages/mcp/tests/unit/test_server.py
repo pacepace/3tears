@@ -325,11 +325,11 @@ class TestServerLifecycle:
     def test_name_property_exposes_constructor_value(self) -> None:
         """McpServer.name returns the configured server name."""
         server = McpServer(
-            name="metallm-test",
+            name="product-test",
             identity_provider=_identity_provider(
                 identity=Identity(principal_type="user", principal_id=uuid4()),
             ),
             authorizer=_authorizer(),
             registry=ToolRegistry(),
         )
-        assert server.name == "metallm-test"
+        assert server.name == "product-test"

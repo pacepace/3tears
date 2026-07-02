@@ -59,7 +59,7 @@ def db_image() -> str:
     the agent-memory package's migration declares a vector column for
     embeddings; running the composed runner against a plain postgres
     image trips on that statement. pgvector/pgvector:pg16 matches
-    the image 14-eng-ai-bot uses for its migration_db fixture.
+    the image the production service uses for its migration_db fixture.
     """
     return "pgvector/pgvector:pg16"
 
@@ -121,7 +121,7 @@ class _AsyncpgStore:
         return result
 
 
-# minimal stub of the ``platform`` schema the aibots hub migrations
+# minimal stub of the ``platform`` schema the 3tears hub migrations
 # create in production. agent-workspace v003 writes cross-schema into
 # ``platform.namespaces`` (joined through ``platform.agents``) during
 # its namespace backfill. the 3tears core test suite cannot import the
@@ -189,11 +189,11 @@ async def pg_schema(pg_url: str) -> AsyncIterator[tuple[str, str]]:
 
 def _build_composed_agent_runner() -> MigrationRunner:
     """
-    compose the agent-scope runner used by the aibots hub broker.
+    compose the agent-scope runner used by the 3tears hub broker.
 
-    mirrors :func:`aibots.hub.broker.migrations.build_agent_runner`
+    mirrors :func:`3tears.hub.broker.migrations.build_agent_runner`
     registration order, but lives here so the core test suite does
-    not take a dependency on the 14-eng-ai-bot package.
+    not take a dependency on the broker package.
 
     :return: runner with every agent-scope package registered
     :rtype: MigrationRunner

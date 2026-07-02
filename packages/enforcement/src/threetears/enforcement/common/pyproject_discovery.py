@@ -9,12 +9,12 @@ parsing pyproject.toml files for the three shapes actually used in the
 3tears ecosystem:
 
 - **poetry** path deps under ``[tool.poetry.dependencies]`` and
-  ``[tool.poetry.group.*.dependencies]`` (metallm uses this).
+  ``[tool.poetry.group.*.dependencies]`` (poetry-based repos use this).
 - **uv workspace** members declared via ``[tool.uv.workspace] members =
   [...]`` glob patterns (3tears workspace root uses this).
 - **uv sources** under ``[tool.uv.sources]`` resolving either to a
   workspace member (``{workspace = true}``) or to an explicit
-  ``{path = "..."}`` (the bot trio uses this).
+  ``{path = "..."}`` (path-dep package sets use this).
 
 raising :class:`PyprojectError` on unsupported shapes is intentional —
 the alternative is silently skipping a real path dep, which would let

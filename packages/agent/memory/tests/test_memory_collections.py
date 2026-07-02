@@ -241,7 +241,7 @@ def registry(
 
     binding the pool to the registry BEFORE Collection construction
     matches the production wiring path (see
-    :mod:`aibots_agents.runtime.three_tier_stack.build_three_tier_stack`).
+    :mod:`3tears_agents.runtime.three_tier_stack.build_three_tier_stack`).
     """
     reg = CollectionRegistry()
     reg.configure(l1_backend=l1_backend, l3_pool=pg_pool)

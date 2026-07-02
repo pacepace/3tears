@@ -2,7 +2,7 @@
 
 Single source of truth for wrapping a :class:`TearsTool` as a
 ``langchain_core.tools.StructuredTool`` so the in-process LangChain
-integration path (used by metallm and any consumer that runs tools
+integration path (used by any consumer that runs tools
 inside a LangGraph graph rather than across NATS via ``ToolServer``)
 shares one execution code path with the NATS dispatch path.
 

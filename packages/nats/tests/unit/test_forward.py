@@ -15,7 +15,6 @@ import json
 import pytest
 
 from threetears.nats import (
-    DEFAULT_NAMESPACE,
     ForwardedHandlerError,
     ForwardError,
     Subjects,
@@ -27,8 +26,8 @@ from threetears.nats.forward import _TAG_ERR, _TAG_OK, _decode_reply, _encode_er
 @pytest.fixture(autouse=True)
 def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     """each test starts from the documented default namespace."""
-    monkeypatch.delenv("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", raising=False)
-    set_default_namespace(DEFAULT_NAMESPACE)
+    monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
+    set_default_namespace("3tears")
 
 
 # --------------------------------------------------------------------------
@@ -41,7 +40,7 @@ def test_forward_subject_is_namespaced_sha256_token() -> None:
     key = "repo-x:branch-y"
     token = hashlib.sha256(key.encode("utf-8")).hexdigest()
     subject = Subjects.forward(key)
-    assert subject.path == f"{DEFAULT_NAMESPACE}.forward.{token}"
+    assert subject.path == f"{'3tears'}.forward.{token}"
     assert subject.kind == "point"
 
 

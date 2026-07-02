@@ -67,7 +67,7 @@ class TestAddGrant:
                 principal_type="user",
                 principal_id=principal_id,
                 tool_name="list_conversations",
-                permission="metallm.conversations.read",
+                permission="product.conversations.read",
             )
         finally:
             McpToolGrantCollection.entity_class = original_property  # type: ignore[assignment]
@@ -78,7 +78,7 @@ class TestAddGrant:
         assert row["principal_type"] == "user"
         assert row["principal_id"] == principal_id
         assert row["tool_name"] == "list_conversations"
-        assert row["permission"] == "metallm.conversations.read"
+        assert row["permission"] == "product.conversations.read"
         assert isinstance(row["grant_id"], UUID)
         # date_created is set to a UTC-aware timestamp.
         assert row["date_created"].tzinfo is not None
@@ -172,7 +172,7 @@ class TestLoadAllGrants:
                     "principal_type": "user",
                     "principal_id": principal_id,
                     "tool_name": "list_conversations",
-                    "permission": "metallm.conversations.read",
+                    "permission": "product.conversations.read",
                     "date_created": "2026-05-05T00:00:00+00:00",
                 },
             ]
@@ -183,7 +183,7 @@ class TestLoadAllGrants:
         assert len(rows) == 1
         assert rows[0]["grant_id"] == grant_id
         assert rows[0]["principal_id"] == principal_id
-        assert rows[0]["permission"] == "metallm.conversations.read"
+        assert rows[0]["permission"] == "product.conversations.read"
 
     @pytest.mark.asyncio
     async def test_load_all_grants_empty_when_no_rows(self) -> None:

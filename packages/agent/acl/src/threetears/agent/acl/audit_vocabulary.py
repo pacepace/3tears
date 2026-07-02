@@ -12,7 +12,7 @@ this module is **not** a back-compat shim. the legacy envelope code
 path no longer exists -- the publisher cannot dual-emit, the hub no
 longer runs a domain-specific consumer, and there is no parallel
 serialization model. the tuples + ``Literal`` aliases below exist so
-the publisher (``aibots.hub.rbac.audit_publish.publish_rbac_audit``)
+the publisher (``3tears.hub.rbac.audit_publish.publish_rbac_audit``)
 keeps the closed-set guarantee on its three identity strings even
 though the unified envelope intentionally accepts open ``str``
 event_type / action / resource_namespace_type values (new domains must

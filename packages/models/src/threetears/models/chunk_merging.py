@@ -6,8 +6,8 @@ Every chat-model consumer that drives the model via ``astream`` /
 list -- merging content, accumulating ``tool_call_chunks`` into
 ``tool_calls``, summing ``usage_metadata``, and preserving
 ``additional_kwargs`` / ``response_metadata`` -- is identical work for
-every consumer (metallm's personality node, 14-eng-ai-bot's router,
-14-eng-ai-bot-agents' tool loop, 14-eng-ai-bot-agent-admin).
+every consumer (for example, a personality node, a router, an
+agent tool loop, an agent-admin service).
 
 :func:`merge_chunks` is the canonical 3tears version of that operation.
 LangChain's ``AIMessageChunk.__add__`` handles the content and
@@ -36,7 +36,7 @@ def merge_chunks(chunks: list[AIMessageChunk]) -> AIMessage:
     downstream consumers do not have to handle the chunk subclass.
 
     ``invalid_tool_calls`` survives the conversion -- consumers
-    (metallm's tool router, aibots-agents' dispatch) inspect that field
+    (a tool router, an agent dispatch layer) inspect that field
     when ``tool_calls`` is empty to attempt JSON-recovery on malformed
     streamed tool calls.
 

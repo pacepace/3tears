@@ -160,7 +160,7 @@ class ToolServerBootstrap:
     async def _start_health_server(self, server: "ToolServer") -> "HealthServer | None":
         """start the canonical /healthz listener on port 8000.
 
-        port 8000 matches the inherited aibots-hub Dockerfile
+        port 8000 matches the inherited 3tears-hub Dockerfile
         HEALTHCHECK so docker / k8s liveness probes work for every
         consumer of that base image without per-service compose
         overrides. failures here are logged + swallowed -- the tool

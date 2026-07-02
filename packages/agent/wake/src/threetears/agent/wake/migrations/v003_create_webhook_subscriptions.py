@@ -19,8 +19,8 @@ verification needs the RAW secret to recompute ``HMAC(secret, body)``
 and compare. A one-way hash (bcrypt/argon2) cannot reproduce the
 HMAC. The platform stores Fernet ciphertext (``BYTEA``) -- the
 consumer supplies an ``EncryptionService`` implementation; 3tears
-does not own one canonical encryption service (metallm has
-``src.services.encryption``; future products will have their own).
+does not own one canonical encryption service (a consumer might
+ship its own ``encryption`` service; future products will have their own).
 Display-once UX (raw secret returned only on create + on rotate)
 lives at the agent-tool / REST layer in shard 04.
 

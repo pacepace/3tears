@@ -9,7 +9,7 @@ plus a free-form ``metadata`` JSONB blob where app-specific
 presentation bits (color, sort_order, icon) live so the canonical
 shape stays app-agnostic.
 
-lifted out of metallm's product-side folder feature so multiple apps
+a product-side folder primitive so multiple apps
 that group conversations under named containers reuse one canonical
 value type instead of re-inventing a per-product table.
 

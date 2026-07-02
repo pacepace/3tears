@@ -26,6 +26,7 @@ from threetears.nats.forward import (
 )
 from threetears.nats.errors import (
     KvError,
+    NamespaceNotConfiguredError,
     NatsClientError,
     OpLogError,
     OpLogSequenceConflict,
@@ -36,7 +37,6 @@ from threetears.nats.errors import (
 from threetears.nats.kv import NatsKvBucket
 from threetears.nats.oplog import AppendResult, OpLog, OpRecord
 from threetears.nats.subjects import (
-    DEFAULT_NAMESPACE,
     Subject,
     SubjectKind,
     Subjects,
@@ -58,7 +58,6 @@ __all__ = [
     "NatsClient",
     "Subscription",
     # subjects
-    "DEFAULT_NAMESPACE",
     "Subject",
     "SubjectKind",
     "Subjects",
@@ -88,6 +87,7 @@ __all__ = [
     "StreamTransport",
     # errors
     "KvError",
+    "NamespaceNotConfiguredError",
     "NatsClientError",
     "OpLogError",
     "OpLogSequenceConflict",

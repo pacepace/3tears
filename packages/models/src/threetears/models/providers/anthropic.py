@@ -10,7 +10,7 @@ instantiating the provider.
 Tool-name translation: the Anthropic Messages API validates tool names
 against ``^[a-zA-Z0-9_-]{1,128}$`` and rejects the dot. Canonical 3tears
 tool names use the dotted form (``threetears.calculator``,
-``aibots.admin.agent_management``), so :func:`create_anthropic_chat`
+``3tears.admin.agent_management``), so :func:`create_anthropic_chat`
 returns a :class:`_NameTranslatingChatAnthropic` subclass that translates
 dot-to-underscore on outgoing tool specs and underscore-to-dot on
 incoming ``tool_calls``. Application code never sees the wire form. The
@@ -67,8 +67,7 @@ def _drop_junk_invalid_tool_calls(message: Any) -> None:
     rejected entry is logged once at WARNING (name truncated to 80
     characters). See
     :mod:`threetears.models.providers.openrouter` for the prod
-    incident write-up (metallm conv
-    ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``, 2026-05-19).
+    incident write-up (2026-05-19).
 
     :param message: chat-model response (``AIMessage`` or
         ``AIMessageChunk``); duck-typed via attribute access
@@ -188,7 +187,7 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             broke LangGraph's ``astream_events(version="v2")`` event
             tap: chunks reached the consumer's ``async for`` loop but
             the framework's ``on_chat_model_stream`` callbacks never
-            fired, leaving event-driven UIs (e.g. metallm's WS handler)
+            fired, leaving event-driven UIs (e.g. a consumer's WS handler)
             with the saved DB content but a blank live stream. Same
             failure mode as the OpenRouter wrapper, same root cause,
             same fix (see :mod:`threetears.models.providers.openrouter`
@@ -215,7 +214,7 @@ def _build_translating_chat_class() -> type[ChatAnthropic]:
             # contextvar's AsyncCallbackManager) survives
             # BaseChatModel.astream's ensure_config replace-by-key step.
             # See the OpenRouter wrapper for the full incident write-up
-            # (metallm 2026-05-13, conv ``019e2243-de0c``).
+            # (2026-05-13).
             from langchain_core.runnables.config import ensure_config, merge_configs
 
             merged_config = merge_configs(ensure_config(None), config)

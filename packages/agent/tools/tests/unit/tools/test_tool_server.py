@@ -154,7 +154,7 @@ def _make_nats_msg(
     return IncomingMessage(
         data=json.dumps(data).encode("utf-8"),
         reply_subject=reply_subject,
-        subject="aibots.tools.internal.test-pod",
+        subject="3tears.tools.internal.test-pod",
     )
 
 
@@ -488,7 +488,7 @@ class TestToolServerHandleCall:
         msg = IncomingMessage(
             data=b"not valid json",
             reply_subject="_INBOX.test",
-            subject="aibots.tools.internal.test-pod",
+            subject="3tears.tools.internal.test-pod",
         )
         rec = _attach_recording_nc(server)
 
@@ -786,7 +786,7 @@ class TestToolServerProbe:
         msg = IncomingMessage(
             data=b'{"pod_id": "ack-pod"}',
             reply_subject="_INBOX.probe",
-            subject="aibots.tools.probe.ack-pod",
+            subject="3tears.tools.probe.ack-pod",
         )
 
         await server.handle_probe(msg)
@@ -811,7 +811,7 @@ class TestToolServerProbe:
         msg = IncomingMessage(
             data=b'{"pod_id": "ready-pod"}',
             reply_subject="_INBOX.probe",
-            subject="aibots.tools.probe.ready-pod",
+            subject="3tears.tools.probe.ready-pod",
         )
 
         await server.handle_probe(msg)
@@ -870,6 +870,9 @@ class TestToolServerProbe:
             ],
         )
 
+        from threetears.nats import set_default_namespace
+
+        set_default_namespace("testns")
         nc = MagicMock()
         nc.request = AsyncMock(return_value=discovery_response)
         server = ToolServer(

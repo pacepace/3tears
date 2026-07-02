@@ -3,8 +3,8 @@
 single source of truth for testcontainer fixtures, docker-availability
 gating, and "is the local NATS reachable" probes that integration
 tests use across every repo. lives in :mod:`threetears.core` so every
-package in the dependency tree (3tears libraries, ``aibots`` hub,
-``aibots_agents`` SDK, downstream agents) can import from one place
+package in the dependency tree (3tears libraries, ``3tears`` hub,
+``3tears_agents`` SDK, downstream agents) can import from one place
 without duplicating the harness per-repo.
 
 usage shape (downstream pytest):

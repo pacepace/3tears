@@ -2,7 +2,7 @@
 
 defines the contract an agent bootstrap delegates tool registration to.
 concrete implementations live in the consuming package (e.g.
-``aibots_agents.runtime.tool_strategies``). the protocol isolates
+``3tears_agents.runtime.tool_strategies``). the protocol isolates
 environment-specific choices -- "do we host tools in-process" vs
 "tools register themselves from external pods" -- from the bootstrap
 body so the bootstrap stays environment-agnostic.
@@ -99,7 +99,7 @@ class BootstrapContext:
         of an agent-acl dependency; concrete construction paths pass
         the real :class:`AclCache` instance
     :ivar knowledge_integration: per-pod knowledge integration handle
-        (the aibots SDK's ``KnowledgeIntegration``) constructed during
+        (the 3tears SDK's ``KnowledgeIntegration``) constructed during
         the three-tier stack phase. strategies that own an in-process
         :class:`ToolServer` register the context-bound
         ``knowledge_drafts`` tool against this handle so the agent can
@@ -107,8 +107,8 @@ class BootstrapContext:
         drafts in conversation (knowledge-task-06, KNW-54). ``None`` when
         the agent has no knowledge layer. typed ``Any`` at the
         strategy-protocol boundary to keep this package free of the
-        aibots SDK dependency (the concrete ``KnowledgeIntegration``
-        lives in the aibots-agents package)
+        3tears SDK dependency (the concrete ``KnowledgeIntegration``
+        lives in the 3tears-agents package)
     :ivar namespace_collection: three-tier
         :class:`NamespaceCollection` constructed during the
         three-tier stack phase. strategies that own a ToolServer
@@ -122,8 +122,8 @@ class BootstrapContext:
         :class:`WorkspaceCreateTool` can emit the paired workspace
         namespace row through the same Collection. typed ``Any`` at
         the strategy-protocol boundary to keep this package free of
-        an aibots hub dependency (the concrete
-        :class:`NamespaceCollection` lives in the aibots package)
+        an 3tears hub dependency (the concrete
+        :class:`NamespaceCollection` lives in the 3tears package)
     """
 
     nats_client: Any

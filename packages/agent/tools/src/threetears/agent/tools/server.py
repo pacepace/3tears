@@ -67,8 +67,8 @@ def tool_namespace_name(mcp_name: str, version: str) -> str:
     ``tools.<mcp_name>.<version>`` (plural prefix + dot separator +
     dot-sanitized segments). :func:`build_namespace_name` replaces
     any ``.`` inside a segment with ``-`` before interpolation — a
-    mcp name like ``aibots.admin.backup`` comes through as
-    ``aibots-admin-backup`` and a semver version like ``1.0.0``
+    mcp name like ``3tears.admin.backup`` comes through as
+    ``3tears-admin-backup`` and a semver version like ``1.0.0``
     comes through as ``1-0-0``. the resulting shape stays unambiguous
     for cross-type lookups (no collision with a workspace-typed row
     sharing the name), preserves per-version pinning (different
@@ -76,7 +76,7 @@ def tool_namespace_name(mcp_name: str, version: str) -> str:
     keeps bulk-delete-on-deregister expressible via a
     ``LIKE 'tools.<sanitized-mcp>.%'`` pattern.
 
-    :param mcp_name: tool mcp name (e.g. ``aibots.admin.backup``)
+    :param mcp_name: tool mcp name (e.g. ``3tears.admin.backup``)
     :ptype mcp_name: str
     :param version: tool version (e.g. ``1.0.0``)
     :ptype version: str
@@ -102,7 +102,7 @@ def tool_namespace_id(
     so every platform pod's emission for the same tool/version
     collides on one row.
 
-    :param mcp_name: tool mcp name (e.g. ``aibots.admin.backup``)
+    :param mcp_name: tool mcp name (e.g. ``3tears.admin.backup``)
     :ptype mcp_name: str
     :param version: tool version (e.g. ``1.0.0``)
     :ptype version: str
@@ -134,7 +134,7 @@ log = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
-async def nats_connect(url: str, *, namespace: str = "aibots") -> NatsClient:
+async def nats_connect(url: str, *, namespace: str = "3tears") -> NatsClient:
     """connect to NATS server via the canonical wrapper.
 
     standalone tool pods that did not receive a pre-connected
@@ -449,7 +449,7 @@ class ToolServer:
         *,
         namespace_collection: Any,
         nats_url: str = "",
-        namespace: str = "aibots",
+        namespace: str = "3tears",
         pod_id: str | None = None,
         heartbeat_interval: float = 15.0,
         bootstrap_token: str | None = None,
@@ -524,7 +524,7 @@ class ToolServer:
             a first-class namespace id; :meth:`deregister_tool` calls
             :meth:`NamespaceCollection.delete`. typed ``Any`` at this
             boundary because :mod:`threetears.agent.tools` sits below
-            :mod:`aibots.hub.broker.namespaces` in the import graph;
+            :mod:`3tears.hub.broker.namespaces` in the import graph;
             the concrete Collection is wired by the bootstrap caller.
             ``None`` suppresses emission entirely — reserved for
             in-process tests and standalone dev that never touch
@@ -1024,7 +1024,7 @@ class ToolServer:
         # natural-identity metadata: the canonical ``name`` column is
         # sanitized (``tools.<sanitized-mcp>.<sanitized-version>``);
         # operators write yaml ``access.tools`` patterns in the
-        # pre-sanitized form (``aibots.admin.*``) and downstream
+        # pre-sanitized form (``3tears.admin.*``) and downstream
         # consumers (registry authorizer lookup, hub access
         # materializer) match patterns against this metadata. keeping
         # ``mcp_name`` / ``mcp_version`` on the row decouples the

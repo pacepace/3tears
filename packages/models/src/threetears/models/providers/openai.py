@@ -113,11 +113,11 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             the consumer's ``async for`` loop but
             ``on_chat_model_stream`` callbacks never fire. See the
             OpenRouter wrapper module for the full incident write-up
-            (metallm 2026-05-13). Today's gateway path drives
+            (2026-05-13). Today's path drives
             ``astream`` not ``astream_events``, so this isn't currently
             biting -- this fix lands the same parity contract so the
             next consumer to drive the v2 event tap through the
-            OpenAI-compat wrapper (e.g. metallm switching its OpenAI
+            OpenAI-compat wrapper (e.g. a consumer switching its OpenAI
             provider to ``create_openai_chat``) doesn't repeat the
             saga.
 
@@ -137,7 +137,7 @@ def _build_translating_chat_class() -> type[ChatOpenAI]:
             # contextvar's AsyncCallbackManager) survives
             # BaseChatModel.astream's ensure_config replace-by-key step.
             # See the OpenRouter wrapper for the full incident write-up
-            # (metallm 2026-05-13, conv ``019e2243-de0c``).
+            # (2026-05-13).
             from langchain_core.runnables.config import ensure_config, merge_configs
 
             merged_config = merge_configs(ensure_config(None), config)

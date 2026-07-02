@@ -16,10 +16,9 @@ the provider and whether the model is in reasoning mode:
 Every chat-model consumer that drives the model via ``astream`` needs
 this introspection once per chunk to route the streamed tokens to the
 correct sink (UI text channel vs. reasoning-trace channel). Until v0.9.0
-the logic lived inline in metallm's personality node and was duplicated
+the logic lived inline in a consumer's personality node and was duplicated
 across that node's main round loop and tool-limit fallback pass; this
-module is the canonical 3tears extraction so every consumer
-(14-eng-ai-bot, 14-eng-ai-bot-agents, metallm) shares one
+module is the canonical 3tears extraction so every consumer shares one
 implementation.
 
 The function is pure (no I/O, no logging) and lives on the hot

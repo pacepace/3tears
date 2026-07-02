@@ -2,7 +2,7 @@
 
 Closes the check-then-insert TOCTOU race on the per-conversation
 active-schedule cap (PLACEMENT §1.9). Before the fix, two create paths
-(the agent ``wake_schedule_create`` tool and the metallm REST router)
+(the agent ``wake_schedule_create`` tool and the consumer REST router)
 each did a non-atomic ``count -> insert``: N concurrent creates could
 all read a count under the cap and then all insert, blowing past it.
 

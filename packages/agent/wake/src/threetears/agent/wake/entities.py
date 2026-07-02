@@ -54,8 +54,8 @@ class EncryptionService(Protocol):
     """Minimal Protocol for the encryption service the consumer supplies.
 
     The 3tears platform does NOT ship a canonical encryption service
-    (key management is consumer-specific: metallm has
-    ``src.services.encryption`` wrapping Fernet, aibots will have its
+    (key management is consumer-specific: a consumer might wrap Fernet
+    via its own ``encryption`` service, 3tears will have its
     own, etc.). The Protocol declares the two surfaces the agent-tools
     layer uses: :meth:`encrypt` (called by
     ``webhook_subscription_create`` / ``rotate_secret`` in shard 04 to

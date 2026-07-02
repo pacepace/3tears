@@ -1,7 +1,7 @@
 """Wake-side config Protocol + platform defaults.
 
 Per PLACEMENT.md (2026-05-19 revision) the policy values live with the
-consumer (metallm's ``system_settings``) while the mechanism that
+consumer (its ``system_settings``) while the mechanism that
 enforces them is platform. :class:`WakeConfig` declares the read-side
 shape; the platform ships ``DEFAULT_*`` constants the consumer can
 fall back to (or override per-deployment).
@@ -80,7 +80,7 @@ class WakeConfig(Protocol):
     """Read-side configuration the consumer supplies to dispatch_wake.
 
     Implementations typically read from the consumer's system_settings
-    (metallm's ``users.config_*`` columns + the ``system_settings``
+    (e.g. ``users.config_*`` columns + the ``system_settings``
     table). Pure read protocol -- no mutation methods. Cached in the
     consumer (suggested ~60s TTL); admin updates propagate within a
     tick.

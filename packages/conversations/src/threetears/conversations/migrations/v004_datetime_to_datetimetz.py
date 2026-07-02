@@ -2,7 +2,7 @@
 conversations v004: TIMESTAMP -> TIMESTAMPTZ for every datetime column
 on the ``conversations`` table.
 
-collections-task-05: eliminate DATETIME_TYPE across 3tears + 14-eng-ai-bot.
+collections-task-05: eliminate DATETIME_TYPE across 3tears and consumers.
 This migration flips the conversations ``conversations`` table from
 naive TIMESTAMP to aware TIMESTAMPTZ. The corresponding ``Column(...)``
 declarations in ``collection.py`` flip from DATETIME_TYPE to

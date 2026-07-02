@@ -8,8 +8,8 @@ full history in its checkpointer / store), they are merely excluded from the
 window fed to the model.
 
 This is domain-agnostic: it takes a list of LangChain messages and a chat
-model, and returns summary text. Lifted from MetaLLM's
-``graph/nodes/summarize.py`` into 3tears so both MetaLLM and Scriob consume
+model, and returns summary text. Lifted from a product's
+``graph/nodes/summarize.py`` into 3tears so multiple products consume
 one implementation (shared-infra directive). The caller decides *when* to
 summarize (the token-threshold trigger) and *what* to do with the result
 (persist a rolling summary, advance a cursor); this module owns only the

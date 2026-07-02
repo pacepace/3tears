@@ -12,7 +12,7 @@ other's vocabulary.
 design notes
 ------------
 
-- **``wake_tick_job`` signature is preserved.** Consumers (metallm) and the
+- **``wake_tick_job`` signature is preserved.** Consumers and the
   integration tests still call ``wake_tick_job(pool, nats_client,
   dispatch_callback)`` with the wake-shaped
   ``DispatchCallback = (WakeTrigger, fire_id, pool) -> WakeDispatchResult``.
@@ -108,7 +108,7 @@ _O_OUTPUT_TEXT: Final[str] = "output_text"
 _O_DISPLAY_SUPPRESSED: Final[str] = "display_suppressed"
 
 
-# Public dispatch-callback type -- UNCHANGED across S-2 so metallm's call site
+# Public dispatch-callback type -- UNCHANGED across S-2 so the consumer's call site
 # (and the integration tests) do not move. The consumer's callback takes the
 # wake-shaped ``(WakeTrigger, fire_id, pool)`` and returns a
 # ``WakeDispatchResult``; :func:`_adapt` bridges it to the generic engine's

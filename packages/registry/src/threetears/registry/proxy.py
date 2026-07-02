@@ -163,7 +163,7 @@ class CallProxy:
         self,
         catalog: ToolCatalog,
         authorizer: AgentToolAuthorizer,
-        namespace: str = "aibots",
+        namespace: str = "3tears",
         timeout: float | None = None,
         routing_strategy: RoutingStrategy | None = None,
     ) -> None:

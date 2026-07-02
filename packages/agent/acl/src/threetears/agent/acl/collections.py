@@ -30,7 +30,7 @@ deploying-app subclasses):
 
 table names use the canonical RBAC vocabulary (``groups`` etc.)
 without any deploy-specific schema prefix; the prefix (``platform.``
-in the aibots hub deployment) is applied at the L3 pool's
+in the 3tears hub deployment) is applied at the L3 pool's
 ``search_path``, not in the schema name on the Collection.
 """
 

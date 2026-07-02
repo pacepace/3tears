@@ -26,7 +26,7 @@ def make_tool_result_dedup_key(tool_name: str, input_fingerprint: str) -> str:
     key, so :meth:`ToolContextManager.save_tool_result` upserts (refreshes)
     the existing row on the v004 partial-unique index instead of appending
     a duplicate. Shared with consumers that LOOK UP a cached result by the
-    same key (e.g. metallm's per-tool TTL reuse), so storage and lookup
+    same key (e.g. a consumer's per-tool TTL reuse), so storage and lookup
     can never disagree on the key shape.
 
     :param tool_name: the tool's registered name

@@ -739,7 +739,7 @@ class TestSignatureHeaderOverride:
         self,
         fixed_subscription_id: UUID,
     ) -> None:
-        receiver = _build_receiver(signature_header="X-MetaLLM-Signature")
+        receiver = _build_receiver(signature_header="X-Product-Signature")
         receiver.register_verifier(
             "always_accept",
             lambda _s, _p, _v: True,
@@ -764,7 +764,7 @@ class TestSignatureHeaderOverride:
             r = client.post(
                 f"/webhooks/{fixed_subscription_id}",
                 content=b"{}",
-                headers={"X-MetaLLM-Signature": "sha256=overridden"},
+                headers={"X-Product-Signature": "sha256=overridden"},
             )
 
         assert r.status_code == 202

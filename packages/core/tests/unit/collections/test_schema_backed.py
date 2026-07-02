@@ -1874,7 +1874,7 @@ class TestExistingTableSchemaBackwardCompat:
         # the partition column survives coercion + v0.8.0 validation
         assert schema.partition_column == "agent_id"
         # v0.8.0: indexes declared (ix_memories_user_date from v0.7.5
-        # factory + ix_memories_user_alias relocated from metallm
+        # factory + ix_memories_user_alias relocated from prod
         # alembic 088).
         index_names = {idx.name for idx in schema.indexes}
         assert "ix_memories_user_date" in index_names

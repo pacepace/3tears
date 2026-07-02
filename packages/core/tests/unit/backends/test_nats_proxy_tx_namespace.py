@@ -9,7 +9,7 @@ without requiring a live broker.
 the broker-side tests that verify the handler honors the namespace
 payload (sets search_path to owner schema, rejects unauthorized
 namespaces with ``TX_NAMESPACE_UNAUTHORIZED``) live in
-``14-eng-ai-bot/tests/unit/hub/broker/test_tx_namespace_routing.py``.
+the broker package's ``tests/unit/hub/broker/test_tx_namespace_routing.py``.
 """
 
 from __future__ import annotations

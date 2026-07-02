@@ -48,7 +48,7 @@ Bad examples (with reasons):
 - "The assistant is helpful and thorough" — self-concept, not an operational fact
 
 Good examples:
-- "Building MetaLLM, a self-hosted LLM orchestrator: Python/FastAPI, LangGraph, pgvector, multi-provider support."
+- "Building a self-hosted LLM orchestrator: Python/FastAPI, LangGraph, pgvector, multi-provider support."
 - "Daughter named Lily, starting kindergarten fall 2026."
 - "Prefers PostgreSQL over MongoDB for new projects — cites JSONB, mature tooling, pgvector."
 - "Lives in Seattle. Works remotely as a senior backend engineer at Acme Corp."

@@ -1,7 +1,7 @@
 """registry-side rbac stack for the standalone ``_run_server()`` entrypoint.
 
 mirrors the agent SDK's
-:func:`aibots_agents.runtime.three_tier_stack.build_three_tier_stack`
+:func:`3tears_agents.runtime.three_tier_stack.build_three_tier_stack`
 with the agent-specific bits stripped: there is no agent identity
 on the registry process, no agent main pool, no agent-owned
 Collections. what remains is the rbac surface the
@@ -79,7 +79,7 @@ log = get_logger(__name__)
 
 #: name of the system namespace the hub broker's read-only carve-out
 #: admits SELECT traffic on. the value is duplicated here (instead of
-#: imported from ``aibots.hub.broker.acl``) so the 3tears registry
+#: imported from ``3tears.hub.broker.acl``) so the 3tears registry
 #: package retains its hub-independent dependency graph -- the hub is
 #: free to evolve the carve-out internally as long as the canonical
 #: name stays the same.

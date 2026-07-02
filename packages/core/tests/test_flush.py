@@ -314,7 +314,7 @@ class TestFkAwareRetryPolicy:
         boundary -- because FK errors get the larger ``_FK_RETRY_LIMIT``
         budget. Otherwise a single Anthropic-class outage would orphan
         every descendant in the conversation tree (the 2026-05-13
-        metallm incident fingerprint).
+        production incident fingerprint).
         """
         buf = WriteBuffer()
         # Sit exactly at the general retry boundary -- one more failure
@@ -350,7 +350,7 @@ class TestFkAwareRetryPolicy:
     async def test_fk_violation_drops_at_fk_retry_limit(self) -> None:
         """Once the FK-specific budget is exhausted the write IS dropped
         permanently with the ``Orphan chain`` log signal so operators
-        can run the metallm conversation-repair endpoint. Verifies the
+        can run a conversation-repair endpoint. Verifies the
         upper bound of the new policy.
         """
         buf = WriteBuffer()

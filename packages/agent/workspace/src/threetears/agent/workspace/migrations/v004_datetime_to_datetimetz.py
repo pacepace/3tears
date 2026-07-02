@@ -2,7 +2,7 @@
 agent-workspace v004: TIMESTAMP -> TIMESTAMPTZ for every datetime column
 in the agent partition.
 
-collections-task-05: eliminate DATETIME_TYPE across 3tears + 14-eng-ai-bot.
+collections-task-05: eliminate DATETIME_TYPE across the 3tears stack.
 This migration flips the agent-workspace tables (``workspaces``,
 ``workspace_files``, ``workspace_file_versions``) from naive TIMESTAMP
 to aware TIMESTAMPTZ. The corresponding ``Column(...)`` declarations

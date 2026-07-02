@@ -139,7 +139,7 @@ def _build_collections_with_l1(
     """Build skills + invocations Collections backed by an L1 SQLite cache.
 
     The default :func:`_build_collections` wires L3 only; a consumer that
-    runs with the real three-tier cache (e.g. metallm via ``main.py``)
+    runs with the real three-tier cache (e.g. a consumer app via ``main.py``)
     holds entities as L1 cache proxies. Tool code that reads entity
     fields AFTER a Collection mutation (``delete``) must snapshot them
     first, because ``delete`` evicts the L1 row and subsequent proxy

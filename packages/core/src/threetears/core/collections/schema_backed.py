@@ -10,7 +10,7 @@ for the standard row lifecycle. domain-specific query methods
 (``find_by_agent`` / ``hybrid_search`` / etc.) stay on subclasses
 because query shape is legitimately per-collection; CRUD is not.
 
-per CLAUDE.md (14-eng-ai-bot) "NO BACKWARDS-COMPATIBILITY SHIMS": a
+per CLAUDE.md "NO BACKWARDS-COMPATIBILITY SHIMS": a
 subclass that adopts :class:`SchemaBackedCollection` deletes its
 hand-rolled CRUD in the same commit. there is no dual-path
 "override-wins" fallback -- schema is the declaration, the base class

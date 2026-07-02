@@ -18,7 +18,7 @@ tool layer enforces (Requirement TOOL-11 in
 ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``).
 
 Spec ref: ``docs/agent-wake/shard-04-agent-tools-and-webhook-adapter.md``
-+ ``metallm/docs/long_running/PLACEMENT.md`` §1.1 / §1.3 / §1.5 / §1.6 /
++ ``docs/long_running/PLACEMENT.md`` §1.1 / §1.3 / §1.5 / §1.6 /
 §1.9 / §8.5.1.
 """
 

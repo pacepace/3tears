@@ -1,7 +1,7 @@
 """Active-skill renderer + per-turn composition (shard-03).
 
 Two public functions plus one dataclass implement the canonical
-per-turn composition from ``metallm/docs/skills/PLACEMENT.md`` section
+per-turn composition from the skills placement spec section
 1.10:
 
 - :func:`compose_turn_context` -- given the consumer's base system
@@ -12,7 +12,7 @@ per-turn composition from ``metallm/docs/skills/PLACEMENT.md`` section
   payload).
 
 Both are **pure** (no DB, no I/O, no logging at INFO). The consumer
-(metallm's ``personality_node``) is responsible for:
+(the personality node) is responsible for:
 
 - Building ``base_system_prompt`` (identity / persona, memories,
   per-conversation overrides) -- BUT NOT per-user additions (NSFW,
@@ -65,8 +65,8 @@ class ComposedTurnContext:
     :ivar system_prompt: the composed system prompt. Equals
         ``base_system_prompt`` when no skill is active or when an
         ``'additive'``-mode skill has no body; otherwise reflects the
-        skill body composition per
-        ``metallm/docs/skills/PLACEMENT.md`` section 1.10. Per-user
+        skill body composition per the skills placement spec
+        section 1.10. Per-user
         additions (NSFW, jailbreak) are NOT applied -- the consumer
         layers them on top after this function returns.
     :ivar available_tool_names: sorted list of tool ``mcp_name`` values

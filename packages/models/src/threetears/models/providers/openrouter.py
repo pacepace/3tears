@@ -11,8 +11,8 @@ backends with strict tool-name validators (Bedrock requires
 name is the dotted ``threetears.X`` form. The factory returns a
 :class:`_NameTranslatingChatOpenRouter` subclass that translates
 dot-to-underscore on outgoing tool specs and underscore-to-dot on
-incoming ``tool_calls``, so application code (3tears core, metallm,
-14-eng-ai-bot, 14-eng-ai-bot-agents) never sees the wire form. The
+incoming ``tool_calls``, so application code (3tears core and other
+consumers) never sees the wire form. The
 translation is keyed by the dotted -> underscored mapping built at
 ``bind_tools`` time, so it round-trips losslessly even for tools whose
 names contain underscores already (e.g. ``threetears.web_search`` ->
@@ -63,10 +63,9 @@ def _drop_junk_invalid_tool_calls(message: Any) -> None:
     regex. Each rejected entry is logged once at WARNING (name
     truncated to 80 characters to bound output size and prevent
     log-injection). Junk names like the prod-observed
-    ``memory_recall" name="memory_recall`` (metallm conv
-    ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``, 2026-05-19) cannot
-    dispatch and would otherwise propagate through metallm /
-    aibots-agents tool routing as a recovery target.
+    ``memory_recall" name="memory_recall`` (2026-05-19) cannot
+    dispatch and would otherwise propagate through
+    consumer tool routing as a recovery target.
 
     :param message: chat-model response (``AIMessage`` or
         ``AIMessageChunk``); duck-typed via attribute access
@@ -144,7 +143,7 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             # ``_astream`` closure in concurrently-running streams still
             # sees the same dict object (PrivateAttr is per-instance,
             # and this instance is request-scoped in every consumer
-            # observed -- metallm's ``build_chat_model_from_config``
+            # observed -- a consumer's ``build_chat_model_from_config``
             # constructs a fresh model per resolve_chat_model call).
             self._name_reverse_map.clear()
             self._name_reverse_map.update(reverse_map)
@@ -167,15 +166,15 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             ``astream_events(version="v2")`` event tap: chunks reach
             the consumer's ``async for`` loop but the framework's
             ``on_chat_model_stream`` callbacks never fire, leaving
-            event-driven UIs (e.g. metallm's WS handler) with the saved
+            event-driven UIs (e.g. a consumer's WS handler) with the saved
             DB content but a blank live stream. The cause: the
             callback-firing path lives inside ``BaseChatModel.astream``
             and depends on the unaltered ``self._astream`` async
             generator to drive ``run_manager.on_llm_new_token`` calls
             per chunk; routing chunks through an extra generator layer
             in our override silently dropped those callbacks for some
-            downstream consumers (observed in metallm conv
-            ``019e1f3d`` on 2026-05-13, 190 chunks delivered, 0 stream
+            downstream consumers (observed in production
+            on 2026-05-13, 190 chunks delivered, 0 stream
             events emitted).
 
             Overriding ``astream`` instead means
@@ -205,9 +204,9 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             node and get persisted, but no ``on_chat_model_stream``
             events fire and the live UI stays blank (the exact
             ``saved_content_length > 0`` /
-            ``tokens_dispatched_count == 0`` fingerprint metallm hit
-            with the post-tool-executor sonnet/openrouter call on
-            2026-05-13 conv ``019e2243-de0c``).
+            ``tokens_dispatched_count == 0`` fingerprint observed in
+            production with the post-tool-executor sonnet/openrouter call on
+            2026-05-13).
 
             The fix is to pre-merge with
             :func:`merge_configs(ensure_config(None), config)`, which
@@ -246,8 +245,8 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
                 # tool-call fields ``reverse_translate_message`` rewrites.
                 reverse_translate_message(chunk, self._name_reverse_map)
                 # Drop junk-name ``invalid_tool_calls`` entries (e.g.
-                # the XML-attribute-leak shape from metallm conv
-                # ``019e3e26-9870-7a03-8f04-8cc6a4f5f418``, 2026-05-19)
+                # the XML-attribute-leak shape observed in production,
+                # 2026-05-19)
                 # before they reach downstream dispatch / persistence.
                 _drop_junk_invalid_tool_calls(chunk)
                 yield chunk
@@ -301,7 +300,7 @@ def _build_translating_chat_class() -> type[ChatOpenRouter]:
             instead of calling ``_agenerate``. That bypasses BOTH the public
             ``astream`` override AND ``_agenerate``, so tool-call names would
             reach the caller in their wire (underscored) form and miss the
-            dotted dispatch map (observed: metallm converged loop emitting
+            dotted dispatch map (observed: a converged loop emitting
             ``threetears_web_search`` that the tool node could not resolve,
             2026-06-22).
 

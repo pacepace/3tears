@@ -450,7 +450,7 @@ def test_to_sqla_unknown_column_type_raises_keyerror() -> None:
 # regression (e.g. ``vector_dim=768`` instead of ``1024`` on
 # ``memories.embedding``, or a dropped enum value, or a numeric scale
 # change) would pass the parity tests silently and only surface at
-# metallm Alembic auto-gen (too late). These three tests confirm at CI
+# Alembic auto-gen (too late). These three tests confirm at CI
 # time that the helper continues to catch each of those drift modes --
 # protecting against a future refactor accidentally weakening
 # ``column_signature``.
@@ -633,7 +633,7 @@ def test_parity_helper_catches_using_regression() -> None:
     :func:`index_signature` 7-tuple is load-bearing — a future
     regression that flipped HNSW back to btree on the ``embedding``
     column would otherwise pass parity silently and only surface at
-    metallm Alembic auto-gen.
+    Alembic auto-gen.
     """
 
     def _build(using: str) -> sa.Table:

@@ -14,7 +14,7 @@ subsequent :func:`get_capabilities` call for that id returns the registered
 metadata with the override fields applied. Overrides exist for the cases
 the canonical registry deliberately does not absorb -- testing budget
 forcing, deployment-side cost throttling, A/B-testing capability shapes --
-so consumers do not each invent parallel local mechanisms (e.g. metallm's
+so consumers do not each invent parallel local mechanisms (e.g. a consumer's
 ``model_overrides`` table for behavioural quirks). Overrides are
 process-local and in-memory; consumers that need cross-pod coherence wrap
 this layer with their own persistence + epoch broadcast (the

@@ -19,7 +19,7 @@ class TestIsValidToolName:
         "name",
         [
             "threetears.calculator",
-            "aibots.schema.dictionary_ingest",
+            "3tears.schema.dictionary_ingest",
             "threetears.workspace.fs_read",
             "threetears.web_search",
         ],
@@ -32,7 +32,7 @@ class TestIsValidToolName:
         "name",
         [
             "threetears_calculator",
-            "aibots_schema_dictionary_ingest",
+            "3tears_schema_dictionary_ingest",
             "threetears_workspace_fs_read",
         ],
     )
@@ -63,7 +63,7 @@ class TestIsValidToolName:
     def test_rejects_observed_xml_attribute_leak(self) -> None:
         """exact pattern observed in prod incident 2026-05-19.
 
-        metallm conversation
+        a production conversation
         ``019e3e26-9870-7a03-8f04-8cc6a4f5f418`` recorded a tool call
         whose ``name`` field was set to
         ``memory_recall" name="memory_recall`` -- the result of a
@@ -208,7 +208,7 @@ class TestFilterInvalidToolCalls:
         accumulate by index in ``tool_call_chunks`` and merge into a
         valid tool call. A nameless entry is therefore NOT junk -- it
         must not be logged or dropped. (Before this fix it was rejected,
-        producing a WARNING per streamed chunk: metallm conv 019ecdfd,
+        producing a WARNING per streamed chunk: prod conv 019ecdfd,
         2026-06-16.)
         """
         call = {"args": "{}", "id": "1", "error": "JSONDecodeError"}

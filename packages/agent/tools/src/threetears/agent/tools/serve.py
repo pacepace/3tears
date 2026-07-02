@@ -83,7 +83,7 @@ def _register_builtin_tools(server: ToolServer) -> None:
             extra={"extra_data": {"tool": "threetears.web_fetch"}},
         )
 
-    searxng_url = os.environ.get("FOURTEENAIBOTS_SEARXNG_URL")
+    searxng_url = os.environ.get("THREETEARS_SEARXNG_URL")
     if searxng_url:
         try:
             from threetears.agent.tools.builtin.web_search import WebSearchTool
@@ -199,7 +199,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
 
     standalone platform-only pod (no host-application HubClient
     lifecycle). reads NATS connection details from
-    ``FOURTEENAIBOTS_NATS_URL`` and ``FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE``
+    ``THREETEARS_NATS_URL`` and ``THREETEARS_NATS_SUBJECT_NAMESPACE``
     environment variables. ``namespace_collection`` is suppressed because
     this entrypoint serves calculator / dictionary / current-date / etc.
     from a standalone process and does not participate in the agent-side
@@ -208,9 +208,14 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
     """
 
     async def build_server(self) -> ToolServer:
-        """build standalone ``ToolServer`` from environment variables."""
-        nats_url = os.environ.get("FOURTEENAIBOTS_NATS_URL", "nats://localhost:4222")
-        namespace = os.environ.get("FOURTEENAIBOTS_NATS_SUBJECT_NAMESPACE", "aibots")
+        """build standalone ``ToolServer`` from environment variables.
+
+        :raises ValueError: if ``THREETEARS_NATS_SUBJECT_NAMESPACE`` is unset
+        """
+        nats_url = os.environ.get("THREETEARS_NATS_URL", "nats://localhost:4222")
+        namespace = os.environ.get("THREETEARS_NATS_SUBJECT_NAMESPACE")
+        if not namespace:
+            raise ValueError("THREETEARS_NATS_SUBJECT_NAMESPACE must be set to run the built-in tool server")
         return ToolServer(
             nats_url=nats_url,
             namespace=namespace,
@@ -225,7 +230,7 @@ class _BuiltinToolBootstrap(ToolServerBootstrap):
 def main() -> None:
     """run built-in tool server.
 
-    reads NATS connection URL from ``FOURTEENAIBOTS_NATS_URL`` env var
+    reads NATS connection URL from ``THREETEARS_NATS_URL`` env var
     (defaults to ``nats://localhost:4222``). registers all available
     built-in tools and serves them until interrupted. the lifecycle
     plumbing (logging configuration, signal handlers, serve loop) is

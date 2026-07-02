@@ -12,7 +12,7 @@ this test scans the framework's source for the common offenders:
 - ``sys.stdout.write(...)`` / ``sys.stderr.write(...)``
 - ``print(..., file=sys.stdout)`` / ``..., file=sys.stderr)``
 
-per-product MCP servers (metallm-mcp-server.py, aibot-mcp-server.py,
+per-product MCP servers (e.g. product-a-mcp-server.py, product-b-mcp-server.py,
 etc.) have their own enforcement test in their respective repos.
 this guard is for the shared framework only.
 """
