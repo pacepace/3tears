@@ -670,6 +670,50 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.user.resolve", kind="point")
 
     @classmethod
+    def hub_object_commit(cls) -> Subject:
+        """request/reply subject for committing a produced object to the hub catalog.
+
+        The agent sends its produced-object handle here (Path-2); the hub verifies
+        the agent's session, derives the owning customer server-side, asserts the
+        object key is under that tenant, and writes the ``platform.objects`` row.
+
+        :return: subject ``{ns}.hub.object.commit``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.commit", kind="point")
+
+    @classmethod
+    def hub_object_resolve(cls) -> Subject:
+        """request/reply subject for resolving an object id to its stored key.
+
+        The consuming agent asks the hub to resolve an ``object_id`` to its
+        ``s3_key`` (Path-2 S0 keystone); the hub verifies the agent's session,
+        derives the owning customer, and returns the key only when the row is
+        owned by that tenant (fail-closed).
+
+        :return: subject ``{ns}.hub.object.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
+
+    @classmethod
+    def hub_engagement_scope(cls) -> Subject:
+        """request/reply subject for resolving an engagement's authorized target scope.
+
+        A consuming TOOL POD asks the hub for the in-scope targets of the
+        ``engagement_id`` on its call context (engagement scope, consumer A of
+        the §2 keystone). The pod has no hub session of its own, so it forwards
+        the invoking agent's ``identity_token``; the hub verifies it, derives the
+        owning customer from the signed claim, and returns the active target set
+        only when the engagement is owned by that tenant (fail-closed). The
+        read-side twin of :meth:`hub_object_resolve`.
+
+        :return: subject ``{ns}.hub.engagement.scope``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
+
+    @classmethod
     def hub_channel_installs(cls) -> Subject:
         """request/reply subject for a channel adapter to fetch its installs.
 

@@ -27,6 +27,12 @@ from threetears.agent.tools.config import (
     get_jwks_request_timeout,
 )
 from threetears.agent.tools.config import (
+    get_object_resolve_request_timeout,
+)
+from threetears.agent.tools.config import (
+    get_engagement_scope_request_timeout,
+)
+from threetears.agent.tools.config import (
     get_ready_poll_interval as _get_ready_poll_interval,
 )
 from threetears.agent.tools.config import (
@@ -35,6 +41,8 @@ from threetears.agent.tools.config import (
 from threetears.agent.tools.config import (
     get_serve_ready_timeout,
 )
+from threetears.agent.tools.engagement_resolver import HubEngagementScopeResolver
+from threetears.agent.tools.object_resolver import HubObjectResolver
 from threetears.core.namespaces import PLURAL_PREFIX_TOOL, build_namespace_name
 from threetears.core.coordination.replay_guard import ReplayGuard
 from threetears.core.security import CachedHubJwksProvider
@@ -137,6 +145,10 @@ def tool_namespace_id(
 _EMPTY_TOOL_NAMES: tuple[str, ...] = ()
 
 if TYPE_CHECKING:
+    from threetears.agent.tools.engagement_resolver import EngagementScopeResolver
+    from threetears.agent.tools.object_resolver import ObjectResolver
+    from threetears.media.contracts import ObjectStore
+
     from threetears.agent.tools.context import ToolContextManager
 
 log = get_logger(__name__)
@@ -508,6 +520,9 @@ class ToolServer:
         jwks_provider: Callable[[], dict[str, Any]] | None = None,
         jwks_refresh: Callable[[], Awaitable[bool]] | None = None,
         assertion_replay_guard: "ReplayGuard | None" = None,
+        object_store: "ObjectStore | None" = None,
+        object_resolver: "ObjectResolver | None" = None,
+        engagement_resolver: "EngagementScopeResolver | None" = None,
     ) -> None:
         """initialize tool server.
 
@@ -603,6 +618,28 @@ class ToolServer:
             wires it to the owned provider's ``refresh_now`` when the pod
             self-provisions its JWKS provider.
         :ptype jwks_refresh: Callable[[], Awaitable[bool]] | None
+        :param object_store: the pod's single streaming object store, or
+            ``None`` when no S3 is configured. installed on every per-call
+            :class:`ToolCallScope` (alongside the context manager) so
+            producing tools reach it through :func:`current_scope` without
+            per-tool constructor plumbing; the pod owns the one instance,
+            the scope just carries the reference per call.
+        :ptype object_store: ObjectStore | None
+        :param object_resolver: the pod's object-id resolver, or ``None`` to
+            self-provision one in :meth:`serve` from the NATS client (the
+            default; it needs no S3 creds, only NATS). installed on every
+            per-call :class:`ToolCallScope` so consuming tools resolve object
+            ids to keys through :func:`current_scope`. an injected resolver
+            (tests) is used as-is and not self-provisioned.
+        :ptype object_resolver: ObjectResolver | None
+        :param engagement_resolver: the pod's engagement-scope resolver, or
+            ``None`` to self-provision one in :meth:`serve` from the NATS client
+            (the default; it needs no S3 creds, only NATS). installed on every
+            per-call :class:`ToolCallScope` so tools resolve the call's
+            ``engagement_id`` to its authorized target set through
+            :func:`current_scope`. an injected resolver (tests) is used as-is and
+            not self-provisioned.
+        :ptype engagement_resolver: EngagementScopeResolver | None
         :raises ValueError: when neither ``nats_url`` nor
             ``nats_client`` carries a usable value
         """
@@ -626,6 +663,17 @@ class ToolServer:
         # when self-provisioning; an injected-provider caller may pass one or leave it None (inert).
         self._jwks_refresh = jwks_refresh
         self._namespace_collection = namespace_collection
+        # the pod's single object store (None when no S3 configured); installed on
+        # every per-call ToolCallScope so producing tools reach it ambiently.
+        self._object_store = object_store
+        # the pod's single object-id resolver; None here is self-provisioned in
+        # serve() from the NATS client (needs no S3 creds), then installed on
+        # every per-call ToolCallScope so consuming tools resolve ids ambiently.
+        self._object_resolver = object_resolver
+        # the pod's single engagement-scope resolver; None here is self-provisioned
+        # in serve() from the NATS client (needs no S3 creds), then installed on
+        # every per-call ToolCallScope so tools re-authorize against the engagement.
+        self._engagement_resolver = engagement_resolver
         self._tools: dict[str, TearsTool] = {}
         self._nc: "NatsClient | None" = nats_client
         self._owns_nats_connection: bool = nats_client is None
@@ -899,6 +947,26 @@ class ToolServer:
             # refresh + re-verify. only set when the pod self-provisions; an injected provider keeps
             # whatever (possibly None) trigger the constructor was given.
             self._jwks_refresh = owned.refresh_now
+        if self._object_resolver is None:
+            # self-provision the object-id resolver over this connection so
+            # consuming tools can turn an object id into its stored key. it
+            # needs only NATS (the hub verifies the caller's identity_token +
+            # owns the objects table), so -- unlike the object store -- the pod
+            # does not have to be wired with S3 creds to resolve.
+            self._object_resolver = HubObjectResolver(
+                self._nc,
+                request_timeout_seconds=get_object_resolve_request_timeout(),
+            )
+        if self._engagement_resolver is None:
+            # self-provision the engagement-scope resolver over this connection so
+            # tools can re-authorize each call against the engagement's target set.
+            # like the object resolver it needs only NATS (the hub verifies the
+            # forwarded identity_token + owns the engagement tables), so the pod
+            # does not have to hold any creds of its own to resolve scope.
+            self._engagement_resolver = HubEngagementScopeResolver(
+                self._nc,
+                request_timeout_seconds=get_engagement_scope_request_timeout(),
+            )
         if self._assertion_replay_guard is None:
             self._assertion_replay_guard = ReplayGuard(
                 self._nc,
@@ -1939,6 +2007,9 @@ class ToolServer:
         return ToolCallScope(
             context=context,
             context_manager=context_manager,
+            object_store=self._object_store,
+            object_resolver=self._object_resolver,
+            engagement_resolver=self._engagement_resolver,
         )
 
     async def _heartbeat_loop(self) -> None:

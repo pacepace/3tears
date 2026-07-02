@@ -8,24 +8,35 @@ feature package's dependency closure. purity is enforced by the
 contract-purity check in the workspace's ``tests/enforcement/``.
 """
 
+from threetears.media.contracts.keys import build_object_key, sanitize_segment
 from threetears.media.contracts.protocols import (
+    OBJECT_HANDLE_METADATA_KEY,
     GeneratedImage,
     ImageGenerationBackend,
     MediaInfo,
     MediaStorage,
+    ObjectHandle,
+    ObjectListing,
+    ObjectStore,
     TextProvider,
     TranscriptionProvider,
     VisionProvider,
 )
 
 __all__ = [
+    "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
     "MediaInfo",
     "MediaStorage",
+    "ObjectHandle",
+    "ObjectListing",
+    "ObjectStore",
     "TextProvider",
     "TranscriptionProvider",
     "VisionProvider",
+    "build_object_key",
+    "sanitize_segment",
 ]
 
 __version__ = "0.10.6"

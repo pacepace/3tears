@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-mcp"
-version = "0.13.10"
+version = "0.13.11"
 description = "Shared MCP framework: McpServer + McpTool + PlatformHttpClient + per-tool RBAC backed by mcp_tool_grants and the task-02 epoch broadcast"
 readme = "README.md"
 requires-python = ">=3.14"
