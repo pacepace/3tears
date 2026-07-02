@@ -31,6 +31,19 @@ def _build_calculator() -> TearsTool:
     return CalculatorTool()
 
 
+def _build_context_recall() -> TearsTool:
+    """zero-config context_recall TearsTool factory.
+
+    the tool resolves its per-conversation
+    :class:`~threetears.agent.tools.context.ToolContextManager` from the
+    active call scope at execute time, so no construction-time wiring is
+    needed (mirrors :func:`_build_current_date`).
+    """
+    from threetears.agent.tools.builtin.context_recall import ContextRecallTool
+
+    return ContextRecallTool()
+
+
 def _build_current_date() -> TearsTool:
     """zero-config current_date TearsTool factory.
 
@@ -72,6 +85,7 @@ def _build_unit_converter() -> TearsTool:
 # the names matching an access pattern) iterate this map and filter.
 STANDARD_BUILTIN_FACTORIES: dict[str, Callable[[], TearsTool]] = {
     "threetears.calculator": _build_calculator,
+    "threetears.context_recall": _build_context_recall,
     "threetears.current_date": _build_current_date,
     "threetears.dictionary": _build_dictionary,
     "threetears.timezone_converter": _build_timezone_converter,
@@ -117,6 +131,7 @@ def register_builtins(registry: ToolRegistry) -> None:
     # Each entry: (tool_type, module_path, factory_name)
     _BUILTINS: list[tuple[str, str, str]] = [
         ("calculator", "threetears.agent.tools.builtin.calculator", "create_calculator_tool"),
+        ("context_recall", "threetears.agent.tools.builtin.context_recall", "create_context_recall_tool"),
         ("unit_converter", "threetears.agent.tools.builtin.unit_converter", "create_unit_converter_tool"),
         ("timezone_converter", "threetears.agent.tools.builtin.timezone_converter", "create_timezone_converter_tool"),
         ("dictionary", "threetears.agent.tools.builtin.dictionary", "create_dictionary_tool"),

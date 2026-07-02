@@ -7,15 +7,21 @@ any specific infrastructure (S3, specific vision APIs, etc.).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
+    "OBJECT_HANDLE_METADATA_KEY",
     "GeneratedImage",
     "ImageGenerationBackend",
     "MediaInfo",
     "MediaStorage",
+    "ObjectHandle",
+    "ObjectListing",
+    "ObjectStore",
     "TextProvider",
     "TranscriptionProvider",
     "VisionProvider",
@@ -215,6 +221,190 @@ class TranscriptionProvider(Protocol):
         :param mime_type: audio MIME type
         :ptype mime_type: str
         :return: transcription text
+        :rtype: str
+        """
+        ...
+
+
+#: the key under which a producing tool places its :class:`ObjectHandle`
+#: (as :meth:`ObjectHandle.to_metadata`) in ``ToolResult.metadata`` so the
+#: agent's catalog seam can recognise + persist it in the object catalog.
+OBJECT_HANDLE_METADATA_KEY = "object_handle"
+
+
+@dataclass
+class ObjectHandle:
+    """Handle to a stored object -- the small descriptor that crosses NATS
+    in place of the bytes.
+
+    The producing tool returns this (in ``ToolResult.metadata`` under
+    :data:`OBJECT_HANDLE_METADATA_KEY`); the agent catalogs it into the
+    hub-owned ``objects`` catalog; consumers resolve ``object_id`` back to
+    ``s3_key`` (customer-safe, pod-side) and stream the bytes down. The bytes
+    themselves never travel with the handle.
+    """
+
+    object_id: UUID
+    s3_key: str
+    mime_type: str
+    size_bytes: int
+    summary: str | None = None
+    category: str | None = None
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Project the handle to a JSON-safe dict for ``ToolResult.metadata``.
+
+        UUIDs are stringified at this border so the descriptor survives the
+        NATS/JSON round-trip to the agent intact.
+
+        :return: a JSON-safe representation of this handle
+        :rtype: dict[str, Any]
+        """
+        return {
+            "object_id": str(self.object_id),
+            "s3_key": self.s3_key,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "summary": self.summary,
+            "category": self.category,
+        }
+
+    @classmethod
+    def from_metadata(cls, data: dict[str, Any]) -> ObjectHandle:
+        """Reconstruct a handle from its :meth:`to_metadata` dict.
+
+        :param data: the JSON-safe handle dict (as produced by
+            :meth:`to_metadata`)
+        :ptype data: dict[str, Any]
+        :return: the reconstructed handle
+        :rtype: ObjectHandle
+        :raises KeyError: when a required field is absent
+        :raises ValueError: when ``object_id`` is not a valid UUID
+        """
+        return cls(
+            object_id=UUID(str(data["object_id"])),
+            s3_key=str(data["s3_key"]),
+            mime_type=str(data["mime_type"]),
+            size_bytes=int(data["size_bytes"]),
+            summary=data.get("summary"),
+            category=data.get("category"),
+        )
+
+
+@dataclass
+class ObjectListing:
+    """One entry from an object-store listing: key plus server metadata.
+
+    Yielded by :meth:`ObjectStore.list_entries` so a reconciler can decide
+    orphan-eligibility by age (``last_modified``) without a per-key HEAD
+    round-trip. ``last_modified`` is the store's own last-modified timestamp
+    (timezone-aware); ``size_bytes`` is the stored object size.
+    """
+
+    key: str
+    last_modified: datetime
+    size_bytes: int
+
+
+@runtime_checkable
+class ObjectStore(Protocol):
+    """Streaming S3-compatible store for large binary artifacts.
+
+    Host apps / the SDK implement this over their object-store
+    infrastructure. STREAMING by contract: writes consume an async byte
+    stream and reads yield one, so a multi-GB artifact (pcap, db dump,
+    rendered report) never has to sit whole in a pod's memory. The key is
+    opaque here; the platform's tenant-scoped key scheme is built above
+    this contract.
+    """
+
+    async def put(
+        self,
+        key: str,
+        body: AsyncIterator[bytes],
+        *,
+        content_type: str,
+        size: int | None = None,
+    ) -> None:
+        """Stream ``body`` to ``key`` (multipart for large objects).
+
+        :param key: tenant-scoped object key (opaque to this contract)
+        :ptype key: str
+        :param body: async iterator yielding the object's bytes in chunks
+        :ptype body: AsyncIterator[bytes]
+        :param content_type: MIME type stored on the object
+        :ptype content_type: str
+        :param size: total byte length when known (lets the impl pick a
+            single PUT below the multipart threshold); None streams multipart
+        :ptype size: int | None
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+    def open_read(self, key: str) -> AsyncIterator[bytes]:
+        """Open ``key`` for streaming read, yielding bytes in chunks.
+
+        :param key: object key
+        :ptype key: str
+        :return: async iterator over the object's bytes
+        :rtype: AsyncIterator[bytes]
+        """
+        ...
+
+    async def delete(self, key: str) -> None:
+        """Delete a single object.
+
+        :param key: object key
+        :ptype key: str
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+    async def delete_many(self, keys: list[str]) -> None:
+        """Delete many objects in one batched request (reconciler sweep).
+
+        :param keys: object keys to delete
+        :ptype keys: list[str]
+        :return: nothing
+        :rtype: None
+        """
+        ...
+
+    def list_keys(self, prefix: str | None = None) -> AsyncIterator[str]:
+        """Yield object keys, optionally restricted to ``prefix``.
+
+        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
+            None lists the whole bucket
+        :ptype prefix: str | None
+        :return: async iterator over object keys
+        :rtype: AsyncIterator[str]
+        """
+        ...
+
+    def list_entries(self, prefix: str | None = None) -> AsyncIterator[ObjectListing]:
+        """Yield object listings (key + last-modified + size), optionally by ``prefix``.
+
+        Like :meth:`list_keys` but carries each object's server metadata so a
+        reconciler can judge orphan age without a per-key HEAD request.
+
+        :param prefix: key-prefix filter (e.g. a tenant's ``<customer_id>/``);
+            None lists the whole bucket
+        :ptype prefix: str | None
+        :return: async iterator over object listings
+        :rtype: AsyncIterator[ObjectListing]
+        """
+        ...
+
+    async def presigned_get_url(self, key: str, *, expires_in: int = 300) -> str:
+        """Presigned GET URL for delivery -- bytes never cross the agent.
+
+        :param key: object key
+        :ptype key: str
+        :param expires_in: URL validity in seconds
+        :ptype expires_in: int
+        :return: presigned URL
         :rtype: str
         """
         ...

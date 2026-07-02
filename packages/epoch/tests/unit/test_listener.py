@@ -76,6 +76,31 @@ class TestEpochListenerColdStartPriming:
 
         assert listener.last_seen(subject) == 0
 
+    @pytest.mark.asyncio
+    async def test_primed_epoch_overrides_current_and_keeps_recovery(self) -> None:
+        """``primed_epoch`` primes last-seen to the caller's loaded epoch, not ``current()``.
+
+        the consumer read current()=3 + loaded its state, then a bump raced the
+        load and the durable row is now 7. priming to the LOADED epoch (3) -- not
+        the now-advanced current() (7) -- keeps last-seen BEHIND the missed bump,
+        so the catch-up / next broadcast at 7 fires instead of being swallowed as
+        already-seen. priming to current() (7) here would pin the stale catalog
+        forever.
+        """
+        pool = _pool_returning(epoch=7)  # durable row already advanced past the consumer's load
+        nats, callbacks = _capture_subscribe_typed()
+        client = EpochClient(pool, nats)
+        listener = EpochListener(nats, client)
+        subject = _subject()
+
+        await listener.subscribe(subject, AsyncMock(), primed_epoch=3)
+
+        # last-seen reflects the LOADED epoch, not the advanced durable row.
+        assert listener.last_seen(subject) == 3
+        # the bump at 7 the loaded state missed now fires (recoverable), not dropped.
+        await callbacks[0](EpochBumpMessage(subject_path=subject.path, epoch=7, payload={}))
+        assert listener.last_seen(subject) == 7
+
 
 class TestEpochListenerDispatch:
     """incoming broadcasts dedupe on subject path, monotonic increase only."""

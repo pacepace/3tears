@@ -28,32 +28,46 @@ saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
 graph = builder.compile(checkpointer=saver)
 ```
 
-## Prompt caching
+## Middleware
 
-The package ships `PromptCachingHook`, an `AgentNodeHook` implementation that rewrites the system prompt with Anthropic `cache_control={"type": "ephemeral"}` annotations and memoizes tool binding across turns. Non-Anthropic adapters degrade silently to bare-string system messages.
+The package ships platform-level [`AgentMiddleware`](https://docs.langchain.com/oss/python/langchain/middleware) for `langchain.agents.create_agent` — the framework-aligned successor to the old hand-rolled `AgentNodeHook` / `ToolNodeHook` protocols. Consumer-specific policy lives in each consumer as its own middleware; only the reusable platform seams live here:
+
+- `PromptCachingMiddleware` (`wrap_model_call`) — annotates a leading bare-string system message with Anthropic `cache_control={"type": "ephemeral"}` when the model supports it, then normalizes cache-hit/creation counters onto `usage_metadata["cache_usage"]`. Non-Anthropic adapters degrade silently to bare-string system messages.
+- `ToolResultOffloadMiddleware` (`wrap_tool_call`) — when a `ToolResultOffloader` is injected on `config["configurable"]` and a tool result exceeds `offload_threshold_chars`, stores the full content out-of-band and shows the model `"<summary>\n\n[ctx:<handle>]"` (the structured `artifact` is preserved). Opt-in: no offloader ⇒ byte-for-byte no-op.
+- `ObjectCatalogMiddleware` (`wrap_tool_call`) — when a tool returns an `ObjectHandle` in its result artifact and an `ObjectCataloger` is injected, persists a catalog record under the verified call identity. Soft-fail side-effect: a catalog error never breaks the tool result.
 
 ```python
-from threetears.langgraph import PromptCachingHook, agent_node
+from langchain.agents import create_agent
 
-config = {
-    "configurable": {
-        "chat_model": chat_anthropic,
-        "system_prompt": long_prompt,
-        "_hooks": {"agent": [PromptCachingHook()]},
-    },
-}
-result = await agent_node(state, config)
-usage = result["messages"][0].usage_metadata["cache_usage"]
-# {"cache_read_input_tokens": ..., "cache_creation_input_tokens": ..., "cached_tokens": ...}
+from threetears.langgraph import (
+    ObjectCatalogMiddleware,
+    PromptCachingMiddleware,
+    ToolResultOffloadMiddleware,
+)
+
+agent = create_agent(
+    model=chat_anthropic,
+    tools=tools,
+    middleware=[
+        PromptCachingMiddleware(),
+        ToolResultOffloadMiddleware(),
+        ObjectCatalogMiddleware(),
+    ],
+)
+# after a run, PromptCachingMiddleware has stamped:
+# message.usage_metadata["cache_usage"]
+# == {"cache_read_input_tokens": ..., "cache_creation_input_tokens": ..., "cached_tokens": ...}
 ```
 
-See [`3tears/docs/prompt-caching.md`](../../docs/prompt-caching.md) for the full contract, summarization interaction, downstream wiring checklist, and a worked example.
+The offload / catalog contracts (`ToolResultOffloader`, `ObjectCataloger`) are pure structural `Protocol`s exported from `threetears.langgraph.offload` / `threetears.langgraph.catalog`; a consumer injects a concrete implementation on `config["configurable"]` (e.g. `tool_result_offloader`, `object_cataloger`) without the package taking any dependency on the consumer's context store.
+
+See [`3tears/docs/prompt-caching.md`](../../docs/prompt-caching.md) for the full caching contract, summarization interaction, downstream wiring checklist, and a worked example.
 
 ## Streaming
 
 The package ships `StreamingResponse`, a transport-agnostic primitive that owns the lifecycle of one streaming response: `start` -> any number of `emit_token` / `emit_tool_call_*` -> mutually-exclusive `end` (success) or `error` (failure) terminal. `run_graph(compiled_graph, state, config)` consumes a LangGraph `astream_events(version="v2")` loop with the start/end ordering managed; on graph exception it fires `error(code="AGENT_FAILED", ...)` and re-raises so the caller still sees the failure on the synchronous path.
 
-The wire vocabulary is fixed: `StreamStartEvent` / `StreamTokenEvent` / `StreamEndEvent` / `StreamErrorEvent` / `ToolCallStartEvent` / `ToolCallEndEvent` / `ToolCallProgressEvent`, dispatched via the `StreamEvent` discriminated union and the `parse_stream_event(payload)` adapter. The transport seam is the `StreamTransport` Protocol — one method, `async def publish(self, payload: bytes) -> None`. Any wire (NATS subject, websocket, chunked HTTP body) satisfies it.
+The wire vocabulary is fixed: `StreamStartEvent` / `StreamTokenEvent` / `StreamEndEvent` / `StreamErrorEvent` / `ToolCallStartEvent` / `ToolCallEndEvent` / `ToolCallProgressEvent`, dispatched via the `StreamEvent` discriminated union and the `parse_stream_event(payload)` adapter. The transport seam is the `StreamTransport` Protocol -- one method, `async def publish(self, payload: bytes) -> None`. Any wire (NATS subject, websocket, chunked HTTP body) satisfies it.
 
 ```python
 from threetears.langgraph import StreamingResponse, StreamTransport
@@ -73,4 +87,4 @@ stream = StreamingResponse(
 final_state = await stream.run_graph(compiled_graph, state, config)
 ```
 
-The aibots SDK ships `aibots_agents.runtime.streaming_transport.NatsStreamTransport` as the reference adapter binding the primitive to the per-correlation-id hub-stream subject via `nc.publish_raw`. Tool-call observation envelopes flow through `ToolCallProgressHook` reading the active `StreamingResponse` from `config["configurable"]["streaming_response"]`.
+A reference adapter can bind the primitive to a per-correlation-id stream subject via `nc.publish_raw`. Tool-call observation envelopes flow through `ToolCallProgressHook` reading the active `StreamingResponse` from `config["configurable"]["streaming_response"]`.

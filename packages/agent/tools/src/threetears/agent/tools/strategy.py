@@ -2,7 +2,7 @@
 
 defines the contract an agent bootstrap delegates tool registration to.
 concrete implementations live in the consuming package (e.g.
-``3tears_agents.runtime.tool_strategies``). the protocol isolates
+``<consumer>.runtime.tool_strategies``). the protocol isolates
 environment-specific choices -- "do we host tools in-process" vs
 "tools register themselves from external pods" -- from the bootstrap
 body so the bootstrap stays environment-agnostic.
@@ -72,6 +72,24 @@ class BootstrapContext:
         strategies publish / subscribe on this connection rather than
         opening their own
     :ivar agent_id: agent UUID this bootstrap is initializing
+    :ivar pod_id: this pod instance's id -- the SAME value the bootstrap
+        used as the NATS connect ``client_name`` (used directly for the
+        ``agents.internal.{agent_id}.{pod_id}`` / heartbeat / reregister
+        subjects, which already lead with the authenticated agent id). a
+        strategy that stands up an IN-PROCESS :class:`ToolServer` on the
+        agent's own connection (the devx ``DevInProcessStrategy`` builtins,
+        the prod ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts``
+        tools) does NOT pass this raw instance id as the tool server's
+        pod_id: it composes the ``{agent_id}.{instance}`` routing pod-id
+        (:meth:`Subjects.agent_inprocess_pod_id`) so the server's
+        ``tools.internal`` / ``tools.probe`` / ``tools.heartbeat`` subjects
+        nest under the ``tools.internal.{agent_id}.>`` subtree the agent's
+        least-privilege JWT grants -- bound to the AUTHENTICATED agent
+        identity, never the spoofable connect-name pod id; a peer-agent or
+        freshly-generated id would fall outside the grant and the registry's
+        reachability probe would find no responder. ``None`` when the caller
+        did not thread it (the ToolServer then generates its own id, matching
+        pre-auth behavior)
     :ivar namespace: NATS subject-namespace prefix
     :ivar nats_url: NATS server URL the bootstrap connected with.
         strategies that stand up their own :class:`ToolServer` (which
@@ -99,7 +117,7 @@ class BootstrapContext:
         of an agent-acl dependency; concrete construction paths pass
         the real :class:`AclCache` instance
     :ivar knowledge_integration: per-pod knowledge integration handle
-        (the 3tears SDK's ``KnowledgeIntegration``) constructed during
+        (the consuming app's SDK's ``KnowledgeIntegration``) constructed during
         the three-tier stack phase. strategies that own an in-process
         :class:`ToolServer` register the context-bound
         ``knowledge_drafts`` tool against this handle so the agent can
@@ -107,8 +125,8 @@ class BootstrapContext:
         drafts in conversation (knowledge-task-06, KNW-54). ``None`` when
         the agent has no knowledge layer. typed ``Any`` at the
         strategy-protocol boundary to keep this package free of the
-        3tears SDK dependency (the concrete ``KnowledgeIntegration``
-        lives in the 3tears-agents package)
+        consuming app's SDK dependency (the concrete ``KnowledgeIntegration``
+        lives in the consumer's agent package)
     :ivar namespace_collection: three-tier
         :class:`NamespaceCollection` constructed during the
         three-tier stack phase. strategies that own a ToolServer
@@ -122,13 +140,38 @@ class BootstrapContext:
         :class:`WorkspaceCreateTool` can emit the paired workspace
         namespace row through the same Collection. typed ``Any`` at
         the strategy-protocol boundary to keep this package free of
-        an 3tears hub dependency (the concrete
-        :class:`NamespaceCollection` lives in the 3tears package)
+        an upstream hub dependency (the concrete
+        :class:`NamespaceCollection` lives in the consumer package)
+    :ivar context_integration: per-pod conversation-context integration
+        handle (the consuming app's SDK's ``ContextIntegration``) constructed
+        during the three-tier stack phase. its
+        ``get_manager(conversation_id, user_id)`` mints / caches the
+        per-conversation :class:`ToolContextManager` the agent graph
+        uses. a strategy that owns an in-process :class:`ToolServer` can
+        derive a ``context_factory`` from it so conversation-aware
+        builtins (e.g. ``context_recall``) resolve the SAME manager the
+        graph reads/writes -- without depending on a workspace runtime.
+        ``None`` when the agent has no context layer. typed ``Any`` at
+        the strategy-protocol boundary to keep this package free of the
+        consuming app's SDK dependency (the concrete ``ContextIntegration`` lives
+        in the consumer's agent package)
+    :ivar engagement_provider: per-pod active-engagement provider handle
+        (the consuming app's SDK's ``EngagementProvider``) constructed during the
+        three-tier stack phase. a strategy that owns an in-process
+        :class:`ToolServer` binds it into the context-bound
+        ``set_active_engagement`` tool so an operator can select / clear
+        the conversation's active engagement in-conversation; the tool
+        writes ``conversations.metadata['active_engagement_id']`` through
+        it. ``None`` when the agent has no conversations layer. typed
+        ``Any`` at the strategy-protocol boundary to keep this package
+        free of the consuming app's SDK dependency (the concrete
+        ``EngagementProvider`` lives in the consumer's agent package)
     """
 
     nats_client: Any
     agent_id: UUID
     namespace: str
+    pod_id: str | None = None
     nats_url: str = ""
     bootstrap_token: str | None = None
     workspace_runtime: Any = None
@@ -136,6 +179,8 @@ class BootstrapContext:
     acl_cache: Any = None
     namespace_collection: Any = None
     knowledge_integration: Any = None
+    context_integration: Any = None
+    engagement_provider: Any = None
 
 
 @runtime_checkable

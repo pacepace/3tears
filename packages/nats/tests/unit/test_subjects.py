@@ -19,7 +19,7 @@ _TEST_NAMESPACE = "3tears"
 
 @pytest.fixture(autouse=True)
 def _reset_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ensure each test starts with a known namespace bound."""
+    """ensure each test starts with the default namespace."""
     monkeypatch.delenv("THREETEARS_NATS_SUBJECT_NAMESPACE", raising=False)
     set_default_namespace(_TEST_NAMESPACE)
 
@@ -78,11 +78,15 @@ def test_agent_subjects_namespace_prefix() -> None:
     assert Subjects.agent_register().path == "3tears.agents.register"
     assert Subjects.agent_deregister().path == "3tears.agents.deregister"
     assert Subjects.agent_deregister().kind == "point"
-    assert Subjects.agent_heartbeat(pod_id).path == "3tears.agents.heartbeat.pod-abc"
+    assert Subjects.agent_heartbeat(agent_id, pod_id).path == (
+        "3tears.agents.heartbeat.019470a8-b5c3-7def-8123-456789abcdef.pod-abc"
+    )
     assert Subjects.agent_heartbeat_wildcard().path == "3tears.agents.heartbeat.>"
     assert Subjects.agent_heartbeat_wildcard().kind == "pattern"
-    assert Subjects.agent_reregister_request(pod_id).path == "3tears.agents.reregister_request.pod-abc"
-    assert Subjects.agent_reregister_request(pod_id).kind == "point"
+    assert Subjects.agent_reregister_request(agent_id, pod_id).path == (
+        "3tears.agents.reregister_request.019470a8-b5c3-7def-8123-456789abcdef.pod-abc"
+    )
+    assert Subjects.agent_reregister_request(agent_id, pod_id).kind == "point"
     assert Subjects.agent_route(agent_id).path == ("3tears.agents.route.019470a8-b5c3-7def-8123-456789abcdef")
     assert Subjects.agent_route_wildcard().path == "3tears.agents.route.>"
     assert Subjects.agent_internal(agent_id, pod_id).path == (
@@ -102,23 +106,62 @@ def test_tools_subjects() -> None:
     assert Subjects.tools_probe(pod_id).path == "3tears.tools.probe.tool-pod-xyz"
 
 
+def test_agent_inprocess_pod_id_composes_two_token_routing_key() -> None:
+    """an agent in-process tool pod-id is the ``{agent_id}.{instance}`` composite."""
+    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    assert composite == "agent-A.inst-1"
+
+
+def test_tools_subjects_preserve_the_agent_composite_structural_dot() -> None:
+    """a composite pod-id renders as a TWO-token subject under the agent subtree.
+
+    the structural dot between ``{agent_id}`` and ``{instance}`` must survive into the subject
+    (unlike single-token tool-pod ids that :func:`_sanitize` leaves intact) so the agent-id segment
+    is its own NATS token and the ``tools.internal.{agent_id}.>`` grant can wildcard-match it. a
+    sanitize-collapsed ``agent-A-inst-1`` single token would make the subtree grant impossible.
+    """
+    composite = Subjects.agent_inprocess_pod_id("agent-A", "inst-1")
+    assert Subjects.tools_internal(composite).path == "3tears.tools.internal.agent-A.inst-1"
+    assert Subjects.tools_probe(composite).path == "3tears.tools.probe.agent-A.inst-1"
+    assert Subjects.tools_heartbeat(composite).path == "3tears.tools.heartbeat.agent-A.inst-1"
+    # the composite subject nests UNDER the authenticated-agent subtree grant ...
+    assert Subjects.tools_internal(composite).path.startswith("3tears.tools.internal.agent-A.")
+    # ... but NOT under a peer agent's subtree (different leading token).
+    assert not Subjects.tools_internal(composite).path.startswith("3tears.tools.internal.agent-B.")
+
+
+def test_tools_subtree_and_router_wildcards() -> None:
+    """agent-subtree grant patterns + the registry router ``>`` wildcards."""
+    assert Subjects.tools_internal_agent_subtree("agent-A").path == "3tears.tools.internal.agent-A.>"
+    assert Subjects.tools_probe_agent_subtree("agent-A").path == "3tears.tools.probe.agent-A.>"
+    assert Subjects.tools_heartbeat_agent_subtree("agent-A").path == "3tears.tools.heartbeat.agent-A.>"
+    # registry router forward/probe wildcards span single-token tool pods AND two-token agent pods.
+    assert Subjects.tools_internal_wildcard().path == "3tears.tools.internal.>"
+    assert Subjects.tools_probe_wildcard().path == "3tears.tools.probe.>"
+
+
 def test_gateway_subjects() -> None:
     """gateway subject builders produce documented shapes."""
+    agent_id = "agent-7"
     correlation_id = "corr-1"
     assert Subjects.gateway_completion().path == "3tears.gateway.completion"
     assert Subjects.gateway_embedding().path == "3tears.gateway.embedding"
     assert Subjects.gateway_health().path == "3tears.gateway.health"
-    assert Subjects.gateway_stream(correlation_id).path == ("3tears.gateway.stream.corr-1")
+    assert Subjects.gateway_stream(agent_id, correlation_id).path == ("3tears.gateway.stream.agent-7.corr-1")
 
 
 def test_hub_subjects() -> None:
     """hub subject builders produce documented shapes."""
+    agent_id = "agent-3"
     correlation_id = "corr-9"
     assert Subjects.hub_handshake().path == "3tears.hub.handshake"
     assert Subjects.hub_secrets_request().path == "3tears.hub.secrets.request"
     assert Subjects.hub_user_resolve().path == "3tears.hub.user.resolve"
+    assert Subjects.hub_object_commit().path == "3tears.hub.object.commit"
+    assert Subjects.hub_object_resolve().path == "3tears.hub.object.resolve"
+    assert Subjects.hub_engagement_scope().path == "3tears.hub.engagement.scope"
     assert Subjects.hub_usage_track().path == "3tears.hub.usage.track"
-    assert Subjects.hub_stream(correlation_id).path == "3tears.hub.stream.corr-9"
+    assert Subjects.hub_stream(agent_id, correlation_id).path == "3tears.hub.stream.agent-3.corr-9"
 
 
 def test_audit_subjects() -> None:
@@ -158,15 +201,15 @@ def test_acl_subjects() -> None:
     assert Subjects.acl_invalidate("role").path == "3tears.acl.role.invalidate"
 
 
-def test_capabilities_epoch_under_single_product_namespace() -> None:
-    """single-product builder produces ``<ns>.capabilities.epoch`` (no product segment).
+def test_metallm_capabilities_epoch_under_metallm_namespace() -> None:
+    """metallm-bound builder produces ``metallm.capabilities.epoch`` (no product segment).
 
-    a single-product namespace has nothing after the namespace to
-    disambiguate against. asymmetric on purpose vs the 3tears-bound
-    builders, which carry a product segment.
+    metallm uses its own namespace so the path has nothing after the
+    namespace to disambiguate against. asymmetric on purpose vs the
+    3tears-bound builders, which carry a product segment.
     """
-    set_default_namespace("app")
-    assert Subjects.capabilities_epoch().path == "app.capabilities.epoch"
+    set_default_namespace("metallm")
+    assert Subjects.capabilities_epoch().path == "metallm.capabilities.epoch"
     set_default_namespace("3tears")
 
 
@@ -182,8 +225,8 @@ def test_mcp_rbac_epoch_under_3tears_namespace() -> None:
 
 def test_epoch_subjects_track_namespace_changes() -> None:
     """epoch subjects honour the bound namespace at call time, like every other Subject."""
-    set_default_namespace("app-staging")
-    assert Subjects.capabilities_epoch().path == "app-staging.capabilities.epoch"
+    set_default_namespace("metallm-staging")
+    assert Subjects.capabilities_epoch().path == "metallm-staging.capabilities.epoch"
     set_default_namespace("3tears-staging")
     assert Subjects.gateway_catalog_epoch().path == "3tears-staging.gateway.catalog.epoch"
     assert Subjects.mcp_rbac_epoch().path == "3tears-staging.mcp.rbac.epoch"
@@ -203,9 +246,9 @@ def test_epoch_subject_path_is_row_pk_identity() -> None:
     catalog = Subjects.gateway_catalog_epoch().path
     rbac = Subjects.mcp_rbac_epoch().path
     assert catalog != rbac
-    # under a single-product namespace, capabilities epoch is different
-    # from any 3tears-namespace path (no cross-product collision).
-    set_default_namespace("app")
+    # under metallm namespace, capabilities epoch is different from any
+    # 3tears-namespace path (no cross-product collision).
+    set_default_namespace("metallm")
     capabilities = Subjects.capabilities_epoch().path
     assert capabilities not in (catalog, rbac)
     set_default_namespace("3tears")

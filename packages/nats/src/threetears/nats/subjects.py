@@ -137,6 +137,29 @@ def _sanitize(segment: str | UUID) -> str:
     return raw.replace(".", "-")
 
 
+def _routing_token(pod_id: str | UUID) -> str:
+    """render a pod-id into its tool-subject routing token(s), preserving structural dots.
+
+    a Tool Pod's id is a single UUID token (no dots) -- :func:`_sanitize` is a no-op for it. an
+    agent's IN-PROCESS tool pod-id is the composite ``{agent_id}.{instance}`` (built by
+    :meth:`Subjects.agent_inprocess_pod_id`) whose structural dot MUST survive so the subject nests
+    as ``tools.internal.{agent_id}.{instance}`` under the authenticated-agent subtree the AGENT_POD
+    JWT grants (``tools.internal.{agent_id}.>``). each dot-delimited token is sanitized
+    independently (so a token's own characters never overload the separator) while the structural
+    dot between tokens is preserved -- unlike :func:`_sanitize`, which would collapse the composite
+    to a single token and make the agent-id segment un-wildcard-matchable.
+
+    :param pod_id: tool routing pod-id (single UUID token, or the agent composite)
+    :ptype pod_id: str | UUID
+    :return: dot-joined sanitized token(s)
+    :rtype: str
+    """
+    # the pod_id is rendered into its NATS-subject routing token(s) here; a single UUID token or the
+    # agent composite is split on its structural dots and each token is subject-sanitized.
+    # convert at border: pod_id -> published NATS subject string
+    return ".".join(_sanitize(token) for token in str(pod_id).split("."))
+
+
 @dataclass(frozen=True, slots=True)
 class Subject:
     """opaque NATS subject token.
@@ -242,15 +265,26 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.deregister", kind="point")
 
     @classmethod
-    def agent_heartbeat(cls, pod_id: str | UUID) -> Subject:
+    def agent_heartbeat(cls, agent_id: str | UUID, pod_id: str | UUID) -> Subject:
         """publish subject for one agent pod's heartbeat.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment
+        (the connecting pod's token-verified agent identity); ``pod_id``
+        comes from the spoofable connect name. Keying on ``agent_id``
+        first means a pod can publish heartbeats only under its own
+        authenticated agent and cannot forge a peer agent's heartbeat.
+
+        :param agent_id: authenticated agent identity the pod serves
+        :ptype agent_id: str | UUID
         :param pod_id: agent pod identifier
         :ptype pod_id: str | UUID
-        :return: subject ``{ns}.agents.heartbeat.{pod_id}``
+        :return: subject ``{ns}.agents.heartbeat.{agent_id}.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.agents.heartbeat.{_sanitize(pod_id)}", kind="point")
+        return Subject(
+            path=f"{_ns()}.agents.heartbeat.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
+            kind="point",
+        )
 
     @classmethod
     def agent_heartbeat_wildcard(cls) -> Subject:
@@ -262,7 +296,7 @@ class Subjects:
         return Subject(path=f"{_ns()}.agents.heartbeat.>", kind="pattern")
 
     @classmethod
-    def agent_reregister_request(cls, pod_id: str | UUID) -> Subject:
+    def agent_reregister_request(cls, agent_id: str | UUID, pod_id: str | UUID) -> Subject:
         """router -> agent pod nudge to re-register after deregistration.
 
         Published by :class:`AgentHeartbeatMonitor.handle_heartbeat` when a
@@ -270,17 +304,25 @@ class Subjects:
         catalog (typically because the heartbeat-timeout monitor
         deregistered the pod during a long host pause such as a laptop
         sleep, and the pod is now back alive and emitting heartbeats
-        again). The agent pod subscribes to its own ``pod_id``-tailed
-        subject and runs the full registration handshake on receipt --
-        restoring the catalog endpoint without forcing a process restart.
+        again). The agent pod subscribes to its own
+        ``{agent_id}.{pod_id}``-tailed subject and runs the full
+        registration handshake on receipt -- restoring the catalog
+        endpoint without forcing a process restart.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        a pod subscribes (and the router targets) only its own agent's
+        reregister channel; the spoofable ``pod_id`` can no longer stand
+        alone to address a peer agent's pod.
+
+        :param agent_id: authenticated agent identity the target pod serves
+        :ptype agent_id: str | UUID
         :param pod_id: target agent pod identifier
         :ptype pod_id: str | UUID
-        :return: subject ``{ns}.agents.reregister_request.{pod_id}``
+        :return: subject ``{ns}.agents.reregister_request.{agent_id}.{pod_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.agents.reregister_request.{_sanitize(pod_id)}",
+            path=f"{_ns()}.agents.reregister_request.{_sanitize(agent_id)}.{_sanitize(pod_id)}",
             kind="point",
         )
 
@@ -337,21 +379,52 @@ class Subjects:
     def tools_heartbeat(cls, pod_id: str | UUID) -> Subject:
         """publish subject for one tool-pod's heartbeat.
 
-        :param pod_id: tool pod identifier
+        ``pod_id`` is a single UUID token for a Tool Pod, or the
+        ``{agent_id}.{instance}`` composite for an agent's IN-PROCESS tool
+        server (see :meth:`agent_inprocess_pod_id`); its structural dots are
+        preserved (:func:`_routing_token`) so the composite nests under the
+        authenticated-agent subtree the AGENT_POD JWT grants.
+
+        :param pod_id: tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
         :return: subject ``{ns}.tools.heartbeat.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.heartbeat.{_sanitize(pod_id)}", kind="point")
+        return Subject(path=f"{_ns()}.tools.heartbeat.{_routing_token(pod_id)}", kind="point")
 
     @classmethod
     def tools_heartbeat_wildcard(cls) -> Subject:
         """wildcard subscribe pattern for all tool-pod heartbeats.
 
+        the ``>`` tail spans both single-token Tool Pod heartbeats
+        (``tools.heartbeat.{pod_id}``) and two-token agent in-process
+        heartbeats (``tools.heartbeat.{agent_id}.{instance}``), so the
+        registry / health monitor sees every pod's heartbeat regardless of
+        pod-id shape.
+
         :return: subject ``{ns}.tools.heartbeat.>``
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.tools.heartbeat.>", kind="pattern")
+
+    @classmethod
+    def tools_heartbeat_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """publish-grant pattern for an agent pod's OWN in-process tool heartbeats.
+
+        the agent serves its in-process tools (workspace / knowledge_drafts /
+        devx builtins) under the ``{agent_id}.{instance}`` composite pod-id, so
+        its heartbeat publishes land on ``tools.heartbeat.{agent_id}.{instance}``.
+        the auth-callout responder knows only the AUTHENTICATED ``agent_id`` (not
+        the per-replica instance), so it grants this ``{agent_id}.>`` subtree:
+        the pod may publish heartbeats only under its OWN authenticated agent and
+        can never forge a peer agent's in-process heartbeat.
+
+        :param agent_id: the authenticated agent identity to scope the subtree on
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.heartbeat.{agent_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.heartbeat.{_sanitize(agent_id)}.>", kind="pattern")
 
     @classmethod
     def tools_discover(cls) -> Subject:
@@ -375,23 +448,132 @@ class Subjects:
     def tools_internal(cls, pod_id: str | UUID) -> Subject:
         """request/reply subject for registry -> tool-pod proxied call.
 
-        :param pod_id: target tool pod identifier
+        ``pod_id`` is a single UUID token for a Tool Pod, or the
+        ``{agent_id}.{instance}`` composite for an agent's IN-PROCESS tool
+        server; its structural dots are preserved (:func:`_routing_token`) so
+        the composite renders as ``tools.internal.{agent_id}.{instance}`` --
+        the registry forwards on the registered pod-id verbatim, and the
+        agent's AGENT_POD JWT grants the ``tools.internal.{agent_id}.>``
+        subtree, so only the authenticated agent can receive its own proxied
+        in-process tool calls.
+
+        :param pod_id: target tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
         :return: subject ``{ns}.tools.internal.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.internal.{_sanitize(pod_id)}", kind="point")
+        return Subject(path=f"{_ns()}.tools.internal.{_routing_token(pod_id)}", kind="point")
+
+    @classmethod
+    def tools_internal_wildcard(cls) -> Subject:
+        """registry-side forward-grant pattern spanning EVERY tool pod's internal subject.
+
+        the registry proxy forwards each agent call to the target pod's
+        ``tools.internal.{pod_id}``; the ``>`` tail covers both single-token
+        Tool Pods and two-token agent in-process pods
+        (``tools.internal.{agent_id}.{instance}``). granted ONLY to the trusted
+        registry router (never a pod), which legitimately reaches every pod.
+
+        :return: subject ``{ns}.tools.internal.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.internal.>", kind="pattern")
+
+    @classmethod
+    def tools_internal_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """subscribe-grant pattern for an agent pod's OWN in-process tool calls.
+
+        the agent's in-process tool server subscribes
+        ``tools.internal.{agent_id}.{instance}``; the auth-callout responder
+        knows only the AUTHENTICATED ``agent_id`` (not the per-replica
+        instance), so it grants this ``{agent_id}.>`` subtree. a peer agent is
+        granted only its OWN ``{peer_agent_id}.>`` subtree and can NEVER
+        subscribe another agent's in-process tool-call traffic -- closing the
+        wiretap a connect-name-scoped grant left open.
+
+        :param agent_id: the authenticated agent identity to scope the subtree on
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.internal.{agent_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.internal.{_sanitize(agent_id)}.>", kind="pattern")
 
     @classmethod
     def tools_probe(cls, pod_id: str | UUID) -> Subject:
         """request/reply subject for liveness probe against one tool pod.
 
-        :param pod_id: target tool pod identifier
+        ``pod_id`` is a single UUID token for a Tool Pod, or the
+        ``{agent_id}.{instance}`` composite for an agent's IN-PROCESS tool
+        server; its structural dots are preserved (:func:`_routing_token`).
+
+        :param pod_id: target tool routing pod identifier (single token or composite)
         :ptype pod_id: str | UUID
         :return: subject ``{ns}.tools.probe.{pod_id}``
         :rtype: Subject
         """
-        return Subject(path=f"{_ns()}.tools.probe.{_sanitize(pod_id)}", kind="point")
+        return Subject(path=f"{_ns()}.tools.probe.{_routing_token(pod_id)}", kind="point")
+
+    @classmethod
+    def tools_probe_wildcard(cls) -> Subject:
+        """registry-side probe-grant pattern spanning EVERY tool pod's probe subject.
+
+        the registry probes each registered pod's ``tools.probe.{pod_id}``
+        during the registration reachability handshake; the ``>`` tail covers
+        both single-token Tool Pods and two-token agent in-process pods. granted
+        ONLY to the trusted registry router.
+
+        :return: subject ``{ns}.tools.probe.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.probe.>", kind="pattern")
+
+    @classmethod
+    def tools_probe_agent_subtree(cls, agent_id: str | UUID) -> Subject:
+        """subscribe-grant pattern for the registry's probe of an agent's OWN in-process pod.
+
+        mirrors :meth:`tools_internal_agent_subtree`: the agent's in-process
+        tool server subscribes ``tools.probe.{agent_id}.{instance}`` and the
+        responder grants the ``{agent_id}.>`` subtree, so a pod answers
+        reachability probes only for its OWN authenticated agent.
+
+        :param agent_id: the authenticated agent identity to scope the subtree on
+        :ptype agent_id: str | UUID
+        :return: subject ``{ns}.tools.probe.{agent_id}.>``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.tools.probe.{_sanitize(agent_id)}.>", kind="pattern")
+
+    @classmethod
+    def agent_inprocess_pod_id(cls, agent_id: str | UUID, instance_id: str | UUID) -> str:
+        """compose the NATS routing pod-id for an agent's IN-PROCESS tool server.
+
+        Returns a plain routing-key STRING (not a :class:`Subject`):
+        ``{agent_id}.{instance_id}`` with each token sanitized. This is the
+        value the SDK hands :class:`ToolServer` as its ``pod_id`` when standing
+        up an in-process tool server on the agent's OWN ``AGENT_POD`` connection
+        (the devx ``DevInProcessStrategy`` builtins, and the prod
+        ``ProdExternalPodsStrategy`` workspace + ``knowledge_drafts`` tools).
+
+        Leading the routing-key with the AUTHENTICATED ``agent_id`` -- the same
+        identity the auth-callout responder resolved from the bootstrap-token
+        hash -- is what binds the in-process tool subjects
+        (:meth:`tools_internal` / :meth:`tools_probe` / :meth:`tools_heartbeat`,
+        which preserve the structural dot) to the authenticated agent rather
+        than the spoofable connect-name pod id: they nest under the
+        ``tools.internal.{agent_id}.>`` subtree the AGENT_POD JWT grants
+        (:meth:`tools_internal_agent_subtree`). The ``instance_id`` tail keeps
+        each replica of the same agent routable as a distinct endpoint without
+        widening the grant. Tool Pods (separate ``TOOL_POD`` processes) keep
+        their single-token UUID pod-id and are unaffected.
+
+        :param agent_id: the authenticated agent identity (leads the routing key)
+        :ptype agent_id: str | UUID
+        :param instance_id: this pod replica's unique instance id (the connect-name pod id)
+        :ptype instance_id: str | UUID
+        :return: routing pod-id string ``{agent_id}.{instance_id}``
+        :rtype: str
+        """
+        return f"{_sanitize(agent_id)}.{_sanitize(instance_id)}"
 
     # ------------------------------------------------------------------
     # gateway (AI model gateway)
@@ -425,16 +607,23 @@ class Subjects:
         return Subject(path=f"{_ns()}.gateway.health", kind="point")
 
     @classmethod
-    def gateway_stream(cls, correlation_id: str | UUID) -> Subject:
+    def gateway_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
         """publish subject for gateway -> agent token streaming.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        an agent subscribes only its OWN gateway token streams; a bare
+        ``gateway.stream.*`` wildcard would let any agent sniff every
+        customer's in-flight token stream.
+
+        :param agent_id: authenticated agent the stream is destined for
+        :ptype agent_id: str | UUID
         :param correlation_id: correlation identifier shared with originating request
         :ptype correlation_id: str | UUID
-        :return: subject ``{ns}.gateway.stream.{correlation_id}``
+        :return: subject ``{ns}.gateway.stream.{agent_id}.{correlation_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.gateway.stream.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.gateway.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
             kind="point",
         )
 
@@ -450,6 +639,18 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.hub.handshake", kind="point")
+
+    @classmethod
+    def hub_jwks(cls) -> Subject:
+        """request/reply subject for the Hub identity-token JWKS fetched by verifiers.
+
+        The registry proxy + tool pods request this to fetch the public keys identity tokens are
+        signed under, then verify tokens against it before RBAC (platform-auth Option B).
+
+        :return: subject ``{ns}.hub.jwks``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.jwks", kind="point")
 
     @classmethod
     def hub_secrets_request(cls) -> Subject:
@@ -468,6 +669,50 @@ class Subjects:
         :rtype: Subject
         """
         return Subject(path=f"{_ns()}.hub.user.resolve", kind="point")
+
+    @classmethod
+    def hub_object_commit(cls) -> Subject:
+        """request/reply subject for committing a produced object to the hub catalog.
+
+        The agent sends its produced-object handle here (Path-2); the hub verifies
+        the agent's session, derives the owning customer server-side, asserts the
+        object key is under that tenant, and writes the ``platform.objects`` row.
+
+        :return: subject ``{ns}.hub.object.commit``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.commit", kind="point")
+
+    @classmethod
+    def hub_object_resolve(cls) -> Subject:
+        """request/reply subject for resolving an object id to its stored key.
+
+        The consuming agent asks the hub to resolve an ``object_id`` to its
+        ``s3_key`` (Path-2 S0 keystone); the hub verifies the agent's session,
+        derives the owning customer, and returns the key only when the row is
+        owned by that tenant (fail-closed).
+
+        :return: subject ``{ns}.hub.object.resolve``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.object.resolve", kind="point")
+
+    @classmethod
+    def hub_engagement_scope(cls) -> Subject:
+        """request/reply subject for resolving an engagement's authorized target scope.
+
+        A consuming TOOL POD asks the hub for the in-scope targets of the
+        ``engagement_id`` on its call context (engagement scope, consumer A of
+        the §2 keystone). The pod has no hub session of its own, so it forwards
+        the invoking agent's ``identity_token``; the hub verifies it, derives the
+        owning customer from the signed claim, and returns the active target set
+        only when the engagement is owned by that tenant (fail-closed). The
+        read-side twin of :meth:`hub_object_resolve`.
+
+        :return: subject ``{ns}.hub.engagement.scope``
+        :rtype: Subject
+        """
+        return Subject(path=f"{_ns()}.hub.engagement.scope", kind="point")
 
     @classmethod
     def hub_channel_installs(cls) -> Subject:
@@ -526,16 +771,23 @@ class Subjects:
         return Subject(path=f"{_ns()}.hub.usage.track", kind="point")
 
     @classmethod
-    def hub_stream(cls, correlation_id: str | UUID) -> Subject:
+    def hub_stream(cls, agent_id: str | UUID, correlation_id: str | UUID) -> Subject:
         """publish subject for agent -> hub token streaming.
 
+        The ``agent_id`` leads the subject as the AUTHENTICATED segment so
+        an agent publishes tokens only under its OWN identity; a bare
+        ``hub.stream.*`` publish grant would let a malicious agent forge
+        or inject tokens onto a peer's in-flight request.
+
+        :param agent_id: authenticated agent publishing the stream
+        :ptype agent_id: str | UUID
         :param correlation_id: correlation identifier for client request
         :ptype correlation_id: str | UUID
-        :return: subject ``{ns}.hub.stream.{correlation_id}``
+        :return: subject ``{ns}.hub.stream.{agent_id}.{correlation_id}``
         :rtype: Subject
         """
         return Subject(
-            path=f"{_ns()}.hub.stream.{_sanitize(correlation_id)}",
+            path=f"{_ns()}.hub.stream.{_sanitize(agent_id)}.{_sanitize(correlation_id)}",
             kind="point",
         )
 

@@ -211,3 +211,6 @@ __marimo__/
 
 # prawduct session evidence (local governance artifacts, never shipped)
 .prawduct/
+
+# macOS folder metadata
+.DS_Store

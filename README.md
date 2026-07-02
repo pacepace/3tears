@@ -1,116 +1,59 @@
 # 3tears
 
-Three-tier data framework for Python applications with LLM agent support.
+**Build horizontally-scalable, agent-native apps without the tears.**
 
-## Packages
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#project-status)
 
-The `agent-*` family lives under the `packages/agent/` namespace dir for visual grouping (each entry is still its own independently-versioned uv workspace member). Top-level packages live directly under `packages/`.
+Going horizontal is where apps start to cry. State scatters across pods. Caches drift out of sync. Cross-pod coordination turns into a second job. Then you try to run an LLM agent on top of it all and the whole thing buckles.
 
-| Package | PyPI | Import | Description |
-|---------|------|--------|-------------|
-| [3tears](packages/core/) | `pip install 3tears` | `threetears.core` | Three-tier entities, collections, caching (L1 SQLite, L2 NATS KV, L3 PostgreSQL), DataStore, canonical `MigrationRunner` (platform + agent scopes, multi-package composition, topological ordering; retires alembic per `docs/migrations-task-01-canonical-runner.md`) |
-| [3tears-enforcement](packages/enforcement/) | `pip install 3tears-enforcement` | `threetears.enforcement` | Shared enforcement-test utilities (datetime-aware audit, naming conventions, dict-state detection, schema-agreement). Extracted in v0.5.0 task-00 to eliminate ~5-6k lines of cross-repo duplication |
-| [3tears-observe](packages/observe/) | `pip install 3tears-observe` | `threetears.observe` | Structured logging, OpenTelemetry tracing, `@traced` decorator, `set_context` / `clear_context` ContextVar-backed tags. Includes the `CorrelationMiddleware` ASGI middleware promoted from metallm/aibots in v0.6.0 task-07 |
-| [3tears-nats](packages/nats/) | `pip install 3tears-nats` | `threetears.nats` | Typed NATS client (`NatsClient`), `Subjects` builders, `IncomingMessage` envelope, `PublishError` / `RequestError` / `SubscribeError`, JetStream KV bucket helper. Single canonical wrapper retired the per-product NatsClient composition wrappers in v0.6.0 task-07.8 |
-| [3tears-epoch](packages/epoch/) | `pip install 3tears-epoch` | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast (push) + per-message epoch echo (pull-on-stale). `EpochClient` + `EpochListener` underpin every cross-pod cache reload — capabilities registry, MCP RBAC, gateway catalog. v0.6.0 platform-followups task-02 |
-| [3tears-mcp](packages/mcp/) | `pip install 3tears-mcp` | `threetears.mcp` | Shared MCP (Model Context Protocol) framework: `McpServer` (RBAC-gated wrapper over the official mcp.server SDK), `McpTool` + `register_tool` decorator, `PlatformHttpClient` (auth-aware REST client with refresh-on-401 + multipart upload), `Identity` / `IdentityProvider` / `Authorizer` Protocols + `EnvVarIdentityProvider` + `LocalGrantAuthorizer`, `McpToolGrantCollection` over `mcp_tool_grants`. Per-product MCP servers (metallm 23 tools, aibot-hub 6, agent-admin 13) compose this framework rather than reimplementing transport / auth / RBAC. v0.6.0 platform-followups task-03 |
-| [3tears-agent-acl](packages/agent/acl/) | `pip install 3tears-agent-acl` | `threetears.agent.acl` | Unified RBAC evaluator + cache (Groups, Roles, Assignments). `evaluate_decision` hot path + `evaluate_with_trail` introspection path; three-layer `AclCache` with invalidation hooks; `GrantLoader` / `MembershipLoader` protocols. Audit vocabulary tuples (`audit_vocabulary.py`) are publish-side validation machinery only — this package does NOT publish its own audit envelope; rbac emission sites call `threetears.agent.audit.publish_audit` directly (audit-task-01 Phase 4 retired `RbacAuditEnvelope`). Pure Python, no NATS or postgres. Produced by `rbac-task-01`; same evaluator runs in hub broker and every agent pod |
-| [3tears-agent-audit](packages/agent/audit/) | `pip install 3tears-agent-audit` | `threetears.agent.audit` | Unified `AuditEvent` envelope + `publish_audit` fire-and-forget helper used by every domain (workspace, rbac, memory, tool dispatch). One wire format, one subject tree (`{ns}.audit.{event_type}`), one consumer, one admin query API. Produced by `audit-task-01` (Phases 1-5); replaces the per-domain `WorkspaceAuditEnvelope` / `RbacAuditEnvelope` (both deleted). Pure Python, no NATS consumer or postgres code |
-| [3tears-conversations](packages/conversations/) | `pip install 3tears-conversations` | `threetears.conversations` | `Conversation` entity + `ConversationsCollection` (three-tier) + agent-scope migration entry point. Split out of agent-memory in `workspace-task-19` / `migrations-task-01` because memory, context items, and workspace bindings all key off `conversation_id` |
-| [3tears-agent-memory](packages/agent/memory/) | `pip install 3tears-agent-memory` | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search for LLM agents. `conversations` now lives in `3tears-conversations`; memory depends on it. `EmbeddingProvider` Protocol retired in v0.6.x cleanup — consumers subclass `langchain_core.embeddings.Embeddings` directly. Migration v014 renamed `conversation_memory_refs.date_added` → `date_created` to align with the standard `(date_created, date_updated)` convention every other 3tears table uses |
-| [3tears-agent-tools](packages/agent/tools/) | `pip install 3tears-agent-tools` | `threetears.agent.tools` | `TearsTool` base (`mcp_schema`, `mcp_name`, `mcp_version`, `execute`), `ToolServer` (NATS registration, call subscription, heartbeat; emits a baseline `event_type='tool.call'` unified audit envelope via `publish_audit` on every dispatch — success, failure, error — introduced in `audit-task-01` Phase 3), `ToolContextManager`, built-in tools, `CallContext` envelope (unified identity plumbing from `context-task-01`; carries `user_timezone` / `user_locale` resolved per-message by channel adapters) + `bind_log_context`, `ToolProvisioningStrategy` protocol (`DevInProcessStrategy` / `ProdExternalPodsStrategy` live in the SDK), `aliases` module declaring tool group sets (`standard`, `web`, `media`, `workspace`, `workspace.fs/doc/lifecycle`) and the `expand_selectors` resolver the SDK calls at agent.yaml load time to flatten group aliases into concrete tool name lists |
-| [3tears-agent-workspace](packages/agent/workspace/) | `pip install 3tears-agent-workspace` | `threetears.agent.workspace` | Workspace tools, sandbox, namespace-routed L3 access. `authorize_workspace_access` delegates to `3tears-agent-acl` — no workspace-specific ACL code. Audit emission goes through the generic `threetears.agent.audit.publish_audit` helper plus the `ToolServer` baseline; this package does NOT publish its own audit envelope (audit-task-01 Phase 3 retired `WorkspaceAuditEnvelope`) |
-| [3tears-langgraph](packages/langgraph/) | `pip install 3tears-langgraph` | `threetears.langgraph` | LangGraph integration: checkpoint savers, graph builders, context registry |
-| [3tears-registry](packages/registry/) | `pip install 3tears-registry` | `threetears.registry` | Multi-pod tool routing: `RegistrationHandler`, `ToolCatalog` (NATS KV-backed), `DiscoveryHandler`, `CallProxy` (per-tool `timeout_seconds` propagation, nested `CallContext` pass-through), `HeartbeatMonitor`, `RegistryServer` convenience runner, pluggable routing strategies |
-| [3tears-models](packages/models/) | `pip install 3tears-models` | `threetears.models` | LangChain-native model adapters (v0.6.0 task-02 retired the `ChatProvider` / `EmbeddingProvider` / `TranscriptionProvider` / etc. runtime protocols in favour of `BaseChatModel` / `Embeddings` subclasses). Providers: Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, OpenAI Images, HuggingFace Images, A1111, ModelsLab, ComfyUI. Unified `UsageTracker.record()` (v0.6.0 task-07.5) emits OTel span + Prometheus instruments + optional `UsageAuditSink` / `UsageCounterSink` per-product fan-out. Circuit breaker, error translation, message preprocessing, streaming utilities, capability registry |
-| [3tears-channels](packages/channels/) | `pip install 3tears-channels` | `threetears.channels` | Message protocol, Slack and Discord adapters, WebSocket handler |
+3tears takes that pain. Your data becomes smart objects over a three-tier cache -- L1 SQLite, L2 NATS KV, L3 PostgreSQL. Every pod reads local and fast. Writes flow through to durable storage and stay coherent across the fleet. No hand-rolled invalidation. No per-pod state surgery.
 
-## Architecture
+Agentic processes are first-class here, not bolted on. Memory, tools, RBAC, model adapters, channel integrations, and LangGraph checkpointing all sit on that same scalable foundation. An agent that runs across a dozen pods is built the same way as one that runs on your laptop.
 
-```mermaid
-graph TB
-    subgraph "Agent Pod"
-        AGENT[LangGraph Agent]
-        TOOLS[NatsToolWrapper]
-        CHECK[ThreeTierCheckpointSaver]
-        DATA[DataStore]
-    end
+Take the whole stack or just the cache underneath it. The core stands on its own. 3tears ships as a family of namespace packages, each versioned in lockstep, each installable on its own.
 
-    subgraph "3tears Core"
-        ENT[BaseEntity<br/>change tracking]
-        COL[BaseCollection<br/>three-tier cache]
-        L1[L1 SQLite]
-        L2[L2 NATS KV]
-        L3[L3 PostgreSQL]
-    end
+## Project status
 
-    subgraph "3tears LangGraph"
-        BUILD[build_tool_agent<br/>build_chat_agent]
-        NODES[agent_node<br/>tool_node]
-        CKPT[ThreeTierCheckpointSaver]
-    end
+3tears is alpha. The `0.x` line runs in production internally, but the public API can shift between minor versions until `1.0.0`. Pin your dependencies. Python 3.14+ required.
 
-    subgraph "3tears Registry"
-        CAT[ToolCatalog<br/>multi-endpoint]
-        DISC[DiscoveryHandler]
-        PROXY[CallProxy + LB<br/>least-connections]
-        ROUTE[RoutingStrategy<br/>pluggable]
-        REG_AUTH[Pod Auth + Namespace]
-        HB[HeartbeatMonitor<br/>endpoint pruning]
-    end
+## Install
 
-    subgraph "3tears MCP"
-        MCP_SERVER[McpServer<br/>RBAC-gated stdio]
-        MCP_TOOL[McpTool +<br/>register_tool]
-        MCP_AUTH[Identity / Authorizer<br/>Protocols]
-        MCP_GRANTS[McpToolGrantCollection<br/>+ epoch broadcast]
-        MCP_HTTP[PlatformHttpClient<br/>auth-aware REST + multipart]
-    end
-
-    subgraph "3tears Epoch"
-        EP_CLI[EpochClient<br/>broadcast publish]
-        EP_LIS[EpochListener<br/>subscribe + catch_up]
-    end
-
-    AGENT --> BUILD
-    AGENT --> NODES
-    CHECK --> CKPT
-    DATA --> COL
-    COL --> L1 --> L2 --> L3
-    TOOLS --> PROXY
-    PROXY --> CAT
-    MCP_SERVER --> MCP_AUTH
-    MCP_AUTH --> MCP_GRANTS
-    MCP_GRANTS --> EP_CLI
-    EP_LIS --> MCP_GRANTS
+```bash
+pip install 3tears              # core three-tier framework
+pip install 3tears-agent-memory # agent memory
+pip install 3tears-models       # LangChain-native model adapters
+# ... or any other package from the table below
 ```
 
-## Core Package (`threetears.core`)
+## Quickstart
 
-### Three-Tier Entities
+### Smart entities that track their own changes
 
 ```python
 from threetears.core import BaseEntity, BaseCollection, CollectionRegistry
 
-# Entities are smart objects with change tracking
+# Attribute writes are change-tracked. save() persists through L1, L2, L3.
 entity = await collection.get(entity_id)
-entity.name = "updated"       # change tracked via __setattr__
-await entity.save()           # persists through L1 → L2 → L3
+entity.name = "updated"        # tracked via __setattr__
+await entity.save()            # writes through every tier
 
-# Subscript access
-collection[entity_id]                  # full entity
-collection[entity_id, "field_name"]    # single field
-collection[entity_id, "field"] = val   # set field
+# Subscript access for fields
+collection[entity_id]                   # full entity
+collection[entity_id, "field_name"]     # single field
+collection[entity_id, "field"] = value  # set field
 ```
 
-### DataStore — Dynamic Tables
+### Dynamic tables with the DataStore
 
 ```python
-from threetears.core.data import DataStore, TableDef, ColumnDef, IndexDef, ForeignKeyDef, MigrationRunner
+from threetears.core.data import (
+    DataStore, TableDef, ColumnDef, IndexDef, MigrationRunner,
+)
 
 store = DataStore(agent_id=agent_id, registry=registry)
 
-# Create tables with FK constraints and indexes
 await store.create_table(TableDef(
     name="survey_responses",
     columns=[
@@ -121,11 +64,11 @@ await store.create_table(TableDef(
     indexes=[IndexDef(name="idx_user", columns=["user_id"])],
 ))
 
-# Three-tier entity access
-store["survey_responses"][response_id]              # full entity
-store["survey_responses"][response_id, "answer"]    # single field
+# Three-tier entity access through the store
+store["survey_responses"][response_id]            # full entity
+store["survey_responses"][response_id, "answer"]  # single field
 
-# Schema migrations
+# Versioned schema migrations
 migrations = MigrationRunner(store)
 
 @migrations.version(1)
@@ -139,57 +82,141 @@ async def v2(store):
 await store.run_migrations(migrations)
 ```
 
-## LangGraph Package (`threetears.langgraph`)
-
-### Graph Builders
+### LangGraph agents with three-tier checkpointing
 
 ```python
-from threetears.langgraph import build_tool_agent, build_chat_agent
+from threetears.langgraph import build_tool_agent, ThreeTierCheckpointSaver, AsyncpgPoolAdapter
 
-# Tool-calling agent
 graph = build_tool_agent(system_prompt="You are helpful.", max_iterations=10)
-compiled = graph.compile(checkpointer=saver)
-
-# Config keys: chat_model, tools, system_prompt, context_manager, data_store, thread_id
-```
-
-### Checkpoint Saver
-
-```python
-from threetears.langgraph import (
-    AsyncpgPoolAdapter,
-    ThreeTierCheckpointSaver,
-)
-
-# Direct DB access (Hub, Gateway) — wrap the pool once
 saver = ThreeTierCheckpointSaver(executor=AsyncpgPoolAdapter(pool))
-
-# Sandboxed agents (no DB credentials) — NatsProxyL3Backend is
-# already an AsyncQueryExecutor, pass it straight through
-saver = ThreeTierCheckpointSaver(executor=nats_l3_backend)
+compiled = graph.compile(checkpointer=saver)
 ```
 
-### Context Memory
+## Packages
 
-```python
-from threetears.agent.tools.context import ToolContextManager
+Every package shares the `threetears.*` import namespace and installs independently. The `agent-*` family lives under `packages/agent/` for grouping. Each one is still its own PyPI distribution.
 
-manager = ToolContextManager(
-    collection=context_collection,
-    conversation_id=conversation_id,
-    user_id=user_id,
-)
-await manager.save_tool_result("search", result, "found 5 matches")
-prompt = manager.build_context_prompt()  # injected into system message
+### Core data
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears`](packages/core/) | `threetears.core` | Three-tier entities, collections, and caching. L1 SQLite, L2 NATS KV, L3 PostgreSQL. `DataStore` for dynamic tables. Canonical `MigrationRunner` with platform and agent scopes, multi-package composition, and topological ordering |
+| [`3tears-conversations`](packages/conversations/) | `threetears.conversations` | `Conversation` entity, three-tier `ConversationsCollection`, and per-agent schema migrations |
+| [`3tears-datasources`](packages/datasources/) | `threetears.datasources` | Datasource entities, collections, and a driver abstraction for PostgreSQL, Redshift, Snowflake, and BigQuery backends |
+
+### Infrastructure
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-nats`](packages/nats/) | `threetears.nats` | Typed NATS client, subject builders, message envelopes, and JetStream KV bucket helpers |
+| [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, a `@traced` decorator, ContextVar-backed tags, and ASGI correlation middleware |
+| [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs with NATS broadcast and per-message echo, for coherent cross-pod cache reloads |
+| [`3tears-mcp`](packages/mcp/) | `threetears.mcp` | A Model Context Protocol framework. RBAC-gated `McpServer`, `McpTool` plus `register_tool`, an auth-aware HTTP client, and pluggable identity and authorizer protocols |
+| [`3tears-registry`](packages/registry/) | `threetears.registry` | Multi-pod tool routing. Registration, a NATS KV-backed catalog, discovery, a load-balancing call proxy, heartbeat monitoring, and pluggable routing strategies |
+| [`3tears-scheduled-jobs`](packages/scheduled-jobs/) | `threetears.scheduled_jobs` | Payload-agnostic, multi-pod-safe scheduled-jobs engine. Cross-pod-locked tick loop, reschedule math, and store protocols |
+| [`3tears-media-contracts`](packages/media-contracts/) | `threetears.media.contracts` | Dependency-free media capability contracts shared by providers and tools |
+| [`3tears-enforcement`](packages/enforcement/) | `threetears.enforcement` | Static-analysis enforcement scanners and shared test utilities. Naming conventions, schema agreement, datetime-aware auditing |
+
+### Agent framework
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-agent-tools`](packages/agent/tools/) | `threetears.agent.tools` | Tool framework. `TearsTool` base, `ToolServer` for NATS registration plus dispatch plus audit, context management, built-in tools, and tool-group aliases |
+| [`3tears-agent-memory`](packages/agent/memory/) | `threetears.agent.memory` | Memory extraction, retrieval, hybrid search, and MMR reranking for LLM agents |
+| [`3tears-agent-skills`](packages/agent/skills/) | `threetears.agent.skills` | Procedural memory. Skill definitions and invocation history |
+| [`3tears-agent-workspace`](packages/agent/workspace/) | `threetears.agent.workspace` | Workspace entities, sandbox, format handlers, and namespace-routed L3 access |
+| [`3tears-agent-acl`](packages/agent/acl/) | `threetears.agent.acl` | Unified RBAC evaluator and cache. Groups, roles, assignments, an evaluation hot path, and an introspection trail. Pure Python |
+| [`3tears-agent-audit`](packages/agent/audit/) | `threetears.agent.audit` | One audit envelope and a fire-and-forget `publish_audit` helper, with a single wire format and subject tree across every domain |
+| [`3tears-agent-wake`](packages/agent/wake/) | `threetears.agent.wake` | Foundation for long-running agents. Wake schedules, fires, and webhook subscriptions |
+
+### Models, channels, LangGraph
+
+| Package | Import | Description |
+|---|---|---|
+| [`3tears-models`](packages/models/) | `threetears.models` | LangChain-native model adapters. Anthropic, OpenAI, OpenRouter, VoyageAI, Whisper, and image providers, with capability metadata, circuit breakers, error translation, and unified usage tracking |
+| [`3tears-channels`](packages/channels/) | `threetears.channels` | A unified message protocol with Slack, Discord, and WebSocket adapters |
+| [`3tears-langgraph`](packages/langgraph/) | `threetears.langgraph` | LangGraph integration. Three-tier checkpoint savers, graph builders, and a context registry |
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Agent Pod"
+        AGENT[LangGraph Agent]
+        TOOLS[Tool Wrapper]
+        CHECK[ThreeTierCheckpointSaver]
+        DATA[DataStore]
+    end
+
+    subgraph "3tears Core"
+        ENT[BaseEntity<br/>change tracking]
+        COL[BaseCollection<br/>three-tier cache]
+        L1[L1 SQLite]
+        L2[L2 NATS KV]
+        L3[L3 PostgreSQL]
+    end
+
+    subgraph "3tears Registry"
+        CAT[ToolCatalog<br/>multi-endpoint]
+        PROXY[CallProxy<br/>load-balanced]
+        HB[HeartbeatMonitor]
+    end
+
+    subgraph "3tears MCP"
+        MCP_SERVER[McpServer<br/>RBAC-gated]
+        MCP_GRANTS[Tool grants<br/>+ epoch broadcast]
+    end
+
+    AGENT --> DATA
+    AGENT --> CHECK
+    DATA --> COL
+    COL --> L1 --> L2 --> L3
+    TOOLS --> PROXY
+    PROXY --> CAT
+    MCP_SERVER --> MCP_GRANTS
 ```
 
 ## Development
 
+3tears is a [uv](https://docs.astral.sh/uv/) workspace.
+
 ```bash
 uv sync                      # install all packages in dev mode
 ./scripts/check-all.sh       # lint + typecheck + tests
-./scripts/test.sh             # tests only
-./scripts/test.sh core        # single package
-./scripts/lint.sh             # ruff check + format
-./scripts/typecheck.sh        # mypy strict
+./scripts/test.sh            # tests only
+./scripts/test.sh core       # a single package
+./scripts/lint.sh            # ruff check + format
+./scripts/typecheck.sh       # mypy (strict)
 ```
+
+Use the scripts. Never invoke `pytest`, `ruff`, or `mypy` directly.
+
+## Contributing
+
+1. Fork the repository and cut a feature branch.
+2. Write tests for new behavior. Tests are contracts here.
+3. Run `./scripts/check-all.sh`. Everything passes or it does not ship.
+4. Open a pull request.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Developed with EAD
+
+AI generates code faster than humans can review it. Architectural drift compounds. Type systems fragment. Verification becomes the bottleneck.
+
+3tears was built with [Enforcement-Accelerated Development](https://doi.org/10.5281/zenodo.17968797), a methodology that makes AI-assisted development tractable. It encodes the rules a reviewer would otherwise enforce by hand.
+
+**Three pillars:**
+
+| Pillar | Implementation in 3tears |
+|---|---|
+| Context Sharding | Task docs in `docs/` at roughly 500 LOC each |
+| Enforcement Tests | Static and AST verification in `tests/enforcement/` and the `3tears-enforcement` package |
+| Evidence-Based Debugging | `function:line` context in structured logs via `3tears-observe` |
+
+Violations caught at commit time. Not in production.
+
+- [EAD Whitepaper](https://doi.org/10.5281/zenodo.17968797) -- the full methodology
+- [Mark Pace](https://pace.org) -- author

@@ -85,19 +85,24 @@ def to_langchain_tool(
     :rtype: StructuredTool
     """
 
-    async def _async_wrapper(**kwargs: Any) -> str:
-        """invoke ``tool.run`` and project ``ToolResult`` to a string.
+    async def _async_wrapper(**kwargs: Any) -> tuple[str, Any]:
+        """invoke ``tool.run`` and project ``ToolResult`` to (content, artifact).
 
-        LangChain ``StructuredTool`` coroutines return strings; the
-        ``ToolResult.content`` carries the human-readable payload
-        (success or error). non-success outcomes still return error
-        text rather than raising so the LLM can reason about
-        failures instead of seeing a Python traceback.
+        the tool is registered ``response_format="content_and_artifact"`` so
+        LangChain wraps this into a ``ToolMessage`` carrying both the
+        human-readable ``content`` and the structured ``metadata`` artifact
+        (2b): the offload seam prefers a tool-authored ``summary`` from it,
+        and the graph keeps the structured payload. non-success outcomes
+        still return error text (artifact ``None``) rather than raising so
+        the LLM can reason about failures instead of seeing a traceback.
         """
         outcome = await tool.run(**kwargs)
-        return outcome.content if outcome.content is not None else (outcome.error or "")
+        content = outcome.content if outcome.content is not None else (outcome.error or "")
+        metadata = getattr(outcome, "metadata", None)
+        artifact = metadata if isinstance(metadata, dict) else None
+        return content, artifact
 
-    def _sync_wrapper(**kwargs: Any) -> str:
+    def _sync_wrapper(**kwargs: Any) -> tuple[str, Any]:
         """sync entry to ``tool.run`` -- safe regardless of caller event loop.
 
         path A: no running loop on this thread -> ``asyncio.run`` directly.
@@ -126,4 +131,5 @@ def to_langchain_tool(
         name=tool.mcp_name(),
         description=description if description is not None else schema.description,
         args_schema=args_schema,
+        response_format="content_and_artifact",
     )

@@ -48,6 +48,7 @@ from threetears.observe import get_logger
 
 __all__ = [
     "caller_visible_customer_clause",
+    "caller_visible_customers_query",
     "customer_scope_visibility_clause",
     "three_scope_visibility_clause",
 ]
@@ -164,6 +165,59 @@ def customer_scope_visibility_clause(
     )
     fragment = f"({customer_id_column} IS NULL OR ({customer_clause}))"
     return fragment, params
+
+
+def caller_visible_customers_query(
+    *,
+    user_id: UUID,
+    param_offset: int = 1,
+) -> tuple[str, list[Any]]:
+    """build a query resolving the caller's visible-customer SET, for the RLS session GUC.
+
+    Where :func:`caller_visible_customer_clause` produces a per-row ``EXISTS`` predicate, this
+    resolves the caller's RBAC grants to a CONCRETE set once per request -- the value the hub
+    request middleware writes into the ``app.customer_ids`` row-level-security GUC. It mirrors the
+    SAME three scope arms (single source of truth, no drift):
+
+    - ``scope_type='all'`` (platform admin) -> ``is_all = true`` (the GUC becomes the ``*``
+      wildcard; every customer's rows admitted by the policy).
+    - ``scope_type='type_customer'`` -> ``scope_customer_id`` joins the set.
+    - ``scope_type='namespace'`` -> the namespace's ``customer_id`` joins the set.
+
+    Returns a query yielding exactly ONE row with columns ``is_all`` (bool) and ``customer_ids``
+    (``uuid[]``, possibly empty). A caller with NO grants yields ``is_all=false`` + an empty array,
+    so the GUC admits only platform (``customer_id IS NULL``) rows -- fail-closed for
+    customer-scoped rows. Runs against the platform schema (``role_assignments`` /
+    ``group_members`` / ``namespaces``); the caller sets the search_path (and, under FORCE, runs it
+    on a BYPASSRLS connection so the RBAC tables it reads are not themselves RLS-filtered).
+
+    :param user_id: caller user UUID (``auth["user_id"]``)
+    :ptype user_id: UUID
+    :param param_offset: 1-based position of the ``$N`` placeholder for the caller user_id
+    :ptype param_offset: int
+    :return: ``(sql, bind_params)``; ``bind_params`` has exactly one element (the caller user_id)
+    :rtype: tuple[str, list[Any]]
+    """
+    sql = f"""SELECT
+        COALESCE(bool_or(ra.scope_type = 'all'), false) AS is_all,
+        COALESCE(
+            array_remove(
+                array_agg(DISTINCT
+                    CASE
+                        WHEN ra.scope_type = 'type_customer' THEN ra.scope_customer_id
+                        WHEN ra.scope_type = 'namespace' THEN ns.customer_id
+                    END
+                ),
+                NULL
+            ),
+            ARRAY[]::uuid[]
+        ) AS customer_ids
+      FROM role_assignments ra
+      JOIN group_members gm ON gm.group_id = ra.group_id
+      LEFT JOIN namespaces ns ON ns.namespace_id = ra.scope_namespace_id
+     WHERE gm.member_type = 'user'
+       AND gm.member_id = ${param_offset}"""
+    return sql, [user_id]
 
 
 def three_scope_visibility_clause(

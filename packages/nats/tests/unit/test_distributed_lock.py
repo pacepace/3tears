@@ -100,7 +100,7 @@ class _FakeClient:
         *,
         name: str,
         ttl: timedelta | None = None,
-        storage: str = "file",
+        storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
     ) -> NatsKvBucket:
@@ -322,7 +322,7 @@ async def test_ttl_mismatch_against_existing_bucket_raises() -> None:
             *,
             name: str,
             ttl: timedelta | None = None,
-            storage: str = "file",
+            storage: str = "memory",
             create_if_missing: bool = True,
             history: int = 1,
         ) -> NatsKvBucket:
@@ -380,7 +380,7 @@ async def test_ttl_match_against_existing_bucket_acquires() -> None:
             *,
             name: str,
             ttl: timedelta | None = None,
-            storage: str = "file",
+            storage: str = "memory",
             create_if_missing: bool = True,
             history: int = 1,
         ) -> NatsKvBucket:

@@ -283,6 +283,9 @@ class RedshiftConnectionConfig(BaseModel):
     :param database: database name
     :param username: redshift user
     :param password_ref: secret reference (scheme://locator) for the password
+    :param sslmode: TLS verification mode for ``redshift_connector.connect``
+        (``verify-ca`` default, or ``verify-full`` for proxy-fronted clusters
+        such as Satori that reject ``verify-ca`` mid-handshake)
     :param executor_max_workers: bounded ThreadPoolExecutor size (via
         ``AsyncSyncBridge``). trade-off: lower = serialises queries
         more, less Redshift WLM pressure; higher = more concurrent
@@ -312,6 +315,15 @@ class RedshiftConnectionConfig(BaseModel):
         description="secret reference (scheme://locator, e.g. 'env://REDSHIFT_PASSWORD') "
         "for the redshift password; None during local fixtures only — drivers raise "
         "at use time",
+    )
+    sslmode: Literal["verify-ca", "verify-full"] = Field(
+        default="verify-ca",
+        description="TLS verification mode passed to redshift_connector.connect. "
+        "redshift_connector supports only 'verify-ca' (the default, matching the lib) "
+        "and 'verify-full'. A cluster fronted by a TLS-terminating proxy (e.g. Satori) "
+        "can require 'verify-full' to complete the handshake — 'verify-ca' fails there "
+        "mid-handshake with a broken pipe — so the mode must be configurable per "
+        "datasource rather than hardcoded to the library default.",
     )
     executor_max_workers: int = Field(
         default=5,

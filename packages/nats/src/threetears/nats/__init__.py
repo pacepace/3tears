@@ -36,12 +36,29 @@ from threetears.nats.errors import (
 )
 from threetears.nats.kv import NatsKvBucket
 from threetears.nats.oplog import AppendResult, OpLog, OpRecord
+from threetears.nats.auth_callout import (
+    AuthCalloutRequest,
+    decode_auth_request,
+    mint_auth_response,
+)
+from threetears.nats.subject_permissions import (
+    CROSS_PLATFORM_CACHE_INVALIDATE,
+    Principal,
+    PrincipalPermissions,
+    build_permissions,
+    inbox_prefix_for,
+)
 from threetears.nats.subjects import (
     Subject,
     SubjectKind,
     Subjects,
     get_default_namespace,
     set_default_namespace,
+)
+from threetears.nats.user_jwt import (
+    account_public_key,
+    generate_account_seed,
+    mint_user_jwt,
 )
 from threetears.nats.transport import (
     IncomingMessage,
@@ -63,6 +80,20 @@ __all__ = [
     "Subjects",
     "get_default_namespace",
     "set_default_namespace",
+    # subject permissions (decentralized-auth allow-lists)
+    "CROSS_PLATFORM_CACHE_INVALIDATE",
+    "Principal",
+    "PrincipalPermissions",
+    "build_permissions",
+    "inbox_prefix_for",
+    # NATS v2 user-JWT minting (decentralized auth)
+    "account_public_key",
+    "generate_account_seed",
+    "mint_user_jwt",
+    # NATS auth-callout request/response codecs
+    "AuthCalloutRequest",
+    "decode_auth_request",
+    "mint_auth_response",
     # KV
     "NatsKvBucket",
     # op-log (durable write-path WAL)

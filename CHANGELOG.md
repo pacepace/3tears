@@ -4,6 +4,191 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.10 -- 2026-06-29
+
+Fixes the platform-wide **1-hour agent cliff**: every long-lived agent pod went
+dead ~1h after boot because the auth-callout's NATS user JWT (default 3600s TTL)
+expired while connected, and the NATS server's auth `-ERR` is routed by nats-py
+straight to a terminal `close` that bypasses `_attempt_reconnect` — so
+forever-reconnect (the network-drop path) never recovers it, and host daemons have
+no k8s liveness net.
+
+### Added
+
+- **`NatsClient.reconnect()`** (`threetears.nats`) — a force-reconnect primitive
+  that drives nats-py's own `_attempt_reconnect` on a still-connected client
+  (synthesizing a `StaleConnectionError` through `_process_op_err`), so the
+  transport cycles and the server auth handshake re-runs — under decentralized
+  auth this re-runs the Hub auth-callout, minting a **fresh user JWT with full
+  TTL** — while subscriptions replay under their original `sid` and the same
+  underlying client object is reused (consumers holding `.raw` stay valid).
+  Raises on an already-closed client; no-ops when not currently connected (so it
+  never trips `_process_op_err`'s connection-closing else-branch).
+
+This is the primitive the SDK uses for **proactive NATS-JWT re-auth**: forcing a
+reconnect a margin *before* expiry, while the current JWT is still valid, so the
+connection never reaches the terminal auth-expiry close. (The SDK-side re-auth
+loop, the Hub's TTL-in-handshake reporting, and the env-overridable TTL knob ride
+on this primitive and live in the consumer repos.)
+
+### Fixed
+
+- Three pre-existing over-strict third-party-stub `mypy` errors in
+  `threetears.nats.client` (the gate-excluded `nats` package is now mypy-clean):
+  the wrapper's float `flush()` timeout (nats-py annotates `int` but waits via
+  `asyncio.wait_for`, which accepts float) and `_subscribe_internal`'s `Subject |
+  str` subject (it already coerces `str`).
+
+## v0.13.9 -- 2026-06-28
+
+Platform-wide authentication lands and is **enforced**. The NATS bus is
+fail-closed (an anonymous connect is rejected); every tool call carries a
+Hub-issued, cryptographically-bound caller identity; and RBAC evaluates the
+**verified** identity rather than a self-asserted envelope field. Shipped
+enforce-only — no warn rung, no `no_auth_user`. Also: first-class
+human-in-the-loop interrupts, an `engagement_id` identity dimension, and a
+Kubernetes-resilience pass across the NATS + identity-verifier layer.
+
+### Added — platform auth (A: NATS connection auth)
+
+- **Auth-callout connection auth.** A connecting agent/tool pod presents its
+  bootstrap token; the Hub's auth-callout responder resolves the principal and
+  mints a **least-privilege, per-principal NATS user JWT** (`threetears.nats`:
+  `user_jwt`, `auth_callout`, `subject_permissions`). Each principal's pub/sub
+  allow-list is scoped to its own identity-bound subjects + reply inbox — no bare
+  `>` wildcards, no cross-tenant KV/stream reach.
+- Ships **enforce-only**: `no_auth_user` removed, anonymous connect rejected
+  (`Authorization Violation`); platform services authenticate with per-service
+  static users.
+
+### Added — platform auth (B: identity tokens + crypto binding)
+
+- **Hub-issued identity tokens** — EdDSA/Ed25519 JWS, alg-pinned, published via
+  JWKS over NATS request/reply, minted at the bootstrap handshake and attached to
+  every outgoing `CallContext` (`threetears.core.security`: `identity_token`,
+  `jwks_provider`).
+- **Verify-and-re-stamp at the registry proxy AND the tool pod** — the verified
+  agent/user/customer overwrite the envelope, so RBAC authorizes the verified
+  identity, never a self-asserted one. Fail-closed.
+- **Crypto binding (DPoP-style).** A per-pod proof-of-possession key binds each
+  call (`cnf` + `ath` + body-hash + single-use nonce, replay-guarded); the proxy
+  mints a body-bound `proxy_assertion` (Ed25519 JWS, `aud=pod_id`) the tool pod
+  verifies (`threetears.core.security`: `pop`, `proxy_assertion`, `replay_guard`).
+
+### Added — HITL + identity
+
+- **Human-in-the-loop interrupt surfacing** in `threetears.langgraph` streaming:
+  a LangGraph `interrupt()` emits a `StreamInterruptEvent` terminal and stashes
+  `__interrupt__` instead of an empty end, so an approval gate can pause and
+  resume via `Command(resume=)`. Additive — uninterrupted graphs end as before.
+- **`engagement_id`** promoted to a first-class typed `CallContext` field.
+
+### Changed — Kubernetes resilience
+
+- **Identity-token refresh lifecycle** — pods re-handshake before expiry reusing
+  the pop key (cnf intact), so tool-calling survives past the token TTL.
+- Forever-retry startup for critical bindings (never flip ready with a dead
+  handler); honest liveness/readiness (real `ping()` + a `jwks_warmed` gate);
+  effectively-infinite NATS reconnect; reactive JWKS self-heal on a kid-miss;
+  guarded background loops. Built for undefined start order, N replicas, and pod
+  movement, not a later resilience pass.
+
+### Fixed
+
+- `timezone_converter` resolves `"now"` itself instead of requiring the caller to
+  supply the current datetime — the tool carries the value, the caller never
+  infers it.
+- Three registry proxy tests import their shared dispatch helper relatively, so
+  the canonical full-suite run (`pytest packages/ tests/`) collects cleanly, not
+  only per-package.
+
+## v0.13.8 -- 2026-06-24
+
+On cancel (e.g. a datasource tool-call timeout) the Redshift driver aborted the
+query by closing the client connection — but closing the **client** socket does
+not kill the running **server-side** Redshift query. A real abandoned query ran
+on the cluster for **7.4 hours**, leaking a connection-pool slot the whole time
+and re-exhausting the small pool faster than it could drain, which silently
+stopped an agent from answering.
+
+### Fixed — `3tears-datasources` — `RedshiftDriver` cancellation
+
+- **The driver now captures each connection's `pg_backend_pid()` at open and, on
+  cancel, issues `pg_terminate_backend(<pid>)` from a fresh short-lived
+  connection** before closing/evicting the poisoned connection. Closing the
+  client socket alone left the query running server-side; terminating the backend
+  actually stops it. (The DB user need not be a superuser — `pg_terminate_backend`
+  on one's own session works where `CANCEL` does not.)
+- **Best-effort and non-fatal throughout.** The pid read at open is best-effort
+  (a failure only degrades the server-side cancel; the connection stays usable).
+  The terminate runs in a worker thread under `wait_for`, logs on success,
+  logs + bumps the existing `cancellation.failed` counter on failure, and never
+  raises — the client-socket close + evict path runs regardless.
+- Pairs with consumers capping each datasource's `query_timeout_seconds` at its
+  tool-call timeout: that bounds queries that **respect** `statement_timeout`;
+  this terminates the ones that **wedge past** it.
+
+## v0.13.7 -- 2026-06-23
+
+NATS is the **L2** tier in 3tears — ephemeral, with durability riding JetStream
+R3 replication plus the consumer's real L3 (git/DB). The JetStream helpers,
+however, defaulted to **file** storage, so any consumer running against a
+deliberately memory-only NATS deployment failed at first KV/stream creation with
+`10047 insufficient storage resources available` (it surfaced as a 500 on the
+first collections L2 access — presence join, entry read).
+
+### Fixed — `3tears-nats` / `3tears` — JetStream storage now defaults to memory
+
+- **`NatsClient.kv_bucket` and `NatsClient.ensure_jetstream_stream` now default
+  `storage="memory"`** (was `"file"`); `NatsKvBucket.__init__` matches. `"file"`
+  remains available as a deliberate, explicit opt-in for the rare object that
+  genuinely needs on-disk durability.
+- **`core.cache.NatsKvClient` no longer forces the `collections` bucket to
+  `file`** — it now uses the `BucketConfig` memory default. This is the bucket
+  whose file-backed creation failed on a memory-only account.
+- Net effect: a consumer on a memory-only NATS (no file store, `max_file: 0`)
+  works out of the box; nothing has to opt into memory. File storage is now the
+  conscious exception, matching the L2 contract.
+
+## v0.13.6 -- 2026-06-23
+
+Closes a permanent-staleness race in the cross-pod config-epoch machinery
+that any consumer loading local state before subscribing could hit -- it
+surfaced as a gateway serving a model catalog that contradicted the admin
+API, and the same shape sat latent in the MCP grant cache.
+
+### Fixed — `3tears-epoch` — `threetears.epoch.listener`
+
+- **`EpochListener.subscribe` gains an optional `primed_epoch` parameter so a
+  consumer that loaded local state before subscribing can never go permanently
+  stale.** `subscribe` primed its per-subject last-seen by reading
+  `EpochClient.current()` at subscribe time. A consumer that loads local state (a
+  model catalog, a grant cache) and only then subscribes therefore primed
+  last-seen to whatever epoch had committed by subscribe time — which can be
+  AHEAD of the epoch the loaded state actually reflects. A bump landing in the
+  load→subscribe window then pins last-seen past the loaded state, the periodic
+  `catch_up` sees `current == last_seen` and never fires, and the consumer serves
+  stale state forever with no recovery path. The fix is additive and
+  backward-compatible: pass `primed_epoch` = the epoch the loaded state reflects
+  (read `current()` BEFORE the load, then load, then subscribe). last-seen is then
+  never ahead of the loaded state, so any bump at or after the load is detected
+  (broadcast or `catch_up`); worst case is one redundant reload, never permanent
+  staleness. Omitting `primed_epoch` preserves the prior `current()`-at-subscribe
+  behaviour — correct only when no state was loaded against an earlier epoch.
+
+### Fixed — `3tears-mcp` — `threetears.mcp.auth`
+
+- **`LocalGrantAuthorizer.start` reads the rbac epoch BEFORE reloading the grant
+  cache and primes the listener to it.** `start` reloaded the grant cache and
+  then subscribed, so a `mcp.rbac` bump committing in that window pinned the
+  listener's last-seen past the freshly-loaded grants and the catch-up tick
+  (`current == last_seen`) never recovered it — the authorizer could serve a
+  permanently-stale grant set, making default-deny RBAC decisions on revoked or
+  stale grants. It now reads `current()` before the reload and passes it as
+  `primed_epoch`, mirroring the gateway catalog fix. Also asserts the listener is
+  non-None in the catch-up loop (only ever spawned under epoch mode), closing a
+  latent `union-attr`.
+
 ## v0.13.5 -- 2026-06-22
 
 Closes the remaining gaps that surfaced while converging a host app's bespoke

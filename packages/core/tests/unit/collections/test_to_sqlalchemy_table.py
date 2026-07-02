@@ -37,9 +37,11 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 from threetears.core.collections.schema_backed import (
+    BIGINT_TYPE,
     BOOL_TYPE,
     BYTES_TYPE,
     ENUM_TYPE,
+    INT_TYPE,
     NUMERIC_TYPE,
     STRING_TYPE,
     TSVECTOR_TYPE,
@@ -415,6 +417,33 @@ def test_to_sqla_bool_and_bytes_types() -> None:
     t = schema.to_sqlalchemy_table(sa.MetaData())
     assert isinstance(t.c.flag.type, Boolean)
     assert isinstance(t.c.blob.type, BYTEA)
+
+
+def test_to_sqla_int_and_bigint_types() -> None:
+    """INT_TYPE → SQLAlchemy ``Integer`` (int4); BIGINT_TYPE → ``BigInteger`` (int8).
+
+    A byte-size column that can exceed int4's ~2.1e9 ceiling (multi-GB
+    artifacts) must map to ``BigInteger`` so the emitted DDL width is
+    correct.
+    """
+    from sqlalchemy import BigInteger, Integer
+
+    schema = TableSchema(
+        name="t",
+        primary_key="a",
+        columns=[
+            Column("a", UUID_TYPE),
+            Column("small", INT_TYPE),
+            Column("size_bytes", BIGINT_TYPE),
+        ],
+    )
+    t = schema.to_sqlalchemy_table(sa.MetaData())
+    assert isinstance(t.c.small.type, Integer)
+    assert isinstance(t.c.size_bytes.type, BigInteger)
+    # BigInteger subclasses Integer in SQLAlchemy, so an int4 column is
+    # NOT a BigInteger instance -- the int4 vs int8 distinction survives
+    # for Alembic autogen parity.
+    assert not isinstance(t.c.small.type, BigInteger)
 
 
 def test_to_sqla_unknown_column_type_raises_keyerror() -> None:

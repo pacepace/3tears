@@ -4,10 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-models"
-version = "0.13.5"
+version = "0.13.10"
 description = "LangChain-native AI model factories with capability metadata, circuit breakers, and usage tracking for the 3tears platform"
+readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "3tears-media-contracts",
     "3tears-observe",

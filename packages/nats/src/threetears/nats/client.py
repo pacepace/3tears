@@ -4,9 +4,9 @@
 talk to NATS. it absorbs the lifecycle, dual-phase reconnect-ceiling,
 rate-limited error logging, deadletter dispatch, typed publish, and
 JetStream KV access that previously lived in three half-overlapping
-wrappers (``3tears/hub/common/nats.py``,
+wrappers (``<upstream-hub>/common/nats.py``,
 ``threetears.core.cache.kv.NatsKvClient`` (formerly
-``cache.nats.NatsClient``), ``3tears_agents.runtime.nats_transport``).
+``cache.nats.NatsClient``), ``<consumer>.runtime.nats_transport``).
 there is exactly one canonical wrapper now; :func:`from nats import`
 outside this module is flagged by the per-repo enforcement walker.
 
@@ -28,10 +28,15 @@ design notes
   :meth:`shutdown` all take ``timedelta`` (not raw seconds floats) so
   callers cannot pass a bare ``5`` ambiguously.
 - **dual-phase reconnect**: startup is bounded by ``startup_timeout``
-  via ``asyncio.wait_for``; runtime uses
-  :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` so a transient blip does not
-  kill the process. inherits the rationale from
-  ``3tears/hub/common/nats.py`` (deleted as part of this consolidation).
+  via ``asyncio.wait_for``; once connected, runtime reconnect is
+  UNBOUNDED (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` ``= -1``) so a NATS
+  outage of any duration -- broker restart, node failure, network
+  partition -- is ridden out and recovered with no human action,
+  instead of the client giving up and self-closing after a finite
+  ceiling. subscriptions survive because nats-py replays them under
+  their original ``sid`` on every reconnect. inherits the rationale
+  from ``<upstream-hub>/common/nats.py`` (deleted as part of this
+  consolidation).
 - **rate-limited error logging**: identical errors within
   :data:`_ERROR_LOG_RATE_LIMIT_SECONDS` log at debug; distinct errors
   log at error. prevents the 60-DNS-error-per-minute incident pattern.
@@ -57,6 +62,7 @@ from nats.js.api import AckPolicy as _NatsAckPolicy, ConsumerConfig as _NatsCons
 from nats.errors import (
     ConnectionClosedError as _NatsConnectionClosedError,
     NoRespondersError as _NatsNoRespondersError,
+    StaleConnectionError as _NatsStaleConnectionError,
     TimeoutError as _NatsTimeoutError,
 )
 from pydantic import BaseModel, ValidationError
@@ -87,6 +93,7 @@ __all__ = [
     "RUNTIME_MAX_RECONNECT_ATTEMPTS",
     "STARTUP_MAX_RECONNECT_ATTEMPTS",
     "NatsClient",
+    "ReconnectCallback",
     "Subscription",
 ]
 
@@ -96,6 +103,11 @@ log = get_logger(__name__)
 
 _T = TypeVar("_T", bound=BaseModel)
 
+#: an async, argument-less callback a consumer registers via :meth:`NatsClient.add_reconnect_callback`
+#: to run after each successful NATS reconnect (e.g. re-mint a short-lived credential whose backing
+#: session the broker may have dropped during the outage).
+ReconnectCallback = Callable[[], Awaitable[None]]
+
 
 # ---------------------------------------------------------------------------
 # tunables
@@ -104,10 +116,22 @@ _T = TypeVar("_T", bound=BaseModel)
 #: max reconnect attempts during startup (asyncio.wait_for enforces wall-time bound).
 STARTUP_MAX_RECONNECT_ATTEMPTS: Final[int] = 15
 
-#: max reconnect attempts after first successful connect. ``-1`` (forever) is rejected
-#: deliberately; ~200s of reconnect budget at ``reconnect_time_wait=2s`` covers any real
-#: transient outage without becoming an infinite-retry sink.
-RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = 100
+#: max reconnect attempts after first successful connect. ``-1`` means FOREVER: a
+#: pod that loses NATS -- broker restart, node failure, network partition of ANY
+#: duration -- must keep retrying until NATS returns, never give up and self-close.
+#: nats-py treats ``< 0`` as unbounded: in ``_select_next_server`` the
+#: ``max_reconnect_attempts > 0`` discard branch is skipped, so the server is never
+#: evicted from the pool and ``NoServersError`` -- the one trigger that permanently
+#: ``close()``s the client on the reconnect path -- is never raised; subscriptions
+#: are replayed on every reconnect under their original ``sid`` so the wrapper's
+#: dispatch loops survive untouched. each attempt is paced by ``reconnect_time_wait``
+#: (a bounded 2s retry, never a hot spin). the previous finite ceiling (100, ~200s of
+#: budget) was the live k8s-resilience bug: any outage longer than the budget closed
+#: the client for good with NO auto-recovery -- and because consumer liveness stayed
+#: 200, k8s never restarted the wedged pod either. forever-reconnect removes the
+#: brick; the consumer's liveness ``is_closed`` check is the last-resort net for the
+#: residual non-recoverable close paths (e.g. a persistent auth violation).
+RUNTIME_MAX_RECONNECT_ATTEMPTS: Final[int] = -1
 
 #: default startup timeout (matches platform's ``startup_timeout_seconds`` env var).
 DEFAULT_STARTUP_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
@@ -236,6 +260,7 @@ class NatsClient:
         "_subscriptions",
         "_buckets",
         "_kv_lock",
+        "_reconnect_callbacks",
     )
 
     def __init__(
@@ -251,6 +276,10 @@ class NatsClient:
         self._subscriptions: list[Subscription] = []
         self._buckets: dict[str, NatsKvBucket] = {}
         self._kv_lock = asyncio.Lock()
+        # consumer-registered post-reconnect hooks. nats-py exposes a SINGLE reconnect callback slot
+        # (wired in :meth:`connect` to a dispatcher that fans out to this list), so the wrapper owns
+        # the fan-out here. :meth:`connect` rebinds this to the same list the dispatcher closes over.
+        self._reconnect_callbacks: list[ReconnectCallback] = []
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -261,10 +290,14 @@ class NatsClient:
         cls,
         *,
         nats_url: str,
-        nats_subject_namespace: str,
+        nats_subject_namespace: str = "3tears",
         client_name: str,
         cluster_urls: list[str] | None = None,
         auth_token: str | None = None,
+        user_credentials: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        inbox_prefix: str | None = None,
         startup_timeout: timedelta = DEFAULT_STARTUP_TIMEOUT,
         verify_jetstream: bool = True,
     ) -> NatsClient:
@@ -284,8 +317,28 @@ class NatsClient:
         :ptype client_name: str
         :param cluster_urls: optional additional cluster member URLs
         :ptype cluster_urls: list[str] | None
-        :param auth_token: optional NATS auth token
+        :param auth_token: optional NATS auth token. under decentralized auth (platform-auth A)
+            this carries the pod's injected bootstrap token: the NATS server forwards it to the
+            Hub auth-callout responder, which validates it and mints the connection's user JWT +
+            subject permissions. anonymous (``None``) on the legacy shared bus.
         :ptype auth_token: str | None
+        :param user_credentials: optional path to a NATS ``.creds`` file (decentralized-auth static
+            credentials). used for principals provisioned with standing creds rather than the
+            auth-callout path; ``None`` leaves credential auth off.
+        :ptype user_credentials: str | None
+        :param user: optional NATS username for centralized config-mode static auth (server
+            ``authorization.users``). each platform service connects with its OWN user/password so
+            the server applies that user's least-privilege subject permissions; pairs with
+            ``password``. ``None`` leaves username/password auth off.
+        :ptype user: str | None
+        :param password: optional NATS password paired with ``user`` for config-mode static auth.
+            ``None`` leaves username/password auth off.
+        :ptype password: str | None
+        :param inbox_prefix: optional request/reply inbox prefix. decentralized auth scopes each
+            principal to its OWN inbox (e.g. ``_INBOX_agent_pod_{pod_id}``) instead of the shared
+            global ``_INBOX`` tree, so a responder's replies cannot be observed cross-principal.
+            ``None`` keeps the nats-py default ``_INBOX``.
+        :ptype inbox_prefix: str | None
         :param startup_timeout: max wall time to spend obtaining first successful connection
         :ptype startup_timeout: timedelta
         :param verify_jetstream: when True (default) verify JetStream is reachable post-connect
@@ -305,17 +358,44 @@ class NatsClient:
         if cluster_urls:
             servers.extend(u.strip() for u in cluster_urls if u.strip())
 
+        # nats-py reads its single ``reconnected_cb`` slot at reconnect time, but the wrapper instance
+        # does not exist yet (it is built after ``nats.connect`` returns). bridge the gap with a list
+        # the dispatcher closes over now and the instance adopts below, so consumer callbacks
+        # registered post-connect via :meth:`add_reconnect_callback` are dispatched on every reconnect.
+        reconnect_callbacks: list[ReconnectCallback] = []
+
+        async def _dispatch_reconnected() -> None:
+            """fan a reconnect out to the wrapper log + every consumer-registered callback."""
+            await _on_reconnected()
+            for callback in list(reconnect_callbacks):
+                try:
+                    await callback()
+                except Exception as exc:  # noqa: BLE001 — one bad hook must not abort the others
+                    # NOSILENT: a failing reconnect hook is logged so a recurring failure surfaces;
+                    # it must never break the reconnect callback chain or the nats-py reconnect path.
+                    log.warning("reconnect callback failed: %s", exc)
+
         options: dict[str, object] = {
             "name": client_name,
             "allow_reconnect": True,
             "max_reconnect_attempts": RUNTIME_MAX_RECONNECT_ATTEMPTS,
             "reconnect_time_wait": 2,
-            "reconnected_cb": _on_reconnected,
+            "reconnected_cb": _dispatch_reconnected,
             "disconnected_cb": _on_disconnected,
             "error_cb": _on_error,
         }
         if auth_token:
             options["token"] = auth_token
+        if user_credentials:
+            options["user_credentials"] = user_credentials
+        if user:
+            options["user"] = user
+        if password:
+            options["password"] = password
+        if inbox_prefix:
+            # nats-py takes the inbox prefix as bytes; scope it per-principal so request/reply
+            # inboxes never share the global `_INBOX` tree across principals.
+            options["inbox_prefix"] = inbox_prefix.encode("ascii")
 
         started_at = time.monotonic()
         try:
@@ -351,7 +431,28 @@ class NatsClient:
             },
         )
 
-        return cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
+        client = cls(raw=raw_client, namespace=nats_subject_namespace, client_name=client_name)
+        # adopt the SAME list the dispatcher closes over, so ``add_reconnect_callback`` appends are
+        # visible to the already-installed ``reconnected_cb``.
+        client._reconnect_callbacks = reconnect_callbacks
+        return client
+
+    def add_reconnect_callback(self, callback: ReconnectCallback) -> None:
+        """register an async callback invoked after each successful NATS reconnect.
+
+        the wrapper rides out an outage of any duration (unbounded runtime reconnect) and replays
+        subscriptions automatically, but state the BROKER holds for this connection -- e.g. a
+        Hub-side session backing a short-lived credential -- may have been dropped meanwhile. a
+        consumer registers a hook here to re-establish such state (re-handshake, re-mint a token)
+        once the connection is back. callbacks run in registration order; one raising is logged and
+        does not stop the others or the reconnect path.
+
+        :param callback: an argument-less coroutine function run after each reconnect
+        :ptype callback: ReconnectCallback
+        :return: nothing
+        :rtype: None
+        """
+        self._reconnect_callbacks.append(callback)
 
     @property
     def namespace(self) -> str:
@@ -409,10 +510,56 @@ class NatsClient:
         if not self._raw.is_connected:
             return False
         try:
-            await self._raw.flush(timeout=timeout)
+            # nats-py annotates flush(timeout: int) but its body waits via asyncio.wait_for, which
+            # accepts a float; the wrapper deliberately exposes sub-second float timeouts (a 1.5s
+            # health-check ping), so the int annotation is over-strict, not a real mismatch.
+            await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
         except Exception:
             return False
         return True
+
+    async def reconnect(self) -> None:
+        """force a clean reconnect of the underlying connection, re-running server auth.
+
+        nats-py exposes no public force-reconnect. this drives its OWN op-error reconnect path
+        (``nats.aio.client.Client._process_op_err``) on a still-CONNECTED client: that transitions
+        the client to ``RECONNECTING`` and spawns ``_attempt_reconnect``, which drops + re-opens the
+        transport, re-runs the server handshake -- under decentralized auth (platform-auth A) this
+        re-runs the Hub auth-callout, minting a FRESH user JWT with full TTL -- and replays every
+        live subscription under its original ``sid``. the registered
+        :meth:`add_reconnect_callback` hooks then fire.
+
+        the motivating use is **proactive NATS-JWT re-auth**: a pod's auth-callout-minted user JWT
+        is short-lived, and at expiry the server sends an ``-ERR`` that nats-py routes STRAIGHT to a
+        terminal ``_close`` (it never enters ``_attempt_reconnect``, so forever-reconnect --
+        :data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` -- does NOT cover it). triggering this reconnect a
+        margin BEFORE expiry re-auths while the current JWT is still valid, so the connection never
+        reaches that terminal close. the SAME underlying ``_raw`` object is reused, so consumers
+        holding :attr:`raw` (e.g. the L3 proxy backend) stay valid across the cycle.
+
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: if the client is already terminally closed -- a closed connection
+            cannot be reconnected in place and the caller must establish a fresh client (the
+            reactive self-heal path)
+        """
+        raw = self._raw
+        if raw.is_closed:
+            raise NatsClientError(
+                "cannot reconnect a closed NATS client; a closed connection requires a fresh connect",
+            )
+        if not raw.is_connected:
+            # nats-py is already mid-reconnect (forever-reconnect after a drop); a forced trigger is
+            # moot AND, via _process_op_err's not-connected else-branch, would _close the client.
+            log.debug("reconnect() skipped: client not currently connected (a reconnect is already in flight)")
+            return
+        # rationale: _process_op_err is nats-py's single internal entry point that, on a CONNECTED
+        # client, transitions to RECONNECTING and spawns _attempt_reconnect (drop+reopen transport,
+        # re-run auth-callout, replay subs under their sid, fire reconnected_cb). we synthesize a
+        # StaleConnectionError -- the connection is about to go stale as the user JWT nears expiry --
+        # so the reconnect+re-auth happens proactively. the is_connected guard above keeps us out of
+        # the method's else-branch, which would _close. nats-py 2.x exposes no public alternative.
+        await raw._process_op_err(_NatsStaleConnectionError())  # noqa: SLF001 -- no public force-reconnect; see rationale above
 
     @property
     def raw(self) -> _NatsPyClient:
@@ -523,7 +670,9 @@ class NatsClient:
         :return: nothing
         :rtype: None
         """
-        await self._raw.flush(timeout=timeout)
+        # nats-py annotates flush(timeout: int) but waits via asyncio.wait_for (accepts float); the
+        # wrapper's float timeout is intentional, so the int annotation is over-strict.
+        await self._raw.flush(timeout=timeout)  # type: ignore[arg-type]
 
     async def publish(
         self,
@@ -792,7 +941,7 @@ class NatsClient:
     async def _subscribe_internal(
         self,
         *,
-        subject: Subject,
+        subject: Subject | str,
         raw_cb: "RawMessageCallback | None",
         typed_cb: Callable[[Any], Awaitable[None]] | None,
         message_type: type[BaseModel] | None,
@@ -802,8 +951,11 @@ class NatsClient:
     ) -> Subscription:
         """common subscribe path used by :meth:`subscribe` / :meth:`subscribe_typed`.
 
-        :param subject: subject pattern or point
-        :ptype subject: Subject
+        a bare ``str`` subject is accepted and coerced to :class:`Subject` below (the
+        test-ergonomic shorthand), so the param is ``Subject | str`` to match both callers.
+
+        :param subject: subject pattern or point (``str`` coerced to :class:`Subject`)
+        :ptype subject: Subject | str
         :param raw_cb: raw-bytes callback (mutually exclusive with typed_cb)
         :ptype raw_cb: RawMessageCallback | None
         :param typed_cb: Pydantic-decoded callback (mutually exclusive with raw_cb)
@@ -1089,7 +1241,7 @@ class NatsClient:
         *,
         name: str,
         ttl: timedelta | None = None,
-        storage: str = "file",
+        storage: str = "memory",
         create_if_missing: bool = True,
         history: int = 1,
     ) -> NatsKvBucket:
@@ -1097,14 +1249,16 @@ class NatsClient:
 
         bucket name is auto-prefixed with the configured namespace
         (``{namespace}-{name}``). passing ``ttl=None`` means values do
-        not expire. storage is one of ``"file"`` (default; survives
-        restarts) or ``"memory"``.
+        not expire. storage defaults to ``"memory"``: in 3tears, NATS is
+        the **L2** tier (ephemeral; durability rides JetStream R3
+        replication + the consumer's real L3). Pass ``"file"`` only as a
+        deliberate opt-in when a bucket genuinely needs on-disk durability.
 
         :param name: bucket name suffix (will be prefixed by namespace)
         :ptype name: str
         :param ttl: optional time-to-live for entries; ``None`` for no expiry
         :ptype ttl: timedelta | None
-        :param storage: ``"file"`` or ``"memory"``
+        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :param create_if_missing: create bucket if it does not exist
         :ptype create_if_missing: bool
@@ -1138,22 +1292,23 @@ class NatsClient:
         *,
         name: str,
         subjects: list[str],
-        storage: str = "file",
+        storage: str = "memory",
     ) -> str:
-        """create (or update) a durable JetStream stream over given subjects.
+        """create (or update) a JetStream stream over given subjects.
 
         idempotent: binds to an existing stream of the same name and reconciles
         its subject set, else creates it. the stream name is namespace-prefixed
-        (``{namespace}-{name}``) to match the KV-bucket convention. ``file``
-        storage rides the ``nats-jetstream`` named volume and survives restarts;
-        this is what makes a finished answer durable when no consumer is
-        attached at publish time.
+        (``{namespace}-{name}``) to match the KV-bucket convention. storage
+        defaults to ``"memory"``: NATS is the **L2** tier in 3tears (ephemeral;
+        durability rides JetStream R3 replication + the consumer's real L3).
+        Pass ``"file"`` only as a deliberate opt-in when a stream genuinely
+        needs on-disk durability.
 
         :param name: stream name suffix (namespace-prefixed)
         :ptype name: str
         :param subjects: subject patterns the stream captures
         :ptype subjects: list[str]
-        :param storage: ``"file"`` (durable, default) or ``"memory"``
+        :param storage: ``"memory"`` (default — L2) or ``"file"`` (opt-in)
         :ptype storage: str
         :return: full namespace-prefixed stream name
         :rtype: str
@@ -1436,6 +1591,18 @@ async def _verify_jetstream(nc: _NatsPyClient, primary_url: str) -> None:
 
 async def _on_reconnected() -> None:
     """nats-py callback invoked on reconnect.
+
+    no re-subscription is needed here: nats-py replays every live
+    subscription under its original ``sid`` inside ``_attempt_reconnect``
+    (it re-sends the ``SUB`` command for each entry in ``client._subs``
+    and never touches the subscription's pending-message queue), so the
+    wrapper's per-subscription dispatch loop -- which iterates
+    ``raw_sub.messages`` -- keeps reading the SAME queue across the
+    disconnect/reconnect and is never observed ending. the loop only
+    ends on an explicit unsubscribe/drain or a permanent client close;
+    with forever-reconnect (:data:`RUNTIME_MAX_RECONNECT_ATTEMPTS` ``=
+    -1``) the reconnect path never closes the client, so an outage can
+    no longer silently kill a subscription.
 
     :return: nothing
     :rtype: None

@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-langgraph"
-version = "0.13.5"
+version = "0.13.10"
 description = "Three-tier LangGraph checkpoint saver: L1 SQLite -> L2 NATS KV -> L3 PostgreSQL"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",
@@ -21,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "3tears",
+    "3tears-media-contracts",
     "3tears-observe",
     "langchain>=1.0",
     "langchain-core>=1.0",
@@ -38,6 +41,7 @@ packages = ["src/threetears"]
 
 [tool.uv.sources]
 3tears = { workspace = true }
+3tears-media-contracts = { workspace = true }
 3tears-observe = { workspace = true }
 
 [tool.mypy]

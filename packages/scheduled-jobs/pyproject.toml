@@ -4,11 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scheduled-jobs"
-version = "0.13.5"
+version = "0.13.10"
 description = "Generic, payload-agnostic, multipod-safe scheduled-jobs core -- cross-pod-locked tick engine, reschedule math, store protocols, and a default kind+payload store"
 readme = "README.md"
 requires-python = ">=3.14"
 authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: AsyncIO",

@@ -20,10 +20,11 @@ from threetears.registry.discovery import DiscoverRequest, DiscoverToolEntry, Di
 from threetears.registry.health import HeartbeatSubscriber
 from threetears.registry.heartbeat_collection import HeartbeatCollection
 from threetears.registry.l1_cache import create_registry_l1_backend
-from threetears.registry.auth import AllowAllAuthorizer
-from threetears.registry.proxy import CallProxy, ProxyCallRequest, ProxyCallResponse
+from threetears.registry.proxy import ProxyCallResponse
 from threetears.registry.registration import ProbeResponse, RegistrationHandler
 from threetears.registry.routing import LeastConnectionsStrategy
+
+from ._dispatch_auth import make_authed_request, make_proxy
 
 
 @pytest.fixture(autouse=True)
@@ -108,47 +109,11 @@ def _make_nats_msg(
 _DEFAULT_CORRELATION_ID = UUID("01948a00-6666-7000-8000-0000abcdef01")
 
 
-_DEFAULT_AGENT_ID = UUID("01948a00-bbbb-7000-8000-000000a9e888")
-
-
-def _make_call_request(
-    agent_id: UUID | None = None,
-    tool_name: str = "threetears.calculator",
-    tool_version: str = "1.0.0",
-    arguments: dict[str, Any] | None = None,
-    correlation_id: UUID | None = None,
-) -> ProxyCallRequest:
-    """create proxy call request for testing.
-
-    :param agent_id: agent identifier stamped on the carried
-        :class:`CallContext`; defaults to a stable UUID
-    :ptype agent_id: UUID | None
-    :param tool_name: namespaced tool name
-    :ptype tool_name: str
-    :param tool_version: semver version string
-    :ptype tool_version: str
-    :param arguments: tool input parameters
-    :ptype arguments: dict[str, Any] | None
-    :param correlation_id: request correlation identifier stamped
-        onto the carried :class:`CallContext`; defaults to a stable UUID
-    :ptype correlation_id: UUID | None
-    :return: test proxy call request
-    :rtype: ProxyCallRequest
-    """
-    if arguments is None:
-        arguments = {"expression": "2+2"}
-    effective_correlation_id = correlation_id if correlation_id is not None else _DEFAULT_CORRELATION_ID
-    effective_agent_id = agent_id if agent_id is not None else _DEFAULT_AGENT_ID
-    result = ProxyCallRequest(
-        tool_name=tool_name,
-        tool_version=tool_version,
-        arguments=arguments,
-        context=CallContext(
-            correlation_id=effective_correlation_id,
-            agent_id=effective_agent_id,
-        ),
-    )
-    return result
+# the enforce-only auth scaffolding (token+pop requests + a JWKS-wired proxy) is shared across the
+# registry dispatch-test modules; see ``_dispatch_auth``. these aliases keep the test bodies reading
+# the same while every dispatch is now authenticated (v0.13.9 verifies identity + pop, fail-closed).
+_make_call_request = make_authed_request
+_make_proxy = make_proxy
 
 
 def _make_tool_response(
@@ -380,7 +345,7 @@ class TestMultiPodRouting:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=1.0)
+        proxy = _make_proxy(catalog, namespace="test", timeout=1.0)
         nc = AsyncMock()
         nc.request_raw = AsyncMock(side_effect=TimeoutError("timed out"))
         await proxy.start(nc)
@@ -402,7 +367,7 @@ class TestMultiPodRouting:
         )
         await catalog.register(entry)
 
-        proxy = CallProxy(catalog, AllowAllAuthorizer(), namespace="test", timeout=5.0)
+        proxy = _make_proxy(catalog, namespace="test", timeout=5.0)
         nc = AsyncMock()
         nc.request_raw = AsyncMock(return_value=_make_tool_response())
         await proxy.start(nc)

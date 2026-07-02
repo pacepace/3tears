@@ -118,6 +118,18 @@ ALLOWLIST: list[tuple[str, str, str, str]] = [
         "_analyzers",
         "constructor-injected config mapping, not cached state",
     ),
+    # -- agent-tools: HubObjectResolver immutable object-id→handle memo --
+    (
+        "agent-tools/object_resolver.py",
+        "HubObjectResolver",
+        "_cache",
+        "per-instance memo of IMMUTABLE (customer_id, object_id)->ObjectHandle "
+        "mappings (an object id->key binding never changes once committed), "
+        "FIFO-capped, tenant-keyed on the VERIFIED customer so no cross-tenant "
+        "reuse; genuinely ephemeral per-pod (no cross-instance coherence needed "
+        "precisely because the mappings are immutable). Its sibling engagement "
+        "resolver deliberately has NO cache because scope IS mutable",
+    ),
     # -- core: SqlL3Backend table→TableSchema registration map --
     (
         "core/backends/sql.py",

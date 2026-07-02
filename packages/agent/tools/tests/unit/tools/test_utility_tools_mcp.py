@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from threetears.agent.tools.base_tool import MCPToolDefinition, TearsTool, ToolResult
-from threetears.agent.tools.builtin.timezone_converter import TimezoneConverterTool
+from threetears.agent.tools.builtin.timezone_converter import (
+    TimezoneConverterTool,
+    _convert_timezone,
+)
 from threetears.agent.tools.builtin.unit_converter import UnitConverterTool
 from threetears.agent.tools.builtin.analyze_media import AnalyzeMediaTool
 from threetears.agent.tools.document import ParseDocumentTool
@@ -90,6 +95,38 @@ class TestTimezoneConverterTool:
         assert isinstance(result, ToolResult)
         assert result.success is False
         assert result.error is not None
+
+    def test_now_resolves_current_date_in_target(self) -> None:
+        """'now' lands on the ACTUAL current date in the target zone.
+
+        Regression for the off-by-one a caller hit when it had to infer the
+        current datetime itself. The tool now reads the clock, so 'now' in a
+        target zone matches that zone's real current date -- the value is
+        carried by the tool, never inferred by the caller.
+        """
+        target = "Asia/Tokyo"
+        expected_date = datetime.now(ZoneInfo(target)).strftime("%A, %B %d, %Y")
+        result = _convert_timezone("now", "America/Los_Angeles", target)
+        assert not result.startswith("[TOOL ERROR]")
+        # output is "<source> = <target>"; the target side carries the real date
+        assert expected_date in result.split("=", 1)[1]
+
+    def test_now_sentinels_all_resolve_to_clock(self) -> None:
+        """'now', 'current', 'right now', and empty all resolve to the clock."""
+        for token in ("now", "Now", "current", "right now", ""):
+            result = _convert_timezone(token, "UTC", "UTC")
+            assert not result.startswith("[TOOL ERROR]"), token
+            # same zone, same instant -> both sides identical
+            source, target = (part.strip() for part in result.split("=", 1))
+            assert source == target, token
+
+    def test_now_via_run_succeeds(self) -> None:
+        """tool.run with time_str='now' returns a successful ToolResult."""
+        tool = TimezoneConverterTool()
+        result = asyncio.run(tool.run(time_str="now", from_timezone="America/New_York", to_timezone="Asia/Tokyo"))
+        assert isinstance(result, ToolResult)
+        assert result.success is True
+        assert result.error is None
 
 
 # -- UnitConverterTool --

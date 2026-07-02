@@ -52,6 +52,7 @@ from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.observe import get_logger
 
 __all__ = [
+    "BIGINT_TYPE",
     "BOOL_TYPE",
     "BYTES_TYPE",
     "Column",
@@ -139,6 +140,12 @@ DATETIMETZ_TYPE = "datetimetz"
 JSONB_TYPE = "jsonb"
 BYTES_TYPE = "bytes"
 INT_TYPE = "int"
+# BIGINT_TYPE: column declared as ``BIGINT`` (64-bit int8). INT_TYPE
+# (int4) tops out at ~2.1e9, which overflows for byte-size columns of
+# multi-GB artifacts (a pcap / db-dump ``size_bytes``); use this tag
+# for any count that can exceed int4. Read/write coercion matches
+# INT_TYPE (a plain Python ``int``); only the L3 DDL width differs.
+BIGINT_TYPE = "bigint"
 BOOL_TYPE = "bool"
 VECTOR_TYPE = "vector"
 
@@ -911,6 +918,7 @@ class TableSchema:
         # initialisation cost is large.
         import sqlalchemy as sa
         from sqlalchemy import (
+            BigInteger,
             Boolean,
             DateTime,
             Enum as SAEnum,
@@ -938,6 +946,7 @@ class TableSchema:
             JSONB_TYPE: lambda col: JSONB(),
             BYTES_TYPE: lambda col: BYTEA(),
             INT_TYPE: lambda col: Integer(),
+            BIGINT_TYPE: lambda col: BigInteger(),
             BOOL_TYPE: lambda col: Boolean(),
             VECTOR_TYPE: lambda col: _require_pgvector()(col.vector_dim),
             NUMERIC_TYPE: lambda col: Numeric(col.precision, col.scale),

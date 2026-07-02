@@ -96,34 +96,40 @@ class EpochListener:
         self,
         subject: Subject,
         on_bump: BumpCallback,
+        primed_epoch: int | None = None,
     ) -> None:
         """register a callback for monotonic bumps on a subject.
 
-        primes the per-subject last-seen via :meth:`EpochClient.
-        current` BEFORE the NATS subscription registers, so the
-        first broadcast a subscriber receives is compared against
-        the durable Postgres view rather than against ``0``. without
-        this priming, every cold-started pod would fire its
+        primes the per-subject last-seen BEFORE the NATS subscription
+        registers, so the first broadcast a subscriber receives is
+        compared against the durable view rather than against ``0``.
+        without this priming, every cold-started pod would fire its
         ``on_bump`` callback once on the first arriving broadcast
-        even when the pod's local state already reflects that
-        epoch (e.g. via :meth:`EpochClient.current` having been
-        called by an upstream catalog-load).
+        even when the pod's local state already reflects that epoch.
 
-        race window (intentional): a bump that commits between the
-        :meth:`EpochClient.current` read and the NATS subscribe
-        registration is missed by the broadcast (subscription not
-        live) and not reflected in ``primed`` (read before commit).
-        the next broadcast at higher epoch fires correctly via
-        gap-jump dispatch; if no further bump occurs, the periodic
-        :meth:`catch_up` tick is the safety net. proven by
-        :func:`tests.unit.test_listener.TestEpochListenerRaceRecovery.
+        WHERE last-seen is primed FROM matters for correctness when
+        the consumer loaded local state (a catalog, a cache) before
+        subscribing. pass ``primed_epoch`` = the epoch that loaded
+        state reflects (read :meth:`EpochClient.current` BEFORE the
+        load, then load, then subscribe). last-seen is then never
+        ahead of the loaded state, so any bump that commits at or
+        after the load is detected (broadcast or :meth:`catch_up`)
+        and the state can never go PERMANENTLY stale. omitting
+        ``primed_epoch`` reads :meth:`EpochClient.current` at
+        subscribe time -- correct only when no state was loaded
+        against an earlier epoch, because a bump landing between the
+        load and this read would advance last-seen PAST the loaded
+        state and the catch-up (``current == last_seen``) would never
+        recover it.
+
+        race window (intentional, recoverable): a bump that commits
+        between the primed epoch and the NATS subscribe registration
+        is missed by the broadcast (subscription not live) but leaves
+        last-seen BEHIND it, so the next broadcast at a higher epoch
+        fires via gap-jump dispatch, or the periodic :meth:`catch_up`
+        tick recovers it. proven by :func:`tests.unit.test_listener.
+        TestEpochListenerRaceRecovery.
         test_catch_up_recovers_when_bump_lands_during_subscribe_window`.
-        the alternative ordering (subscribe-first, prime-second)
-        trades this race for one where a broadcast received
-        between subscribe and prime advances last_seen ahead of the
-        prime read; the prime would then write a STALER value over
-        the live one. the current order keeps the failure mode
-        recoverable via the documented pull-on-stale path.
 
         narrow exception scope: :class:`~threetears.nats.errors.
         SubscribeError` propagates because cache coherence is not
@@ -136,12 +142,18 @@ class EpochListener:
         :param on_bump: async callback invoked on each monotonic
             bump with ``(new_epoch, payload)``
         :ptype on_bump: BumpCallback
+        :param primed_epoch: epoch to prime last-seen to -- the epoch
+            the consumer's already-loaded local state reflects (read
+            ``current()`` before loading). ``None`` reads
+            ``current()`` now (no state loaded against an earlier
+            epoch)
+        :ptype primed_epoch: int | None
         :return: nothing
         :rtype: None
         :raises SubscribeError: if the underlying NATS subscribe
             fails to register
         """
-        primed = await self._epoch_client.current(subject)
+        primed = primed_epoch if primed_epoch is not None else await self._epoch_client.current(subject)
         self._last_seen[subject.path] = primed
         log.debug(
             "epoch listener primed last-seen",
