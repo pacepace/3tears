@@ -4,6 +4,29 @@ All notable changes to the 3tears platform packages are recorded here.
 This project follows semantic versioning across all 21 workspace
 packages (bumped in lock-step).
 
+## v0.13.11 -- 2026-07-02
+
+The **scope-and-objects** framework family: the huge-object offload backend and
+the general engagement re-authorization seam that pentest scan scope is built on.
+
+- **Object offload (Path-2).** A streaming S3/MinIO `ObjectStore` with scope-first
+  keys (`object-store`); a langgraph offload seam that streams large tool results
+  to the store and threads an `ObjectHandle` through the graph, plus tool-authored
+  offload summaries via `content_and_artifact` (`langgraph`); the pod-side produce
+  seam and a `build_s3_object_store` secret-ref-resolving wiring helper
+  (`agent-tools`); the object-catalog NATS subjects — `hub_object_commit` /
+  `hub_object_resolve` — and `list_entries` (`nats`, `object-store`); a general
+  report tool that renders to the store and a general deliver tool that resolves an
+  object id to a presigned URL, both pod-side and identity-token authed against the
+  verified tenant (`agent-tools`); and a `BIGINT_TYPE` column tag for int8 columns
+  (`core`).
+- **Engagement scope (ES-1/ES-5).** The `hub_engagement_scope` NATS subject and the
+  pod-side engagement re-authorization resolver + scope-injection seam (`nats`,
+  `agent-tools`), and an `engagement_provider` carried on `BootstrapContext` so the
+  runtime can auto-stamp the active engagement onto outgoing tool calls
+  (`langgraph`). The framework treats `target_type` as an opaque string; the pentest
+  domain interprets it.
+
 ## v0.13.10 -- 2026-06-29
 
 Fixes the platform-wide **1-hour agent cliff**: every long-lived agent pod went

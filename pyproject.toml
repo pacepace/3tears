@@ -8,6 +8,13 @@ members = ["packages/*", "packages/agent/*"]
 exclude = ["packages/agent"]
 
 [tool.uv]
+# Pin the purely-transitive lxml (via trafilatura / python-docx /
+# redshift-connector) to the 6.x line, which ships cp314 wheels. Without this,
+# `uv lock` drifts lxml DOWN to 5.4.0 -- a version with NO Python 3.14 wheel --
+# so a fresh CI/Docker install source-builds it and fails (no libxml2/libxslt
+# dev headers on the runner). This is the resolver-level fix so the drift can
+# never recur on a re-lock; keep it mirrored in every consumer repo's pyproject.
+constraint-dependencies = ["lxml>=6.1.0,<7"]
 dev-dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -285,6 +292,11 @@ module = [
     "threetears.core.cache.duckdb",
     "threetears.agent.tools.document",
     "threetears.agent.tools.builtin.calculator",
+    # redshift_connector ships no py.typed/stubs; suppress its import-untyped
+    # so mypy is green whether or not the runner installs the `redshift` extra
+    # (a CI env with the extra installed reports import-untyped, not
+    # import-not-found, so ignore_missing_imports alone does not cover it).
+    "threetears.datasources.drivers.redshift_driver",
 ]
 disable_error_code = ["import-untyped"]
 
