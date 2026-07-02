@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-conversations"
-version = "0.13.10"
+version = "0.13.11"
 description = "Conversation entity, three-tier collection, and per-agent schema migrations shared by memory and tool packages"
 readme = "README.md"
 requires-python = ">=3.14"

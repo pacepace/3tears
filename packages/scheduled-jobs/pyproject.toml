@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-scheduled-jobs"
-version = "0.13.10"
+version = "0.13.11"
 description = "Generic, payload-agnostic, multipod-safe scheduled-jobs core -- cross-pod-locked tick engine, reschedule math, store protocols, and a default kind+payload store"
 readme = "README.md"
 requires-python = ">=3.14"

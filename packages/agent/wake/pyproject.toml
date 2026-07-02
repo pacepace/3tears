@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "3tears-agent-wake"
-version = "0.13.10"
+version = "0.13.11"
 description = "Long-running-agent foundation -- wake schedules, fires, webhook subscriptions"
 readme = "README.md"
 requires-python = ">=3.14"
